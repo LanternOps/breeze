@@ -95,6 +95,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
+import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -673,6 +674,9 @@ export async function bootWorker(): Promise<void> {
     });
   }, 30_000);
   auditRetryInterval.unref?.();
+  // AI model registry W01 (#7599): same snapshot as the API process. Agent
+  // runs and the cost tracker run here too.
+  startPlatformModelSnapshotRefresher();
 
   // Step 9: signal handlers → phased shutdown.
   let shutdownStarted = false;

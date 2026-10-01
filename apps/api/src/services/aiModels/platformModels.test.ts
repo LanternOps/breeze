@@ -1,7 +1,9 @@
 // apps/api/src/services/aiModels/platformModels.test.ts
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiPlatformModelRow } from '../../db/schema';
-import { toPlatformModel } from './platformModels';
+import { startPlatformModelSnapshotRefresher, toPlatformModel } from './platformModels';
+import { clearPlatformModelSnapshot, isPlatformModelSnapshotLoaded, peekPlatformModel } from './platformModelSnapshot';
+import { SEEDED_PLATFORM_MODELS } from './__fixtures__/seededPlatformModels';
 
 const NOW = new Date('2026-11-13T00:00:00.000Z');
 
@@ -59,5 +61,51 @@ describe('toPlatformModel', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(toPlatformModel(row({ optionRates: { 'speed:turbo': {} } as never })).optionRates).toBeNull();
     warn.mockRestore();
+  });
+});
+
+describe('startPlatformModelSnapshotRefresher', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    clearPlatformModelSnapshot();
+  });
+
+  it('loads immediately, then on every interval, and stops when told', async () => {
+    const load = vi.fn(async () => [...SEEDED_PLATFORM_MODELS]);
+    const stop = startPlatformModelSnapshotRefresher({ intervalMs: 1_000, load });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(peekPlatformModel('claude-sonnet-5-5')?.isPlatformDefault).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(load).toHaveBeenCalledTimes(3);
+    stop();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the previous snapshot when a refresh fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const load = vi.fn()
+      .mockResolvedValueOnce([...SEEDED_PLATFORM_MODELS])
+      .mockRejectedValueOnce(new Error('db down'));
+    const stop = startPlatformModelSnapshotRefresher({ intervalMs: 1_000, load });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(isPlatformModelSnapshotLoaded()).toBe(true);
+    expect(peekPlatformModel('claude-opus-4-8')).toBeDefined();
+    expect(warn).toHaveBeenCalled();
+    stop();
+    warn.mockRestore();
+  });
+
+  it('a second start while running is a no-op that returns the same stop', async () => {
+    const load = vi.fn(async () => []);
+    const stopA = startPlatformModelSnapshotRefresher({ intervalMs: 1_000, load });
+    const stopB = startPlatformModelSnapshotRefresher({ intervalMs: 1_000, load });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(stopB).toBe(stopA);
+    stopA();
   });
 });

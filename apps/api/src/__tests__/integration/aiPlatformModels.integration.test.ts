@@ -1,7 +1,19 @@
 // apps/api/src/__tests__/integration/aiPlatformModels.integration.test.ts
 import './setup';
 import { readFileSync } from 'node:fs';
-import { toPlatformModel } from '../../services/aiModels/platformModels';
+import {
+  PlatformModelError,
+  getPlatformDefaultModel,
+  getPlatformModelByModelId,
+  isOfferablePlatformModel,
+  listCatalogMappableModelIds,
+  listOfferableModelIds,
+  refreshPlatformModelSnapshot,
+  toPlatformModel,
+  updatePlatformModelAdmin,
+  upsertDiscoveredPlatformModel,
+} from '../../services/aiModels/platformModels';
+import { clearPlatformModelSnapshot, peekPlatformDefaultModelId, peekPlatformModel } from '../../services/aiModels/platformModelSnapshot';
 import { SEEDED_PLATFORM_MODELS, W00_OFFERABLE_AI_MODELS } from '../../services/aiModels/__fixtures__/seededPlatformModels';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -160,5 +172,97 @@ describe('ai_platform_models seed (W01 #7599)', () => {
       expect(n).toBe(SEEDED_IDS.length);
       throw new Rollback();
     })).rejects.toBeInstanceOf(Rollback);
+  });
+});
+
+describe('platform model service (W01 #7599)', () => {
+  const ADAPTIVE_CAPS = {
+    thinking: { supported: true, types: { adaptive: { supported: true }, enabled: { supported: false } } },
+    effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: false }, max: { supported: true } },
+  };
+
+  runDb('offerable ids equal W00 OFFERABLE_AI_MODELS on a seeded database', async () => {
+    expect((await listOfferableModelIds()).filter((id) => SEEDED_IDS.includes(id)).sort())
+      .toEqual([...W00_OFFERABLE_AI_MODELS].sort());
+    expect(await isOfferablePlatformModel('claude-sonnet-5-5')).toBe(true);
+    expect(await isOfferablePlatformModel('claude-sonnet-4-5')).toBe(false); // priced, never offered
+    expect(await isOfferablePlatformModel('no-such-model')).toBe(false);
+  });
+
+  runDb('catalog-mappable ids include every seeded id, and the default is Sonnet 5.5', async () => {
+    expect(await listCatalogMappableModelIds()).toEqual(expect.arrayContaining(SEEDED_IDS));
+    expect((await getPlatformDefaultModel())?.modelId).toBe('claude-sonnet-5-5');
+  });
+
+  runDb('a newly discovered model lands unpriced, unoffered, with derived support', async () => {
+    const modelId = `w01-test-${randomUUID()}`;
+    await expect(withSystemDbAccessContext(async () => {
+      const result = await upsertDiscoveredPlatformModel({ id: modelId, displayName: 'New', maxInputTokens: 1000, maxOutputTokens: 100, capabilities: ADAPTIVE_CAPS });
+      expect(result.inserted).toBe(true);
+      expect(result.row).toMatchObject({
+        rates: null, platformOffered: false, isPlatformDefault: false, lifecycle: 'available', promptProfile: 'generic',
+        optionSupport: { effort: ['low', 'medium', 'high', 'max'], thinkingDisplay: ['omitted', 'summarized'], speed: ['standard'], inferenceGeo: [] },
+      });
+      expect(result.row.lastSeenAt).not.toBeNull();
+      throw new Rollback();
+    })).rejects.toBeInstanceOf(Rollback);
+  });
+
+  runDb('rediscovering a seeded model never changes its price, offer, default or operator-set options', async () => {
+    await expect(withSystemDbAccessContext(async () => {
+      const before = (await getPlatformModelByModelId('claude-opus-5-5'))!;
+      const result = await upsertDiscoveredPlatformModel({
+        id: 'claude-opus-5-5', displayName: 'Claude Opus 5.5', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, capabilities: ADAPTIVE_CAPS,
+      });
+      expect(result.inserted).toBe(false);
+      expect(result.row.rates).toEqual(before.rates);
+      expect(result.row.platformOffered).toBe(true);
+      expect(result.row.isPlatformDefault).toBe(false);
+      expect(result.row.promptProfile).toBe('claude-frontier');
+      expect(result.row.capabilities).toEqual(ADAPTIVE_CAPS);
+      // API owns effort (xhigh dropped by the new tree); the operator's updates + fast survive.
+      expect(result.row.optionSupport).toEqual({
+        effort: ['low', 'medium', 'high', 'max'], thinkingDisplay: ['omitted', 'summarized', 'updates'], speed: ['standard', 'fast'], inferenceGeo: [],
+      });
+      throw new Rollback();
+    })).rejects.toBeInstanceOf(Rollback);
+  });
+
+  runDb('making another model the default swaps atomically, leaving exactly one', async () => {
+    await expect(withSystemDbAccessContext(async () => {
+      const opus = (await getPlatformModelByModelId('claude-opus-5-5'))!;
+      const { after } = await updatePlatformModelAdmin(opus.id, { isPlatformDefault: true });
+      expect(after.isPlatformDefault).toBe(true);
+      const defaults = await db.select({ modelId: aiPlatformModels.modelId }).from(aiPlatformModels).where(sql`is_platform_default`);
+      expect(defaults).toEqual([{ modelId: 'claude-opus-5-5' }]);
+      throw new Rollback();
+    })).rejects.toBeInstanceOf(Rollback);
+  });
+
+  runDb('rejects un-defaulting the current default with a 409 and changes nothing', async () => {
+    const sonnet = (await getPlatformModelByModelId('claude-sonnet-5-5'))!;
+    await expect(updatePlatformModelAdmin(sonnet.id, { isPlatformDefault: false }))
+      .rejects.toMatchObject({ name: 'PlatformModelError', status: 409 });
+    expect((await getPlatformDefaultModel())?.modelId).toBe('claude-sonnet-5-5');
+  });
+
+  runDb('a price edit persists and refreshes the snapshot', async () => {
+    clearPlatformModelSnapshot();
+    await expect(withSystemDbAccessContext(async () => {
+      const haiku = (await getPlatformModelByModelId('claude-haiku-4-5'))!;
+      const { after } = await updatePlatformModelAdmin(haiku.id, {
+        rates: { inputCentsPerM: 80, outputCentsPerM: 400, cacheReadCentsPerM: 8, cacheWriteCentsPerM: 100 },
+      });
+      expect(after.rates?.inputCentsPerM).toBe(80);
+      throw new Rollback();
+    })).rejects.toBeInstanceOf(Rollback);
+    await refreshPlatformModelSnapshot();
+    expect(peekPlatformModel('claude-haiku-4-5')?.rates?.inputCentsPerM).toBe(100); // rolled back
+    expect(peekPlatformDefaultModelId()).toBe('claude-sonnet-5-5');
+    clearPlatformModelSnapshot();
+  });
+
+  runDb('PlatformModelError is a 404 for an unknown id', async () => {
+    await expect(updatePlatformModelAdmin(randomUUID(), { minPlan: null })).rejects.toBeInstanceOf(PlatformModelError);
   });
 });
