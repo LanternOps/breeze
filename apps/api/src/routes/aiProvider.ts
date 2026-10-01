@@ -22,7 +22,6 @@ import {
 } from '../services/partnerWideAccess';
 import { captureException } from '../services/sentry';
 import { buildCatalogSummary } from '../services/aiModels/registryView';
-import { APPROVALS_DECIDE_REQUIRED, canDecideApprovals } from './aiModels/shared';
 
 export const aiProviderRoutes = new Hono();
 
@@ -131,9 +130,8 @@ aiProviderRoutes.patch(
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
-    // W03 changeCompatDefaultModel re-points partner assignments on the old
-    // default, script_reviewer included: same gate as PUT /ai/models/assignments.
-    if (!canDecideApprovals(c)) return c.json(APPROVALS_DECIDE_REQUIRED, 403);
+    // No approvals:decide gate: W03 changeCompatDefaultModel only re-points
+    // DEFAULT_FOLLOWING_SURFACES, which excludes script_reviewer.
     const { defaultModel } = c.req.valid('json');
     try {
       const result = await updatePartnerLlmConfig({ partnerId: auth.partnerId, defaultModel });

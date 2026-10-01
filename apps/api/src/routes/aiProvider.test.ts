@@ -246,9 +246,7 @@ describe('AI provider routes', () => {
   });
 
   it('registers every handler with the billing manage permission', async () => {
-    // 5 handlers here + the partnerRead/partnerWrite arrays that ./aiModels/shared
-    // (imported for the PATCH approvals gate) builds at module load.
-    expect(requirePermission).toHaveBeenCalledTimes(7);
+    expect(requirePermission).toHaveBeenCalledTimes(5);
     for (const args of vi.mocked(requirePermission).mock.calls) expect(args).toEqual(['billing', 'manage']);
   });
 
@@ -498,9 +496,9 @@ describe('AI provider routes', () => {
     }));
   });
 
-  // W04 (#7602): the compat default-model change re-points every partner-level
-  // assignment on the old default, script_reviewer included, so it carries the
-  // same gate as PUT /ai/models/assignments (MFA + approvals:decide).
+  // W04 (#7602): MFA parity with /ai/models writes. No approvals:decide gate:
+  // W03's compat default-model change only re-points DEFAULT_FOLLOWING_SURFACES,
+  // which excludes script_reviewer.
   it('PATCH / → 403 without MFA', async () => {
     authGates.mfaDenied = true;
 
@@ -514,7 +512,7 @@ describe('AI provider routes', () => {
     expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
-  it('PATCH / → 403 APPROVALS_DECIDE_REQUIRED without approvals:decide', async () => {
+  it('PATCH / does not require approvals:decide (the reviewer never follows the default model)', async () => {
     authGates.approvalsDecide = false;
 
     const response = await aiProviderRoutes.request('/', {
@@ -523,9 +521,8 @@ describe('AI provider routes', () => {
       body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
     });
 
-    expect(response.status).toBe(403);
-    expect((await response.json()).code).toBe('APPROVALS_DECIDE_REQUIRED');
-    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(updatePartnerLlmConfig).toHaveBeenCalled();
   });
 
   it('PATCH / captures mapped PartnerLlmError responses at 5xx', async () => {
