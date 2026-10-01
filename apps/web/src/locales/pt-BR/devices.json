@@ -320,6 +320,8 @@
     "generateNewToken": "Gerar novo token",
     "generateToken": "Gerar token",
     "cliTokenNotGenerated": "Ainda não há token. Escolha o site, o número de dispositivos e a expiração e, em seguida, gere um token. Cada token é uma chave de registro ativa.",
+    "cliCommandNeedsToken": "Gere um token primeiro. O comando de instalação aparece aqui assim que existir um token; até lá, não há nada para executar.",
+    "copyCommand": "Copiar comando",
     "cliTokenSite": "Os dispositivos registrados com este token entram em {{site}}.",
     "singleUseValidForOneDevice": "Uso único — válido para um dispositivo. Gere um novo token para cada máquina adicional.",
     "linux": "linux",

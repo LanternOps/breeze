@@ -120,3 +120,62 @@ describe('EnrollDeviceStep — installer device count (#2992)', () => {
     expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('discardKeyOnFailure=1');
   });
 });
+
+/**
+ * #7628 — the CLI tab used to render the install command with a literal
+ * "<TOKEN>" while the onboarding token was loading or after the mint failed,
+ * and the copy button copied it. That command fails enrollment with
+ * enrollment_key_not_found (exit 11).
+ */
+describe('EnrollDeviceStep — CLI command needs a real token (#7628)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+  });
+
+  it('shows no command and no copy button when the token mint fails', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ error: 'nope' }, false, 500));
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    await waitFor(() => {
+      expect(screen.getByText('nope')).toBeDefined();
+    });
+    expect(screen.queryByText(/<TOKEN>/)).toBeNull();
+    expect(screen.queryByTestId('setup-cli-command')).toBeNull();
+    expect(screen.queryByTestId('setup-cli-copy-command')).toBeNull();
+    expect(screen.getByTestId('setup-cli-command-needs-token')).toBeDefined();
+  });
+
+  it('shows no command while the token is still being minted', () => {
+    fetchWithAuthMock.mockReturnValue(new Promise<Response>(() => {}));
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    expect(screen.queryByText(/<TOKEN>/)).toBeNull();
+    expect(screen.queryByTestId('setup-cli-copy-command')).toBeNull();
+    expect(screen.getByTestId('setup-cli-command-needs-token')).toBeDefined();
+  });
+
+  it('shows and copies the real command once the token exists', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({ token: 'wizard-token-1', enrollmentSecret: 'sec' })
+    );
+
+    render(<EnrollDeviceStep orgId="org-1" siteId="site-1" onFinish={vi.fn()} />);
+    fireEvent.click(screen.getByText('CLI Commands'));
+
+    const command = await screen.findByTestId('setup-cli-command');
+    expect(command.textContent).toContain('wizard-token-1');
+    expect(screen.queryByTestId('setup-cli-command-needs-token')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('setup-cli-copy-command'));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(command.textContent);
+    });
+  });
+});

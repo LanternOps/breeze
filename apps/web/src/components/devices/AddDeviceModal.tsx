@@ -1295,15 +1295,21 @@ export default function AddDeviceModal({
 
             {/* Commands section */}
             {(() => {
-              const commands = buildInstallCommands({
-                apiUrl:
-                  import.meta.env.PUBLIC_API_URL || window.location.origin,
-                token: onboardingToken || "<TOKEN>",
-                enrollmentSecret: enrollmentSecret || undefined,
-              });
               const commandPlatform =
                 selectedOS === "windows" ? "windows" : "linux";
-              const command = commands[commandPlatform];
+              // #7628: never render a command until a real key exists. A
+              // "<TOKEN>" placeholder looked runnable, got copied, and failed
+              // enrollment with enrollment_key_not_found (exit 11).
+              const command =
+                onboardingToken && !tokenLoading && !tokenError
+                  ? buildInstallCommands({
+                      apiUrl:
+                        import.meta.env.PUBLIC_API_URL ||
+                        window.location.origin,
+                      token: onboardingToken,
+                      enrollmentSecret: enrollmentSecret || undefined,
+                    })[commandPlatform]
+                  : null;
               const commandOptions = [
                 { platform: "windows", label: t("addDeviceModal.windows2") },
                 { platform: "linux", label: t("addDeviceModal.linuxMacos") },
@@ -1331,18 +1337,32 @@ export default function AddDeviceModal({
                     ))}
                   </div>
                   <div className="rounded-lg border bg-muted/30 p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <code className="text-xs font-mono text-muted-foreground break-all">
-                        {command}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() => handleCopyCommand(command)}
-                        className="shrink-0 p-1 hover:bg-muted rounded"
+                    {command ? (
+                      <div className="flex items-start justify-between gap-2">
+                        <code
+                          className="text-xs font-mono text-muted-foreground break-all"
+                          data-testid="cli-command"
+                        >
+                          {command}
+                        </code>
+                        <button
+                          type="button"
+                          data-testid="cli-copy-command"
+                          aria-label={t("addDeviceModal.copyCommand")}
+                          onClick={() => handleCopyCommand(command)}
+                          className="shrink-0 p-1 hover:bg-muted rounded"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <p
+                        className="text-sm text-muted-foreground"
+                        data-testid="cli-command-needs-token"
                       >
-                        <Copy className="h-4 w-4" />
-                      </button>
-                    </div>
+                        {t("addDeviceModal.cliCommandNeedsToken")}
+                      </p>
+                    )}
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {commandPlatform === "windows"
