@@ -519,6 +519,32 @@ describe.skipIf(!RUN)('money moves exactly once (Step 8a, findings 1 and 2)', ()
     expect(callsFor(id)).toHaveLength(2);
   });
 
+  it('two CONCURRENT sweeps over one undebited reservation send only the identical key + amount and stamp it once (review T3)', async () => {
+    deductResponses.push(async () => { throw new TypeError('fetch failed'); });
+    const id = await reserve(s, binding);
+    await settleInvocation(settleInput(s, binding, id));
+    expect(await reservationState(id)).toMatchObject({ credits_debited_at: null, credits_debit_attempts: 1 });
+    await backdateDebit(id);
+
+    await Promise.all([settleAndDebitAiReservations(), settleAndDebitAiReservations()]);
+
+    const calls = callsFor(id);
+    const amount = Number((await reservationState(id)).actual_cost_cents);
+    // The original (lost) call plus one per sweep that saw the row: never a
+    // different key or amount, so the billing service's idempotency makes it one charge.
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.length).toBeLessThanOrEqual(3);
+    for (const call of calls) expect(call).toEqual({ key: `ai-settlement:${id}`, headerKey: `ai-settlement:${id}`, costCents: amount });
+    const stamped = await q<{ at: string | null }>(sql`SELECT credits_debited_at::text AS at FROM ai_budget_reservations WHERE id = ${id}::uuid`);
+    expect(stamped[0]!.at).not.toBeNull();
+
+    // Exactly one stamp: a later sweep neither re-sends nor re-stamps.
+    await settleAndDebitAiReservations();
+    expect(callsFor(id)).toHaveLength(calls.length);
+    const restamped = await q<{ at: string | null }>(sql`SELECT credits_debited_at::text AS at FROM ai_budget_reservations WHERE id = ${id}::uuid`);
+    expect(restamped[0]!.at).toBe(stamped[0]!.at);
+  });
+
   it('a 5xx (deduct_unconfirmed) is retried, not stamped failed', async () => {
     deductResponses.push(async () => new Response(JSON.stringify({ error: 'deduct_unconfirmed' }), { status: 503 }));
     const id = await reserve(s, binding);

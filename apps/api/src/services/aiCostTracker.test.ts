@@ -1296,6 +1296,10 @@ describe('debitBillingCredits (keyed)', () => {
     [400, { error: 'invalid_idempotency_key', message: 'idempotencyKey: bad value ai-settlement:x' }, 'http_400:invalid_idempotency_key'],
     [409, { error: 'idempotency_key_reused', message: 'nothing was deducted' }, 'http_409:idempotency_key_reused'],
     [403, 'forbidden', 'http_403'],
+    // A rotated / wrong billing API key, and a deployment pointed at a billing
+    // service without the route: retrying either can never help.
+    [401, { error: 'unauthorized' }, 'http_401:unauthorized'],
+    [404, 'not found', 'http_404'],
   ])('%i is TERMINAL: rejected with a short code, never the response message', async (status, body, code) => {
     const fetchMock = enableBillingService();
     fetchMock.mockResolvedValueOnce(typeof body === 'string' ? new Response(body, { status }) : json(status, body));
