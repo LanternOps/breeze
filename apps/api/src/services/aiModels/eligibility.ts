@@ -142,7 +142,7 @@ export type EnableGateReason =
   | 'connection_unavailable';
 
 /** W03 soft-disconnect: the connection row is kept as provenance only (status 'disconnected'). */
-function onDisconnectedConnection(c: CandidateFacts): boolean {
+export function onDisconnectedConnection(c: CandidateFacts): boolean {
   return c.connection.status === 'disconnected';
 }
 

@@ -164,6 +164,29 @@ describe('setOfferingEnabled', () => {
     expect([err.status, err.code]).toEqual([404, 'not_found']);
   });
 
+  describe('an offering on a disconnected connection (W03 soft-disconnect)', () => {
+    const onDisconnected = () => candidate({ connectionId: 'c-gone', funding: 'partner_key' }, {
+      platform: null, connection: { kind: 'anthropic_byok', status: 'disconnected', keyUsable: false },
+      rate: { source: 'linked_platform', standard: RATES },
+    });
+
+    it('enable → 409 not_eligible connection_unavailable, nothing written', async () => {
+      h.loadOfferingCandidate.mockResolvedValue(onDisconnected());
+      const err = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: true, force: false }).catch((e) => e);
+      expect(err).toBeInstanceOf(RegistryWriteError);
+      expect([err.status, err.code, err.details?.reason]).toEqual([409, 'not_eligible', 'connection_unavailable']);
+      expect(h.enableOffering).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('disable (force %s) stays allowed (idempotent: it is already disabled)', async (force) => {
+      h.loadOfferingCandidate.mockResolvedValue(onDisconnected());
+      h.enableOffering.mockResolvedValue(row({ enabled: false }));
+      const r = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force });
+      expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
+      expect(r.offering.enabled).toBe(false);
+    });
+  });
+
   it('refuses to disable a default offering without force, listing the surfaces', async () => {
     h.loadOfferingCandidate.mockResolvedValue(candidate({}, { enabled: true }));
     h.dbSelectRows = [[{ surface: 'chat', orgId: null }, { surface: 'helper', orgId: 'org-1' }]];
@@ -444,5 +467,55 @@ describe('updateOfferingDetails', () => {
   it('rejects the offering as its own refusal fallback', async () => {
     const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, refusalFallbackOfferingId: OFF } }).catch((e) => e);
     expect(err.details.reason).toBe('self');
+  });
+
+  describe('W03 soft-disconnect', () => {
+    const disconnected = { kind: 'anthropic_byok', status: 'disconnected', keyUsable: false };
+    const live = { kind: 'anthropic_byok', status: 'active', keyUsable: true };
+    const byok = (id: string, connectionId: string, connection: Record<string, unknown>, enabled: boolean) =>
+      candidate({ offeringId: id, connectionId, funding: 'partner_key' }, {
+        enabled, platform: null, connection, rate: { source: 'linked_platform', standard: RATES },
+      });
+
+    it.each([
+      ['a rename', { displayName: 'x' }],
+      ['an option edit', { defaultOptions: { effort: 'low' as const } }],
+      ['a refusal-fallback clear', { refusalFallbackOfferingId: null }],
+    ])('refuses %s of an offering on a disconnected connection: 409 not_eligible connection_unavailable, nothing written', async (_l, fields) => {
+      h.getOffering.mockResolvedValue(row({ source: 'discovered', connectionId: 'c-gone', platformModelId: 'pm-1', modelId: 'm' }));
+      h.loadOfferingCandidate.mockResolvedValue(byok(OFF, 'c-gone', disconnected, false));
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, ...fields } }).catch((e) => e);
+      expect(err).toBeInstanceOf(RegistryWriteError);
+      expect([err.status, err.code, err.details]).toEqual([409, 'not_eligible', { reason: 'connection_unavailable' }]);
+      expect(err.message).toBe("This model's connection is disconnected.");
+      expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    // A reconnect creates a NEW connection, so an offering on the live one and a
+    // disconnected offering never share a connection: different_connection.
+    it('rejects a refusal fallback on the disconnected (previous) connection', async () => {
+      h.getOffering.mockResolvedValue(row({ source: 'discovered', connectionId: 'c-new', platformModelId: 'pm-1', modelId: 'm' }));
+      h.loadOfferingCandidate.mockImplementation(async (id: string) => (id === FB
+        ? byok(FB, 'c-gone', disconnected, false)
+        : byok(OFF, 'c-new', live, true)));
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, refusalFallbackOfferingId: FB } }).catch((e) => e);
+      expect([err.status, err.code, err.details.reason]).toEqual([422, 'not_eligible', 'different_connection']);
+      expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    // Defence in depth past the connection check: a disconnected offering is
+    // disabled, and even an enabled one fails the enable gate.
+    it.each([
+      ['disabled (as disconnectCompat leaves it)', false, 'disabled'],
+      ['still enabled (never left by W03, defence in depth)', true, 'connection_unavailable'],
+    ])('rejects a disconnected refusal fallback that is %s', async (_l, enabled, reason) => {
+      h.getOffering.mockResolvedValue(row({ source: 'discovered', connectionId: 'c-1', platformModelId: 'pm-1', modelId: 'm' }));
+      h.loadOfferingCandidate.mockImplementation(async (id: string) => (id === FB
+        ? byok(FB, 'c-1', disconnected, enabled)
+        : byok(OFF, 'c-1', live, true)));
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, refusalFallbackOfferingId: FB } }).catch((e) => e);
+      expect([err.status, err.code, err.details.reason]).toEqual([422, 'not_eligible', reason]);
+      expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+    });
   });
 });

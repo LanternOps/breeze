@@ -20,13 +20,16 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiModelAssignments, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
 import { loadOfferingCandidate, loadPartnerFacts, platformCandidateFacts, type LoadedCandidate } from './candidateLoader';
-import { checkEnableEligibility, type EnableEligibilityContext } from './eligibility';
+import { checkEnableEligibility, onDisconnectedConnection, type EnableEligibilityContext } from './eligibility';
 import { tryLockPartnerRegistryWrite } from './registryWriteLock';
 import { enableOffering, getOffering, offeringPriceSource, type Offering } from './offerings';
 import { getPlatformInferenceGeo, getPlatformModelById, type PlatformModel } from './platformModels';
 import { REGISTRY_BUSY_MESSAGE, RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
 
 export interface OfferingInUse { surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }
+
+/** W03 soft-disconnect: the offering's connection is kept as provenance only; nothing may edit or re-enable it. */
+export const CONNECTION_DISCONNECTED_MESSAGE = "This model's connection is disconnected.";
 
 /**
  * Runs `write` in a fresh system transaction holding the partner's registry
@@ -144,7 +147,11 @@ export async function ensurePlatformOffering(input: { partnerId: string; platfor
   });
 }
 
-/** Enable runs checkEnableEligibility; disable refuses (409 offering_in_use) while a surface defaults to it, unless force. */
+/**
+ * Enable runs checkEnableEligibility (an offering on a disconnected connection
+ * is refused as connection_unavailable); disable refuses (409 offering_in_use)
+ * while a surface defaults to it, unless force.
+ */
 export async function setOfferingEnabled(input: {
   partnerId: string; offeringId: string; enabled: boolean; force: boolean;
 }): Promise<{ offering: Offering; inUse: OfferingInUse[] }> {
@@ -285,6 +292,11 @@ async function updateOfferingDetailsLocked(input: {
     throw new RegistryWriteError('This model was changed by someone else. Reload and try again.', 'stale_write', 409);
   }
   const candidate = await loadOwned(input.partnerId, input.offeringId);
+  // Its offerings stay as ledger provenance (W03 soft-disconnect) and are
+  // hidden from every list, so no edit of one is meaningful.
+  if (onDisconnectedConnection(candidate.facts)) {
+    throw new RegistryWriteError(CONNECTION_DISCONNECTED_MESSAGE, 'not_eligible', 409, { reason: 'connection_unavailable' });
+  }
 
   const set: Partial<typeof partnerAiModels.$inferInsert> = { updatedAt: new Date() };
   if (patch.displayName !== undefined) set.displayName = patch.displayName;
