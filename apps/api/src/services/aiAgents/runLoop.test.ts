@@ -359,8 +359,14 @@ vi.mock('../llm/platformKeyAlert', () => ({
   PLATFORM_KEY_MISSING_MESSAGE: 'AI is not configured on this deployment.',
 }));
 
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../sentry')>()),
+  captureException,
+}));
+
 const settleInvocation = vi.hoisted(() =>
-  vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean }>>(
+  vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean; unrecorded?: boolean }>>(
     async () => ({ costCents: 0, invocationIds: [], deferred: false })));
 vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
@@ -2606,6 +2612,33 @@ describe('executeAgentRun', () => {
     expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
       orgId: ORG_ID, reservationId: '00000000-0000-4000-8000-0000000000e1',
     });
+  });
+
+  it('a settlement failure is reported to Sentry (scrubbed, with run + org) and the reservation is held indeterminate (review S2)', async () => {
+    seedRows();
+    settleInvocation.mockRejectedValueOnce(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
+    markAiBudgetReservationIndeterminate.mockRejectedValueOnce(Object.assign(new Error('Failed query: update … params: sk-ant-secret2'), { params: ['sk-ant-secret2'] }));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await executeAgentRun(RUN_ID);
+
+    const logged = JSON.stringify(error.mock.calls);
+    expect(logged).not.toContain('sk-ant-secret');
+    const settleReport = captureException.mock.calls.find(([e]) => /agent run settlement failed/.test(String((e as Error).message)));
+    expect(settleReport).toBeDefined();
+    expect(String((settleReport![0] as Error).message)).not.toContain('sk-ant-secret');
+    expect(settleReport![2]).toEqual(expect.objectContaining({ org_id: ORG_ID, ai_agent_run_id: RUN_ID }));
+    expect(JSON.stringify(captureException.mock.calls.map(([e]) => String((e as Error).message)))).not.toContain('sk-ant-secret');
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalled();
+  });
+
+  it('an UNRECORDED settlement (deferred, not persisted) keeps the reservation held indeterminate (review S1)', async () => {
+    seedRows();
+    settleInvocation.mockResolvedValueOnce({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }));
   });
 
   it('a usage-recording failure never redefines the run outcome', async () => {

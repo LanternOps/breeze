@@ -2313,16 +2313,27 @@ async function driveSdkLoop(
       // The run row carries the billed number (which also prices any model
       // the CLI switched to on its own at its platform rate).
       costCents = settled.costCents;
+      // Review S1: deferred but NOT persisted — recorded nowhere (already
+      // reported by settleInvocation). Keep the reservation held.
+      if (settled.unrecorded) await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
     } else {
       await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
     }
   } catch (error) {
-    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    // Settlement errors are DB errors: scrubbed before any log or report (S2).
+    const message = safeErrorMessage(error);
+    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error: message });
+    captureException(new Error(`agent run settlement failed: ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+    });
     await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
-      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
-        runId: run.id,
-        error: markError,
-      }));
+      .catch((markError) => {
+        const markMessage = safeErrorMessage(markError);
+        console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', { runId: run.id, error: markMessage });
+        captureException(new Error(`agent run reservation not retained as indeterminate: ${markMessage}`), undefined, {
+          org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+        });
+      });
   }
 
   // §9.1a: the FINAL answer was a refusal (no fallback, or the fallback
