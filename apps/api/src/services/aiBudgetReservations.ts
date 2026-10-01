@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { pgErrorCode } from '@breeze/shared/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
@@ -938,7 +938,8 @@ async function advanceSdkUsageSnapshot(orgId: string, sdkUsage: SettleSdkUsage):
  * snapshot merged with any settlement still PENDING for the session: a turn
  * whose settlement was deferred by lock contention has been priced but not yet
  * applied, and billing the next turn's delta against the older snapshot would
- * bill that usage twice when the sweep replays it.
+ * bill that usage twice when the sweep replays it. A DEAD pending settlement
+ * (finding 5) will never be applied, so it is not merged.
  */
 export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: string }): Promise<SdkUsageSnapshot | null> {
   return inReservationTransaction('aiBudgetReservations.readSdkUsageSnapshot', async () => {
@@ -953,6 +954,7 @@ export async function readSdkUsageSnapshot(input: { orgId: string; sessionId: st
       FROM ai_budget_reservations
       WHERE org_id = ${input.orgId}::uuid
         AND pending_settlement IS NOT NULL
+        AND pending_settlement_dead_at IS NULL
         AND status <> 'settled'
         AND pending_settlement -> 'sdkUsage' ->> 'sessionId' = ${input.sessionId}
     `));
@@ -1210,18 +1212,52 @@ export interface ReplayedAiSettlement {
 }
 
 /**
+ * Failed replays before a pending settlement is given up on (stamped dead).
+ * The sweep runs every 5 minutes, so ~1 hour of consecutive failures; a lock
+ * contention that outlasts that is not transient.
+ */
+export const MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS = 12;
+
+/**
+ * A replay failed: count it, keep the scrubbed error, and bump updated_at so
+ * the row goes to the back of the replay queue (review finding 5 — without the
+ * bump, `limit` permanently failing rows were picked first on every run and
+ * starved everything behind them). At the cap the row is stamped dead.
+ */
+async function recordPendingSettlementReplayFailure(
+  reservationId: string,
+  message: string,
+): Promise<{ attempts: number; dead: boolean } | null> {
+  return inReservationTransaction('aiBudgetReservations.recordReplayFailure', async () => {
+    const row = rows<{ attempts: number; dead: boolean }>(await db.execute(sql`
+      UPDATE ai_budget_reservations
+      SET pending_settlement_attempts = pending_settlement_attempts + 1,
+          pending_settlement_error = ${boundedCode(message)},
+          pending_settlement_dead_at = CASE
+            WHEN pending_settlement_attempts + 1 >= ${MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS} THEN now() ELSE NULL END,
+          updated_at = now()
+      WHERE id = ${reservationId}::uuid AND pending_settlement IS NOT NULL AND pending_settlement_dead_at IS NULL
+      RETURNING pending_settlement_attempts AS attempts, pending_settlement_dead_at IS NOT NULL AS dead
+    `))[0];
+    return row ? { attempts: Number(row.attempts), dead: row.dead === true } : null;
+  });
+}
+
+/**
  * Replay every persisted deferred settlement through the same idempotent
  * settleAiBudgetReservation (one transaction each). A row that settles clears
  * its own pending_settlement in that transaction, so a second run finds
- * nothing. A failing row is reported (DB detail scrubbed) and left pending for
- * the next run; it never blocks the others.
+ * nothing. A failing row is reported (DB detail scrubbed), counted and moved to
+ * the back of the queue; after MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS it is
+ * stamped dead (Sentry `ai_settlement_replay_dead`, listDeadPendingSettlements)
+ * and no longer replayed. It never blocks the others.
  */
 export async function replayPendingAiSettlements(limit = 100): Promise<ReplayedAiSettlement[]> {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive safe integer');
   const pending = await inReservationTransaction('aiBudgetReservations.listPending', async () =>
     rows<{ id: string; org_id: string; pending_settlement: unknown }>(await db.execute(sql`
       SELECT id, org_id, pending_settlement FROM ai_budget_reservations
-      WHERE pending_settlement IS NOT NULL AND status <> 'settled'
+      WHERE pending_settlement IS NOT NULL AND status <> 'settled' AND pending_settlement_dead_at IS NULL
       ORDER BY updated_at ASC
       LIMIT ${limit}
     `)));
@@ -1242,9 +1278,59 @@ export async function replayPendingAiSettlements(limit = 100): Promise<ReplayedA
         reservationId: row.id, orgId: row.org_id, error: message,
       });
       captureException(new Error(`pending AI settlement replay failed: ${message}`));
+      try {
+        const recorded = await recordPendingSettlementReplayFailure(row.id, message);
+        if (recorded?.dead) {
+          console.error('[AI] pending AI settlement replay given up (dead); operator action needed', {
+            reservationId: row.id, orgId: row.org_id, attempts: recorded.attempts, error: message,
+          });
+          captureMessage('Pending AI settlement replay exhausted its attempts; spend is unrecorded until an operator acts', {
+            eventCode: 'ai_settlement_replay_dead',
+            level: 'error',
+          });
+        }
+      } catch (recordError) {
+        const recordMessage = safeErrorMessage(recordError);
+        console.error('[AI] could not record the pending settlement replay failure', {
+          reservationId: row.id, orgId: row.org_id, error: recordMessage,
+        });
+        captureException(new Error(`pending AI settlement replay failure not recorded: ${recordMessage}`));
+      }
     }
   }
   return out;
+}
+
+export interface DeadPendingSettlement {
+  reservationId: string;
+  orgId: string;
+  status: AiBudgetReservationStatus;
+  attempts: number;
+  error: string | null;
+  deadAt: string;
+}
+
+/** Operator view: deferred settlements the replay gave up on (finding 5), newest first. */
+export async function listDeadPendingSettlements(limit = 100): Promise<DeadPendingSettlement[]> {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive safe integer');
+  return inReservationTransaction('aiBudgetReservations.listDeadPending', async () =>
+    rows<{ id: string; org_id: string; status: AiBudgetReservationStatus; attempts: number; error: string | null; dead_at: string }>(
+      await db.execute(sql`
+        SELECT id, org_id, status, pending_settlement_attempts AS attempts, pending_settlement_error AS error,
+               pending_settlement_dead_at::text AS dead_at
+        FROM ai_budget_reservations
+        WHERE pending_settlement_dead_at IS NOT NULL AND pending_settlement IS NOT NULL
+        ORDER BY pending_settlement_dead_at DESC
+        LIMIT ${limit}
+      `),
+    ).map((row) => ({
+      reservationId: row.id,
+      orgId: row.org_id,
+      status: row.status,
+      attempts: Number(row.attempts),
+      error: row.error,
+      deadAt: row.dead_at,
+    })));
 }
 
 /**

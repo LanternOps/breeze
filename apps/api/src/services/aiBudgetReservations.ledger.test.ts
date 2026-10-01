@@ -18,6 +18,7 @@ const { dbMock, hoisted } = vi.hoisted(() => ({
     tightenLockTimeout: vi.fn(async () => 0),
     getEffectiveAiBudget: vi.fn(),
     captureException: vi.fn(),
+    captureMessage: vi.fn(),
     recordInvocation: vi.fn(),
     getPlatformModelByModelId: vi.fn(),
   },
@@ -30,14 +31,16 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../db/lockTimeout', () => ({ tightenLockTimeout: hoisted.tightenLockTimeout }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: hoisted.getEffectiveAiBudget }));
-vi.mock('./sentry', () => ({ captureException: hoisted.captureException, captureMessage: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: hoisted.captureException, captureMessage: hoisted.captureMessage }));
 vi.mock('./aiModels/invocationLedgerWrite', () => ({ recordInvocation: hoisted.recordInvocation }));
 vi.mock('./aiModels/platformModels', () => ({ getPlatformModelByModelId: hoisted.getPlatformModelByModelId }));
 
 import {
   AiBudgetBindingConflictError,
   AiBudgetPendingSettlementError,
+  MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS,
   readSdkUsageSnapshot,
+  replayPendingAiSettlements,
   reserveAiBudget,
   settleAiBudgetReservation,
   settleAiBudgetReservationDurably,
@@ -399,6 +402,37 @@ describe('settleAiBudgetReservationDurably persists a contended settlement (find
     expect(persist.sql).not.toMatch(/organizations/);
     expect(JSON.parse(persist.params.find((p) => typeof p === 'string' && p.startsWith('{')) as string))
       .toMatchObject({ reservationId: RESERVATION_ID, invocations: [expect.objectContaining({ costCents: 0.5 })] });
+    error.mockRestore();
+  });
+});
+
+describe('replayPendingAiSettlements dead-letter (#7700 review finding 5)', () => {
+  it('a failed replay is counted and moved to the back; the last allowed failure stamps it dead and reports ai_settlement_replay_dead', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    hoisted.captureMessage.mockClear();
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: RESERVATION_ID, org_id: ORG_ID, pending_settlement: { reservationId: 'someone-else', orgId: ORG_ID } }])
+      .mockResolvedValueOnce([{ attempts: MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS, dead: true }]);
+
+    await expect(replayPendingAiSettlements(10)).resolves.toEqual([]);
+
+    expect(allSql()[0]).toMatch(/pending_settlement_dead_at IS NULL/);
+    const failure = q(1);
+    expect(failure.sql).toMatch(/SET pending_settlement_attempts = pending_settlement_attempts \+ 1/);
+    expect(failure.sql).toMatch(/updated_at = now\(\)/);
+    expect(failure.params).toContain(RESERVATION_ID);
+    expect(hoisted.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_settlement_replay_dead' }));
+    error.mockRestore();
+  });
+
+  it('a failure below the cap reports no dead-letter event', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    hoisted.captureMessage.mockClear();
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: RESERVATION_ID, org_id: ORG_ID, pending_settlement: { reservationId: 'someone-else', orgId: ORG_ID } }])
+      .mockResolvedValueOnce([{ attempts: 1, dead: false }]);
+    await replayPendingAiSettlements(10);
+    expect(hoisted.captureMessage).not.toHaveBeenCalled();
     error.mockRestore();
   });
 });

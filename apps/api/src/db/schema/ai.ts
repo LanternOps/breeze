@@ -284,6 +284,11 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   modelBinding: jsonb('model_binding').$type<Record<string, unknown> | null>(),
   // A settlement deferred by org-lock contention, replayed by the sweep.
   pendingSettlement: jsonb('pending_settlement').$type<Record<string, unknown> | null>(),
+  // Replay dead-letter (#7700 finding 5): failed replays so far, the last
+  // scrubbed error, and when it was given up on (excluded from replay).
+  pendingSettlementAttempts: integer('pending_settlement_attempts').notNull().default(0),
+  pendingSettlementError: varchar('pending_settlement_error', { length: 128 }),
+  pendingSettlementDeadAt: timestamp('pending_settlement_dead_at', { withTimezone: true }),
   // Exactly-once keyed platform credit debit (`ai-settlement:<id>`). `due` is
   // set only by a ledger settlement of platform spend; failed = terminal (4xx
   // or retries exhausted), excluded from the sweep's retry and operator-visible.
@@ -301,8 +306,9 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
     .on(table.orgId, table.namespace, table.dailyPeriodKey, table.monthlyPeriodKey, table.status),
   // Partial indexes created via SQL migration
   // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate');
-  // W03: _pending_settlement_idx, _credits_undebited_idx, _credits_debit_failed_idx;
-  // CHECK ai_budget_reservations_credits_debit_attempts_chk).
+  // W03: _pending_settlement_idx, _credits_undebited_idx, _credits_debit_failed_idx,
+  // _pending_replay_idx, _pending_dead_idx; CHECK
+  // ai_budget_reservations_credits_debit_attempts_chk, _pending_settlement_attempts_chk).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
   // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
 }));

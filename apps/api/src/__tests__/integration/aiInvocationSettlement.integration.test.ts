@@ -26,7 +26,9 @@ import {
   AiBudgetPendingSettlementError,
   clearCreditDebitFailure,
   listFailedCreditDebits,
+  listDeadPendingSettlements,
   listUndebitedPlatformSettlements,
+  MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS,
   persistPendingSettlement,
   readSdkUsageSnapshot,
   replayPendingAiSettlements,
@@ -331,6 +333,59 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     // The pending settlement itself (the sweep's replay, or the deferring caller retrying) goes through.
     expect((await replayPendingAiSettlements()).filter((r) => r.reservationId === id)).toMatchObject([{ kind: 'settled', actualCostCents: 5 }]);
     expect(await reservationState(id)).toMatchObject({ status: 'settled', pending_settlement: null });
+  });
+});
+
+describe.skipIf(!RUN)('pending settlement replay has no head-of-line (#7700 review finding 5)', () => {
+  /** A pending settlement that can never replay (it names another reservation), backdated to sort first. */
+  async function poisoned(s: SeededRegistryPartner, binding: TurnBinding, day: string, sdkSnapshot?: SdkUsageSnapshot): Promise<string> {
+    const id = await reserve(s, binding, { session: false });
+    const pending = {
+      reservationId: randomUUID(), orgId: s.orgId, actualCostCents: 1, inputTokens: 1, outputTokens: 1,
+      ...(sdkSnapshot ? { sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: sdkSnapshot } } : {}),
+    };
+    await fixtureSql`UPDATE ai_budget_reservations SET pending_settlement = ${fixtureSql.json(pending)},
+                     updated_at = ${day}::timestamptz WHERE id = ${id}`;
+    return id;
+  }
+  const attemptsOf = async (id: string) => (await q<{ a: number; dead: string | null; err: string | null }>(sql`
+    SELECT pending_settlement_attempts AS a, pending_settlement_dead_at AS dead, pending_settlement_error AS err
+      FROM ai_budget_reservations WHERE id = ${id}::uuid`))[0]!;
+
+  it('a failing replay moves to the back of the queue, so it cannot starve the rows behind it', async () => {
+    const s = await seedRegistryPartner('platform');
+    const binding = await bindingFor(s, 'ai_agents');
+    const a = await poisoned(s, binding, '2000-01-01');
+    const b = await poisoned(s, binding, '2000-01-02');
+    await replayPendingAiSettlements(1);
+    expect(await attemptsOf(a)).toMatchObject({ a: 1, dead: null });
+    await replayPendingAiSettlements(1);
+    // Before the fix the same (oldest, still failing) row was picked again forever.
+    expect(await attemptsOf(b)).toMatchObject({ a: 1, dead: null });
+    expect(await attemptsOf(a)).toMatchObject({ a: 1 });
+    expect((await attemptsOf(a)).err).toMatch(/does not belong/);
+  });
+
+  it('after N failures the row is stamped dead: excluded from replay and from the SDK snapshot merge, listed for an operator', async () => {
+    const s = await seedRegistryPartner('platform');
+    const binding = await bindingFor(s, 'ai_agents');
+    const snapshot: SdkUsageSnapshot = { version: 1, models: { [binding.wireModel]: { tokens: T, webSearchRequests: 0 } } };
+    const a = await poisoned(s, binding, '2000-01-01', snapshot);
+    expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(snapshot);
+    await fixtureSql`UPDATE ai_budget_reservations SET pending_settlement_attempts = ${MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS - 1},
+                     updated_at = '2000-01-01' WHERE id = ${a}`;
+    await replayPendingAiSettlements(1);
+    const dead = await attemptsOf(a);
+    expect(dead.a).toBe(MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS);
+    expect(dead.dead).not.toBeNull();
+    // Excluded from replay: another run does not touch it, even as the oldest row.
+    await fixtureSql`UPDATE ai_budget_reservations SET updated_at = '2000-01-01' WHERE id = ${a}`;
+    await replayPendingAiSettlements(1);
+    expect((await attemptsOf(a)).a).toBe(MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS);
+    // A dead settlement is not billed, so the next turn must not bill against its snapshot either.
+    expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toBeNull();
+    expect((await listDeadPendingSettlements(500)).find((r) => r.reservationId === a))
+      .toMatchObject({ orgId: s.orgId, attempts: MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS });
   });
 });
 

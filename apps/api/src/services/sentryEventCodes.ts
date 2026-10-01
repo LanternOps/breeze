@@ -196,6 +196,12 @@ export const SENTRY_EVENT_CODES = [
   /** W03 (#7601): a keyed credit debit stayed unconfirmed (5xx / transport) through every retry. */
   'ai_credit_debit_retries_exhausted',
   /**
+   * W03 (#7601, PR #7700 finding 5): a deferred (pending) AI settlement failed
+   * every replay attempt and was stamped pending_settlement_dead_at. Its spend
+   * is unrecorded until an operator acts (listDeadPendingSettlements).
+   */
+  'ai_settlement_replay_dead',
+  /**
    * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
    * DOWN against the session's snapshot (the CLI's counters restarted, or a
    * glitch). The snapshot is re-baselined to the current reading and the turn
