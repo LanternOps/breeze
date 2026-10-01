@@ -530,11 +530,13 @@ export interface ActiveSession {
   revokeEgressGrant?: () => void;
   sdkSessionId: string | null;
   /**
-   * True when this session's live `query()` was started with `resume`, so its
-   * first result's `total_cost_usd` also carries earlier queries' cost (#7667).
-   * Optional so fixtures that build ActiveSession literals compile unchanged.
+   * True while the live query's running `total_cost_usd` may include cost that
+   * no baseline accounts for (#7667): the query was started with `resume` (its
+   * first result carries earlier queries' cost), or an earlier result on it
+   * arrived without a usable total. Optional so fixtures that build
+   * ActiveSession literals compile unchanged.
    */
-  readonly resumedQuery?: boolean;
+  sdkTotalCarriesPriorCost?: boolean;
   /**
    * Highest SDK running `total_cost_usd` seen on this session's live query;
    * undefined until its first result. Each turn is billed against it (#7667).
@@ -1094,6 +1096,8 @@ export class StreamingSessionManager {
     // silently re-pointing the run at the default model's wire id while the
     // ledger records a model that never ran.
     const wire = resolveWireModel(resolved, effectiveModel);
+    // One source for both the SDK `resume:` option and the cost baseline (#7667).
+    const resumeSdkSessionId = dbSession.sdkSessionId ?? undefined;
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
@@ -1105,8 +1109,8 @@ export class StreamingSessionManager {
       budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
-      // Mirrors the `resume:` option passed to query() below.
-      resumedQuery: !!dbSession.sdkSessionId,
+      // Derived from the same value as the `resume:` option passed to query() below.
+      sdkTotalCarriesPriorCost: resumeSdkSessionId !== undefined,
       sdkCostBaselineUsd: undefined,
       query: null as unknown as Query, // set below
       abortController,
@@ -1326,7 +1330,7 @@ export class StreamingSessionManager {
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },
-            resume: dbSession.sdkSessionId ?? undefined,
+            resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
             // #7587, #7599: per-model thinking/effort from agentSdkWireOptions (never a
@@ -1908,12 +1912,15 @@ export class StreamingSessionManager {
               const turnCost = sdkTurnCostFromRunningTotal({
                 reportedTotalUsd: resultMsg.total_cost_usd,
                 baselineUsd: session.sdkCostBaselineUsd,
-                resumedQuery: session.resumedQuery === true,
+                totalCarriesPriorCost: session.sdkTotalCarriesPriorCost === true,
                 model: session.model,
                 usage: turnUsage,
               });
               turnTotalCostUsd = turnCost.turnCostUsd;
               session.sdkCostBaselineUsd = turnCost.baselineUsd;
+              // Once a result has been seen, any later total that still has no
+              // baseline also includes this turn — bill the next from its usage.
+              session.sdkTotalCarriesPriorCost = true;
             }
 
             const usageData = {

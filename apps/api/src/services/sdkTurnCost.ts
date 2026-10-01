@@ -14,7 +14,8 @@ import { calculateCostCents } from './aiCostTracker';
  *   before it, and it also covers SDK side calls `result.usage` omits);
  * - the first result of a RESUMED query → this turn's `result.usage` priced
  *   at the model's rate, because the total there includes earlier queries we
- *   cannot separate out without persisting the previous total.
+ *   cannot separate out without persisting the previous total. The same
+ *   applies to the first usable total after a result that reported none.
  *
  * The baseline only ever moves up, so a total that dips is never billed twice
  * when it climbs back. Interrupted or aborted turns that the SDK under-reports
@@ -28,9 +29,13 @@ export interface SdkTurnCostInput {
   reportedTotalUsd: number | null | undefined;
   /** Highest running total seen on this query so far; undefined before its first result. */
   baselineUsd: number | undefined;
-  /** True when this query was started with `resume` (it carries earlier queries' cost). */
-  resumedQuery: boolean;
-  /** Model id used to price `usage` for the first result of a resumed query. */
+  /**
+   * True when the running total may include cost no baseline accounts for: the
+   * query was started with `resume` (it carries earlier queries' cost), or an
+   * earlier result on it reported no usable total.
+   */
+  totalCarriesPriorCost: boolean;
+  /** Model id used to price `usage` when the total cannot be split. */
   model: string;
   /** This turn's own token usage (the SDK's per-turn `result.usage`). */
   usage: {
@@ -63,7 +68,7 @@ export function sdkTurnCostFromRunningTotal(input: SdkTurnCostInput): SdkTurnCos
     };
   }
 
-  if (!input.resumedQuery) {
+  if (!input.totalCarriesPriorCost) {
     return { turnCostUsd: reported, baselineUsd: reported };
   }
 

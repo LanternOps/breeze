@@ -18,7 +18,7 @@ function input(overrides: Partial<SdkTurnCostInput>): SdkTurnCostInput {
   return {
     reportedTotalUsd: 0,
     baselineUsd: undefined,
-    resumedQuery: false,
+    totalCarriesPriorCost: false,
     model: 'claude-sonnet-5-5',
     usage,
     ...overrides,
@@ -44,13 +44,13 @@ describe('sdkTurnCostFromRunningTotal (#7667)', () => {
   });
 
   it('prices the first result of a resumed query from its own usage', () => {
-    const r = sdkTurnCostFromRunningTotal(input({ reportedTotalUsd: 0.003533, resumedQuery: true }));
+    const r = sdkTurnCostFromRunningTotal(input({ reportedTotalUsd: 0.003533, totalCarriesPriorCost: true }));
     expect(calculateCostCentsMock).toHaveBeenCalledWith('claude-sonnet-5-5', 300, 20, 4000, 50);
     expect(r).toEqual({ turnCostUsd: 0.075, baselineUsd: 0.003533 });
   });
 
   it('uses the delta for later results of a resumed query', () => {
-    const r = sdkTurnCostFromRunningTotal(input({ reportedTotalUsd: 0.6, baselineUsd: 0.5, resumedQuery: true }));
+    const r = sdkTurnCostFromRunningTotal(input({ reportedTotalUsd: 0.6, baselineUsd: 0.5, totalCarriesPriorCost: true }));
     expect(r.turnCostUsd).toBeCloseTo(0.1, 12);
     expect(calculateCostCentsMock).not.toHaveBeenCalled();
   });

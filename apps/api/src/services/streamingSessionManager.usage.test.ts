@@ -513,4 +513,35 @@ describe('per-turn cost from the SDK running total (#7667)', () => {
     expect(recordedUsd[1]).toBeCloseTo(0.008, 10);
     expect(recordedUsd[2]).toBeCloseTo(0.012, 10);
   });
+
+  it('does not re-bill an earlier turn when the first result had no total', async () => {
+    const { recordedUsd, extraCents } = await runClientSession('sess-missing-first-total', [
+      // No total: the ledger writer prices this turn from its tokens.
+      resultMsg({ total_cost_usd: undefined, usage }),
+      // This running total includes turn 1, which was already billed.
+      resultMsg({ total_cost_usd: 0.03, usage }),
+      resultMsg({ total_cost_usd: 0.04, usage }),
+    ]);
+
+    expect(recordedUsd[0]).toBe(0);
+    // Priced from this turn's own usage (calculateCostCents mock → 42 cents), not the 0.03 total.
+    expect(recordedUsd[1]).toBeCloseTo(0.42, 10);
+    expect(recordedUsd[2]).toBeCloseTo(0.01, 10);
+    expect(extraCents).toEqual([0, 42, 1]);
+  });
+
+  it('starts the SDK query with `resume` exactly when it bills the first result from usage', async () => {
+    await runClientSession('sess-resume-pin', [resultMsg({ total_cost_usd: 0.5, usage })], 'sdk-prior');
+    expect(queryMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ resume: 'sdk-prior' }) }),
+    );
+    expect(calculateCostCentsMock).toHaveBeenCalledTimes(1);
+
+    vi.clearAllMocks();
+    await runClientSession('sess-no-resume-pin', [resultMsg({ total_cost_usd: 0.5, usage })]);
+    expect(queryMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ options: expect.objectContaining({ resume: undefined }) }),
+    );
+    expect(calculateCostCentsMock).not.toHaveBeenCalled();
+  });
 });
