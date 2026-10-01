@@ -6,6 +6,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
 import { aiBudgetReservations, scriptProposalReviews, scriptProposals } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
+import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
 
 /**
  * AI script authoring W02 — `runScriptReview` against a real Postgres: the
@@ -107,7 +108,8 @@ runDb('a clean proposal becomes reviewed: static_scan + model rows, classifier f
   const rows = await reviewsFor(proposal.id);
   expect(rows.map((r) => [r.reviewerKind, r.status])).toEqual([['static_scan', 'completed'], ['model', 'completed']]);
   expect(rows[1]).toMatchObject({
-    model: 'claude-sonnet-4-6', inputTokens: 420, outputTokens: 90, goalMatch: 'yes', reversible: true,
+    // The reviewer runs its own default (#7587), not the resolved chat model.
+    model: AI_SCRIPT_REVIEWER_MODEL, inputTokens: 420, outputTokens: 90, goalMatch: 'yes', reversible: true,
     verificationAdequate: true,
   });
   expect(rows[1]!.budgetReservationId).toBeTruthy();

@@ -695,4 +695,41 @@ describe('updatePartnerLlmEndpoint', () => {
       params: [],
     });
   });
+
+  // #7587: a catalog revision only serves the models it mapped AND verified, so
+  // a catalog selection must never keep tracking the moving platform default —
+  // the next default change (sonnet-4-6 → sonnet-5-5) would turn the partner
+  // `model_unverified` / ai_unavailable overnight. Pin the model just validated.
+  it('pins the validated model when the partner was tracking the platform default', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
+    dbState.updateResults.push([{ configVersion: 7 }]);
+
+    await updatePartnerLlmEndpoint({
+      partnerId: PARTNER_ID,
+      catalogEntryId: CATALOG_ENTRY_ID,
+      acknowledgeDataNote: true,
+      userId: USER_ID,
+    });
+
+    // resolveDefaultModel is mocked to claude-sonnet-4-6 in this file.
+    expect(dbState.updateSets[0]).toMatchObject({
+      catalogEntryId: CATALOG_ENTRY_ID,
+      defaultModel: 'claude-sonnet-4-6',
+    });
+  });
+
+  it('does not change the model when reverting to direct Anthropic', async () => {
+    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
+    dbState.updateResults.push([{ configVersion: 8 }]);
+
+    await updatePartnerLlmEndpoint({
+      partnerId: PARTNER_ID,
+      catalogEntryId: null,
+      acknowledgeDataNote: false,
+      userId: USER_ID,
+    });
+
+    expect(dbState.updateSets[0]).not.toHaveProperty('defaultModel');
+  });
 });

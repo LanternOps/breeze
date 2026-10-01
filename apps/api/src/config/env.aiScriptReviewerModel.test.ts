@@ -19,7 +19,7 @@ describe('AI_SCRIPT_REVIEWER_MODEL', () => {
 
   it('defaults to the platform Sonnet-class fallback model when unset', async () => {
     const { AI_SCRIPT_REVIEWER_MODEL } = await import('./env');
-    expect(AI_SCRIPT_REVIEWER_MODEL).toBe('claude-sonnet-4-6');
+    expect(AI_SCRIPT_REVIEWER_MODEL).toBe('claude-sonnet-5-5');
   });
 
   it('honours BREEZE_AI_SCRIPT_REVIEWER_MODEL, trimmed', async () => {

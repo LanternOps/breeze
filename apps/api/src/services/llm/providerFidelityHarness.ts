@@ -38,6 +38,7 @@
  * child's own egress.
  */
 
+import { resolveModelThinking } from '../aiModelThinking';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { buildGuardedLlmFetch } from './guardedLlmFetch';
@@ -468,7 +469,9 @@ async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<Fidelit
         },
         settingSources: [],
         persistSession: false,
-        thinking: { type: 'disabled' },
+        // #7587: same per-model thinking/effort as production chat, keyed on
+        // the catalog wire id (an unrecognised id keeps `disabled`).
+        ...resolveModelThinking(input.providerModel),
         abortController,
         env: buildFidelityChildEnv(input),
       },

@@ -91,12 +91,23 @@ function reportBillingIssueAtMostHourly(key: string, capture: () => void): void 
 
 // Cost per million tokens, expressed in cents (USD * 100).
 // Source: official Anthropic pricing — https://platform.claude.com/docs/en/about-claude/models/overview
-// (input / output $/MTok): opus-4-8 $5/$25, sonnet-4-6 $3/$15, haiku-4-5 $1/$5, fable-5 $10/$50.
-// Verified 2026-06-13. Do NOT edit these without re-confirming against the official pricing page.
+// (input / output $/MTok): sonnet-5-5 $2/$10, opus-5-5 $4/$20, fable-5-1 $10/$50,
+// opus-4-8 $5/$25, sonnet-4-6 $3/$15, haiku-4-5 $1/$5, fable-5 $10/$50.
+// Verified 2026-06-13; 5.5 / 5.1 rows added 2026-09-30 (#7587), matching the pricing tiers
+// baked into @anthropic-ai/claude-agent-sdk 0.3.286's model catalog. Do NOT edit these without re-confirming against the official pricing page.
 // Both the dateless alias and the pinned dated snapshot are keyed where one exists, since callers
 // may pass either form (the SDK / DB sessions use the alias; legacy rows may carry the dated id).
-const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
+// `cacheReadPerMillion` overrides the standard CACHE_READ_INPUT_MULTIPLIER (0.1x
+// input) for models billed below it: opus-5-5 $0.20 and fable-5-1 $0.25 per MTok
+// (SDK tiers `tier_4_20_cache_read_0_20` / `tier_10_50_cache_read_0_25`, #7587).
+const MODEL_PRICING: Record<
+  string,
+  { inputPerMillion: number; outputPerMillion: number; cacheReadPerMillion?: number }
+> = {
   // Current models
+  'claude-sonnet-5-5': { inputPerMillion: 200, outputPerMillion: 1000 },
+  'claude-opus-5-5': { inputPerMillion: 400, outputPerMillion: 2000, cacheReadPerMillion: 20 },
+  'claude-fable-5-1': { inputPerMillion: 1000, outputPerMillion: 5000, cacheReadPerMillion: 25 },
   'claude-opus-4-8': { inputPerMillion: 500, outputPerMillion: 2500 },
   'claude-sonnet-4-6': { inputPerMillion: 300, outputPerMillion: 1500 },
   'claude-haiku-4-5': { inputPerMillion: 100, outputPerMillion: 500 },
@@ -123,16 +134,8 @@ export {
   computePriceMultiplier,
 } from './aiComputePricing';
 
-// Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
-// snapshot ids for cost attribution on old sessions; those must not be offered
-// (or accepted) as new defaults — a retired snapshot pinned partner-wide fails
-// every AI session against the partner's own key.
-export const OFFERABLE_AI_MODELS: readonly string[] = Object.freeze([
-  'claude-opus-4-8',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5',
-  'claude-fable-5',
-]);
+// Lives in aiOfferableModels.ts (dependency-free); re-exported for existing importers.
+export { OFFERABLE_AI_MODELS } from './aiOfferableModels';
 
 // Conservative last-resort pricing for an unrecognized model id. Mirrors the most
 // expensive current Opus-tier rate so we never silently undercount. Hitting this is logged.
@@ -610,7 +613,8 @@ export function calculateCostCents(
   cacheReadInputTokens = 0,
   cacheCreationInputTokens = 0
 ): number {
-  let pricing = MODEL_PRICING[model];
+  let pricing: { inputPerMillion: number; outputPerMillion: number; cacheReadPerMillion?: number } | undefined =
+    MODEL_PRICING[model];
   if (!pricing) {
     pricing = DEFAULT_PRICING;
     // Surface unrecognized models so we can add them to MODEL_PRICING rather than
@@ -626,7 +630,8 @@ export function calculateCostCents(
   // off the per-model input rate. Omitting them undercounts cost for any cached
   // request — the bulk of input tokens on multi-turn sessions land in the cache.
   const cacheReadCost =
-    (cacheReadInputTokens / 1_000_000) * pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER;
+    (cacheReadInputTokens / 1_000_000) *
+    (pricing.cacheReadPerMillion ?? pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER);
   const cacheWriteCost =
     (cacheCreationInputTokens / 1_000_000) * pricing.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER;
   return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;

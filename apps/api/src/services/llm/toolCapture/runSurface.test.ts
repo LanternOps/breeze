@@ -174,6 +174,19 @@ describe('runSurfaceCapture', () => {
     });
   });
 
+  it('sends adaptive thinking + effort medium for a current model, never disabled (#7587)', async () => {
+    queryMock.mockReturnValueOnce(messages([
+      { type: 'result', subtype: 'success', session_id: 's-thinking', num_turns: 1, duration_ms: 5, total_cost_usd: 0 },
+    ]));
+
+    await runSurfaceCapture({ ...baseOpts, model: 'claude-opus-5-5' });
+
+    expect(queryMock).toHaveBeenCalledWith({
+      prompt: 'test prompt',
+      options: expect.objectContaining({ thinking: { type: 'adaptive' }, effort: 'medium' }),
+    });
+  });
+
   it.each([
     ['a static-subset surface', { surface: CAPTURE_SURFACES['helper-standard'] }, [], 'false'],
     ['a non-first-party base URL', { env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999' } }, [], 'false'],
