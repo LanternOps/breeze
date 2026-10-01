@@ -19,6 +19,7 @@ import {
 } from './aiModelRegistryFixtures';
 import { recordShadowInvocation } from '../../services/aiModels/invocationLedger';
 import { reconcilePartnerFromLegacy } from '../../services/aiModels/legacyReconcile';
+import { pruneAiInvocations } from '../../jobs/aiInvocationRetention';
 
 const RUN = !!process.env.DATABASE_URL;
 afterAll(closeRegistryFixtures);
@@ -187,5 +188,18 @@ describe.skipIf(!RUN)('shadow ledger write (#7600 W02)', () => {
     const [row] = await adminSql`SELECT surface, funding_source, offering_id, ledger_mode, legacy_cost_cents FROM ai_invocations WHERE org_id = ${org.id}`;
     expect(row).toMatchObject({ surface: 'catalog_enrichment', funding_source: 'platform', ledger_mode: 'shadow' });
     expect(row!.offering_id).not.toBeNull();
+  });
+});
+
+describe.skipIf(!RUN)('ai_invocations retention (#7600 W02)', () => {
+  it('prunes only rows older than the window, through the audit-admin path', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const old = await insertRow(org.id, { created_at: new Date(Date.now() - 60 * 86_400_000).toISOString() });
+    const fresh = await insertRow(org.id);
+    const result = await pruneAiInvocations({ retentionDays: 30, batchSize: 1000, maxBatches: 5 });
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
+    expect(await adminSql`SELECT 1 FROM ai_invocations WHERE id = ${old}`).toHaveLength(0);
+    expect(await adminSql`SELECT 1 FROM ai_invocations WHERE id = ${fresh}`).toHaveLength(1);
   });
 });
