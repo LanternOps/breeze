@@ -246,6 +246,7 @@ import { TicketDraftFailedError } from '../services/aiTicketDraft';
 import { turnBindingFrom } from '../services/aiModels/turnBinding';
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { TicketServiceError } from '../services/ticketService';
+import { captureException } from '../services/sentry';
 
 const partnerAuth = authHarness.partnerAuth;
 const orgAuth = authHarness.orgAuth;
@@ -488,6 +489,47 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(res.status).toBe(502);
     expect(routeMocks.settleInvocationMock).toHaveBeenCalledTimes(1);
     expect(routeMocks.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('a failure-path settlement that THROWS holds the reservation indeterminate and is reported scrubbed (review S7)', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'fixed' }],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(new TicketDraftFailedError('bad json', attemptsFixture, false));
+    routeMocks.settleInvocationMock.mockRejectedValueOnce(Object.assign(new Error('Failed query: insert … params: sk-ant-secret'), { params: ['sk-ant-secret'] }));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await postDraft('s1', partnerAuth);
+    const logged = JSON.stringify(errSpy.mock.calls);
+    errSpy.mockRestore();
+
+    expect(res.status).toBe(502);
+    expect(routeMocks.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: 'org1', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
+    expect(logged).not.toContain('sk-ant-secret');
+    const messages = vi.mocked(captureException).mock.calls.map(([e]) => String((e as Error).message));
+    expect(messages.some((msg) => /ticket draft settlement failed/.test(msg))).toBe(true);
+    expect(messages.join(' ')).not.toContain('sk-ant-secret');
+  });
+
+  it('an UNRECORDED success-path settlement keeps the reservation indeterminate (review S1)', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'fixed' }],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 'S', problemSummary: 'P', resolutionSummary: 'R', wasFixed: true, suggestedTimeMinutes: 15, attempts: attemptsFixture,
+    });
+    routeMocks.settleInvocationMock.mockResolvedValueOnce({ costCents: 1, invocationIds: [], deferred: true, unrecorded: true });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(200);
+    expect(routeMocks.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: 'org1', reservationId: '66666666-6666-4666-8666-666666666666',
+    });
   });
 
   it('a provider throw with nothing billed leaves the reservation indeterminate and never settles', async () => {

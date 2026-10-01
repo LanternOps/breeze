@@ -67,6 +67,7 @@ import {
 } from '@breeze/shared/validators';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { persistAutoSessionTitle } from '../services/aiSessionTitle';
 import { getConfig } from '../config/validate';
 import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
@@ -569,14 +570,33 @@ aiRoutes.post(
     // chat turn, and its cost in the chat session's total_cost_cents would
     // double-attribute it in the session list. The ledger keeps it as
     // surface 'chat', source_ref 'ticket_draft'.
-    const settle = (attempts: MessageAttempt[], dispatchFailed = false) => {
-      const { usage, outcome } = dispatchFailed
-        ? messagesUsageAfterDispatchError(binding, attempts)
-        : messagesUsage(binding, attempts);
-      return settleInvocation({
-        binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
-        sourceRef: 'ticket_draft', usage, outcome, reservationId,
+    const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId })
+      .catch((markError) => {
+        captureException(new Error(`ticket draft reservation not retained as indeterminate: ${safeErrorMessage(markError)}`), undefined, {
+          org_id: session.orgId, ai_reservation_id: reservationId,
+        });
       });
+    // Best effort, never throws: a settlement failure (or an unrecorded
+    // deferral, S1) holds the reservation indeterminate and is reported
+    // scrubbed (S7) — it is never released.
+    const settle = async (attempts: MessageAttempt[], dispatchFailed = false): Promise<void> => {
+      try {
+        const { usage, outcome } = dispatchFailed
+          ? messagesUsageAfterDispatchError(binding, attempts)
+          : messagesUsage(binding, attempts);
+        const settled = await settleInvocation({
+          binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
+          sourceRef: 'ticket_draft', usage, outcome, reservationId,
+        });
+        if (settled.unrecorded) await holdIndeterminate();
+      } catch (settleError) {
+        const message = safeErrorMessage(settleError);
+        console.error('[AI] ticket draft settlement failed', { reservationId, error: message });
+        captureException(new Error(`ticket draft settlement failed: ${message}`), undefined, {
+          org_id: session.orgId, ai_reservation_id: reservationId,
+        });
+        await holdIndeterminate();
+      }
     };
 
     let draft;
@@ -602,7 +622,9 @@ aiRoutes.post(
           await releaseUnusedAiBudgetReservation({ orgId: session.orgId, reservationId });
         }
       } catch (budgetError) {
-        captureException(budgetError);
+        captureException(new Error(`ticket draft reservation bookkeeping failed: ${safeErrorMessage(budgetError)}`), undefined, {
+          org_id: session.orgId, ai_reservation_id: reservationId,
+        });
       }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
@@ -612,12 +634,7 @@ aiRoutes.post(
     }
 
     // Best-effort cost accounting; never fails the request.
-    try {
-      await settle(draft.attempts);
-    } catch (err) {
-      captureException(err);
-      await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId }).catch(captureException);
-    }
+    await settle(draft.attempts);
 
     let deviceHostname: string | null = null;
     if (session.deviceId) {
