@@ -14,6 +14,7 @@
  * The connection key is the legacy row's ciphertext, decrypted for real.
  */
 import { emptyOptionSupport } from '@breeze/shared';
+import { resolveDefaultModel } from '../../aiModel';
 import { getLegacyModelRates } from '../../aiCostTracker';
 import type { ListedProvider } from '../../llmProviderCatalog';
 import { mergeEffectiveAssignment, type EffectiveAssignment } from '../assignments';
@@ -43,6 +44,7 @@ export interface SnapshotDeps {
   getConnectionKeyMaterial(id: string): Promise<{ id: string; partnerId: string; apiKeyEncrypted: string | null } | null>;
   getPlatformModelById(id: string): Promise<PlatformModel | null>;
   getPlatformModelByModelId(modelId: string): Promise<PlatformModel | null>;
+  getPlatformDefaultModel(): Promise<PlatformModel | null>;
   getListedProviderByEntryId(entryId: string): Promise<ListedProvider | null>;
   getEffectiveAssignment(input: { partnerId: string; orgId: string | null; surface: string; role?: string }): Promise<EffectiveAssignment>;
   loadPartnerFacts(partnerId: string): Promise<{ plan: 'unlimited'; residencyRequired: false }>;
@@ -117,6 +119,15 @@ export function snapshotDeps(store: RegistrySnapshot, fixture: ParityFixture): S
     getPlatformModelByModelId: async (modelId) => {
       const pm = store.platformModels.find((p) => p.modelId === modelId);
       return pm ? platformRow(pm) : null;
+    },
+    // The platform default row (is_platform_default): the deployment's default
+    // model id, as the legacy ambient-key callers resolved it. A fixture that
+    // does not seed it gets the bootstrap row (legacy rates), like the cutover.
+    getPlatformDefaultModel: async () => {
+      const modelId = resolveDefaultModel(fixture.env as NodeJS.ProcessEnv);
+      const pm = store.platformModels.find((p) => p.modelId === modelId)
+        ?? { id: `default:${modelId}`, modelId, bootstrapRates: getLegacyModelRates(modelId).rates };
+      return { ...platformRow(pm), isPlatformDefault: true };
     },
     getListedProviderByEntryId: async (entryId) =>
       (store.catalogProvider?.entryId === entryId ? store.catalogProvider : null),

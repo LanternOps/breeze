@@ -40,7 +40,7 @@ vi.mock('../connections', async (orig) => ({
 vi.mock('../platformModels', async (orig) => ({
   ...(await orig<typeof import('../platformModels')>()),
   getPlatformModelById: h.call('getPlatformModelById'), getPlatformModelByModelId: h.call('getPlatformModelByModelId'),
-  getPlatformDefaultModel: async () => { throw new Error('parity: no platform-only surface is compared here'); },
+  getPlatformDefaultModel: h.call('getPlatformDefaultModel'),
   getPlatformInferenceGeo: async () => null,
 }));
 vi.mock('../../llmProviderCatalog', async (orig) => ({
@@ -197,6 +197,18 @@ describe('W03 parity: ai_agents (policy offering, permitted set re-checked at ru
           ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
         }));
       },
+    });
+  });
+});
+
+describe('W03 parity: patch_test (platform-only, unmetered system surface)', () => {
+  surfaceParity('is the platform default on the platform key for every fixture', async () => {
+    await assertSurfaceParity({
+      select: surfaceQuery('patch_test'),
+      bind,
+      registrySide: async () => toSurfaceUse(await resolveModel({
+        partnerId: null, orgId: null, surface: 'patch_test', maxTokens: 512,
+      })),
     });
   });
 });
