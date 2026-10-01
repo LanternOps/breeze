@@ -6,6 +6,7 @@ import type { SQL } from 'drizzle-orm';
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
 const authorizeResilienceResourcesMock = vi.fn();
+const cancelBareMetalRecoveryMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 const authzState = vi.hoisted(() => ({
   allowedPermissions: new Set<string>(['*:*']),
@@ -111,6 +112,10 @@ vi.mock('../../services/commandQueue', () => ({
   },
   queueBackupStopCommand: (...args: unknown[]) => queueBackupStopCommandMock(...(args as [])),
   queueCommandForExecution: (...args: unknown[]) => queueCommandForExecutionMock(...(args as [])),
+}));
+
+vi.mock('../../services/bareMetalRecoveryService', () => ({
+  cancelBareMetalRecovery: (...args: unknown[]) => cancelBareMetalRecoveryMock(...(args as [])),
 }));
 
 vi.mock('../../services/backupMetrics', () => ({
@@ -1010,6 +1015,63 @@ describe('restore routes', () => {
 
     expect(res.status).toBe(200);
     expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+  });
+
+  describe('rebuild-engine jobs (#7512)', () => {
+    const rebuildJob = (status: string) => ({
+      id: 'restore-r1',
+      orgId: 'org-1',
+      snapshotId: 'snap-db-1',
+      deviceId: 'device-1',
+      restoreType: 'full',
+      selectedPaths: [],
+      status,
+      targetPath: null,
+      startedAt: null,
+      completedAt: null,
+      restoredSize: null,
+      restoredFiles: null,
+      targetConfig: { engine: 'rebuild', recoveryId: 'recovery-1' },
+      commandId: 'command-r1',
+      createdAt: new Date('2026-04-01T00:00:00Z'),
+      updatedAt: new Date('2026-04-01T00:00:00Z'),
+    });
+
+    it('closes the bare-metal recovery when a queued rebuild is cancelled', async () => {
+      selectMock.mockReturnValueOnce(chainMock([rebuildJob('pending')]));
+      updateMock.mockReturnValueOnce(chainMock([{ ...rebuildJob('cancelled') }]));
+      deleteMock.mockReturnValueOnce(chainMock([{ id: 'command-r1' }]));
+      cancelBareMetalRecoveryMock.mockResolvedValue({});
+
+      const res = await app.request('/restore/restore-r1/cancel', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(cancelBareMetalRecoveryMock).toHaveBeenCalledWith(
+        expect.objectContaining({ recoveryId: 'recovery-1', orgId: 'org-1' }),
+      );
+      expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to cancel a rebuild that is already running', async () => {
+      selectMock.mockReturnValueOnce(chainMock([rebuildJob('running')]));
+
+      const res = await app.request('/restore/restore-r1/cancel', { method: 'POST' });
+
+      expect(res.status).toBe(409);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cancelBareMetalRecoveryMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the rebuild command was already delivered', async () => {
+      selectMock.mockReturnValueOnce(chainMock([rebuildJob('pending')]));
+      deleteMock.mockReturnValueOnce(chainMock([]));
+
+      const res = await app.request('/restore/restore-r1/cancel', { method: 'POST' });
+
+      expect(res.status).toBe(409);
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(cancelBareMetalRecoveryMock).not.toHaveBeenCalled();
+    });
   });
 });
 

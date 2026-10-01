@@ -18,6 +18,7 @@ import {
   authorizeRouteResilienceResources,
   resolveRouteAuthorizedDeviceIds,
 } from './resilienceAuthorization';
+import { cancelBareMetalRecovery } from '../../services/bareMetalRecoveryService';
 import { isBackupHelperUpdateRequiredError } from '../../services/backupReadHelperGate';
 
 export const restoreRoutes = new Hono();
@@ -459,6 +460,30 @@ restoreRoutes.post(
       return c.json({ error: 'Restore job is not cancelable' }, 409);
     }
 
+    // A rebuild-engine job owns a bare-metal recovery that holds the device's
+    // "one non-terminal recovery" slot. backup_stop does not stop a rebuild, so
+    // only a rebuild still queued (command not yet delivered) can be cancelled;
+    // once running the host is mid-rebuild and cancelling would be a lie.
+    const config = current.targetConfig as Record<string, unknown> | null;
+    const rebuildRecoveryId =
+      config && config.engine === 'rebuild' && typeof config.recoveryId === 'string'
+        ? config.recoveryId
+        : null;
+    let rebuildDispatchRemoved = false;
+    if (rebuildRecoveryId) {
+      if (current.status === 'running') {
+        return c.json({ error: 'A rebuild that is already running cannot be cancelled' }, 409);
+      }
+      try {
+        rebuildDispatchRemoved = await removeQueuedRestoreDispatch(current.commandId);
+      } catch (err) {
+        console.warn(`[BackupRestore] Failed to remove queued rebuild dispatch for restore ${current.id}:`, err);
+      }
+      if (!rebuildDispatchRemoved) {
+        return c.json({ error: 'The rebuild command was already delivered and cannot be cancelled' }, 409);
+      }
+    }
+
     const reason = 'Cancelled by user';
     const now = new Date();
     const [row] = await runInOrg(orgId, async () =>
@@ -487,8 +512,22 @@ restoreRoutes.post(
       return c.json({ error: 'Restore job is not cancelable' }, 409);
     }
 
-    let dispatchRemoved = false;
-    if (current.commandId) {
+    if (rebuildRecoveryId) {
+      // Free the device's recovery slot so the next rebuild isn't refused.
+      try {
+        await cancelBareMetalRecovery({
+          recoveryId: rebuildRecoveryId,
+          orgId,
+          userId: auth?.user?.id ?? null,
+          reason,
+        });
+      } catch (err) {
+        console.warn(`[BackupRestore] Failed to close bare-metal recovery ${rebuildRecoveryId} for restore ${row.id}:`, err);
+      }
+    }
+
+    let dispatchRemoved = rebuildDispatchRemoved;
+    if (current.commandId && !rebuildRecoveryId) {
       try {
         dispatchRemoved = await removeQueuedRestoreDispatch(current.commandId);
       } catch (err) {
@@ -497,7 +536,7 @@ restoreRoutes.post(
     }
 
     let stopQueued = false;
-    if (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved)) {
+    if (!rebuildRecoveryId && (current.status === 'running' || (current.status === 'pending' && !dispatchRemoved))) {
       try {
         const { error } = await queueBackupStopCommand(row.deviceId, {
           userId: auth?.user?.id ?? undefined,
