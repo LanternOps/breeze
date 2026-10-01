@@ -2218,6 +2218,16 @@ describe('getLegacyModelRates (#7600 W02)', () => {
     },
   );
 
+  // W01 deferred finding: the bootstrap table was read with a bare index, so a
+  // prototype key resolved through Object.prototype and counted as "priced".
+  it.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])(
+    'a prototype-named id (%s) is never priced by the bootstrap table',
+    (model) => {
+      expect(isPricedModel(model)).toBe(false);
+      expect(calculateCostCents(model, 1_000_000, 1_000_000)).toBe(500 + 2500); // DEFAULT_PRICING, not NaN
+    },
+  );
+
   it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5', 'my-gateway-model'])(
     'prices one million of each token class exactly as calculateCostCents does (%s), cold or warm snapshot',
     (model) => {

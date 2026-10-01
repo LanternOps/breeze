@@ -128,7 +128,9 @@ const MODEL_PRICING: Record<
  * deletes MODEL_PRICING / DEFAULT_PRICING / isPricedModel.
  */
 function legacyRateSnapshot(model: string): RateSnapshot | null {
-  const pricing = MODEL_PRICING[model];
+  // Own keys only: a prototype key ('constructor', '__proto__', 'toString')
+  // would otherwise resolve through Object.prototype and count as priced.
+  const pricing = Object.hasOwn(MODEL_PRICING, model) ? MODEL_PRICING[model] : undefined;
   if (!pricing) return null;
   return {
     source: 'platform',
@@ -705,7 +707,8 @@ export function calculateCostCents(
  * backfilled non-platform offerings at exactly what legacy bills, so the W02
  * shadow ledger and the W03 cutover agree with it. A prototype key
  * ('constructor', '__proto__') is never a model id; without the guard
- * MODEL_PRICING[...] would resolve through Object.prototype.
+ * MODEL_PRICING[...] would resolve through Object.prototype (legacyRateSnapshot
+ * reads own keys only).
  * W03 moves this and its rate table to aiModels/legacySurfaceModels.ts (its
  * per-partner cutover still runs the projection); W08 deletes it.
  */
@@ -713,7 +716,7 @@ export function getLegacyModelRates(model: string): {
   rates: ModelRates;
   source: 'priced' | 'default_pricing';
 } {
-  const rate = model in Object.prototype ? null : resolveTokenRate(model);
+  const rate = resolveTokenRate(model);
   if (rate) return { source: 'priced', rates: { ...rate.standard } };
   return {
     source: 'default_pricing',
