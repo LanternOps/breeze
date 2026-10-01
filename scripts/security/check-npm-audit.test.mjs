@@ -86,7 +86,7 @@ function runGate({ osvReport, exceptions }) {
 
 const out = (res) => `exit ${res.status}\nstdout:\n${res.stdout}\nstderr:\n${res.stderr}`;
 
-// --- the five required behaviours ------------------------------------------
+// --- core suppression and expiry behaviours ----------------------------------
 
 test('an exact id + package match is suppressed and the gate passes', () => {
   const res = runGate({
@@ -161,9 +161,10 @@ test('an unknown HIGH still fails while another advisory is excepted', () => {
 });
 
 test('matching is exact: superstrings, prefixes and aliases never match', () => {
-  // Each finding is one edit away from the entry (node-forge / FORGE_ID), in
-  // both directions, so a startswith/contains/regex/alias regression in the
-  // gate's matcher lets at least one of them through and turns this red.
+  // Each finding is a near miss of the entry (node-forge / FORGE_ID): a
+  // superstring, a truncation, or a case change, in both directions. A
+  // startswith/contains/regex/case-folding regression in the gate's matcher
+  // lets at least one of them through and turns this red.
   const nearMisses = [
     finding('node-forge-extra', FORGE_ID), // entry package is a prefix of it
     finding('@scope/node-forge', FORGE_ID), // entry package is a suffix of it

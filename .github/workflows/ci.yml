@@ -1261,12 +1261,10 @@ jobs:
       # pnpm has not migrated to the bulk advisory endpoint at any version, so
       # `pnpm audit` now fails closed everywhere.
       #
-      # Gate stays at `critical`, matching the previous `--audit-level=critical`.
-      # The earlier `--prod` scoping existed to dodge a HIGH `ip@<=2.0.1`
-      # (GHSA-2p57-rm9w-gvfp) pulled in by apps/mobile dev tooling; the
-      # `ip@<=2.0.1: npm:neoip@^3.1.0` override in package.json has since
-      # resolved that, and the tree is now clean at every severity, so the scan
-      # covers dev dependencies too.
+      # The scan covers dev dependencies too. An earlier `--prod` scoping existed
+      # to dodge a HIGH `ip@<=2.0.1` (GHSA-2p57-rm9w-gvfp) pulled in by
+      # apps/mobile dev tooling; the `ip@<=2.0.1: npm:neoip@^3.1.0` override in
+      # package.json resolved that.
       #
       # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
       # HIGH advisory blocks PRs until patched or until a reviewed, expiring

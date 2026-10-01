@@ -22,8 +22,9 @@ set -euo pipefail
 #     the same id on another package, or another id on the same package,
 #     still blocks;
 #   - every entry is printed on every run, with its status;
-#   - an entry past its `expires` date (UTC, inclusive) fails the run, even
-#     when the advisory no longer appears in the scan;
+#   - an entry is honoured through its `expires` date (UTC, inclusive); from
+#     the next day it fails the run, even when the advisory no longer appears
+#     in the scan;
 #   - an entry may not expire more than MAX_EXCEPTION_DAYS days out, so each
 #     one is re-reviewed at least that often;
 #   - a missing or malformed file fails the run (it never means "no rules").
@@ -151,11 +152,14 @@ fi
 
 # An active entry that matched nothing is noise that erodes trust in the list —
 # surface it (non-fatal) so it gets removed once the advisory is fixed.
-jq -r --argjson findings "$findings" --arg file "$EXCEPTIONS_FILE" '
-  .[] | . as $e
+# (Findings go on stdin, not --argjson: a large report would overflow the
+# per-argument size limit.)
+jq -r --argjson active "$active_json" --arg file "$EXCEPTIONS_FILE" '
+  . as $findings
+  | $active[] | . as $e
   | select(any($findings[]; .id == $e.id and .package == $e.package) | not)
   | "WARN exception \(.id) on \(.package) matched no advisory in this scan — remove it from \($file) once its tracking issue confirms the fix"
-' <<<"$active_json"
+' <<<"$findings"
 
 # Severities at or above the threshold block. Ranks: CRITICAL=4 HIGH=3
 # MODERATE=2 LOW=1 UNSPECIFIED=0.
