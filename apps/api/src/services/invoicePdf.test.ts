@@ -217,6 +217,38 @@ describe('renderInvoiceHtml', () => {
   });
 });
 
+describe('unit price column (#7508)', () => {
+  const lines = [makeLine({ quantity: '3', unitPrice: '1234.50', lineTotal: '3703.50' })];
+
+  it('HTML shows a Unit price header and the formatted unit price between Qty and Amount', () => {
+    const html = renderInvoiceHtml(makeInvoice({ currencyCode: 'EUR', documentLocale: 'de-DE' } as Partial<InvoiceRow>), lines, branding);
+    expect(html).toMatch(/>Unit price<\/th>/);
+    const unit = escapeForHtml(formatMoney('1234.50', 'EUR', 'de-DE'));
+    expect(html).toContain(unit);
+    const row = html.slice(html.indexOf('Consulting'));
+    expect(row.indexOf(unit)).toBeLessThan(row.indexOf(escapeForHtml(formatMoney('3703.50', 'EUR', 'de-DE'))));
+  });
+
+  it.each([[true], [false]])('PDF draws a UNIT PRICE header and the unit price in its own column (showTax=%s)', async (showTax) => {
+    const invoice = makeInvoice({
+      currencyCode: 'EUR', documentLocale: 'de-DE',
+      taxRate: showTax ? '0.085' : null, taxTotal: showTax ? '8.50' : '0',
+    } as Partial<InvoiceRow>);
+    const pdf = await renderInvoicePdfBuffer(invoice, lines, branding);
+    const frags = extractPositionedPdfText(pdf);
+    const c = invoiceColumnsFor(new PDFDocument({ size: 'A4', margin: 50 }), showTax);
+    expect(frags.some((f) => f.text === 'UNIT PRICE' && f.x >= c.colUnitX - 0.5 && f.x < c.colUnitX + c.colNumW)).toBe(true);
+    const unit = frags.find((f) => /1.234,50/.test(f.text));
+    expect(unit).toBeDefined();
+    expect(unit!.x).toBeGreaterThanOrEqual(c.colUnitX - 0.5);
+    expect(unit!.x).toBeLessThan(c.colUnitX + c.colNumW);
+  });
+});
+
+function escapeForHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 describe('renderInvoicePdfBuffer', () => {
   it('produces a valid %PDF- buffer', async () => {
     const pdf = await renderInvoicePdfBuffer(makeInvoice(), [makeLine()], branding);
@@ -241,9 +273,11 @@ describe('renderInvoicePdfBuffer', () => {
     expect(untaxed.colAmtX + untaxed.colNumW).toBeCloseTo(untaxed.right, 5);
     // Columns never overlap.
     expect(taxed.colQtyX).toBeGreaterThanOrEqual(taxed.left + taxed.colDescW);
-    expect(taxed.colTaxX).toBeGreaterThanOrEqual(taxed.colQtyX + taxed.colNumW);
+    expect(taxed.colUnitX).toBeGreaterThanOrEqual(taxed.colQtyX + taxed.colNumW);
+    expect(taxed.colTaxX).toBeGreaterThanOrEqual(taxed.colUnitX + taxed.colNumW);
     expect(taxed.colAmtX).toBeGreaterThanOrEqual(taxed.colTaxX + taxed.colNumW);
-    expect(untaxed.colAmtX).toBeGreaterThanOrEqual(untaxed.colQtyX + untaxed.colNumW);
+    expect(untaxed.colUnitX).toBeGreaterThanOrEqual(untaxed.colQtyX + untaxed.colNumW);
+    expect(untaxed.colAmtX).toBeGreaterThanOrEqual(untaxed.colUnitX + untaxed.colNumW);
   });
 
   it('gives the emphasised total its own box wide enough for bold 14', () => {
@@ -276,14 +310,14 @@ describe('renderInvoicePdfBuffer', () => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const c = invoiceColumnsFor(doc, showTax);
     const money = extractPositionedPdfText(pdf).filter((f) => MAX_AMOUNT_RE.test(f.text));
-    // line AMOUNT + Subtotal + (Tax) + Total + Paid + Balance due. The per-line
-    // TAX cell is lineTotal × rate, so it never equals the maximum itself.
-    expect(money.length).toBe(showTax ? 6 : 5);
+    // line UNIT PRICE + line AMOUNT + Subtotal + (Tax) + Total + Paid + Balance due.
+    // The per-line TAX cell is lineTotal × rate, so it never equals the maximum itself.
+    expect(money.length).toBe(showTax ? 7 : 6);
     for (const f of money) {
       // Right-aligned with lineBreak:false, pdfkit starts an over-wide string
       // LEFT of the box; a wrapped string shows up as a fragment without the
       // full figure. Both are caught by the x floor + the regex above.
-      expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
+      expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colUnitX, c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
     }
     // The whole figure stays on its row: no fragment holds only a tail like "999.99".
     const tails = extractPositionedPdfText(pdf).filter((f) => /^[\u2019'\u0092]?999/.test(f.text.trim()));
@@ -452,9 +486,9 @@ describe('Invoice ticket grouping and line labeling (#3319)', () => {
   it('spans the tax column in the ticket header when tax is shown', () => {
     const lines = [makeLine({ ticketId: 't-1', ticketNumber: '1042', name: 'Repair' } as never)];
     const taxed = renderInvoiceHtml(makeInvoice({ taxRate: '0.0825', taxTotal: '8.25' }), lines, branding);
-    expect(taxed).toMatch(/<td colspan="4"[^>]*>Ticket #1042/);
+    expect(taxed).toMatch(/<td colspan="5"[^>]*>Ticket #1042/);
     const untaxed = renderInvoiceHtml(makeInvoice({ taxRate: '0', taxTotal: '0' }), lines, branding);
-    expect(untaxed).toMatch(/<td colspan="3"[^>]*>Ticket #1042/);
+    expect(untaxed).toMatch(/<td colspan="4"[^>]*>Ticket #1042/);
   });
 
   it('keeps first-seen group order when ticket lines interleave', () => {
