@@ -59,9 +59,9 @@ func TestSignatureChecksHaveFirstActiveCheck(t *testing.T) {
 }
 
 // TestEndpointSecuritySignatures_AVProviders locks the endpoint-security
-// signatures for the AV/EDR products added in #7551. Each row names the
-// signature and the probes that identify it; a probe is matched on type, value
-// and OS so a typo in a service or process name fails here, not on a fleet.
+// signatures for the AV/EDR products added in #7551. Each row lists every probe
+// of the signature, in order; a probe is matched on type, value and OS so a typo
+// in a service or process name fails here, not on a fleet.
 func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -74,6 +74,7 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 			probes: []Check{
 				{Type: CheckServiceRunning, Value: "ekrn", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "ekrn.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "esets_daemon", OS: "darwin"},
 				{Type: CheckFileExists, Value: `C:\Program Files\ESET\ESET Security\ekrn.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: "/Library/Application Support/ESET", OS: "darwin"},
 			},
@@ -84,6 +85,8 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 			probes: []Check{
 				{Type: CheckServiceRunning, Value: "a2AntiMalware", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "a2service.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Emsisoft Anti-Malware\a2service.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Emsisoft Anti-Malware\a2service.exe`, OS: "windows"},
 			},
 		},
 		{
@@ -92,6 +95,8 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 			probes: []Check{
 				{Type: CheckServiceRunning, Value: "WRSVC", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "WRSA.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Webroot\WRSA.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Webroot\WRSA.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: "/Applications/Webroot SecureAnywhere.app", OS: "darwin"},
 			},
 		},
@@ -101,8 +106,9 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 			probes: []Check{
 				{Type: CheckServiceRunning, Value: "MBEndpointAgent", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "MBCloudEA.exe", OS: "windows"},
-				{Type: CheckFileExists, Value: `C:\Program Files\Malwarebytes Endpoint Agent\MBCloudEA.exe`, OS: "windows"},
 				{Type: CheckProcessRunning, Value: "EndpointAgentDaemon", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Malwarebytes Endpoint Agent\MBCloudEA.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/Application Support/Malwarebytes/Malwarebytes Endpoint Agent", OS: "darwin"},
 			},
 		},
 		{
@@ -110,6 +116,7 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 			os:   []string{"windows"},
 			probes: []Check{
 				{Type: CheckProcessRunning, Value: "fshoster64.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "fshoster32.exe", OS: "windows"},
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\F-Secure\PSB`, OS: "windows"},
 			},
 		},
@@ -117,6 +124,9 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 
 	byName := map[string]Signature{}
 	for _, sig := range AllSignatures() {
+		if _, dup := byName[sig.Name]; dup && sig.Category == CategoryEndpointSecurity {
+			t.Errorf("duplicate endpoint-security signature name %q", sig.Name)
+		}
 		byName[sig.Name] = sig
 	}
 
@@ -134,16 +144,12 @@ func TestEndpointSecuritySignatures_AVProviders(t *testing.T) {
 					t.Errorf("signature does not cover %s", goos)
 				}
 			}
-			for _, probe := range tc.probes {
-				found := false
-				for _, c := range sig.Checks {
-					if c.Type == probe.Type && c.Value == probe.Value && c.OS == probe.OS {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("missing probe %s %q (os %q)", probe.Type, probe.Value, probe.OS)
+			if len(sig.Checks) != len(tc.probes) {
+				t.Fatalf("signature has %d probes, test lists %d — keep the table complete", len(sig.Checks), len(tc.probes))
+			}
+			for i, probe := range tc.probes {
+				if c := sig.Checks[i]; c.Type != probe.Type || c.Value != probe.Value || c.OS != probe.OS {
+					t.Errorf("probe %d = %s %q (os %q), want %s %q (os %q)", i, c.Type, c.Value, c.OS, probe.Type, probe.Value, probe.OS)
 				}
 			}
 			// Every per-check OS must be one the signature declares, or the

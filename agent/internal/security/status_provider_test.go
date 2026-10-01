@@ -31,6 +31,12 @@ func TestProviderFromName(t *testing.T) {
 		{"not eset: reset", "Acme Reset Guard", "other"},
 		{"not eset: preset", "Preset Protection", "other"},
 		{"not eset: resetter", "ResetterAV", "other"},
+		{"not eset: letter after", "Esets Guard", "other"},
+		{"eset only", "ESET", "eset"},
+		{"eset trailing", "Acme ESET", "eset"},
+		{"eset digit boundary", "eset2", "eset"},
+		// The first occurrence is embedded in "Reset"; the second is the word.
+		{"embedded then word", "Reset ESET Endpoint", "eset"},
 		// Emsisoft, Webroot, WithSecure / F-Secure (#7551).
 		{"emsisoft anti-malware", "Emsisoft Anti-Malware", "emsisoft"},
 		{"emsisoft enterprise security", "Emsisoft Enterprise Security", "emsisoft"},
@@ -41,6 +47,10 @@ func TestProviderFromName(t *testing.T) {
 		{"f-secure computer protection", "F-Secure Computer Protection", "withsecure"},
 		// ThreatDown is Malwarebytes' business rebrand (#7551).
 		{"threatdown", "ThreatDown Endpoint Protection", "malwarebytes"},
+		{"threatdown upper", "THREATDOWN", "malwarebytes"},
+		// Locks the vendor-before-defender ordering for the new cases.
+		{"threatdown vs defender", "ThreatDown Defender Plus", "malwarebytes"},
+		{"webroot vs defender", "Webroot Defender", "webroot"},
 		{"malwarebytes", "Malwarebytes", "malwarebytes"},
 		// Regression guards for the broad matches the new cases sit beside.
 		{"microsoft defender antivirus", "Microsoft Defender Antivirus", "windows_defender"},
