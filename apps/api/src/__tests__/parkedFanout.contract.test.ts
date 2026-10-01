@@ -274,6 +274,7 @@ const EXEMPT: Record<string, string> = {
   'services/customFields/queries.ts': 'request path: per-device reads and writes with the device supplied by the request route',
   'services/deploymentEngine.ts': 'org-pinned: targets resolved via deployment.orgId, a row a person creates for a real org',
   'services/deploymentTargetResolver.ts': 'org-pinned: every target branch filters on the deployment row\'s org',
+  'services/deviceConsentPromptCapability.ts': 'request path: reads one capability column of the one device a desktop start names, no enumeration',
   'services/deviceCoverage.ts': 'request path: single-device read enforcing actor.accessibleOrgIds from the request',
   'services/deviceDeletion.ts': 'lifecycle: removes one device and its referencing rows',
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
