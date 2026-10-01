@@ -2096,7 +2096,10 @@ jobs:
       # (CreateFile with backup semantics) and reg.exe is never spawned; a run
       # with no run-wide VSS session (pathless system_image, IPC
       # system_state_collect) takes its own system-volume snapshot, and only a
-      # VSS failure reaches reg.exe. The
+      # VSS failure reaches reg.exe. The #7367 tests pin that the loaded hives
+      # are flushed right before either snapshot (never when none is taken),
+      # that a stuck or failing flush never holds up the backup, and that the
+      # real RegFlushKey call flushes a loaded hive. The
       # live counterparts (TestLive_WholeMachineShadowRootIsWalkable,
       # TestLive_CollectRegistryFromRealShadowCopy) stay opt-in behind
       # BREEZE_VSS_LIVE like the other live VSS suites.
@@ -2106,14 +2109,14 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe|CollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot|CollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot|CollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave|CollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased|CollectRegistryHivesForRun_SkipSystemVolumeSnapshot|CollectRegistryHivesFromShadow_MissingDefaultIsBestEffort|NewCollector_DefaultsToOwnSystemVolumeSnapshot)$' -v 2>&1
+          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe|CollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot|CollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot|CollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave|CollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased|CollectRegistryHivesForRun_SkipSystemVolumeSnapshot|CollectRegistryHivesFromShadow_MissingDefaultIsBestEffort|NewCollector_DefaultsToOwnSystemVolumeSnapshot|RunBackupContext_FlushesRegistryBeforeTheRunsSnapshot|RunBackupContext_NoVSSNoRegistryFlush|CollectRegistryHivesForRun_OwnSnapshotFlushesHivesFirst|CollectRegistryHivesForRun_NoOwnSnapshotNoFlush|FlushRegistryHives_StuckFlushDoesNotBlockTheCaller|FlushRegistryHives_FailureAndPanicAreContained|FlushHiveKey_FlushesALoadedHive|FlushHiveKey_UnloadedHiveIsErrHiveNotLoaded|LoadedUserHives_ListsDefault)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the whole-machine capture path tests SKIPPED" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 20) { throw "expected exactly 20 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 29) { throw "expected exactly 29 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The real WinSystem (internal/backup/rebuild/winsystem_windows.go) and
       # winhive's RegLoadKeyW/RegUnLoadKeyW are the W06 Windows engine's only
