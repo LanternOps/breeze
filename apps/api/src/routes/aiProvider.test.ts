@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const authGates = vi.hoisted(() => ({
   permissionDenied: false,
   mfaDenied: false,
+  approvalsDecide: true,
 }));
 
 const { captureExceptionMock } = vi.hoisted(() => ({
@@ -25,6 +26,7 @@ vi.mock('../middleware/auth', () => ({
   },
   requirePermission: vi.fn(() => async (c: any, next: any) => {
     if (authGates.permissionDenied) return c.json({ error: 'Permission denied' }, 403);
+    c.set('permissions', {});
     await next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -36,7 +38,9 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../services/permissions', () => ({
   PERMISSIONS: {
     BILLING_MANAGE: { resource: 'billing', action: 'manage' },
+    APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },
   },
+  userCanDecideApprovals: () => authGates.approvalsDecide,
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -135,6 +139,7 @@ describe('AI provider routes', () => {
     catalogFlagState.enabled = true;
     authGates.permissionDenied = false;
     authGates.mfaDenied = false;
+    authGates.approvalsDecide = true;
     authState.value = {
       user: { id: '11111111-1111-4111-8111-111111111111', email: 'admin@example.com', name: 'Admin' },
       scope: 'partner',
@@ -241,8 +246,10 @@ describe('AI provider routes', () => {
   });
 
   it('registers every handler with the billing manage permission', async () => {
-    expect(requirePermission).toHaveBeenCalledTimes(5);
-    expect(requirePermission).toHaveBeenCalledWith('billing', 'manage');
+    // 5 handlers here + the partnerRead/partnerWrite arrays that ./aiModels/shared
+    // (imported for the PATCH approvals gate) builds at module load.
+    expect(requirePermission).toHaveBeenCalledTimes(7);
+    for (const args of vi.mocked(requirePermission).mock.calls) expect(args).toEqual(['billing', 'manage']);
   });
 
   it('GET / uses read-specific copy when full partner org access is missing', async () => {
@@ -491,7 +498,10 @@ describe('AI provider routes', () => {
     }));
   });
 
-  it('PATCH / deliberately succeeds without requiring MFA because only key writes and removal are gated', async () => {
+  // W04 (#7602): the compat default-model change re-points every partner-level
+  // assignment on the old default, script_reviewer included, so it carries the
+  // same gate as PUT /ai/models/assignments (MFA + approvals:decide).
+  it('PATCH / → 403 without MFA', async () => {
     authGates.mfaDenied = true;
 
     const response = await aiProviderRoutes.request('/', {
@@ -500,11 +510,22 @@ describe('AI provider routes', () => {
       body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
     });
 
-    expect(response.status).toBe(200);
-    expect(updatePartnerLlmConfig).toHaveBeenCalledWith({
-      partnerId: '22222222-2222-4222-8222-222222222222',
-      defaultModel: 'claude-haiku-4-5',
+    expect(response.status).toBe(403);
+    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
+  });
+
+  it('PATCH / → 403 APPROVALS_DECIDE_REQUIRED without approvals:decide', async () => {
+    authGates.approvalsDecide = false;
+
+    const response = await aiProviderRoutes.request('/', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ defaultModel: 'claude-haiku-4-5' }),
     });
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).code).toBe('APPROVALS_DECIDE_REQUIRED');
+    expect(updatePartnerLlmConfig).not.toHaveBeenCalled();
   });
 
   it('PATCH / captures mapped PartnerLlmError responses at 5xx', async () => {

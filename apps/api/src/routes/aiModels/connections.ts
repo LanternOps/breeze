@@ -1,0 +1,112 @@
+import { Hono, type Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import {
+  connectionCreateSchema,
+  connectionEndpointSchema,
+  connectionRotateKeySchema,
+  connectionSettingsPatchSchema,
+} from '@breeze/shared';
+import { zValidator } from '../../lib/validation';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { getCompatConnection } from '../../services/aiModels/connections';
+import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
+import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
+import { deletePartnerLlmConfig, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
+import { partnerWrite, registryWrite, requirePartnerWide } from './shared';
+
+// POST /:id/refresh (enqueueConnectionSync, W03 Task 16) lands in W04 Task 8b.
+
+export const aiModelConnectionRoutes = new Hono();
+
+/** compat_uq (W02–W08): the partner has at most one anthropic_byok/catalog connection; :id must be it. */
+async function ownConnectionId(partnerId: string, id: string): Promise<string> {
+  const conn = await getCompatConnection(partnerId);
+  if (!conn || conn.id !== id) throw new HTTPException(404, { message: 'Connection not found.' });
+  return conn.id;
+}
+
+function audit(c: Context, partnerId: string, action: string, details: Record<string, unknown> = {}) {
+  writeRouteAudit(c, { orgId: null, action: `ai_models.connection.${action}`, resourceType: 'partner', resourceId: partnerId, details });
+}
+
+aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connectionCreateSchema), async (c) => {
+  const { partnerId, userId } = requirePartnerWide(c);
+  const body = c.req.valid('json');
+  return registryWrite(c, partnerId, async () => {
+    if (await getCompatConnection(partnerId)) {
+      return c.json({ error: 'This partner already has an Anthropic connection. Rotate its key instead.', code: 'conflict' }, 409);
+    }
+    switch (body.kind) {
+      case 'anthropic_byok': {
+        const result = await savePartnerLlmKey({ partnerId, apiKey: body.apiKey, userId });
+        const conn = await getCompatConnection(partnerId);
+        // Two writes, not one: the key save probes the provider outside any
+        // transaction (W03). If the settings write fails, the connection still
+        // works with its default name/geo and the admin can edit them.
+        if (conn && (body.name !== undefined || body.inferenceGeo !== undefined)) {
+          await updateConnectionSettings({ partnerId, connectionId: conn.id, patch: { name: body.name, inferenceGeo: body.inferenceGeo } });
+        }
+        audit(c, partnerId, 'created', {
+          kind: body.kind, connectionId: conn?.id ?? null, last4: result.last4, configVersion: result.configVersion,
+        });
+        return c.json({ id: conn?.id ?? null }, 201);
+      }
+      default: {
+        const never: never = body.kind;
+        throw new HTTPException(400, { message: `Unsupported connection kind ${String(never)}` });
+      }
+    }
+  });
+});
+
+aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('json', connectionRotateKeySchema), async (c) => {
+  const { partnerId, userId } = requirePartnerWide(c);
+  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  return registryWrite(c, partnerId, async () => {
+    const result = await savePartnerLlmKey({ partnerId, apiKey: c.req.valid('json').apiKey, userId });
+    audit(c, partnerId, 'key_rotated', { connectionId: id, last4: result.last4, configVersion: result.configVersion });
+    return c.json({ id, keyLast4: result.last4, configVersion: result.configVersion });
+  });
+});
+
+aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('json', connectionEndpointSchema), async (c) => {
+  const { partnerId, userId } = requirePartnerWide(c);
+  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
+  // Same rule as routes/aiProvider.ts: the flag gates SELECTING an endpoint, never clearing one.
+  if (catalogEntryId !== null && !isLlmProviderCatalogEnabled()) {
+    throw new HTTPException(404, { message: 'Catalog endpoint selection is not available on this deployment.' });
+  }
+  return registryWrite(c, partnerId, async () => {
+    const result = await updatePartnerLlmEndpoint({ partnerId, catalogEntryId, acknowledgeDataNote, userId });
+    audit(c, partnerId, 'endpoint_changed', {
+      connectionId: id,
+      catalogEntryId: result.catalogEntryId,
+      slug: result.slug,
+      revision: result.revision,
+      configVersion: result.configVersion,
+    });
+    return c.json({ id, catalogEntryId: result.catalogEntryId, configVersion: result.configVersion });
+  });
+});
+
+aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('json', connectionSettingsPatchSchema), async (c) => {
+  const { partnerId } = requirePartnerWide(c);
+  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  const patch = c.req.valid('json');
+  return registryWrite(c, partnerId, async () => {
+    const conn = await updateConnectionSettings({ partnerId, connectionId: id, patch });
+    audit(c, partnerId, 'updated', { connectionId: id, ...patch, configVersion: conn.configVersion });
+    return c.json({ id, configVersion: conn.configVersion });
+  });
+});
+
+aiModelConnectionRoutes.delete('/:id', ...partnerWrite, async (c) => {
+  const { partnerId } = requirePartnerWide(c);
+  const id = await ownConnectionId(partnerId, c.req.param('id'));
+  return registryWrite(c, partnerId, async () => {
+    const deleted = await deletePartnerLlmConfig(partnerId);
+    if (deleted) audit(c, partnerId, 'deleted', { connectionId: id });
+    return c.json({ deleted });
+  });
+});
