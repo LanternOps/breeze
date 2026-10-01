@@ -11,9 +11,9 @@ tracking_issue: LanternOps/breeze#7598
 | Wave (sub-issue) | Plan file | Depends on | Plan status |
 |---|---|---|---|
 | W0 | — (issue #7587, PR #7593) | — | shipped as an interim fix; not part of this feature's sub-issues |
-| W01 (#7599) platform catalog, discovery, derivation | `2026-09-30-ai-model-registry-w01-platform-catalog.md` | W0 merged | detailed |
-| W02 (#7600) schema + backfill + compatibility (no routing change) | `2026-09-30-ai-model-registry-w02-schema-backfill.md` | W01 merged | detailed |
-| W03 (#7601) resolver + cost/funding cutover | `2026-09-30-ai-model-registry-w03-resolver-cutover.md` | W02 merged | detailed |
+| W01 (#7599) platform catalog, discovery, derivation | `2026-09-30-ai-model-registry-w01-platform-catalog.md` | W0 merged | detailed (18 tasks) |
+| W02 (#7600) schema + backfill + compatibility (no routing change) | `2026-09-30-ai-model-registry-w02-schema-backfill.md` | W01 merged | detailed (18 tasks; Codex xhigh schema pass done) |
+| W03 (#7601) resolver + cost/funding cutover | `2026-09-30-ai-model-registry-w03-resolver-cutover.md` | W02 merged | detailed (19 tasks) |
 | W04 (#7602) settings UI + usage page | written at `start_wave` | W03 | outline (spec §11) |
 | W05 (#7603) SDK-resume spike → chat picker + switching | written at `start_wave` | W03 (W04 for admin enablement UX) | outline (spec §9.2, §11) |
 | W06 (#7604) BYO OpenAI-compatible | written at `start_wave` | W03 | outline (spec §6, §12) |
@@ -64,7 +64,7 @@ Correction to spec §5.6 for naming consistency: `ai_sessions` gets `options jso
 - `/ai/models` (partner offerings / assignments / connections API) → **W04**.
 
 ### Jobs
-BullMQ queue `ai-model-discovery`, worker `workers/aiModelDiscoveryWorker.ts` (follow the existing worker registration pattern). Repeatable daily job `sync-platform` (W01), on-demand `sync-platform` (admin "Refresh"), and `sync-connection:{id}` (W03).
+BullMQ queue `ai-model-discovery`, worker `jobs/aiModelDiscoveryWorker.ts` (the repo's `jobs/` convention, per W01). The connection sync uses job name `sync-connection` with jobId `sync-connection-{id}`; BullMQ rejects colon ids. Repeatable daily job `sync-platform` (W01), on-demand `sync-platform` (admin "Refresh"), and `sync-connection` / jobId `sync-connection-{id}` (W03).
 
 ### Web
 - `apps/web/src/components/admin/AiModels.tsx` + page `/admin/ai-models` (W01).
@@ -76,3 +76,6 @@ BullMQ queue `ai-model-discovery`, worker `workers/aiModelDiscoveryWorker.ts` (f
 3. Migrations sort after the newest **committed** migration at commit time (`git ls-tree --name-only origin/main apps/api/migrations | sort | tail -1`), and use `YYYY-MM-DD-HHMMSS-slug.sql`. Every file that writes rows elects system scope first.
 4. Every new `org_id` table → cascade order, merge registry, export policy, RLS coverage in the same PR (CLAUDE.md table).
 5. Platform-key traffic is never priced from a non-platform rate. A model with no resolvable rate is never dispatched (spec §8).
+
+## Index additions
+Each wave plan ends with an "Index additions" table listing the names it introduced beyond this contract (e.g. W01 `modelWireOptions.ts`, `platformModelAdmin.ts`; W02 `legacyProjection` / `legacyReconcile`, `parity/*`, `legacyCostEvents`; W03 `eligibility`, `candidateLoader`, `transport`, `connectionFactory`, `turnBinding`, `settleInvocation`, `refusals`, `registryCutover`). Those tables are binding for later waves, the same as this file. W03's Preconditions table (P1–P15) records how it aligned to W01/W02's real names.
