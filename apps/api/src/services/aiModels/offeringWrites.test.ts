@@ -364,6 +364,39 @@ describe('updateOfferingDetails', () => {
     } })).resolves.toBeDefined();
   });
 
+  describe('fast-permission rule on a W02-projected platform row (allowedOptions + requiredPermission null, fast-rated model)', () => {
+    const fastCandidate = () => candidate({ optionRates: { 'speed:fast': RATES },
+      optionSupport: { effort: ['low', 'medium', 'high'], thinkingDisplay: [], speed: ['standard', 'fast'], inferenceGeo: [] } });
+    beforeEach(() => {
+      h.loadOfferingCandidate.mockResolvedValue(fastCandidate());
+      h.getOffering.mockResolvedValue(row({ allowedOptions: null, requiredPermission: null }));
+    });
+
+    it.each([
+      ['a rename', { displayName: 'Renamed' }],
+      ['an unrelated default option edit', { defaultOptions: { effort: 'low' as const } }],
+      ['a refusal-fallback clear', { refusalFallbackOfferingId: null }],
+    ])('%s is not refused', async (_l, fields) => {
+      await expect(updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, ...fields } })).resolves.toBeDefined();
+      expect(h.dbUpdateReturning).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['re-saving allowed options that keep fast', { allowedOptions: { speed: ['standard', 'fast'] as Array<'standard' | 'fast'> } }],
+      ['setting a fast default', { defaultOptions: { speed: 'fast' as const } }],
+      ['explicitly clearing the permission', { requiredPermission: null }],
+    ])('%s without the permission is still 422', async (_l, fields) => {
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, ...fields } }).catch((e) => e);
+      expect([err.status, err.details?.reason]).toEqual([422, 'fast_requires_permission']);
+    });
+
+    it('a compliant row (premium required) that drops the permission is 422', async () => {
+      h.getOffering.mockResolvedValue(row({ allowedOptions: null, requiredPermission: 'ai_models:premium' }));
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, requiredPermission: null } }).catch((e) => e);
+      expect([err.status, err.details?.reason]).toEqual([422, 'fast_requires_permission']);
+    });
+  });
+
   it('a rename never clears option restrictions (untouched fields keep their stored value)', async () => {
     h.getOffering.mockResolvedValue(row({ allowedOptions: { speed: ['standard'] } }));
     await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, displayName: 'Renamed' } });

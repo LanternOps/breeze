@@ -190,11 +190,19 @@ type ProposedAllowed = OfferingDetailsPatch['allowedOptions'] | null;
  *    (W03 loader, Q14: own prices carry no option rates; a BYOK offering with no
  *    own price inherits the linked platform row's option rates);
  *  - spec §15 #7: on a PLATFORM-funded offering, a selectable fast mode needs
- *    the premium permission.
+ *    the premium permission. Rows that already break this rule exist: the W02
+ *    projection (legacyReconcile) inserts platform offerings with
+ *    allowedOptions and requiredPermission null. So the rule is enforced only
+ *    when this patch is what makes fast selectable without the permission —
+ *    the stored state was compliant, or the patch edits allowedOptions /
+ *    requiredPermission, or it sets a fast default. A rename, a price edit or
+ *    an unrelated option edit on such a row is never refused by it.
  */
 function validateProposedOptions(
   c: LoadedCandidate,
   proposed: { allowed: ProposedAllowed; defaults: OfferingOptions | null; requiredPermission: string | null; fastRated: boolean },
+  stored: { allowed: ProposedAllowed; requiredPermission: string | null; fastRated: boolean },
+  patch: OfferingDetailsPatch,
 ): void {
   for (const key of OPTION_KEYS) {
     const support = key === 'speed'
@@ -209,10 +217,17 @@ function validateProposedOptions(
       throw new RegistryWriteError('That default is not available for this model.', 'invalid', 422, { field: 'defaultOptions', key });
     }
   }
-  const fastSelectable = proposed.fastRated
+  const fastNeedsPermission = (state: { allowed: ProposedAllowed; requiredPermission: string | null; fastRated: boolean }) =>
+    c.funding === 'platform'
+    && state.fastRated
     && ((c.optionSupport.speed ?? []) as readonly string[]).includes('fast')
-    && (!proposed.allowed?.speed || proposed.allowed.speed.includes('fast'));
-  if (fastSelectable && c.funding === 'platform' && proposed.requiredPermission === null) {
+    && (!state.allowed?.speed || state.allowed.speed.includes('fast'))
+    && state.requiredPermission === null;
+  const patchOwnsFastGate = !fastNeedsPermission(stored)
+    || patch.allowedOptions !== undefined
+    || patch.requiredPermission !== undefined
+    || patch.defaultOptions?.speed === 'fast';
+  if (fastNeedsPermission(proposed) && patchOwnsFastGate) {
     throw new RegistryWriteError(
       'Fast mode on Breeze credits needs the premium-model permission. Require it, or allow only standard speed.',
       'invalid', 422, { field: 'requiredPermission', reason: 'fast_requires_permission' },
@@ -299,7 +314,11 @@ async function updateOfferingDetailsLocked(input: {
     defaults: patch.defaultOptions !== undefined ? patch.defaultOptions : (current.defaultOptions as OfferingOptions | null),
     requiredPermission: patch.requiredPermission !== undefined ? patch.requiredPermission : current.requiredPermission,
     fastRated,
-  });
+  }, {
+    allowed: current.allowedOptions as ProposedAllowed,
+    requiredPermission: current.requiredPermission,
+    fastRated: Boolean(candidate.optionRates?.['speed:fast']),
+  }, patch);
   if (patch.allowedOptions !== undefined) set.allowedOptions = patch.allowedOptions as Record<string, unknown> | null;
   if (patch.defaultOptions !== undefined) set.defaultOptions = patch.defaultOptions as Record<string, unknown> | null;
   if (patch.requiredPermission !== undefined) set.requiredPermission = patch.requiredPermission;
