@@ -682,6 +682,12 @@ describe('mapping jobs and recovery sweep', () => {
       expect(captureExceptionMock).not.toHaveBeenCalled();
     },
   );
+  it('does not retry provider_rejected (a code-less provider validation error) and does not re-report it (#7292)', async () => {
+    // The coordinator already sent the one Sentry event; a retry can never succeed.
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('provider_rejected', 409, 'Xero rejected the customer sync'));
+    await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
   it('does not retry a remote write whose local persistence failed', async () => {
     syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('record_failed', 502, 'remote write landed'));
     await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();

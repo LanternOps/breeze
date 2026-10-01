@@ -227,15 +227,18 @@ const MAPPING_TERMINAL_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set(
   'income_account_required', 'mapping_not_ready', 'currency_mismatch',
   'item_price_required', 'record_failed',
   'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
+  'provider_rejected',
 ]);
 
 /**
  * Terminal refusals the USER resolves in the workbench (Xero W03): logged, never
- * retried, and not reported to Sentry — they are expected outcomes, not incidents.
+ * retried, and not reported to Sentry by the worker — they are expected outcomes,
+ * not incidents. `provider_rejected` (#7292) is here because the coordinator has
+ * already reported it once; a second capture would double-count it.
  * Every other terminal code keeps its capture (QuickBooks telemetry unchanged).
  */
 const MAPPING_USER_RESOLVABLE_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set([
-  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission',
+  'duplicate_name', 'remote_archived', 'remote_missing', 'provider_permission', 'provider_rejected',
 ]);
 
 let accountingSyncQueue: Queue<AccountingSyncJobData> | null = null;
