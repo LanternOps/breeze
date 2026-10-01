@@ -20,6 +20,7 @@ import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 import { topologySessionCondition, type TopologySessionVisibility } from './topology/aiSessionAccess';
 import { isPlatformModelSnapshotLoaded, peekPlatformModel } from './aiModels/platformModelSnapshot';
 import { computeInvocationCents, platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
+import { emitLegacyCostRecorded, type InvocationLedgerContext, type LegacyCostEvent } from './aiModels/legacyCostEvents';
 import type { ModelRates } from '@breeze/shared';
 
 export type AiBillingSource = 'platform' | 'partner_key';
@@ -930,6 +931,7 @@ export async function recordUsage(
   catalogPricing?: CatalogPricingSnapshot,
   budgetReservationId?: string,
   additionalCostCents = 0,
+  ledger?: InvocationLedgerContext,
 ): Promise<void> {
   if (!Number.isFinite(additionalCostCents) || additionalCostCents < 0) {
     throw new Error('additionalCostCents must be a finite non-negative amount');
@@ -938,6 +940,19 @@ export async function recordUsage(
     ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
     : calculateCostCents(model, inputTokens, outputTokens);
   const costCents = tokenCostCents + additionalCostCents;
+  // #7600 W02 shadow ledger: what legacy charged. Emitted only once the legacy
+  // record below has been written (never inside its try/catch), so the emit
+  // cannot change what is written, what throws, or what is returned.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId, model, billingSource,
+    catalogPricing: catalogPricing ?? null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: 0, cacheWrite: 0 },
+    legacyCostCents: tokenCostCents,
+    legacyAdditionalCostCents: additionalCostCents,
+    legacyCostSource: catalogPricing ? 'catalog' : 'model_pricing',
+    sdkReportedCostUsd: null,
+    ledger: ledger ?? null,
+  };
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -953,6 +968,7 @@ export async function recordUsage(
       toolExecutionCount: isToolExecution ? 1 : 0,
       ...(sessionId !== null ? { session: { id: sessionId, turnCount: 1 } } : {}),
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed:', err);
     });
@@ -1028,6 +1044,8 @@ export async function recordUsage(
     }
   }
 
+  emitLegacyCostRecorded(legacyCostEvent);
+
   // Cost anomaly detection (after counter updates)
   checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed:', err);
@@ -1090,6 +1108,7 @@ export async function recordUsageFromSdkResult(
   const recordedInputTokens = sumInputTokens(result.usage);
 
   let costCents: number;
+  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = catalogPricing ? 'catalog' : 'sdk';
   if (catalogPricing) {
     costCents = calculateCatalogCostCents(
       catalogPricing,
@@ -1119,6 +1138,7 @@ export async function recordUsageFromSdkResult(
           cacheReadTokens,
           cacheCreationTokens
         );
+        legacyCostSource = 'model_pricing';
         console.warn(
           `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
           `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
@@ -1134,6 +1154,18 @@ export async function recordUsageFromSdkResult(
       }
     }
   }
+  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
+  // record is written, before the credit deduction, which is unaffected.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId, model: result.model ?? null, billingSource,
+    catalogPricing: catalogPricing ?? null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
+    legacyCostCents: costCents,
+    legacyAdditionalCostCents: 0,
+    legacyCostSource,
+    sdkReportedCostUsd: result.total_cost_usd,
+    ledger: null,
+  };
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -1149,6 +1181,7 @@ export async function recordUsageFromSdkResult(
       toolExecutionCount,
       session: { id: sessionId, turnCount: result.num_turns },
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed:', err);
     });
@@ -1215,6 +1248,8 @@ export async function recordUsageFromSdkResult(
     }
   }
 
+  emitLegacyCostRecorded(legacyCostEvent);
+
   // Cost anomaly detection
   checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (SDK):', err);
@@ -1267,6 +1302,7 @@ export async function recordSessionlessSdkUsage(
   },
   billingSource: AiBillingSource,
   budgetReservationId?: string,
+  ledger?: InvocationLedgerContext,
 ): Promise<void> {
   if (!orgId) {
     console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
@@ -1283,6 +1319,7 @@ export async function recordSessionlessSdkUsage(
     inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
 
   let costCents = result.costCents;
+  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = 'precomputed';
   if (costCents <= 0 && anyTokens && result.model) {
     costCents = calculateCostCents(
       result.model,
@@ -1291,7 +1328,20 @@ export async function recordSessionlessSdkUsage(
       cacheReadTokens,
       cacheCreationTokens,
     );
+    legacyCostSource = 'model_pricing';
   }
+  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
+  // record is written, before the credit deduction, which is unaffected.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId: null, model: result.model ?? null, billingSource,
+    catalogPricing: null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
+    legacyCostCents: Math.max(0, costCents),
+    legacyAdditionalCostCents: 0,
+    legacyCostSource,
+    sdkReportedCostUsd: null,
+    ledger: ledger ?? null,
+  };
 
   // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
   // summed. Pricing above deliberately keeps them split (different rates).
@@ -1312,6 +1362,7 @@ export async function recordSessionlessSdkUsage(
       messageCount,
       toolExecutionCount,
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(null, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
     });
@@ -1366,6 +1417,8 @@ export async function recordSessionlessSdkUsage(
       // Continue to attempt the other period.
     }
   }
+
+  emitLegacyCostRecorded(legacyCostEvent);
 
   checkCostAnomalies(null, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);

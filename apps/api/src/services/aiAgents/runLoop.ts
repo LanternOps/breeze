@@ -2246,6 +2246,7 @@ async function driveSdkLoop(
         },
         billingSource,
         reservationId,
+        { surface: 'ai_agents', agentRunId: run.id },
       );
     } else {
       await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });

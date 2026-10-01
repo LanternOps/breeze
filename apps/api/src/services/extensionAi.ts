@@ -261,6 +261,8 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           billingSource,
           wire.catalogPricing,
           reservationId,
+          0,
+          { surface: 'extension_content' },
         );
       } catch (error) {
         await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })

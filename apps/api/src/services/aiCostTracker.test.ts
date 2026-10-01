@@ -25,6 +25,7 @@ import { rateLimiter } from './rate-limit';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { clearPlatformModelSnapshot, setPlatformModelSnapshot } from './aiModels/platformModelSnapshot';
+import { __resetLegacyCostListenersForTests, onLegacyCostRecorded, type LegacyCostEvent } from './aiModels/legacyCostEvents';
 import {
   PARITY_TOKEN_VECTORS,
   SEEDED_PLATFORM_MODELS,
@@ -2225,4 +2226,113 @@ describe('getLegacyModelRates (#7600 W02)', () => {
       expect(calculateCostCents(model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBeCloseTo(expected, 2);
     },
   );
+});
+
+const withoutClock = (value: unknown) =>
+  JSON.parse(JSON.stringify(value, (key, v) => (key === 'updatedAt' || key === 'lastActivityAt' ? undefined : v)));
+
+describe('legacy cost events (#7600 W02) — billing is byte-identical with or without the ledger listener', () => {
+  afterEach(() => __resetLegacyCostListenersForTests());
+
+  it('recordUsage: same writes with a listener; one event carrying the token cost and the ledger context', async () => {
+    const call = () => recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 0, false, 'platform', undefined, undefined, 5, { surface: 'chat', sourceRef: 'ticket_draft' });
+    const without = setupDbMocks(null);
+    const withoutResult = await call();
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    const withListener = setupDbMocks(null);
+    const withResult = await call();
+    expect(withResult).toEqual(withoutResult);
+    expect(withoutClock(withListener)).toEqual(withoutClock(without));
+    expect(events).toEqual([expect.objectContaining({
+      orgId: 'org-1', sessionId: 'sess-1', model: 'claude-sonnet-4-6', billingSource: 'platform',
+      legacyCostCents: 300, legacyAdditionalCostCents: 5, legacyCostSource: 'model_pricing',
+      tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+      ledger: { surface: 'chat', sourceRef: 'ticket_draft' },
+    })]);
+  });
+
+  it('recordUsageFromSdkResult and recordSessionlessSdkUsage: same writes with a listener', async () => {
+    const sdk = () => recordUsageFromSdkResult('sess-b', 'org-1', {
+      total_cost_usd: 0.02, model: 'claude-sonnet-4-6', num_turns: 2,
+      usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 },
+    }, 'partner_key');
+    const sessionless = () => recordSessionlessSdkUsage('org-1', {
+      costCents: 0, usage: { input_tokens: 1_000_000, output_tokens: 0 }, numTurns: 1, model: 'claude-sonnet-4-6',
+    }, 'partner_key', undefined, { surface: 'ai_agents', agentRunId: 'run-b' });
+    for (const call of [sdk, sessionless]) {
+      __resetLegacyCostListenersForTests();
+      const without = setupDbMocks(null);
+      const withoutResult = await call();
+      const events: LegacyCostEvent[] = [];
+      onLegacyCostRecorded((e) => events.push(e));
+      const withListener = setupDbMocks(null);
+      const withResult = await call();
+      expect(withResult).toEqual(withoutResult);
+      expect(withoutClock(withListener)).toEqual(withoutClock(without));
+      expect(events).toHaveLength(1);
+    }
+  });
+
+  it('emits only after the legacy write succeeds: a failed session write rejects as before and emits nothing', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    mockDb.update.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockRejectedValue(new Error('db down')) })),
+    });
+    await expect(recordUsage('sess-x', 'org-1', 'claude-sonnet-4-6', 10, 10, false, 'platform', undefined, undefined, 0, { surface: 'chat' }))
+      .rejects.toThrow('db down');
+    await expect(recordUsageFromSdkResult('sess-x', 'org-1', {
+      total_cost_usd: 0.02, model: 'claude-sonnet-4-6', num_turns: 1, usage: { input_tokens: 10, output_tokens: 10 },
+    }, 'platform')).rejects.toThrow('db down');
+    expect(events).toEqual([]);
+    error.mockRestore();
+  });
+
+  it('a throwing listener cannot fail or alter recordUsage', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    onLegacyCostRecorded(() => { throw new Error('ledger down'); });
+    const captured = setupDbMocks(null);
+    await expect(recordUsage('sess-2', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, false, 'platform')).resolves.toBeUndefined();
+    expect(recordedCostCents(captured.sessionSet)).toBe(1800);
+    error.mockRestore();
+  });
+
+  it.each([
+    ['sdk', { total_cost_usd: 0.02, model: 'claude-sonnet-4-6' }, undefined, 'sdk', 2],
+    ['model_pricing fallback', { total_cost_usd: 0, model: 'claude-sonnet-4-6' }, undefined, 'model_pricing', 300],
+    ['catalog', { total_cost_usd: 0.02, model: 'claude-sonnet-4-6' }, { catalogEntryId: 'c', revisionId: 'r', inputCentsPerM: 100, outputCentsPerM: 100, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 }, 'catalog', 100],
+  ] as const)('recordUsageFromSdkResult reports its legacy cost source: %s', async (_l, sdk, catalogPricing, source, cents) => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordUsageFromSdkResult('sess-3', 'org-1', {
+      total_cost_usd: sdk.total_cost_usd, model: sdk.model, num_turns: 1,
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+    }, 'platform', catalogPricing as never);
+    expect(events[0]).toMatchObject({ legacyCostSource: source, legacyCostCents: cents, sdkReportedCostUsd: sdk.total_cost_usd, ledger: null });
+  });
+
+  it('recordSessionlessSdkUsage forwards the agent ledger context', async () => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 12, usage: { input_tokens: 10, output_tokens: 10 }, numTurns: 1, model: 'claude-sonnet-4-6',
+    }, 'platform', undefined, { surface: 'ai_agents', agentRunId: 'run-1' });
+    expect(events[0]).toMatchObject({ legacyCostSource: 'precomputed', legacyCostCents: 12, ledger: { surface: 'ai_agents', agentRunId: 'run-1' } });
+  });
+
+  it('the event payload carries only cost-record fields (no raw error or prompt content)', async () => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordUsage('sess-4', 'org-1', 'claude-sonnet-4-6', 10, 10, false, 'platform', undefined, undefined, 0, { surface: 'chat' });
+    expect(Object.keys(events[0]!).sort()).toEqual([
+      'billingSource', 'catalogPricing', 'ledger', 'legacyAdditionalCostCents', 'legacyCostCents',
+      'legacyCostSource', 'model', 'orgId', 'sdkReportedCostUsd', 'sessionId', 'tokens',
+    ]);
+  });
 });
