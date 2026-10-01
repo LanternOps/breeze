@@ -53,6 +53,10 @@ vi.mock('../services/pamRuleTierDrift', () => ({
   PAM_RULE_TIER_UNREACHABLE_CODE: 'pam_rule_risk_tier_unreachable',
 }));
 
+vi.mock('../services/pamMobileApprovals', () => ({
+  expireSupersededMobileApprovals: vi.fn(async () => 0),
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   // #7526: records the deferred work (label, work) so tests can assert it was
@@ -224,6 +228,7 @@ vi.mock('./softwarePolicies', () => ({
 import { db, runAfterDbContextExit } from '../db';
 import { inArray } from 'drizzle-orm';
 import { pamRoutes } from './pam';
+import { expireSupersededMobileApprovals } from '../services/pamMobileApprovals';
 import { assertApprovalAssurance, StepUpRequiredError, ReauthRequiredError } from '../services/authenticatorAssurance';
 import { requireCurrentPasswordStepUp } from './auth/helpers';
 import { generateApprovalAssertionOptions } from '../services/approverWebAuthn';
@@ -1462,14 +1467,6 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
 
   it('uac_intercept respond never touches the execution mirror', async () => {
     const { updateSetCalls } = rigTransaction({ row: activeRow, casWins: true });
-    // #1254: the mobile-approval expiry moved OUT of the respond tx to a
-    // post-commit system-scoped db.update — approval_requests is Shape-6
-    // (user-id-scoped), so the fanned-out approver rows belong to OTHER users
-    // and are invisible to this web caller's request context; a bare in-tx
-    // update would silently match zero rows. Wire that post-commit db.update
-    // and capture its .set arg.
-    const expireSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    vi.mocked(db.update).mockReturnValue({ set: expireSet } as any);
 
     const res = await app().request(`/pam/elevation-requests/${REQ_ID}/respond`, {
       method: 'POST',
@@ -1481,25 +1478,20 @@ describe('ai_tool_action elevation requests (Phase 1)', () => {
     // In the tx, only the elevation-status CAS runs — no execution mirror (that
     // only happens for ai_tool_action) and no in-tx approval expiry anymore.
     expect(updateSetCalls.length).toBe(1);
-    // The #1254 mobile-approval expiry now runs post-commit via the system-scoped
-    // db.update (clears any fanned-out approval_requests rows so a web decision
-    // also removes the request from approvers' phones).
-    // #7526: registered via runAfterDbContextExit, NOT run inline — nothing has
-    // touched approval_requests yet.
+    // The #1254 mobile-approval expiry (clears any fanned-out approval_requests
+    // rows so a web decision also removes the request from approvers' phones)
+    // is registered to run after the request transaction commits (#7526), not
+    // run inline. Its guard and system scope are covered against real Postgres
+    // in elevationApprovalConcurrency.integration.test.ts.
     expect(runAfterDbContextExit).toHaveBeenCalledTimes(1);
     expect(runAfterDbContextExit).toHaveBeenCalledWith(
-      'pam: expire sibling mobile approvals',
+      `pam: expire sibling mobile approvals (elevation ${REQ_ID})`,
       expect.any(Function),
     );
-    expect(expireSet).not.toHaveBeenCalled();
-    // Run the recorded work: the expiry write happens, guarded by an exists()
-    // subquery over elevation_requests (db.select chain).
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn(() => ({ where: vi.fn(() => ({})) })),
-    } as any);
+    expect(expireSupersededMobileApprovals).not.toHaveBeenCalled();
     const work = vi.mocked(runAfterDbContextExit).mock.calls[0]![1] as () => Promise<unknown>;
     await work();
-    expect(expireSet).toHaveBeenCalledWith({ status: 'expired' });
+    expect(expireSupersededMobileApprovals).toHaveBeenCalledWith(REQ_ID);
   });
 });
 

@@ -46,6 +46,7 @@ import {
 } from './db-utils';
 import { approvalRoutes } from '../../routes/approvals';
 import { pamRoutes } from '../../routes/pam';
+import { expireSupersededMobileApprovals } from '../../services/pamMobileApprovals';
 
 const RUN = !!process.env.DATABASE_URL;
 // Superuser connections for the lock holder, the probe and the pg_stat_activity
@@ -234,13 +235,19 @@ async function holdOpen(
   };
 }
 
-/** Number of backends currently waiting on a lock another backend holds. */
-async function blockedBackends(): Promise<number> {
+/**
+ * Number of backends waiting, directly or through another waiter, on a lock
+ * the backend `holderPid` holds. A second waiter on a row queues behind the
+ * first waiter's tuple lock, so it is blocked by that waiter, not the holder.
+ */
+async function blockedBy(holderPid: number): Promise<number> {
   const [row] = await adminSql<{ n: number }[]>`
-    SELECT count(*)::int AS n
-    FROM pg_stat_activity
-    WHERE datname = current_database()
-      AND cardinality(pg_blocking_pids(pid)) > 0
+    WITH RECURSIVE waiters(pid) AS (
+      SELECT a.pid FROM pg_stat_activity a WHERE ${holderPid} = ANY(pg_blocking_pids(a.pid))
+      UNION
+      SELECT a.pid FROM pg_stat_activity a JOIN waiters w ON w.pid = ANY(pg_blocking_pids(a.pid))
+    )
+    SELECT count(*)::int AS n FROM waiters
   `;
   return row!.n;
 }
@@ -302,7 +309,7 @@ describe.skipIf(!RUN)('elevation approval lock order (#7526)', () => {
     const a = track(decide(s, s.approverA, rowA, 'approve'));
     const b = track(decide(s, s.approverB, rowB, 'approve'));
     try {
-      await waitUntil('both decides waiting on the elevation', async () => (await blockedBackends()) >= 2);
+      await waitUntil('both decides waiting on the elevation', async () => (await blockedBy(holder.pid)) >= 2);
     } finally {
       await holder.release();
     }
@@ -337,7 +344,7 @@ describe.skipIf(!RUN)('elevation approval lock order (#7526)', () => {
     try {
       // Either the request finished (the expiry no longer holds it up) or it
       // is stuck behind A's row.
-      await waitUntil('web respond finished or blocked', async () => web.settled() || (await blockedBackends()) >= 1);
+      await waitUntil('web respond finished or blocked', async () => web.settled() || (await blockedBy(holder.pid)) >= 1);
       // Is the elevation still locked at this point?
       probe = await adminSql
         .begin((tx) => tx`SELECT id FROM elevation_requests WHERE id = ${elevationId} FOR UPDATE NOWAIT`)
@@ -380,7 +387,7 @@ describe.skipIf(!RUN)('elevation approval lock order (#7526)', () => {
       `);
       const res = track(decide(s, s.approverA, rowA, decision));
       try {
-        await waitUntil('decide waiting on the elevation', async () => (await blockedBackends()) >= 1);
+        await waitUntil('decide waiting on the elevation', async () => (await blockedBy(holder.pid)) >= 1);
       } finally {
         await holder.release();
       }
@@ -414,5 +421,38 @@ describe.skipIf(!RUN)('elevation approval lock order (#7526)', () => {
     expect(res.status).toBe(409);
     expect((await readApprovals([rowA])).get(rowA)).toBe('expired');
     expect((await readElevation(elevationId)).status).toBe('expired');
+  });
+
+  describe('the web decision\'s deferred sibling expiry', () => {
+    it('leaves the rows pending while the elevation is still pending (the request rolled back)', async () => {
+      const { elevationId, approvalIds } = await seedElevation(s, [s.approverA, s.approverB]);
+
+      expect(await expireSupersededMobileApprovals(elevationId)).toBe(0);
+      const rows = await readApprovals(approvalIds);
+      expect([...rows.values()]).toEqual(['pending', 'pending']);
+    });
+
+    it('expires the pending rows once the elevation has been decided', async () => {
+      const { elevationId, approvalIds } = await seedElevation(s, [s.approverA, s.approverB]);
+      const [rowA, rowB] = approvalIds as [string, string];
+      // Approver A's row was already decided; only pending rows move.
+      await withSystemDbAccessContext(() =>
+        db
+          .update(approvalRequests)
+          .set({ status: 'denied', decidedAt: new Date() })
+          .where(eq(approvalRequests.id, rowA)),
+      );
+      await withSystemDbAccessContext(() =>
+        db
+          .update(elevationRequests)
+          .set({ status: 'denied', deniedByUserId: s.webDecider.id, denialReason: 'no', updatedAt: new Date() })
+          .where(eq(elevationRequests.id, elevationId)),
+      );
+
+      expect(await expireSupersededMobileApprovals(elevationId)).toBe(1);
+      const rows = await readApprovals(approvalIds);
+      expect(rows.get(rowA)).toBe('denied');
+      expect(rows.get(rowB)).toBe('expired');
+    });
   });
 });

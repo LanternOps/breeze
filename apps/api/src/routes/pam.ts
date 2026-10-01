@@ -20,13 +20,12 @@
  */
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { SQL, and, desc, eq, exists, gt, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { SQL, and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
-import { db, runAfterDbContextExit, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextExit } from '../db';
 import {
-  approvalRequests,
   authenticatorDevices,
   devices,
   elevationAudit,
@@ -48,6 +47,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
+import { expireSupersededMobileApprovals } from '../services/pamMobileApprovals';
 import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import {
@@ -789,28 +789,13 @@ pamRoutes.post(
     // the elevation this request held: a cycle across two connections that
     // Postgres cannot detect. One order for both tables: elevation first,
     // then approval rows (decideApprovalRequest takes the same order).
-    // runAfterDbContextExit also runs the work when the request rolls back, so
-    // the UPDATE only touches rows whose elevation is no longer pending.
+    // runAfterDbContextExit also runs the work when the request rolls back;
+    // expireSupersededMobileApprovals only touches rows whose elevation is no
+    // longer pending, so that is a no-op.
     if (result.row.flowType === 'uac_intercept') {
       const elevationId = result.row.id;
-      runAfterDbContextExit('pam: expire sibling mobile approvals', () =>
-        withSystemDbAccessContext(async () => {
-          await db
-            .update(approvalRequests)
-            .set({ status: 'expired' })
-            .where(
-              and(
-                eq(approvalRequests.elevationRequestId, elevationId),
-                eq(approvalRequests.status, 'pending'),
-                exists(
-                  db
-                    .select({ one: sql`1` })
-                    .from(elevationRequests)
-                    .where(and(eq(elevationRequests.id, elevationId), ne(elevationRequests.status, 'pending'))),
-                ),
-              ),
-            );
-        }),
+      runAfterDbContextExit(`pam: expire sibling mobile approvals (elevation ${elevationId})`, () =>
+        expireSupersededMobileApprovals(elevationId),
       );
     }
 
