@@ -97,6 +97,44 @@ describe('previewResidencyImpact', () => {
     expect((await previewResidencyImpact(P)).unavailableSurfaces).toEqual(['ai_agents']);
   });
 
+  // W03 soft-disconnect: an offering on a disconnected connection is already
+  // unusable (disabled + connection_unavailable). It is not residency's impact
+  // — never a working candidate — and never lists a surface a second time.
+  describe('an offering on a disconnected connection', () => {
+    const onDisconnected = (enabled: boolean) => {
+      const c = cand(null, []);
+      return { facts: { ...c.facts, enabled, platform: null, connection: { kind: 'anthropic_byok', status: 'disconnected', keyUsable: false } } };
+    };
+
+    it.each([
+      ['disabled, as disconnectCompat leaves it', false],
+      ['still enabled (defence in depth)', true],
+    ])('is not counted as a default residency would break (%s)', async (_l, enabled) => {
+      h.carries = { agent_sdk: true, messages_api: true };
+      h.rows = [{ surface: 'helper', role: 'default', orgId: null, defaultOfferingId: A }];
+      h.orgRows = [{ orgId: 'o1', orgName: 'Acme', surface: 'chat', defaultOfferingId: A }];
+      h.candidates.set(A, onDisconnected(enabled));
+      expect(await previewResidencyImpact(P)).toEqual({ unavailableSurfaces: [], affectedOrgOverrides: [] });
+    });
+
+    it('beside a live default that residency would break, the surface is listed once', async () => {
+      h.rows = [
+        { surface: 'ai_agents', role: 'default', orgId: null, defaultOfferingId: B },
+        { surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: A },
+      ];
+      h.candidates.set(A, onDisconnected(false));
+      h.candidates.set(B, cand(null, []));
+      h.orgRows = [
+        { orgId: 'o1', orgName: 'Acme', surface: 'ai_agents', defaultOfferingId: A },
+        { orgId: 'o1', orgName: 'Acme', surface: 'ai_agents', defaultOfferingId: B },
+      ];
+      expect(await previewResidencyImpact(P)).toEqual({
+        unavailableSurfaces: ['ai_agents'],
+        affectedOrgOverrides: [{ orgId: 'o1', orgName: 'Acme', surface: 'ai_agents' }],
+      });
+    });
+  });
+
   it('ignores rows without a default and offerings the partner no longer owns', async () => {
     h.rows = [
       { surface: 'chat', role: 'default', orgId: null, defaultOfferingId: null },
