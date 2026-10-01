@@ -353,3 +353,39 @@ func TestUnparsableAgentYAMLOwesRotationOnlyForARealHelperToken(t *testing.T) {
 		})
 	}
 }
+
+// A token left in agent.yaml that a later rotation has already replaced (for
+// example while agent.yaml could not be rewritten) is removed without owing
+// another rotation; one that is still current or staged is not.
+func TestScrubOwesRotationOnlyForAStillValidHelperToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		secrets  string
+		wantOwed bool
+	}{
+		{name: "matches current", secrets: "helper_auth_token: brz_helper_legacy\n", wantOwed: true},
+		{name: "matches staged", secrets: "helper_auth_token: brz_helper_newer\npending_helper_auth_token: brz_helper_legacy\n", wantOwed: true},
+		{name: "no helper token in secrets.yaml", secrets: "auth_token: brz_agent\n", wantOwed: true},
+		{name: "already replaced", secrets: "helper_auth_token: brz_helper_newer\n", wantOwed: false},
+		{name: "already replaced, other staged", secrets: "helper_auth_token: brz_helper_newer\npending_helper_auth_token: brz_helper_staged\n", wantOwed: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(resetHelperTokenRotationStateForTest)
+			dir, cfgPath := writeLegacyAgentYAML(t)
+			if err := os.WriteFile(filepath.Join(dir, "secrets.yaml"), []byte(tt.secrets), 0o600); err != nil {
+				t.Fatalf("write secrets.yaml: %v", err)
+			}
+
+			fixAgentYAMLPermissions(cfgPath)
+
+			if data, _ := os.ReadFile(cfgPath); strings.Contains(string(data), "helper_auth_token") {
+				t.Fatalf("agent.yaml still carries the helper token:\n%s", data)
+			}
+			_, statErr := os.Stat(helperTokenRotationMarkerPathFor(cfgPath))
+			if got := statErr == nil || helperTokenRotationOwedInProcess.Load(); got != tt.wantOwed {
+				t.Fatalf("rotation owed = %v, want %v", got, tt.wantOwed)
+			}
+		})
+	}
+}

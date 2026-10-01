@@ -1330,9 +1330,14 @@ func migrateInlineSecretsToSecretFile(cfgPath string) error {
 		return err
 	}
 	// Before anything below rewrites the file: a helper token an older agent
-	// left here is rotated, not just moved (see helperTokenRotationMarkerName).
-	if !isEmptyYAMLValue(cfgValues[secretKeyHelperAuthToken]) {
-		recordHelperTokenRotationOwed(cfgPath)
+	// left here is rotated, not just moved (see helperTokenRotationMarkerName)
+	// — unless a later rotation has already replaced it.
+	if inline := cfgValues[secretKeyHelperAuthToken]; !isEmptyYAMLValue(inline) {
+		if inlineHelperTokenStillValid(cfgPath, inline) {
+			recordHelperTokenRotationOwed(cfgPath)
+		} else {
+			log.Info("helper token in agent.yaml was already replaced by a rotation; removing it without another rotation", "path", cfgPath)
+		}
 	}
 
 	hasInlineSecretKeys := false

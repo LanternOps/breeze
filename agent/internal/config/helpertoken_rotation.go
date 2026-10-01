@@ -88,6 +88,26 @@ func recordHelperTokenRotationOwed(cfgPath string) {
 	log.Warn("helper token found in agent.yaml; removing it and rotating credentials", "path", cfgPath)
 }
 
+// inlineHelperTokenStillValid reports whether a helper token found in
+// agent.yaml may still be accepted by the server: it is the current or the
+// staged helper token in secrets.yaml. Once a rotation has replaced it (for
+// example one promoted while agent.yaml could not be rewritten), removing it
+// is enough and no further rotation is owed. Anything it cannot establish —
+// unreadable secrets.yaml, no helper token there, a non-string value — counts
+// as still valid, so the rotation is owed. Token values are never logged.
+func inlineHelperTokenStillValid(cfgPath string, inline any) bool {
+	token, ok := inline.(string)
+	if !ok {
+		return true
+	}
+	creds, err := readPersistedCredentialsAt(cfgPath)
+	if err != nil || creds == nil || creds.HelperAuthToken == "" {
+		return true
+	}
+	return token == creds.HelperAuthToken ||
+		(creds.PendingHelperAuthToken != "" && token == creds.PendingHelperAuthToken)
+}
+
 // clearHelperTokenRotationOwed removes the marker beside the active config once
 // a rotation has been promoted. Failure is logged, never returned: the
 // promotion already succeeded. A marker that cannot be removed is ignored for

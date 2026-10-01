@@ -410,6 +410,19 @@ func Main(v string) {
 	}
 }
 
+// repairConfigThenInitLogging runs the startup config repair, then sets up
+// logging. The repair stays first: opening the log file creates files under
+// the config directory, which should not happen before that directory's
+// permissions are repaired. What the config package logs during the repair is
+// held in memory and written once the logger exists, so it reaches the agent
+// log file instead of a service's discarded stdout.
+func repairConfigThenInitLogging(cfg *config.Config, repair func()) {
+	config.HoldStartupLogs()
+	defer config.FlushStartupLogs()
+	repair()
+	initLogging(cfg)
+}
+
 // initLogging sets up structured logging from config. Call after config.Load().
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
@@ -722,11 +735,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
 	// them. secrets.yaml stays root-only (0600). Skipped in support mode: this
 	// operates on the REAL config dir, which a support client does not own.
-	if !cfg.SupportMode {
-		config.FixConfigPermissions()
-	}
-
-	initLogging(cfg)
+	repairConfigThenInitLogging(cfg, func() {
+		if !cfg.SupportMode {
+			config.FixConfigPermissions()
+		}
+	})
 
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge

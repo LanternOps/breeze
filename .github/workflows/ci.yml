@@ -2005,14 +2005,14 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/config -run '^Test(WindowsHelperToken|IsSecretYAMLKey$|HelperTokensAreNeverExemptedFromStripping$|PersistSettersNeverWriteLoadedSecretsBack$|FixAgentYAMLPermissionsRecordsRotationOwedForLegacyHelperToken$|RotationOwedSurvivesAnUnwritableMarker$|PromotePendingCredentialsClearsRotationOwed$|SaveToKeepsFullAgentTokensOutOfAgentYAML$|MigrateInlineSecretsToSecretFileScrubsAgentYAML$|FixConfigPermissionsScrubsActiveNonDefaultConfig$|UnparsableAgentYAMLOwesRotationOnlyForARealHelperToken$|PromotePendingCredentialsSucceedsWhenMarkerCannotBeCleared$)' -v 2>&1
+          $out = go test ./internal/config -run '^Test(WindowsHelperToken|IsSecretYAMLKey$|HelperTokensAreNeverExemptedFromStripping$|PersistSettersNeverWriteLoadedSecretsBack$|FixAgentYAMLPermissionsRecordsRotationOwedForLegacyHelperToken$|RotationOwedSurvivesAnUnwritableMarker$|PromotePendingCredentialsClearsRotationOwed$|SaveToKeepsFullAgentTokensOutOfAgentYAML$|MigrateInlineSecretsToSecretFileScrubsAgentYAML$|FixConfigPermissionsScrubsActiveNonDefaultConfig$|UnparsableAgentYAMLOwesRotationOnlyForARealHelperToken$|PromotePendingCredentialsSucceedsWhenMarkerCannotBeCleared$|ScrubOwesRotationOnlyForAStillValidHelperToken$|StartupLogsAreHeldUntilLoggingIsInitialized$)' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
-          if ($passes -ne 13) { throw "expected exactly 13 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
