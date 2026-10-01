@@ -3982,6 +3982,50 @@ describe('auth routes', () => {
         expect(grants.has(SSO_GRANT)).toBe(true);
       });
 
+      // /mfa/verify Case 2 is the third terminal write and the only one with no
+      // ambient DB context (its `authMiddleware(c, async () => {})` idiom) — the
+      // SAME two legs must hold there.
+      it('POST /auth/mfa/verify (setup confirm) enables TOTP with the SSO manage grant PLUS a fresh add_factor grant, spending each once', async () => {
+        mockPasswordlessPasskeyHolder();
+        mockPendingSetup();
+        stubTx();
+        const grants = useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor', [FACTOR_GRANT]: 'add_factor' });
+
+        const res = await post('/auth/mfa/verify', { code: '123456', ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+        expect(res.status).toBe(200);
+        expect(verifyPassword).not.toHaveBeenCalled();
+        expect(callsFor(consumeStepUpGrant, 'add_factor')).toHaveLength(1);
+        expect(callsFor(consumeStepUpGrant, 'sso_reauth_manage_factor')).toHaveLength(1);
+        expect(callsFor(consumeStepUpGrant, 'enroll_first_factor')).toHaveLength(0);
+        expect(grants.size).toBe(0);
+      });
+
+      it('POST /auth/mfa/verify (setup confirm) still demands the existing-factor proof — the SSO grant alone gets the SR2-20 403', async () => {
+        mockPasswordlessPasskeyHolder();
+        mockPendingSetup();
+        const grants = useGrants({ [SSO_GRANT]: 'sso_reauth_manage_factor' });
+
+        const res = await post('/auth/mfa/verify', { code: '123456', ssoReauthGrantId: SSO_GRANT });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
+        expect(consumeMFAToken).not.toHaveBeenCalled();
+        expect(grants.has(SSO_GRANT)).toBe(true);
+      });
+
+      it('POST /auth/mfa/verify (setup confirm) writes nothing when the SSO grant is gone, even with a valid add_factor grant', async () => {
+        mockPasswordlessPasskeyHolder();
+        mockPendingSetup();
+        useGrants({ [FACTOR_GRANT]: 'add_factor' }); // SSO grant expired since /mfa/setup
+
+        const res = await post('/auth/mfa/verify', { code: '123456', ssoReauthGrantId: SSO_GRANT, stepUpGrantId: FACTOR_GRANT });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ code: 'enrollment_grant_expired', reauthUrl: '/sso/reauth/start' });
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
       it('POST /auth/mfa/enable refuses an enroll_first_factor grant from an account that already holds a passkey', async () => {
         mockPasswordlessPasskeyHolder();
         mockPendingSetup();
