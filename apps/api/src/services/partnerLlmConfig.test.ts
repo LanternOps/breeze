@@ -144,6 +144,7 @@ import {
 } from './partnerLlmConfig';
 import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmFetch';
 import { CompatConnectionMissingError, RegistryNotCutOverError } from './aiModels/compatRemap';
+import { RegistryWriteError } from './aiModels/registryWriteErrors';
 
 const byok = (over: Partial<NonNullable<typeof reg.compat>> = {}) =>
   ({ id: CONFIG_ID, kind: 'anthropic_byok' as const, catalogEntryId: null, legacyDefaultModel: null, ...over });
@@ -494,7 +495,7 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
 
   // createConnection's insert can fail with a DrizzleQueryError whose message
   // and params carry the key ciphertext and fingerprint: never surfaced.
-  it('maps a raw database failure inside the write (e.g. the connection insert) to a safe 500 that keeps only the SQLSTATE', async () => {
+  it('maps a raw unique violation inside the write (e.g. the connection insert) to a safe 409 that keeps only the SQLSTATE', async () => {
     const pgCause = Object.assign(new Error('duplicate key value violates unique constraint "partner_ai_connections_compat_uq"'), {
       code: '23505',
       detail: 'Key (api_key_encrypted)=(enc:v3:SECRET-CIPHERTEXT) already exists.',
@@ -509,7 +510,7 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     try {
       const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
       expect(error).toBeInstanceOf(PartnerLlmError);
-      expect(error).toMatchObject({ status: 500 });
+      expect(error).toMatchObject({ status: 409, message: 'The AI provider configuration changed. Reload and try again.' });
       expect((error.cause as { code?: unknown }).code).toBe('23505');
       const surfaces = [
         inspect(error, { showHidden: true, depth: 10 }),
@@ -536,6 +537,30 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     const cause = error.cause as Error & { code?: unknown };
     expect(cause.code).toBe('40P01');
     expect(cause.message).toContain('deadlock detected');
+    expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain('SECRET');
+  });
+
+  // BD-5 (#7602): createConnection throws an already-scrubbed RegistryWriteError
+  // (no query values). The facade still answers with a PartnerLlmError so the
+  // /ai/provider routes keep returning a mapped status, never the global 500.
+  it.each([
+    ['conflict', 409, 409],
+    ['stale_write', 409, 409],
+    ['invalid', 422, 500],
+    ['not_found', 404, 500],
+    ['write_failed', 500, 500],
+  ] as const)('maps a RegistryWriteError %s (%i) to a PartnerLlmError %i with a safe message', async (code, status, expected) => {
+    const scrubbedCause = Object.assign(new Error('AI model registry write failed: Error (SQLSTATE 23505)'), { code: '23505' });
+    const registryError = new RegistryWriteError('enc:v3:SECRET-CIPHERTEXT', code, status);
+    registryError.cause = scrubbedCause;
+    remap.connectCompat.mockRejectedValueOnce(registryError);
+    const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
+    expect(error).toBeInstanceOf(PartnerLlmError);
+    expect(error.status).toBe(expected);
+    expect(error.message).toBe(expected === 409
+      ? 'The AI provider configuration changed. Reload and try again.'
+      : 'Could not save the AI provider configuration.');
+    expect(error.cause).toBe(scrubbedCause);
     expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain('SECRET');
   });
 
