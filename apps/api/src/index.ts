@@ -178,6 +178,7 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
+import { reconcileAllPartnersFromLegacy } from './services/aiModels/legacyReconcile';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
@@ -1854,6 +1855,25 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored settings secrets failed:', err);
       captureException(err, undefined, { area: 'settings_secret_backfill' });
+    });
+
+  // AI model registry W02 (#7600): keep the registry a projection of the legacy
+  // AI config (connections, offerings, assignments, agent/session bindings).
+  // Detached: nothing in W02 routes on it, and GET /ai/provider reads only
+  // connection rows, which the migration and the facade keep exact. Env changes
+  // need a restart, so a per-boot sweep tracks ANTHROPIC_MODEL-style defaults.
+  // W03 (Task 6A) deletes this block: each partner is projected exactly once,
+  // durably, at its cutover (gated in resolveModel, plus a leased sweep after serve()).
+  void reconcileAllPartnersFromLegacy()
+    .then((result) => {
+      console.log(`[startup] AI model registry reconciled for ${result.partners} partner(s); ${result.failures.length} failed`);
+      for (const failure of result.failures) {
+        captureException(new Error(failure.error), undefined, { area: 'ai_model_registry_reconcile', partnerId: failure.partnerId });
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] AI model registry reconcile failed:', err);
+      captureException(err, undefined, { area: 'ai_model_registry_reconcile' });
     });
 
   // Storage keys that S3 backup destinations used before backups were written
