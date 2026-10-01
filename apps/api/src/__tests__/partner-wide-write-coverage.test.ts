@@ -271,6 +271,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offerings.ts': 'enableOffering is reached from offeringWrites.ts (gated at routes/aiModels/offerings.ts: BILLING_MANAGE + canManagePartnerWidePolicies) and the W02/W03 projection. Partner-axis only, every write pinned to input.partnerId',
   'services/aiModels/assignmentWrites.ts': 'partner rows gated at routes/aiModels/assignments.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); org rows are org-scoped overrides gated at routes/aiModels/orgAssignments.ts (ORGS_WRITE + canAccessOrg + MFA) and can never write a partner row (org_id set, offering_partner_id from the org)',
   'services/aiModels/offeringWrites.ts': 'gated at routes/aiModels/offerings.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis only, every write pinned to input.partnerId from auth',
+  'services/aiModels/connectionSettings.ts': 'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
   'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',

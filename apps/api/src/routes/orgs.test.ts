@@ -1323,6 +1323,39 @@ describe('org routes', () => {
         expect(getCaptured().settings.security.ipAllowlist).toEqual([]);
         expect(clearPartnerAllowlistCache).toHaveBeenCalledWith('partner-1');
       });
+
+      // settings.ai has one home: /ai/models/residency (W04 #7602). The system
+      // wholesale write can neither erase nor set it.
+      it('keeps the stored settings.ai when the incoming settings omit it', async () => {
+        mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { branding: { primaryColor: '#ff0000' } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
+        expect(getCaptured().settings.branding).toEqual({ primaryColor: '#ff0000' });
+      });
+
+      it('ignores an incoming settings.ai', async () => {
+        mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { ai: { residencyRequired: false } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
+      });
+
+      it('cannot create settings.ai when none is stored', async () => {
+        mockCurrentPartnerSelect({});
+        const getCaptured = mockUpdateCapture();
+
+        const res = await patchPartner({ settings: { ai: { residencyRequired: true } } });
+
+        expect(res.status).toBe(200);
+        expect(getCaptured().settings).not.toHaveProperty('ai');
+      });
     });
 
     // SR2-05: the system-scoped wholesale settings write is a THIRD write path
@@ -1694,6 +1727,17 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       expect(getCaptured().settings.security.ipAllowlist).toEqual(['203.0.113.0/24']);
       expect(getCaptured().settings.ticketing.inbound.enabled).toBe(true);
+    });
+
+    it('cannot write settings.ai — residency has one home (/ai/models/residency)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ai: { residencyRequired: true } });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ai: { residencyRequired: false } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ai).toEqual({ residencyRequired: true });
     });
 
     // defaultTriageOrgId write-time validation: the PATCH must reject (400) an id
