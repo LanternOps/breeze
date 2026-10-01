@@ -1269,9 +1269,16 @@ jobs:
       # covers dev dependencies too.
       #
       # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
-      # HIGH advisory blocks PRs until patched or an exception is recorded.
+      # HIGH advisory blocks PRs until patched or until a reviewed, expiring
+      # entry is added to scripts/security/npm-audit-exceptions.json (the bar
+      # and the enforced rules are in that file's header).
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
+
+      # The exceptions logic is tested first, deliberately: a regression in it
+      # could suppress a real advisory and still read as a passing audit.
+      - name: Test npm-audit exceptions logic
+        run: pnpm test:npm-audit-exceptions
 
       - name: Run dependency audit (high+critical gate)
         run: bash scripts/security/check-npm-audit.sh
