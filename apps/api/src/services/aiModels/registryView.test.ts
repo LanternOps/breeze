@@ -222,9 +222,34 @@ describe('buildPartnerModelsSnapshot', () => {
   });
 
   it('marks prices editable only for discovered/manual offerings', async () => {
+    h.connections = [conn({ id: C, kind: 'anthropic_byok' })];
     setOfferings([offering({ id: A, source: 'platform' }), offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null })]);
     const s = await buildPartnerModelsSnapshot(P);
     expect(s.offerings.map((o) => [o.id, o.pricesEditable])).toEqual([[A, false], [B, true]]);
+  });
+
+  describe('W03 soft-disconnect: a disconnected connection and its offerings are never listed', () => {
+    const GONE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+    it('drops a disconnected connection even if the live-only reader ever returned one (type-narrowed)', async () => {
+      h.connections = [conn({ id: GONE, kind: 'anthropic_byok', status: 'disconnected', keyLast4: null }), conn({ id: C, kind: 'anthropic_byok' })];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.map((c) => c.id)).toEqual([null, C]);
+      expect(s.connections.map((c) => c.status)).not.toContain('disconnected');
+    });
+
+    it('omits offerings whose connection is not live (Models card, defaults pickers and defaultFor read this list)', async () => {
+      h.connections = [conn({ id: C, kind: 'anthropic_byok' })];
+      setOfferings([
+        offering({ id: A }),
+        offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }),
+        offering({ id: GONE, source: 'discovered', connectionId: GONE, platformModelId: null, enabled: false }),
+      ]);
+      h.allRows = [{ surface: 'chat', orgId: 'o1', defaultOfferingId: GONE }];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.offerings.map((o) => o.id)).toEqual([A, B]);
+      expect(s.offerings.flatMap((o) => o.defaultFor)).toEqual([]);
+    });
   });
 
   it('includes the catalog only when the catalog flag is on', async () => {
@@ -258,6 +283,12 @@ describe('buildOrgModelDefaults', () => {
 
   it('lists only enabled offerings as choices', async () => {
     setOfferings([offering({ id: A, enabled: true }), offering({ id: B, enabled: false })]);
+    const d = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
+    expect(d.offerings.map((o) => o.id)).toEqual([A]);
+  });
+
+  it('never offers a disconnected connection’s offering (W03 disables them all on disconnect)', async () => {
+    setOfferings([offering({ id: A, enabled: true }), offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null, enabled: false })]);
     const d = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
     expect(d.offerings.map((o) => o.id)).toEqual([A]);
   });

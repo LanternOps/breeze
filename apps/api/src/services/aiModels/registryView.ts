@@ -38,7 +38,7 @@ import {
 } from './candidateLoader';
 import { enableBlockerFor, type EnableEligibilityContext } from './eligibility';
 import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from './platformModels';
-import { listConnections } from './connections';
+import { listConnections, type PartnerAiConnection } from './connections';
 import { listOfferings, type Offering } from './offerings';
 import { listAssignmentRows } from './assignmentRows';
 import { mergeEffectiveAssignment } from './assignments';
@@ -160,6 +160,17 @@ function unionGeos(offerings: AiOfferingDto[], connectionId: string | null): str
   return [...new Set(offerings.filter((o) => o.connectionId === connectionId).flatMap((o) => o.optionSupport.inferenceGeo))].sort();
 }
 
+type LiveConnection = PartnerAiConnection & { status: Exclude<PartnerAiConnection['status'], 'disconnected'> };
+
+/**
+ * W03 soft-disconnect: a disconnected connection is ledger provenance only.
+ * listConnections already excludes it; this guard keeps the DTO's status union
+ * honest if a reader ever returns one.
+ */
+function isLiveConnection(c: PartnerAiConnection): c is LiveConnection {
+  return c.status !== 'disconnected';
+}
+
 /** Callers pass only role-'default' rows; a role outside the shared list is a programming error, never a DTO. */
 function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
   const role = AI_ASSIGNMENT_WRITE_ROLES.find((known) => known === r.role);
@@ -179,7 +190,7 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
   const facts = await loadPartnerFacts(partnerId);
   const hosted = isHosted();
   const ctx: EnableEligibilityContext = { partnerId, partnerPlan: facts.plan, hosted };
-  const [connections, offerings, platformModels, partnerRows, allRows, platformGeo] = await Promise.all([
+  const [listedConnections, listedOfferings, platformModels, partnerRows, allRows, platformGeo] = await Promise.all([
     listConnections(partnerId),
     listOfferings(partnerId),
     listPlatformModels(),
@@ -194,6 +205,11 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
       .where(eq(aiModelAssignments.offeringPartnerId, partnerId)),
     getPlatformInferenceGeo(),
   ]);
+  const connections = listedConnections.filter(isLiveConnection);
+  // A disconnected connection's offerings stay as provenance (W03) but are
+  // never shown: not in the Models card, the defaults pickers or defaultFor.
+  const liveConnectionIds = new Set(connections.map((c) => c.id));
+  const offerings = listedOfferings.filter((o) => o.connectionId === null || liveConnectionIds.has(o.connectionId));
 
   const offeringDtos: AiOfferingDto[] = [];
   for (const o of offerings) {
