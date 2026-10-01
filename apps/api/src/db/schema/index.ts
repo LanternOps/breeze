@@ -192,3 +192,4 @@ export * from './backupStorageSessions';
 export * from './backupStorageCredentialHistory';
 export * from './backupSnapshotAttestations';
 export * from './devicePoolAssignmentEvents';
+export * from './aiModelRegistry';

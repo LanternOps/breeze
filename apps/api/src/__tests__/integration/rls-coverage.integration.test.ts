@@ -319,6 +319,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // stripeConnectCredentialsRls.integration.test.ts.
   ['stripe_connect_credentials', 'partner_id'],
   ['partner_llm_configs', 'partner_id'],
+  // AI model registry W02 (#7600): partner_ai_connections — partner axis like
+  // partner_llm_configs (rows copied with the same id); no org_id, so no
+  // org-cascade / export-policy entry. No org-token read branch by design.
+  ['partner_ai_connections', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
