@@ -1,6 +1,6 @@
 ---
 title: AI model registry — discovered models, admin enablement, per-chat model + effort, BYO providers
-status: draft v3 (Codex xhigh quorum §16 + extension hooks: refusals, chargeback, residency, options, roles/failover, permission/plan gates, cloud connections, prompt profiles, quality view; awaiting Todd decisions §15)
+status: draft v3 (Codex xhigh quorum §16 + extension hooks: refusals, chargeback, residency, options, roles/failover, permission/plan gates, cloud connections, prompt profiles, quality view; decisions §15 approved 2026-09-30)
 date: 2026-09-30
 issues: "#7570 (multiple models/providers), #7120 (BYO OpenAI-compatible), #6772 (tool calling on OpenAI-compatible), #7587 (interim — W0)"
 ---
@@ -44,9 +44,9 @@ The consequences:
 10. **Extensible without migrations.** The schema already has slots for model options (effort, thinking display, speed), per-surface roles (escalation), ordered fallbacks (failover), and per-model permission / plan gates. Later waves fill them in.
 
 ### Non-goals (v1 runtime; schema hooks exist, behaviour lands in later waves)
-- Automatic multi-provider failover (W7; columns in §5.4).
-- Escalation chains inside one agent run (W7; `role` in §5.4).
-- Invoicing AI usage to client orgs (W8; ledger fields in §5.5).
+- Automatic multi-provider failover (W09; columns in §5.4).
+- Escalation chains inside one agent run (W09; `role` in §5.4).
+- Invoicing AI usage to client orgs (W10; ledger fields in §5.5).
 - Embeddings and images.
 
 ## 3. Current state to build on (origin/main c1c8fee46f)
@@ -71,14 +71,14 @@ The consequences:
 
 - **Connection.** How models are reached. It fixes the **destination**, the **funding source** and the **inference geography**.
   - `platform` is implicit: the deployment's key, funded by platform credits on hosted.
-  - `anthropic_byok`, `catalog` and `openai_compatible` are rows, funded by the partner's key. `bedrock`, `vertex` and `foundry` connections (Claude on the MSP's own AWS / GCP / Azure commitment) are W5b; `kind` is a CHECK'd text column, so adding them needs no table change.
+  - `anthropic_byok`, `catalog` and `openai_compatible` are rows, funded by the partner's key. `bedrock`, `vertex` and `foundry` connections (Claude on the MSP's own AWS / GCP / Azure commitment) are W07; `kind` is a CHECK'd text column, so adding them needs no table change.
 - **Options.** One typed set of per-call knobs, `OfferingOptions` (shared zod schema):
   - `effort`;
   - `thinkingDisplay` (`omitted` | `summarized` | `updates`);
   - `speed` (`standard` | `fast`).
 
   A model supports only some of these, and an option variant can carry its own rate (fast mode). New knobs extend the schema, not the table.
-- **Role.** A sub-slot of a surface: `default` for every surface. `triage` / `analysis` / `remediation` for `ai_agents` (W7 escalation).
+- **Role.** A sub-slot of a surface: `default` for every surface. `triage` / `analysis` / `remediation` for `ai_agents` (W09 escalation).
 - **Offering.** A model a partner can use through one connection. It carries enabled state and defaults.
 - **Surface.** A feature that calls a model: `chat`, `helper`, `script_builder`, `script_reviewer`, `office_chat`, `office_ticket`, `ai_agents`, `catalog_enrichment`, `extension_content`, `patch_test`. Ticket draft and topology inherit their chat session's offering.
 - **Assignment.** For one surface: the default offering and effort, the **permitted** offerings, and whether users may choose among them. It is set at partner level, and an org may override it tighten-only.
@@ -111,9 +111,9 @@ It is seeded by migration from today's `MODEL_PRICING` rows (priced, `platform_o
 
 ### 5.2 `partner_ai_connections` — shape 3 (partner axis)
 It generalizes `partner_llm_configs`. Columns:
-- `id`, `partner_id`, `kind` (`anthropic_byok` | `catalog` | `openai_compatible`; W5b adds `bedrock` | `vertex` | `foundry`), `name`;
-- `inference_geo` text NULL. Sent as Anthropic's top-level `inference_geo` where the model supports it; for W5b cloud kinds it is the provider region. NULL = provider default;
-- `provider_config` jsonb NULL. Non-secret per-kind settings (region, project id, resource name) for W5b kinds. Export: `excludedOpen`;
+- `id`, `partner_id`, `kind` (`anthropic_byok` | `catalog` | `openai_compatible`; W07 adds `bedrock` | `vertex` | `foundry`), `name`;
+- `inference_geo` text NULL. Sent as Anthropic's top-level `inference_geo` where the model supports it; for W07 cloud kinds it is the provider region. NULL = provider default;
+- `provider_config` jsonb NULL. Non-secret per-kind settings (region, project id, resource name) for W07 kinds. Export: `excludedOpen`;
 - `api_key_encrypted`, `key_last4`, `key_fingerprint`;
 - `catalog_entry_id`, `base_url` (openai_compatible only);
 - `status`, `last_error`, `verified_at`, `config_version`, `connected_by`;
@@ -164,11 +164,11 @@ Uniqueness:
 | `id`, `org_id` NULL, `partner_id` NULL | `_one_owner_chk` |
 | `offering_partner_id` NOT NULL | The partner that owns the referenced offerings. Denormalized for enforcement |
 | `surface` | CHECK against §4 |
-| `role` text NOT NULL default `'default'` | CHECK per surface (§4). v1 resolves only `default`; W7 escalation reads the agent roles |
+| `role` text NOT NULL default `'default'` | CHECK per surface (§4). v1 resolves only `default`; W09 escalation reads the agent roles |
 | `default_offering_id` NULL | **Composite FK `(default_offering_id, offering_partner_id) → partner_ai_models(id, partner_id)`**. NULL on an org row = inherit |
 | `options` jsonb NULL | `OfferingOptions` for this surface (e.g. effort `low` for catalog enrichment). NULL = inherit |
-| `fallback_offering_ids` uuid[] NULL | **Ordered failover list (W7)**. Same ownership trigger as `permitted_offering_ids`. Stored and validated in v1 but **not acted on until W7** |
-| `fallback_may_cross_funding` bool default false | W7. Failover may move from the platform key to a partner key (or back) only when this is explicitly true |
+| `fallback_offering_ids` uuid[] NULL | **Ordered failover list (W09)**. Same ownership trigger as `permitted_offering_ids`. Stored and validated in v1 but **not acted on until W09** |
+| `fallback_may_cross_funding` bool default false | W09. Failover may move from the platform key to a partner key (or back) only when this is explicitly true |
 | `permitted_offering_ids` uuid[] NULL | NULL = all enabled offerings (partner row) or inherit (org row). A trigger asserts every id belongs to `offering_partner_id` (arrays can't carry FKs). The resolver re-filters to enabled rows at use |
 | `allow_user_choice` bool NULL | NULL on an org row = inherit |
 
@@ -199,7 +199,7 @@ One immutable row per model call or turn, from **every** surface, including sess
 
 Columns:
 - `id`, `org_id`, `surface`, `role`;
-- `user_id` NULL: the tech who initiated it. NULL for system and agent runs. Needed for per-tech showback (W8);
+- `user_id` NULL: the tech who initiated it. NULL for system and agent runs. Needed for per-tech showback (W10);
 - `session_id` / `agent_run_id` / `source_ref` NULL;
 - `offering_id`, `connection_id` NULL, `funding_source` (`platform` | `partner_key`);
 - `requested_model`, `served_model`. They differ when a refusal fallback served the turn;
@@ -207,7 +207,7 @@ Columns:
 - `stop_reason` (`end_turn` | `tool_use` | `max_tokens` | `refusal` | `error` | …), `refusal_category` NULL, `fallback_used` bool;
 - `catalog_revision_id` NULL, `connection_config_version` NULL;
 - `input/output/cache_read/cache_write_tokens`, `rate_snapshot` jsonb, `cost_cents`;
-- `chargeable` bool: a **snapshot** of whether the partner's chargeback policy (W8) treats this as billable to the org. Default false until W8;
+- `chargeable` bool: a **snapshot** of whether the partner's chargeback policy (W10) treats this as billable to the org. Default false until W10;
 - `sdk_reported_cost_usd` (telemetry only), `created_at`.
 
 A refused turn that fell back is priced by the **served** model's rate (from the registry; fallback eligibility guarantees it is priced). The declined attempt is priced per Anthropic's refusal billing.
@@ -216,11 +216,11 @@ It is append-only (REVOKE UPDATE/DELETE + an immutability trigger). Registration
 - cascade and `AUDIT_ADMIN_REQUIRED_TABLES` (append-only);
 - export policy (`rate_snapshot`, `options_sent` → `excludedOpen`);
 - merge `repoint`;
-- retention by the existing AI-usage retention job. Chargeback (W8) aggregates **before** retention trims rows; it never mutates them.
+- retention by the existing AI-usage retention job. Chargeback (W10) aggregates **before** retention trims rows; it never mutates them.
 
 `ai_sessions` totals and the `ai_cost_usage` rollups become **derived from** invocations, not written independently.
 
-**Quality link**: session flags (`ai_sessions.flagged_at` / `flagged_by`) and the flagged-chat review outcomes are joinable to invocations through `session_id`, giving refusal rate, flag rate and cost per offering. W9 builds the comparison view; no extra columns are needed now.
+**Quality link**: session flags (`ai_sessions.flagged_at` / `flagged_by`) and the flagged-chat review outcomes are joinable to invocations through `session_id`, giving refusal rate, flag rate and cost per offering. W11 builds the comparison view; no extra columns are needed now.
 
 ### 5.6 Existing tables
 - **`ai_sessions`**:
@@ -230,7 +230,7 @@ It is append-only (REVOKE UPDATE/DELETE + an immutability trigger). Registration
   - Export policy: add the new columns.
 - **AI agent policies' `model`** → `offering_id` + `offering_partner_id` with the same composite-FK pattern. Explicit policy models are checked against the `ai_agents` assignment's effective permitted set at write **and** at run (quorum #11).
 - **`ai_script_policies.reviewer_model`** → the `script_reviewer` assignment.
-- **`ai_budgets.allowed_models`** → replaced by the `ai_agents` assignment's `permitted_offering_ids` (backfilled from it), then dropped in W6.
+- **`ai_budgets.allowed_models`** → replaced by the `ai_agents` assignment's `permitted_offering_ids` (backfilled from it), then dropped in W08.
 
 ## 6. Discovery
 
@@ -240,7 +240,7 @@ The BullMQ job `ai-model-discovery` runs per connection on create/rotate and on 
   - On the platform key, new ids land unpriced with `platform_offered=false`, and the operator is notified.
   - On BYOK, new ids land as offerings, **disabled**, linked to a platform row when the ids match.
 - **Catalog**: offerings are mirrored from the active revision's `model_map` keys, and only mapped **and** verified models appear. `model_map` keys become `ai_platform_models.model_id` values (replacing `OFFERABLE_AI_MODELS` validation).
-- **OpenAI-compatible** (W5): `GET {base_url}/models` through the egress guard. Rows land with capabilities `unknown` until the fidelity harness verifies them. Manual entry is always allowed.
+- **OpenAI-compatible** (W06): `GET {base_url}/models` through the egress guard. Rows land with capabilities `unknown` until the fidelity harness verifies them. Manual entry is always allowed.
 - **Lifecycle**: a model absent from 3 consecutive successful syncs is `missing`; absent for 14 days it is `retired`. A failed sync never changes lifecycle.
 - **Discovery never enables anything, never changes an assignment, and never deletes rows.**
 
@@ -258,12 +258,12 @@ The Models API capability leaves used are `thinking.types.{adaptive,enabled}.sup
 - **Catalog and BYO endpoints send a parameter only if the fidelity harness verified it** for that revision or connection. The harness gains an adaptive + effort probe and moves to `max_tokens ≥ 2048`, because manual thinking needs ≥1024 and today's harness uses 512.
 - **Option resolution** (each `OfferingOptions` key independently): request → effective assignment `options` → offering `default_options` → provider default (the param is omitted). The result is clamped to `allowed_options ∩ model support`. If that intersection is empty at runtime (a model's capabilities changed), the param is omitted and a warning is logged. Writes can never create an empty intersection.
   - `effort` → `output_config.effort`.
-  - `thinkingDisplay` → `thinking.display`. `updates` (beta `thinking-display-updates-2026-08-18`; Fable 5.1, Opus 5.5, Sonnet 5.5) streams short progress notes while the model thinks. **It is the chat default where supported**, so a thinking model never looks frozen. That holds only if the Agent SDK passes it through; W1 verifies this, and if it can't, the chat shows a "thinking…" indicator.
+  - `thinkingDisplay` → `thinking.display`. `updates` (beta `thinking-display-updates-2026-08-18`; Fable 5.1, Opus 5.5, Sonnet 5.5) streams short progress notes while the model thinks. **It is the chat default where supported**, so a thinking model never looks frozen. That holds only if the Agent SDK passes it through; W01 verifies this, and if it can't, the chat shows a "thinking…" indicator.
   - `speed: fast` → `speed: 'fast'` + beta `fast-mode-2026-02-01`. Only on models whose `option_support.speed.fast` is set (Opus 5.5 / 5 / 4.8, Claude API only). Priced from `option_rates["speed:fast"]`. A 429 on fast falls back to standard and records `options_sent` accordingly.
-- **Inference geography**: the connection's `inference_geo`, else the platform setting, is sent only where `option_support.inferenceGeo` includes the value. If the partner **requires** residency (`partners.settings.ai.residencyRequired`), offerings that can't honour it are ineligible (§9), never silently sent elsewhere. The supported values must be confirmed against the live API before W2b.
+- **Inference geography**: the connection's `inference_geo`, else the platform setting, is sent only where `option_support.inferenceGeo` includes the value. If the partner **requires** residency (`partners.settings.ai.residencyRequired`), offerings that can't honour it are ineligible (§9), never silently sent elsewhere. The supported values must be confirmed against the live API before W03.
 - **`max_tokens`** per call is validated against the model's `max_output_tokens`.
 - **Tool-requiring surfaces**: `chat`, `helper`, `script_builder`, `ai_agents`, `office_chat`. An offering without verified tool support can't be assigned or permitted for them.
-- **Prompt profile**: `resolveModel` returns the model's `prompt_profile`. System-prompt builders may branch on it: frontier models (Opus 5.5 / Fable) do worse with heavily prescriptive prompts, and small models need terser tool guidance. v1 ships one prompt per surface plus the hook. Per-profile prompt tuning is W9, measured with the quality view.
+- **Prompt profile**: `resolveModel` returns the model's `prompt_profile`. System-prompt builders may branch on it: frontier models (Opus 5.5 / Fable) do worse with heavily prescriptive prompts, and small models need terser tool guidance. v1 ships one prompt per surface plus the hook. Per-profile prompt tuning is W11, measured with the quality view.
 - **Agent SDK**: #7587 established `query({ thinking, effort })`. This module owns the mapping of every option onto SDK/API params afterwards.
 
 ## 8. Pricing, funding and billing (quorum #4, #5)
@@ -281,8 +281,8 @@ The Models API capability leaves used are `thinking.types.{adaptive,enabled}.sup
 - **Option rates**: an option variant with its own rate (fast mode) is priced from `option_rates`. A variant with no rate is not selectable.
 - **Refusals**: a turn served by a refusal fallback is priced at the **served** model's rate. The fallback offering must itself be eligible and priced (§5.3), so this is always defined.
 - **Hosted plan gate**: `ai_platform_models.min_plan` is compared with `partners.plan` at enable time **and** at dispatch. A partner that downgrades loses access to the gated models at the next turn, through the §9.1 fallback.
-- **Chargeback (W8)**: Breeze's own costs stay as above. What an MSP charges its client is a **separate** partner-set price (cost-plus markup or a per-model client price list). It is applied in W8 by aggregating `ai_invocations` where `chargeable`, into invoice lines through the existing billing profiles. W8 decides the pricing model (§15 #6).
-- `MODEL_PRICING`, `OFFERABLE_AI_MODELS`, `DEFAULT_PRICING` and `isPricedModel` are deleted in W2b.
+- **Chargeback (W10)**: Breeze's own costs stay as above. What an MSP charges its client is a **separate** partner-set price (cost-plus markup or a per-model client price list). It is applied in W10 by aggregating `ai_invocations` where `chargeable`, into invoice lines through the existing billing profiles. W10 decides the pricing model (§15 #6).
+- `MODEL_PRICING`, `OFFERABLE_AI_MODELS`, `DEFAULT_PRICING` and `isPricedModel` are deleted in W03.
 
 ## 9. Resolution
 
@@ -315,7 +315,7 @@ When a stored choice (session, agent policy) is ineligible, the resolver tries *
 - chat shows "Model X is no longer available — choose another" with the picker;
 - an agent run ends `blocked: model_unavailable` and notifies the partner once per policy per day.
 
-Nothing ever crosses a connection or funding source implicitly. In W7, a configured `fallback_offering_ids` list replaces the single-candidate rule with an ordered walk under the same eligibility checks. It crosses funding only when `fallback_may_cross_funding` is set.
+Nothing ever crosses a connection or funding source implicitly. In W09, a configured `fallback_offering_ids` list replaces the single-candidate rule with an ordered walk under the same eligibility checks. It crosses funding only when `fallback_may_cross_funding` is set.
 
 ### 9.1a Refusals
 When a turn ends `stop_reason: refusal` (after any configured refusal fallback also declined), the ledger records the category. The user sees "The model declined this request (category: cyber)." It offers the other permitted offerings and links to the admin docs on configuring a refusal fallback. It is **never** a silent empty answer. An agent run ends `blocked: model_refused`, carrying the category in its outcome. The usage view reports the refusal rate per offering, so a partner can see when, say, security work needs a different model.
@@ -324,11 +324,11 @@ When a turn ends `stop_reason: refusal` (after any configured refusal fallback a
 - **Claiming a turn** binds offering, effort, rate snapshot and reservation **atomically** (the same transaction as the turn claim).
 - **A live SDK query is reused** only if the connection id, `config_version`, catalog revision and wire model are all unchanged. Otherwise the query is recreated.
 - **Switching** is allowed within the same connection **and** the same `config_version` and revision, and only when the transcript fits the target model's context window. A cross-connection switch starts a continuation session seeded with a summary.
-- **W4 opens with a spike.** It must verify Agent SDK `resume` across models with persisted tool and thinking histories, and with a smaller target context. Preserved-thinking prefix binding means blocks from another model are dropped, not replayed. If resume is unsafe, same-connection switching also becomes a continuation.
+- **W05 opens with a spike.** It must verify Agent SDK `resume` across models with persisted tool and thinking histories, and with a smaller target context. Preserved-thinking prefix binding means blocks from another model are dropped, not replayed. If resume is unsafe, same-connection switching also becomes a continuation.
 
 ## 10. Migration and backfill (quorum #3)
 
-W2a backfills **every surface for every partner** from its **current effective behaviour**, preserving destination and funding source:
+W02 backfills **every surface for every partner** from its **current effective behaviour**, preserving destination and funding source:
 - **Partners with a `partner_llm_configs` row:**
   - A connection is created with the same id.
   - An offering is created for each model any surface currently resolves to: the partner default, agent policy models, `reviewer_model`, Office policy models, and the extension/env models where they run on the partner key.
@@ -337,7 +337,7 @@ W2a backfills **every surface for every partner** from its **current effective b
 - **Legacy ids** that match no platform row become `manual` offerings **on the same connection they run on today**. They never silently move to the platform key.
 - **Live sessions** get `offering_id` backfilled from `model` + their session's funding source.
 - **Parity test**: for a fixture of every existing config shape, `resolveModel` returns the same destination, funding source and wire model that the legacy code path returns.
-- **Compatibility**: `/ai/provider` (GET/PATCH/POST key/endpoint) keeps working **against the new store** until W3 replaces the UI.
+- **Compatibility**: `/ai/provider` (GET/PATCH/POST key/endpoint) keeps working **against the new store** until W04 replaces the UI.
 
 ## 11. UI and settings homes
 
@@ -348,7 +348,7 @@ These follow the settings rules (2026-09-17 audit).
 | Connections (incl. inference geo) | Partner Settings → **AI Providers & Models** (the renamed `#ai-provider` tab), "Connections" card | partner | row drawer Save |
 | Residency requirement | Same tab, "Connections" card header switch | partner | autosave + toast |
 | Offerings (enable, options, BYO price, required permission, refusal fallback, verify) | Same tab, "Models" table | partner | enable switch = autosave + toast; details = row drawer Save |
-| Assignments (default, permitted set, user choice, options; agent roles + fallbacks once W7 lands) | Same tab, "Defaults by feature" | partner | page Save |
+| Assignments (default, permitted set, user choice, options; agent roles + fallbacks once W09 lands) | Same tab, "Defaults by feature" | partner | page Save |
 | Assignment override (tighten-only; blank = inherit, showing the inherited value and its source) | Org Settings → `#ai`, "Model defaults" | org | page Save |
 | Platform models, prices + option rates, option support, `min_plan`, prompt profile, `platform_offered`, platform default, platform inference geo | `/admin/ai-models` (platform admin + MFA). The provider catalog page reads its model list from here | platform | row drawer Save |
 | AI usage by model / surface / tech / org, refusal rate (read-only) | The existing `/settings/ai-usage` page, extended from `ai_invocations` | partner (org filter) | n/a |
@@ -371,14 +371,14 @@ These follow the settings rules (2026-09-17 audit).
 
 - **Permissions.** Connections, offerings and partner assignments use the `/ai/provider` gate (`BILLING_MANAGE` + `canManagePartnerWidePolicies`). Org overrides use the org-settings permission. Every mutation is audited.
 - **Keys.** Encryption and row-bound AAD as today. Keys are never returned. They are excluded from export.
-- **BYO base URLs (W5).** All requests, including discovery, go through `guardedLlmFetch`:
+- **BYO base URLs (W06).** All requests, including discovery, go through `guardedLlmFetch`:
   - no private, link-local or metadata IPs; DNS pinning;
   - https only on hosted;
   - response-size limits;
   - error bodies scrubbed of key material;
   - calls recorded in `llm_egress_events`.
 
-  **W5 requires a security review.**
+  **W06 requires a security review.**
 - **RLS.**
   - `partner_ai_connections`: `PARTNER_TENANT_TABLES`.
   - `partner_ai_models`: `PARTNER_TENANT_TABLES` + the SELECT-only org-token branch.
@@ -388,39 +388,39 @@ These follow the settings rules (2026-09-17 audit).
   - **Forgery tests** cover every composite FK: cross-partner connection, offering, assignment, session and agent policy.
 - **Cost abuse.** This replaces the free-form session `model` input. Only eligible offerings are reachable, and they are re-checked at every dispatch. Fast mode and premium models can be gated by `required_permission` and `min_plan`.
 - **Residency.** When it is required, it fails closed: an offering that can't honour the geography is ineligible, and nothing falls back to a non-resident model.
-- **W5b cloud connections** (Bedrock / Vertex / Foundry) store cloud credentials under the same row-bound encryption. They get the same security review as W5.
+- **W07 cloud connections** (Bedrock / Vertex / Foundry) store cloud credentials under the same row-bound encryption. They get the same security review as W06.
 
 ## 13. Waves (revised per quorum #14)
 
 | Wave | Scope | Rigor |
 |---|---|---|
 | **W0 (#7587, in flight)** | Interim: Sonnet 5.5 default, adaptive thinking, new prices, validate session model | high |
-| **W1** | `ai_platform_models` + seed + Anthropic discovery (platform key) + `/admin/ai-models` (prices, option rates/support, `min_plan`, prompt profile); §7 derivation + `OfferingOptions` schema (deletes the interim resolver); harness adaptive/effort probe; verify the SDK passes `thinking.display: updates`, `speed` and `inference_geo` | high |
-| **W2a** | Schema + backfill + compatibility: connections (id-preserving, AAD, `inference_geo`, `provider_config`), offerings (options, `required_permission`, refusal fallback), assignments (every surface, `role`, `options`, fallback columns), `ai_invocations` (user, served model, refusal, options, chargeable); `/ai/provider` on the new store; **no routing change** (parity tests) | high (tenancy, secrets) |
-| **W2b** | Cutover: `resolveModel` on all surfaces (agents wire translation, patch runner); per-offering funding through admission → settlement; one cost function incl. option + fallback rates; permission / plan / residency eligibility; refusal handling (§9.1a); prompt-profile hook; delete the hard-coded lists; BYOK discovery | high (billing) |
-| **W3** | Settings UI: partner tab (connections, residency, models, defaults) + org override card; AI-usage page by model / surface / tech / refusal rate; replace PolicyEditor list + reviewer field | medium |
-| **W4** | SDK-resume spike → turn-claim binding, chat picker with option controls + thinking progress, same-connection switching / continuation, agent policy picker | medium→high if the spike finds resume issues |
-| **W5** | `openai_compatible` per partner: guarded discovery, manual entry, harness verification, tool calling (absorbs #6772, closes #7120) | high + security review |
-| **W5b** | `bedrock` / `vertex` / `foundry` connections via the Agent SDK's provider modes: provider config, regional inference, discovery where the provider lists models, harness verification | high + security review |
-| **W6** | Drop `partner_llm_configs`, `ai_budgets.allowed_models`, legacy cost paths; docs | low |
-| **W7** | Failover (`fallback_offering_ids` walk, `fallback_may_cross_funding`) + agent escalation roles (triage → analysis → remediation, #7570) | high (funding) |
-| **W8** | Chargeback: partner client pricing (markup or price list), `chargeable` policy, monthly aggregation into invoice lines via billing profiles, per-client AI usage report | high (billing) |
-| **W9** | Model quality view (cost, refusal rate, flag rate, turns-to-resolution per offering) + per-prompt-profile prompt tuning measured against it | medium |
+| **W01** | `ai_platform_models` + seed + Anthropic discovery (platform key) + `/admin/ai-models` (prices, option rates/support, `min_plan`, prompt profile); §7 derivation + `OfferingOptions` schema (deletes the interim resolver); harness adaptive/effort probe; verify the SDK passes `thinking.display: updates`, `speed` and `inference_geo` | high |
+| **W02** | Schema + backfill + compatibility: connections (id-preserving, AAD, `inference_geo`, `provider_config`), offerings (options, `required_permission`, refusal fallback), assignments (every surface, `role`, `options`, fallback columns), `ai_invocations` (user, served model, refusal, options, chargeable); `/ai/provider` on the new store; **no routing change** (parity tests) | high (tenancy, secrets) |
+| **W03** | Cutover: `resolveModel` on all surfaces (agents wire translation, patch runner); per-offering funding through admission → settlement; one cost function incl. option + fallback rates; permission / plan / residency eligibility; refusal handling (§9.1a); prompt-profile hook; delete the hard-coded lists; BYOK discovery | high (billing) |
+| **W04** | Settings UI: partner tab (connections, residency, models, defaults) + org override card; AI-usage page by model / surface / tech / refusal rate; replace PolicyEditor list + reviewer field | medium |
+| **W05** | SDK-resume spike → turn-claim binding, chat picker with option controls + thinking progress, same-connection switching / continuation, agent policy picker | medium→high if the spike finds resume issues |
+| **W06** | `openai_compatible` per partner: guarded discovery, manual entry, harness verification, tool calling (absorbs #6772, closes #7120) | high + security review |
+| **W07** | `bedrock` / `vertex` / `foundry` connections via the Agent SDK's provider modes: provider config, regional inference, discovery where the provider lists models, harness verification | high + security review |
+| **W08** | Drop `partner_llm_configs`, `ai_budgets.allowed_models`, legacy cost paths; docs | low |
+| **W09** | Failover (`fallback_offering_ids` walk, `fallback_may_cross_funding`) + agent escalation roles (triage → analysis → remediation, #7570) | high (funding) |
+| **W10** | Chargeback: partner client pricing (markup or price list), `chargeable` policy, monthly aggregation into invoice lines via billing profiles, per-client AI usage report | high (billing) |
+| **W11** | Model quality view (cost, refusal rate, flag rate, turns-to-resolution per offering) + per-prompt-profile prompt tuning measured against it | medium |
 
 ## 14. Still out of scope
 
 - `fallbacks: "default"` (Anthropic auto-routed refusal fallback). It could serve a model we haven't priced, so only the explicit-model form is used.
-- Automatic, model-chosen escalation **within** one chat turn. W7 escalation is policy-driven per agent stage.
+- Automatic, model-chosen escalation **within** one chat turn. W09 escalation is policy-driven per agent stage.
 - Non-chat modalities.
 
-## 15. Decisions needed (Todd)
+## 15. Decisions (approved by Todd 2026-09-30 — all recommendations accepted)
 
 1. **Premium models on the platform key (hosted).** Credits burn 2–5× faster than Sonnet 5.5. **Recommend** gating only by `platform_offered` + price, with the rate shown at enable time. Plan-gating can come later as a column.
 2. **Who picks per chat.** **Recommend** techs choose among the permitted offerings by default, with `allow_user_choice=false` locking a surface (partner or org).
 3. **A new Anthropic model on hosted.** **Recommend** a manual operator step (set price → offer): one click, and never billed at a guessed rate.
 4. **Cross-connection switch mid-chat.** **Recommend** a continuation session with a summary.
-5. **EU residency default.** **Recommend** the EU deployment sets the platform inference geo to EU **if** Anthropic offers an EU value for the offered models (verify in W1). Partners there can then turn on "residency required".
-6. **Chargeback pricing model (W8).** Cost-plus markup per partner vs. a per-model client price list vs. both. **Recommend** deciding at W8 planning with partner input. The ledger supports either.
+5. **EU residency default.** **Recommend** the EU deployment sets the platform inference geo to EU **if** Anthropic offers an EU value for the offered models (verify in W01). Partners there can then turn on "residency required".
+6. **Chargeback pricing model (W10).** Cost-plus markup per partner vs. a per-model client price list vs. both. **Recommend** deciding at W10 planning with partner input. The ledger supports either.
 7. **Fast mode on the platform key.** It costs 2× Opus rates. **Recommend** offering it only behind a `required_permission` the partner grants deliberately.
 
 ## 16. Advisor quorum (2026-09-30)
@@ -434,7 +434,7 @@ These follow the settings rules (2026-09-17 audit).
   - #3: full-surface backfill + parity.
   - #4: per-offering funding.
   - #5: one cost function.
-  - #6: `ai_invocations` in W2a.
+  - #6: `ai_invocations` in W02.
   - #7: live catalog-revision resolution, precedence fixed.
   - #8: atomic turn binding + resume spike.
   - #9: bounded fallback + recoverable unavailable.
@@ -442,7 +442,7 @@ These follow the settings rules (2026-09-17 audit).
   - #11: `permitted_offering_ids` + tighten-only merge.
   - #12: `repoint-dedupe`, org-token SELECT branch, system-table posture.
   - #13: id-preserving connection migration with the legacy `aadTag`.
-  - #14: W2 split into W2a/W2b.
+  - #14: W2 split into W02/W03.
 - **Divergence from Codex's suggestion**:
   - The permitted list is a `uuid[]` + ownership trigger, not a child table (it avoids a new join-policy shape). Membership is re-filtered at resolve.
   - Unpriced BYO offerings can't be enabled, rather than metering at a default rate.
@@ -456,6 +456,6 @@ These follow the settings rules (2026-09-17 audit).
 - generalized `OfferingOptions` (effort, thinking display, fast mode);
 - `(surface, role)` assignments + failover columns;
 - `required_permission` / `min_plan` gates;
-- W5b cloud connections, W7 failover/escalation, W8 chargeback, W9 quality.
+- W07 cloud connections, W09 failover/escalation, W10 chargeback, W11 quality.
 
-These are additive columns and waves on the quorum-reviewed structure, so none changes the tenancy, funding or migration contracts Codex reviewed. **A second Codex pass on the W2a schema is required during W2a planning.**
+These are additive columns and waves on the quorum-reviewed structure, so none changes the tenancy, funding or migration contracts Codex reviewed. **A second Codex pass on the W02 schema is required during W02 planning.**
