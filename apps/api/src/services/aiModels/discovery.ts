@@ -224,8 +224,9 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
             .where(inArray(aiPlatformModels.id, write.toNotify.map((row) => row.id))),
         'aiModels.markNotified'));
       } catch (error) {
-        console.warn('[aiModels] could not mark discovered models as notified; they will be re-alerted on the next sync:', error);
-        captureException(error instanceof Error ? error : new Error(String(error)));
+        const message = safeErrorMessage(error);
+        console.warn('[aiModels] could not mark discovered models as notified; they will be re-alerted on the next sync:', message);
+        captureException(new Error(`AI model discovery notify mark failed: ${message}`));
       }
     }
   }
@@ -233,7 +234,9 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
   try {
     await refreshPlatformModelSnapshot();
   } catch (error) {
-    console.warn('[aiModels] snapshot refresh after sync failed; the periodic refresher will retry:', error);
+    const message = safeErrorMessage(error);
+    console.warn('[aiModels] snapshot refresh after sync failed; the periodic refresher will retry:', message);
+    captureException(new Error(`AI platform model snapshot refresh after sync failed: ${message}`));
   }
 
   return {

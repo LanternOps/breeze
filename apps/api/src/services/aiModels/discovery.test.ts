@@ -34,6 +34,8 @@ import {
   discoverAnthropicModels,
   syncPlatformModels,
 } from './discovery';
+import { captureException } from '../sentry';
+import { refreshPlatformModelSnapshot } from './platformModels';
 
 const NOW = new Date('2026-11-20T06:38:00.000Z');
 const HOURS = 3_600_000;
@@ -116,6 +118,25 @@ describe('syncPlatformModels guards (no database touched)', () => {
     const report = await syncPlatformModels({ env: { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'https://api.anthropic.com/' }, discover });
     expect(discover).toHaveBeenCalledWith('k');
     expect(report).toEqual({ status: 'failed', error: 'network down' });
+  });
+
+  it('a failed snapshot refresh after a sync is warned and reported, scrubbed (review S9)', async () => {
+    withSystemDbAccessContextMock.mockResolvedValueOnce({
+      inserted: [], restored: [], markedMissing: [], retired: [], toNotify: [], defaultProblem: null,
+    });
+    vi.mocked(refreshPlatformModelSnapshot).mockRejectedValueOnce(
+      Object.assign(new Error('Failed query: select … params: snap-secret'), { params: ['snap-secret'] }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const discover = vi.fn().mockResolvedValue([{ id: 'model-a', displayName: 'A', maxInputTokens: null, maxOutputTokens: null, capabilities: null }]);
+    const report = await syncPlatformModels({ env: { ANTHROPIC_API_KEY: 'k' }, discover });
+    const logged = JSON.stringify(warn.mock.calls);
+    warn.mockRestore();
+    expect(report).toMatchObject({ status: 'ok' });
+    expect(logged).toContain('snapshot refresh');
+    expect(logged).not.toContain('snap-secret');
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(String((vi.mocked(captureException).mock.calls[0]![0] as Error).message)).not.toContain('snap-secret');
   });
 
   it('a failed listing changes nothing', async () => {
