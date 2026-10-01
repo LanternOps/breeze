@@ -550,20 +550,47 @@ fn start_ipc_driver() -> bool {
 }
 
 /// Build a reqwest::Client, optionally with mTLS identity.
+///
+/// Trusts the bundled public roots plus the OS trust store (#7550). reqwest
+/// fails the build if the OS store yields certificates but none parse; in that
+/// case fall back to the bundled roots alone (the pre-#7550 behavior) rather
+/// than taking Assist offline, and log why.
 fn build_client(cfg: &AgentConfigFull) -> Result<Client, String> {
-    let mut builder = Client::builder().use_rustls_tls();
+    let identity = match (&cfg.mtls_cert_pem, &cfg.mtls_key_pem) {
+        (Some(cert_pem), Some(key_pem)) => {
+            // reqwest Identity expects PEM with both cert and key concatenated.
+            let combined_pem = format!("{}\n{}", cert_pem, key_pem);
+            Some(
+                Identity::from_pem(combined_pem.as_bytes())
+                    .map_err(|e| format!("Failed to build mTLS identity: {}", e))?,
+            )
+        }
+        _ => None,
+    };
 
-    if let (Some(cert_pem), Some(key_pem)) = (&cfg.mtls_cert_pem, &cfg.mtls_key_pem) {
-        // reqwest Identity expects PEM with both cert and key concatenated.
-        let combined_pem = format!("{}\n{}", cert_pem, key_pem);
-        let identity = Identity::from_pem(combined_pem.as_bytes())
-            .map_err(|e| format!("Failed to build mTLS identity: {}", e))?;
-        builder = builder.identity(identity);
+    let builder = |native_roots: bool| {
+        let mut b = Client::builder()
+            .use_rustls_tls()
+            .tls_built_in_native_certs(native_roots);
+        if let Some(identity) = identity.clone() {
+            b = b.identity(identity);
+        }
+        b
+    };
+
+    match builder(true).build() {
+        Ok(client) => Ok(client),
+        Err(native_err) => {
+            log_helper_error(&format!(
+                "HTTP client build with OS trust store failed ({:?}); \
+                 falling back to bundled public roots only",
+                native_err
+            ));
+            builder(false)
+                .build()
+                .map_err(|e| format!("Failed to build HTTP client: {}", e))
+        }
     }
-
-    builder
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
 const GENERIC_CONNECT_ERROR: &str =
@@ -572,17 +599,30 @@ const CERTIFICATE_CONNECT_ERROR: &str =
     "Cannot connect to the Breeze server: its TLS certificate is not trusted on this computer. \
      If the server uses a private certificate authority, install that CA in the operating \
      system's trusted root certificate store.";
+const CLIENT_CERTIFICATE_REJECTED_ERROR: &str =
+    "Cannot connect to the Breeze server: the server rejected this computer's TLS client \
+     certificate. The Breeze agent may need to be re-enrolled.";
 
 /// User-facing message for a request that failed before a response arrived
-/// (#7550). TLS verification failures surface as connect errors whose
-/// innermost cause is a rustls error ("invalid peer certificate: UnknownIssuer",
-/// "received fatal alert: BadCertificate", ...) — name the certificate problem
-/// instead of blaming the network. The full chain is still logged by callers.
+/// (#7550). TLS failures surface as connect errors whose cause chain ends in a
+/// rustls error; name the certificate problem instead of blaming the network.
+/// The top-level error is skipped because its Display embeds the request URL.
+/// The full chain is still logged by callers.
 fn transport_error_message(err: &(dyn std::error::Error + 'static)) -> String {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    let mut current = err.source();
     while let Some(e) = current {
-        if e.to_string().to_ascii_lowercase().contains("certificate") {
+        let msg = e.to_string().to_ascii_lowercase();
+        // We rejected the server's certificate (UnknownIssuer, expired, name
+        // mismatch, ...).
+        if msg.contains("invalid peer certificate") {
             return CERTIFICATE_CONNECT_ERROR.to_string();
+        }
+        // The server rejected ours (mTLS): BadCertificate, CertificateRequired,
+        // CertificateExpired/Revoked, UnknownCA, ...
+        if msg.contains("received fatal alert")
+            && (msg.contains("certificate") || msg.contains("unknownca"))
+        {
+            return CLIENT_CERTIFICATE_REJECTED_ERROR.to_string();
         }
         current = e.source();
     }
@@ -1611,6 +1651,44 @@ mod tests {
             message.to_lowercase().contains("certificate"),
             "expected a certificate-specific message, got: {message}"
         );
+    }
+
+    // Review finding: the top-level reqwest error embeds the request URL, so a
+    // path like /certificates must not turn a network failure into a cert one.
+    #[test]
+    fn transport_error_ignores_certificate_word_in_request_url() {
+        let err = ChainErr {
+            msg: "error sending request for url (https://breeze.local/api/v1/certificates)",
+            source: Some(Box::new(ChainErr {
+                msg: "tcp connect error: Connection refused (os error 61)",
+                source: None,
+            })),
+        };
+        assert_eq!(transport_error_message(&err), GENERIC_CONNECT_ERROR);
+    }
+
+    // A fatal alert means the SERVER rejected our (mTLS) client certificate —
+    // telling the user to install a CA would send them to the wrong fix.
+    #[test]
+    fn transport_error_distinguishes_rejected_client_certificate() {
+        for alert in [
+            "received fatal alert: BadCertificate",
+            "received fatal alert: CertificateRequired",
+            "received fatal alert: UnknownCA",
+        ] {
+            let err = ChainErr {
+                msg: "error sending request for url (https://breeze.local/api/v1/x)",
+                source: Some(Box::new(ChainErr {
+                    msg: alert,
+                    source: None,
+                })),
+            };
+            assert_eq!(
+                transport_error_message(&err),
+                CLIENT_CERTIFICATE_REJECTED_ERROR,
+                "alert: {alert}"
+            );
+        }
     }
 
     #[test]
