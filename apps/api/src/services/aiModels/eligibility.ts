@@ -181,7 +181,7 @@ export function checkEnableEligibility(c: CandidateFacts, ctx: EnableEligibility
     case 'residency_unavailable':
       return reason;
     default:
-      if (onDisconnectedConnection(c)) return 'connection_unavailable';
+      if (reason === 'connection_unavailable' && onDisconnectedConnection(c)) return 'connection_unavailable';
       // Otherwise connection_unavailable can only come from a non-dispatchable
       // kind (openai_compatible before W06). Treat it as unavailable for enabling.
       return 'model_unavailable';
