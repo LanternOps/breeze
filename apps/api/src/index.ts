@@ -285,6 +285,7 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
+import { registerInvocationLedgerShadow } from './services/aiModels/invocationLedger';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -1777,6 +1778,9 @@ async function bootstrap(): Promise<void> {
   // token-price fallback). Not awaited; until the first load lands, those
   // paths use the W00 bootstrap rules.
   startPlatformModelSnapshotRefresher();
+  // AI model registry W02 (#7600): shadow every legacy AI cost record into the
+  // invocation ledger (after the caller's transaction exits; never affects billing).
+  registerInvocationLedgerShadow();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this

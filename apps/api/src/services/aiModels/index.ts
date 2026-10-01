@@ -14,3 +14,5 @@ export * from './offerings';
 export * from './assignments';
 export * from './legacyProjection';
 export * from './legacyReconcile';
+export * from './legacyCostEvents';
+export { recordInvocation, registerInvocationLedgerShadow, recordShadowInvocation, surfaceFromSession, buildShadowRateSnapshot, shadowCostDiff, type NewInvocation } from './invocationLedger';
