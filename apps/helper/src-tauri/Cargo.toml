@@ -18,7 +18,11 @@ tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
-reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
+# rustls-tls = bundled public (webpki) roots; rustls-tls-native-roots = the OS
+# trust store (Windows cert store, macOS keychain, Linux system bundle). With
+# both enabled reqwest trusts the union, so a self-hosted server on a private
+# CA installed in the OS store works like it does for the Go agent (#7550).
+reqwest = { version = "0.12", features = ["rustls-tls", "rustls-tls-native-roots", "stream"], default-features = false }
 tokio = { version = "1", features = ["sync", "net", "io-util", "time", "rt", "macros"] }
 futures-util = "0.3"
 whoami = "2"

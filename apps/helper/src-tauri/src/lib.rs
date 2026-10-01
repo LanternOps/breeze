@@ -566,6 +566,29 @@ fn build_client(cfg: &AgentConfigFull) -> Result<Client, String> {
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
+const GENERIC_CONNECT_ERROR: &str =
+    "Cannot connect to the Breeze server. Check your network connection.";
+const CERTIFICATE_CONNECT_ERROR: &str =
+    "Cannot connect to the Breeze server: its TLS certificate is not trusted on this computer. \
+     If the server uses a private certificate authority, install that CA in the operating \
+     system's trusted root certificate store.";
+
+/// User-facing message for a request that failed before a response arrived
+/// (#7550). TLS verification failures surface as connect errors whose
+/// innermost cause is a rustls error ("invalid peer certificate: UnknownIssuer",
+/// "received fatal alert: BadCertificate", ...) — name the certificate problem
+/// instead of blaming the network. The full chain is still logged by callers.
+fn transport_error_message(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if e.to_string().to_ascii_lowercase().contains("certificate") {
+            return CERTIFICATE_CONNECT_ERROR.to_string();
+        }
+        current = e.source();
+    }
+    GENERIC_CONNECT_ERROR.to_string()
+}
+
 /// Ensure the HTTP state is initialized, returning a reference. Caller holds the mutex guard.
 async fn ensure_http_state() -> Result<(), String> {
     let lock = get_http_state_lock();
@@ -1066,20 +1089,17 @@ async fn helper_fetch(
                     return Err(message)
                 }
                 Err(SendError::Request { error, url }) => {
-                    log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
-                    return Err(
-                        "Cannot connect to the Breeze server. Check your network connection."
-                            .to_string(),
-                    );
+                    // Debug includes the source chain (hyper/io/rustls cause),
+                    // which Display omits.
+                    log_helper_error(&format!("HTTP request to {} failed: {:?}", url, error));
+                    return Err(transport_error_message(&error));
                 }
             }
         }
         Err(SendError::Url(message)) | Err(SendError::NoToken(message)) => return Err(message),
         Err(SendError::Request { error, url }) => {
-            log_helper_error(&format!("HTTP request to {} failed: {}", url, error));
-            return Err(
-                "Cannot connect to the Breeze server. Check your network connection.".to_string(),
-            );
+            log_helper_error(&format!("HTTP request to {} failed: {:?}", url, error));
+            return Err(transport_error_message(&error));
         }
     };
 
@@ -1510,6 +1530,103 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #7550: Assist must trust the OS certificate store (self-hosted servers
+    // on a private CA installed in LocalMachine\Root / keychain / system
+    // bundle) IN ADDITION TO the bundled public roots. reqwest unions the two
+    // root sources only when both features are compiled in, so pin both.
+    #[test]
+    fn reqwest_trusts_os_store_and_bundled_public_roots() {
+        let line = include_str!("../Cargo.toml")
+            .lines()
+            .find(|l| l.trim_start().starts_with("reqwest ="))
+            .expect("reqwest dependency line in Cargo.toml");
+        let features: Vec<String> = line
+            .split("features")
+            .nth(1)
+            .and_then(|rest| rest.split('[').nth(1))
+            .and_then(|rest| rest.split(']').next())
+            .unwrap_or("")
+            .split(',')
+            .map(|f| f.trim().trim_matches('"').to_string())
+            .filter(|f| !f.is_empty())
+            .collect();
+        assert!(
+            features.iter().any(|f| f == "rustls-tls-native-roots"),
+            "reqwest must enable rustls-tls-native-roots (OS trust store); got {:?}",
+            features
+        );
+        assert!(
+            features.iter().any(|f| f == "rustls-tls"),
+            "reqwest must keep rustls-tls (bundled public roots); got {:?}",
+            features
+        );
+    }
+
+    #[test]
+    fn build_client_loads_native_roots_without_error() {
+        let cfg = AgentConfigFull {
+            api_url: "https://breeze.example.com".to_string(),
+            file_token: None,
+            agent_id: "agent".to_string(),
+            mtls_cert_pem: None,
+            mtls_key_pem: None,
+        };
+        build_client(&cfg).expect("client with OS + bundled roots builds");
+    }
+
+    #[derive(Debug)]
+    struct ChainErr {
+        msg: &'static str,
+        source: Option<Box<ChainErr>>,
+    }
+    impl std::fmt::Display for ChainErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.msg)
+        }
+    }
+    impl std::error::Error for ChainErr {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn transport_error_names_certificate_problem() {
+        // Shape of a reqwest -> hyper -> io -> rustls chain on an untrusted CA.
+        let err = ChainErr {
+            msg: "error sending request for url (https://breeze.local/api/v1/x)",
+            source: Some(Box::new(ChainErr {
+                msg: "client error (Connect)",
+                source: Some(Box::new(ChainErr {
+                    msg: "invalid peer certificate: UnknownIssuer",
+                    source: None,
+                })),
+            })),
+        };
+        let message = transport_error_message(&err);
+        assert!(
+            message.to_lowercase().contains("certificate"),
+            "expected a certificate-specific message, got: {message}"
+        );
+    }
+
+    #[test]
+    fn transport_error_keeps_generic_message_for_network_failures() {
+        let err = ChainErr {
+            msg: "error sending request",
+            source: Some(Box::new(ChainErr {
+                msg: "tcp connect error: Connection refused (os error 61)",
+                source: None,
+            })),
+        };
+        assert_eq!(
+            transport_error_message(&err),
+            "Cannot connect to the Breeze server. Check your network connection."
+        );
+    }
 
     // #3202: a config written by an agent that predates show_tray_icon must
     // leave the icon VISIBLE. A bare `#[serde(default)]` would decode the
