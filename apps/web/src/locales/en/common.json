@@ -60,6 +60,7 @@
     "billing": "Billing",
     "organizations": "Organizations",
     "aiUsage": "AI Usage",
+    "aiProvidersModels": "AI Providers & Models",
     "scriptAuthoring": "Script authoring",
     "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",

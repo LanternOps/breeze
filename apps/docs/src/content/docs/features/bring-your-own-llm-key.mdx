@@ -26,7 +26,7 @@ You must be a partner admin with access to all organizations and the billing man
 
 <Steps>
 
-1. Open **Partner Settings → AI Provider**.
+1. Open **Partner Settings → AI Providers & Models**.
 
 2. Paste your Anthropic API key into the write-only key field.
 
@@ -60,7 +60,7 @@ Breeze maintains this list itself. **You choose from the list — you never ente
 
 <Steps>
 
-1. Open **Partner Settings → AI Provider**. Whenever at least one catalog entry is available — or you already have an endpoint selected — an **Endpoint** card appears below the key card, listing **Anthropic (direct)** plus one radio option per vetted endpoint. Selecting an endpoint requires a connected key: if you try it before connecting one, Breeze rejects the change with *"Connect an Anthropic API key before selecting an endpoint."* rather than storing a selection that could not be used.
+1. Open **Partner Settings → AI Providers & Models**. Whenever at least one catalog entry is available — or you already have an endpoint selected — an **Endpoint** card appears below the key card, listing **Anthropic (direct)** plus one radio option per vetted endpoint. Selecting an endpoint requires a connected key: if you try it before connecting one, Breeze rejects the change with *"Connect an Anthropic API key before selecting an endpoint."* rather than storing a selection that could not be used.
 
 2. Selecting **Anthropic (direct)** applies immediately — it always requires zero confirmation, since it is the safe fallback.
 
@@ -95,9 +95,25 @@ Platform administrators manage the models Breeze knows about at **Administration
 - **Offered on the platform key**. A model can only be offered once all four standard prices are set.
 - **Platform default**. In v0.120.0 this choice is recorded but does not yet change routing; the deployment default still comes from `ANTHROPIC_MODEL` or the built-in default.
 
-Every change requires MFA. The **AI Provider** settings page and the **LLM Provider Catalog** page read their model lists from this catalog.
+Every change requires MFA. The **AI Providers & Models** settings and the **LLM Provider Catalog** page read their model lists from this catalog.
 
 **Discovery.** Once a day (06:38 UTC) Breeze lists the models available to the platform Anthropic key. A model it has not seen before appears with a **New** badge and the platform operators are alerted. Discovery only flags models for review: it never offers, prices, or removes a model on its own, and a new model stays unpriced and offered to no one until you set it up. A model that stops appearing is marked **Missing** after several successful checks and two days, and **Retired** after 14 days; a model discovery has never seen is never moved. **Refresh models** queues a discovery run immediately. Discovery is skipped when no platform key is configured or when `ANTHROPIC_BASE_URL` points at a gateway rather than Anthropic.
+
+## AI Providers & Models
+
+**Partner Settings → AI Providers & Models** is the single home for where AI requests are sent, which models are available, and which model each feature uses. It requires the billing management permission. The sections below describe each card. Per-model spend by feature, technician, and organization is under **Settings → AI Usage**.
+
+### Connections and residency
+
+The **Connections** card lists the Breeze platform connection plus any connection you add, with its status, key state, inference region, and who is billed. Adding or editing a connection opens a drawer where you can set a name and inference region, replace the write-only API key, pick a catalog endpoint, or disconnect; **Refresh models** queues a fresh model discovery for that connection. The **Require data residency** switch restricts every feature to models that can keep data in the required region. Before it applies, Breeze shows which features and organization overrides would stop working so you can confirm or cancel.
+
+### Models
+
+The **Models** card groups the models each connection offers, with context size and per-1M-token prices. The switch on a row enables or disables the model and saves immediately; a model with no price cannot be enabled, and disabling a model that is still a feature default asks you to confirm and lists the affected features. A row's details drawer sets a display name, price, premium flag, default and allowed effort or speed options, and an optional refusal fallback, which must be another enabled model on the same connection.
+
+### Defaults by feature (and org overrides)
+
+The **Defaults by feature** card sets the default model, effort, and speed for each AI feature (chat, helper, script builder, script reviewer, and so on), which models are permitted, and whether users may choose their own. Changing the script reviewer's model requires the approvals decide permission. Each organization can narrow these under **Settings → Organizations → (organization) → Model defaults**: leave a field on **Inherit** to follow the partner default, or override it. An organization can only narrow what its partner allows, and the partner can lock user choice. The script-authoring and client-AI policy pages link here instead of holding their own model fields.
 
 ## Self-hosted: configure an instance-wide provider
 

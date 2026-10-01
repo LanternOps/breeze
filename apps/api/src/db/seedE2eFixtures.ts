@@ -38,6 +38,9 @@ import {
   aiBudgetAlertEvents,
 } from './schema';
 import { and, eq } from 'drizzle-orm';
+import { ensurePartnerCutover } from '../services/aiModels/registryCutover';
+import { listPlatformModels } from '../services/aiModels/platformModels';
+import { ensurePlatformOffering, setOfferingEnabled } from '../services/aiModels/offeringWrites';
 
 // Stable device IDs so e2e `.env` vars (E2E_MACOS_DEVICE_ID /
 // E2E_WINDOWS_DEVICE_ID) and the YAML suite resolve the same rows every run.
@@ -107,7 +110,8 @@ export async function seedE2eFixtures(
     return { seeded: false, reason: guard.reason };
   }
 
-  return withSystemDbAccessContext(async () => {
+  let aiRegistryPartnerId: string | null = null;
+  const seeded = await withSystemDbAccessContext(async () => {
     log('[seed:e2e] Seeding e2e fixtures...');
 
     // Baseline tenant must already exist (seedDefaultAdmin runs first).
@@ -118,6 +122,7 @@ export async function seedE2eFixtures(
       return { seeded: false, reason };
     }
     const orgId = org.id;
+    aiRegistryPartnerId = org.partnerId;
 
     const [site] = await db
       .select()
@@ -401,6 +406,38 @@ export async function seedE2eFixtures(
       windowsDeviceId: E2E_WINDOWS_DEVICE_ID,
     };
   });
+  // The registry writers open their own system transaction (and take the
+  // partner reconcile lock), so they run after the fixture transaction ends.
+  if (seeded.seeded && aiRegistryPartnerId) await seedAiModelRegistry(aiRegistryPartnerId, log);
+  return seeded;
+}
+
+/**
+ * ai-providers-models.spec.ts needs at least two enabled platform offerings.
+ * Goes through the registry services (cutover first), never raw SQL, so the
+ * rows carry the same invariants a real admin enable produces. Idempotent:
+ * ensurePlatformOffering returns the existing row and enabling is a no-op.
+ */
+async function seedAiModelRegistry(partnerId: string, log: (...args: unknown[]) => void): Promise<void> {
+  if (!(await ensurePartnerCutover(partnerId))) {
+    log('[seed:e2e] AI registry cutover unavailable; skipping platform offerings.');
+    return;
+  }
+  const candidates = (await listPlatformModels()).filter(
+    (m) => m.platformOffered && m.lifecycle === 'available' && m.rates !== null,
+  );
+  let enabled = 0;
+  for (const model of candidates) {
+    if (enabled >= 2) break;
+    try {
+      const offering = await ensurePlatformOffering({ partnerId, platformModelId: model.id, enabled: true });
+      if (!offering.enabled) await setOfferingEnabled({ partnerId, offeringId: offering.id, enabled: true, force: false });
+      enabled += 1;
+    } catch (err) {
+      log(`[seed:e2e] Could not enable platform model ${model.modelId}: ${(err as Error).message}`);
+    }
+  }
+  if (enabled < 2) log(`[seed:e2e] Only ${enabled} platform model(s) enabled; ai-providers-models.spec.ts needs 2.`);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
