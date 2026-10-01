@@ -16,7 +16,10 @@ import { idParamSchema, partnerWrite, queueConnectionSync, registryWrite, requir
 
 export const aiModelConnectionRoutes = new Hono();
 
-/** compat_uq (W02–W08): the partner has at most one anthropic_byok/catalog connection; :id must be it. */
+/**
+ * compat_uq (W02–W08): the partner has at most one anthropic_byok/catalog connection; :id must be it.
+ * Call it INSIDE the registryWrite callback so a not-yet-cut-over partner gets the recoverable 503, not a 404.
+ */
 async function ownConnectionId(partnerId: string, id: string): Promise<string> {
   const conn = await getCompatConnection(partnerId);
   if (!conn || conn.id !== id) throw new HTTPException(404, { message: 'Connection not found.' });
@@ -59,8 +62,8 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
 
 aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionRotateKeySchema), async (c) => {
   const { partnerId, userId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   return registryWrite(c, partnerId, async () => {
+    const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const result = await savePartnerLlmKey({ partnerId, apiKey: c.req.valid('json').apiKey, userId });
     audit(c, partnerId, 'key_rotated', { connectionId: id, last4: result.last4, configVersion: result.configVersion });
     return c.json({ id, keyLast4: result.last4, configVersion: result.configVersion });
@@ -69,13 +72,13 @@ aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', id
 
 aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionEndpointSchema), async (c) => {
   const { partnerId, userId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
   // Same rule as routes/aiProvider.ts: the flag gates SELECTING an endpoint, never clearing one.
   if (catalogEntryId !== null && !isLlmProviderCatalogEnabled()) {
     throw new HTTPException(404, { message: 'Catalog endpoint selection is not available on this deployment.' });
   }
   return registryWrite(c, partnerId, async () => {
+    const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const result = await updatePartnerLlmEndpoint({ partnerId, catalogEntryId, acknowledgeDataNote, userId });
     audit(c, partnerId, 'endpoint_changed', {
       connectionId: id,
@@ -90,9 +93,9 @@ aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('param
 
 aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionSettingsPatchSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   const patch = c.req.valid('json');
   return registryWrite(c, partnerId, async () => {
+    const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const conn = await updateConnectionSettings({ partnerId, connectionId: id, patch });
     audit(c, partnerId, 'updated', { connectionId: id, ...patch, configVersion: conn.configVersion });
     return c.json({ id, configVersion: conn.configVersion });
@@ -101,8 +104,8 @@ aiModelConnectionRoutes.patch('/:id', ...partnerWrite, zValidator('param', idPar
 
 aiModelConnectionRoutes.delete('/:id', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   return registryWrite(c, partnerId, async () => {
+    const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const deleted = await deletePartnerLlmConfig(partnerId);
     if (deleted) audit(c, partnerId, 'deleted', { connectionId: id });
     return c.json({ deleted });
@@ -114,8 +117,8 @@ aiModelConnectionRoutes.delete('/:id', ...partnerWrite, zValidator('param', idPa
 // here: platform discovery is the operator's /admin/ai-models refresh.
 aiModelConnectionRoutes.post('/:id/refresh', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
-  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
   return registryWrite(c, partnerId, async () => {
+    const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const failed = await queueConnectionSync(c, id);
     if (failed) return failed;
     audit(c, partnerId, 'refresh_requested', { connectionId: id });

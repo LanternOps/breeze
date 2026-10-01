@@ -147,8 +147,8 @@ beforeEach(() => {
   authState.value = baseAuth();
   vi.mocked(ensurePartnerCutover).mockResolvedValue(true);
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
-  // Connection routes bind :id to the partner's compat connection BEFORE the
-  // cutover gate, so the default must be the partner's own connection C.
+  // Connection routes bind :id to the partner's compat connection (inside the
+  // cutover gate), so the default must be the partner's own connection C.
   vi.mocked(getCompatConnection).mockResolvedValue({ id: C, partnerId: P } as any);
   vi.mocked(savePartnerLlmKey).mockResolvedValue({ last4: 'xxxx', model: 'm', verifiedAt: T, configVersion: 2 });
   vi.mocked(updatePartnerLlmEndpoint).mockResolvedValue({ catalogEntryId: null, configVersion: 3, slug: null, revision: null } as any);
@@ -244,6 +244,24 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(updateConnectionSettings).not.toHaveBeenCalled();
     expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
     expect(savePartnerLlmKey).not.toHaveBeenCalled();
+  });
+  it('a partner that is not cut over gets the recoverable 503 on every :id connection route, never a 404', async () => {
+    // Before the cutover the compat connection may not resolve yet; the cutover gate must answer first.
+    vi.mocked(getCompatConnection).mockResolvedValue(null);
+    vi.mocked(ensurePartnerCutover).mockResolvedValue(false);
+    const routes: Array<[string, string, unknown?]> = [
+      ['POST', `/connections/${C}/key`, { apiKey: KEY }],
+      ['POST', `/connections/${C}/endpoint`, { catalogEntryId: null }],
+      ['PATCH', `/connections/${C}`, { name: 'x' }],
+      ['DELETE', `/connections/${C}`],
+      ['POST', `/connections/${C}/refresh`],
+    ];
+    for (const [method, path, body] of routes) {
+      const res = await call(method, path, body);
+      expect([path, method, res.status]).toEqual([path, method, 503]);
+      expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
+    }
+    expect(getCompatConnection).not.toHaveBeenCalled();
   });
   it('404s every connection route when the partner has no connection', async () => {
     vi.mocked(getCompatConnection).mockResolvedValue(null);
