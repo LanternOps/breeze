@@ -69,6 +69,11 @@ import {
 } from '../../services/aiAgents/runService';
 import { loadNarrativeContext } from '../../services/aiAgents/narrativeContext';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 /** Monday 07:00 UTC — the only cron shape `isWeeklyLiteralCron` admits. */
 const NARRATIVE_CRON = '0 7 * * 1';

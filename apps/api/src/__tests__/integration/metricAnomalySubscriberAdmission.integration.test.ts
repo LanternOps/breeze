@@ -63,6 +63,11 @@ import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/
 import { handleAnomalyIncidentOpenedEvent } from '../../services/aiAgents/metricAnomalySubscriber';
 import type { BreezeEvent } from '../../services/eventBus';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 function policyFields(overrides: Partial<{
   enabled: boolean;

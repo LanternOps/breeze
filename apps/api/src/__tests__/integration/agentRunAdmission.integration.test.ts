@@ -56,11 +56,18 @@ import {
 import {
   createAndEnqueueAgentRun,
   registerAgentRunEnqueuer,
+  transitionRunStatus,
   type AgentRunEnqueuer,
   type CreateAgentRunInput,
   type CreateAgentRunResult,
 } from '../../services/aiAgents/runService';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+import { fixtureSql } from './aiModelRegistryFixtures';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -228,6 +235,32 @@ afterEach(() => {
 });
 
 describe('agent run admission against real Postgres', () => {
+  it('W03: an agent whose model is unusable is skipped model_unavailable — no row written', async () => {
+    const t = await seedTenant({ triggers: { alertSeverities: ['critical', 'high'] } });
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;   // the platform default is unusable
+    try {
+      expect(await createAndEnqueueAgentRun(triggerInput(t))).toEqual({ created: false, skipped: 'model_unavailable' });
+    } finally {
+      process.env.ANTHROPIC_API_KEY = savedKey;
+    }
+    expect(await countRunsForOrg(t.org.id)).toBe(0);
+    expect(enqueued).toEqual([]);
+  });
+
+  it('W03: `blocked` is a legal terminal status; funding_source admits only platform | partner_key', async () => {
+    const t = await seedTenant({ triggers: { alertSeverities: ['critical', 'high'] } });
+    const run = expectCreated(await createAndEnqueueAgentRun(triggerInput(t)));
+    expect(await transitionRunStatus(run.id, 'queued', 'blocked', {
+      errorCode: 'model_refused', outcome: { blockedReason: 'model_refused', refusalCategory: 'cyber' }, finishedAt: new Date(),
+    })).toBe(true);
+    expect(await readRun(run.id)).toMatchObject({
+      status: 'blocked', errorCode: 'model_refused', outcome: { blockedReason: 'model_refused', refusalCategory: 'cyber' },
+    });
+    await expect(fixtureSql`UPDATE ai_agent_runs SET funding_source = 'credit_card' WHERE id = ${run.id}`)
+      .rejects.toMatchObject({ code: '23514' });
+  });
+
   it('admits a manual run: queued row, jsonb snapshot round-trip, event, enqueue', async () => {
     // respectMaintenanceWindows stays at its shipped default (true) here, so
     // the real partner-wide maintenance read runs inside the gate's system
@@ -251,6 +284,13 @@ describe('agent run admission against real Postgres', () => {
     expect(stored).toBeDefined();
     expect(stored!.status).toBe('queued');
     expect(stored!.dedupeKey).toBe(input.dedupeKey);
+    // W03 (#7601): admission's model decision is on the row — the funding it
+    // checked credits for and the offering the run loop must re-resolve.
+    expect(stored!.fundingSource).toBe('platform');
+    expect(stored!.admittedOfferingId).toMatch(/^[0-9a-f-]{36}$/);
+    const [offering] = await fixtureSql`
+      SELECT partner_id, connection_id, enabled FROM partner_ai_models WHERE id = ${stored!.admittedOfferingId!}`;
+    expect(offering).toMatchObject({ partner_id: t.partner.id, connection_id: null, enabled: true });
     const snapshot = stored!.policySnapshot as unknown as {
       schemaVersion: number;
       agentId: string;
