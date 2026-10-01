@@ -291,6 +291,26 @@ describe('credits are debited exactly once per reservation (finding 1)', () => {
     expect(m.debit).not.toHaveBeenCalled();
   });
 
+  it('a persisted deferral is a clean deferral (not unrecorded, nothing reported)', async () => {
+    m.settleDurably.mockResolvedValue({ kind: 'deferred_indeterminate', reservationId: 'r1', persisted: true });
+    const out = await settleInvocation(base());
+    expect(out.unrecorded).toBeFalsy();
+    expect(m.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('a deferral that could NOT be persisted is reported as unrecorded spend, never as a clean deferral (review S1)', async () => {
+    m.settleDurably.mockResolvedValue({ kind: 'deferred_indeterminate', reservationId: 'r1', persisted: false });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = await settleInvocation(base());
+    error.mockRestore();
+    expect(out).toMatchObject({ deferred: true, unrecorded: true, invocationIds: [] });
+    expect(m.debit).not.toHaveBeenCalled();
+    expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      eventCode: 'ai_settlement_unrecorded',
+      tags: expect.objectContaining({ org_id: 'o1', ai_reservation_id: 'r1' }),
+    }));
+  });
+
   it('the debit amount is the settled amount the reservation stored (what the sweep re-sends)', async () => {
     m.settleDurably.mockResolvedValue({ kind: 'settled', reservationId: 'r1', actualCostCents: 299.999999, invocationIds: ['i1'], billingSource: 'platform', creditsDebitDue: true });
     await settleInvocation(base());
@@ -348,12 +368,57 @@ describe('debitSettledCredits: 4xx terminal, 5xx/network retried under the same 
   });
 });
 
+describe('unreserved debit reporting (review S4)', () => {
+  it('throttles per (eventCode, org), not globally, and tags the first ledger row so an operator can recover it', async () => {
+    m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
+    m.recordWithRollups.mockResolvedValueOnce(['i-o1']).mockResolvedValueOnce(['i-o2']).mockResolvedValueOnce(['i-o1b']);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));
+    await settleInvocation(base({ reservationId: undefined, orgId: 'o2' }));
+    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));   // same org inside the window: log only
+    error.mockRestore();
+    const reports = m.captureMessage.mock.calls.filter(([, o]) => o.eventCode === 'ai_credit_debit_rejected');
+    expect(reports).toHaveLength(2);
+    expect(reports.map(([, o]) => o.tags)).toEqual([
+      expect.objectContaining({ org_id: 'o1', ai_invocation_id: 'i-o1' }),
+      expect.objectContaining({ org_id: 'o2', ai_invocation_id: 'i-o2' }),
+    ]);
+  });
+
+  it('a thrown unreserved debit is reported with the org and first ledger row', async () => {
+    m.debit.mockRejectedValue(new Error('socket hang up'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await settleInvocation(base({ reservationId: undefined }));
+    error.mockRestore();
+    expect(m.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      org_id: 'o1', ai_invocation_id: 'i1',
+    }));
+  });
+
+  it('the settled-debit rejection throttle is per org too', async () => {
+    m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await debitSettledCredits({ orgId: 'o1', reservationId: 'r1', costCents: 1 });
+    await debitSettledCredits({ orgId: 'o2', reservationId: 'r2', costCents: 1 });
+    error.mockRestore();
+    expect(m.captureMessage.mock.calls.filter(([, o]) => o.eventCode === 'ai_credit_debit_rejected')).toHaveLength(2);
+  });
+});
+
 describe('SDK usage snapshot (W05 spike)', () => {
   const NEXT: SdkUsageSnapshot = { version: 1, models: { 'claude-sonnet-5-5': { tokens: T, webSearchRequests: 0 } } };
 
   it('passes the next snapshot into the SAME settlement call (advanced in its transaction)', async () => {
     await settleInvocation(base({ sessionId: 's1', sdkUsage: { sessionId: 's1', nextSnapshot: NEXT, usageConfirmed: true, usageNote: 'delta' } }));
     expect(m.settleDurably.mock.calls[0]![0].sdkUsage).toEqual({ sessionId: 's1', nextSnapshot: NEXT });
+  });
+
+  it('a rebaseline carries the snapshot it was computed against, so a late replay can tell it is stale (review S10)', async () => {
+    const PREV: SdkUsageSnapshot = { version: 1, models: { 'claude-sonnet-5-5': { tokens: { ...T, input: T.input * 2 }, webSearchRequests: 0 } } };
+    await settleInvocation(base({ sessionId: 's1', usage: [], sdkUsage: {
+      sessionId: 's1', nextSnapshot: NEXT, baseSnapshot: PREV, usageConfirmed: false, usageNote: 'snapshot_regressed',
+    } }));
+    expect(m.settleDurably.mock.calls[0]![0].sdkUsage).toEqual({ sessionId: 's1', nextSnapshot: NEXT, rebaseline: true, baseSnapshot: PREV });
   });
 
   it('snapshot_regressed is reported to Sentry with its eventCode', async () => {

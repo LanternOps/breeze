@@ -135,10 +135,28 @@ export interface SettleInvocationInput {
     nextSnapshot: SdkUsageSnapshot | null;
     usageConfirmed?: boolean;
     usageNote?: SdkUsageNote;
+    /**
+     * The snapshot this turn's usage was computed against (what
+     * readSdkUsageSnapshot returned). Sent only with a re-baseline: a deferred
+     * re-baseline replayed after a newer turn moved the stored snapshot must
+     * not overwrite it (review S10).
+     */
+    baseSnapshot?: SdkUsageSnapshot | null;
   };
 }
 
-export interface SettledInvocation { costCents: number; invocationIds: string[]; deferred: boolean }
+export interface SettledInvocation {
+  costCents: number;
+  invocationIds: string[];
+  deferred: boolean;
+  /**
+   * Review S1: the settlement was deferred AND could not be persisted for the
+   * sweep — the spend is recorded nowhere. The reservation was left
+   * indeterminate; a caller must keep treating it as unsettled (never clear
+   * or release it) and must not report the turn as billed.
+   */
+  unrecorded?: boolean;
+}
 
 /**
  * The cents settleInvocation will bill for this usage (same rate selection,
@@ -225,18 +243,25 @@ async function loadUnboundPlatformRates(binding: TurnBinding, usage: readonly Bi
 }
 
 type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted';
-const lastReportedAt = new Map<ReportedEventCode, number>();
+const lastReportedAt = new Map<string, number>();
+const MAX_THROTTLE_KEYS = 10_000;
 
 /**
  * These conditions can arrive in storms (a rotated billing key rejects every
- * debit), so Sentry gets at most one event per code per window per process.
- * Every occurrence still reaches the server log with its ids.
+ * debit), so Sentry gets at most one event per code PER ORGANIZATION per window
+ * per process (review S4: a global throttle let one noisy org hide every other
+ * org's rejections). Every occurrence still reaches the server log with its ids.
  */
-function shouldReport(eventCode: ReportedEventCode): boolean {
+function shouldReport(eventCode: ReportedEventCode, orgId: string): boolean {
   const now = Date.now();
-  const last = lastReportedAt.get(eventCode);
+  const key = `${eventCode}:${orgId}`;
+  const last = lastReportedAt.get(key);
   if (last !== undefined && now - last < REPORT_WINDOW_MS) return false;
-  lastReportedAt.set(eventCode, now);
+  if (lastReportedAt.size >= MAX_THROTTLE_KEYS) {
+    for (const [k, at] of lastReportedAt) if (now - at >= REPORT_WINDOW_MS) lastReportedAt.delete(k);
+    if (lastReportedAt.size >= MAX_THROTTLE_KEYS) lastReportedAt.clear();
+  }
+  lastReportedAt.set(key, now);
   return true;
 }
 
@@ -257,7 +282,7 @@ function reportUsageConfidence(input: SettleInvocationInput): void {
   };
   console.warn(`[settleInvocation] ${detail.eventCode} ${JSON.stringify(detail)}`);
   if (s.usageNote === 'snapshot_regressed') {
-    if (shouldReport('ai_usage_snapshot_regressed')) {
+    if (shouldReport('ai_usage_snapshot_regressed', input.orgId)) {
       captureMessage('AI SDK usage snapshot regressed; re-baselined and billed the turn\'s own usage (unconfirmed)', { eventCode: 'ai_usage_snapshot_regressed' });
     }
   }
@@ -287,7 +312,9 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     ? {
       sessionId: input.sdkUsage.sessionId,
       nextSnapshot: input.sdkUsage.nextSnapshot,
-      ...(input.sdkUsage.usageNote === 'snapshot_regressed' ? { rebaseline: true } : {}),
+      ...(input.sdkUsage.usageNote === 'snapshot_regressed'
+        ? { rebaseline: true, ...(input.sdkUsage.baseSnapshot !== undefined ? { baseSnapshot: input.sdkUsage.baseSnapshot } : {}) }
+        : {}),
     }
     : undefined;
 
@@ -303,7 +330,12 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     });
     if (result.kind === 'deferred_indeterminate') {
       // Persisted for the sweep, which replays it and then debits.
-      return { costCents, invocationIds: [], deferred: true };
+      if (result.persisted) return { costCents, invocationIds: [], deferred: true };
+      // Review S1: blocked twice AND the pending write failed (or another
+      // pending settlement held the slot). Nothing recorded this spend; say so
+      // instead of passing it off as a clean deferral.
+      reportUnrecordedSettlement(input, costCents);
+      return { costCents, invocationIds: [], deferred: true, unrecorded: true };
     }
     // Review finding 1: only the call that moved the reservation to `settled`
     // debits; 'already_settled' means another call did (and debited).
@@ -324,7 +356,7 @@ export async function settleInvocation(input: SettleInvocationInput): Promise<Se
     ...(sdkUsage ? { sdkUsage } : {}),
   });
   if (input.binding.funding === 'platform' && costCents > 0 && invocationIds[0]) {
-    await debitUnreservedCredits(input.orgId, costCents, `ai-invocation:${invocationIds[0]}`);
+    await debitUnreservedCredits(input.orgId, costCents, invocationIds[0]);
   }
   checkSpendThresholds(input.orgId, input.sessionId, costCents);
   return { costCents, invocationIds, deferred: false };
@@ -357,7 +389,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
         console.error('[AI] platform credit debit REJECTED; stamped failed for an operator', {
           orgId: input.orgId, reservationId: input.reservationId, costCents: input.costCents, code: result.code,
         });
-        if (shouldReport('ai_credit_debit_rejected')) {
+        if (shouldReport('ai_credit_debit_rejected', input.orgId)) {
           captureMessage('AI platform credit debit rejected; spend not debited', {
             eventCode: 'ai_credit_debit_rejected', tags: billingTags(input.orgId, result.status),
           });
@@ -370,7 +402,7 @@ export async function debitSettledCredits(input: { orgId: string; reservationId:
           orgId: input.orgId, reservationId: input.reservationId, code: result.code, attempts, exhausted,
         });
         if (exhausted) {
-          if (shouldReport('ai_credit_debit_retries_exhausted')) {
+          if (shouldReport('ai_credit_debit_retries_exhausted', input.orgId)) {
             captureMessage('AI platform credit debit never confirmed; retries exhausted', {
               eventCode: 'ai_credit_debit_retries_exhausted', tags: billingTags(input.orgId, result.status),
             });
@@ -392,24 +424,50 @@ function billingTags(orgId: string, status: number | null): Record<string, strin
   return { org_id: orgId, ai_billing_http_status: status === null ? 'none' : String(status) };
 }
 
+function reportUnrecordedSettlement(input: SettleInvocationInput, costCents: number): void {
+  console.error('[AI] settlement deferred but NOT persisted; spend is unrecorded and the reservation stays indeterminate', {
+    eventCode: 'ai_settlement_unrecorded',
+    orgId: input.orgId,
+    reservationId: input.reservationId ?? null,
+    sessionId: input.sessionId,
+    agentRunId: input.agentRunId,
+    surface: input.binding.surface,
+    costCents,
+  });
+  // Never throttled: each one is a distinct reservation an operator has to reconcile.
+  captureMessage('AI settlement deferred but not persisted; spend is unrecorded', {
+    eventCode: 'ai_settlement_unrecorded',
+    level: 'error',
+    tags: { org_id: input.orgId, ...(input.reservationId ? { ai_reservation_id: input.reservationId } : {}) },
+  });
+}
+
 /**
  * A platform debit with no reservation to stamp. Keyed by the call's first
  * ledger row, so a repeat of THIS call cannot double-charge, but there is no
- * durable retry: a failure is logged and reported for reconciliation.
+ * durable retry: a failure is logged and reported for reconciliation, carrying
+ * that first ledger row id (review S4) — the operator re-sends the debit under
+ * `ai-invocation:<id>` for the summed cost of the call's rows.
  */
-async function debitUnreservedCredits(orgId: string, costCents: number, idempotencyKey: string): Promise<void> {
+async function debitUnreservedCredits(orgId: string, costCents: number, firstInvocationId: string): Promise<void> {
+  const idempotencyKey = `ai-invocation:${firstInvocationId}`;
   try {
     const result = await debitBillingCredits(orgId, costCents, { idempotencyKey });
     if (result.kind === 'debited' || result.kind === 'not_configured') return;
-    console.error('[AI] unreserved platform credit debit did not land', { orgId, costCents, code: result.code, kind: result.kind });
-    if (shouldReport('ai_credit_debit_rejected')) {
+    console.error('[AI] unreserved platform credit debit did not land', {
+      orgId, costCents, code: result.code, kind: result.kind, invocationId: firstInvocationId,
+    });
+    if (shouldReport('ai_credit_debit_rejected', orgId)) {
       captureMessage('AI platform credit debit (no reservation) did not land', {
-        eventCode: 'ai_credit_debit_rejected', tags: billingTags(orgId, result.status),
+        eventCode: 'ai_credit_debit_rejected',
+        tags: { ...billingTags(orgId, result.status), ai_invocation_id: firstInvocationId },
       });
     }
   } catch (error) {
     const message = safeErrorMessage(error);
-    console.error('[AI] unreserved platform credit debit failed', { orgId, error: message });
-    captureException(new Error(`AI credit debit failed: ${message}`));
+    console.error('[AI] unreserved platform credit debit failed', { orgId, costCents, invocationId: firstInvocationId, error: message });
+    captureException(new Error(`AI credit debit failed: ${message}`), undefined, {
+      org_id: orgId, ai_invocation_id: firstInvocationId,
+    });
   }
 }

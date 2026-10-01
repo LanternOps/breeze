@@ -202,6 +202,13 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_settlement_replay_dead',
   /**
+   * W03 (#7601, PR #7700 review S1): a settlement blocked twice on the org lock
+   * AND its pending_settlement write failed (or another one already held the
+   * slot). The spend is recorded nowhere; the reservation is left
+   * indeterminate. Tags carry org_id + ai_reservation_id for reconciliation.
+   */
+  'ai_settlement_unrecorded',
+  /**
    * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
    * DOWN against the session's snapshot (the CLI's counters restarted, or a
    * glitch). The snapshot is re-baselined to the current reading and the turn
