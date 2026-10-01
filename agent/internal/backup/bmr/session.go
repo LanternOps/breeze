@@ -237,7 +237,8 @@ func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion st
 		// refused: {"error":"code_invalid"} when it does not normalize to a
 		// code, or zValidator's object-shaped error for an over-long one
 		// (routes/backup/bmrRecoveries.ts, bmrExchangeSchema).
-		if resp.StatusCode == http.StatusBadRequest || (resp.StatusCode == http.StatusNotFound && errorCode == "code_invalid") {
+		if (resp.StatusCode == http.StatusBadRequest && (errorCode == "code_invalid" || isRequestValidationError(data))) ||
+			(resp.StatusCode == http.StatusNotFound && errorCode == "code_invalid") {
 			return "", nil, ErrCodeInvalid
 		}
 		if resp.StatusCode == http.StatusNotFound {

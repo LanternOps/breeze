@@ -52,6 +52,15 @@ func TestExchangeRecoveryCode_ClassifiesFailures(t *testing.T) {
 			},
 		},
 		{
+			name: "some other JSON API's 400 is not a rejected code", status: 400,
+			contentType: "application/json", body: `{"error":"missing field"}`,
+			check: func(t *testing.T, err error) {
+				if err == nil || errors.Is(err, ErrCodeInvalid) {
+					t.Fatalf("err = %v, must not be ErrCodeInvalid", err)
+				}
+			},
+		},
+		{
 			name: "HTML 400 from some other web server is not a rejected code", status: 400,
 			contentType: "text/html", body: "<html>Bad Request</html>",
 			check: func(t *testing.T, err error) {

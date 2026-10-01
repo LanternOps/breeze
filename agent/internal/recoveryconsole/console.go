@@ -580,6 +580,7 @@ func (c *Console) promptCodeAndExchange(ctx context.Context, ci bool, answers An
 		return token, bs, nil
 	}
 
+	serverErrors := 0
 	for {
 		code, err := c.IO.ReadLine("Recovery code: ")
 		if err != nil {
@@ -605,22 +606,41 @@ func (c *Console) promptCodeAndExchange(ctx context.Context, ci bool, answers An
 			var su *bmr.ServerUnreachableError
 			errors.As(exErr, &su)
 			c.IO.Print("Could not reach %s: %s.\n", su.Host, unreachableReason(exErr))
-			c.IO.Print("The recovery code was not used and this did not count as a failed attempt. Check the server URL and the network connection.\n")
+			if failedBeforeSending(exErr) {
+				c.IO.Print("The recovery code was not sent and this did not count as a failed attempt. Check the server URL and the network connection.\n")
+			} else {
+				c.IO.Print(codeMayBeUsedNotice)
+			}
 			return "", nil, errReenterServer
 		case failureNotBreezeServer:
 			var ue *bmr.UnexpectedServerResponseError
 			errors.As(exErr, &ue)
-			c.IO.Print("%s answered, but not as a Breeze recovery server (HTTP %d%s).\n", ue.Host, ue.StatusCode, contentTypeSuffix(ue.ContentType))
-			c.IO.Print("The recovery code was not used and this did not count as a failed attempt. Check the server URL.\n")
+			if ue.StatusCode >= 500 {
+				// A proxy error page: the URL may be right and the Breeze
+				// server behind it down, restarting, or slow (a 504 can
+				// arrive after the server already claimed the code).
+				c.IO.Print("%s returned a gateway/server error page (HTTP %d%s): the Breeze server may be down or restarting, or the URL may be wrong.\n", ue.Host, ue.StatusCode, contentTypeSuffix(ue.ContentType))
+				c.IO.Print(codeMayBeUsedNotice)
+			} else {
+				c.IO.Print("%s answered, but not as a Breeze recovery server (HTTP %d%s).\n", ue.Host, ue.StatusCode, contentTypeSuffix(ue.ContentType))
+				c.IO.Print("The recovery code was not used and this did not count as a failed attempt. Check the server URL.\n")
+			}
 			return "", nil, errReenterServer
 		case failureServerError:
 			// The server (or our own context) failed without judging the
 			// code — a rate limit, a 5xx, a cancelled request. Show what
-			// happened and ask again without spending an attempt.
+			// happened and ask again without spending an attempt, but
+			// never forever: after maxCodeAttempts in a row, go back to
+			// the server prompt in case the URL points at the wrong API.
 			if ctx.Err() != nil {
 				return "", nil, exErr
 			}
+			serverErrors++
 			c.IO.Print("The server could not check that code: %v\n", exErr)
+			if serverErrors >= maxCodeAttempts {
+				c.IO.Print("This did not count as a failed attempt. The server keeps failing; check the server URL, or try again later.\n")
+				return "", nil, errReenterServer
+			}
 			c.IO.Print("This did not count as a failed attempt. Try the code again.\n")
 			continue
 		}
@@ -703,8 +723,16 @@ func unreachableReason(err error) string {
 			return "server name not found (DNS lookup failed) — check the server URL"
 		}
 		return fmt.Sprintf("DNS lookup failed (%s)", dnsErr.Err)
-	case errors.As(err, &unknownAuthority), errors.As(err, &hostnameErr), errors.As(err, &invalidCert), errors.As(err, &certVerify):
-		return fmt.Sprintf("TLS certificate error (%v) — check the server URL", innermost(err))
+	case errors.As(err, &hostnameErr):
+		return fmt.Sprintf("TLS certificate error (%v) — the certificate is for a different name; check the server URL", innermost(err))
+	case errors.As(err, &invalidCert) && (invalidCert.Reason == x509.Expired):
+		// x509 reports both "expired" and "not yet valid" as Expired; on
+		// bare-metal media a wrong BIOS clock is the usual cause.
+		return fmt.Sprintf("TLS certificate error (%v) — check this machine's date and time (BIOS clock)", innermost(err))
+	case errors.As(err, &unknownAuthority):
+		return fmt.Sprintf("TLS certificate error (%v) — the certificate is not trusted by this recovery media; check the server URL, or for a TLS-intercepting proxy on this network", innermost(err))
+	case errors.As(err, &invalidCert), errors.As(err, &certVerify):
+		return fmt.Sprintf("TLS certificate error (%v)", innermost(err))
 	case errors.As(err, &recordHeader):
 		return "TLS handshake failed — the server did not answer as an https:// server"
 	case errors.Is(err, syscall.ECONNREFUSED):
@@ -716,6 +744,34 @@ func unreachableReason(err error) string {
 	default:
 		return innermost(err).Error()
 	}
+}
+
+// codeMayBeUsedNotice is printed when the request may have reached the
+// server before failing, so the one-time code may already be claimed.
+const codeMayBeUsedNotice = "This did not count as a failed attempt, but the request may have reached the server: if the same code is then reported as invalid, create a new recovery code in Breeze.\n"
+
+// failedBeforeSending reports whether a transport failure provably happened
+// before the request (and so the recovery code) was sent: name resolution,
+// the TCP dial, or the TLS handshake. A timeout or reset after that point
+// may have reached a server that already claimed the one-time code.
+func failedBeforeSending(err error) bool {
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	var invalidCert x509.CertificateInvalidError
+	var certVerify *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	switch {
+	case errors.Is(err, bmr.ErrServerCertPinMismatch),
+		errors.As(err, &dnsErr),
+		errors.As(err, &opErr) && opErr.Op == "dial",
+		errors.As(err, &unknownAuthority), errors.As(err, &hostnameErr),
+		errors.As(err, &invalidCert), errors.As(err, &certVerify),
+		errors.As(err, &recordHeader):
+		return true
+	}
+	return false
 }
 
 // innermost unwraps err (through *bmr.ServerUnreachableError and *url.Error)

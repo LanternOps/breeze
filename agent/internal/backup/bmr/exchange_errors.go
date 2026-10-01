@@ -14,8 +14,10 @@ var ErrServerCertPinMismatch = errors.New("bmr: server certificate does not matc
 
 // ServerUnreachableError means the request to the recovery server never got
 // an HTTP response: DNS lookup, TCP connect, TLS handshake (including a
-// certificate-pin refusal), or a timeout failed. Nothing reached the server,
-// so no recovery code was checked or spent (#7649).
+// certificate-pin refusal), a timeout, or a reset failed. It is never a
+// verdict on the recovery code (#7649). DNS/dial/TLS failures happen before
+// the request is sent; a timeout or reset may come after the server already
+// claimed the one-time code, so callers must not promise it was unused.
 type ServerUnreachableError struct {
 	// Host is the host[:port] the request was sent to.
 	Host string
@@ -62,4 +64,18 @@ func breezeErrorCode(data []byte) (code string, ok bool) {
 	}
 	code, _ = body.Error.(string)
 	return code, true
+}
+
+// isRequestValidationError reports whether data is zValidator's failure body
+// (`{"success":false,"error":{...}}`) — the shape a Breeze route returns
+// when the request JSON itself fails schema validation.
+func isRequestValidationError(data []byte) bool {
+	var body struct {
+		Success *bool          `json:"success"`
+		Error   map[string]any `json:"error"`
+	}
+	if json.Unmarshal(data, &body) != nil {
+		return false
+	}
+	return body.Success != nil && !*body.Success && body.Error != nil
 }

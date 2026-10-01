@@ -212,14 +212,14 @@ func TestConnect_ServerErrorIsNotBlamedOnTheCode(t *testing.T) {
 	deps := &fakeDeps{
 		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
 			n++
-			if n <= maxCodeAttempts {
+			if n < maxCodeAttempts {
 				return "", nil, errors.New("bmr: exchange failed: Rate limit exceeded. Please wait before retrying.")
 			}
 			return happyExchange(t)(ctx, server, code)
 		},
 	}
 	var answers = []string{"https://breeze.example"}
-	for i := 0; i <= maxCodeAttempts; i++ {
+	for i := 0; i < maxCodeAttempts; i++ {
 		answers = append(answers, "abc-def-ghj")
 	}
 	io := &fakeIO{Answers: answers}
@@ -273,5 +273,115 @@ func TestConnect_CIUnreachableFailsWithReason(t *testing.T) {
 	}
 	if io.readLineCalls != 0 {
 		t.Fatalf("CI mode prompted %d times", io.readLineCalls)
+	}
+}
+
+// Review finding: a persistent non-verdict server error (a JSON API at the
+// wrong URL answering 401/500, or a Breeze outage) must not re-prompt the
+// code forever — after maxCodeAttempts in a row it returns to the server
+// prompt, still without counting any attempt.
+func TestConnect_PersistentServerErrorReturnsToServerPrompt(t *testing.T) {
+	const good = "https://breeze.example"
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			if server != good {
+				return "", nil, errors.New("bmr: exchange failed: Unauthorized")
+			}
+			return happyExchange(t)(ctx, server, code)
+		},
+	}
+	answers := []string{"https://other-api.example"}
+	for i := 0; i < maxCodeAttempts; i++ {
+		answers = append(answers, "abc-def-ghj")
+	}
+	answers = append(answers, good, "abc-def-ghj")
+	io := &fakeIO{Answers: answers}
+	c := &Console{IO: io, Deps: deps.build("0.111.1")}
+
+	server, _, _, err := c.connect(context.Background(), false, Answers{})
+	if err != nil || server != good {
+		t.Fatalf("connect() = (%q, %v), want (%q, nil)\n%s", server, err, good, io.transcript.String())
+	}
+	if c.codeRejections != 0 {
+		t.Fatalf("codeRejections = %d, want 0", c.codeRejections)
+	}
+}
+
+func TestConnect_TimeoutAfterSendWarnsTheCodeMayBeUsed(t *testing.T) {
+	const good = "https://breeze.example"
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			if server != good {
+				return "", nil, unreachable("slow.example", timeoutErr{})
+			}
+			return happyExchange(t)(ctx, server, code)
+		},
+	}
+	io := &fakeIO{Answers: []string{"https://slow.example", "abc-def-ghj", good, "abc-def-ghj"}}
+	c := &Console{IO: io, Deps: deps.build("0.111.1")}
+	if _, _, _, err := c.connect(context.Background(), false, Answers{}); err != nil {
+		t.Fatalf("connect() error = %v", err)
+	}
+	transcript := io.transcript.String()
+	if !strings.Contains(transcript, "may have reached the server") {
+		t.Fatalf("transcript missing the code-may-be-used notice:\n%s", transcript)
+	}
+	if strings.Contains(transcript, "code was not sent") {
+		t.Fatalf("transcript claims the code was not sent after a timeout:\n%s", transcript)
+	}
+}
+
+func TestConnect_ProxyErrorPageSaysServerMayBeDown(t *testing.T) {
+	const good = "https://breeze.example"
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			if server != good {
+				return "", nil, &bmr.UnexpectedServerResponseError{Host: "breeze.example:8443", StatusCode: 502, ContentType: "text/html"}
+			}
+			return happyExchange(t)(ctx, server, code)
+		},
+	}
+	io := &fakeIO{Answers: []string{"https://breeze.example:8443", "abc-def-ghj", good, "abc-def-ghj"}}
+	c := &Console{IO: io, Deps: deps.build("0.111.1")}
+	if _, _, _, err := c.connect(context.Background(), false, Answers{}); err != nil {
+		t.Fatalf("connect() error = %v", err)
+	}
+	transcript := io.transcript.String()
+	for _, want := range []string{"may be down or restarting", "may have reached the server"} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("transcript missing %q:\n%s", want, transcript)
+		}
+	}
+}
+
+func TestFailedBeforeSending(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
+	reset := &net.OpError{Op: "read", Net: "tcp", Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"dns", unreachable("x", &net.DNSError{Err: "no such host", Name: "x", IsNotFound: true}), true},
+		{"dial refused", unreachable("x", refused), true},
+		{"tls untrusted", unreachable("x", x509.UnknownAuthorityError{}), true},
+		{"pin mismatch", unreachable("x", fmt.Errorf("%w: no match", bmr.ErrServerCertPinMismatch)), true},
+		{"read reset after send", unreachable("x", reset), false},
+		{"timeout", unreachable("x", timeoutErr{}), false},
+		{"unknown", unreachable("x", errors.New("EOF")), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := failedBeforeSending(tc.err); got != tc.want {
+				t.Fatalf("failedBeforeSending() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnreachableReason_ExpiredCertPointsAtTheClock(t *testing.T) {
+	err := unreachable("x", x509.CertificateInvalidError{Cert: &x509.Certificate{}, Reason: x509.Expired})
+	if got := unreachableReason(err); !strings.Contains(got, "date and time") {
+		t.Fatalf("unreachableReason() = %q, want it to point at the clock", got)
 	}
 }
