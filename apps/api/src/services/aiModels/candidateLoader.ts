@@ -162,6 +162,36 @@ function asPlan(value: string | null | undefined): PartnerPlan | null {
   return (PARTNER_PLAN_ORDER as readonly string[]).includes(value ?? '') ? (value as PartnerPlan) : null;
 }
 
+/**
+ * W04 (#7602, ruling BD-1): eligibility facts for a platform model the partner
+ * has not added yet (registry snapshot / add-and-enable). Pure: the caller
+ * awaits getPlatformInferenceGeo() and passes it in. Built from the SAME
+ * helpers as platformCandidate below (effective platform-key geographies,
+ * plan, rate, capabilities), so a synthesized row gets the same enable verdict
+ * as the loaded offering, including W03's platform-geo `residency_unavailable`.
+ * Connection health is reported as usable: the enable gate neutralises it.
+ */
+export function platformCandidateFacts(
+  partnerId: string,
+  row: PlatformModel,
+  platformInferenceGeo: string | null,
+): CandidateFacts {
+  const standard = platformRate(row);
+  return {
+    ownerPartnerId: partnerId,
+    enabled: false,
+    lifecycle: 'available',
+    requiredPermission: null,
+    platform: { platformOffered: row.platformOffered, lifecycle: row.lifecycle, minPlan: asPlan(row.minPlan) },
+    connection: { kind: 'platform', status: 'active', keyUsable: true },
+    catalog: null,
+    rate: standard ? { source: 'platform', standard } : null,
+    supportsTools: anthropicCapabilities(row.capabilities, row.modelId).capabilities.supportsTools,
+    inferenceGeo: platformInferenceGeo,
+    supportedInferenceGeos: effectivePlatformInferenceGeos(row.optionSupport.inferenceGeo),
+  };
+}
+
 /** Platform offering, or the partnerless system candidate (patch_test). */
 async function platformCandidate(
   row: PlatformModel,

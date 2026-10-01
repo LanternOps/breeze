@@ -54,8 +54,8 @@ vi.mock('./capabilities', () => ({
   }),
 }));
 
-import { findOfferingIdByModel, loadOfferingCandidate, loadPlatformDefaultCandidate } from './candidateLoader';
-import { checkEligibility, type EligibilityContext } from './eligibility';
+import { findOfferingIdByModel, loadOfferingCandidate, loadPlatformDefaultCandidate, platformCandidateFacts } from './candidateLoader';
+import { checkEligibility, checkEnableEligibility, type EligibilityContext } from './eligibility';
 
 const ELIGIBILITY_CTX: EligibilityContext = {
   partnerId: 'p1', surface: 'chat', partnerPlan: 'pro', hosted: true, residencyRequired: false,
@@ -442,5 +442,40 @@ describe('unknown capabilities on an Anthropic connection (W01 D4 + W00 wire par
     m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible' });
     const c = (await loadOfferingCandidate('off-1', 'p1'))!;
     expect(c.capabilities).toEqual({ thinkingMode: 'unknown', effortLevels: [], supportsTools: false, supportsVision: false });
+  });
+});
+
+describe('platformCandidateFacts: synthesized platform rows match the loader (W04 #7602, ruling BD-1)', () => {
+  const ENABLE_CTX = { partnerId: 'p1', partnerPlan: 'pro' as const, hosted: true };
+
+  it.each([
+    ['a geo the key cannot serve', ['us'], 'eu', 'residency_unavailable'],
+    ['a served geo', ['us'], 'us', null],
+    ['a row geo list the key narrows away', ['eu', 'us'], 'global', 'residency_unavailable'],
+    ['the default (empty) row list under global', [], 'global', null],
+    ['no configured platform geo', ['us'], null, null],
+  ] as const)('%s → the same enable verdict', async (_label, rowGeos, platformGeo, expected) => {
+    const row = { ...PLATFORM_ROW, optionSupport: { ...PLATFORM_ROW.optionSupport, inferenceGeo: [...rowGeos] } };
+    m.getPlatformModelById.mockResolvedValue(row);
+    m.getPlatformInferenceGeo.mockResolvedValue(platformGeo);
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, enabled: false });
+
+    const loaded = (await loadOfferingCandidate('off-1', 'p1'))!;
+    const synthesized = platformCandidateFacts('p1', row as never, platformGeo);
+
+    expect(synthesized.inferenceGeo).toBe(loaded.facts.inferenceGeo);
+    expect(synthesized.supportedInferenceGeos).toEqual(loaded.facts.supportedInferenceGeos);
+    expect(checkEnableEligibility(synthesized, ENABLE_CTX)).toBe(expected);
+    expect(checkEnableEligibility(loaded.facts, ENABLE_CTX)).toBe(expected);
+  });
+
+  it('carries the loader’s platform, rate and tools facts for the same row', async () => {
+    m.getOffering.mockResolvedValue({ ...BASE_OFFERING, enabled: false });
+    const loaded = (await loadOfferingCandidate('off-1', 'p1'))!;
+    const synthesized = platformCandidateFacts('p1', PLATFORM_ROW as never, null);
+    expect(synthesized.platform).toEqual(loaded.facts.platform);
+    expect(synthesized.rate).toEqual(loaded.facts.rate);
+    expect(synthesized.supportsTools).toBe(loaded.facts.supportsTools);
+    expect(synthesized).toMatchObject({ ownerPartnerId: 'p1', enabled: false, lifecycle: 'available', requiredPermission: null, catalog: null });
   });
 });
