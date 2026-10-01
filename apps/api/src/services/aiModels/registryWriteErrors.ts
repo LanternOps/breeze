@@ -12,13 +12,16 @@ import { ConnectionKeyError } from './connectionKeys';
 
 export type RegistryWriteCode =
   | 'not_found' | 'unpriced' | 'not_eligible' | 'offering_in_use' | 'stale_write'
-  | 'conflict' | 'invalid' | 'tools_unsupported' | 'widens_partner' | 'write_failed';
+  | 'conflict' | 'invalid' | 'tools_unsupported' | 'widens_partner' | 'write_failed'
+  | 'registry_busy';
+
+export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 
 export class RegistryWriteError extends Error {
   constructor(
     message: string,
     readonly code: RegistryWriteCode,
-    readonly status: 400 | 404 | 409 | 422 | 500,
+    readonly status: 400 | 404 | 409 | 422 | 500 | 503,
     readonly details?: Record<string, unknown>,
   ) {
     super(message);

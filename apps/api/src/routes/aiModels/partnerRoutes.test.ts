@@ -303,6 +303,15 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(await res.json()).toEqual({ error: 'in use', code: 'offering_in_use', details: { inUse: [{ surface: 'chat', level: 'partner', orgId: null }] } });
     expect(captureException).not.toHaveBeenCalled();
   });
+  it('a busy partner registry lock is a 503 registry_busy, not reported to Sentry (expected contention)', async () => {
+    vi.mocked(putPartnerAssignments).mockRejectedValue(
+      new RegistryWriteError('Another AI configuration change is in progress. Try again in a moment.', 'registry_busy', 503),
+    );
+    const res = await call('PUT', '/assignments', { assignments: [{ surface: 'chat', role: 'default', defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: null, expectedUpdatedAt: null }] });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ code: 'registry_busy', error: 'Another AI configuration change is in progress. Try again in a moment.' });
+    expect(captureException).not.toHaveBeenCalled();
+  });
   it('maps PartnerLlmError to its status (key rotation probe failure)', async () => {
     vi.mocked(savePartnerLlmKey).mockRejectedValue(new PartnerLlmError('Anthropic rejected this key.', 400));
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });

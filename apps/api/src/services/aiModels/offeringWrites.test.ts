@@ -7,7 +7,8 @@ const h = vi.hoisted(() => ({
   getOffering: vi.fn(),
   getPlatformModelById: vi.fn(),
   getPlatformInferenceGeo: vi.fn(async () => null as string | null),
-  lockPartnerRegistryReconcile: vi.fn(async (_partnerId: string) => {}),
+  /** pg_try_advisory_xact_lock result; false = another registry write holds the partner lock. */
+  tryLock: vi.fn(async (_partnerId: string) => true),
   hosted: true,
   /** Ordered log of lock acquisition and row writes, to pin lock-before-write. */
   calls: [] as string[],
@@ -34,10 +35,10 @@ vi.mock('./platformModels', async (orig) => ({
   getPlatformModelById: h.getPlatformModelById,
   getPlatformInferenceGeo: h.getPlatformInferenceGeo,
 }));
-vi.mock('./legacyReconcile', () => ({
-  lockPartnerRegistryReconcile: async (partnerId: string) => {
+vi.mock('./registryWriteLock', () => ({
+  tryLockPartnerRegistryWrite: async (partnerId: string) => {
     h.calls.push(`lock:${partnerId}`);
-    return h.lockPartnerRegistryReconcile(partnerId);
+    return h.tryLock(partnerId);
   },
 }));
 vi.mock('../../config/env', () => ({ isHosted: () => h.hosted }));
@@ -132,6 +133,17 @@ describe('setOfferingEnabled', () => {
     await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: true, force: false });
     expect(h.calls).toEqual([`lock:${P}`, 'enableOffering']);
     expect(h.systemContexts).toBe(1);
+  });
+
+  it('does not wait for a held partner registry lock: 503 registry_busy and nothing written', async () => {
+    h.loadOfferingCandidate.mockResolvedValue(candidate());
+    h.tryLock.mockResolvedValueOnce(false);
+    const err = await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: true, force: false }).catch((e) => e);
+    expect(err).toBeInstanceOf(RegistryWriteError);
+    expect([err.status, err.code]).toEqual([503, 'registry_busy']);
+    expect(err.message).toBe('Another AI configuration change is in progress. Try again in a moment.');
+    expect(h.calls).toEqual([`lock:${P}`]);
+    expect(h.enableOffering).not.toHaveBeenCalled();
   });
 
   it.each([

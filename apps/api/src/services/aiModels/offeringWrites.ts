@@ -4,8 +4,9 @@
  * The route gates every call on BILLING_MANAGE + canManagePartnerWidePolicies
  * + MFA and runs ensurePartnerCutover first (routes/aiModels/shared.ts
  * registryWrite). Each write then runs in ONE system transaction behind the
- * per-partner registry lock (lockPartnerRegistryReconcile, the lock W03's
- * cutover and compatRemap take), so it serialises with a concurrent
+ * per-partner registry lock (the key W03's lockPartnerRegistryReconcile, cutover
+ * and compatRemap use; W04 try-locks it, a held lock → 503 registry_busy),
+ * so it serialises with a concurrent
  * /ai/provider key or kind switch that remaps offering ids — the same pattern
  * as partnerLlmConfig.inRegistryWrite. System scope bypasses RLS, so every
  * statement is pinned to input.partnerId (from auth, never from the body).
@@ -20,16 +21,18 @@ import { aiModelAssignments, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
 import { loadOfferingCandidate, loadPartnerFacts, platformCandidateFacts, type LoadedCandidate } from './candidateLoader';
 import { checkEnableEligibility, type EnableEligibilityContext } from './eligibility';
-import { lockPartnerRegistryReconcile } from './legacyReconcile';
+import { tryLockPartnerRegistryWrite } from './registryWriteLock';
 import { enableOffering, getOffering, offeringPriceSource, type Offering } from './offerings';
 import { getPlatformInferenceGeo, getPlatformModelById, type PlatformModel } from './platformModels';
-import { RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
+import { REGISTRY_BUSY_MESSAGE, RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
 
 export interface OfferingInUse { surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }
 
 /**
  * Runs `write` in a fresh system transaction holding the partner's registry
- * lock, mapping any failure through toRegistryWriteError. Shared by every W04
+ * lock (try-locked: a concurrent holder makes this a 503 registry_busy rather
+ * than parking pooled connections), mapping any failure through
+ * toRegistryWriteError. Shared by every W04
  * registry write (offerings here, assignments in assignmentWrites.ts).
  * Internal helpers below assume they are already inside it and never
  * open a second one: a nested runOutsideDbContext would take a new connection
@@ -39,7 +42,10 @@ export async function inPartnerRegistryWrite<T>(partnerId: string, label: string
   try {
     return await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
-        await lockPartnerRegistryReconcile(partnerId);
+        // Try, never wait (registryWriteLock.ts): a held lock is a 503 the client retries.
+        if (!(await tryLockPartnerRegistryWrite(partnerId))) {
+          throw new RegistryWriteError(REGISTRY_BUSY_MESSAGE, 'registry_busy', 503);
+        }
         return write();
       }, label));
   } catch (error) {

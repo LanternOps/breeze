@@ -311,6 +311,60 @@ describe.skipIf(!RUN)('tighten-only + ownership trigger, under an org token (#76
   });
 });
 
+describe.skipIf(!RUN)('already-stored permitted ids and the non-blocking registry lock (#7602 W04)', () => {
+  it('a partner row whose stored permitted id was disabled since stays saveable; a newly added disabled id is still refused', async () => {
+    const w = await seedWorld();
+    const rowId = await seedPartnerDefault(w.pA, 'catalog_enrichment', w.offA, [w.offA, w.offA2]);
+    await fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE id = ${w.offA2}`;
+    const offOff = await seedOffering({ partnerId: w.pA, platformModelId: await seedPricedPlatformModel(), enabled: false });
+
+    const token = await versionToken('ai_model_assignments', rowId);
+    const err = await caught(asPartner(w.pA, [w.orgA], () => putPartnerAssignments({ partnerId: w.pA, rows: [
+      partnerRow('catalog_enrichment', w.offA, [w.offA, w.offA2, offOff], token),
+    ] })));
+    expect([err.status, err.code, err.details?.offeringId]).toEqual([422, 'not_eligible', offOff]);
+
+    const [saved] = await asPartner(w.pA, [w.orgA], () => putPartnerAssignments({ partnerId: w.pA, rows: [
+      { ...partnerRow('catalog_enrichment', w.offA, [w.offA, w.offA2], token), allowUserChoice: false },
+    ] }));
+    expect(saved).toMatchObject({ id: rowId, permittedOfferingIds: [w.offA, w.offA2], allowUserChoice: false });
+  });
+
+  it('an org override whose stored permitted id was disabled since stays saveable (and can drop it)', async () => {
+    const w = await seedWorld();
+    await seedPartnerDefault(w.pA, 'catalog_enrichment', w.offA, null);
+    const rowId = await seedOrgOverride(w.orgA, w.pA, 'catalog_enrichment', null, [w.offA, w.offA2]);
+    await fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE id = ${w.offA2}`;
+
+    const first = await versionToken('ai_model_assignments', rowId);
+    const [kept] = await asOrg(w.orgA, w.pA, () => putOrgAssignments({ partnerId: w.pA, orgId: w.orgA, rows: [
+      orgRow('catalog_enrichment', { permittedOfferingIds: [w.offA, w.offA2], allowUserChoice: false, expectedUpdatedAt: first }),
+    ] }));
+    expect(kept).toMatchObject({ id: rowId, permittedOfferingIds: [w.offA, w.offA2], allowUserChoice: false });
+
+    const second = await versionToken('ai_model_assignments', rowId);
+    const [dropped] = await asOrg(w.orgA, w.pA, () => putOrgAssignments({ partnerId: w.pA, orgId: w.orgA, rows: [
+      orgRow('catalog_enrichment', { permittedOfferingIds: [w.offA], allowUserChoice: false, expectedUpdatedAt: second }),
+    ] }));
+    expect(dropped).toMatchObject({ id: rowId, permittedOfferingIds: [w.offA] });
+  });
+
+  it('a write while another transaction holds the partner registry lock is 503 registry_busy and writes nothing', async () => {
+    const w = await seedWorld();
+    await fixtureSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`ai_model_registry_reconcile:${w.pA}`}, 0))`;
+      const err = await caught(asPartner(w.pA, [w.orgA], () => putPartnerAssignments({ partnerId: w.pA, rows: [
+        partnerRow('catalog_enrichment', w.offA),
+      ] })));
+      expect([err.status, err.code]).toEqual([503, 'registry_busy']);
+    });
+    expect(await assignmentCount({ partnerId: w.pA })).toBe(0);
+    // Lock released at commit: the same write now goes through.
+    await asPartner(w.pA, [w.orgA], () => putPartnerAssignments({ partnerId: w.pA, rows: [partnerRow('catalog_enrichment', w.offA)] }));
+    expect(await assignmentCount({ partnerId: w.pA })).toBe(1);
+  });
+});
+
 describe.skipIf(!RUN)('stale-write tokens at ms precision (#7602 W04)', () => {
   it('an org row whose updated_at carries microseconds matches its ms token; an off-by-one ms token is stale', async () => {
     const w = await seedWorld();

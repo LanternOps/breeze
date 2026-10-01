@@ -71,7 +71,8 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
     return await fn();
   } catch (error) {
     if (error instanceof RegistryWriteError) {
-      if (error.status >= 500) captureException(error, undefined, { service: 'aiModels' });
+      // registry_busy is expected contention on the partner lock, not a fault.
+      if (error.status >= 500 && error.code !== 'registry_busy') captureException(error, undefined, { service: 'aiModels' });
       return c.json({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) }, error.status);
     }
     if (error instanceof PartnerLlmError) {

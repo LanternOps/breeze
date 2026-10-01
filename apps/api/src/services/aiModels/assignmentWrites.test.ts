@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
   /** Ordered log: lock acquisition, row reads, row writes. */
   calls: [] as string[],
   systemContexts: 0,
+  /** pg_try_advisory_xact_lock result; false = another registry write holds the partner lock. */
+  lockAcquired: true,
 }));
 
 vi.mock('./candidateLoader', async (orig) => ({
@@ -19,8 +21,8 @@ vi.mock('./candidateLoader', async (orig) => ({
   loadPartnerFacts: vi.fn(async () => ({ plan: 'pro', residencyRequired: false })),
 }));
 vi.mock('../../config/env', () => ({ isHosted: () => true }));
-vi.mock('./legacyReconcile', () => ({
-  lockPartnerRegistryReconcile: vi.fn(async (partnerId: string) => { h.calls.push(`lock:${partnerId}`); }),
+vi.mock('./registryWriteLock', () => ({
+  tryLockPartnerRegistryWrite: vi.fn(async (partnerId: string) => { h.calls.push(`lock:${partnerId}`); return h.lockAcquired; }),
 }));
 vi.mock('./assignmentRows', () => ({
   listAssignmentRows: vi.fn(async ({ orgId }: { orgId?: string | null }) => {
@@ -97,6 +99,7 @@ beforeEach(() => {
   h.updateResult = null;
   h.calls = [];
   h.systemContexts = 0;
+  h.lockAcquired = true;
 });
 
 describe('putPartnerAssignments', () => {
@@ -119,6 +122,15 @@ describe('putPartnerAssignments', () => {
     await putPartnerAssignments({ partnerId: P, rows: [row()] });
     expect(h.systemContexts).toBe(1);
     expect(h.calls).toEqual([`lock:${P}`, 'read', 'insert']);
+  });
+
+  it('a held partner registry lock is 503 registry_busy: no read, no write, no waiting', async () => {
+    h.candidates.set(A, cand());
+    h.lockAcquired = false;
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row()] }).catch((e) => e);
+    expect([err.status, err.code]).toEqual([503, 'registry_busy']);
+    expect(h.calls).toEqual([`lock:${P}`]);
+    expect(h.upserts).toHaveLength(0);
   });
 
   it('updates an existing row by version and never touches the fallback columns', async () => {
