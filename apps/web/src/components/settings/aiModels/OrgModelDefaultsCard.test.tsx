@@ -110,7 +110,10 @@ describe('OrgModelDefaultsCard', () => {
   it('the lock is disabled when the partner already locks user choice', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { allowUserChoice: false } } })));
     render(<OrgModelDefaultsCard orgId={ORG} />);
-    expect(((await screen.findByTestId('org-model-defaults-lock-choice-chat')) as HTMLInputElement).disabled).toBe(true);
+    const lock = (await screen.findByTestId('org-model-defaults-lock-choice-chat')) as HTMLInputElement;
+    expect(lock.disabled).toBe(true);
+    expect(lock.checked).toBe(true);
+    expect(screen.getByText('Locked by the partner')).toBeTruthy();
   });
 
   it('renders nothing when the org is forbidden or unknown', async () => {
@@ -120,26 +123,45 @@ describe('OrgModelDefaultsCard', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('prompts for a default when narrowing drops the inherited default, and surfaces the 422', async () => {
+  it('flags narrowing that drops the inherited default before Save', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { permittedOfferingIds: [A, B] } } })));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    await screen.findByTestId('org-model-defaults-row-chat');
+    fireEvent.change(screen.getByTestId('org-model-defaults-permitted-mode-chat'), { target: { value: 'list' } });
+    fireEvent.click(screen.getByTestId(`org-model-defaults-permitted-chat-${B}`));
+    expect(screen.getByTestId('org-model-defaults-pick-default-chat')).toBeTruthy();
+    expect((screen.getByTestId('org-model-defaults-default-chat') as HTMLSelectElement).getAttribute('aria-invalid')).toBe('true');
+    // Picking a default clears the prompt.
+    fireEvent.change(screen.getByTestId('org-model-defaults-default-chat'), { target: { value: B } });
+    expect(screen.queryByTestId('org-model-defaults-pick-default-chat')).toBeNull();
+  });
+
+  it('the inherited_default_not_permitted 422 alone raises the pick-a-default prompt', async () => {
     fetchWithAuth
-      .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { permittedOfferingIds: [A, B] } } })))
+      .mockResolvedValueOnce(jsonRes(orgDefaults()))
       .mockResolvedValueOnce(jsonRes({
         error: 'An organization can only narrow the partner’s defaults.', code: 'widens_partner',
         details: { surface: 'chat', field: 'defaultOfferingId', reason: 'inherited_default_not_permitted' },
       }, 422));
     render(<OrgModelDefaultsCard orgId={ORG} />);
     await screen.findByTestId('org-model-defaults-row-chat');
-    fireEvent.change(screen.getByTestId('org-model-defaults-permitted-mode-chat'), { target: { value: 'list' } });
-    fireEvent.click(screen.getByTestId(`org-model-defaults-permitted-chat-${B}`));
-    // The inherited default (A) is no longer permitted and no replacement is chosen.
-    expect(screen.getByTestId('org-model-defaults-pick-default-chat')).toBeTruthy();
-    expect((screen.getByTestId('org-model-defaults-default-chat') as HTMLSelectElement).getAttribute('aria-invalid')).toBe('true');
-    fireEvent.click(screen.getByTestId('org-model-defaults-save'));
-    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
-    expect(await screen.findByTestId('org-model-defaults-pick-default-chat')).toBeTruthy();
-    // Picking a default clears the prompt.
-    fireEvent.change(screen.getByTestId('org-model-defaults-default-chat'), { target: { value: B } });
+    // A draft the client-side check does not flag: only the server can raise the prompt.
+    fireEvent.change(screen.getByTestId('org-model-defaults-effort-chat'), { target: { value: 'low' } });
     expect(screen.queryByTestId('org-model-defaults-pick-default-chat')).toBeNull();
+    fireEvent.click(screen.getByTestId('org-model-defaults-save'));
+    expect(await screen.findByTestId('org-model-defaults-pick-default-chat')).toBeTruthy();
+    expect((screen.getByTestId('org-model-defaults-default-chat') as HTMLSelectElement).getAttribute('aria-invalid')).toBe('true');
+    expect(screen.queryByTestId('org-model-defaults-field-error-chat')).toBeNull();
+  });
+
+  it('labels each option select with the inherited value', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { options: { effort: 'medium', thinkingDisplay: 'summarized', speed: 'fast' } } } })));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    await screen.findByTestId('org-model-defaults-row-chat');
+    const first = (id: string) => (screen.getByTestId(id) as HTMLSelectElement).options[0].textContent;
+    expect(first('org-model-defaults-effort-chat')).toBe('Inherit — Medium');
+    expect(first('org-model-defaults-display-chat')).toBe('Inherit — Summarized');
+    expect(first('org-model-defaults-speed-chat')).toBe('Inherit — Fast');
   });
 
   it('shows a widens_partner 422 on the field the API named', async () => {
