@@ -37,7 +37,8 @@
 --
 -- The swap drops the drain table's FKs (see the function for why), so a
 -- device or org deleted mid-drain is neither blocked by nor cascaded into it;
--- the move discards rows whose device or org no longer exists. The table
+-- the move discards rows whose device no longer exists and re-inserts the rest
+-- under their device's current org. The table
 -- keeps the default's RLS and
 -- grants; metric_rollups_staging is not usable by breeze_app
 -- (USAGE revoked from PUBLIC) and is outside the public-schema tenancy
@@ -188,7 +189,8 @@ BEGIN
   -- organizations and devices to remove their FK triggers, queueing every
   -- reader of devices behind it. Without them a device or org deleted during
   -- the drain cannot be blocked by (or cascade into) the drain table; the move
-  -- skips rows whose device or org no longer exists instead.
+  -- discards rows whose device no longer exists instead (a device row always
+  -- references a live org).
   FOR v_con IN
     SELECT c.conname FROM pg_constraint c
     WHERE c.conrelid = 'metric_rollups_staging.metric_rollups_default_drain'::regclass AND c.contype = 'f'
@@ -224,7 +226,8 @@ $$;
 -- 2. Move one page range [p_from_page, p_from_page + p_pages) of the drain
 -- table back through metric_rollups. Returns the next page to process (NULL
 -- once past the end), rows re-inserted, and rows discarded (expired, or their
--- device/org was deleted while they sat in the drain table).
+-- device was deleted while they sat in the drain table). A re-inserted row
+-- takes its device's current org_id.
 --
 -- A row is kept when its bucket_start is at or after its bucket's cutoff. The
 -- cutoffs come from the caller's retention settings, but are clamped to the
@@ -258,9 +261,9 @@ DECLARE
   v_total_pages BIGINT;
   v_to_page     BIGINT;
   v_cols        TEXT;
+  v_select      TEXT;
   v_set         TEXT;
   v_batch       BIGINT;
-  v_applied     BIGINT;
 BEGIN
   IF public.breeze_current_scope() IS DISTINCT FROM 'system' THEN
     RAISE EXCEPTION 'breeze_drain_metric_rollup_default_batch: requires breeze.scope = system (RLS would hide rows from the move)'
@@ -292,6 +295,10 @@ BEGIN
   SELECT string_agg(quote_ident(attname), ', ' ORDER BY attnum) INTO v_cols
   FROM pg_attribute
   WHERE attrelid = 'public.metric_rollups'::regclass AND attnum > 0 AND NOT attisdropped;
+  SELECT string_agg(CASE WHEN attname = 'org_id' THEN 'current_org_id' ELSE quote_ident(attname) END, ', ' ORDER BY attnum)
+    INTO v_select
+  FROM pg_attribute
+  WHERE attrelid = 'public.metric_rollups'::regclass AND attnum > 0 AND NOT attisdropped;
   SELECT string_agg(format('%1$I = EXCLUDED.%1$I', attname), ', ' ORDER BY attnum) INTO v_set
   FROM pg_attribute
   WHERE attrelid = 'public.metric_rollups'::regclass AND attnum > 0 AND NOT attisdropped
@@ -304,22 +311,27 @@ BEGIN
         WHERE ctid >= %L::tid AND ctid < %L::tid
         RETURNING *
       ), keep AS (
-        SELECT * FROM batch
-        WHERE bucket_start >= CASE bucket_seconds WHEN 300 THEN $1 WHEN 3600 THEN $2 ELSE $3 END
-          AND EXISTS (SELECT 1 FROM public.devices d WHERE d.id = batch.device_id)
-          AND EXISTS (SELECT 1 FROM public.organizations o WHERE o.id = batch.org_id)
+        -- A row follows its device's CURRENT org: a device moved to another
+        -- org while its rows sat in the drain table must not come back under
+        -- the old org (the org move rewrote the live rows, not these).
+        SELECT batch.*, d.org_id AS current_org_id
+        FROM batch
+        JOIN public.devices d ON d.id = batch.device_id
+        WHERE batch.bucket_start >= CASE batch.bucket_seconds WHEN 300 THEN $1 WHEN 3600 THEN $2 ELSE $3 END
       ), moved AS (
         INSERT INTO public.metric_rollups AS live (%s)
         SELECT %s FROM keep
         ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
         DO UPDATE SET %s WHERE live.updated_at < EXCLUDED.updated_at
-        RETURNING 1
       )
-      SELECT (SELECT count(*) FROM batch), (SELECT count(*) FROM keep), (SELECT count(*) FROM moved)
+      -- The INSERT CTE runs whether or not it is referenced. rows_moved counts
+      -- every retained row handed back to metric_rollups, including one that
+      -- lost the updated_at tie-break to a newer live row (already current).
+      SELECT (SELECT count(*) FROM batch), (SELECT count(*) FROM keep)
     $q$,
-    format('(%s,0)', p_from_page), format('(%s,0)', v_to_page), v_cols, v_cols, v_set
+    format('(%s,0)', p_from_page), format('(%s,0)', v_to_page), v_cols, v_select, v_set
   )
-  INTO v_batch, rows_moved, v_applied
+  INTO v_batch, rows_moved
   USING v_cut_5m, v_cut_1h, v_cut_1d;
 
   rows_discarded := v_batch - rows_moved;

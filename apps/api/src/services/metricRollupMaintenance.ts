@@ -449,7 +449,12 @@ async function drainDefaultPartition(
   }
   if (probe === LOCK_HELD) return LOCK_HELD;
 
-  drain.blockedMonths = probe.months.map((month) => metricRollupPartitionName(new Date(`${month.replace(' ', 'T')}Z`)));
+  // Pure string mapping (no Date parsing), so an odd bucket_start can never
+  // throw here and take the rest of the run down with it.
+  drain.blockedMonths = probe.months.map((month) => {
+    const match = /^(\d{4,})-(\d{2})-/.exec(month);
+    return match ? `metric_rollups_y${match[1]}m${match[2]}` : month;
+  });
   if (drain.blockedMonths.length > 0) {
     console.warn(
       `[MetricRollupMaintenance] metric_rollups_default holds rows for ${drain.blockedMonths.join(', ')}; draining it`,

@@ -277,6 +277,87 @@ describe('metric_rollups_default drain (#7541, real DB, breeze_app)', () => {
     await dropMonth(BLOCKED.name);
   });
 
+  it('re-inserts a drained row under its device\'s CURRENT org when the device moved mid-drain', async () => {
+    await getTestDb().insert(metricRollups).values(rollup('2035-01-01T00:00:00Z', 3600, 1));
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_swap_metric_rollup_default(ARRAY['2035-01-01 00:00:00']::timestamp[], '2000-01-01 00:00:00'::timestamp)`),
+    );
+    const partner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    await getTestDb().execute(sql`UPDATE devices SET org_id = ${otherOrg.id}, site_id = ${otherSite.id} WHERE id = ${deviceId}`);
+
+    const result = await runMetricRollupMaintenance({ now: new Date(), retentionDays: RETENTION });
+
+    expect(result.failures).toEqual([]);
+    const moved = await rows<{ orgId: string }>(sql`
+      SELECT org_id AS "orgId" FROM metric_rollups
+      WHERE device_id = ${deviceId} AND bucket_start = '2035-01-01 00:00:00' AND bucket_seconds = 3600
+    `);
+    expect(moved).toEqual([{ orgId: otherOrg.id }]);
+  });
+
+  it('refuses a second swap while a drain is pending', async () => {
+    const swap = () =>
+      withSystemDbAccessContext(() =>
+        db.execute(sql`SELECT public.breeze_swap_metric_rollup_default(ARRAY[]::timestamp[], '2000-01-01 00:00:00'::timestamp)`),
+      );
+    await swap();
+    let code: string | undefined;
+    try {
+      await swap();
+    } catch (error) {
+      code = (error as { cause?: { code?: string } }).cause?.code;
+    }
+    expect(code).toBe('55000');
+    // Finish the (empty) drain so the next test starts clean.
+    await withSystemDbAccessContext(() => db.execute(sql`SELECT public.breeze_finish_metric_rollup_default_drain()`));
+    expect(await relkind('metric_rollups_staging', DRAIN_TABLE)).toBeNull();
+  });
+
+  it('clamps caller cutoffs to the retention floors: a row inside the 30 day 5-minute floor is never discarded', async () => {
+    // A 5-minute row from a few days ago, for a month whose partition exists.
+    const recent = new Date(Date.now() - 3 * 86_400_000);
+    recent.setUTCMinutes(0, 0, 0);
+    await withSystemDbAccessContext(() =>
+      db.execute(sql`SELECT public.breeze_swap_metric_rollup_default(ARRAY[]::timestamp[], '2000-01-01 00:00:00'::timestamp)`),
+    );
+    await getTestDb().execute(sql`
+      INSERT INTO metric_rollups_staging.metric_rollups_default_drain
+        (org_id, source_table, device_id, metric_type, metric_name, bucket_start, bucket_seconds, avg_value, sample_count)
+      VALUES (${orgId}, 'device_metrics', ${deviceId}, 'cpu', 'cpu_floor_probe', ${recent.toISOString()}::timestamptz AT TIME ZONE 'UTC', 300, 1, 1)
+    `);
+
+    // A caller asking to discard everything older than "now".
+    const [batch] = await withSystemDbAccessContext(async () =>
+      (await db.execute(sql`
+        SELECT rows_moved::int AS moved, rows_discarded::int AS discarded
+        FROM public.breeze_drain_metric_rollup_default_batch(0, 1000, now()::timestamp, now()::timestamp, now()::timestamp)
+      `)) as unknown as Array<{ moved: number; discarded: number }>,
+    );
+    expect(batch).toEqual({ moved: 1, discarded: 0 });
+    const [kept] = await rows<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM metric_rollups WHERE device_id = ${deviceId} AND metric_name = 'cpu_floor_probe'
+    `);
+    expect(kept!.n).toBe(1);
+    await withSystemDbAccessContext(() => db.execute(sql`SELECT public.breeze_finish_metric_rollup_default_drain()`));
+    await getTestDb().execute(sql`DELETE FROM metric_rollups WHERE metric_name = 'cpu_floor_probe'`);
+  });
+
+  it('does not create a month past the daily cutoff; its rows are discarded', async () => {
+    await getTestDb().insert(metricRollups).values(rollup('2019-07-01T00:00:00Z', 86400, 1));
+
+    const result = await runMetricRollupMaintenance({
+      now: new Date(),
+      retentionDays: { fiveMinute: 30, hourly: 365, daily: 730 },
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.defaultPartitionDrain).toMatchObject({ swapped: true, monthsCreated: [], rowsMoved: 0, rowsDiscarded: 1 });
+    expect(await relkind('public', EXPIRED_MONTH)).toBeNull();
+    expect(await defaultRowCount()).toBe(0);
+  });
+
   it('moves a drain table spanning many pages in page-range batches', async () => {
     await getTestDb().execute(sql`
       INSERT INTO metric_rollups (org_id, source_table, device_id, metric_type, metric_name, bucket_start, bucket_seconds, avg_value, sample_count)
