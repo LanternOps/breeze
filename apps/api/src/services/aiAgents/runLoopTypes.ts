@@ -370,6 +370,14 @@ export interface RunRow {
    * workspace finalizer settles at when provider usage is unavailable.
    */
   computeReservedCents: number | null;
+  /**
+   * AI model registry W03 — the funding of the offering admission resolved
+   * (`ai_agent_runs.funding_source`) and that offering's id (finding 6: the
+   * loop re-resolves exactly it). Both null on a run admitted before W03;
+   * optional so a fixture that predates them stays a valid row.
+   */
+  fundingSource?: 'platform' | 'partner_key' | null;
+  admittedOfferingId?: string | null;
 }
 
 export interface AgentRow {

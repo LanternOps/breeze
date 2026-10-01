@@ -74,7 +74,7 @@ function parseRunIdHash(hash: string): string | undefined {
 /** Statuses from `GET /ai/agents/runs/:runId` that mean the design run will
  *  never change again — matches AiRunCard's terminal set for the subset of
  *  statuses a designer run can reach. */
-const TERMINAL_DESIGN_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "expired", "skipped"]);
+const TERMINAL_DESIGN_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "expired", "skipped", "blocked"]);
 
 /** A Fleet Design run takes ~3 minutes end to end. The page has no other
  *  progress signal once the 202 lands, so poll for completion rather than

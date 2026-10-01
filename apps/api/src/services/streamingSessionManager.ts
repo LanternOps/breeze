@@ -26,7 +26,7 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 // real runtime cycle. TypeScript erases this one.
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { sdkModelOptions } from './aiModels/connectionFactory';
+import { grantCatalogSdkEgress, sdkModelOptions } from './aiModels/connectionFactory';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -53,9 +53,7 @@ import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { isRecognizedSelfHostSignal } from '../config/env';
 import type { ResolvedLlmEndpoint, UsableLlmConfig } from './llm/llmConfigResolver';
-import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { PLATFORM_LLM_CREDENTIAL_ENV_KEYS } from './llm/llmAvailability';
-import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
@@ -1188,47 +1186,14 @@ export class StreamingSessionManager {
     // `mcpServerFactory`, `createBreezeMcpServer` — would otherwise leak the
     // grant until the process restarted, since `remove()` never runs for a
     // session that was never registered.
-    let egressProxyUrl: string | undefined;
-    let revokeEgressGrant: (() => void) | undefined;
-    if (catalogEndpoint && connectionConfig.source === 'partner') {
-      const host = new URL(catalogEndpoint.baseUrl).hostname;
-      const partnerId = connectionConfig.partnerId;
-      const provenance = {
-        orgId: dbSession.orgId,
-        partnerId,
-        catalogEntryId: catalogEndpoint.catalogEntryId,
-        revisionId: catalogEndpoint.revisionId,
-        aiSessionId: breezeSessionId,
-      };
-      const proxy = await getLlmEgressProxy();
-      egressProxyUrl = proxy.grant(
-        breezeSessionId,
-        { host, port: 443 },
-        // Every CONNECT the child makes under this grant — tunnelled or
-        // refused — becomes one audit row. Synchronous and fire-and-forget by
-        // the recorder's contract; it runs inside the proxy's socket handler.
-        (attempt) => {
-          recordLlmEgressEvent({
-            ...provenance,
-            surface: 'sdk_proxy_connect',
-            host: attempt.host,
-            resolvedIp: attempt.resolvedIp,
-            blocked: attempt.blocked,
-          });
-        },
-      ).proxyUrl;
-      revokeEgressGrant = () => proxy.revoke(breezeSessionId);
-      session.revokeEgressGrant = revokeEgressGrant;
-      // One row per session create, so the audit shows which provider a session
-      // was pointed at even if the child never manages a single CONNECT.
-      recordLlmEgressEvent({
-        ...provenance,
-        surface: 'sdk_session_create',
-        host,
-        resolvedIp: null,
-        blocked: false,
-      });
-    }
+    // Shared with agent runs (aiModels/connectionFactory.grantCatalogSdkEgress):
+    // null for a non-catalog connection; audited CONNECT grant otherwise.
+    const egress = await grantCatalogSdkEgress(resolved, {
+      key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
+    });
+    const egressProxyUrl = egress?.proxyUrl;
+    const revokeEgressGrant = egress?.revoke;
+    if (revokeEgressGrant) session.revokeEgressGrant = revokeEgressGrant;
 
     // Durable per-session provenance (#3922 phase 2). `billing_source` stays
     // 'partner_key' for direct and catalog BYOK alike, so these two columns are

@@ -3,6 +3,7 @@ import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_POLICY_SNAPSHOT_VERSION,
   AI_AGENT_RUN_PROFILES,
+  AI_AGENT_RUN_STATUSES,
   ANALYSIS_FINDING_SEVERITIES,
   type AiAgentPolicySnapshot,
   type AnalysisOutcome,
@@ -22,6 +23,12 @@ describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v15, AI Operator task-wide budgets â
     const versions: Array<AiAgentPolicySnapshot['schemaVersion']> =
       [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+  });
+});
+
+describe('AI_AGENT_RUN_STATUSES (AI model registry W03)', () => {
+  it('carries the terminal `blocked` status (model unavailable / refused)', () => {
+    expect(AI_AGENT_RUN_STATUSES).toContain('blocked');
   });
 });
 

@@ -274,11 +274,13 @@ describe('mergeAgentPolicies — tighten only', () => {
         '[partner guidance]\npartner says hi\n[/partner guidance]\n\n' +
         '[organization guidance]\norg says hi\n[/organization guidance]',
       cooldownSeconds: 300,
+      offeringId: null,
     };
     const expectedProvenance = {
       enabled: 'partner',
       mode: 'partner',
       model: 'partner',
+      offeringId: 'partner',
       toolAllowlist: 'merged',
       protectedResources: 'merged',
       limits: 'merged',
@@ -364,6 +366,30 @@ describe('mergeAgentPolicies — tighten only', () => {
 
     expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.limits.maxPolicyDecisionsPerDay)
       .toBe(10);
+  });
+
+  // AI model registry W03 (W02 handoff #5): the bound offering follows the
+  // registry projection's rule — the org row's binding, else the partner
+  // baseline's — and is NOT gated on the legacy ai_budgets.allowed_models list
+  // (the run-time resolver re-checks it against the ai_agents permitted set).
+  it('carries the bound offering: org binding wins, else the partner baseline, else null', () => {
+    const partner = policy({ offeringId: 'off-partner' });
+    const orgWins = mergeAgentPolicies(partner, policy({ offeringId: 'off-org' }), { allowedModels: null });
+    expect(orgWins.effective.offeringId).toBe('off-org');
+    expect(orgWins.provenance.offeringId).toBe('org');
+    expect(mergeAgentPolicies(partner, policy({ offeringId: null }), { allowedModels: null }).effective.offeringId)
+      .toBe('off-partner');
+    expect(mergeAgentPolicies(partner, null, { allowedModels: null }).effective.offeringId).toBe('off-partner');
+    expect(mergeAgentPolicies(policy(), policy(), { allowedModels: null }).effective.offeringId).toBeNull();
+  });
+
+  it('normalizes the row\'s offering_id (null when unbound)', () => {
+    const row = {
+      enabled: false, mode: 'off' as const, model: 'claude-opus-5-5', toolAllowlist: [], protectedResources: {},
+      limits: {}, triggers: {}, recipients: {}, actAssets: {}, instructions: null, cooldownSeconds: 900,
+    };
+    expect(normalizeAgentPolicy({ ...row, offeringId: 'off-1' }).offeringId).toBe('off-1');
+    expect(normalizeAgentPolicy({ ...row, offeringId: null }).offeringId).toBeNull();
   });
 
   it('fills JSONB defaults when normalizing a sparse row', () => {

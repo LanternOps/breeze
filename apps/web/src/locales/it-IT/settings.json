@@ -2155,7 +2155,8 @@
         "failed": "Non riuscita",
         "cancelled": "Annullata",
         "expired": "Scaduta",
-        "skipped": "Saltata"
+        "skipped": "Saltata",
+        "blocked": "Bloccata"
       },
       "verdicts": {
         "remediated": "Risolto",

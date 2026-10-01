@@ -72,7 +72,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // device_id/alert_id above. profile / correlation_group_id (phase 2 wave
   // P2-1): the run's lane ('full'|'verdict') and the alert correlation group
   // a verdict run judged — both plain non-secret scalars/identifiers.
-  "ai_agent_runs": tablePolicy("org_id", {"included":["compute_cpu_ms","compute_wall_ms","compute_cents","compute_reserved_cents","workspace_id","id","agent_id","org_id","device_id","alert_id","profile","correlation_group_id","schedule_id","report_run_id","session_id","ticket_id","anomaly_incident_id","trigger_kind","trigger_event_id","dedupe_key","mode_at_start","status","summary","intent_ids","turn_count","cost_cents","error_code","correlation_id","queued_at","started_at","finished_at","task_id","task_step_key","task_attempt_ordinal","prompt_version","resolved_model"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["trigger_ref","policy_snapshot","outcome","staged_inputs"]}),
+  // AI model registry W03 (#7601): funding_source ('platform'|'partner_key')
+  // and admitted_offering_id (an offering uuid) are plain scalars -> included.
+  "ai_agent_runs": tablePolicy("org_id", {"included":["compute_cpu_ms","compute_wall_ms","compute_cents","compute_reserved_cents","workspace_id","id","agent_id","org_id","device_id","alert_id","profile","correlation_group_id","schedule_id","report_run_id","session_id","ticket_id","anomaly_incident_id","trigger_kind","trigger_event_id","dedupe_key","mode_at_start","status","summary","intent_ids","turn_count","cost_cents","error_code","correlation_id","queued_at","started_at","finished_at","task_id","task_step_key","task_attempt_ordinal","prompt_version","resolved_model","funding_source","admitted_offering_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["trigger_ref","policy_snapshot","outcome","staged_inputs"]}),
   // ai_agent_schedules (P2-2, #4189): dual-owner (org_id XOR partner_id)
   // config, same tablePolicy("org_id", ...) treatment as other dual-axis
   // config tables — export/erasure scope by org_id only, partner-wide

@@ -95,6 +95,9 @@ describe('admitAnalysisRun', () => {
     ['max_concurrent_analysis_runs', 'max_concurrent_analysis_runs'],
     ['duplicate', 'analysis_rate'],
     ['agent_daily_budget_exceeded', 'org_budget_exceeded'],
+    // AI model registry W03: its own refusal, like org_budget_exceeded — the
+    // thing to fix (the agents' AI model) is a different setting.
+    ['model_unavailable', 'model_unavailable'],
   ])('maps %s onto %s', async (skipped, refusal) => {
     createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped });
     const result = await admitAnalysisRun(input());
@@ -113,7 +116,7 @@ describe('admitAnalysisRun', () => {
       'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
       'analysis_region_unavailable', 'compute_budget_exceeded', 'org_budget_exceeded',
       'max_concurrent_analysis_runs', 'analysis_rate', 'too_many_input_devices',
-      'device_not_in_org', 'artifact_forbidden', 'enqueue_failed',
+      'device_not_in_org', 'artifact_forbidden', 'enqueue_failed', 'model_unavailable',
     ]);
     for (const [skip, refusal] of Object.entries(SKIP_REASON_REFUSALS)) {
       expect(allowed.has(refusal), `${skip} -> ${refusal}`).toBe(true);

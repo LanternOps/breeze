@@ -15,6 +15,8 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 vi.mock('../llm/guardedLlmFetch', () => ({ buildGuardedLlmFetch: m.guarded }));
 vi.mock('../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: vi.fn() }));
+const egress = vi.hoisted(() => ({ grant: vi.fn(), revoke: vi.fn() }));
+vi.mock('../llm/llmEgressProxy', () => ({ getLlmEgressProxy: vi.fn(async () => egress) }));
 vi.mock('../sentry', () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
 vi.mock('./wireParams', () => ({
   toAgentSdkOptions: (w: { thinking?: unknown; effort?: string }) => ({
@@ -43,6 +45,7 @@ import {
   createAnthropicClient,
   createMessage,
   describeDispatch,
+  grantCatalogSdkEgress,
   messagesModelParams,
   sdkModelOptions,
 } from './connectionFactory';
@@ -259,5 +262,36 @@ describe('describeDispatch', () => {
     ['catalog', { destinationKind: 'catalog', baseUrl: 'https://gw.example.com', connectionId: 'conn-1', funding: 'partner_key', wireModel: 'anthropic/claude-sonnet-5.5' }],
   ] as const)('%s', (kind, expected) => {
     expect(describeDispatch(r(kind))).toEqual(expected);
+  });
+});
+
+describe('grantCatalogSdkEgress (moved from the session manager, W03 Task 12)', () => {
+  beforeEach(() => {
+    egress.grant.mockReset().mockReturnValue({ proxyUrl: 'http://127.0.0.1:9999' });
+    egress.revoke.mockReset();
+    vi.mocked(recordLlmEgressEvent).mockClear();
+  });
+
+  it.each(['platform', 'anthropic_byok'] as const)('%s: no grant (the child dials Anthropic itself)', async (kind) => {
+    await expect(grantCatalogSdkEgress(r(kind), { key: 'k', orgId: 'org-1', aiSessionId: null })).resolves.toBeNull();
+    expect(egress.grant).not.toHaveBeenCalled();
+  });
+
+  it('catalog: one CONNECT grant to the revision host on 443, audited, revocable by its key', async () => {
+    const got = await grantCatalogSdkEgress(r('catalog'), { key: 'agent-run:run-1', orgId: 'org-1', aiSessionId: null });
+    expect(got?.proxyUrl).toBe('http://127.0.0.1:9999');
+    expect(egress.grant).toHaveBeenCalledWith('agent-run:run-1', { host: 'gw.example.com', port: 443 }, expect.any(Function));
+    expect(recordLlmEgressEvent).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'sdk_session_create', host: 'gw.example.com', orgId: 'org-1', partnerId: 'p1',
+      catalogEntryId: 'cat-1', revisionId: 'rev-1', aiSessionId: null, blocked: false,
+    }));
+    // Every CONNECT attempt under the grant is an audit row.
+    const onAttempt = egress.grant.mock.calls[0]![2] as (a: { host: string; resolvedIp: string | null; blocked: boolean }) => void;
+    onAttempt({ host: 'evil.example.com', resolvedIp: '10.0.0.1', blocked: true });
+    expect(recordLlmEgressEvent).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'sdk_proxy_connect', host: 'evil.example.com', blocked: true,
+    }));
+    got!.revoke();
+    expect(egress.revoke).toHaveBeenCalledWith('agent-run:run-1');
   });
 });

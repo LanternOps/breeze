@@ -2155,7 +2155,8 @@
         "failed": "Fehlgeschlagen",
         "cancelled": "Abgebrochen",
         "expired": "Abgelaufen",
-        "skipped": "Übersprungen"
+        "skipped": "Übersprungen",
+        "blocked": "Blockiert"
       },
       "verdicts": {
         "remediated": "Behoben",

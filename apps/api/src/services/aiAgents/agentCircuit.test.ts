@@ -204,6 +204,13 @@ describe('classifyTerminal', () => {
     expect(classifyTerminal('completed', null, NEEDS_ATTENTION)).toBe('increment');
   });
 
+  it('is neutral on a blocked run — an admin\'s model choice or a provider refusal is not an agent fault (W03)', () => {
+    expect(classifyTerminal('blocked', 'model_refused', null)).toBe('neutral');
+    expect(classifyTerminal('blocked', 'model_unavailable', NEEDS_ATTENTION)).toBe('neutral');
+    // Even with an error code the failure classifier WOULD increment on.
+    expect(classifyTerminal('blocked', 'sdk_error', null)).toBe('neutral');
+  });
+
   it('resets on a clean completed run (no verdict)', () => {
     expect(classifyTerminal('completed', null, null)).toBe('reset');
   });

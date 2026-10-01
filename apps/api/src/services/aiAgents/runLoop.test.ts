@@ -346,9 +346,30 @@ vi.mock('./opEvidence', async (importOriginal) => {
   return { ...actual, insertOpEvidence };
 });
 
-const resolveLlmConfigForOrg = vi.hoisted(() =>
-  vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg }));
+// AI model registry W03 (Task 12): the run loop resolves `ai_agents` through
+// the registry, settles through the single billing path, and takes its catalog
+// egress grant from the connection factory. `priceUsage`/`sumCostCents` stay
+// REAL so the per-run budget guard is asserted on the registry price.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+const settleInvocation = vi.hoisted(() =>
+  vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean }>>(
+    async () => ({ costCents: 0, invocationIds: [], deferred: false })));
+vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
+  settleInvocation,
+}));
+const grantCatalogSdkEgress = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ proxyUrl: string; revoke: () => void } | null>>(async () => null));
+vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModels/connectionFactory')>()),
+  grantCatalogSdkEgress,
+}));
+const notifyModelBlocked = vi.hoisted(() => vi.fn<(input: Record<string, unknown>) => Promise<void>>(async () => undefined));
+vi.mock('./modelBlocked', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./modelBlocked')>()),
+  notifyModelBlocked,
+}));
 
 const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
@@ -375,6 +396,8 @@ import {
   fullRunToolExposure, PROPOSAL_RECORDED_TEXT, __setResourceScopeRecheckClockForTests,
 } from './runLoop';
 import type { AgentRunOutcome } from './runLoop';
+import { FIXTURE_STD_RATES, makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
+const realSettle = await vi.importActual<typeof import('../aiModels/settleInvocation')>('../aiModels/settleInvocation');
 import { VERIFY_READ_TIMEOUT_MS } from './actVerify';
 import { BREEZE_MCP_TOOL_NAMES, POST_TOOL_USE_TIMEOUT_MS } from '../aiAgentSdkTools';
 import { aiTools } from '../aiToolNames';
@@ -447,6 +470,9 @@ function seedRows(options: {
    *  every existing test is unaffected. Pass a schedule id to exercise a
    *  schedule-triggered run's `triggerRefId` stamping. */
   scheduleId?: string | null;
+  /** AI model registry W03 — what admission resolved; undefined = a pre-W03 run (both NULL). */
+  admittedOfferingId?: string | null;
+  fundingSource?: 'platform' | 'partner_key' | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -469,6 +495,8 @@ function seedRows(options: {
     policySnapshot: snapshot(effective),
     profile: options.profile ?? 'full',
     correlationGroupId: options.correlationGroupId === undefined ? null : options.correlationGroupId,
+    admittedOfferingId: options.admittedOfferingId ?? null,
+    fundingSource: options.fundingSource ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -536,7 +564,15 @@ const preVerdicts: Array<{
 const closeMock = vi.fn();
 let lastQueryOptions: Record<string, unknown> | undefined;
 
+/** The wire model `makeResolvedModel('platform')` binds; SDK `modelUsage` is keyed by it. */
+const AGENT_WIRE_MODEL = 'claude-sonnet-5-5';
+
+/**
+ * A scripted SDK result. `modelUsage` (what billing reads, W03) is derived
+ * from `usage` under the bound wire model unless a test passes its own.
+ */
 function resultMessage(overrides: Record<string, unknown> = {}) {
+  const usage = (overrides.usage ?? { input_tokens: 25_000, output_tokens: 20_000 }) as Record<string, number | undefined>;
   return {
     type: 'result',
     subtype: 'success',
@@ -544,9 +580,26 @@ function resultMessage(overrides: Record<string, unknown> = {}) {
     num_turns: 3,
     result: '',
     total_cost_usd: 0.25,
-    usage: { input_tokens: 1200, output_tokens: 300 },
+    usage,
+    modelUsage: {
+      [AGENT_WIRE_MODEL]: {
+        inputTokens: usage.input_tokens ?? 0,
+        outputTokens: usage.output_tokens ?? 0,
+        cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+        cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+        webSearchRequests: 0,
+        costUSD: 0,
+      },
+    },
     ...overrides,
   };
+}
+
+/** Registry cents for `usage` at the fixture's standard rates (input 200, output 1000, cache read 20, cache write 250 ¢/M). */
+function registryCents(usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): number {
+  const r = FIXTURE_STD_RATES;
+  return ((usage.input ?? 0) * r.inputCentsPerM + (usage.output ?? 0) * r.outputCentsPerM
+    + (usage.cacheRead ?? 0) * r.cacheReadCentsPerM + (usage.cacheWrite ?? 0) * r.cacheWriteCentsPerM) / 1_000_000;
 }
 
 function scriptQuery(script: QueryScript) {
@@ -645,7 +698,17 @@ beforeEach(() => {
   completeToolExecution.mockResolvedValue(undefined);
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
-  resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
+  grantCatalogSdkEgress.mockResolvedValue(null);
+  // The billed number the real settlement returns: the registry price.
+  settleInvocation.mockImplementation(async (input) => ({
+    costCents: realSettle.sumCostCents(realSettle.priceUsage(
+      input.binding as Parameters<typeof realSettle.priceUsage>[0],
+      input.usage as Parameters<typeof realSettle.priceUsage>[1],
+    )),
+    invocationIds: [],
+    deferred: false,
+  }));
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
@@ -693,13 +756,178 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(lastQueryOptions?.maxBudgetUsd).toBe(0.05);
-    expect(recordSessionlessSdkUsage).toHaveBeenCalledWith(
-      ORG_ID,
-      expect.any(Object),
-      'platform',
-      '00000000-0000-4000-8000-0000000000e1',
-      { surface: 'ai_agents', agentRunId: RUN_ID },
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, agentRunId: RUN_ID, userId: null, sessionId: null, sourceRef: null,
+      reservationId: '00000000-0000-4000-8000-0000000000e1',
+    }));
+  });
+
+  // -------------------------------------------------------------------------
+  // AI model registry W03 (Task 12): resolve, translate, fund, settle
+  // -------------------------------------------------------------------------
+
+  it('catalog agent runs send the TRANSLATED wire model through a proxied env (legacy sent the logical id)', async () => {
+    seedRows();
+    const catalog = makeResolvedModel('catalog', { surface: 'ai_agents' });
+    resolveModel.mockResolvedValue(catalog);
+    const revoke = vi.fn();
+    grantCatalogSdkEgress.mockResolvedValue({ proxyUrl: 'http://127.0.0.1:9999', revoke });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.model).toBe('anthropic/claude-sonnet-5.5');
+    expect(grantCatalogSdkEgress).toHaveBeenCalledWith(catalog, {
+      key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1',
+    });
+    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
+      catalog.connection.config, process.env, { egressProxyUrl: 'http://127.0.0.1:9999' },
     );
+    // The grant never outlives the run.
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('a non-catalog run builds an unproxied child env from the resolved connection', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'platform' }), process.env, {},
+    );
+  });
+
+  it('dispatches with the resolver\'s wire params (thinking/effort) and its refusal fallback', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', {
+      surface: 'ai_agents',
+      refusalFallback: {
+        offeringId: 'off-fb', displayName: 'Haiku', wireModel: 'claude-haiku-4-5',
+        wireParams: { thinking: { type: 'disabled' }, betas: [], applied: {} },
+        options: {}, rateSnapshot: { source: 'platform', standard: FIXTURE_STD_RATES },
+      },
+    }));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.model).toBe('claude-sonnet-5-5');
+    expect(lastQueryOptions!.fallbackModel).toBe('claude-haiku-4-5');
+    expect(lastQueryOptions!.thinking).toEqual({ type: 'adaptive' });
+    expect(lastQueryOptions!.effort).toBe('medium');
+  });
+
+  it('the policy offering is requested with origin policy', async () => {
+    seedRows({ effective: policy({ offeringId: 'off-77' }) });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(resolveModel).toHaveBeenCalledWith({
+      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents',
+      requested: { offeringId: 'off-77', origin: 'policy' },
+    });
+  });
+
+  it('reserves with the turn binding and the resolved funding', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, idempotencyKey: `ai-agent-run:${RUN_ID}`, billingSource: 'partner_key',
+      binding: expect.objectContaining({ funding: 'partner_key', offeringId: 'off-1', wireModel: 'claude-sonnet-5-5' }),
+    }));
+  });
+
+  it('an inflated SDK cost does not trip the per-run budget guard; the registry price does', async () => {
+    seedRows({ effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxBudgetCentsPerRun: 10 } as AiAgentLimits }) });
+    scriptQuery({
+      assistantText: 'done',
+      results: [resultMessage({ total_cost_usd: 500, num_turns: 1, usage: { input_tokens: 1000, output_tokens: 100 } })],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect((final.patch.outcome as AgentRunOutcome).budgetExceeded).toBeFalsy();
+    // 1000 input + 100 output at the bound rate: 0.3 cents, never $500.
+    expect(final.patch.costCents).toBe(Math.round(registryCents({ input: 1000, output: 100 })));
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: RUN_ID, userId: null, sessionId: null }));
+    const settled = settleInvocation.mock.calls[0]![0] as { usage: Array<{ model: string; tokens: Record<string, number> }> };
+    expect(settled.usage).toEqual([expect.objectContaining({
+      model: 'claude-sonnet-5-5', tokens: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 },
+    })]);
+  });
+
+  it('re-resolves the ADMITTED offering, and never dispatches on a funding source admission did not check (finding 6)', async () => {
+    seedRows({ effective: policy({ offeringId: 'off-policy-now' }), admittedOfferingId: 'off-admitted', fundingSource: 'partner_key' });
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+      requested: { offeringId: 'off-admitted', origin: 'policy' },
+    }));
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({
+      errorCode: 'model_unavailable',
+    }));
+  });
+
+  it('an unavailable model ends the run blocked/model_unavailable and notifies', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue({
+      ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'o',
+      message: 'Model X is no longer available — choose another.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({
+      errorCode: 'model_unavailable',
+      outcome: expect.objectContaining({ blockedReason: 'model_unavailable', message: 'Model X is no longer available — choose another.' }),
+    }));
+    expect(notifyModelBlocked).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, agentId: AGENT_ID, agentName: 'Front Desk Triage', reason: 'model_unavailable',
+      agent: { orgId: null, partnerId: PARTNER_ID, recipients: { userIds: [], roleIds: [] } },
+    }));
+    // Automations waiting on this run still hear that it ended.
+    expect(publishEvent.mock.calls.map((c) => c[0])).toContain('ai.agent.run.failed');
+  });
+
+  it('registry_unavailable at dispatch blocks the run WITHOUT telling an admin the model is gone', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'm' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({ errorCode: 'model_unavailable' }));
+    expect(notifyModelBlocked).not.toHaveBeenCalled();
+  });
+
+  it('a refusal ends the run blocked/model_refused with the category in its outcome, and records what it cost', async () => {
+    seedRows();
+    scriptQuery({
+      results: [
+        { type: 'system', subtype: 'model_refusal_no_fallback', api_refusal_category: 'cyber' },
+        resultMessage({ stop_reason: 'refusal', total_cost_usd: 0, num_turns: 1, usage: { input_tokens: 10_000, output_tokens: 0 } }),
+      ],
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(transitionRunStatus).toHaveBeenCalledWith(RUN_ID, 'running', 'blocked', expect.objectContaining({
+      errorCode: 'model_refused',
+      outcome: expect.objectContaining({
+        blockedReason: 'model_refused', refusalCategory: 'cyber', offeringId: 'off-1', requestedModel: 'claude-sonnet-5-5',
+      }),
+      costCents: Math.round(registryCents({ input: 10_000 })),
+      turnCount: 1,
+    }));
+    expect((settleInvocation.mock.calls[0]![0] as { outcome: unknown }).outcome)
+      .toMatchObject({ refused: true, refusalCategory: 'cyber' });
+    expect(notifyModelBlocked).toHaveBeenCalledWith(expect.objectContaining({ reason: 'model_refused' }));
   });
 
   it('does not create an SDK query when durable org admission denies the run', async () => {
@@ -1702,8 +1930,8 @@ describe('executeAgentRun', () => {
     scriptQuery({
       assistantText: 'partial work',
       results: [
-        resultMessage({ total_cost_usd: 0.5, num_turns: 2 }),
-        resultMessage({ total_cost_usd: 0.5, num_turns: 2 }),
+        resultMessage({ total_cost_usd: 0.5, num_turns: 2, usage: { input_tokens: 0, output_tokens: 50_000 } }),
+        resultMessage({ total_cost_usd: 0.5, num_turns: 2, usage: { input_tokens: 0, output_tokens: 50_000 } }),
       ],
     });
 
@@ -1723,7 +1951,7 @@ describe('executeAgentRun', () => {
     queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
       lastQueryOptions = params.options;
       const generator = (async function* () {
-        yield resultMessage({ total_cost_usd: 0.42, num_turns: 4 });
+        yield resultMessage({ total_cost_usd: 0.42, num_turns: 4, usage: { input_tokens: 0, output_tokens: 42_000 } });
         throw new Error('anthropic 529 overloaded');
       })();
       return Object.assign(generator, { close: closeMock, interrupt: vi.fn() });
@@ -1740,20 +1968,20 @@ describe('executeAgentRun', () => {
     expect(final.patch.turnCount).toBe(4);
   });
 
-  it('a setup failure before any spend fails without inventing a cost', async () => {
+  it('a setup failure before any spend ends the run without inventing a cost', async () => {
     seedRows();
-    resolveLlmConfigForOrg.mockResolvedValue({ source: 'unavailable', model: '' });
+    resolveModel.mockResolvedValue({ ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: null, message: 'm' });
 
     await executeAgentRun(RUN_ID);
 
     expect(queryMock).not.toHaveBeenCalled();
     const final = finalTransition()!;
-    expect(final.to).toBe('failed');
-    expect(final.patch.errorCode).toBe('llm_unavailable');
+    expect(final.to).toBe('blocked');
+    expect(final.patch.errorCode).toBe('model_unavailable');
     expect(final.patch.costCents).toBeUndefined();
   });
 
-  it('passes the per-run turn ceiling and the agent model to the SDK', async () => {
+  it('passes the per-run turn ceiling and the RESOLVED wire model to the SDK', async () => {
     seedRows({
       effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 7 } as AiAgentLimits }),
     });
@@ -1761,25 +1989,11 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(lastQueryOptions!.maxTurns).toBe(7);
-    expect(lastQueryOptions!.model).toBe('claude-agent-model');
+    // The policy's free-form `model` string no longer routes (W03): the
+    // registry resolves the offering it was bound to.
+    expect(lastQueryOptions!.model).toBe('claude-sonnet-5-5');
     expect(lastQueryOptions!.persistSession).toBe(false);
     expect(lastQueryOptions!.settingSources).toEqual([]);
-    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'platform' }),
-    );
-  });
-
-  it.each([
-    ['claude-sonnet-5-5', { type: 'adaptive' }, 'medium'],
-    ['claude-haiku-4-5', { type: 'disabled' }, undefined],
-    ['claude-agent-model', { type: 'disabled' }, undefined],
-  ])('sends the per-model thinking/effort for %s via agentSdkWireOptions (#7587, #7599)', async (model, thinking, effort) => {
-    seedRows({ effective: policy({ model }) });
-
-    await executeAgentRun(RUN_ID);
-
-    expect(lastQueryOptions!.thinking).toEqual(thinking);
-    expect(lastQueryOptions!.effort).toBe(effort);
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {
@@ -2305,19 +2519,22 @@ describe('executeAgentRun', () => {
 
     await executeAgentRun(RUN_ID);
 
-    // recordUsage(null, …) used to stand here: it re-priced from input/output
-    // alone and deducted no platform credits at all.
-    expect(recordSessionlessSdkUsage).toHaveBeenCalledTimes(1);
-    const [orgId, payload, billingSource] = recordSessionlessSdkUsage.mock.calls[0]!;
-    expect(orgId).toBe(ORG_ID);
-    expect(billingSource).toBe('platform');
-    expect(payload).toMatchObject({
-      costCents: 40,
-      numTurns: 5,
-      usage: expect.objectContaining({
-        cache_read_input_tokens: 90_000,
-        cache_creation_input_tokens: 5_000,
-      }),
+    // One settlement through the registry billing path, cache tokens included
+    // (the SDK's own $0.40 is telemetry only) — and the legacy recorder is
+    // gone, so nothing is recorded twice.
+    expect(recordSessionlessSdkUsage).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const input = settleInvocation.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input).toMatchObject({
+      orgId: ORG_ID,
+      agentRunId: RUN_ID,
+      binding: expect.objectContaining({ funding: 'platform' }),
+      messageCount: 5,
+      usage: [expect.objectContaining({
+        model: 'claude-sonnet-5-5',
+        tokens: { input: 10, output: 20, cacheRead: 90_000, cacheWrite: 5_000 },
+      })],
+      outcome: expect.objectContaining({ refused: false, sdkReportedCostUsd: 0.4 }),
     });
   });
 
@@ -2333,13 +2550,34 @@ describe('executeAgentRun', () => {
 
     await executeAgentRun(RUN_ID);
 
-    expect(recordSessionlessSdkUsage).toHaveBeenCalledTimes(1);
-    expect(recordSessionlessSdkUsage.mock.calls[0]![1]).toMatchObject({ costCents: 12 });
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect((settleInvocation.mock.calls[0]![0] as { usage: unknown }).usage).toEqual([expect.objectContaining({
+      tokens: { input: 0, output: 0, cacheRead: 200_000, cacheWrite: 0 },
+    })]);
+  });
+
+  it('a run that ended with no result marks its reservation indeterminate instead of settling', async () => {
+    seedRows();
+    queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
+      lastQueryOptions = params.options;
+      const generator = (async function* () {
+        yield { type: 'assistant', message: { content: [{ type: 'text', text: 'half way' }] } };
+        throw new Error('anthropic 529 overloaded');
+      })();
+      return Object.assign(generator, { close: closeMock, interrupt: vi.fn() });
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(settleInvocation).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: ORG_ID, reservationId: '00000000-0000-4000-8000-0000000000e1',
+    });
   });
 
   it('a usage-recording failure never redefines the run outcome', async () => {
     seedRows();
-    recordSessionlessSdkUsage.mockRejectedValueOnce(new Error('billing service down'));
+    settleInvocation.mockRejectedValueOnce(new Error('billing service down'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await executeAgentRun(RUN_ID);
@@ -2364,18 +2602,21 @@ describe('executeAgentRun', () => {
       agentId: AGENT_ID,
       orgId: ORG_ID,
       deviceId: DEVICE_ID,
-      model: 'claude-agent-model',
+      // The resolved logical model, not the policy's free-form string.
+      model: 'claude-sonnet-5-5',
       maxTurns: 9,
     }));
   });
 
-  it('falls back to the resolved LLM model when the snapshot has none', async () => {
+  it('a policy with no bound offering follows the ai_agents assignment default', async () => {
     seedRows({ effective: policy({ model: null }) });
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', logicalModel: 'claude-default-x' }));
 
     await executeAgentRun(RUN_ID);
 
+    expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents' });
     expect(createAgentRunSession).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'claude-fallback' }),
+      expect.objectContaining({ model: 'claude-default-x' }),
     );
   });
 
@@ -2808,7 +3049,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
     seedRows({ effective: policy({ toolAllowlist: [] }), profile: 'verdict' });
     scriptQuery({
       assistantText: 'Verdict recorded.',
-      results: [resultMessage({ total_cost_usd: 0.03 })],
+      results: [resultMessage({ total_cost_usd: 0.03, usage: { input_tokens: 0, output_tokens: 3_000 } })],
     });
 
     await executeAgentRun(RUN_ID);

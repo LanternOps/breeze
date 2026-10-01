@@ -20,6 +20,7 @@ import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from '../llm/guarde
 // Type-only: a value import of llmConfigResolver closes a module-init cycle
 // (→ llmProviderCatalog → providerFidelityHarness → this file).
 import type { LlmClientCallerContext, UsableLlmConfig } from '../llm/llmConfigResolver';
+import { getLlmEgressProxy } from '../llm/llmEgressProxy';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
 import { PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from '../llm/platformKeyAlert';
@@ -232,4 +233,41 @@ export function describeDispatch(resolved: ResolvedModel): DispatchFacts {
     funding: resolved.funding,
     wireModel: resolved.wireModel,
   };
+}
+
+/**
+ * CONNECT-proxy grant for an Agent SDK child talking to a catalog endpoint
+ * (moved from streamingSessionManager.getOrCreate, W03 Task 12, so chat and
+ * agent runs share one implementation). The child may open exactly one
+ * destination — the revision's host on 443 — through the local allowlisting
+ * proxy; every CONNECT is audited as `sdk_proxy_connect`, and one
+ * `sdk_session_create` row records the target even if the child never
+ * connects. Null for platform / direct-Anthropic connections (no grant
+ * needed). Throws if the proxy cannot start: never start an unproxied child.
+ */
+export async function grantCatalogSdkEgress(
+  resolved: ResolvedModel,
+  input: { key: string; orgId: string; aiSessionId: string | null },
+): Promise<{ proxyUrl: string; revoke: () => void } | null> {
+  const cfg = resolved.connection.config;
+  if (cfg.source !== 'partner' || cfg.endpoint.kind !== 'catalog') return null;
+  const endpoint = cfg.endpoint;
+  const host = new URL(endpoint.baseUrl).hostname;
+  const provenance = {
+    orgId: input.orgId,
+    partnerId: cfg.partnerId,
+    catalogEntryId: endpoint.catalogEntryId,
+    revisionId: endpoint.revisionId,
+    aiSessionId: input.aiSessionId,
+  };
+  const proxy = await getLlmEgressProxy();
+  const proxyUrl = proxy.grant(input.key, { host, port: 443 }, (attempt) => {
+    // Synchronous and fire-and-forget by the recorder's contract; it runs
+    // inside the proxy's socket handler.
+    recordLlmEgressEvent({
+      ...provenance, surface: 'sdk_proxy_connect', host: attempt.host, resolvedIp: attempt.resolvedIp, blocked: attempt.blocked,
+    });
+  }).proxyUrl;
+  recordLlmEgressEvent({ ...provenance, surface: 'sdk_session_create', host, resolvedIp: null, blocked: false });
+  return { proxyUrl, revoke: () => proxy.revoke(input.key) };
 }

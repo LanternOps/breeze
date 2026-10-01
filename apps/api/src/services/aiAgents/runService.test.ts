@@ -158,8 +158,14 @@ vi.mock('../aiCostTracker', () => ({
   checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
 }));
 
-const getLlmBillingSourceForOrg = vi.hoisted(() => vi.fn());
-vi.mock('../llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg }));
+// AI model registry W03 (Task 12): admission resolves the agent's model first;
+// its funding (not a per-org guess) feeds every budget gate and the run row.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+const readOrgPartnerId = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/candidateLoader', () => ({ readOrgPartnerId }));
+const notifyModelBlocked = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./modelBlocked', () => ({ notifyModelBlocked }));
 
 const isDeviceInMaintenanceWindow = vi.hoisted(() => vi.fn());
 vi.mock('../deploymentEngine', () => ({ isDeviceInMaintenanceWindow }));
@@ -196,6 +202,7 @@ vi.mock('./agentCircuit', () => ({
   isTerminalRunStatus: (status: string) => status !== 'queued' && status !== 'running',
 }));
 
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import {
   createAndEnqueueAgentRun,
   evaluateAgentTriggerFilters,
@@ -345,7 +352,8 @@ beforeEach(() => {
   dbMockState.contextAtEnqueue = undefined;
   resolveEffectiveAgentSystem.mockResolvedValue(snapshot());
   checkBudget.mockResolvedValue(null);
-  getLlmBillingSourceForOrg.mockResolvedValue('platform');
+  readOrgPartnerId.mockResolvedValue(PARTNER_ID);
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   isDeviceInMaintenanceWindow.mockResolvedValue(false);
   publishEvent.mockResolvedValue('event-id');
   isCircuitOpen.mockResolvedValue(false);
@@ -807,9 +815,67 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
 
   it('passes the partner BYOK billing source through to checkBudget', async () => {
     seedAdmissionReads();
-    getLlmBillingSourceForOrg.mockResolvedValue('partner_key');
+    resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
     await createAndEnqueueAgentRun(input());
     expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+  });
+
+  describe('agent model (AI model registry W03, Task 12)', () => {
+    it('admission resolves the agent model first: funding feeds checkBudget and the run row', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
+      expect(await createAndEnqueueAgentRun(input())).toMatchObject({ created: true });
+      expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents' });
+      expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+      expect(dbMockState.insertValues[0]).toMatchObject({ fundingSource: 'partner_key', admittedOfferingId: 'off-1' });
+    });
+
+    it('requests the policy\'s bound offering with origin policy', async () => {
+      seedAdmissionReads();
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ offeringId: 'off-77' }));
+      await createAndEnqueueAgentRun(input());
+      expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+        surface: 'ai_agents', requested: { offeringId: 'off-77', origin: 'policy' },
+      }));
+    });
+
+    it('resolves OUTSIDE the admission transaction (no second pooled connection under the advisory lock)', async () => {
+      seedAdmissionReads();
+      let depthAtResolve = -1;
+      resolveModel.mockImplementation(async () => {
+        depthAtResolve = dbMockState.systemContextDepth;
+        return makeResolvedModel('platform', { surface: 'ai_agents' });
+      });
+      await createAndEnqueueAgentRun(input());
+      expect(depthAtResolve).toBe(0);
+    });
+
+    it('an unavailable agent model skips with model_unavailable and notifies once per day', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'not_permitted', recoverable: true, offeringId: 'x', message: 'm' });
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      expect(notifyModelBlocked).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: ORG_ID, agentId: AGENT_ID, agentName: 'Triage', reason: 'model_unavailable', message: 'm',
+        agent: { orgId: null, partnerId: PARTNER_ID, recipients: { userIds: [], roleIds: [] } },
+      }));
+      expect(checkBudget).not.toHaveBeenCalled();
+      expect(dbMockState.insertValues).toHaveLength(0);
+      expect(recordAgentRunSkip).toHaveBeenCalledWith(expect.objectContaining({ reason: 'model_unavailable' }));
+    });
+
+    it('a notify failure never turns the skip into a throw', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'x', message: 'm' });
+      notifyModelBlocked.mockRejectedValueOnce(new Error('smtp down'));
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+    });
+
+    it('registry_unavailable (cutover not done yet) skips WITHOUT telling an admin the model is gone', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'm' });
+      expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'model_unavailable' });
+      expect(notifyModelBlocked).not.toHaveBeenCalled();
+    });
   });
 
   it('agent_daily_budget_exceeded when this agent spent its daily cap in this org', async () => {
@@ -1763,6 +1829,15 @@ describe('transitionRunStatus — compute reservation release (execution plane W
     // Settled at the reservation, never at 0: a run we lost track of is
     // precisely the case where the measured number is gone (spec §9).
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'platform');
+  });
+
+  it('releases on the run\'s ADMITTED funding source, never a re-derived one (W03)', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25, fundingSource: 'partner_key',
+    }];
+    await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', { errorCode: 'stalled' });
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'partner_key');
   });
 
   it('does NOT settle on a non-terminal transition', async () => {

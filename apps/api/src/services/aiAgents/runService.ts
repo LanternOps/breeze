@@ -7,6 +7,7 @@ import type {
   AiAgentKind,
   AiAgentLimits,
   AiAgentPolicySnapshot,
+  AiAgentRecipients,
   AiAgentRunProfile,
   AiAgentRunStatus,
   AiAgentTriggerKind,
@@ -39,7 +40,8 @@ import { isToolAllowlisted } from './toolAllowlist';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
-import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
+import type { ResolvedModel } from '../aiModels/resolveModel';
+import { notifyModelBlocked } from './modelBlocked';
 import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
 import {
   RUN_TERMINAL_OUTBOX_TRANSITION_SEQ,
@@ -423,7 +425,13 @@ export type AgentRunSkipReason =
   // The sandbox backend's circuit breaker is open (R5, spec §9). Published:
   // a technician whose analysis will not start deserves to know the provider
   // is down rather than that they did something wrong.
-  | 'workspace_unavailable';
+  | 'workspace_unavailable'
+  // AI model registry W03 (spec §9.1): the agent's model (its bound offering,
+  // or the `ai_agents` assignment default) is not usable for this org right
+  // now — disabled, outside the permitted set, unpriced, its connection down,
+  // or the partner's registry cutover not done yet. Published: an admin has to
+  // pick another model (recipients are also notified once per agent per day).
+  | 'model_unavailable';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -716,6 +724,8 @@ const PUBLISHED_SKIP_REASONS: ReadonlySet<AgentRunSkipReason> = new Set([
   'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
   'analysis_region_unavailable', 'compute_budget_exceeded', 'compute_credits_exhausted',
   'too_many_input_devices', 'workspace_unavailable',
+  // AI model registry W03 — a policy event an admin must act on.
+  'model_unavailable',
 ]);
 
 /**
@@ -1014,6 +1024,62 @@ function profileCaps(
  * event and one BullMQ enqueue. With `options.deferEnqueue` the event and the
  * enqueue move into the returned `enqueue()` continuation (#7187).
  */
+type AdmissionModel =
+  | { ok: true; resolved: ResolvedModel }
+  | { ok: false; message: string; notify: boolean };
+
+/**
+ * Step 3d of admission (AI model registry W03). The policy's bound offering is
+ * requested with origin `policy`, so resolveModel re-checks it against the
+ * org's current `ai_agents` permitted set (quorum #11) and only ever takes the
+ * bounded same-connection, same-funding fallback.
+ *
+ * `registry_unavailable` is the partner's one-time cutover not having run (or
+ * having failed transiently): skipped, but never reported to an admin as "your
+ * model is gone".
+ */
+async function resolveAgentModelForAdmission(orgId: string, offeringId: string | null): Promise<AdmissionModel> {
+  // Loaded lazily: the resolver's module graph (candidate loader, the schema
+  // barrel, the registry cutover) is only needed on the admission path, and
+  // runService is imported — via transitionRunStatus — by many modules that
+  // never admit a run.
+  const [{ readOrgPartnerId }, { resolveModel }] = await Promise.all([
+    import('../aiModels/candidateLoader'),
+    import('../aiModels/resolveModel'),
+  ]);
+  const partnerId = await readOrgPartnerId(orgId);
+  if (!partnerId) {
+    // ownership_mismatch territory (step 8 would refuse it too); nothing to resolve against.
+    return { ok: false, message: 'No AI model is available for AI agents.', notify: false };
+  }
+  const result = await resolveModel({
+    partnerId, orgId, surface: 'ai_agents',
+    ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
+  });
+  if (result.ok) return { ok: true, resolved: result };
+  return { ok: false, message: result.message, notify: result.reason !== 'registry_unavailable' };
+}
+
+/** The circuit-open notifier's recipients rule: the agent ROW's owner + the effective recipients. */
+async function notifyAdmissionModelBlocked(
+  orgId: string,
+  agentId: string,
+  recipients: AiAgentRecipients,
+  message: string,
+): Promise<void> {
+  const [agentRow] = await inSystemDbContext(() => db
+    .select({ name: aiAgents.name, orgId: aiAgents.orgId, partnerId: aiAgents.partnerId })
+    .from(aiAgents)
+    .where(eq(aiAgents.id, agentId))
+    .limit(1));
+  if (!agentRow) return;
+  await notifyModelBlocked({
+    orgId, agentId, agentName: agentRow.name,
+    agent: { orgId: agentRow.orgId, partnerId: agentRow.partnerId, recipients },
+    reason: 'model_unavailable', message,
+  });
+}
+
 export async function createAndEnqueueAgentRun(
   input: CreateAgentRunInput,
   options: CreateAgentRunOptions = {},
@@ -1217,6 +1283,29 @@ export async function createAndEnqueueAgentRun(
     && !(await evaluateAnomalyTriggerFilters(effective.triggers, input.anomalyContext, deviceId, orgId))) {
     return skip('trigger_filter_mismatch');
   }
+
+  // 3d. The agent's model (AI model registry W03, spec §9: decided BEFORE
+  //     admission; quorum #4: its funding drives every budget gate below and
+  //     is persisted on the run so compute settlement never re-derives it;
+  //     review finding 6: the run loop re-resolves exactly this offering).
+  //     Resolved HERE, outside the admission transaction below: the resolver
+  //     reads on its own pooled connection (and may run the partner's one-time
+  //     registry cutover), which must never happen while this admission holds
+  //     a connection idle in transaction behind its advisory lock.
+  const agentModel = await resolveAgentModelForAdmission(orgId, effective.offeringId ?? null);
+  if (!agentModel.ok) {
+    if (agentModel.notify) {
+      await notifyAdmissionModelBlocked(orgId, resolved.agentId, effective.recipients, agentModel.message)
+        .catch((error: unknown) => {
+          console.error('[aiAgentRunService] model-blocked notify failed (non-fatal)', {
+            orgId, agentId: resolved.agentId, error,
+          });
+        });
+    }
+    return skip('model_unavailable');
+  }
+  const billingSource = agentModel.resolved.funding;
+  const admittedOfferingId = agentModel.resolved.offering.id;
 
   // 4. Maintenance windows. Reads partner-wide (org_id NULL) windows, so it has
   //    to run inside the system context below — an org-scoped RLS context sees
@@ -1424,8 +1513,8 @@ export async function createAndEnqueueAgentRun(
     }
 
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap
-    //    (spec §4.3 — "per org, on top of ai_budgets").
-    const billingSource = await getLlmBillingSourceForOrg(orgId);
+    //    (spec §4.3 — "per org, on top of ai_budgets"). `billingSource` is the
+    //    funding of the offering resolved in step 3d.
     if (await checkBudget(orgId, billingSource)) return skip('org_budget_exceeded');
 
     const startOfUtcDay = new Date();
@@ -1606,6 +1695,9 @@ export async function createAndEnqueueAgentRun(
         // Execution plane W04 — the frozen input allowlist. NULL for every
         // other profile (`stagedInputs` is only ever set in step 4d).
         stagedInputs,
+        // AI model registry W03 (step 3d): what admission checked credits for.
+        fundingSource: billingSource,
+        admittedOfferingId,
       })
       .onConflictDoNothing({ target: [aiAgentRuns.orgId, aiAgentRuns.dedupeKey] })
       .returning();
@@ -1683,6 +1775,9 @@ export async function createAndEnqueueAgentRun(
         // attempt's frozen inputs: this attempt froze its own set (or, for a
         // non-analysis profile, none at all).
         stagedInputs,
+        // AI model registry W03: this attempt's own admission decision.
+        fundingSource: billingSource,
+        admittedOfferingId,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),
@@ -1758,7 +1853,8 @@ async function announceAndEnqueueAgentRun(
     // takes, so there is only one way a reservation ever ends.
     if ((input.profile ?? 'full') === 'analysis') {
       try {
-        await settleComputeCents(orgId, run.id, 0, await getLlmBillingSourceForOrg(orgId));
+        // NULL = admitted before W03: the previous fail-safe.
+        await settleComputeCents(orgId, run.id, 0, run.fundingSource ?? 'platform');
       } catch (settleError) {
         console.error('[aiAgentRunService] failed to release a compute reservation', {
           runId: run.id, error: settleError,
@@ -1836,6 +1932,9 @@ export async function transitionRunStatus(
         // below on any terminal transition. Returned from the CAS itself so
         // the release reads the value the transition actually observed.
         computeReservedCents: aiAgentRuns.computeReservedCents,
+        // AI model registry W03 — the funding admission checked; the release
+        // below settles on it rather than re-deriving one per org.
+        fundingSource: aiAgentRuns.fundingSource,
       });
     const row = rows[0] ?? null;
 
@@ -1917,7 +2016,8 @@ export async function transitionRunStatus(
   if (isTerminalRunStatus(to) && outstandingReservation > 0) {
     try {
       await settleComputeCents(
-        moved.orgId, moved.id, outstandingReservation, await getLlmBillingSourceForOrg(moved.orgId),
+        // NULL = admitted before W03: the previous fail-safe.
+        moved.orgId, moved.id, outstandingReservation, moved.fundingSource ?? 'platform',
       );
     } catch (error) {
       console.error('[aiAgentRunService] compute reservation release failed; the org keeps a held reservation', {

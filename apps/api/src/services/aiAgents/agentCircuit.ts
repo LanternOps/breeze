@@ -220,6 +220,9 @@ export function classifyTerminal(
   runVerdict: AgentRunVerdict | null,
   profile: AiAgentRunProfile = 'full',
 ): TerminalClassification {
+  // AI model registry W03: an admin's model choice / a provider refusal is not
+  // an agent fault, so a `blocked` run never moves the streak either way.
+  if (to === 'blocked') return 'neutral';
   if (to === 'completed') {
     if (STREAK_NEUTRAL_PROFILES.has(profile)) return 'neutral';
     return runVerdict === 'needs_attention' ? 'increment' : 'reset';
