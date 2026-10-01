@@ -333,6 +333,7 @@ const EXPECTED_NAMES = [
   'sendingDomainsWorker',
   // AI Suggested Fixes W1.
   'fixOutcomeWorker',
+  'aiModelDiscoveryWorker',
 ];
 
 // ---------------------------------------------------------------------------
