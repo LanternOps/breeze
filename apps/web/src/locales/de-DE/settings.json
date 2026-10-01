@@ -335,7 +335,8 @@
       "write_failed": "Die Änderung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
       "registry_unavailable": "Die KI-Konfiguration wird gerade aktualisiert. Versuchen Sie es gleich noch einmal.",
       "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich.",
-      "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal."
+      "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal.",
+      "registry_busy": "Eine andere Änderung der KI-Konfiguration wird gerade ausgeführt. Versuchen Sie es gleich noch einmal."
     },
     "org": {
       "title": "Modellstandards",

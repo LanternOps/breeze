@@ -335,7 +335,8 @@
       "write_failed": "Değişiklik kaydedilemedi. Tekrar deneyin.",
       "registry_unavailable": "Yapay zeka yapılandırması yükseltiliyor. Birazdan tekrar deneyin.",
       "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir.",
-      "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin."
+      "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin.",
+      "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin."
     },
     "org": {
       "title": "Varsayılan modeller",

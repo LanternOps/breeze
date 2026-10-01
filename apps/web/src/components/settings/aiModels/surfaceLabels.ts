@@ -37,6 +37,7 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   widens_partner: 'aiModels.errors.widens_partner',
   write_failed: 'aiModels.errors.write_failed',
   registry_unavailable: 'aiModels.errors.registry_unavailable',
+  registry_busy: 'aiModels.errors.registry_busy',
   queue_unavailable: 'aiModels.errors.queue_unavailable',
   APPROVALS_DECIDE_REQUIRED: 'aiModels.errors.approvals_decide_required',
 };

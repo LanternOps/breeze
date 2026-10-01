@@ -335,7 +335,8 @@
       "write_failed": "No se pudo guardar el cambio. Inténtalo de nuevo.",
       "registry_unavailable": "La configuración de IA se está actualizando. Inténtalo de nuevo en un momento.",
       "approvals_decide_required": "Cambiar el modelo del revisor de scripts requiere el permiso approvals:decide.",
-      "queue_unavailable": "La cola de solicitudes no está disponible. Inténtelo de nuevo en un momento."
+      "queue_unavailable": "La cola de solicitudes no está disponible. Inténtelo de nuevo en un momento.",
+      "registry_busy": "Hay otro cambio de configuración de IA en curso. Inténtalo de nuevo en un momento."
     },
     "org": {
       "title": "Modelos predeterminados",

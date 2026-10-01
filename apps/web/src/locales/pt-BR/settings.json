@@ -335,7 +335,8 @@
       "write_failed": "Não foi possível salvar a alteração. Tente novamente.",
       "registry_unavailable": "A configuração de IA está sendo atualizada. Tente novamente em instantes.",
       "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide.",
-      "queue_unavailable": "A fila de solicitações está indisponível. Tente novamente em instantes."
+      "queue_unavailable": "A fila de solicitações está indisponível. Tente novamente em instantes.",
+      "registry_busy": "Outra alteração na configuração de IA está em andamento. Tente novamente em instantes."
     },
     "org": {
       "title": "Modelos padrão",

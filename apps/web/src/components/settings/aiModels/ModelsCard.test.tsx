@@ -119,4 +119,13 @@ describe('ModelsCard', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/upgrad/i) })));
     expect(onChanged).not.toHaveBeenCalled();
   });
+
+  it('shows a registry-busy 503 with the localized try-again message', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'server text', code: 'registry_busy' }, 503));
+    render(<ModelsCard snapshot={snap([row({ id: OFF })])} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTestId(`ai-offering-enable-${OFF}`));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: 'Another AI configuration change is in progress. Try again in a moment.',
+    })));
+  });
 });

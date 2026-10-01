@@ -335,7 +335,8 @@
       "write_failed": "Impossible d'enregistrer cette modification. Réessayez.",
       "registry_unavailable": "La configuration de l'IA est en cours de mise à niveau. Réessayez dans un instant.",
       "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide.",
-      "queue_unavailable": "La file d'attente des requêtes est indisponible. Réessayez dans un instant."
+      "queue_unavailable": "La file d'attente des requêtes est indisponible. Réessayez dans un instant.",
+      "registry_busy": "Une autre modification de la configuration IA est en cours. Réessayez dans un instant."
     },
     "org": {
       "title": "Modèles par défaut",

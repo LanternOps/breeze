@@ -335,7 +335,8 @@
       "write_failed": "Couldn't save that change. Try again.",
       "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
       "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
-      "queue_unavailable": "The request queue is unavailable. Try again in a moment."
+      "queue_unavailable": "The request queue is unavailable. Try again in a moment.",
+      "registry_busy": "Another AI configuration change is in progress. Try again in a moment."
     },
     "org": {
       "title": "Model defaults",

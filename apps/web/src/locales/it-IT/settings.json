@@ -335,7 +335,8 @@
       "write_failed": "Impossibile salvare la modifica. Riprova.",
       "registry_unavailable": "La configurazione IA è in fase di aggiornamento. Riprova tra un momento.",
       "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide.",
-      "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento."
+      "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento.",
+      "registry_busy": "È in corso un'altra modifica alla configurazione IA. Riprova tra un momento."
     },
     "org": {
       "title": "Modelli predefiniti",
