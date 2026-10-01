@@ -282,6 +282,17 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(updateConnectionSettings).toHaveBeenCalledWith({ partnerId: P, connectionId: C, patch: { name: 'Ours', inferenceGeo: 'us' } });
     expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain(KEY);
   });
+  it('500s write_failed (captured, no audit) when the new connection cannot be read back after the key save', async () => {
+    vi.mocked(getCompatConnection).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY, name: 'Ours' });
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe('write_failed');
+    expect(body).not.toHaveProperty('id');
+    expect(captureException).toHaveBeenCalled();
+    expect(updateConnectionSettings).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
   it('does not call updateConnectionSettings when create carries no name/geo', async () => {
     vi.mocked(getCompatConnection).mockResolvedValueOnce(null).mockResolvedValueOnce({ id: C, partnerId: P } as any);
     expect((await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY })).status).toBe(201);

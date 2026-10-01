@@ -10,6 +10,7 @@ import { zValidator } from '../../lib/validation';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getCompatConnection } from '../../services/aiModels/connections';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
+import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
 import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
 import { deletePartnerLlmConfig, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
 import { idParamSchema, partnerWrite, queueConnectionSync, registryWrite, requirePartnerWide } from './shared';
@@ -41,16 +42,19 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
       case 'anthropic_byok': {
         const result = await savePartnerLlmKey({ partnerId, apiKey: body.apiKey, userId });
         const conn = await getCompatConnection(partnerId);
+        // The key saved but its connection row is not readable: an inconsistent
+        // create, never a 201 with a null id (registryWrite captures the 500).
+        if (!conn) throw new RegistryWriteError('The connection could not be created. Try again in a moment.', 'write_failed', 500);
         // Two writes, not one: the key save probes the provider outside any
         // transaction (W03). If the settings write fails, the connection still
         // works with its default name/geo and the admin can edit them.
-        if (conn && (body.name !== undefined || body.inferenceGeo !== undefined)) {
+        if (body.name !== undefined || body.inferenceGeo !== undefined) {
           await updateConnectionSettings({ partnerId, connectionId: conn.id, patch: { name: body.name, inferenceGeo: body.inferenceGeo } });
         }
         audit(c, partnerId, 'created', {
-          kind: body.kind, connectionId: conn?.id ?? null, last4: result.last4, configVersion: result.configVersion,
+          kind: body.kind, connectionId: conn.id, last4: result.last4, configVersion: result.configVersion,
         });
-        return c.json({ id: conn?.id ?? null }, 201);
+        return c.json({ id: conn.id }, 201);
       }
       default: {
         const never: never = body.kind;
