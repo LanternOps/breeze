@@ -264,7 +264,9 @@
         "provider_default": "padrão do provedor"
       },
       "geoProviderDefault": "Padrão do provedor",
-      "supportedGeos": "Suporta: {{geos}}"
+      "supportedGeos": "Suporta: {{geos}}",
+      "refreshQueued": "Atualização de modelos na fila",
+      "refreshFailed": "Não foi possível enfileirar a atualização de modelos."
     },
     "drawer": {
       "titleCreate": "Adicionar conexão",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Salve primeiro a nova chave e depois altere o endpoint (cada um é verificado separadamente).",
       "disconnect": "Desconectar",
       "disconnectTitle": "Desconectar esta conexão?",
-      "disconnectMessage": "Os recursos de IA deixam de usar esta chave. Você pode reconectar com uma nova chave a qualquer momento."
+      "disconnectMessage": "Os recursos de IA deixam de usar esta chave. Você pode reconectar com uma nova chave a qualquer momento.",
+      "refresh": "Atualizar modelos"
     },
     "residency": {
       "label": "Exigir residência de dados",
@@ -331,7 +334,8 @@
       "widens_partner": "Uma organização só pode restringir o que o parceiro permite.",
       "write_failed": "Não foi possível salvar a alteração. Tente novamente.",
       "registry_unavailable": "A configuração de IA está sendo atualizada. Tente novamente em instantes.",
-      "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide."
+      "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide.",
+      "queue_unavailable": "A fila de solicitações está indisponível. Tente novamente em instantes."
     },
     "org": {
       "title": "Modelos padrão",
@@ -437,7 +441,10 @@
       "refusalHint": "Outro modelo ativado na mesma conexão para tentar quando este recusar uma solicitação.",
       "invalidPrices": "Informe os quatro preços como números não negativos ou deixe os quatro em branco.",
       "saved": "Modelo salvo",
-      "saveFailed": "Não foi possível salvar o modelo. Tente novamente."
+      "saveFailed": "Não foi possível salvar o modelo. Tente novamente.",
+      "verify": "Verificar",
+      "verifyQueued": "Verificação do modelo na fila",
+      "verifyFailed": "Não foi possível enfileirar a verificação do modelo."
     },
     "defaults": {
       "title": "Padrões por recurso",

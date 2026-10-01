@@ -264,7 +264,9 @@
         "provider_default": "predefinito del provider"
       },
       "geoProviderDefault": "Predefinito del provider",
-      "supportedGeos": "Supporta: {{geos}}"
+      "supportedGeos": "Supporta: {{geos}}",
+      "refreshQueued": "Aggiornamento dei modelli in coda",
+      "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli."
     },
     "drawer": {
       "titleCreate": "Aggiungi connessione",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Salva prima la nuova chiave, poi modifica l'endpoint (ciascuno viene verificato separatamente).",
       "disconnect": "Disconnetti",
       "disconnectTitle": "Disconnettere questa connessione?",
-      "disconnectMessage": "Le funzioni IA smettono di usare questa chiave. Puoi riconnetterti con una nuova chiave in qualsiasi momento."
+      "disconnectMessage": "Le funzioni IA smettono di usare questa chiave. Puoi riconnetterti con una nuova chiave in qualsiasi momento.",
+      "refresh": "Aggiorna modelli"
     },
     "residency": {
       "label": "Richiedi la residenza dei dati",
@@ -331,7 +334,8 @@
       "widens_partner": "Un'organizzazione può solo restringere ciò che il partner consente.",
       "write_failed": "Impossibile salvare la modifica. Riprova.",
       "registry_unavailable": "La configurazione IA è in fase di aggiornamento. Riprova tra un momento.",
-      "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide."
+      "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide.",
+      "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento."
     },
     "org": {
       "title": "Modelli predefiniti",
@@ -437,7 +441,10 @@
       "refusalHint": "Un altro modello abilitato sulla stessa connessione da provare quando questo rifiuta una richiesta.",
       "invalidPrices": "Inserisci tutti e quattro i prezzi come numeri non negativi oppure lasciali tutti vuoti.",
       "saved": "Modello salvato",
-      "saveFailed": "Impossibile salvare il modello. Riprova."
+      "saveFailed": "Impossibile salvare il modello. Riprova.",
+      "verify": "Verifica",
+      "verifyQueued": "Verifica del modello in coda",
+      "verifyFailed": "Impossibile mettere in coda la verifica del modello."
     },
     "defaults": {
       "title": "Predefiniti per funzionalità",

@@ -264,7 +264,9 @@
         "provider_default": "valeur par défaut du fournisseur"
       },
       "geoProviderDefault": "Valeur par défaut du fournisseur",
-      "supportedGeos": "Prend en charge : {{geos}}"
+      "supportedGeos": "Prend en charge : {{geos}}",
+      "refreshQueued": "Actualisation des modèles mise en file d'attente",
+      "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente."
     },
     "drawer": {
       "titleCreate": "Ajouter une connexion",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Enregistrez d'abord la nouvelle clé, puis modifiez le point de terminaison (chacun est vérifié séparément).",
       "disconnect": "Déconnecter",
       "disconnectTitle": "Déconnecter cette connexion ?",
-      "disconnectMessage": "Les fonctionnalités d'IA cessent d'utiliser cette clé. Vous pouvez vous reconnecter avec une nouvelle clé à tout moment."
+      "disconnectMessage": "Les fonctionnalités d'IA cessent d'utiliser cette clé. Vous pouvez vous reconnecter avec une nouvelle clé à tout moment.",
+      "refresh": "Actualiser les modèles"
     },
     "residency": {
       "label": "Exiger la résidence des données",
@@ -331,7 +334,8 @@
       "widens_partner": "Une organisation ne peut que restreindre ce que son partenaire autorise.",
       "write_failed": "Impossible d'enregistrer cette modification. Réessayez.",
       "registry_unavailable": "La configuration de l'IA est en cours de mise à niveau. Réessayez dans un instant.",
-      "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide."
+      "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide.",
+      "queue_unavailable": "La file d'attente des requêtes est indisponible. Réessayez dans un instant."
     },
     "org": {
       "title": "Modèles par défaut",
@@ -437,7 +441,10 @@
       "refusalHint": "Un autre modèle activé sur la même connexion, essayé lorsque celui-ci refuse une requête.",
       "invalidPrices": "Saisissez les quatre prix sous forme de nombres positifs ou nuls, ou laissez-les tous vides.",
       "saved": "Modèle enregistré",
-      "saveFailed": "Impossible d’enregistrer le modèle. Réessayez."
+      "saveFailed": "Impossible d’enregistrer le modèle. Réessayez.",
+      "verify": "Vérifier",
+      "verifyQueued": "Vérification du modèle mise en file d'attente",
+      "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente."
     },
     "defaults": {
       "title": "Valeurs par défaut par fonctionnalité",

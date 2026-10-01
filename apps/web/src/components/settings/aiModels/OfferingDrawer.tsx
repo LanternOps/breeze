@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { Loader2, Save } from 'lucide-react';
+import { Loader2, RefreshCw, Save } from 'lucide-react';
 import {
   AI_MODEL_REQUIRED_PERMISSION_CHOICES,
   EFFORT_LEVELS,
@@ -175,6 +175,7 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
   const initial = useMemo(() => draftFrom(offering), [offering]);
   const [draft, setDraft] = useState<Draft>(initial);
   const [saving, setSaving] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const friendly = registryFriendly(t);
 
   const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
@@ -196,6 +197,29 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
     const efforts = EFFORT_LEVELS.filter((l) => (l === level ? on : draft.efforts.includes(l)));
     if (efforts.length === 0) return; // an allow-list cannot be empty; leave at least one
     set({ efforts, defaultEffort: draft.defaultEffort && efforts.includes(draft.defaultEffort) ? draft.defaultEffort : '' });
+  };
+
+  // Verify re-runs discovery for the offering's connection; platform rows are verified by the operator.
+  const canVerify = offering.id !== null && offering.funding !== 'platform' && offering.connectionId !== null;
+
+  const handleVerify = async () => {
+    if (offering.id === null || saving || verifying) return;
+    setVerifying(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/ai/models/offerings/${offering.id}/verify`, { method: 'POST' }),
+        successMessage: t('aiModels.offering.verifyQueued'),
+        errorFallback: t('aiModels.offering.verifyFailed'),
+        friendly,
+        onUnauthorized,
+      });
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.offering.verifyFailed') });
+      // other ActionErrors already toasted by runAction; the drawer stays open
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handleSave = async () => {
@@ -353,7 +377,17 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
           <p className="text-xs text-muted-foreground">{t('aiModels.offering.refusalHint')}</p>
         </div>
 
-        <div className="flex justify-end gap-2 border-t pt-4">
+        <div className="flex items-center justify-between gap-2 border-t pt-4">
+          <div>
+            {canVerify && (
+              <button type="button" data-testid="ai-offering-verify" onClick={() => { void handleVerify(); }} disabled={saving || verifying}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+                {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {t('aiModels.offering.verify')}
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
           <button type="button" data-testid="ai-offering-cancel" onClick={onClose} disabled={saving}
             className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
             {t('common:actions.cancel')}
@@ -363,6 +397,7 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? t('common:states.saving') : t('common:actions.save')}
           </button>
+          </div>
         </div>
       </div>
     </Drawer>

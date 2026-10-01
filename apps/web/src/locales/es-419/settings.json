@@ -264,7 +264,9 @@
         "provider_default": "predeterminado del proveedor"
       },
       "geoProviderDefault": "Predeterminado del proveedor",
-      "supportedGeos": "Admite: {{geos}}"
+      "supportedGeos": "Admite: {{geos}}",
+      "refreshQueued": "Actualización de modelos en cola",
+      "refreshFailed": "No se pudo poner en cola la actualización de modelos."
     },
     "drawer": {
       "titleCreate": "Agregar conexión",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Guarda primero la clave nueva y luego cambia el endpoint (cada uno se verifica por separado).",
       "disconnect": "Desconectar",
       "disconnectTitle": "¿Desconectar esta conexión?",
-      "disconnectMessage": "Las funciones de IA dejan de usar esta clave. Puedes volver a conectar con una clave nueva en cualquier momento."
+      "disconnectMessage": "Las funciones de IA dejan de usar esta clave. Puedes volver a conectar con una clave nueva en cualquier momento.",
+      "refresh": "Actualizar modelos"
     },
     "residency": {
       "label": "Exigir residencia de datos",
@@ -331,7 +334,8 @@
       "widens_partner": "Una organización solo puede restringir lo que permite su socio.",
       "write_failed": "No se pudo guardar el cambio. Inténtalo de nuevo.",
       "registry_unavailable": "La configuración de IA se está actualizando. Inténtalo de nuevo en un momento.",
-      "approvals_decide_required": "Cambiar el modelo del revisor de scripts requiere el permiso approvals:decide."
+      "approvals_decide_required": "Cambiar el modelo del revisor de scripts requiere el permiso approvals:decide.",
+      "queue_unavailable": "La cola de solicitudes no está disponible. Inténtelo de nuevo en un momento."
     },
     "org": {
       "title": "Modelos predeterminados",
@@ -437,7 +441,10 @@
       "refusalHint": "Otro modelo activado en la misma conexión para probar cuando este rechace una solicitud.",
       "invalidPrices": "Introduce los cuatro precios como números no negativos o déjalos todos en blanco.",
       "saved": "Modelo guardado",
-      "saveFailed": "No se pudo guardar el modelo. Inténtalo de nuevo."
+      "saveFailed": "No se pudo guardar el modelo. Inténtalo de nuevo.",
+      "verify": "Verificar",
+      "verifyQueued": "Verificación del modelo en cola",
+      "verifyFailed": "No se pudo poner en cola la verificación del modelo."
     },
     "defaults": {
       "title": "Valores predeterminados por función",

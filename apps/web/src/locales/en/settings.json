@@ -264,7 +264,9 @@
         "provider_default": "provider default"
       },
       "geoProviderDefault": "Provider default",
-      "supportedGeos": "Supports: {{geos}}"
+      "supportedGeos": "Supports: {{geos}}",
+      "refreshQueued": "Model refresh queued",
+      "refreshFailed": "Couldn't queue a model refresh."
     },
     "drawer": {
       "titleCreate": "Add connection",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Save the new key first, then change the endpoint (each is verified separately).",
       "disconnect": "Disconnect",
       "disconnectTitle": "Disconnect this connection?",
-      "disconnectMessage": "AI features stop using this key. You can reconnect with a new key at any time."
+      "disconnectMessage": "AI features stop using this key. You can reconnect with a new key at any time.",
+      "refresh": "Refresh models"
     },
     "residency": {
       "label": "Require data residency",
@@ -331,7 +334,8 @@
       "widens_partner": "An organization can only narrow what its partner allows.",
       "write_failed": "Couldn't save that change. Try again.",
       "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
-      "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission."
+      "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
+      "queue_unavailable": "The request queue is unavailable. Try again in a moment."
     },
     "org": {
       "title": "Model defaults",
@@ -437,7 +441,10 @@
       "refusalHint": "Another enabled model on the same connection to try when this one refuses a request.",
       "invalidPrices": "Enter all four prices as non-negative numbers, or leave all four blank.",
       "saved": "Model saved",
-      "saveFailed": "Couldn’t save the model. Try again."
+      "saveFailed": "Couldn’t save the model. Try again.",
+      "verify": "Verify",
+      "verifyQueued": "Model check queued",
+      "verifyFailed": "Couldn't queue the model check."
     },
     "defaults": {
       "title": "Defaults by feature",

@@ -264,7 +264,9 @@
         "provider_default": "Anbieter-Standard"
       },
       "geoProviderDefault": "Anbieter-Standard",
-      "supportedGeos": "Unterstützt: {{geos}}"
+      "supportedGeos": "Unterstützt: {{geos}}",
+      "refreshQueued": "Modellaktualisierung eingeplant",
+      "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden."
     },
     "drawer": {
       "titleCreate": "Verbindung hinzufügen",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Speichern Sie zuerst den neuen Schlüssel und ändern Sie dann den Endpunkt (beides wird getrennt geprüft).",
       "disconnect": "Trennen",
       "disconnectTitle": "Diese Verbindung trennen?",
-      "disconnectMessage": "KI-Funktionen verwenden diesen Schlüssel nicht mehr. Sie können jederzeit mit einem neuen Schlüssel erneut verbinden."
+      "disconnectMessage": "KI-Funktionen verwenden diesen Schlüssel nicht mehr. Sie können jederzeit mit einem neuen Schlüssel erneut verbinden.",
+      "refresh": "Modelle aktualisieren"
     },
     "residency": {
       "label": "Datenresidenz erforderlich",
@@ -331,7 +334,8 @@
       "widens_partner": "Eine Organisation kann nur einschränken, was der Partner erlaubt.",
       "write_failed": "Die Änderung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
       "registry_unavailable": "Die KI-Konfiguration wird gerade aktualisiert. Versuchen Sie es gleich noch einmal.",
-      "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich."
+      "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich.",
+      "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal."
     },
     "org": {
       "title": "Modellstandards",
@@ -437,7 +441,10 @@
       "refusalHint": "Ein anderes aktiviertes Modell derselben Verbindung, das verwendet wird, wenn dieses eine Anfrage ablehnt.",
       "invalidPrices": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer.",
       "saved": "Modell gespeichert",
-      "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut."
+      "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "verify": "Prüfen",
+      "verifyQueued": "Modellprüfung eingeplant",
+      "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden."
     },
     "defaults": {
       "title": "Standards pro Funktion",

@@ -137,8 +137,27 @@ describe('OfferingDrawer', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('has no verify control (the route lands with W03 Task 16)', () => {
-    render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+  it('verify queues a model check for the offering connection via runAction and toasts', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ queued: true, connectionId: CONN }, 202));
+    const onClose = vi.fn();
+    render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-offering-verify'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/ai/models/offerings/${OFF}/verify`, expect.objectContaining({ method: 'POST' })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/check queued/i) })));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('verify failure toasts and stays open', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'Model not found', code: 'not_found' }, 404));
+    const onClose = vi.fn();
+    render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-offering-verify'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('hides verify for platform offerings (the operator verifies those)', () => {
+    render(<OfferingDrawer offering={row({ id: OFF, connectionId: null, funding: 'platform' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-offering-verify')).toBeNull();
   });
 });

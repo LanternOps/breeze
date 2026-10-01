@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Loader2, Save, Unplug } from 'lucide-react';
+import { AlertTriangle, Loader2, RefreshCw, Save, Unplug } from 'lucide-react';
 import type { AiConnectionDto, AiModelsSnapshotDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
@@ -34,7 +34,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
-  const busy = saving || disconnecting;
+  const [refreshing, setRefreshing] = useState(false);
+  const busy = saving || disconnecting || refreshing;
   const friendly = registryFriendly(t);
 
   const storedEndpoint = connection?.catalogEntryId ?? null;
@@ -126,6 +127,29 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
       // non-401 ActionError already toasted by runAction; the drawer stays open
     } finally {
       setSaving(false);
+    }
+  };
+
+  // The platform connection has no id (nothing to discover); the Add form has no connection yet.
+  const canRefresh = connection !== null && connection.id !== null;
+
+  const handleRefresh = async () => {
+    if (connection === null || connection.id === null || busy) return;
+    setRefreshing(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/ai/models/connections/${connection.id}/refresh`, { method: 'POST' }),
+        successMessage: t('aiModels.connections.refreshQueued'),
+        errorFallback: t('aiModels.connections.refreshFailed'),
+        friendly,
+        onUnauthorized,
+      });
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.refreshFailed') });
+      // other ActionErrors already toasted by runAction; the drawer stays open
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -249,7 +273,14 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
         )}
 
         <div className="flex items-center justify-between gap-2 border-t pt-4">
-          <div>
+          <div className="flex flex-wrap gap-2">
+            {canRefresh && (
+              <button type="button" data-testid="ai-connection-refresh" onClick={() => { void handleRefresh(); }} disabled={busy}
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                {t('aiModels.drawer.refresh')}
+              </button>
+            )}
             {connection !== null && (
               <button type="button" data-testid="ai-connection-disconnect" onClick={() => setConfirmDisconnect(true)} disabled={busy}
                 className="inline-flex items-center gap-2 rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">

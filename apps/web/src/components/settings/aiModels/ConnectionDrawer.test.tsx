@@ -122,8 +122,30 @@ describe('ConnectionDrawer', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
-  it('does not render a refresh control (the route lands with W03 Task 16)', () => {
-    render(<ConnectionDrawer connection={connection} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={vi.fn()} />);
+  it('refresh queues model discovery via runAction and toasts', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ queued: true, connectionId: CONN }, 202));
+    const onClose = vi.fn();
+    render(<ConnectionDrawer connection={connection} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-connection-refresh'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/ai/models/connections/${CONN}/refresh`, expect.objectContaining({ method: 'POST' })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/refresh.*queued/i) })));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('refresh failure (queue unavailable) toasts the localized reason and stays open', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x', code: 'queue_unavailable' }, 503));
+    const onClose = vi.fn();
+    render(<ConnectionDrawer connection={connection} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-connection-refresh'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/queue/i) })));
+    expect(onClose).not.toHaveBeenCalled();
+    expect((screen.getByTestId('ai-connection-refresh') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('hides refresh for the platform connection (id null) and in the Add form', () => {
+    const { rerender } = render(<ConnectionDrawer connection={SNAPSHOT.connections[0]} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByTestId('ai-connection-refresh')).toBeNull();
+    rerender(<ConnectionDrawer connection={null} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-connection-refresh')).toBeNull();
   });
 });

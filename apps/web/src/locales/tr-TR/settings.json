@@ -264,7 +264,9 @@
         "provider_default": "sağlayıcı varsayılanı"
       },
       "geoProviderDefault": "Sağlayıcı varsayılanı",
-      "supportedGeos": "Desteklenen: {{geos}}"
+      "supportedGeos": "Desteklenen: {{geos}}",
+      "refreshQueued": "Model yenileme sıraya alındı",
+      "refreshFailed": "Model yenileme sıraya alınamadı."
     },
     "drawer": {
       "titleCreate": "Bağlantı ekle",
@@ -287,7 +289,8 @@
       "oneCredentialChange": "Önce yeni anahtarı kaydedin, sonra uç noktayı değiştirin (her biri ayrı doğrulanır).",
       "disconnect": "Bağlantıyı kes",
       "disconnectTitle": "Bu bağlantı kesilsin mi?",
-      "disconnectMessage": "Yapay zeka özellikleri bu anahtarı kullanmayı bırakır. İstediğiniz zaman yeni bir anahtarla yeniden bağlanabilirsiniz."
+      "disconnectMessage": "Yapay zeka özellikleri bu anahtarı kullanmayı bırakır. İstediğiniz zaman yeni bir anahtarla yeniden bağlanabilirsiniz.",
+      "refresh": "Modelleri yenile"
     },
     "residency": {
       "label": "Veri yerleşimini zorunlu kıl",
@@ -331,7 +334,8 @@
       "widens_partner": "Bir kuruluş, iş ortağının izin verdiğini yalnızca daraltabilir.",
       "write_failed": "Değişiklik kaydedilemedi. Tekrar deneyin.",
       "registry_unavailable": "Yapay zeka yapılandırması yükseltiliyor. Birazdan tekrar deneyin.",
-      "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir."
+      "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir.",
+      "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -437,7 +441,10 @@
       "refusalHint": "Bu model bir isteği reddettiğinde denenecek, aynı bağlantıdaki başka bir etkin model.",
       "invalidPrices": "Dört fiyatı da negatif olmayan sayılar olarak girin veya dördünü de boş bırakın.",
       "saved": "Model kaydedildi",
-      "saveFailed": "Model kaydedilemedi. Tekrar deneyin."
+      "saveFailed": "Model kaydedilemedi. Tekrar deneyin.",
+      "verify": "Doğrula",
+      "verifyQueued": "Model denetimi sıraya alındı",
+      "verifyFailed": "Model denetimi sıraya alınamadı."
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",
