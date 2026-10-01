@@ -12,9 +12,7 @@ import { getCompatConnection } from '../../services/aiModels/connections';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
 import { deletePartnerLlmConfig, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
-import { idParamSchema, partnerWrite, registryWrite, requirePartnerWide } from './shared';
-
-// POST /:id/refresh (enqueueConnectionSync, W03 Task 16) lands in W04 Task 8b.
+import { idParamSchema, partnerWrite, queueConnectionSync, registryWrite, requirePartnerWide } from './shared';
 
 export const aiModelConnectionRoutes = new Hono();
 
@@ -108,5 +106,19 @@ aiModelConnectionRoutes.delete('/:id', ...partnerWrite, zValidator('param', idPa
     const deleted = await deletePartnerLlmConfig(partnerId);
     if (deleted) audit(c, partnerId, 'deleted', { connectionId: id });
     return c.json({ deleted });
+  });
+});
+
+// Re-run model discovery for the partner's connection. The implicit platform
+// connection has no row (id null in the snapshot), so it is never refreshable
+// here: platform discovery is the operator's /admin/ai-models refresh.
+aiModelConnectionRoutes.post('/:id/refresh', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
+  const { partnerId } = requirePartnerWide(c);
+  const id = await ownConnectionId(partnerId, c.req.valid('param').id);
+  return registryWrite(c, partnerId, async () => {
+    const failed = await queueConnectionSync(c, id);
+    if (failed) return failed;
+    audit(c, partnerId, 'refresh_requested', { connectionId: id });
+    return c.json({ queued: true, connectionId: id }, 202);
   });
 });

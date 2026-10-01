@@ -54,6 +54,8 @@ vi.mock('../../db', () => ({ db: {}, runOutsideDbContext: vi.fn(), withSystemDbA
 vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover: vi.fn() }));
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
 vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn() }));
+vi.mock('../../services/aiModels/offerings', () => ({ getOffering: vi.fn() }));
+vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn() }));
 vi.mock('../../services/aiModels/connectionSettings', () => ({ updateConnectionSettings: vi.fn() }));
 vi.mock('../../services/aiModels/offeringWrites', () => ({
   ensurePlatformOffering: vi.fn(),
@@ -91,6 +93,8 @@ import { captureException } from '../../services/sentry';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { getCompatConnection } from '../../services/aiModels/connections';
+import { getOffering } from '../../services/aiModels/offerings';
+import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
@@ -104,17 +108,17 @@ const chatRow = {
 };
 const KEY = 'sk-ant-' + 'x'.repeat(40);
 
-// Deferred to Task 8b (need W03 Task 16's enqueueConnectionSync):
-//   POST /connections/:id/refresh, POST /offerings/:id/verify.
 const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY }],
   ['POST', `/connections/${C}/key`, { apiKey: KEY }],
   ['POST', `/connections/${C}/endpoint`, { catalogEntryId: null }],
   ['PATCH', `/connections/${C}`, { name: 'x' }],
   ['DELETE', `/connections/${C}`],
+  ['POST', `/connections/${C}/refresh`],
   ['POST', `/offerings/platform/${PM}`, { enabled: true }],
   ['POST', `/offerings/${A}/enabled`, { enabled: true }],
   ['PATCH', `/offerings/${A}`, { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
+  ['POST', `/offerings/${A}/verify`],
   ['PUT', '/assignments', { assignments: [chatRow] }],
   ['PUT', '/residency', { required: false }],
 ];
@@ -122,6 +126,7 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
 const ALL_WRITE_SERVICE_MOCKS = [
   savePartnerLlmKey, updatePartnerLlmEndpoint, deletePartnerLlmConfig, updateConnectionSettings,
   ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, putPartnerAssignments, setResidencyRequired,
+  enqueueConnectionSync,
 ].map((m) => vi.mocked(m));
 
 function call(method: string, path: string, body?: unknown) {
@@ -153,6 +158,8 @@ beforeEach(() => {
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
   vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
+  vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: C } as any);
+  vi.mocked(enqueueConnectionSync).mockResolvedValue(undefined);
   vi.mocked(putPartnerAssignments).mockResolvedValue([{ surface: 'chat', role: 'default', updatedAt: T }] as any);
   vi.mocked(previewResidencyImpact).mockResolvedValue({ unavailableSurfaces: [], affectedOrgOverrides: [] });
   vi.mocked(setResidencyRequired).mockResolvedValue({ residencyRequired: false, impact: { unavailableSurfaces: [], affectedOrgOverrides: [] } });
@@ -398,8 +405,71 @@ describe('/ai/models partner routes — malformed ids', () => {
     ['PATCH', '/offerings/not-a-uuid', { expectedUpdatedAt: '2026-10-01T00:00:00.000Z', displayName: 'x' }],
     ['PATCH', '/connections/not-a-uuid', { name: 'x' }],
     ['DELETE', '/connections/not-a-uuid'],
+    ['POST', '/connections/not-a-uuid/refresh'],
+    ['POST', '/offerings/not-a-uuid/verify'],
   ])('%s %s → 400, no write', async (method, path, body) => {
     expect((await call(method, path, body)).status).toBe(400);
     for (const write of ALL_WRITE_SERVICE_MOCKS) expect(write).not.toHaveBeenCalled();
+  });
+});
+
+describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
+  it('POST /connections/:id/refresh queues discovery for the partner’s connection → 202', async () => {
+    const res = await call('POST', `/connections/${C}/refresh`);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ queued: true, connectionId: C });
+    expect(enqueueConnectionSync).toHaveBeenCalledWith(C);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null, action: 'ai_models.connection.refresh_requested', resourceType: 'partner', resourceId: P,
+      details: { connectionId: C },
+    }));
+  });
+  it('POST /connections/:id/refresh 404s a forged id (and the platform connection, which has no row)', async () => {
+    vi.mocked(getCompatConnection).mockResolvedValue({ id: 'someone-else', partnerId: P } as any);
+    expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
+    vi.mocked(getCompatConnection).mockResolvedValue(null);
+    expect((await call('POST', `/connections/${C}/refresh`)).status).toBe(404);
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it('POST /offerings/:id/verify re-runs discovery for the offering’s connection → 202', async () => {
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ queued: true, connectionId: C });
+    expect(getOffering).toHaveBeenCalledWith(A);
+    expect(enqueueConnectionSync).toHaveBeenCalledWith(C);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null, action: 'ai_models.offering.verify_requested', resourceType: 'partner', resourceId: P,
+      details: { offeringId: A, connectionId: C },
+    }));
+  });
+  it('POST /offerings/:id/verify on a platform offering is 409 (operator-verified), no enqueue', async () => {
+    vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: null } as any);
+    const res = await call('POST', `/offerings/${A}/verify`);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'conflict' });
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+  });
+  it('POST /offerings/:id/verify 404s another partner’s offering and a missing one, no enqueue', async () => {
+    vi.mocked(getOffering).mockResolvedValueOnce({ id: A, partnerId: 'other-partner', connectionId: C } as any);
+    const forged = await call('POST', `/offerings/${A}/verify`);
+    expect([forged.status, (await forged.json()).code]).toEqual([404, 'not_found']);
+    vi.mocked(getOffering).mockResolvedValueOnce(null);
+    expect((await call('POST', `/offerings/${A}/verify`)).status).toBe(404);
+    expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['POST', `/connections/${C}/refresh`],
+    ['POST', `/offerings/${A}/verify`],
+  ])('%s %s → 503 queue_unavailable when the queue rejects; captured, not audited', async (method, path) => {
+    vi.mocked(enqueueConnectionSync).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    const res = await call(method, path);
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'queue_unavailable' });
+    expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
+    expect(captureException).toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 });

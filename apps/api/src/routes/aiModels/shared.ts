@@ -1,6 +1,7 @@
 /**
  * Gates and the write wrapper shared by the /ai/models partner routes (W04,
- * #7602). No route method calls here, so mcp-coverage does not index it.
+ * #7602). The scanner still indexes it (it reads c.get('auth')): mcpCoverage
+ * lists it as internal_plumbing.
  */
 import type { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -10,6 +11,7 @@ import { PERMISSIONS, userCanDecideApprovals } from '../../services/permissions'
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
+import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
 import { PartnerLlmError } from '../../services/partnerLlmConfig';
 import { captureException } from '../../services/sentry';
 
@@ -77,5 +79,20 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
       return c.json({ error: error.message }, error.status);
     }
     throw error;
+  }
+}
+
+/**
+ * Queue model discovery for one connection (W03's `sync-connection` job, which
+ * collapses onto a waiting/active job for the same connection). Returns null
+ * when queued; a queue failure (Redis down) is a 503, captured, never echoed.
+ */
+export async function queueConnectionSync(c: Context, connectionId: string): Promise<Response | null> {
+  try {
+    await enqueueConnectionSync(connectionId);
+    return null;
+  } catch (error) {
+    captureException(error, undefined, { service: 'aiModels', stage: 'enqueue' });
+    return c.json({ error: 'Could not queue the model refresh. Try again in a moment.', code: 'queue_unavailable' }, 503);
   }
 }

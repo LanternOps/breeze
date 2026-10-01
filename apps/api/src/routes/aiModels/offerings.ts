@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { offeringDetailsPatchSchema, offeringEnableSchema } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { getOffering } from '../../services/aiModels/offerings';
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
@@ -14,11 +15,10 @@ import {
   idParamSchema,
   partnerWrite,
   platformModelIdParamSchema,
+  queueConnectionSync,
   registryWrite,
   requirePartnerWide,
 } from './shared';
-
-// POST /:id/verify (enqueueConnectionSync, W03 Task 16) lands in W04 Task 8b.
 
 export const aiModelOfferingRoutes = new Hono();
 
@@ -70,5 +70,24 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
     const { expectedUpdatedAt: _ignored, ...changed } = patch;
     auditOffering(c, partnerId, 'updated', { offeringId: offering.id, fields: Object.keys(changed) });
     return c.json({ id: offering.id, updatedAt: offering.updatedAt.toISOString() });
+  });
+});
+
+// "Verify" (spec §11, Decision D4) in v1 re-runs discovery for the offering's
+// connection, which re-reads its capabilities and lifecycle. Platform offerings
+// (no connection) are verified by the operator on /admin/ai-models.
+aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
+  const { partnerId } = requirePartnerWide(c);
+  const { id: offeringId } = c.req.valid('param');
+  return registryWrite(c, partnerId, async () => {
+    const offering = await getOffering(offeringId);
+    if (!offering || offering.partnerId !== partnerId) return c.json({ error: 'Model not found.', code: 'not_found' }, 404);
+    if (!offering.connectionId) {
+      return c.json({ error: 'Platform models are verified by the Breeze operator.', code: 'conflict' }, 409);
+    }
+    const failed = await queueConnectionSync(c, offering.connectionId);
+    if (failed) return failed;
+    auditOffering(c, partnerId, 'verify_requested', { offeringId: offering.id, connectionId: offering.connectionId });
+    return c.json({ queued: true, connectionId: offering.connectionId }, 202);
   });
 });
