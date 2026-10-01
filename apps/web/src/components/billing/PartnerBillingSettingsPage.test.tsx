@@ -97,6 +97,16 @@ describe('PartnerBillingSettingsPage', () => {
     expect(screen.getByTestId('partner-billing-prefix')).toBeDisabled();
     expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
     expect(screen.getByTestId('partner-billing-readonly')).toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+  });
+
+  it('shows the plain notice (not the partner-wide one) when both the grant and partner-wide access are missing', async () => {
+    canWrite = false;
+    canManagePartnerWide = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+    expect(screen.getByTestId('partner-billing-currency')).toBeDisabled();
   });
 
   it('is read-only with a partner-wide-specific notice when invoices:write is held but partner-wide access is not (#7517)', async () => {
