@@ -36,6 +36,7 @@ vi.mock('./aiModels/platformModels', () => ({ getPlatformModelByModelId: hoisted
 
 import {
   AiBudgetBindingConflictError,
+  AiBudgetPendingSettlementError,
   readSdkUsageSnapshot,
   reserveAiBudget,
   settleAiBudgetReservation,
@@ -173,7 +174,15 @@ describe('reserveAiBudget with a turn binding (spec §9.2 bullet 1)', () => {
       .mockResolvedValueOnce([reservationRow({ model_binding: BINDING, pending_settlement: { reservationId: RESERVATION_ID } })]);
     const repriced = { ...BINDING, wireFingerprint: 'g' };
     await expect(reserveAiBudget({ orgId: ORG_ID, idempotencyKey: 'key-1', billingSource: 'platform', binding: repriced }))
-      .rejects.toBeInstanceOf(AiBudgetBindingConflictError);
+      .rejects.toBeInstanceOf(AiBudgetPendingSettlementError);
+  });
+
+  it('refuses a SAME-binding replay onto a reservation whose settlement is pending (review finding 2)', async () => {
+    dbMock.execute
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([reservationRow({ model_binding: BINDING, pending_settlement: { reservationId: RESERVATION_ID } })]);
+    await expect(reserveAiBudget({ orgId: ORG_ID, idempotencyKey: 'key-1', billingSource: 'platform', binding: BINDING }))
+      .rejects.toBeInstanceOf(AiBudgetPendingSettlementError);
   });
 });
 

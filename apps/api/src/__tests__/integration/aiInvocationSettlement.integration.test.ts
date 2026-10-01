@@ -23,13 +23,15 @@ vi.mock('../../db/lockTimeout', async (importOriginal) => {
 import { db, withSystemDbAccessContext } from '../../db';
 import { settleAndDebitAiReservations } from '../../jobs/aiBudgetReservationSweep';
 import {
-  AiBudgetBindingConflictError,
+  AiBudgetPendingSettlementError,
   clearCreditDebitFailure,
   listFailedCreditDebits,
   listUndebitedPlatformSettlements,
+  persistPendingSettlement,
   readSdkUsageSnapshot,
   replayPendingAiSettlements,
   reserveAiBudget,
+  settleAiBudgetReservation,
 } from '../../services/aiBudgetReservations';
 import type { SdkUsageSnapshot, TurnOutcome } from '../../services/aiModels/invocationUsage';
 import { getPlatformModelById } from '../../services/aiModels/platformModels';
@@ -283,7 +285,36 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     await fixtureSql`UPDATE ai_budget_reservations SET pending_settlement = '{"x":1}'::jsonb WHERE id = ${id}`;
     await expect(reserveAiBudget({
       orgId: s.orgId, billingSource: 'platform', idempotencyKey: key, binding: { ...agentBinding, wireFingerprint: 'changed' },
-    })).rejects.toBeInstanceOf(AiBudgetBindingConflictError);
+    })).rejects.toBeInstanceOf(AiBudgetPendingSettlementError);
+  });
+
+  it('refuses a SAME-binding stable-key replay onto a reservation carrying a pending settlement (review finding 2)', async () => {
+    const agentBinding = await bindingFor(s, 'ai_agents');
+    const key = `ai-agent-run:${randomUUID()}`;
+    const id = await reserve(s, agentBinding, { session: false, key });
+    const deferred = { orgId: s.orgId, reservationId: id, actualCostCents: 5, inputTokens: 10, outputTokens: 5 };
+    expect(await persistPendingSettlement(deferred)).toBe('persisted');
+    // Still `active` (markIndeterminate is best effort): the replay must not get the hold back.
+    expect(await reservationState(id)).toMatchObject({ status: 'active' });
+    await expect(reserveAiBudget({ orgId: s.orgId, billingSource: 'platform', idempotencyKey: key, binding: agentBinding }))
+      .rejects.toThrow(/pending settlement/);
+    await expect(reserveAiBudget({ orgId: s.orgId, billingSource: 'platform', idempotencyKey: key }))
+      .rejects.toThrow(/pending settlement/);
+    expect((await reservationState(id)).pending_settlement).toMatchObject({ actualCostCents: 5 });
+  });
+
+  it('a settlement that is not the pending one is refused and the pending one survives to be replayed (review finding 2)', async () => {
+    const agentBinding = await bindingFor(s, 'ai_agents');
+    const id = await reserve(s, agentBinding, { session: false });
+    const deferred = { orgId: s.orgId, reservationId: id, actualCostCents: 5, inputTokens: 10, outputTokens: 5 };
+    expect(await persistPendingSettlement(deferred)).toBe('persisted');
+    await expect(settleAiBudgetReservation({ ...deferred, actualCostCents: 7, outputTokens: 9 }))
+      .rejects.toThrow(/pending settlement/);
+    expect(await reservationState(id)).toMatchObject({ status: 'active', actual_cost_cents: null });
+    expect((await reservationState(id)).pending_settlement).toMatchObject({ actualCostCents: 5 });
+    // The pending settlement itself (the sweep's replay, or the deferring caller retrying) goes through.
+    expect((await replayPendingAiSettlements()).filter((r) => r.reservationId === id)).toMatchObject([{ kind: 'settled', actualCostCents: 5 }]);
+    expect(await reservationState(id)).toMatchObject({ status: 'settled', pending_settlement: null });
   });
 });
 

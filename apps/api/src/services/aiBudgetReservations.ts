@@ -151,6 +151,23 @@ export class AiBudgetBindingConflictError extends Error {
 }
 
 /**
+ * Review finding 2 (#7700): the reservation carries a persisted deferred
+ * settlement. Its outcome is recorded (just not yet applied), so a stable-key
+ * replay may not take the hold back for a new dispatch, and no settlement other
+ * than that pending one may land on it — either would overwrite or orphan the
+ * spend the sweep is about to replay.
+ */
+export class AiBudgetPendingSettlementError extends Error {
+  readonly code = 'pending_settlement' as const;
+  constructor(reservationId: string, action: 'reserve' | 'settle') {
+    super(action === 'reserve'
+      ? `AI budget reservation ${reservationId} carries a pending settlement and cannot be reused`
+      : `AI budget reservation ${reservationId} carries a different pending settlement`);
+    this.name = 'AiBudgetPendingSettlementError';
+  }
+}
+
+/**
  * N11: `status` is the literal `'active'`, not a union. `existingResult` is the
  * ONLY producer and it throws for every other status, so a widened union made
  * callers write an unreachable `status !== 'active'` branch that read like a
@@ -542,6 +559,11 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
         || existing.namespace !== namespace) {
         throw new Error('AI budget reservation idempotency key conflicts with another dispatch');
       }
+      // Review finding 2 (#7700): whatever the binding, a reservation whose
+      // settlement is persisted-but-pending belongs to the turn that produced it.
+      if (existing.pending_settlement !== null && existing.pending_settlement !== undefined) {
+        throw new AiBudgetPendingSettlementError(existing.id, 'reserve');
+      }
       // Review finding 4: a stable-key retry (agent run, script review attempt)
       // gets back the reservation of a dispatch that never completed. Its old
       // binding may predate a rate or offering change, and settlement would
@@ -549,8 +571,7 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
       // anything is dispatched — but never one whose outcome is (or may be)
       // recorded.
       if (input.binding && stableJson(parseTurnBinding(existing.model_binding)) !== stableJson(input.binding)) {
-        if (existing.status !== 'active' || existing.settlement_fingerprint !== null
-          || (existing.pending_settlement !== null && existing.pending_settlement !== undefined)) {
+        if (existing.status !== 'active' || existing.settlement_fingerprint !== null) {
           throw new AiBudgetBindingConflictError();
         }
         await db.execute(sql`
@@ -988,6 +1009,20 @@ export async function settleAiBudgetReservation(
     }
     if (reservation.status === 'released') {
       throw new Error('Released AI budget reservation cannot be settled');
+    }
+    // Review finding 2 (#7700): a persisted deferred settlement is the outcome
+    // of record. Only that settlement (the sweep's replay, or the deferring
+    // caller retrying the same input) may clear it; anything else would
+    // silently overwrite the spend it holds.
+    if (reservation.pending_settlement !== null && reservation.pending_settlement !== undefined) {
+      const pending = revivePendingSettlement(reservation.pending_settlement, reservation);
+      const pendingTotals = settlementTotals(pending);
+      const pendingFingerprint = settlementFingerprint(
+        pending, pendingTotals, moneyString(pendingTotals.actualCostCents, 'actualCostCents'),
+      );
+      if (pendingFingerprint !== fingerprint) {
+        throw new AiBudgetPendingSettlementError(reservation.id, 'settle');
+      }
     }
     // B3(c): an `expired` reservation is still settleable. Expiry only means it
     // stopped HOLDING capacity; the provider may still report real spend
