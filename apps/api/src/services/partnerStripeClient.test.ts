@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ StripeMock: vi.fn(), rows: [] as unknown[][], constructed: [] as unknown[][] }));
+const h = vi.hoisted(() => ({ StripeMock: vi.fn(), selectMock: vi.fn(), rows: [] as unknown[][], constructed: [] as unknown[][] }));
 vi.mock('stripe', () => ({ default: class StripeStub { constructor(key: string, options: unknown) { h.constructed.push([key, options]); return h.StripeMock(key, options); } } }));
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
-  for (const name of ['select', 'from', 'where', 'limit', 'update', 'set']) chain[name] = () => chain;
+  for (const name of ['select', 'from', 'where', 'limit', 'update', 'set']) chain[name] = () => { if (name === 'select') h.selectMock(); return chain; };
   chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(h.rows.shift() ?? []).then(resolve);
   return { db: chain };
 });
@@ -35,7 +35,7 @@ describe('getPartnerStripeClient credential boundary', () => {
 
   it('uses a candidate key without reading stored ciphertext', async () => {
     await expect(getPartnerStripeClient('partner', { candidateApiKey: 'sk_test_candidate' })).resolves.toEqual({ stripe });
-    expect(h.rows).toHaveLength(0);
+    expect(h.selectMock).not.toHaveBeenCalled();
     expect(h.constructed).toEqual([['sk_test_candidate', { apiVersion }]]);
   });
 
