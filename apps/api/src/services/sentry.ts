@@ -60,6 +60,11 @@ const ALLOWED_TAG_NAMES = new Set([
   'org_id',
   'partner_id',
   'stripe_reconcile_stage',
+  // Autopay failures: local row UUIDs and bounded enum/phase labels only.
+  'billing_notice_id',
+  'billing_notice_kind',
+  'autopay_method_id',
+  'autopay_phase',
   // SEC-150: which phase of Checkout-session revocation produced the alert —
   // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
   // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid

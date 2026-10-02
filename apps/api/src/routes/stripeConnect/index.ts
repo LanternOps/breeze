@@ -64,6 +64,8 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        autopayCapabilitiesCheckedAt: result.autopayCapabilitiesCheckedAt.toISOString(),
+        autopayMissingPermissions: result.autopayMissingPermissions,
         reconciliation: { state: 'pending', lastPolledAt: null, error: null },
       });
     } catch (err) {
@@ -148,6 +150,8 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        autopayCapabilitiesCheckedAt: result.autopayCapabilitiesCheckedAt.toISOString(),
+        autopayMissingPermissions: result.autopayMissingPermissions,
         cacheState: 'fresh',
         stale: false,
         error: null,

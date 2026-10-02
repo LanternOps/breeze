@@ -76,6 +76,8 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * so an unused slot is easy to spot.
  */
 export const JOB_SCHEDULES = {
+  // Fine-grained billing outbox tick; intentionally outside the coarse collision grid.
+  'billing-notice-dispatch': '* * * * *',
   // ---------------------------------------------------------------- daily tier
   // Minutes ≡ 3 (mod 5), one job per (hour, minute).
   'device-metrics-retention': '3 0 * * *',

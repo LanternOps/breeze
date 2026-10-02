@@ -49,6 +49,7 @@ import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
+import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { contractRoutes } from './routes/contracts';
 import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
@@ -346,7 +347,7 @@ const REQUIRE_REDIS_ON_STARTUP = envFlag(
   (process.env.NODE_ENV ?? 'development') === 'production'
 );
 
-const app = new Hono();
+export const app = new Hono();
 
 /**
  * Boot-time connectivity results. These drive the startup fail-fast gate and
@@ -767,6 +768,7 @@ api.route('/', invoiceAssemblyRoutes);
 // /api/v1/partner/billing-settings and /api/v1/orgs/:orgId/billing-settings.
 // invoiceSettingsRoutes applies authMiddleware itself.
 api.route('/', invoiceSettingsRoutes);
+api.route('/', billingPaymentSettingsRoutes);
 api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
@@ -2008,7 +2010,9 @@ async function bootstrap(): Promise<void> {
   installSignalHandlers();
 }
 
-void bootstrap().catch((error) => {
-  console.error('[CRITICAL] API startup failed:', error);
-  process.exit(1);
-});
+if (!process.env.VITEST) {
+  void bootstrap().catch((error) => {
+    console.error('[CRITICAL] API startup failed:', error);
+    process.exit(1);
+  });
+}

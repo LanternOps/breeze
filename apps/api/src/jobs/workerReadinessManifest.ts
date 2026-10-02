@@ -200,6 +200,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('inboundEmailWorker'),
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
+  consumers('autopayWorker'),
   consumers('contractWorker'),
   // ONE initializer constructing TWO Workers, so both stable names are declared.
   // They must match the attachWorkerObservability strings character for

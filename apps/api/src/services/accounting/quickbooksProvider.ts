@@ -76,11 +76,9 @@ export const QBO_CDC_QUERY_MAX_PAGES = 50;
 /**
  * QuickBooks PaymentMethod name -> Breeze `payment_method` enum.
  *
- * Only the names QuickBooks ships as realm defaults are mapped. Everything else
- * — including plausible-looking rails like "ACH", "Wire" or "Direct Debit" — is
- * `other` ON PURPOSE: `bank_transfer` is never INFERRED from a free-text name a
- * QBO admin can rename at will, because mis-labelling the rail on a money row is
- * worse than an honest `other`.
+ * Only explicit names are mapped. The explicitly named "ACH debit" rail is
+ * recognized; "ACH", "Wire" and "Direct Debit" remain unknown because a
+ * plausible free-text name does not prove the rail.
  */
 export const QBO_PAYMENT_METHOD_NAMES: Record<string, AccountingPaymentMethod> = {
   cash: 'cash',
@@ -95,6 +93,7 @@ export const QBO_PAYMENT_METHOD_NAMES: Record<string, AccountingPaymentMethod> =
   amex: 'card',
   'american express': 'card',
   discover: 'card',
+  'ach debit': 'ach_debit',
   'diners club': 'card',
 };
 

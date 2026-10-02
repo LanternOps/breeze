@@ -109,6 +109,17 @@ describe('executeTool — selfManagedDbContext (#7128)', () => {
     expect(vi.mocked(withDbAccessContext).mock.calls[0]![0]).toBe(AUTH_CTX);
   });
 
+  it('opens short dispatch contexts for an opted-in action only', async () => {
+    register(false);
+    // Only the listed action owns the dispatch phases and handler contexts.
+    Object.assign(aiTools.get(PROBE)!, { selfManagedDbContext: ['create_pay_link'] });
+    await executeTool(PROBE, { action: 'create_pay_link', deviceId: DEVICE }, auth);
+    expect(dbState.events).toEqual(['open', 'gate:held', 'close', 'handler:none', 'open', 'close']);
+    dbState.events.length = 0;
+    await executeTool(PROBE, { action: 'create_draft', deviceId: DEVICE }, auth);
+    expect(dbState.events).toEqual(['gate:none', 'handler:none']);
+  });
+
   it('joins a context the caller already holds instead of opening one (MCP request path)', async () => {
     register(true);
     dbState.held = { scope: 'organization', label: 'request' };

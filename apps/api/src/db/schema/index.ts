@@ -196,3 +196,4 @@ export * from './aiModelRegistry';
 export * from './aiModelRegistryCutover';
 export * from './aiInvocations';
 export * from './aiUsageCharges';
+export * from './autopay';

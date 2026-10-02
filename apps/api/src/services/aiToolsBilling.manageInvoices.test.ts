@@ -85,6 +85,7 @@ function contractRow(id = 'contract-1'): Awaited<ReturnType<typeof contractServi
     nextBillingAt: null,
     autoIssue: false,
     autoRenew: false,
+    autopayExcluded: false,
     renewalTermMonths: null,
     renewalNoticeDays: null,
     currencyCode: 'USD',

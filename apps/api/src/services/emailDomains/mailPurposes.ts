@@ -82,6 +82,7 @@ export const MAIL_PURPOSES = {
   // when a tech accepts on their behalf. Same envelope as the quote itself;
   // its own purpose so delivery history never reports it as a quote send.
   'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+  'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
 } as const satisfies Record<string, MailPurposePolicy>;

@@ -86,6 +86,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     // still fails, instead of passing on an unchanged total.
     //
     // Resolved top-level segments (all reserved):
+    //   billingPaymentSettingsRoutes  → orgs, partner
     //   callerVerificationRoutes      → orgs, partner
     //   externalServicesRoutes        → billing, support
     //   invoiceAssemblyRoutes         → orgs, tickets
@@ -100,6 +101,7 @@ describe('RESERVED_ROUTE_NAMESPACES', () => {
     // segments by hand, and add them to RESERVED_ROUTE_NAMESPACES.
     const rootMounts = [...source.matchAll(ROOT_MOUNT_RE)].map((m) => m[1]!).sort();
     expect(rootMounts).toEqual([
+      'billingPaymentSettingsRoutes',
       'callerVerificationRoutes',
       'externalServicesRoutes',
       'invoiceAssemblyRoutes',

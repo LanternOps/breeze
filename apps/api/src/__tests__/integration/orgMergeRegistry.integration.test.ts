@@ -185,6 +185,7 @@ const PREDICATE_CHECK_EXCEPTIONS = new Set(['tenant_variables']);
  * silently writes the old value back — equally fatal, and quieter.
  */
 const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
+  'org_autopay_consents.org_autopay_consents_immutable': 'unconditional append-only RAISE; consent authority remains with the loser for erasure',
   'offline_transition_effects.offline_effect_source_guard': 'RAISEs iff immutable source org_id changes; historical intents remain with source until erasure',
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
@@ -238,6 +239,9 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
  * row's org_id is unchanged afterwards.
  */
 const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>> = {
+  org_autopay_enrollments: 'Cancel and retain source authority; proven by autopayMerge.integration.test.ts.',
+  org_payment_methods: 'Remove and retain source authority; proven by autopayMerge.integration.test.ts.',
+
   // fenceScriptProposals sets status/decision_note in the resolve phase;
   // moveScriptProposals is a documented no-op. Proven by
   // scriptProposalsLifecycle.integration.test.ts ("an org merge expires live
@@ -521,10 +525,13 @@ describe('Org merge policy registry contract', () => {
     for (const [table, policy] of policies) {
       if (policy.kind !== 'keep-survivor') continue;
       const indexes = await getUniqueIndexes(table);
-      const match = indexes.find((ix) => ix.whereNormalized === null && ix.nonOrgColumns.size === 0);
+      // Dual-axis settings have one row per non-null org, plus partner-owned rows.
+      // Their merge executor deletes source settings and never repoints them.
+      const expectedWhere = table === 'billing_payment_settings' ? normalizeSql('org_id IS NOT NULL') : null;
+      const match = indexes.find((ix) => ix.whereNormalized === expectedWhere && ix.nonOrgColumns.size === 0);
       expect(
         match,
-        `${table}: expected a total (non-partial) UNIQUE index on exactly (org_id); found unique indexes: ${JSON.stringify(indexes.map((i) => i.indexname))}`,
+        `${table}: expected a UNIQUE index on exactly (org_id) with predicate ${expectedWhere ?? 'none'}; found unique indexes: ${JSON.stringify(indexes.map((i) => i.indexname))}`,
       ).toBeDefined();
     }
   });

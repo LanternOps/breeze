@@ -1477,3 +1477,14 @@ describe('rate limiting (Xero W01 Task 14)', () => {
     expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m1', 'p1');
   });
 });
+
+it('A3 advances after an imported overpayment but holds the cursor for a reservation conflict', async () => {
+  reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line({ amountMinor: 20000 })] });
+  applyReturns('applied');
+  await processReconcileConnectionJob(JOB);
+  expect(advanceReconcileCursorMock).toHaveBeenCalledOnce();
+  advanceReconcileCursorMock.mockClear();
+  applyMock.mockRejectedValueOnce(Object.assign(new Error('collection in progress'), { code: 'COLLECTION_IN_PROGRESS' }));
+  await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
+  expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+});

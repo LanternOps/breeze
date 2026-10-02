@@ -1,3 +1,5 @@
+const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
+vi.mock('../../services/autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { db } from '../../db';
@@ -60,6 +62,8 @@ vi.mock('../../db', () => {
     for (const m of ['select', 'from', 'where', 'orderBy', 'limit', 'offset', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
+      const first = rows[0];
+      if (first && typeof first === 'object' && 'currencyCode' in first && 'balance' in first) reservation.invoice = first as Record<string, unknown>;
       return Promise.resolve(rows).then(resolve);
     };
     (chain as { insert: unknown }).insert = vi.fn(() => ({
@@ -103,6 +107,7 @@ const { settleCheckoutSessionMock, HeldCtxError } = vi.hoisted(() => ({
 }));
 vi.mock('../../services/stripeSettle', () => ({
   settleCheckoutSession: settleCheckoutSessionMock,
+  assertNoHeldDbContextForStripe: vi.fn(),
   HeldDbContextForStripeError: HeldCtxError,
 }));
 
@@ -151,7 +156,8 @@ function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>
 import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
 
 describe('portal invoices routes', () => {
-  beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
+  beforeEach(() => {
+    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
 
   it.each(['pay', 'settle'])('rejects cookie-authenticated POST /invoices/:id/%s without CSRF before side effects', async (action) => {
     const res = await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/${action}`, {
@@ -166,6 +172,15 @@ describe('portal invoices routes', () => {
     expect(sessionsCreateMock).not.toHaveBeenCalled();
     expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
   });
+
+it('portal pay returns 409 for a reservation before contacting Stripe', async () => {
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
+  const response = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'COLLECTION_IN_PROGRESS' });
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
 
   it('rejects a form-urlencoded settle body for bearer auth', async () => {
     const res = await app().request(`/invoices/${INV_ID}/settle`, {

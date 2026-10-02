@@ -14,7 +14,7 @@ const PARTNER_A = '11111111-1111-4111-8111-111111111111';
 const PARTNER_B = '22222222-2222-4222-8222-222222222222';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
 
-const { dbMocks, accountsRetrieveMock, eventsListMock, sessionsExpireMock, systemContextCalls } = vi.hoisted(() => ({
+const { dbMocks, accountsRetrieveMock, eventsListMock, sessionsExpireMock, systemContextCalls, clientBoundaryMock, capabilityProbeMock, clientRow } = vi.hoisted(() => ({
   dbMocks: {
     // queue of results for successive db.select()...limit() terminals
     selectResults: [] as unknown[][],
@@ -39,16 +39,11 @@ const { dbMocks, accountsRetrieveMock, eventsListMock, sessionsExpireMock, syste
     Object.assign(new Error('No such checkout session'), { type: 'StripeInvalidRequestError', code: 'resource_missing' }),
   ),
   systemContextCalls: { count: 0, depth: 0 },
+  clientBoundaryMock: vi.fn(), capabilityProbeMock: vi.fn(), clientRow: { current: null as Record<string, unknown> | null },
 }));
 
-vi.mock('stripe', () => ({
-  default: class MockStripe {
-    accounts = { retrieve: accountsRetrieveMock };
-    events = { list: eventsListMock };
-    checkout = { sessions: { expire: sessionsExpireMock } };
-    constructor(_key: string, _opts?: unknown) {}
-  },
-}));
+vi.mock('./partnerStripeClient', () => ({ getPartnerStripeClient: clientBoundaryMock }));
+vi.mock('./autopay/stripeCapabilities', () => ({ probeAutopayCapabilities: capabilityProbeMock }));
 
 vi.mock('./secretCrypto', () => ({
   encryptSecret: (x: string) => `enc(${x})`,
@@ -77,7 +72,9 @@ vi.mock('../db', () => ({
           dbMocks.selectWheres.push(cond);
           const run = () => {
             dbMocks.callOrder.push('select');
-            return Promise.resolve(dbMocks.selectResults.shift() ?? []);
+            const resultRows = dbMocks.selectResults.shift() ?? [];
+            clientRow.current = (resultRows[0] as Record<string, unknown> | undefined) ?? null;
+            return Promise.resolve(resultRows);
           };
           return {
             limit: vi.fn(() => {
@@ -167,9 +164,35 @@ beforeEach(() => {
   accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit' });
   eventsListMock.mockReset();
   eventsListMock.mockResolvedValue({ data: [], has_more: false });
+  clientRow.current = null;
+  capabilityProbeMock.mockReset().mockResolvedValue({ missing: [] });
+  clientBoundaryMock.mockReset().mockImplementation(async (_partnerId: string, source?: { candidateApiKey?: string }) => {
+    const stripe = { accounts: { retrieve: accountsRetrieveMock }, events: { list: eventsListMock }, checkout: { sessions: { expire: sessionsExpireMock } } };
+    if (source?.candidateApiKey) return { stripe };
+    const row = clientRow.current;
+    if (!row || row.status !== 'connected' || !row.apiKey) throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
+    if (row.apiKey === 'garbage') throw new PartnerStripeError('Stored Stripe key cannot be read.', 'STRIPE_KEY_UNREADABLE');
+    return { stripe, stripeAccountId: String(row.stripeAccountId), defaultCurrency: row.defaultCurrency ?? null };
+  });
 });
 
 describe('savePartnerStripeKey', () => {
+  it('saves a checkout-capable key with missing autopay permissions in both upsert arms', async () => {
+    capabilityProbeMock.mockResolvedValue({ missing: ['setup_intents_write', 'mandates_read'] });
+    dbMocks.selectResults.push([]);
+    const result = await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+    expect(clientBoundaryMock).toHaveBeenCalledWith(PARTNER_A, { candidateApiKey: TEST_KEY });
+    expect(result).toMatchObject({ autopayMissingPermissions: ['setup_intents_write', 'mandates_read'], autopayCapabilitiesCheckedAt: expect.any(Date) });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ autopayMissingPermissions: ['setup_intents_write', 'mandates_read'], autopayCapabilitiesCheckedAt: expect.any(Date) });
+    expect(dbMocks.upsertConfigs[0]).toMatchObject({ set: expect.objectContaining({ autopayMissingPermissions: ['setup_intents_write', 'mandates_read'] }) });
+  });
+  it('saves a key with autopay unavailable on a probe outage', async () => {
+    capabilityProbeMock.mockRejectedValue(Object.assign(new Error('temporary'), { type: 'StripeAPIError' }));
+    dbMocks.selectResults.push([]);
+    await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID })).resolves.toMatchObject({ stripeAccountId: 'acct_unit' });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['customers_write', 'mandates_read']) });
+  });
+
   it('rejects a restricted key that cannot read events before enabling payment collection', async () => {
     eventsListMock.mockRejectedValue(Object.assign(new Error('events denied'), { type: 'StripePermissionError' }));
     await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID }))
@@ -189,6 +212,8 @@ describe('savePartnerStripeKey', () => {
       defaultCurrency: null,
       accountCountry: null,
       accountRefreshedAt: expect.any(Date),
+      autopayCapabilitiesCheckedAt: expect.any(Date),
+      autopayMissingPermissions: [],
     });
     // Pre-check ran inside the system context (partner-axis RLS would hide a
     // cross-partner claim from the request context). Four, not two, since
@@ -225,6 +250,8 @@ describe('savePartnerStripeKey', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: expect.any(Date),
+      autopayCapabilitiesCheckedAt: expect.any(Date),
+      autopayMissingPermissions: [],
     });
     expect(dbMocks.insertedValues[0]).toMatchObject({ defaultCurrency: 'EUR', accountCountry: 'DE' });
     expect(dbMocks.upsertConfigs[0]!.set).toMatchObject({ defaultCurrency: 'EUR', accountCountry: 'DE' });
@@ -355,6 +382,7 @@ describe('refreshPartnerStripeAccount', () => {
     status: 'connected',
     stripeAccountId,
     defaultCurrency: 'USD',
+    connectedAt: new Date('2026-10-01T00:00:00Z'),
   });
   const returnedRow = (over: Record<string, unknown> = {}) => ({
     stripeAccountId: 'acct_unit',
@@ -363,7 +391,17 @@ describe('refreshPartnerStripeAccount', () => {
     defaultCurrency: 'GBP',
     accountCountry: 'GB',
     accountRefreshedAt: new Date(),
+    autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+    autopayMissingPermissions: [],
     ...over,
+  });
+
+  it('refreshes account fields even when autopay capability probing fails', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    dbMocks.updateReturning.push([returnedRow()]);
+    capabilityProbeMock.mockRejectedValueOnce(new Error('probe outage'));
+    await expect(refreshPartnerStripeAccount(PARTNER_A)).resolves.toMatchObject({ stripeAccountId: 'acct_unit' });
+    expect(dbMocks.updatedValues.at(-1)).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['customers_write', 'mandates_read']) });
   });
 
   it('retrieves fresh account fields, updates the cache via RETURNING, and returns the persisted row', async () => {
@@ -380,6 +418,8 @@ describe('refreshPartnerStripeAccount', () => {
       defaultCurrency: 'GBP',
       accountCountry: 'GB',
       accountRefreshedAt: expect.any(Date),
+      autopayCapabilitiesCheckedAt: expect.any(Date),
+      autopayMissingPermissions: [],
     });
     expect(dbMocks.updatedValues).toHaveLength(1);
     const written = dbMocks.updatedValues[0]!;
@@ -388,6 +428,8 @@ describe('refreshPartnerStripeAccount', () => {
       accountCountry: 'GB',
       accountRefreshedAt: expect.any(Date),
       updatedAt: expect.any(Date),
+      autopayCapabilitiesCheckedAt: expect.any(Date),
+      autopayMissingPermissions: [],
     });
     expect(written.updatedAt).toBe(written.accountRefreshedAt); // one `now` stamp
   });
@@ -400,8 +442,8 @@ describe('refreshPartnerStripeAccount', () => {
     await refreshPartnerStripeAccount(PARTNER_A);
 
     const terms = collectSqlTerms(dbMocks.updateWheres[0]);
-    expect(terms.columns).toEqual(expect.arrayContaining(['partner_id', 'stripe_account_id', 'status']));
-    expect(terms.params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit', 'connected']));
+    expect(terms.columns).toEqual(expect.arrayContaining(['partner_id', 'stripe_account_id', 'status', 'api_key']));
+    expect(terms.params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit', 'connected', 'enc(sk_test_x)']));
   });
 
   it('zero rows updated (key replaced mid-flight): retries against the NEW account instead of returning unpersisted values', async () => {
@@ -523,6 +565,8 @@ describe('getPartnerStripeAccountSnapshot', () => {
     defaultCurrency: 'USD',
     accountCountry: 'US',
     accountRefreshedAt: new Date(),
+    autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+    autopayMissingPermissions: [],
     ...over,
   });
 
@@ -558,7 +602,7 @@ describe('getPartnerStripeAccountSnapshot', () => {
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'cad', country: 'CA' });
     dbMocks.updateReturning.push([{
       stripeAccountId: 'acct_unit', keyLast4: '7777', livemode: true,
-      defaultCurrency: 'CAD', accountCountry: 'CA', accountRefreshedAt: new Date(),
+      defaultCurrency: 'CAD', accountCountry: 'CA', accountRefreshedAt: new Date(), autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'), autopayMissingPermissions: [],
     }]);
 
     const res = await getPartnerStripeAccountSnapshot(PARTNER_A);
@@ -585,7 +629,7 @@ describe('getPartnerStripeAccountSnapshot', () => {
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'eur', country: 'DE' });
     dbMocks.updateReturning.push([{
       stripeAccountId: 'acct_unit', keyLast4: '9999', livemode: false,
-      defaultCurrency: 'EUR', accountCountry: 'DE', accountRefreshedAt: new Date(),
+      defaultCurrency: 'EUR', accountCountry: 'DE', accountRefreshedAt: new Date(), autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'), autopayMissingPermissions: [],
     }]);
 
     await expect(getPartnerStripeAccountSnapshot(PARTNER_A)).resolves.toMatchObject({ defaultCurrency: 'EUR', cacheState: 'fresh' });

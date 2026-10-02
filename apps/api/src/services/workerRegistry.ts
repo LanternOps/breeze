@@ -1400,6 +1400,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'autopayWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/autopayWorker');
+      return { init: m.initializeAutopayWorkers, shutdown: m.shutdownAutopayWorkers };
+    },
+  },
+  {
     // #3828 wave-6-4 task 2. Same shape/precedent as ticketOutboxPublisher —
     // drains metric_anomaly_incidents' dispatch marker onto the generic
     // eventBus. No agent-socket-local dispatch dependency, so 'global'.

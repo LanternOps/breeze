@@ -11,22 +11,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, invoices, invoiceStripePayments } from '../../db/schema';
+import { partners, organizations, users, invoices, invoiceStripePayments, invoicePayments } from '../../db/schema';
 import { getTestDb } from './setup';
 
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
-const { retrieveMock } = vi.hoisted(() => ({ retrieveMock: vi.fn() }));
+const { retrieveMock, clientConstructed } = vi.hoisted(() => ({ retrieveMock: vi.fn(), clientConstructed: vi.fn() }));
 // Settlement reads the session via the partner's key — mock that client.
 vi.mock('../../services/partnerStripe', () => ({
-  getPartnerStripeClient: async () => ({ stripe: { checkout: { sessions: { retrieve: retrieveMock } } }, stripeAccountId: 'acct_test' }),
+  getPartnerStripeClient: async () => { clientConstructed(); return ({ stripe: { checkout: { sessions: { retrieve: retrieveMock } } }, stripeAccountId: 'acct_test' }); },
   // Imported by routes/portal/invoices.ts (the pay route's error mapping).
   PartnerStripeError: class PartnerStripeError extends Error {},
 }));
 
 import * as svc from '../../services/invoiceService';
-import { settleCheckoutSession } from '../../services/stripeSettle';
+import { settleCheckoutSession, settlePaymentIntent } from '../../services/stripeSettle';
 import { reconcilePendingStripePayments } from '../../jobs/stripeReconcileSweep';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 import { invoiceRoutes as portalInvoiceRoutes } from '../../routes/portal/invoices';
@@ -288,4 +288,14 @@ describe('POST /portal/invoices/:id/settle cross-org isolation (#7069)', () => {
     expect(await statusOf(a.inv.id)).toEqual({ invoice: 'paid', mapping: 'succeeded' });
     expect(await statusOf(b.inv.id)).toEqual({ invoice: 'sent', mapping: 'pending' });
   });
+});
+
+runDb('C1 cross-partner PaymentIntent settlement refuses before constructing Stripe', async () => {
+  const { f, inv } = await seedPendingPayment();
+  const { f: other } = await seedPendingPayment('cs_other', 'pi_other');
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ stripeObjectType: 'payment_intent', stripeObjectId: 'pi_1' }).where(eq(invoiceStripePayments.invoiceId, inv.id)));
+  clientConstructed.mockClear();
+  await expect(settlePaymentIntent(other.partnerId, 'pi_1')).rejects.toMatchObject({ status: 404, code: 'INVOICE_NOT_FOUND' });
+  expect(clientConstructed).not.toHaveBeenCalled();
+  expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, inv.id)))).toHaveLength(0);
 });

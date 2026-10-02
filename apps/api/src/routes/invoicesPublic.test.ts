@@ -417,3 +417,11 @@ describe('invoicesPublic org-lifecycle gate', () => {
     expect(resolveOrgLinkGate).toHaveBeenCalledWith(ORG_ID);
   });
 });
+
+it('public pay returns the reservation conflict without exposing a payment URL', async () => {
+  resolveMock.mockResolvedValue(invoice());
+  payLinkMock.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
+  const response = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: 'A payment is already processing', code: 'COLLECTION_IN_PROGRESS' });
+});

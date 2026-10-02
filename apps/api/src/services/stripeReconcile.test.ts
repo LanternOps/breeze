@@ -172,6 +172,25 @@ beforeEach(() => {
 });
 
 describe('recordStripePayment', () => {
+  it.each([
+    ['payment_intent', 'failed', 'us_bank_account', '3.00', '103.00', 'ach_debit', true],
+    ['payment_intent', 'pending', 'card', '3.00', '103.00', 'card', true],
+    ['checkout_session', 'pending', null, '0.00', '100.00', 'card', true],
+    ['checkout_session', 'failed', null, '0.00', '100.00', 'card', false],
+    ['payment_intent', 'pending', 'card', '3.00', '100.00', 'card', false],
+  ])('captures %s/%s/%s with fee %s and gross %s', async (stripeObjectType, status, paymentMethodType, feeAmount, gross, method, records) => {
+    const mapping = { id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1', stripeObjectType, status, paymentMethodType, feeAmount, amount: '100.00', currency: 'USD', stripePaymentIntentId: 'pi_1' };
+    queueResult([mapping]);
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '100.00', currencyCode: 'USD' }]);
+    queueResult([mapping]);
+    if (records) {
+      queueResult([{ id: 'pay1' }]); queueResult([{ id: 'm1' }]); queueResult([{ status: 'paid' }]);
+    }
+    await recordStripePayment({ stripeObjectId: stripeObjectType === 'payment_intent' ? 'pi_1' : 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1', amount: gross, currency: 'USD' });
+    if (records) expect(insertValues.calls).toContainEqual(expect.objectContaining({ amount: '100.00', method }));
+    else expect(insertValues.calls).toHaveLength(0);
+  });
+
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
     // db call order (B10 lock order): select mapping (discovery) → select invoice
     // FOR UPDATE → re-read mapping FOR UPDATE → insert payment returning →
