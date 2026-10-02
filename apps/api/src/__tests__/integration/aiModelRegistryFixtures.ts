@@ -48,6 +48,22 @@ export async function seedPlatformModel(modelId = `w02-test-${randomUUID()}`): P
   return String(row!.id);
 }
 
+/**
+ * A priced, offered platform model, optionally the platform default (W08 #7606).
+ * Clears any other default first (partial unique index ai_platform_models_one_default_uq);
+ * a suite that sets a default restores the previous one itself.
+ */
+export async function seedPricedPlatformModel(input: { modelId?: string; isPlatformDefault?: boolean } = {}): Promise<{ id: string; modelId: string }> {
+  const modelId = input.modelId ?? `w08-model-${randomUUID()}`;
+  if (input.isPlatformDefault) await fixtureSql`UPDATE ai_platform_models SET is_platform_default = false WHERE is_platform_default`;
+  const [row] = await fixtureSql`
+    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle,
+                                    input_cents_per_m, output_cents_per_m, cache_read_cents_per_m, cache_write_cents_per_m)
+    VALUES ('anthropic', ${modelId}, ${modelId}, true, ${input.isPlatformDefault ?? false}, 'available', 300, 1500, 30, 375)
+    RETURNING id`;
+  return { id: String(row!.id), modelId };
+}
+
 export async function seedOffering(input: {
   partnerId: string;
   connectionId?: string | null;

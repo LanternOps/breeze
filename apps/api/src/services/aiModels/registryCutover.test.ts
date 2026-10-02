@@ -1,97 +1,77 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const m = vi.hoisted(() => ({
-  rows: new Set<string>(),
-  pending: [] as string[],
-  lease: { owner: null as string | null, expired: true },
-  completedAt: null as Date | null,
-  reconcile: vi.fn(),
-  disable: vi.fn(),
-  capture: vi.fn(),
-  order: [] as string[],
-}));
-// A tiny in-memory stand-in for the two tables; registryCutover.ts reaches them only
-// through the helpers below, which it imports from './registryCutoverStore'.
+// A tiny in-memory stand-in for the cutover table; registryCutover.ts reaches it
+// only through the two helpers below, which it imports from './registryCutoverStore'.
+const store = vi.hoisted(() => ({ rows: new Set<string>() }));
 vi.mock('./registryCutoverStore', () => ({
-  withPartnerCutoverTx: async (partnerId: string, fn: (exists: boolean) => Promise<void>) => {
-    const exists = m.rows.has(partnerId);
+  hasCutoverRow: vi.fn(async (id: string) => store.rows.has(id)),
+  withPartnerCutoverTx: vi.fn(async (id: string, fn: (exists: boolean) => Promise<void>) => {
+    const exists = store.rows.has(id);
     await fn(exists);   // a throw here aborts the "transaction": no row
-    if (!exists) m.rows.add(partnerId);
-  },
-  hasCutoverRow: async (id: string) => m.rows.has(id),
-  takeLease: async (owner: string) => {
-    if (m.completedAt) return 'complete';
-    if (m.lease.owner && m.lease.owner !== owner && !m.lease.expired) return 'held';
-    m.lease = { owner, expired: false };
-    return 'taken';
-  },
-  renewLease: async (owner: string) => m.lease.owner === owner,
-  nextUncutPartners: async (after: string | null, limit: number) =>
-    m.pending.filter((p) => !m.rows.has(p) && (after === null || p > after)).slice(0, limit),
-  markComplete: async (owner: string) => {
-    if (m.lease.owner !== owner) return false;
-    m.completedAt ??= new Date(); m.lease = { owner: null, expired: true };
-    return true;
-  },
-  releaseLease: async (owner: string) => { if (m.lease.owner === owner) m.lease = { owner: null, expired: true }; },
-  disableUnproducedOfferings: m.disable,
+    if (!exists) store.rows.add(id);
+  }),
 }));
-vi.mock('../sentry', () => ({ captureException: m.capture }));
-vi.mock('./legacyReconcile', () => ({ reconcilePartnerFromLegacyInTx: m.reconcile }));
+vi.mock('../sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('./registryBootstrap', () => ({ bootstrapPartnerRegistryInTx: vi.fn() }));
 
-import {
-  __resetRegistryCutoverMemoForTests, cutoverPartner, ensurePartnerCutover, isPartnerCutOver, runRegistryCutoverSweep,
-  runRegistryCutoverSweepWithRetry, REGISTRY_CUTOVER_RETRY_DELAYS_MS,
-} from './registryCutover';
+import { __resetRegistryCutoverMemoForTests, cutoverPartner, ensurePartnerCutover, isPartnerCutOver } from './registryCutover';
+import * as registryCutoverModule from './registryCutover';
+import { bootstrapPartnerRegistryInTx } from './registryBootstrap';
+import { captureException, captureMessage } from '../sentry';
+
+const report = (over: Record<string, unknown> = {}) => ({
+  destination: 'platform', connectionId: null, defaultModelId: 'model-a', offeringId: 'off-1',
+  platformOfferingId: 'off-1', assignmentsCreated: 10, createdPlatformRow: false, ...over,
+});
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  m.rows = new Set(); m.pending = []; m.lease = { owner: null, expired: true }; m.completedAt = null; m.order = [];
-  m.reconcile.mockImplementation(async (id: string) => { m.order.push(`reconcile:${id}`); return { producedOfferingIds: [`${id}-o1`] }; });
-  m.disable.mockImplementation(async (id: string) => { m.order.push(`disable:${id}`); return 0; });
+  store.rows.clear();
   __resetRegistryCutoverMemoForTests();
+  vi.clearAllMocks();
+  vi.mocked(bootstrapPartnerRegistryInTx).mockResolvedValue(report() as never);
 });
 
-describe('cutoverPartner', () => {
-  it('reconciles a partner exactly once, ever', async () => {
-    expect(await cutoverPartner('p1')).toBe('done');
-    expect(await cutoverPartner('p1')).toBe('already');
-    expect(m.reconcile).toHaveBeenCalledTimes(1);
+describe('registry gate (W08: bootstrap, no legacy projection)', () => {
+  it('bootstraps a partner with no cutover row exactly once', async () => {
+    const bootstrapInTx = vi.fn(async () => report());
+    expect(await cutoverPartner('p1', { bootstrapInTx: bootstrapInTx as never })).toBe('done');
+    expect(await cutoverPartner('p1', { bootstrapInTx: bootstrapInTx as never })).toBe('already');
+    expect(bootstrapInTx).toHaveBeenCalledTimes(1);
   });
 
-  it('disables offerings the projection did not produce, after the projection, in the same transaction', async () => {
+  it('a platform bootstrap is not reported', async () => {
     await cutoverPartner('p1');
-    expect(m.order).toEqual(['reconcile:p1', 'disable:p1']);
-    expect(m.disable).toHaveBeenCalledWith('p1', ['p1-o1']);
+    expect(captureMessage).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
   });
 
-  it('a failed stale-offering disable leaves the partner un-rowed (the cutover rolls back as a whole)', async () => {
-    m.disable.mockRejectedValueOnce(new Error('disable failed'));
-    await expect(cutoverPartner('p1')).rejects.toThrow('disable failed');
-    expect(m.rows.has('p1')).toBe(false);
+  it('reports a partner that was bootstrapped onto an existing connection (its legacy settings were never projected)', async () => {
+    const bootstrapInTx = vi.fn(async () => report({ destination: 'connection', connectionId: 'c1' }));
+    await cutoverPartner('p2', { bootstrapInTx: bootstrapInTx as never });
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('bootstrapped onto its existing AI connection'),
+      expect.objectContaining({ eventCode: 'ai_registry_bootstrap_existing_connection' }),
+    );
   });
 
-  it('an already cut-over partner is neither re-projected nor touched', async () => {
-    m.rows.add('p1');
-    expect(await cutoverPartner('p1')).toBe('already');
-    expect(m.reconcile).not.toHaveBeenCalled();
-    expect(m.disable).not.toHaveBeenCalled();
-  });
-});
-
-describe('ensurePartnerCutover (the resolver gate)', () => {
-  it('cuts an un-reconciled partner over on demand, then serves from memo', async () => {
-    expect(await ensurePartnerCutover('p1')).toBe(true);
-    expect(await ensurePartnerCutover('p1')).toBe(true);
-    expect(m.reconcile).toHaveBeenCalledTimes(1);
-    expect(await isPartnerCutOver('p1')).toBe(true);
+  it('reports an ambiguous (several connections) bootstrap as an exception', async () => {
+    const bootstrapInTx = vi.fn(async () => report({ destination: 'ambiguous', offeringId: null }));
+    await cutoverPartner('p4', { bootstrapInTx: bootstrapInTx as never });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('fail closed') }),
+      undefined,
+      expect.objectContaining({ area: 'ai_model_registry_cutover', partnerId: 'p4' }),
+    );
   });
 
-  it('a failing reconcile refuses (never routes on a stale registry) and is retried next time', async () => {
-    m.reconcile.mockRejectedValueOnce(new Error('boom'));
-    expect(await ensurePartnerCutover('p1')).toBe(false);
-    expect(await isPartnerCutOver('p1')).toBe(false);
-    expect(await ensurePartnerCutover('p1')).toBe(true);
+  it('ensurePartnerCutover resolves false (never throws) and reports when the bootstrap fails; the next call retries', async () => {
+    vi.mocked(bootstrapPartnerRegistryInTx).mockRejectedValueOnce(new Error('boom'));
+    expect(await ensurePartnerCutover('p3')).toBe(false);
+    expect(captureException).toHaveBeenCalled();
+    expect(store.rows.has('p3')).toBe(false);
+    expect(await isPartnerCutOver('p3')).toBe(false);
+    expect(await ensurePartnerCutover('p3')).toBe(true);
+    expect(store.rows.has('p3')).toBe(true);
   });
 
   it('a query-bearing failure reaches Sentry scrubbed: no SQL params', async () => {
@@ -99,96 +79,19 @@ describe('ensurePartnerCutover (the resolver gate)', () => {
       params: ['sk-secret-ciphertext'],
       cause: Object.assign(new Error('duplicate key value violates unique constraint "x_pk"'), { code: '23505', constraint_name: 'x_pk' }),
     });
-    m.reconcile.mockRejectedValueOnce(drizzle);
+    vi.mocked(bootstrapPartnerRegistryInTx).mockRejectedValueOnce(drizzle);
     expect(await ensurePartnerCutover('p1')).toBe(false);
-    expect(m.capture).toHaveBeenCalledTimes(1);
-    const [reported, , tags] = m.capture.mock.calls[0]!;
+    expect(captureException).toHaveBeenCalledTimes(1);
+    const [reported, , tags] = vi.mocked(captureException).mock.calls[0]!;
     expect(reported).not.toBe(drizzle);
     expect(String((reported as Error).message)).not.toContain('sk-secret-ciphertext');
     expect(String((reported as Error).message)).toContain('23505');
     expect(tags).toMatchObject({ area: 'ai_model_registry_cutover', partnerId: 'p1' });
   });
-});
 
-describe('runRegistryCutoverSweep', () => {
-  it('a second concurrent sweep is not the coordinator', async () => {
-    m.pending = ['a', 'b'];
-    m.lease = { owner: 'other', expired: false };
-    expect((await runRegistryCutoverSweep({ owner: 'me' })).outcome).toBe('not_coordinator');
-    expect(m.reconcile).not.toHaveBeenCalled();
-  });
-
-  it('processes every un-cut partner, completes monotonically, and a later run is a no-op', async () => {
-    m.pending = ['a', 'b', 'c'];
-    m.rows.add('b');                                   // cut over on demand earlier
-    const first = await runRegistryCutoverSweep({ owner: 'me', batch: 2 });
-    expect(first).toMatchObject({ outcome: 'complete', processed: 2, failed: [] });
-    const completedAt = m.completedAt;
-    expect((await runRegistryCutoverSweep({ owner: 'me' })).outcome).toBe('complete');
-    expect(m.completedAt).toBe(completedAt);
-    expect(m.reconcile).toHaveBeenCalledTimes(2);
-  });
-
-  it('a failure leaves completion unset and the partner un-rowed for retry, and releases the lease', async () => {
-    m.pending = ['a', 'b'];
-    m.reconcile.mockImplementation(async (id: string) => { if (id === 'b') throw new Error('x'); return { producedOfferingIds: [] }; });
-    expect(await runRegistryCutoverSweep({ owner: 'me' })).toMatchObject({ outcome: 'incomplete', failed: ['b'] });
-    expect(m.completedAt).toBeNull();
-    expect(m.rows.has('b')).toBe(false);
-    expect(m.lease.owner).toBeNull();
-  });
-
-  it('stops as soon as the lease is lost', async () => {
-    m.pending = ['a', 'b', 'c'];
-    m.reconcile.mockImplementation(async (id: string) => {
-      if (id === 'a') m.lease = { owner: 'thief', expired: false };
-      return { producedOfferingIds: [] };
-    });
-    expect(await runRegistryCutoverSweep({ owner: 'me' })).toMatchObject({ outcome: 'not_coordinator', processed: 1 });
-    expect(m.reconcile).toHaveBeenCalledTimes(1);
-    expect(m.completedAt).toBeNull();
-  });
-});
-
-describe('runRegistryCutoverSweepWithRetry (#7693: a failed first boot attempt must not wait for the next deploy)', () => {
-  it('retries after an incomplete run and stops at the first complete one', async () => {
-    m.pending = ['a', 'b'];
-    let failB = true;
-    m.reconcile.mockImplementation(async (id: string) => {
-      if (id === 'b' && failB) { failB = false; throw new Error('transient'); }
-      return { producedOfferingIds: [] };
-    });
-    const sleeps: number[] = [];
-    const out = await runRegistryCutoverSweepWithRetry({ retryDelaysMs: [10, 20, 30], sleep: async (ms) => { sleeps.push(ms); } });
-    expect(out.outcome).toBe('complete');
-    expect(sleeps).toEqual([10]);
-    expect(m.rows.has('b')).toBe(true);
-    expect(m.completedAt).not.toBeNull();
-  });
-
-  it('retries after a sweep that throws, and after not_coordinator (another replica may have died holding the lease)', async () => {
-    m.pending = ['a'];
-    m.lease = { owner: 'other', expired: false };
-    const sleeps: number[] = [];
-    const out = await runRegistryCutoverSweepWithRetry({
-      retryDelaysMs: [5, 6],
-      sleep: async (ms) => { sleeps.push(ms); m.lease = { owner: null, expired: true } as never; },
-    });
-    expect(sleeps).toEqual([5]);
-    expect(out.outcome).toBe('complete');
-  });
-
-  it('gives up after the bounded delays and returns the last result (on-demand cutover still covers stragglers)', async () => {
-    m.pending = ['a'];
-    m.reconcile.mockImplementation(async () => { throw new Error('down'); });
-    const sleeps: number[] = [];
-    const out = await runRegistryCutoverSweepWithRetry({ retryDelaysMs: [1, 2], sleep: async (ms) => { sleeps.push(ms); } });
-    expect(sleeps).toEqual([1, 2]);
-    expect(out).toMatchObject({ outcome: 'incomplete', failed: ['a'] });
-  });
-
-  it('defaults to a bounded schedule reaching at least an hour', () => {
-    expect(REGISTRY_CUTOVER_RETRY_DELAYS_MS.length).toBeGreaterThanOrEqual(3);
-    expect(REGISTRY_CUTOVER_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(60 * 60_000);
+  it('the W03 boot sweep is gone', () => {
+    expect('runRegistryCutoverSweep' in registryCutoverModule).toBe(false);
+    expect('runRegistryCutoverSweepWithRetry' in registryCutoverModule).toBe(false);
+    expect('REGISTRY_CUTOVER_RETRY_DELAYS_MS' in registryCutoverModule).toBe(false);
   });
 });

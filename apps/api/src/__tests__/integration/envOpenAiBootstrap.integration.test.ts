@@ -29,7 +29,7 @@ import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { FIDELITY_HARNESS_VERSION } from '../../services/llm/providerFidelityHarness';
 import { endpointFingerprint, verifiedCapabilitiesTree } from '../../services/aiModels/gatewayCapabilities';
-import { partnerRegistryReconcileLockKey } from '../../services/aiModels/legacyReconcile';
+import { partnerRegistryLockKey } from '../../services/aiModels/registryWriteLock';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 import { createPartner } from './db-utils';
@@ -306,7 +306,7 @@ describe.skipIf(!RUN)('MCP_LLM_* env bootstrap (real DB)', () => {
     let locked!: () => void;
     const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
     const holder = fixtureSql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryReconcileLockKey(p.partnerId)}, 0))`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryLockKey(p.partnerId)}, 0))`;
       locked();
       await new Promise<void>((resolve) => { release = resolve; });
     });

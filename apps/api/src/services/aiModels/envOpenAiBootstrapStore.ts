@@ -3,7 +3,7 @@
  *
  * Every write runs inside `inPartnerEnvLock`: ONE system transaction holding
  * the per-partner registry lock — the same key W03's cutover/compatRemap and
- * W04/W06's /ai/models writes use (legacyReconcile.lockPartnerRegistryReconcile),
+ * W04/W06's /ai/models writes use (registryWriteLock.lockPartnerRegistry),
  * so the bootstrap serialises with all of them and with itself on another
  * replica. It WAITS for the lock (bounded by lock_timeout) instead of W04's
  * try-lock: a boot task holds no request connection, so there is no
@@ -19,7 +19,7 @@ import { aiModelAssignments, partnerAiConnections, partnerAiModels, partners } f
 import { createGatewayConnectionRow } from './connections';
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
 import { createManualOfferingLocked, envManagementState } from './gatewayConnections';
-import { lockPartnerRegistryReconcile } from './legacyReconcile';
+import { lockPartnerRegistry } from './registryWriteLock';
 
 /** Upper bound on waiting for the partner registry lock (or a row lock) at boot; the retry schedule picks the partner up again. */
 const BOOT_LOCK_TIMEOUT = '30s';
@@ -57,7 +57,7 @@ export async function listPartnerIds(): Promise<string[]> {
 export async function inPartnerEnvLock<T>(partnerId: string, fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     await db.execute(sql.raw(`SET LOCAL lock_timeout = '${BOOT_LOCK_TIMEOUT}'`));
-    await lockPartnerRegistryReconcile(partnerId);
+    await lockPartnerRegistry(partnerId);
     return fn();
   }, 'aiModels.envBootstrap.partner'));
 }

@@ -25,7 +25,7 @@ import {
   deleteGatewayConnection,
   updateGatewayConnection,
 } from '../../services/aiModels/gatewayConnections';
-import { partnerRegistryReconcileLockKey } from '../../services/aiModels/legacyReconcile';
+import { partnerRegistryLockKey } from '../../services/aiModels/registryWriteLock';
 import { verifyConnectionOffering } from '../../services/aiModels/offeringVerification';
 import { getLlmEgressProxy } from '../../services/llm/llmEgressProxy';
 import { __setLookupForTests } from '../../services/urlSafety';
@@ -206,7 +206,7 @@ describe('verifyConnectionOffering (real DB)', () => {
     let locked!: () => void;
     const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
     const holder = fixtureSql.begin(async (tx) => {
-      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryReconcileLockKey(partnerId)}, 0))`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryLockKey(partnerId)}, 0))`;
       locked();
       await new Promise<void>((resolve) => { release = resolve; });
     });

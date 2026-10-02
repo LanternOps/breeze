@@ -44,7 +44,13 @@ import {
   type OfferingKey,
 } from './legacyProjection';
 import { getLegacyModelRates, legacyExtensionModel } from './legacySurfaceModels';
+import { lockPartnerRegistry, partnerRegistryLockKey } from './registryWriteLock';
 import { safeErrorMessage } from './safeDbError';
+
+// W08 (#7606): the per-partner registry lock lives in registryWriteLock.ts. The
+// old names stay exported for this file's remaining importers until Task 7
+// deletes the file.
+export { partnerRegistryLockKey as partnerRegistryReconcileLockKey, lockPartnerRegistry as lockPartnerRegistryReconcile };
 
 export interface ReconcileReport {
   partnerId: string;
@@ -355,34 +361,13 @@ async function deleteOrphanConnections(partnerId: string, orphanIds: readonly st
 }
 
 /**
- * The advisory-lock key text of the per-partner reconcile lock, hashed with
- * hashtextextended(key, 0). W04's registry writes try-lock the same key
- * (registryWriteLock.ts) so both serialise on one lock.
- */
-export function partnerRegistryReconcileLockKey(partnerId: string): string {
-  return `ai_model_registry_reconcile:${partnerId}`;
-}
-
-/**
- * Take the per-partner reconcile lock (transaction-scoped) on the held
- * context's transaction. A legacy writer (the /ai/provider facade) calls this
- * BEFORE its legacy write, then reconcilePartnerFromLegacyInTx in the same
- * transaction: pg_advisory_xact_lock is re-entrant within a session, so the
- * second acquisition returns immediately and both release at commit/rollback.
- */
-export async function lockPartnerRegistryReconcile(partnerId: string): Promise<void> {
-  assertSystemContext();
-  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryReconcileLockKey(partnerId)}, 0))`);
-}
-
-/**
  * Throws on any failure and never returns a partial report. It never opens,
  * commits or rolls back a transaction: a failure aborts the CALLER's
  * transaction (W03 inserts its cutover row in that same transaction).
  */
 export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: LegacyProjectionEnv = readLegacyProjectionEnv()): Promise<ReconcileReport> {
   assertSystemContext();
-  await lockPartnerRegistryReconcile(partnerId);
+  await lockPartnerRegistry(partnerId);
   const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [], unknownPlatformModelsSkipped: 0, producedOfferingIds: [] };
 
   const snapshot = await loadLegacySnapshot(partnerId);

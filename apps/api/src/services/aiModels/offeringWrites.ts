@@ -4,7 +4,7 @@
  * The route gates every call on BILLING_MANAGE + canManagePartnerWidePolicies
  * + MFA and runs ensurePartnerCutover first (routes/aiModels/shared.ts
  * registryWrite). Each write then runs in ONE system transaction behind the
- * per-partner registry lock (the key W03's lockPartnerRegistryReconcile, cutover
+ * per-partner registry lock (registryWriteLock.ts; the key the bootstrap, cutover
  * and compatRemap use; W04 try-locks it, a held lock → 503 registry_busy),
  * so it serialises with a concurrent
  * /ai/provider key or kind switch that remaps offering ids — the same pattern

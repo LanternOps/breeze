@@ -20,6 +20,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Worker } from 'bullmq';
 import { Gauge } from 'prom-client';
 
@@ -65,7 +67,6 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
-    runRegistryCutoverSweepWithRetry: vi.fn(async () => ({ outcome: 'complete', processed: 0, failed: [] as string[] })),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -164,10 +165,6 @@ vi.mock('./extensions/builtinExtensions', () => ({ loadBuiltinExtensions: mocks.
 vi.mock('./extensions/contributionRegistry', () => ({ extensionContributionRegistry: {} }));
 vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.createExtensionStateStore }));
 vi.mock('./jobs/aiAgentEnqueuer', () => ({ registerAiAgentEnqueuer: mocks.registerAiAgentEnqueuer }));
-vi.mock('./services/aiModels/registryCutover', () => ({
-  runRegistryCutoverSweepWithRetry: mocks.runRegistryCutoverSweepWithRetry,
-  reportableCutoverError: (e: unknown) => e,
-}));
 vi.mock('./services/eventSubscribers', () => ({ registerAllEventSubscribers: mocks.registerAllEventSubscribers }));
 vi.mock('./services/webhookFanoutDeps', () => ({ buildWebhookFanoutDeps: mocks.buildWebhookFanoutDeps }));
 vi.mock('./services/workerRegistry', () => ({
@@ -342,7 +339,6 @@ beforeEach(() => {
   mocks.shutdownEventDispatchQueue.mockResolvedValue(undefined);
   mocks.getEventBus.mockReturnValue({ close: vi.fn(async () => {}) });
   mocks.drainAuditRetryQueue.mockResolvedValue(undefined);
-  mocks.runRegistryCutoverSweepWithRetry.mockResolvedValue({ outcome: 'complete', processed: 0, failed: [] });
 });
 
 afterEach(async () => {
@@ -406,36 +402,10 @@ describe('worker.ts boot (#4086 Task 6)', () => {
     ]);
   });
 
-  it('starts the AI model registry cutover sweep detached, after the workers (#7601 Task 6A)', async () => {
-    const order: string[] = [];
-    mocks.startRegisteredWorkers.mockImplementation(
-      async (_role: string, hooks: { onResult: (n: string, ok: boolean, e?: unknown) => void }) => {
-        order.push('startRegisteredWorkers');
-        (await liveRegistry()).attach('fakeGlobalWorker', fakeBullmqWorker() as unknown as Worker);
-        hooks.onResult('fakeGlobalWorker', true);
-      },
-    );
-    // A sweep that never settles must not hold boot (or readiness) hostage.
-    mocks.runRegistryCutoverSweepWithRetry.mockImplementation(() => {
-      order.push('registryCutoverSweep');
-      return new Promise(() => {});
-    });
-
-    const worker = await importFreshWorker();
-    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
-    await waitFor(() => mocks.runRegistryCutoverSweepWithRetry.mock.calls.length > 0);
-
-    expect(order).toEqual(['startRegisteredWorkers', 'registryCutoverSweep']);
-    expect(mocks.runRegistryCutoverSweepWithRetry).toHaveBeenCalledTimes(1);
-    expect(exitCalls).toEqual([]);
-  });
-
-  it('a rejected cutover sweep is reported, never fatal', async () => {
-    mocks.runRegistryCutoverSweepWithRetry.mockRejectedValue(new Error('sweep exploded'));
-    const worker = await importFreshWorker();
-    await waitFor(() => worker._getWorkerInitPhaseForTest() === 'started');
-    await waitFor(() => mocks.captureException.mock.calls.some(([e]) => e instanceof Error && e.message === 'sweep exploded'));
-    expect(exitCalls).toEqual([]);
+  it('no AI model registry cutover sweep at worker boot (W08 #7606: partners are bootstrapped on demand by ensurePartnerCutover)', () => {
+    const source = readFileSync(join(__dirname, 'worker.ts'), 'utf8');
+    expect(source).not.toMatch(/runRegistryCutoverSweep/);
+    expect(source).not.toMatch(/services\/aiModels\/registryCutover'/);
   });
 
   it('exits non-zero when production DB-role verification fails, before Redis is probed or workers start', async () => {

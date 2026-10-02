@@ -20,7 +20,7 @@ import { deletePartnerLlmConfig, getPartnerLlmStatus, updatePartnerLlmConfig } f
 import { markPartnerLlmError } from '../../services/llm/llmConfigResolver';
 import { cutoverPartner } from '../../services/aiModels/registryCutover';
 import { createOrganization, createPartner, createUser } from './db-utils';
-import { closeRegistryFixtures, fixtureSql as adminSql, keySpec, seedAgent } from './aiModelRegistryFixtures';
+import { closeRegistryFixtures, fixtureSql as adminSql, keySpec, seedAgent, seedByokConnection } from './aiModelRegistryFixtures';
 
 const RUN = !!process.env.DATABASE_URL;
 afterAll(closeRegistryFixtures);
@@ -52,6 +52,18 @@ async function seedLegacyConfig(partnerId: string, over: { defaultModel?: string
   const sealed = encryptSecret(over.key ?? 'sk-ant-api03-reconcile-0042', { aad: columnAad(keySpec('partner_llm_configs'), id) })!;
   await adminSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, default_model, status)
                  VALUES (${id}, ${partnerId}, ${sealed}, '0042', 'fp', ${over.defaultModel ?? null}, ${over.status ?? 'active'})`;
+  return id;
+}
+
+/**
+ * W08 (#7606): the cutover no longer projects legacy config. A partner with a
+ * legacy row always also has the W02-copied connection (same id), which the
+ * W08 bootstrap adopts — seed that copy so the facade cases below exercise
+ * the state a real un-cut-over partner is in.
+ */
+async function seedLegacyConfigWithCopy(partnerId: string): Promise<string> {
+  const id = await seedLegacyConfig(partnerId);
+  await seedByokConnection(partnerId, id);
   return id;
 }
 
@@ -431,7 +443,7 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
   // writes the connection itself and the legacy row is never touched.
   it('a runtime credential failure (markPartnerLlmError) marks the connection directly; the legacy row stays frozen', async () => {
     const partner = await createPartner();
-    const configId = await seedLegacyConfig(partner.id);
+    const configId = await seedLegacyConfigWithCopy(partner.id);
     await cutoverPartner(partner.id);
     expect(await markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
     expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
@@ -444,7 +456,7 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
   // nothing re-projects it, so a later cutover attempt is a no-op.
   it('after cutover, a runtime error stamp is never reverted by a later cutover attempt', async () => {
     const partner = await createPartner();
-    const configId = await seedLegacyConfig(partner.id);
+    const configId = await seedLegacyConfigWithCopy(partner.id);
     expect(await cutoverPartner(partner.id)).toBe('done');
     expect(await markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
     expect(await cutoverPartner(partner.id)).toBe('already');
@@ -476,12 +488,12 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
   });
 
   // W03 Task 6B: facade writes and the partner's cutover take the same
-  // per-partner lock, so a write racing the sweep's / a request's cutover never
-  // deadlocks, the partner is projected once, and the last native edit wins.
+  // per-partner lock, so a write racing a request's cutover never deadlocks,
+  // the partner is bootstrapped once (W08), and the last native edit wins.
   it('facade writes racing the cutover never deadlock and converge on the last native edit', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
-    const configId = await seedLegacyConfig(partner.id);
+    const configId = await seedLegacyConfigWithCopy(partner.id);
     const models = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-sonnet-4-6'];
     for (const model of models) {
       await Promise.all([

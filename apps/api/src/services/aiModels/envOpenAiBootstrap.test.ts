@@ -627,12 +627,11 @@ describe('boot wiring', () => {
   const code = (rel: string) => readFileSync(join(__dirname, '../..', rel), 'utf8')
     .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
 
-  it('index.ts starts the env bootstrap detached, after the registry cutover sweep is scheduled', () => {
+  it('index.ts starts the env bootstrap detached; the W03 cutover sweep is gone (W08: partners are bootstrapped inside it)', () => {
     const text = code('index.ts');
-    const sweepAt = text.search(/void runRegistryCutoverSweepWithRetry\(\)/);
     const bootAt = text.search(/void runEnvOpenAiBootstrapAtBoot\(\)/);
-    expect(sweepAt).toBeGreaterThan(-1);
-    expect(bootAt).toBeGreaterThan(sweepAt);
+    expect(text).not.toMatch(/runRegistryCutoverSweep/);
+    expect(bootAt).toBeGreaterThan(-1);
     expect(text).not.toMatch(/await (runEnvOpenAiBootstrapAtBoot|runEnvOpenAiBootstrapWithRetry|bootstrapEnvOpenAiConnections)\(/);
   });
 

@@ -20,7 +20,7 @@ import {
 } from '../../services/partnerLlmConfig';
 import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { markPartnerLlmError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
-import { closeRegistryFixtures, fixtureSql, keySpec } from './aiModelRegistryFixtures';
+import { closeRegistryFixtures, fixtureSql, keySpec, seedByokConnection } from './aiModelRegistryFixtures';
 import { seedPricedPlatformModel, seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
@@ -187,7 +187,10 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(reconcileSpy.calls).toEqual([]);
   });
 
-  it('a partner that is not cut over yet is cut over first (one projection), then edited natively', async () => {
+  // W08 (#7606): the cutover is a registry-native bootstrap. A not-yet-cut-over
+  // partner with a legacy row also has the W02-copied connection (same id); the
+  // bootstrap adopts it and never projects legacy config.
+  it('a partner that is not cut over yet is bootstrapped onto its copied connection first (no projection), then edited natively', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
     const user = await createUser({ partnerId: partner.id });
@@ -195,9 +198,10 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     const sealed = encryptSecret('sk-ant-api03-legacy-0003', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
     await fixtureSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, connected_by)
                      VALUES (${legacyId}, ${partner.id}, ${sealed}, '0003', 'fp', ${user.id})`;
+    await seedByokConnection(partner.id, legacyId);
 
     await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' });
-    expect(reconcileSpy.calls).toEqual([partner.id]);   // exactly one projection: the cutover
+    expect(reconcileSpy.calls).toEqual([]);   // no projection: the cutover bootstraps natively
     expect(await fixtureSql`SELECT 1 FROM ai_model_registry_partner_cutover WHERE partner_id = ${partner.id}`).toHaveLength(1);
     expect(await chatDefault(partner.id)).toMatchObject({ conn: legacyId, model: 'claude-haiku-4-5' });
     // The legacy row is frozen: the native edit is not written back.
@@ -205,7 +209,7 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(legacy).toEqual({ default_model: null, config_version: 1 });
 
     await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: null });
-    expect(reconcileSpy.calls).toEqual([partner.id]);
+    expect(reconcileSpy.calls).toEqual([]);
     expect(await sys(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: null });
   });
 
@@ -218,6 +222,7 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
       const sealed = encryptSecret(`sk-ant-api03-legacy-${suffix}`, { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
       await fixtureSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, connected_by)
                        VALUES (${legacyId}, ${partner.id}, ${sealed}, ${suffix}, 'fp', ${user.id})`;
+      await seedByokConnection(partner.id, legacyId);   // the W02 copy (W08: the cutover no longer projects)
       return { partnerId: partner.id, userId: user.id, sealed };
     };
     const holdsCiphertext = async (sealed: string) =>
