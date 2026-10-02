@@ -1428,6 +1428,7 @@
           "created": "Webhook créé",
           "disabled": "Webhook désactivé",
           "enabled": "Webhook activé",
+          "testQueued": "Livraison de test mise en file d’attente",
           "updated": "Webhook mis à jour"
         },
         "title": "Webhooks"
