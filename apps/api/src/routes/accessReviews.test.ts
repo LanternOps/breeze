@@ -110,6 +110,8 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
   };
 });
 
+vi.mock('../services/email', () => ({ getEmailService: vi.fn() }));
+
 const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
 vi.mock('../services/auditEvents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/auditEvents')>()),
@@ -131,6 +133,7 @@ import { db } from '../db';
 import { users, userPasskeys } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
+import { getEmailService } from '../services/email';
 
 describe('access review routes', () => {
   let app: Hono;
@@ -348,6 +351,69 @@ describe('access review routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /access-reviews/:id/notify', () => {
+    const selectOnce = (rows: any[]) =>
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) })
+        })
+      } as any);
+    const review = {
+      id: 'review-1', name: 'Q4 Review', status: 'pending',
+      dueDate: new Date('2026-10-16T00:00:00.000Z'), reviewerId: 'rev-1'
+    };
+    const notify = () => app.request('/access-reviews/review-1/notify', { method: 'POST' });
+
+    it('emails the reviewer through the server email service', async () => {
+      const sendEmail = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail } as any);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: true, recipients: 1 });
+      expect(sendEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ to: 'rev@example.com', purpose: 'staff.access_review_notice' })
+      );
+    });
+
+    it('reports email_not_configured instead of failing when no email service exists', async () => {
+      vi.mocked(getEmailService).mockReturnValue(null);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: false, reason: 'email_not_configured' });
+    });
+
+    it('reports send_failed when the transport throws', async () => {
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail: vi.fn().mockRejectedValue(new Error('smtp down')) } as any);
+      selectOnce([review]);
+      selectOnce([{ email: 'rev@example.com' }]);
+
+      const res = await notify();
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ emailed: false, reason: 'send_failed' });
+    });
+
+    it('returns 404 for a review outside the caller scope', async () => {
+      selectOnce([]);
+      const res = await notify();
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects notifying a completed review', async () => {
+      selectOnce([{ ...review, status: 'completed' }]);
+      const res = await notify();
+      expect(res.status).toBe(400);
     });
   });
 

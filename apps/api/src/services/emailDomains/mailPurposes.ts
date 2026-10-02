@@ -70,6 +70,8 @@ export const MAIL_PURPOSES = {
   'staff.alert_notification': { lane: 'platform' },
   'staff.workspace_drift_report': { lane: 'platform' },
   'staff.report_failure': { lane: 'platform' },
+  // Settings → Access Reviews: "Email reviewers" to the assigned reviewer (MSP staff).
+  'staff.access_review_notice': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 

@@ -64,6 +64,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'staff.alert_notification', params: { ...MESSAGE, purpose: 'staff.alert_notification' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.workspace_drift_report', params: { ...MESSAGE, purpose: 'staff.workspace_drift_report' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.report_failure', params: { ...MESSAGE, purpose: 'staff.report_failure' }, expectedFrom: DEFAULT_FROM },
+  { name: 'staff.access_review_notice', params: { ...MESSAGE, purpose: 'staff.access_review_notice' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.sending_domain_status', params: { ...MESSAGE, purpose: 'staff.sending_domain_status' }, expectedFrom: DEFAULT_FROM },
   { name: 'deployment.invite', params: { ...MESSAGE, purpose: 'deployment.invite' }, expectedFrom: DEFAULT_FROM },
   { name: 'ticket.staff_notification', params: { ...MESSAGE, purpose: 'ticket.staff_notification' }, expectedFrom: DEFAULT_FROM },

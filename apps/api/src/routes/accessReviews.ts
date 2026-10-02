@@ -15,6 +15,8 @@ import {
   organizationUsers
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
+import { getEmailService } from '../services/email';
+import { buildAccessReviewNotifyEmail } from '../services/accessReviewNotifyEmail';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
@@ -287,6 +289,77 @@ accessReviewRoutes.get(
       ...review,
       items: itemsWithPermissions
     });
+  }
+);
+
+// POST /access-reviews/:id/notify - Email the assigned reviewer.
+// Always 200 for a found review: `emailed:false` carries a machine-readable
+// `reason` so the UI can fall back to mailto: with a visible explanation.
+accessReviewRoutes.post(
+  '/:id/notify',
+  requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const scopeContext = getScopeContext(auth);
+    const reviewId = c.req.param('id')!;
+
+    const whereClause =
+      scopeContext.scope === 'partner'
+        ? and(eq(accessReviews.id, reviewId), eq(accessReviews.partnerId, scopeContext.partnerId))
+        : and(eq(accessReviews.id, reviewId), eq(accessReviews.orgId, scopeContext.orgId));
+
+    const [review] = await db
+      .select({
+        id: accessReviews.id,
+        name: accessReviews.name,
+        status: accessReviews.status,
+        dueDate: accessReviews.dueDate,
+        reviewerId: accessReviews.reviewerId
+      })
+      .from(accessReviews)
+      .where(whereClause)
+      .limit(1);
+
+    if (!review) {
+      return c.json({ error: 'Access review not found' }, 404);
+    }
+    if (review.status === 'completed') {
+      return c.json({ error: 'Review is already completed' }, 400);
+    }
+
+    const [reviewer] = review.reviewerId
+      ? await db.select({ email: users.email }).from(users).where(eq(users.id, review.reviewerId)).limit(1)
+      : [];
+    if (!reviewer?.email) {
+      return c.json({ emailed: false, reason: 'no_reviewer_email' });
+    }
+
+    const emailService = getEmailService();
+    if (!emailService) {
+      return c.json({ emailed: false, reason: 'email_not_configured' });
+    }
+
+    const appBaseUrl = process.env.DASHBOARD_URL || process.env.PUBLIC_APP_URL || 'http://localhost:4321';
+    const template = buildAccessReviewNotifyEmail({
+      reviewName: review.name,
+      dueDate: review.dueDate,
+      appBaseUrl
+    });
+
+    try {
+      await emailService.sendEmail({
+        to: reviewer.email,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        purpose: 'staff.access_review_notice'
+      });
+    } catch (error) {
+      console.error(`[AccessReviews] Failed to email reviewer for review ${review.id}:`, error);
+      return c.json({ emailed: false, reason: 'send_failed' });
+    }
+
+    return c.json({ emailed: true, recipients: 1 });
   }
 );
 
