@@ -97,17 +97,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   const clientIp = getTrustedClientIp(c, 'unknown');
   // 'unknown' is the rate-limiter fallback, not a real address — store NULL.
   const enrollmentIp = clientIp === 'unknown' ? null : clientIp;
-  // Per-source-IP, operator-tunable (AGENT_ENROLL_RATE_LIMIT, #7472). Rejected
-  // attempts are refunded so machines that retry early don't keep a NAT'd site
-  // blocked past the window.
+  // Per-source-IP, operator-tunable (AGENT_ENROLL_RATE_LIMIT, #7472). This runs
+  // before any credential check, so rejected attempts deliberately still count
+  // (no refundOnReject): a client hammering through 429s stays throttled.
   const { limit: enrollLimit, windowSeconds: enrollWindowSeconds } = getEnrollmentRateLimit();
   const rateCheck = await rateLimiter(
     getRedis(),
     `agent-enroll:${rateLimitIpKey(clientIp)}`,
     enrollLimit,
-    enrollWindowSeconds,
-    1,
-    { refundOnReject: true }
+    enrollWindowSeconds
   );
   if (!rateCheck.allowed) {
     recordAgentEnrollment('denied');

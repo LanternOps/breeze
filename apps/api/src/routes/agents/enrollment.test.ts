@@ -3414,10 +3414,10 @@ describe('POST /agents/enroll — configurable per-IP rate limit (#7472)', () =>
     body: JSON.stringify(baseEnrollBody),
   });
 
-  it('uses 10 per 60s by default and does not count rejected attempts', async () => {
+  it('uses 10 per 60s by default', async () => {
     await post();
     expect(rateLimiter).toHaveBeenCalledWith(
-      expect.anything(), 'agent-enroll:127.0.0.1', 10, 60, 1, { refundOnReject: true },
+      expect.anything(), 'agent-enroll:127.0.0.1', 10, 60,
     );
   });
 
@@ -3426,7 +3426,7 @@ describe('POST /agents/enroll — configurable per-IP rate limit (#7472)', () =>
     process.env.AGENT_ENROLL_RATE_WINDOW_SECONDS = '30';
     await post();
     expect(rateLimiter).toHaveBeenCalledWith(
-      expect.anything(), 'agent-enroll:127.0.0.1', 200, 30, 1, { refundOnReject: true },
+      expect.anything(), 'agent-enroll:127.0.0.1', 200, 30,
     );
   });
 

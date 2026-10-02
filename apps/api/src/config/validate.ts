@@ -632,15 +632,15 @@ const envObjectSchema = z
       .string()
       .optional()
       .refine(
-        (v) => !v?.trim() || /^[1-9]\d*$/.test(v.trim()),
-        'AGENT_ENROLL_RATE_LIMIT must be a positive integer',
+        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
+        'AGENT_ENROLL_RATE_LIMIT must be a positive integer below 1,000,000,000',
       ),
     AGENT_ENROLL_RATE_WINDOW_SECONDS: z
       .string()
       .optional()
       .refine(
-        (v) => !v?.trim() || /^[1-9]\d*$/.test(v.trim()),
-        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer',
+        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
+        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer below 1,000,000,000',
       ),
 
     // Controlled agent-fleet rollout (decouple registration from promotion).

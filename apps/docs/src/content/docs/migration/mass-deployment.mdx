@@ -69,9 +69,9 @@ The server limits enrollment to **10 attempts per 60 seconds per source IP**.
 Every machine at a site that reaches the server through one NAT/public address
 shares that single bucket, so a GPO or RMM push that starts more than 10
 installs at once gets `429 Enrollment rate limit exceeded` for the rest; the
-agent exits with code 13 and the MSI install fails. Rejected attempts are not
-counted against the window, so a failed machine can simply be re-run after the
-window passes.
+agent exits with code 13 and the MSI install fails. Rejected attempts also
+count against the window, so wait for it to pass before re-running failed
+machines.
 
 Self-hosted operators can raise the limit before a large rollout by setting
 `AGENT_ENROLL_RATE_LIMIT` (and optionally `AGENT_ENROLL_RATE_WINDOW_SECONDS`) in
