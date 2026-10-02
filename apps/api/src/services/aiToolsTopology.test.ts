@@ -124,7 +124,7 @@ describe('get_topology (M4 Task 1)', () => {
   it('reads a bounded projection (≤150 nodes, ≤250 relationships) with explicit omissions, and never a cursor token or layout', async () => {
     mocks.graph.mockResolvedValue(graphResponse(150, 300));
     const result = JSON.parse(await call('get_topology', { view: 'physical', focus_node_id: NODE, limit: 999 }));
-    expect(mocks.graph).toHaveBeenCalledWith(ctx, { view: 'physical', focusNodeId: NODE, hops: 1, includeHealth: true, limit: AI_TOPOLOGY_MAX_NODES });
+    expect(mocks.graph).toHaveBeenCalledWith(ctx, { view: 'physical', focusNodeId: NODE, hops: 1, includeHealth: true, limit: AI_TOPOLOGY_MAX_NODES }, { presentationGroups: false });
     expect(result.nodes).toHaveLength(150);
     expect(result.relationships).toHaveLength(AI_TOPOLOGY_MAX_RELATIONSHIPS);
     expect(result.omitted).toEqual({ nodes: 0, relationships: 50 });
