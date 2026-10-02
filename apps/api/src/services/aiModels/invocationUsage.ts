@@ -74,8 +74,12 @@ export interface SdkTurnObservation {
   refusalNoFallback: { category: string | null } | null;
   /** W05: some frame of the turn reported fast mode not serving (cooldown / off). */
   fastNotOnSeen: boolean;
-  /** W09 (#7607): the last failover-eligible provider failure the CLI reported this turn. */
-  providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number } | null;
+  /**
+   * W09 (#7607): the last failover-eligible provider failure the CLI reported
+   * this turn. `terminal` = it came from the CLI's own api-error assistant
+   * message (the request's final failure), not from an `api_retry`.
+   */
+  providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number; terminal: boolean } | null;
   /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
   sawOutput: boolean;
 }
@@ -103,17 +107,17 @@ export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): vo
   // does not recognise (a timeout or reset after send, an invalid request, an
   // unknown model, …) CLEARS any earlier cause: the latest failure decides,
   // and a turn must never fail over on a stale 529 after an unknown outcome.
-  const recordFailure = (error: unknown, status: unknown, attempt: unknown) => {
+  const recordFailure = (error: unknown, status: unknown, attempt: unknown, terminal: boolean) => {
     const httpStatus = typeof status === 'number' ? status : null;
     const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
     if (!cause) { obs.providerFailure = null; return; }
     const retries = typeof attempt === 'number' ? attempt : (obs.providerFailure?.retries ?? 0);
-    obs.providerFailure = { cause, status: httpStatus, retries };
+    obs.providerFailure = { cause, status: httpStatus, retries, terminal };
   };
   if (m.type === 'assistant') {
     // A synthetic API-error assistant message carries `error`: a failure, not
     // output. Anything else with a content block is output.
-    if (typeof m.error === 'string') { recordFailure(m.error, null, undefined); return; }
+    if (typeof m.error === 'string') { recordFailure(m.error, null, undefined, true); return; }
     const content = Array.isArray(m.message?.content) ? (m.message!.content as Array<{ type?: unknown }>) : [];
     if (content.some((b) => typeof b?.type === 'string' && OUTPUT_BLOCKS.has(b.type))) obs.sawOutput = true;
     return;
@@ -123,11 +127,19 @@ export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): vo
     return;
   }
   if (m.type === 'result') {
-    if (typeof m.api_error_status === 'number') recordFailure(null, m.api_error_status, undefined);
+    // #7784: the result's `api_error_status` restates the failure the CLI's
+    // terminal api-error message already classified, with less detail: a
+    // low-credit reply is `billing_error` there but a bare 400 here. A
+    // classified status may replace that cause (529 says more than
+    // `server_error`); an unclassifiable one never clears it. A cause left by
+    // an `api_retry` (retried, so not final) is still cleared, as above.
+    if (typeof m.api_error_status !== 'number') return;
+    if (obs.providerFailure?.terminal && !classifySdkAssistantError(null, m.api_error_status)) return;
+    recordFailure(null, m.api_error_status, undefined, true);
     return;
   }
   if (m.type !== 'system') return;
-  if (m.subtype === 'api_retry') { recordFailure(m.error, m.error_status, m.attempt); return; }
+  if (m.subtype === 'api_retry') { recordFailure(m.error, m.error_status, m.attempt, false); return; }
   const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : null;
   if (m.subtype === 'model_refusal_fallback') {
     // 'local' = a subagent / side question fell back; the main loop did not.
@@ -319,10 +331,17 @@ function servedModelOf(
   return best ? best[0] : binding.wireModel;
 }
 
-function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkResultLike | null, servedModel: string): TurnOutcome {
+function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkResultLike | null, observedServed: string): TurnOutcome {
   const sdkStop = result?.stop_reason ?? null;
   const refused = obs.refusalNoFallback !== null || sdkStop === 'refusal';
   const errored = !result || result.subtype !== 'success' || result.is_error === true;
+  // #7786: a turn that failed before the main loop produced anything was
+  // served by no other model. The CLI's own background call (a small model,
+  // run once per query, which succeeds even when the main model fails) is
+  // then the only modelUsage key that grew, so the usage-based guess would
+  // name it. Keep the bound model and report no fallback. Labels only:
+  // billing attributes usage separately and is unchanged.
+  const servedModel = errored && !obs.sawOutput && obs.refusalFallback === null ? binding.wireModel : observedServed;
   const stopReason = refused ? 'refusal' : errored ? 'error' : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;

@@ -557,6 +557,15 @@ describe('W09 (#7607, D5): chat never replays a turn; a pre-output provider fail
     expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
   });
 
+  it('#7784: low credit (billing_error, then the result\'s bare 400: the W09 lab frames) cools the offering as quota_exhausted', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'assistant', error: 'billing_error', message: { model: '<synthetic>', content: [{ type: 'text', text: 'Credit balance is too low' }] } },
+      { ...failed(), subtype: 'success', api_error_status: 400, modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 900, outputTokens: 15 } } },
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledTimes(1);
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledWith(expect.objectContaining({ offeringId: 'off-1' }), 'quota_exhausted');
+  });
+
   it('a non-failover error (invalid request) cools nothing', async () => {
     await runOneTurn('s1', makeResolvedModel(), [
       { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' },

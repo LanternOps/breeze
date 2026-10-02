@@ -99,6 +99,25 @@ export function classifySdkAssistantError(
   }
 }
 
+/**
+ * W09 / PR #7775 review (D8): the classified provider status an agent-run hop
+ * ENDS on. The CLI's own final api-error assistant message sets it (null when
+ * unclassified); an `api_retry` clears it, since an error the CLI then retried
+ * was not final. A result's `api_error_status` restates that final failure
+ * with less detail (#7784: low credit is `billing_error` on the assistant
+ * message but a bare 400 on the result), so it replaces the cause only when it
+ * classifies, and never clears it. Everything else leaves it as it was.
+ * Chat applies the same rule in invocationUsage.observeSdkMessage.
+ */
+export function nextTerminalProviderCause(current: ProviderFailureCause | null, message: unknown): ProviderFailureCause | null {
+  if (!message || typeof message !== 'object') return current;
+  const m = message as { type?: unknown; subtype?: unknown; error?: unknown; api_error_status?: unknown };
+  if (m.type === 'assistant' && typeof m.error === 'string') return classifySdkAssistantError(m.error, null);
+  if (m.type === 'system' && m.subtype === 'api_retry') return null;
+  if (m.type === 'result' && typeof m.api_error_status === 'number') return classifySdkAssistantError(null, m.api_error_status) ?? current;
+  return current;
+}
+
 /** Hop 0 keeps the surface's own key (W03 behaviour, replay-compatible); hop n appends `:hop:n`. */
 export function hopIdempotencyKey(base: string, hop: number): string {
   if (!Number.isInteger(hop) || hop < 0 || hop > MAX_FAILOVER_HOP) throw new Error(`invalid failover hop ${hop}`);
