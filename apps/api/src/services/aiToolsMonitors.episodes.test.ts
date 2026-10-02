@@ -218,4 +218,21 @@ describe('reset_monitor_escalation', () => {
       details: expect.objectContaining({ monitorId: MONITOR_ID, deviceId: DEVICE_ID }),
     });
   });
+
+  // #7696: the snapshot shim carries no auth, so the tool attributes a
+  // partner-wide monitor's audit row explicitly — partner scope only.
+  it('attributes a partner-wide monitor reset to the partner only for a partner-scope caller', async () => {
+    const PARTNER = '33333333-3333-4333-8333-333333333333';
+    getMonitorDefinitionMock.mockResolvedValue(monitorRow({ orgId: null, partnerId: PARTNER }));
+    resetMonitorEscalationMock.mockResolvedValue({ reset: true });
+
+    await call('reset_monitor_escalation', { monitorId: MONITOR_ID, deviceId: DEVICE_ID },
+      auth({ scope: 'partner', partnerId: PARTNER, orgId: null }));
+    expect(writeAuditEventMock.mock.calls[0]![1]).toMatchObject({ orgId: null, partnerId: PARTNER });
+
+    writeAuditEventMock.mockClear();
+    await call('reset_monitor_escalation', { monitorId: MONITOR_ID, deviceId: DEVICE_ID },
+      auth({ scope: 'organization', partnerId: PARTNER }));
+    expect(writeAuditEventMock.mock.calls[0]![1]).toMatchObject({ orgId: null, partnerId: null });
+  });
 });

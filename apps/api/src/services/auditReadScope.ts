@@ -25,7 +25,7 @@ export function auditPartnerScopeId(auth: Pick<AuthContext, 'scope' | 'partnerId
  * - organization scope: the accessible-org condition only.
  * - partner scope: accessible orgs OR the caller's own partner-scoped rows.
  *
- * Platform-wide NULL-org rows (`partner_id IS NULL`: SSO, mTLS, enrollment,
+ * Platform-wide NULL-org rows (`partner_id IS NULL`: system-scope actions,
  * pre-#7696 history) match neither branch for a non-system caller.
  */
 export function auditLogReadCondition(auth: AuditReadAuth): SQL | undefined {

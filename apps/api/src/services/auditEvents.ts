@@ -1,6 +1,7 @@
 import { createAuditLogAsync, type InitiatedByType } from './auditService';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { sanitizeAuditPayload } from './auditPayloadSanitizer';
+import * as dbModule from '../db';
 
 export const ANONYMOUS_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -78,9 +79,29 @@ function readRequestAuth(c: RequestLike): PartnerScopeAuth | undefined {
   try {
     const auth = get.call(c, 'auth');
     return auth && typeof auth === 'object' ? (auth as PartnerScopeAuth) : undefined;
-  } catch {
+  } catch (err) {
+    console.warn('[audit] could not read request auth for partner attribution:', err);
     return undefined;
   }
+}
+
+/**
+ * The ambient RLS context's partner, for partner scope only. AI tools and
+ * services audit through `requestLikeFromSnapshot` (no auth on it) but run
+ * inside `withDbAccessContext(dbAccessContextFromAuth(auth))`, so this is the
+ * same partner the caller's reads are scoped to.
+ */
+function ambientPartnerScopeId(): string | null {
+  let ctx: ReturnType<typeof dbModule.getCurrentDbAccessContext>;
+  try {
+    ctx = dbModule.getCurrentDbAccessContext();
+  } catch {
+    // Unit tests that mock '../db' without this export.
+    return null;
+  }
+  if (ctx?.scope !== 'partner') return null;
+  const ids = ctx.accessiblePartnerIds;
+  return Array.isArray(ids) && ids.length === 1 && isUuid(ids[0]) ? ids[0]! : null;
 }
 
 /**
@@ -93,15 +114,25 @@ function readRequestAuth(c: RequestLike): PartnerScopeAuth | undefined {
  *   attributed to the caller's partner. Gated on scope, not on `partnerId`
  *   alone: organization-scope tokens carry their MSP's partnerId too, and a
  *   NULL-org row an org user causes must not land in the MSP's trail.
+ * - With no request auth on `c` (a snapshot shim), the ambient partner-scope
+ *   DB access context is used instead, under the same scope gate.
  */
 export function derivePartnerAttribution(c: RequestLike, event: Pick<AuditEventInput, 'orgId' | 'partnerId'>): string | null {
   if (event.orgId) return null;
-  if (event.partnerId !== undefined) return isUuid(event.partnerId) ? event.partnerId : null;
-  const auth = readRequestAuth(c);
-  if (auth?.scope === 'partner' && typeof auth.partnerId === 'string' && isUuid(auth.partnerId)) {
-    return auth.partnerId;
+  if (event.partnerId !== undefined) {
+    if (event.partnerId !== null && !isUuid(event.partnerId)) {
+      console.warn('[audit] ignoring non-uuid partnerId for partner attribution', { partnerId: event.partnerId });
+      return null;
+    }
+    return event.partnerId;
   }
-  return null;
+  const auth = readRequestAuth(c);
+  if (auth) {
+    return auth.scope === 'partner' && typeof auth.partnerId === 'string' && isUuid(auth.partnerId)
+      ? auth.partnerId
+      : null;
+  }
+  return ambientPartnerScopeId();
 }
 
 export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Promise<void> {

@@ -1,4 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const { ambientContext } = vi.hoisted(() => ({ ambientContext: vi.fn() }));
+vi.mock('../db', () => ({
+  db: {},
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  getCurrentDbAccessContext: ambientContext,
+}));
 import { inArray, sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { PgColumn } from 'drizzle-orm/pg-core';
@@ -55,6 +63,11 @@ describe('auditLogReadCondition (#7696)', () => {
 });
 
 describe('derivePartnerAttribution (#7696)', () => {
+  beforeEach(() => {
+    ambientContext.mockReset();
+    ambientContext.mockReturnValue(undefined);
+  });
+
   const ctx = (a: unknown): RequestLike =>
     ({ req: { header: () => undefined }, get: (k: string) => (k === 'auth' ? a : undefined) }) as unknown as RequestLike;
   const shim: RequestLike = { req: { header: () => undefined } };
@@ -83,5 +96,27 @@ describe('derivePartnerAttribution (#7696)', () => {
     expect(derivePartnerAttribution(shim, { orgId: null })).toBeNull();
     expect(derivePartnerAttribution(ctx({ scope: 'partner', partnerId: 'not-a-uuid' }), { orgId: null })).toBeNull();
     expect(derivePartnerAttribution(shim, { orgId: null, partnerId: 'not-a-uuid' })).toBeNull();
+  });
+
+  // AI tools and services audit through requestLikeFromSnapshot (no auth), but
+  // run inside withDbAccessContext(dbAccessContextFromAuth(auth)). The RLS
+  // context is the fallback attribution source.
+  it('falls back to the ambient partner-scope DB context for an auth-less shim', () => {
+    ambientContext.mockReturnValue({ scope: 'partner', orgId: null, accessibleOrgIds: [ORG], accessiblePartnerIds: [PARTNER], currentPartnerId: PARTNER });
+    expect(derivePartnerAttribution(shim, { orgId: null })).toBe(PARTNER);
+    expect(derivePartnerAttribution(shim, { orgId: ORG })).toBeNull();
+    expect(derivePartnerAttribution(shim, { orgId: null, partnerId: null })).toBeNull();
+  });
+
+  it('never falls back to an organization- or system-scope DB context', () => {
+    ambientContext.mockReturnValue({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [], currentPartnerId: PARTNER });
+    expect(derivePartnerAttribution(shim, { orgId: null })).toBeNull();
+    ambientContext.mockReturnValue({ scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null });
+    expect(derivePartnerAttribution(shim, { orgId: null })).toBeNull();
+  });
+
+  it('request auth wins over the ambient context', () => {
+    ambientContext.mockReturnValue({ scope: 'partner', orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [PARTNER] });
+    expect(derivePartnerAttribution(ctx({ scope: 'organization', partnerId: PARTNER }), { orgId: null })).toBeNull();
   });
 });

@@ -10,13 +10,15 @@
 --     outside system scope; and
 --   * the row carries no partner identity at all, so there is nothing a partner
 --     predicate could match on — and some NULL-org rows are genuinely
---     platform-wide (SSO, mTLS, enrollment, synthetic-partner purges) and must
---     stay hidden from every partner.
+--     platform-wide (anything not written on behalf of a partner: system-scope
+--     admin actions, pre-auth agent enrollment / mTLS events, synthetic-partner
+--     purges) and must stay hidden from every partner.
 --
 -- FIX
 -- 1. `partner_id uuid` (nullable). Stamped by the writer
 --    (services/auditEvents.ts / auditService.ts) ONLY on NULL-org rows written
---    on behalf of a partner. Org rows keep `partner_id NULL` — their tenancy is
+--    on behalf of a partner (a partner-scope request or partner-scope DB
+--    context, or an explicit partnerId). Org rows keep `partner_id NULL` — their tenancy is
 --    the org axis — and the CHECK below makes that an invariant, so a stamped
 --    org row can never reach a partner through the new branch by a second path.
 -- 2. One additive, SELECT-only permissive policy for

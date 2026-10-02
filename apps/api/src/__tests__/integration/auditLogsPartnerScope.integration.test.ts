@@ -30,10 +30,11 @@ import { auditLogRoutes } from '../../routes/auditLogs';
 import { createAccessToken } from '../../services/jwt';
 import { registerAuditTools } from '../../services/aiToolsAudit';
 import { createAuditLog } from '../../services/auditService';
-import { writeRouteAudit } from '../../services/auditEvents';
+import { requestLikeFromSnapshot, writeAuditEvent, writeRouteAudit } from '../../services/auditEvents';
 import { cascadeDeletePartner } from '../../services/tenantCascade';
 import type { AiTool } from '../../services/aiTools';
-import type { AuthContext } from '../../middleware/auth';
+import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
+import { auditLogReadCondition } from '../../services/auditReadScope';
 import {
   assignUserToOrganization,
   assignUserToPartner,
@@ -129,6 +130,19 @@ async function fixture() {
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/** from/to bracketing "now" generously (host vs DB clock skew). */
+function windowQuery(): string {
+  const now = Date.now();
+  const from = new Date(now - 10 * 60_000).toISOString();
+  const to = new Date(now + 10 * 60_000).toISOString();
+  return `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+}
+
+/** First column of a CSV export requested with columns=id,... */
+function csvIds(body: string): string[] {
+  return body.split('\n').slice(1).map((line) => line.split(',')[0]!.replace(/"/g, '')).filter(Boolean);
+}
 
 function idsOf(rows: Array<{ id: string }>): string[] {
   return rows.map((r) => r.id);
@@ -256,9 +270,20 @@ describe('Audit Trail routes — partner-scoped rows (#7696)', () => {
     expect(search.status).toBe(200);
     expectVisibility(idsOf((await search.json()).data), f, ['partnerA', 'orgA1'], 'GET /search');
 
-    // GET /reports/user-activity (recentActivity lists the newest rows)
-    const report = await partnerA.get('/audit-logs/reports/user-activity');
-    expect(report.status).toBe(200);
+    // Stats / reports: fresh partner, so a window around the fixture holds
+    // exactly its two visible rows. Run before any export (an export writes its
+    // own partner-attributed audit row).
+    const win = windowQuery();
+    const stats = await (await partnerA.get(`/audit-logs/stats?${win}`)).json();
+    expect(stats.totalEvents).toBe(2);
+    const activity = await (await partnerA.get(`/audit-logs/reports/user-activity?${win}`)).json();
+    expect(activity.totalEvents).toBe(2);
+    expectVisibility(idsOf(activity.recentActivity), f, ['partnerA', 'orgA1'], 'GET /reports/user-activity');
+
+    // GET /export (CSV)
+    const csv = await partnerA.get('/audit-logs/export?columns=id,action');
+    expect(csv.status).toBe(200);
+    expectVisibility(csvIds(await csv.text()), f, ['partnerA', 'orgA1'], 'GET /export');
 
     // POST /export (json) with the marker filter
     const exp = await partnerA.post('/audit-logs/export', {
@@ -287,6 +312,8 @@ describe('Audit Trail routes — partner-scoped rows (#7696)', () => {
     expect((await partnerB.get(`/audit-logs/logs/${f.ids.partnerA}`)).status).toBe(404);
     const exp = await partnerB.post('/audit-logs/export', { format: 'json', filters: { action: f.marker } });
     expectVisibility(idsOf((await exp.json()).data), f, ['partnerB', 'orgB1'], 'partner B export');
+    const csv = await partnerB.get('/audit-logs/export?columns=id,action');
+    expectVisibility(csvIds(await csv.text()), f, ['partnerB', 'orgB1'], 'partner B GET /export');
   });
 
   it('an org user in partner A never sees partner A partner-scoped rows (org-token negative)', async () => {
@@ -300,8 +327,63 @@ describe('Audit Trail routes — partner-scoped rows (#7696)', () => {
     expect((await orgUser.get(`/audit-logs/logs/${f.ids.partnerA}`)).status).toBe(404);
     const search = await orgUser.get(`/audit-logs/search?q=${encodeURIComponent(f.marker)}&limit=100`);
     expectVisibility(idsOf((await search.json()).data), f, ['orgA1'], 'org search');
+    const stats = await (await orgUser.get(`/audit-logs/stats?${windowQuery()}`)).json();
+    expect(stats.totalEvents).toBe(1);
     const exp = await orgUser.post('/audit-logs/export', { format: 'json', filters: { action: f.marker } });
     expectVisibility(idsOf((await exp.json()).data), f, ['orgA1'], 'org export');
+    const csv = await orgUser.get('/audit-logs/export?columns=id,action');
+    expectVisibility(csvIds(await csv.text()), f, ['orgA1'], 'org GET /export');
+  });
+
+  it('fast path: excludeActions applies to the partner branch, and the merged branches interleave by time', async () => {
+    const f = await fixture();
+    const partnerA = await mintClient('partner', f.partnerA.id, f.orgA1.id);
+    const excluded = await partnerA.get(
+      `/audit-logs/logs?limit=100&skipCount=true&excludeActions=${encodeURIComponent(`${f.marker}.partner_a`)}`,
+    );
+    expectVisibility(idsOf((await excluded.json()).data), f, ['orgA1'], 'fast path excludeActions');
+
+    // Newest row is a partner row: limit=1 must return it, not the org row.
+    const newest = await seedRow({ orgId: null, partnerId: f.partnerA.id, action: `${f.marker}.partner_newest` });
+    const top = await (await partnerA.get('/audit-logs/logs?limit=1&skipCount=true')).json();
+    expect(idsOf(top.data)).toEqual([newest]);
+  });
+
+  it('a partner with zero accessible orgs still sees its partner-scoped rows', async () => {
+    const partner = await createPartner();
+    const marker = `p7696.${randomUUID().slice(0, 8)}`;
+    const own = await seedRow({ orgId: null, partnerId: partner.id, action: `${marker}.own` });
+    const client = await mintClient('partner', partner.id, randomUUID());
+    const list = await (await client.get(`/audit-logs?limit=100&action=${encodeURIComponent(marker)}`)).json();
+    expect(idsOf(list.entries)).toEqual([own]);
+    const fast = await (await client.get('/audit-logs/logs?limit=100&skipCount=true')).json();
+    expect(idsOf(fast.data)).toContain(own);
+  });
+});
+
+describe('auditLogReadCondition — app-layer predicate without RLS (#7696)', () => {
+  // RLS hides cross-tenant rows on every route above, so those negatives cannot
+  // tell a correct app predicate from a too-wide one. Evaluate the predicate
+  // under system scope (RLS out of the picture) to prove it independently.
+  function predicateAuth(scope: 'partner' | 'organization', partnerId: string, orgIds: string[]) {
+    return { scope, partnerId, ...buildOrgAccessClosures(orgIds) };
+  }
+
+  async function matching(f: Fixture, auth: ReturnType<typeof predicateAuth>) {
+    const rows = await withSystemDbAccessContext(() =>
+      db
+        .select({ id: auditLogs.id })
+        .from(auditLogs)
+        .where(and(inArray(auditLogs.id, Object.values(f.ids)), auditLogReadCondition(auth))),
+    );
+    return idsOf(rows);
+  }
+
+  it('partner A: own partner rows + own orgs; partner B and org-scope tokens never match partner A rows', async () => {
+    const f = await fixture();
+    expectVisibility(await matching(f, predicateAuth('partner', f.partnerA.id, [f.orgA1.id])), f, ['partnerA', 'orgA1'], 'predicate partner A');
+    expectVisibility(await matching(f, predicateAuth('partner', f.partnerB.id, [f.orgB1.id])), f, ['partnerB', 'orgB1'], 'predicate partner B');
+    expectVisibility(await matching(f, predicateAuth('organization', f.partnerA.id, [f.orgA1.id])), f, ['orgA1'], 'predicate org A1');
   });
 });
 
@@ -415,6 +497,24 @@ describe('audit writer — partner attribution (#7696)', () => {
     const orgRow = await waitForRow(partnerOrgRow);
     expect(orgRow.orgId).toBe(org.id);
     expect(orgRow.partnerId).toBeNull();
+  });
+
+  it('attributes an auth-less snapshot-shim write (AI tools) from the ambient partner-scope DB context', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerAction = `p7696.write.${randomUUID().slice(0, 8)}`;
+    await withDbAccessContext(
+      { scope: 'partner', orgId: null, accessibleOrgIds: [org.id], accessiblePartnerIds: [partner.id], currentPartnerId: partner.id },
+      async () => writeAuditEvent(requestLikeFromSnapshot({}), { orgId: null, action: partnerAction, resourceType: 'notification_channel' }),
+    );
+    expect((await waitForRow(partnerAction)).partnerId).toBe(partner.id);
+
+    const orgAction = `p7696.write.${randomUUID().slice(0, 8)}`;
+    await withDbAccessContext(
+      { scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id], accessiblePartnerIds: [], currentPartnerId: partner.id },
+      async () => writeAuditEvent(requestLikeFromSnapshot({}), { orgId: null, action: orgAction, resourceType: 'notification_channel' }),
+    );
+    expect((await waitForRow(orgAction)).partnerId).toBeNull();
   });
 
   it('createAuditLog persists an explicit partnerId and drops it on an org row', async () => {
