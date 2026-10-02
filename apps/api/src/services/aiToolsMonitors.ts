@@ -84,14 +84,15 @@ const KIND_LIST_HINT = `Valid kinds: ${MONITOR_KINDS.join(', ')}.`;
  * unknown kind lists the valid kinds; a known kind with a bad condition points
  * at `describe` for that kind's shape.
  */
-function definitionErrorMessage(definition: unknown, issue: string | null | undefined): string {
+function definitionErrorMessage(definition: unknown, issue: string | null | undefined, isCreate: boolean): string {
   const base = issue ?? 'Invalid monitor definition';
   const kind = (definition as { kind?: unknown } | null | undefined)?.kind;
   if (kind !== undefined && !isMonitorKind(kind)) {
     return `${base}. ${KIND_LIST_HINT} Use action "describe" (with kind) for each condition shape.`;
   }
   if (isMonitorKind(kind)) return `${base}. Use action "describe" with kind "${kind}" for its condition shape.`;
-  return `${base}. ${KIND_LIST_HINT} Use action "describe" for condition shapes.`;
+  // Partial updates normally carry no kind; the kind list would be noise there.
+  return isCreate ? `${base}. ${KIND_LIST_HINT} Use action "describe" for condition shapes.` : base;
 }
 
 type Handler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -445,7 +446,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});
         if (!parsed.success) {
           return JSON.stringify({
-            error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error)),
+            error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error), true),
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
@@ -463,7 +464,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         const parsed = updateMonitorDefinitionSchema.safeParse(patch);
         if (!parsed.success) {
           return JSON.stringify({
-            error: definitionErrorMessage(patch, describeFirstZodIssue(parsed.error)),
+            error: definitionErrorMessage(patch, describeFirstZodIssue(parsed.error), false),
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
