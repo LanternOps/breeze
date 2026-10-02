@@ -120,7 +120,7 @@ export const executeCommandShape = {
     'list_services', 'start_service', 'stop_service', 'restart_service',
     'file_list', 'file_read',
     'event_logs_list', 'event_logs_query',
-  ]),
+  ]).describe('The type of command to execute. Before kill_process, restate the evidence tying that PID to the problem, each claim labelled verified or inferred.'),
   payload: executeCommandPayloadSchema
     .describe('Command-specific parameters — see level/logName for event_logs_query, name for service control, pid (required) for kill_process, path for file ops.')
     .optional(),
