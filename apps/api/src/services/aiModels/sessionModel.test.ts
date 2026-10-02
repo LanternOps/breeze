@@ -108,35 +108,11 @@ describe('chooseSessionModel', () => {
     await expect(chooseSessionModel({ ...base, offeringId: 'off-2' })).rejects.toBeInstanceOf(LlmUnavailableError);
   });
 
-  it('the legacy `model` string maps to the matching enabled offering', async () => {
-    extra.findOfferingIdByModel.mockResolvedValue('off-7');
-    m.resolveModel.mockResolvedValue(makeResolvedModel());
-    await chooseSessionModel({ ...base, legacyModel: 'claude-opus-5-5' });
-    expect(extra.ensurePartnerCutover).toHaveBeenCalledWith('partner-1');
-    expect(extra.findOfferingIdByModel).toHaveBeenCalledWith({ partnerId: 'partner-1', orgId: 'org-1', surface: 'chat', modelId: 'claude-opus-5-5' });
-    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-7', origin: 'user' } }));
-  });
-
-  it('an explicit offeringId wins over the legacy model string', async () => {
-    m.resolveModel.mockResolvedValue(makeResolvedModel());
-    await chooseSessionModel({ ...base, offeringId: 'off-2', legacyModel: 'claude-opus-5-5' });
+  it('chooseSessionModel has no free-form model path (W05)', async () => {
+    m.resolveModel.mockResolvedValueOnce(makeResolvedModel('platform'));
+    // @ts-expect-error legacyModel was removed in W05
+    await chooseSessionModel({ ...base, legacyModel: 'x' });
     expect(extra.findOfferingIdByModel).not.toHaveBeenCalled();
-    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'off-2', origin: 'user' } }));
-  });
-
-  it('an unknown legacy model id is invalid_model and never resolved', async () => {
-    extra.findOfferingIdByModel.mockResolvedValue(null);
-    await expect(chooseSessionModel({ ...base, legacyModel: 'gpt-free-form' })).rejects.toMatchObject({
-      status: 400, code: 'invalid_model', message: 'Model "gpt-free-form" is not available for AI sessions.',
-    });
-    expect(m.resolveModel).not.toHaveBeenCalled();
-  });
-
-  it('the legacy lookup never reads assignments of a partner not yet cut over', async () => {
-    extra.ensurePartnerCutover.mockResolvedValue(false);
-    await expect(chooseSessionModel({ ...base, legacyModel: 'claude-opus-5-5' })).rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(extra.findOfferingIdByModel).not.toHaveBeenCalled();
-    expect(m.resolveModel).not.toHaveBeenCalled();
   });
 
   it('nothing requested and nothing eligible keeps the legacy 503 shapes', async () => {

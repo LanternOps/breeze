@@ -91,8 +91,6 @@ export async function createSession(
     /** Registry offering to run the session on (W03 #7601). */
     offeringId?: string;
     options?: Partial<OfferingOptions>;
-    /** @deprecated W03: mapped to the partner's offering for this model id; W05 removes it. */
-    model?: string;
     title?: string;
     orgId?: string;
     delegantM365ConnectionId?: string;
@@ -229,7 +227,7 @@ export async function createSession(
     const resolved = await resolveLlmConfigForOrg(orgId);
     if (llmUnusableCode(resolved) === 'ai_not_configured') throw new LlmNotConfiguredError();
     if (resolved.source === 'unavailable') throw new LlmUnavailableError();
-    if (options.offeringId || options.options || (options.model !== undefined && options.model !== resolved.model)) {
+    if (options.offeringId || options.options) {
       throw new InvalidSessionModelError('Model selection is not available on this deployment.', 'invalid_model');
     }
     choice = {
@@ -244,7 +242,6 @@ export async function createSession(
       partnerId, orgId, userId: auth.user.id, surface: 'chat',
       ...(options.offeringId ? { offeringId: options.offeringId } : {}),
       ...(options.options ? { options: options.options } : {}),
-      ...(options.model !== undefined ? { legacyModel: options.model } : {}),
     });
   }
 

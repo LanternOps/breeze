@@ -131,12 +131,12 @@ describe('createSession stores the registry choice (W03 Task 9)', () => {
     expect(resolveLlmConfigForOrgMock).not.toHaveBeenCalled();
   });
 
-  it('passes the deprecated `model` body field as the legacy lookup key', async () => {
+  it('passes no legacyModel to chooseSessionModel (W05 removed the free-form model)', async () => {
     sm.chooseSessionModel.mockResolvedValue(choice);
     armInsert();
-    await createSession(orgAuth(), { model: 'claude-opus-5-5' });
+    await createSession(orgAuth(), {});
     expect(sm.chooseSessionModel).toHaveBeenCalledWith({
-      partnerId: 'partner-1', orgId: ORG_A, userId: 'user-2', surface: 'chat', legacyModel: 'claude-opus-5-5',
+      partnerId: 'partner-1', orgId: ORG_A, userId: 'user-2', surface: 'chat',
     });
   });
 
@@ -186,7 +186,6 @@ describe('env OpenAI-compatible deployment (finding 12)', () => {
 
   it.each([
     [{ offeringId: OFFERING }],
-    [{ model: 'claude-opus-5-5' }],
     [{ options: { effort: 'high' as const } }],
   ])('a model choice %j is invalid_model with no row', async (body) => {
     await expect(createSession(orgAuth(), body)).rejects.toMatchObject({
@@ -194,11 +193,6 @@ describe('env OpenAI-compatible deployment (finding 12)', () => {
     });
     expect(sm.chooseSessionModel).not.toHaveBeenCalled();
     expect(insertMock).not.toHaveBeenCalled();
-  });
-
-  it('echoing the configured model id is accepted', async () => {
-    armInsert();
-    await expect(createSession(orgAuth(), { model: 'gpt-4o-mini' })).resolves.toMatchObject({ id: 'sess-1' });
   });
 
   it('the legacy resolver returning unavailable is ai_unavailable', async () => {

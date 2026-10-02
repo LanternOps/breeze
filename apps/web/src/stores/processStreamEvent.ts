@@ -486,6 +486,10 @@ export function processStreamEvent(
     // §9.1a: the refusal explanation already streamed as ordinary
     // message_start/content_delta/message_end events and renders as the
     // assistant message. This structured twin is for the W05 model picker.
+    // W05: rendered by Task 13 (AiThinkingIndicator / AiTurnModelBadge).
+    case 'thinking_state':
+    case 'turn_model':
+      return currentAssistantId;
     case 'model_refusal':
       return currentAssistantId;
 

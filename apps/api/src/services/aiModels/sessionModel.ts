@@ -12,9 +12,8 @@ import type { AiSurface, OfferingOptions } from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import { isPlatformLlmConfigured, LlmNotConfiguredError } from '../llm/llmAvailability';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
-import { findOfferingIdByModel, readOrgPartnerId, readSessionModelRow } from './candidateLoader';
+import { readOrgPartnerId, readSessionModelRow } from './candidateLoader';
 import { InvalidSessionModelError } from './invalidSessionModelError';
-import { ensurePartnerCutover } from './registryCutover';
 import { resolveModel, unavailableMessage, type ResolvedModel, type ResolveModelResult } from './resolveModel';
 import type { DispatchTransport } from './transport';
 
@@ -79,22 +78,8 @@ export async function chooseSessionModel(input: {
   surface: AiSurface;
   offeringId?: string;
   options?: Partial<OfferingOptions>;
-  /** @deprecated W03: the old free-form `model` body field, used only as a lookup key. */
-  legacyModel?: string;
 }): Promise<SessionModelChoice> {
-  let offeringId = input.offeringId;
-  if (!offeringId && input.legacyModel) {
-    // The lookup reads assignments: never against a partner not yet cut over (Task 6A).
-    if (!(await ensurePartnerCutover(input.partnerId))) {
-      throw new LlmUnavailableError(unavailableMessage('registry_unavailable'));
-    }
-    offeringId = (await findOfferingIdByModel({
-      partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, modelId: input.legacyModel,
-    })) ?? undefined;
-    if (!offeringId) {
-      throw new InvalidSessionModelError(`Model "${input.legacyModel}" is not available for AI sessions.`, 'invalid_model');
-    }
-  }
+  const offeringId = input.offeringId;
   const requested = offeringId || input.options
     ? { ...(offeringId ? { offeringId } : {}), ...(input.options ? { options: input.options } : {}), origin: 'user' as const }
     : undefined;
