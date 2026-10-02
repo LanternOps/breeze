@@ -1161,6 +1161,7 @@
     "clearCategory": "Seçimi temizle",
     "columnPath": "Yol",
     "columnSize": "Boyut",
+    "selectionLimit": "Tek bir temizlik çalıştırması en fazla {{max}} öğe silebilir. Tümünü seç, seçimi bu sınıra kadar en büyükten başlayarak doldurur. Bunları silin, ardından kalanlar için temizlik önizlemesini yeniden çalıştırın.",
     "selectionSummary": "{{count}} seçildi · {{size}}",
     "executeSelected": "Seçilenleri sil ({{count}})",
     "confirmTitle": "Temizleme hedeflerini kalıcı olarak sil",

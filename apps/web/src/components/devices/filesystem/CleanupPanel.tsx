@@ -34,6 +34,14 @@ import {
 
 const CONFIRM_PATH_PREVIEW_LIMIT = 10;
 
+/**
+ * Mirrors `cleanupExecuteBodySchema`'s `.max(200)` in
+ * apps/api/src/routes/devices/filesystem.ts (#7469). One pinned run accepts
+ * exactly ONE execute (atomic `previewed` -> `running` claim), so the UI cannot
+ * batch; it must never build a selection the API will always refuse.
+ */
+export const MAX_CLEANUP_EXECUTE_PATHS = 200;
+
 const RESULT_LABEL_KEYS: Record<(typeof CLEANUP_ACTION_STATUSES)[number], string> = {
   completed: 'deviceFilesystemTab.resultCompleted',
   failed: 'deviceFilesystemTab.resultFailures',
@@ -99,12 +107,13 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
     [sortedCandidates, selected],
   );
   const selectedByteTotal = selectedBytes(sortedCandidates, selected);
+  const atSelectionLimit = selectedPaths.length >= MAX_CLEANUP_EXECUTE_PATHS;
 
   const toggle = useCallback((path: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
-      else next.add(path);
+      else if (next.size < MAX_CLEANUP_EXECUTE_PATHS) next.add(path);
       return next;
     });
   }, []);
@@ -112,9 +121,10 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
   const selectCategory = useCallback((category: string, on: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev);
+      // Candidates are size-sorted, so a capped select-all keeps the largest.
       for (const candidate of byCategory.get(category) ?? []) {
-        if (on) next.add(candidate.path);
-        else next.delete(candidate.path);
+        if (!on) next.delete(candidate.path);
+        else if (next.size < MAX_CLEANUP_EXECUTE_PATHS) next.add(candidate.path);
       }
       return next;
     });
@@ -222,10 +232,21 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
         </div>
       </div>
 
+      {(atSelectionLimit || sortedCandidates.length > MAX_CLEANUP_EXECUTE_PATHS) && (
+        <p className="mt-3 text-xs text-muted-foreground" data-testid="cleanup-selection-limit">
+          {t('deviceFilesystemTab.selectionLimit', { max: MAX_CLEANUP_EXECUTE_PATHS })}
+        </p>
+      )}
+
       <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {preview.categories.map((category) => {
           const rows = byCategory.get(category.category) ?? [];
-          const allOn = rows.length > 0 && rows.every((row) => selected.has(row.path));
+          // At the cap a category can never be fully ticked, so the button must
+          // still offer Clear (otherwise it is a silent no-op, review finding).
+          const allOn = rows.length > 0 && (
+            rows.every((row) => selected.has(row.path))
+            || (atSelectionLimit && rows.some((row) => selected.has(row.path)))
+          );
           return (
             <div
               key={category.category}
@@ -279,6 +300,7 @@ export default function CleanupPanel({ deviceId, volumeLabel, preview, onExecute
                 type="checkbox"
                 data-testid={`cleanup-candidate-checkbox-${candidate.path}`}
                 checked={selected.has(candidate.path)}
+                disabled={atSelectionLimit && !selected.has(candidate.path)}
                 onChange={() => toggle(candidate.path)}
               />
               <span className="truncate">{candidate.path}</span>

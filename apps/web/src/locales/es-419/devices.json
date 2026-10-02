@@ -1161,6 +1161,7 @@
     "clearCategory": "Quitar selección",
     "columnPath": "Ruta",
     "columnSize": "Tamaño",
+    "selectionLimit": "Una sola ejecución de limpieza puede eliminar como máximo {{max}} elementos. Seleccionar todo completa la selección hasta ese límite, empezando por los más grandes. Elimínelos y vuelva a ejecutar la vista previa de limpieza para lo que quede.",
     "selectionSummary": "{{count}} seleccionados · {{size}}",
     "executeSelected": "Eliminar seleccionados ({{count}})",
     "confirmTitle": "Eliminar permanentemente los objetivos de limpieza",
