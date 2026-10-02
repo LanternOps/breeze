@@ -26,7 +26,7 @@ Feature #7598, wave W06 (#7604, PR #7771). These are release gates for v0.121.
 | L1 | LiteLLM → llama.cpp: chat turn executes a tool; usage recorded | **PASS** |
 | L1 | LiteLLM → llama.cpp: AI agent run executes tools | **PASS** |
 | L1 | LiteLLM → llama.cpp: two-turn chat recalls turn 1 | **PASS** |
-| L1 | LiteLLM → **Ollama**: chat / agent tool calls | **FAIL**: Ollama drops `mcp__…` tool calls (#7795). The 3b model still verified. |
+| L1 | LiteLLM → **Ollama**: chat / agent tool calls | **FAIL**: tool calls through Ollama were mostly dropped; the parser cause is not established (#7795). The 3b model still verified. |
 | L1 | Slow first token (> 30 s) on Breeze-sized prompts | **FAIL**: the gateway's 30 s header deadline aborts and retries (#7794) |
 | L1 | vLLM | **Not run**: no CUDA GPU. vLLM's server images are CUDA-only, and Apple-silicon support is experimental. |
 | L1 | OpenRouter | **Not run**: no key |
@@ -38,14 +38,14 @@ Feature #7598, wave W06 (#7604, PR #7771). These are release gates for v0.121.
 | L2 | `IS_HOSTED` not explicitly false: refused, fail closed | **PASS** (exact message below) |
 | L2 | Env vars removed: connection stays, read-only, not deleted | **PASS** |
 | **L3** | Hosted: `http://` public host refused | **PASS** |
-| L3 | Hosted: RFC 1918 / loopback / metadata refused (plus 12 encodings via the API) | **PASS** |
+| L3 | Hosted: RFC 1918 / loopback / metadata refused (plus 10 additional probes (encodings, DNS names, CGNAT and ULA ranges) via the API) | **PASS** |
 | L3 | Hosted: public https accepted by the URL policy (discovery then 401s on the dummy key) | **PASS** |
 
 **Overall:**
 - **L3 passes.**
 - **L2 passes**, except the non-tool-model message (#7793).
 - **L1 passes on LiteLLM in front of llama.cpp** for every case: connection flow, chat tool call, agent tool calls, recall and usage.
-- **L1 fails in front of Ollama:** tools never run in chat or agents (#7795).
+- **L1 fails in front of Ollama:** tool calls through Ollama 0.35.0 (qwen2.5 3b/7b) were mostly dropped. `mcp_`-prefixed names parsed 1 of 3 times. The exact parser cause is not established (#7795).
 - **Slow local hardware** trips the gateway's 30 s header deadline (#7794).
 
 **Defects filed (not fixed here):**
@@ -54,9 +54,7 @@ Feature #7598, wave W06 (#7604, PR #7771). These are release gates for v0.121.
 |---|---|---|
 | #7793 | medium | Chat on a model that cannot call tools shows the raw code `ai_unavailable`. The resolver's text ("This AI model cannot use tools, which this feature needs.") is dropped by `routes/ai.ts`. |
 | #7794 | medium | The gateway gives the upstream 30 s for response headers. On 29k–69k-token Breeze prompts, local prefill is slower than that, and LiteLLM holds its headers until the first token. The result is repeated abort-and-retry, or "AI request timed out". Nothing is logged in Breeze. |
-| #7795 | medium | Ollama 0.35.0 drops a tool call whose name starts with `mcp` (every Breeze tool is `mcp__<server>__<tool>`). The turn comes back empty with no error. The harness passed for qwen2.5:3b, so the offering showed **Verified** but could not run tools in chat. |
-
-One low/informational item is recorded privately (security remediation register), not here.
+| #7795 | medium | Tool calls through Ollama 0.35.0 (qwen2.5 3b/7b) were mostly dropped. `mcp_`-prefixed names parsed 1 of 3 times. The exact parser cause is not established (#7795). The harness passed for qwen2.5:3b, so the offering showed **Verified** but could not run tools in chat. |
 
 ## Setup
 
@@ -91,7 +89,7 @@ One low/informational item is recorded privately (security remediation register)
   - the upstream's `prompt_tokens_details.cached_tokens` was carried through LiteLLM as cache-read.
 - **Behind Ollama** (both the 3b and the 7b), every chat turn came back as `message_start` / `message_end` (output 16 tokens) twice, then `done`. There was no text, no tool and no error.
   - Captured upstream: Ollama returned `content:""` with no `tool_calls` and `eval_count` 16–25. The CLI then retried with "[Your previous response had no visible output…]" and got the same reply.
-  - Replaying the captured request showed the model emits a correct `<tool_call>{"name":"mcp__…"}` that Ollama's parser drops. Renamed tools parse (table in #7795).
+  - Replaying the captured request showed the model emits a well-formed `<tool_call>{"name":"mcp__…"}` that Ollama mostly did not return as a tool call; renamed tools parsed more often (table in #7795). The exact parser cause is not established.
   - **The harness passed for the 3b model and failed for the 7b one**, so "Verified" does not guarantee chat tool use on Ollama.
 
 ### AI agent run with tool calls: PASS (LiteLLM → llama.cpp)
@@ -115,7 +113,7 @@ The OS appeared only in turn 1's **tool result**, not in its text. So turn 2 car
 | LiteLLM | **Headers:** response headers are held until the first upstream chunk, so prefill time counts against the gateway's header deadline (#7794). On a client disconnect it cancels upstream: "client disconnected before first chunk, upstream LLM request cancelled". |
 | LiteLLM | **`/v1/models` and pricing:** `/v1/models` lists model-group names, not backend ids. For unmapped local models it logs cost-map errors, which are harmless. |
 | LiteLLM → Ollama, non-tool model | Sending tools gets **HTTP 500** `litellm.InternalServerError … tools param requires --jinja flag`. Breeze verification records `passed:false, toolUse:false`, with the 500 in the summary. |
-| **Ollama 0.35.0** | **Tool-call parsing:** names starting with `mcp` are dropped, giving empty content and no `tool_calls` (#7795). `/api/chat` buffered `done_reason: "stop"`. |
+| **Ollama 0.35.0** | **Tool-call parsing:** tool calls through Ollama 0.35.0 (qwen2.5 3b/7b) were mostly dropped. `mcp_`-prefixed names parsed 1 of 3 times. The exact parser cause is not established (#7795). `/api/chat` buffered `done_reason: "stop"`. |
 | Ollama in Docker on Apple silicon | CPU only. At the default 18 threads decode collapses to 0.26 tok/s (oversubscription); pin `num_thread`. |
 | **llama.cpp** `llama-server --jinja` | **Tool calls:** parses `mcp__…` names correctly (3/3). Returns `prompt_tokens_details.cached_tokens`, so Breeze ledgers cache reads. |
 | llama.cpp | **Context:** the jinja render of Breeze's chat request is 68,959 tokens, so it needs more than 32k context. Below that the request gets HTTP 400 "exceeds the available context size", and the chat turn ends with **no error shown to the user** (`turn_model` + `done`, usage 0; the #7785 pattern). |
@@ -135,7 +133,7 @@ The OS appeared only in turn 1's **tool result**, not in its text. So turn 2 car
 | 4 Two replicas | 5 new partners inserted. Then `--scale api=2 --force-recreate`, so both replicas boot at once. | **api-1:** `partners=6 created=2 chatRepointed=2`. **api-2:** `partners=6 created=3 chatRepointed=3`.<br>Real interleaving: per-partner SQL shows **exactly 1 env connection and 1 offering for every partner**, and chat on the env offering for each of the 5 new partners.<br>A second concurrent 2-replica boot logged `created=0` on both, with 6 connections and 6 offerings total. |
 | 5 Non-tool model | `MCP_LLM_MODEL=qwen2.5-3b-notools` (Default Partner's chat first set to the env offering) | **Resync:** a new offering per partner, enabled and priced. The old one was kept, disabled. Chat re-pointed only where it was exactly the old env offering, which was all 6.<br>**Verification** failed (`direct_tool_use: … HTTP 500 …`).<br>**Chat:** `POST /ai/sessions` → **503 `{"error":"ai_unavailable"}`**, and the panel shows a red **`ai_unavailable`** banner (`l2-05-notools-chat-ai_unavailable.png`). **FAIL: #7793.** |
 | 6 `IS_HOSTED` not explicitly false | `IS_HOSTED=` (empty) | **The API refuses to start** (fail closed). The exact message is below. Only the empty value was run. Unset, garbage and truthy values go through the same check (`isRecognizedSelfHostSignal`), per the code. |
-| 6b Loopback URL | `IS_HOSTED=false`, `MCP_LLM_BASE_URL=http://127.0.0.1:11434/v1` | **The API starts.** The bootstrap refuses and retries every 60 s: `MCP_LLM_BASE_URL refused: That host is not reachable from Breeze (loopback, link-local and metadata addresses are never allowed). — no partner was bootstrapped`. Existing rows are untouched. |
+| 6b Loopback URL | `IS_HOSTED=false`, `MCP_LLM_BASE_URL=http://127.0.0.1:11434/v1` | **The API starts.** The bootstrap refuses and retries at 1, 5, 15 and 60 minutes, then every 10 minutes (new-partner sync): `MCP_LLM_BASE_URL refused: That host is not reachable from Breeze (loopback, link-local and metadata addresses are never allowed). — no partner was bootstrapped`. Existing rows are untouched. |
 | 7 Vars removed | `MCP_LLM_*` absent | **Log:** `MCP_LLM_PROVIDER is not openai-compatible: released 6 env-managed connection(s); nothing deleted, they stay read-only (partners may disconnect them)`.<br>**Rows:** all 6 connections still `active`, offerings intact, `envReleasedAt` stamped.<br>**Read-only:** `PATCH …/gateway` → **409** `managed_by_env`: "This connection was set up from the MCP_LLM_* environment variables, which are no longer set. It cannot be edited; you can disconnect it." The drawer's fields are disabled; *Disconnect* and *Refresh models* stay available (`l2-07-released-env-connection-readonly.png`). |
 
 **Notes:**
@@ -170,7 +168,7 @@ URLs with userinfo or a query were refused at schema validation: "Enter an http(
   > `MCP_LLM_PROVIDER: MCP_LLM_PROVIDER=openai-compatible is for self-hosted Breeze (set IS_HOSTED explicitly to false). On hosted — or with IS_HOSTED unset/invalid — it is refused: it would create a connection for every partner. Add an OpenAI-compatible connection under Partner Settings → AI Providers & Models instead.`
 
   Stock `docker-compose.yml` maps `IS_HOSTED: ${IS_HOSTED:-false}`, so a compose install that leaves it out of `.env` still gets `false`. Installs without compose (systemd, k8s, bare node) must set it.
-- **Env endpoint on loopback, link-local or metadata.** The API starts, but nothing is bootstrapped, and it retries every 60 s:
+- **Env endpoint on loopback, link-local or metadata.** The API starts, but nothing is bootstrapped, and it retries at 1, 5, 15 and 60 minutes, then every 10 minutes (new-partner sync):
 
   > `[envOpenAiBootstrap] MCP_LLM_BASE_URL refused: That host is not reachable from Breeze (loopback, link-local and metadata addresses are never allowed). — no partner was bootstrapped`
 
@@ -186,11 +184,11 @@ URLs with userinfo or a query were refused at schema validation: "Enter an http(
   > `That host resolves to a private or reserved address, which Breeze does not connect to.`
 
 - **Other release-note points:**
-  - The env path now needs a model that can call tools for chat. A non-tool model currently shows `ai_unavailable` (#7793).
+  - The env path now needs a model that can call tools for chat. A non-tool model shows `ai_unavailable` at the time of this lab (#7793).
   - `MCP_LLM_API_KEY` is optional; when set it must be at least 8 characters.
   - Do not blank `MCP_LLM_BASE_URL`; delete the line instead (see the pre-existing note above).
-  - **Ollama is not yet usable for tool-using surfaces** (#7795). llama.cpp `llama-server --jinja`, behind LiteLLM or direct, works.
-  - Local servers need at least about 70k context for Breeze chat, and a first token within 30 s (#7794).
+  - **Ollama tool calling was unreliable at the time of this lab** (#7795). llama.cpp `llama-server --jinja`, behind LiteLLM or direct, works.
+  - Local servers need at least about 70k context; allow headroom for long chats. The first token must arrive within 30 s (#7794).
 
 ## Teardown
 
