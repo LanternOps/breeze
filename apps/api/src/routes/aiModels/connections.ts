@@ -199,7 +199,7 @@ aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', id
 aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('param', idParamSchema), zValidator('json', connectionEndpointSchema), async (c) => {
   const { partnerId, userId } = requirePartnerWide(c);
   const { catalogEntryId, acknowledgeDataNote } = c.req.valid('json');
-  // Same rule as routes/aiProvider.ts: the flag gates SELECTING an endpoint, never clearing one.
+  // Same rule the retired /ai/provider API used: the flag gates SELECTING an endpoint, never clearing one.
   if (catalogEntryId !== null && !isLlmProviderCatalogEnabled()) {
     throw new HTTPException(404, { message: 'Catalog endpoint selection is not available on this deployment.' });
   }

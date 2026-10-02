@@ -1,7 +1,7 @@
 /**
  * W03 Task 6B (#7601, review finding 9): after the authority flip the
  * /ai/provider facade edits the registry natively — connect / disconnect /
- * rotate / default-model changes are offering-id remaps — and never
+ * rotate are offering-id remaps — and never
  * re-projects it from legacy config, never writes partner_llm_configs, and the
  * W02 legacy → connection mirror trigger is gone.
  */
@@ -14,9 +14,7 @@ import { columnAad } from '../../services/encryptedColumnRegistry';
 import { encryptSecret } from '../../services/secretCrypto';
 import {
   deletePartnerLlmConfig,
-  getPartnerLlmStatus,
   savePartnerLlmKey,
-  updatePartnerLlmConfig,
 } from '../../services/partnerLlmConfig';
 import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { markPartnerLlmError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
@@ -60,6 +58,11 @@ const chatDefault = async (partnerId: string) => (await fixtureSql`
     LEFT JOIN ai_platform_models pm ON pm.id = o.platform_model_id
    WHERE a.partner_id = ${partnerId} AND a.org_id IS NULL AND a.surface = 'chat'`)[0]!;
 
+/** The partner's live (not disconnected) Anthropic connection, as the retired status read reported it. */
+const liveConnection = async (partnerId: string) => (await fixtureSql`
+  SELECT status, key_last4, last_error FROM partner_ai_connections
+   WHERE partner_id = ${partnerId} AND kind IN ('anthropic_byok', 'catalog') AND status <> 'disconnected'`)[0];
+
 const offering = async (id: string) => (await fixtureSql`SELECT id, enabled, connection_id FROM partner_ai_models WHERE id = ${id}`)[0];
 
 describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the registry, never re-projects it', () => {
@@ -90,7 +93,7 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
 
     expect(await fixtureSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${s.partnerId}`).toHaveLength(0);
     expect(reconcileSpy.calls).toEqual([]);
-    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: true, status: 'active', keyLast4: '0001' });
+    expect(await liveConnection(s.partnerId)).toMatchObject({ status: 'active', key_last4: '0001' });
   });
 
   it('disconnecting returns references to platform offerings and soft-disconnects the connection (keyless, offerings disabled)', async () => {
@@ -100,13 +103,12 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(await fixtureSql`SELECT status, api_key_encrypted, key_last4, key_fingerprint FROM partner_ai_connections WHERE partner_id = ${s.partnerId}`)
       .toEqual([{ status: 'disconnected', api_key_encrypted: null, key_last4: null, key_fingerprint: null }]);
     expect(await offering(s.offeringId)).toMatchObject({ enabled: false, connection_id: s.connectionId });
-    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: false });
+    expect(await liveConnection(s.partnerId)).toBeUndefined();
     const d = await chatDefault(s.partnerId);
     expect(d.conn).toBeNull();
     expect(d.model).toBe(s.modelId);
     const [session] = await fixtureSql`SELECT s.offering_id, o.connection_id FROM ai_sessions s JOIN partner_ai_models o ON o.id = s.offering_id WHERE s.id = ${s.chatSessionId}`;
     expect(session!.connection_id).toBeNull();
-    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: false, status: 'platform' });
     expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'platform' });
     expect(reconcileSpy.calls).toEqual([]);
   });
@@ -128,11 +130,11 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(conns[1]).toMatchObject({ status: 'active', key_last4: '0009' });
     expect(conns[1]!.id).not.toBe(s.connectionId);
     expect(await chatDefault(s.partnerId)).toMatchObject({ conn: conns[1]!.id, model: s.modelId });
-    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ configured: true, keyLast4: '0009' });
+    expect(await liveConnection(s.partnerId)).toMatchObject({ key_last4: '0009' });
     expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'partner', configId: conns[1]!.id });
   });
 
-  it('a registry-native edit survives later /ai/provider writes (rotate, default model, disconnect)', async () => {
+  it('a registry-native edit survives later /ai/provider writes (rotate, disconnect)', async () => {
     const s = await seedRegistryPartner('byok');
     const otherModel = `w03-other-${randomUUID()}`;
     const otherPlatform = await seedPricedPlatformModel(otherModel);
@@ -148,32 +150,20 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
       INSERT INTO ai_model_assignments (org_id, offering_partner_id, surface, role, default_offering_id)
       VALUES (${s.orgId}, ${s.partnerId}, 'helper', 'default', ${explicit!.id})`;
     await fixtureSql`UPDATE ai_sessions SET offering_id = ${explicit!.id} WHERE id = ${s.chatSessionId}`;
-    // The partner pins the seeded model as its default (as legacy_default_model).
-    await fixtureSql`UPDATE partner_ai_connections SET legacy_default_model = ${s.modelId} WHERE id = ${s.connectionId}`;
 
     const rotated = await savePartnerLlmKey({ partnerId: s.partnerId, apiKey: 'sk-ant-api03-authority-0002', userId: s.userId });
     expect(rotated.configVersion).toBe(2);
     const [conn] = await fixtureSql`SELECT id, key_last4, config_version FROM partner_ai_connections WHERE partner_id = ${s.partnerId}`;
     expect(conn).toMatchObject({ id: s.connectionId, key_last4: '0002', config_version: 2 });
 
-    let chat = await chatDefault(s.partnerId);
+    const chat = await chatDefault(s.partnerId);
     expect(chat.options).toEqual({ effort: 'high' });
     expect(chat.offering_id).toBe(s.offeringId);
 
-    await updatePartnerLlmConfig({ partnerId: s.partnerId, defaultModel: otherModel });
-    chat = await chatDefault(s.partnerId);
-    expect(chat).toMatchObject({ offering_id: explicit!.id, conn: s.connectionId, options: { effort: 'high' } });
     const [chatRow] = await fixtureSql`SELECT fallback_offering_ids FROM ai_model_assignments WHERE partner_id = ${s.partnerId} AND surface = 'chat'`;
     expect(chatRow!.fallback_offering_ids).toEqual([explicit!.id]);
-    const orgRows = await fixtureSql`SELECT default_offering_id FROM ai_model_assignments WHERE org_id = ${s.orgId}`;
-    expect(orgRows).toEqual([{ default_offering_id: explicit!.id }]);
     const [session] = await fixtureSql`SELECT offering_id FROM ai_sessions WHERE id = ${s.chatSessionId}`;
     expect(session!.offering_id).toBe(explicit!.id);
-    // The old default still serves the surfaces that never followed the
-    // partner default (script_reviewer / extension_content), so it stays enabled.
-    expect(await offering(s.offeringId)).toMatchObject({ enabled: true });
-    const [reviewer] = await fixtureSql`SELECT default_offering_id FROM ai_model_assignments WHERE partner_id = ${s.partnerId} AND surface = 'script_reviewer'`;
-    expect(reviewer!.default_offering_id).toBe(s.offeringId);
 
     // Disconnect keeps the org override and the session's explicit model — on the platform.
     await deletePartnerLlmConfig(s.partnerId);
@@ -185,32 +175,6 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     expect(chatAfter!.options).toEqual({ effort: 'high' });
     expect(await fixtureSql`SELECT 1 FROM ai_model_assignments WHERE org_id = ${s.orgId}`).toHaveLength(1);
     expect(reconcileSpy.calls).toEqual([]);
-  });
-
-  // W08 (#7606): the cutover is a registry-native bootstrap. A not-yet-cut-over
-  // partner with a legacy row also has the W02-copied connection (same id); the
-  // bootstrap adopts it and never projects legacy config.
-  it('a partner that is not cut over yet is bootstrapped onto its copied connection first (no projection), then edited natively', async () => {
-    const partner = await createPartner();
-    await createOrganization({ partnerId: partner.id });
-    const user = await createUser({ partnerId: partner.id });
-    const legacyId = randomUUID();
-    const sealed = encryptSecret('sk-ant-api03-legacy-0003', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
-    await fixtureSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, connected_by)
-                     VALUES (${legacyId}, ${partner.id}, ${sealed}, '0003', 'fp', ${user.id})`;
-    await seedByokConnection(partner.id, legacyId);
-
-    await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' });
-    expect(reconcileSpy.calls).toEqual([]);   // no projection: the cutover bootstraps natively
-    expect(await fixtureSql`SELECT 1 FROM ai_model_registry_partner_cutover WHERE partner_id = ${partner.id}`).toHaveLength(1);
-    expect(await chatDefault(partner.id)).toMatchObject({ conn: legacyId, model: 'claude-haiku-4-5' });
-    // The legacy row is frozen: the native edit is not written back.
-    const [legacy] = await fixtureSql`SELECT default_model, config_version FROM partner_llm_configs WHERE id = ${legacyId}`;
-    expect(legacy).toEqual({ default_model: null, config_version: 1 });
-
-    await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: null });
-    expect(reconcileSpy.calls).toEqual([]);
-    expect(await sys(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: null });
   });
 
   it('a revoked key never survives in partner_llm_configs: rotate and disconnect remove the legacy ciphertext (#7700 finding 4)', async () => {
@@ -231,7 +195,7 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     // Rotation (cuts the partner over first, then rotates in place).
     const rotated = await seedLegacy('0011');
     await savePartnerLlmKey({ partnerId: rotated.partnerId, apiKey: 'sk-ant-api03-authority-0012', userId: rotated.userId });
-    expect(await sys(() => getPartnerLlmStatus(rotated.partnerId))).toMatchObject({ configured: true, keyLast4: '0012' });
+    expect(await liveConnection(rotated.partnerId)).toMatchObject({ key_last4: '0012' });
     expect(await holdsCiphertext(rotated.sealed)).toHaveLength(0);
     expect(await fixtureSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${rotated.partnerId}`).toHaveLength(0);
 
@@ -247,7 +211,7 @@ describe.skipIf(!RUN)('authority flip (finding 9): /ai/provider edits the regist
     const resolved = await resolveLlmConfig(s.partnerId);
     expect(resolved).toMatchObject({ source: 'partner', configId: s.connectionId, configVersion: 1 });
     expect(await markPartnerLlmError({ configId: s.connectionId!, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
-    expect(await sys(() => getPartnerLlmStatus(s.partnerId))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
+    expect(await liveConnection(s.partnerId)).toMatchObject({ status: 'error', last_error: 'auth_rejected' });
     expect(await resolveLlmConfig(s.partnerId)).toEqual({ source: 'unavailable', partnerId: s.partnerId, reason: 'key_error' });
     // A rotation clears it.
     await savePartnerLlmKey({ partnerId: s.partnerId, apiKey: 'sk-ant-api03-authority-0004', userId: s.userId });

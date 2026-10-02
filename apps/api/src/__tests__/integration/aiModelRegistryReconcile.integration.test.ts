@@ -8,7 +8,7 @@
 import './setup';
 import { afterAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { withSystemDbAccessContext } from '../../db';
 import { columnAad } from '../../services/encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../../services/secretCrypto';
 import { buildDesiredRegistryState, type LegacyProjectionEnv } from '../../services/aiModels/legacyProjection';
@@ -16,7 +16,7 @@ import { loadLegacySnapshot, lockPartnerRegistryReconcile, reconcilePartnerFromL
 import { parityQueries, type ParityFixture } from '../../services/aiModels/parity/harness';
 import { materializeDesiredState, projectSurfaceUse, type RegistrySnapshot } from '../../services/aiModels/parity/storeProjection';
 import { getLegacyModelRates } from '../../services/aiModels/legacySurfaceModels';
-import { deletePartnerLlmConfig, getPartnerLlmStatus, updatePartnerLlmConfig } from '../../services/partnerLlmConfig';
+import { deletePartnerLlmConfig } from '../../services/partnerLlmConfig';
 import { markPartnerLlmError } from '../../services/llm/llmConfigResolver';
 import { cutoverPartner } from '../../services/aiModels/registryCutover';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -402,43 +402,7 @@ describe.skipIf(!RUN)('legacy reconcile (#7600 W02)', () => {
   });
 });
 
-describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-native since #7601 Task 6B)', () => {
-  it('PATCH → GET reflects the new pin from the registry, and every partner-default surface moves with it', async () => {
-    const partner = await createPartner();
-    await createOrganization({ partnerId: partner.id });
-    const configId = await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: true, defaultModel: null });
-
-    await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' });
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: 'claude-haiku-4-5' });
-    const [chat] = await adminSql`
-      SELECT m.model_id, m.connection_id FROM ai_model_assignments a JOIN partner_ai_models m ON m.id = a.default_offering_id
-       WHERE a.partner_id = ${partner.id} AND a.org_id IS NULL AND a.surface = 'chat'`;
-    expect(chat).toEqual({ model_id: 'claude-haiku-4-5', connection_id: configId });
-
-    await updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: null });
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: null });
-  });
-
-  it('GET reads the registry (a registry-only change is what GET returns)', async () => {
-    const partner = await createPartner();
-    const configId = await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
-    await adminSql`UPDATE partner_ai_connections SET key_last4 = 'zzzz' WHERE id = ${configId}`;
-    expect((await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).keyLast4).toBe('zzzz');
-  });
-
-  it('GET runs under the request partner context: the owner sees its connection, another partner sees the platform', async () => {
-    const partner = await createPartner();
-    const other = await createPartner();
-    await seedLegacyConfig(partner.id);
-    await reconcilePartnerFromLegacy(partner.id);
-    const asPartner = (partnerId: string) => ({ scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null });
-    expect(await withDbAccessContext(asPartner(partner.id), () => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: true, keyLast4: '0042' });
-    expect(await withDbAccessContext(asPartner(other.id), () => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: false, status: 'platform' });
-  });
-
+describe.skipIf(!RUN)('/ai/provider facade writes on the registry (#7600 W02; registry-native since #7601 Task 6B)', () => {
   // W03 Task 6B (R3): the W02 mirror trigger is gone — markPartnerLlmError
   // writes the connection itself and the legacy row is never touched.
   it('a runtime credential failure (markPartnerLlmError) marks the connection directly; the legacy row stays frozen', async () => {
@@ -446,7 +410,8 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
     const configId = await seedLegacyConfigWithCopy(partner.id);
     await cutoverPartner(partner.id);
     expect(await markPartnerLlmError({ configId, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ status: 'error', lastError: 'auth_rejected' });
+    expect(await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${configId}`)
+      .toEqual([{ status: 'error', last_error: 'auth_rejected' }]);
     const [legacy] = await adminSql`SELECT status, last_error FROM partner_llm_configs WHERE id = ${configId}`;
     expect(legacy).toEqual({ status: 'active', last_error: null });
   });
@@ -464,48 +429,14 @@ describe.skipIf(!RUN)('/ai/provider facade on the registry (#7600 W02; registry-
     expect(conn).toEqual({ status: 'error', last_error: 'auth_rejected' });
   });
 
-  it('DELETE → GET reports the platform and the registry holds no LIVE connection (soft-disconnected, keyless)', async () => {
+  it('DELETE leaves the registry with no LIVE connection (soft-disconnected, keyless)', async () => {
     const partner = await createPartner();
     await createOrganization({ partnerId: partner.id });
     await seedLegacyConfig(partner.id);
     await reconcilePartnerFromLegacy(partner.id);
     expect(await deletePartnerLlmConfig(partner.id)).toBe(true);
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ configured: false, status: 'platform' });
     // #7700 finding 1: kept as provenance, never deleted — but keyless and not live.
     expect(await adminSql`SELECT status, api_key_encrypted FROM partner_ai_connections WHERE partner_id = ${partner.id}`)
       .toEqual([{ status: 'disconnected', api_key_encrypted: null }]);
-  });
-
-  // W03 Task 6B: the gate cuts the partner over first (its one projection), so
-  // the platform assignments exist; the 409 itself writes no connection and no
-  // legacy row.
-  it('a 409 (no key yet) writes no connection and no legacy row', async () => {
-    const partner = await createPartner();
-    await expect(updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: 'claude-haiku-4-5' })).rejects.toMatchObject({ status: 409 });
-    expect(await adminSql`SELECT 1 FROM ai_model_registry_partner_cutover WHERE partner_id = ${partner.id}`).toHaveLength(1);
-    expect(await adminSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${partner.id}`).toHaveLength(0);
-    expect(await adminSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${partner.id}`).toHaveLength(0);
-  });
-
-  // W03 Task 6B: facade writes and the partner's cutover take the same
-  // per-partner lock, so a write racing a request's cutover never deadlocks,
-  // the partner is bootstrapped once (W08), and the last native edit wins.
-  it('facade writes racing the cutover never deadlock and converge on the last native edit', async () => {
-    const partner = await createPartner();
-    await createOrganization({ partnerId: partner.id });
-    const configId = await seedLegacyConfigWithCopy(partner.id);
-    const models = ['claude-haiku-4-5', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-sonnet-4-6'];
-    for (const model of models) {
-      await Promise.all([
-        cutoverPartner(partner.id),
-        updatePartnerLlmConfig({ partnerId: partner.id, defaultModel: model }),
-        cutoverPartner(partner.id),
-      ]);
-    }
-    expect(await withSystemDbAccessContext(() => getPartnerLlmStatus(partner.id))).toMatchObject({ defaultModel: 'claude-sonnet-4-6' });
-    const [chat] = await adminSql`
-      SELECT m.model_id, m.connection_id FROM ai_model_assignments a JOIN partner_ai_models m ON m.id = a.default_offering_id
-       WHERE a.partner_id = ${partner.id} AND a.org_id IS NULL AND a.surface = 'chat'`;
-    expect(chat).toEqual({ model_id: 'claude-sonnet-4-6', connection_id: configId });
   });
 });

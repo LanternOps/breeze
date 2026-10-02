@@ -51,10 +51,6 @@ vi.mock('./aiModel', async (importOriginal) => ({
   resolveDefaultModel: () => 'claude-sonnet-4-6',
 }));
 
-const { isOfferablePlatformModelMock } = vi.hoisted(() => ({ isOfferablePlatformModelMock: vi.fn() }));
-vi.mock('./aiModels/platformModels', () => ({
-  isOfferablePlatformModel: (...args: unknown[]) => isOfferablePlatformModelMock(...args),
-}));
 
 const legacy = vi.hoisted(() => ({
   lock: vi.fn(async (_partnerId: string) => { order.push('lock'); }),
@@ -84,7 +80,6 @@ const remap = vi.hoisted(() => ({
   lockCompatConnection: vi.fn(),
   connectCompat: vi.fn(),
   disconnectCompat: vi.fn(),
-  changeCompatDefaultModel: vi.fn(),
   rotateCompatKey: vi.fn(),
   setCompatCatalogEntry: vi.fn(),
   bumpCompatConfigVersion: vi.fn(),
@@ -133,13 +128,10 @@ vi.mock('../db', () => ({
   },
 }));
 
-import { partnerAiConnections } from '../db/schema';
 import {
   deletePartnerLlmConfig,
-  getPartnerLlmStatus,
   PartnerLlmError,
   savePartnerLlmKey,
-  updatePartnerLlmConfig,
   updatePartnerLlmEndpoint,
 } from './partnerLlmConfig';
 import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmFetch';
@@ -152,7 +144,7 @@ const catalogConn = (over: Partial<NonNullable<typeof reg.compat>> = {}) =>
   byok({ kind: 'catalog', catalogEntryId: CATALOG_ENTRY_ID, legacyDefaultModel: 'claude-sonnet-4-6', ...over });
 
 /** Every registry-native write the facade can issue. */
-const WRITES = ['connectCompat', 'disconnectCompat', 'changeCompatDefaultModel', 'rotateCompatKey', 'setCompatCatalogEntry', 'bumpCompatConfigVersion', 'switchCompatKind'] as const;
+const WRITES = ['connectCompat', 'disconnectCompat', 'rotateCompatKey', 'setCompatCatalogEntry', 'bumpCompatConfigVersion', 'switchCompatKind'] as const;
 const writesIssued = () => WRITES.filter((name) => remap[name].mock.calls.length > 0);
 
 function listedProvider(overrides: Record<string, unknown> = {}) {
@@ -203,8 +195,6 @@ beforeEach(() => {
   discovery.enqueue.mockResolvedValue(undefined);
   remap.disconnectCompat.mockImplementation(async () => { order.push('disconnectCompat'); return true; });
   remap.rotateCompatKey.mockImplementation(async () => { order.push('rotateCompatKey'); return { configVersion: 8, defaultModel: 'claude-haiku-4-5' }; });
-  isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
-    ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'].includes(model));
 });
 
 describe('savePartnerLlmKey', () => {
@@ -296,52 +286,6 @@ describe('savePartnerLlmKey', () => {
     remap.lockCompatConnection.mockResolvedValueOnce({ ...catalogConn(), configVersion: 9, connectedBy: null, verifiedAt: null });
     await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
     expect(writesIssued()).toEqual([]);
-  });
-});
-
-describe('updatePartnerLlmConfig', () => {
-  it('accepts a default the registry offers that W00 never listed (W01 #7599)', async () => {
-    reg.compat = byok();
-    isOfferablePlatformModelMock.mockResolvedValue(true);
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'vendor-new-model' }))
-      .resolves.toEqual({ defaultModel: 'vendor-new-model', configVersion: 5 });
-    expect(remap.changeCompatDefaultModel).toHaveBeenCalledWith(PARTNER_ID, 'vendor-new-model');
-  });
-
-  it.each(['claude-made-up-model', 'claude-haiku-3'])('rejects %s (not offerable) before the gate, without writing', async (model) => {
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: model }))
-      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
-    expect(cutover.ensure).not.toHaveBeenCalled();
-    expect(writesIssued()).toEqual([]);
-  });
-
-  it('a null default goes back to tracking the deployment default', async () => {
-    reg.compat = byok({ legacyDefaultModel: 'claude-haiku-4-5' });
-    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: null });
-    expect(remap.changeCompatDefaultModel).toHaveBeenCalledWith(PARTNER_ID, null);
-  });
-
-  it('409s without a connection and writes nothing', async () => {
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
-      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 409, message: 'Connect an Anthropic API key before selecting a model.' });
-    expect(writesIssued()).toEqual([]);
-  });
-});
-
-describe('getPartnerLlmStatus', () => {
-  it('reads the registry connection and preserves a null defaultModel (platform inheritance)', async () => {
-    reg.statusRow = { keyLast4: '7890', defaultModel: null, status: 'active', verifiedAt: new Date('2026-08-23T12:00:00.000Z'), lastError: null, catalogEntryId: null };
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: true, defaultModel: null, catalogEntryId: null });
-    expect(reg.statusFrom).toEqual([partnerAiConnections]);
-  });
-
-  it('surfaces the selected catalog entry id', async () => {
-    reg.statusRow = { keyLast4: '7890', defaultModel: 'claude-sonnet-4-6', status: 'active', verifiedAt: null, lastError: null, catalogEntryId: CATALOG_ENTRY_ID };
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID });
-  });
-
-  it('reports the platform when unconfigured', async () => {
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: false, status: 'platform', catalogEntryId: null });
   });
 });
 
@@ -445,7 +389,6 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     reg.compat = byok();
     catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
     await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
-    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
     await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
     await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
     await deletePartnerLlmConfig(PARTNER_ID);
@@ -463,9 +406,6 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
     expect(order).toEqual(['gate', 'probe', 'lock', 'switchCompatKind']);
     order.length = 0;
-    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
-    expect(order).toEqual(['gate', 'lock', 'changeCompatDefaultModel']);
-    order.length = 0;
     await deletePartnerLlmConfig(PARTNER_ID);
     expect(order).toEqual(['gate', 'lock', 'disconnectCompat']);
   });
@@ -475,7 +415,6 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     reg.compat = byok();
     const writes = [
       () => savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-      () => updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }),
       () => updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID }),
       () => deletePartnerLlmConfig(PARTNER_ID),
     ];
@@ -489,8 +428,8 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
     remap.disconnectCompat.mockRejectedValueOnce(new RegistryNotCutOverError(PARTNER_ID));
     await expect(deletePartnerLlmConfig(PARTNER_ID)).rejects.toMatchObject({ status: 503 });
     reg.compat = byok();
-    remap.changeCompatDefaultModel.mockRejectedValueOnce(new CompatConnectionMissingError());
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' })).rejects.toMatchObject({ status: 409 });
+    remap.rotateCompatKey.mockRejectedValueOnce(new CompatConnectionMissingError());
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
   });
 
   // createConnection's insert can fail with a DrizzleQueryError whose message
@@ -575,8 +514,8 @@ describe('authority flip (#7601 Task 6B): registry-native writes, never a re-pro
   it('surfaces a non-query error from a remap with its message and stack intact', async () => {
     reg.compat = byok();
     const bug = new Error('remap: x');
-    remap.changeCompatDefaultModel.mockRejectedValueOnce(bug);
-    const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
+    remap.rotateCompatKey.mockRejectedValueOnce(bug);
+    const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e);
     expect(error).toBe(bug);
     expect((error as Error).stack).toContain('remap: x');
   });
@@ -623,7 +562,6 @@ describe('connection discovery triggers (#7601 Task 16, spec §6: on connect and
 
   it('edits that change no key or endpoint, disconnects and refused writes enqueue nothing', async () => {
     reg.compat = byok();
-    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
     await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
     await deletePartnerLlmConfig(PARTNER_ID);
     remap.lockCompatConnection.mockResolvedValueOnce({ ...catalogConn(), configVersion: 9, connectedBy: null, verifiedAt: null });

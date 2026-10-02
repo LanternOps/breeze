@@ -20,7 +20,7 @@ import { captureException } from '../../services/sentry';
 // Fixed-length tuples, not MiddlewareHandler[]: Hono's typed route overloads
 // only accept a spread whose length is known.
 
-/** Partner registry reads: the /ai/provider gate (MFA is not required to read). */
+/** Partner registry reads: the gate the retired /ai/provider API used (MFA is not required to read). */
 export const partnerRead: readonly [MiddlewareHandler] = [
   requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
 ];
@@ -31,7 +31,7 @@ export const partnerWrite: readonly [MiddlewareHandler, MiddlewareHandler] = [
   requireMfa(),
 ];
 
-/** Same gate as routes/aiProvider.ts: a partner token with orgAccess 'all' (or system with a partner context). */
+/** The gate the retired /ai/provider API used: a partner token with orgAccess 'all' (or system with a partner context). */
 export function requirePartnerWide(c: Context): { partnerId: string; userId: string } {
   const auth = c.get('auth');
   if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });

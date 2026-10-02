@@ -160,7 +160,6 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
-import { aiProviderRoutes } from './routes/aiProvider';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -958,7 +957,6 @@ api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
-api.route('/ai/provider', aiProviderRoutes);
 // AI model registry (W04 #7602) — before the broad '/ai' mounts (Hono matches in order).
 api.route('/ai/models', aiModelsRoutes);
 // BEFORE /ai/agents: aiAgentsRoutes owns /:id, which would otherwise capture

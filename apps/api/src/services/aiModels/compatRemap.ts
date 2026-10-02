@@ -363,25 +363,6 @@ export async function disconnectCompat(partnerId: string): Promise<boolean> {
   return true;
 }
 
-/** `legacy_default_model` (null = track the deployment default) + the partner-level re-point. */
-export async function changeCompatDefaultModel(partnerId: string, modelId: string | null): Promise<{ configVersion: number }> {
-  assertSystemContext();
-  await assertPartnerCutOverInTx(partnerId);
-  const conn = await lockCompatConnection(partnerId);
-  if (!conn) throw new CompatConnectionMissingError();
-  const [updated] = await rows<{ config_version: number }>(sql`UPDATE partner_ai_connections
-    SET legacy_default_model = ${modelId}, config_version = config_version + 1, updated_at = now()
-    WHERE id = ${conn.id}::uuid AND partner_id = ${partnerId}::uuid RETURNING config_version`);
-  const deploymentDefault = resolveDefaultModel();
-  await repointPartnerDefault(
-    partnerId,
-    { connectionId: conn.id, kind: conn.kind },
-    conn.legacyDefaultModel ?? deploymentDefault,
-    modelId ?? deploymentDefault,
-  );
-  return { configVersion: Number(updated!.config_version) };
-}
-
 /** Same-kind key rotation: the connection is updated in place, no remap; the old key's legacy copy is dropped. */
 export async function rotateCompatKey(
   partnerId: string,

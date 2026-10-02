@@ -1,11 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { and, eq, inArray, ne } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { partnerAiConnections } from '../db/schema';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveDefaultModel } from './aiModel';
 import {
   bumpCompatConfigVersion,
-  changeCompatDefaultModel,
   CompatConnectionMissingError,
   connectCompat,
   disconnectCompat,
@@ -24,7 +21,6 @@ import {
   type PartnerAiConnection,
 } from './aiModels/connections';
 import { lockPartnerRegistryReconcile } from './aiModels/legacyReconcile';
-import { isOfferablePlatformModel } from './aiModels/platformModels';
 import { ensurePartnerCutover } from './aiModels/registryCutover';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { RegistryWriteError, toRegistryWriteError } from './aiModels/registryWriteErrors';
@@ -145,18 +141,6 @@ async function readConnectionKey(connectionId: string): Promise<string> {
     withSystemDbAccessContext(() => getConnectionKeyMaterial(connectionId), 'aiProvider.readConnectionKey'));
   if (!material) throw configChanged();
   return decryptConnectionKey(material);
-}
-
-export interface PartnerLlmStatus {
-  configured: boolean;
-  provider: 'anthropic';
-  keyLast4: string | null;
-  defaultModel: string | null;
-  status: 'platform' | 'active' | 'error';
-  verifiedAt: Date | null;
-  lastError: string | null;
-  /** The platform-catalog endpoint this partner has selected, or null for direct Anthropic (#3922 W3). */
-  catalogEntryId: string | null;
 }
 
 /**
@@ -317,75 +301,6 @@ export async function savePartnerLlmKey(input: {
     model: stored.defaultModel ?? resolveDefaultModel(),
     verifiedAt,
     configVersion: stored.configVersion,
-  };
-}
-
-export async function getPartnerLlmStatus(partnerId: string): Promise<PartnerLlmStatus> {
-  // legacy_default_model is the partner's pin (null = tracks the deployment
-  // default); partner_ai_connections_compat_uq guarantees one row.
-  const [row] = await db
-    .select({
-      keyLast4: partnerAiConnections.keyLast4,
-      defaultModel: partnerAiConnections.legacyDefaultModel,
-      status: partnerAiConnections.status,
-      verifiedAt: partnerAiConnections.verifiedAt,
-      lastError: partnerAiConnections.lastError,
-      catalogEntryId: partnerAiConnections.catalogEntryId,
-    })
-    .from(partnerAiConnections)
-    .where(and(
-      eq(partnerAiConnections.partnerId, partnerId),
-      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
-      ne(partnerAiConnections.status, 'disconnected'),
-    ))
-    .limit(1);
-
-  // The query excludes disconnected rows; the guard narrows the type.
-  if (!row || row.status === 'disconnected') {
-    return {
-      configured: false,
-      provider: 'anthropic',
-      keyLast4: null,
-      defaultModel: null,
-      status: 'platform',
-      verifiedAt: null,
-      lastError: null,
-      catalogEntryId: null,
-    };
-  }
-
-  return {
-    configured: true,
-    provider: 'anthropic',
-    keyLast4: row.keyLast4,
-    defaultModel: row.defaultModel,
-    status: row.status,
-    verifiedAt: row.verifiedAt,
-    lastError: row.lastError,
-    catalogEntryId: row.catalogEntryId,
-  };
-}
-
-export async function updatePartnerLlmConfig(input: {
-  partnerId: string;
-  defaultModel: string | null;
-}): Promise<{ defaultModel: string | null; configVersion: number }> {
-  if (input.defaultModel !== null && !(await isOfferablePlatformModel(input.defaultModel))) {
-    throw new PartnerLlmError('Unsupported Anthropic model.', 400);
-  }
-  await ensureCutOver(input.partnerId);
-
-  // A throw inside the write rolls the transaction back: a 409 writes nothing.
-  const updated = await inRegistryWrite(input.partnerId, async () => {
-    if (!(await lockCompatConnection(input.partnerId))) {
-      throw new PartnerLlmError('Connect an Anthropic API key before selecting a model.', 409);
-    }
-    return changeCompatDefaultModel(input.partnerId, input.defaultModel);
-  });
-
-  return {
-    defaultModel: input.defaultModel,
-    configVersion: updated.configVersion,
   };
 }
 

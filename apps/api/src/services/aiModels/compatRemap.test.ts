@@ -38,7 +38,6 @@ vi.mock('./legacyReconcile', () => ({ ensureLegacyPlatformModel: m.ensureLegacyP
 vi.mock('../secretCrypto', () => ({ hmacFingerprint: () => 'fp' }));
 
 import {
-  changeCompatDefaultModel,
   connectCompat,
   disconnectCompat,
   remapPartnerOfferings,
@@ -115,7 +114,6 @@ describe('the gate: no registry-native write before the partner is cut over', ()
   it.each([
     ['connectCompat', () => connectCompat(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, defaultModel: null })],
     ['disconnectCompat', () => disconnectCompat(P)],
-    ['changeCompatDefaultModel', () => changeCompatDefaultModel(P, 'm2')],
   ])('%s throws RegistryNotCutOverError and writes nothing', async (_name, run) => {
     m.respond = (text) => (text.includes('FROM ai_model_registry_partner_cutover') ? [] : [{ id: 'x' }]);
     await expect(run()).rejects.toBeInstanceOf(RegistryNotCutOverError);
@@ -237,42 +235,5 @@ describe('rotateCompatKey', () => {
       .toEqual({ configVersion: 4, defaultModel: null });
     expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
     expect(deletes()[0]!.params).toEqual([P]);
-  });
-});
-
-describe('changeCompatDefaultModel', () => {
-  it('re-points only partner-level default rows of surfaces that follow the partner default, from the old default offering', async () => {
-    m.respond = baseRespond((text, params) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: 'm-old', config_version: 3, connected_by: null, verified_at: null }];
-      if (text.startsWith('UPDATE partner_ai_connections')) return [{ config_version: 4 }];
-      if (text.startsWith('SELECT kind FROM partner_ai_connections')) return [{ kind: 'anthropic_byok' }];
-      if (text.startsWith('SELECT id FROM partner_ai_models WHERE')) return params.includes('m-old') ? [{ id: 'old-o' }] : [];
-      if (text.startsWith('SELECT id, input_cents_per_m')) return [{ id: 'pm-new', input_cents_per_m: 1, output_cents_per_m: 1, cache_read_cents_per_m: 1, cache_write_cents_per_m: 1 }];
-      if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: 'new-o' }];
-      return undefined;
-    });
-    expect(await changeCompatDefaultModel(P, 'm-new')).toEqual({ configVersion: 4 });
-    const conn = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections'))!;
-    expect(conn.text).toContain('legacy_default_model =');
-    expect(conn.text).toContain('config_version = config_version + 1');
-    const repoint = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id ='))!;
-    expect(repoint.text).toContain('org_id IS NULL');
-    expect(repoint.text).toContain("role = 'default'");
-    expect(repoint.params).toEqual(expect.arrayContaining(['new-o', 'old-o', 'chat', 'helper', 'ai_agents']));
-    expect(repoint.params).not.toContain('script_reviewer');
-    expect(repoint.params).not.toContain('extension_content');
-    expect(repoint.params).not.toContain('patch_test');
-    expect(m.statements.find((s) => s.text.includes('SET enabled = false'))!.params).toContain('old-o');
-    expect(deletes()).toEqual([]);
-  });
-
-  it('changes nothing in the assignments when the effective default is unchanged (null pin = deployment default)', async () => {
-    m.respond = baseRespond((text) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: 'env-default', config_version: 3, connected_by: null, verified_at: null }];
-      if (text.startsWith('UPDATE partner_ai_connections')) return [{ config_version: 4 }];
-      return undefined;
-    });
-    await changeCompatDefaultModel(P, null);
-    expect(m.statements.some((s) => s.text.startsWith('UPDATE ai_model_assignments'))).toBe(false);
   });
 });
