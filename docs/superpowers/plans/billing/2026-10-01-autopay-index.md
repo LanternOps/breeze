@@ -65,7 +65,7 @@ waves add UI and logic without schema churn.
 **Slot update (2026-10-02):** `origin/main` moved past these slots (twice) before W01 shipped, so W01's six
 migrations ship as `2026-12-03-110000-…` … `2026-12-03-110500-…` (same order and slugs). Every later
 wave renames its reserved files to sort after the newest committed migration at implementation
-time. Keep the relative order (W2 < W3 < W4 < W5), and never sort before W01's `2026-12-03-1105NN`.
+time. Keep the relative order (W2 < W3 < W4 < W5), and never sort before W01's `2026-12-03-1105NN`. W02 ships `2026-12-04-120000-autopay-setup-attempts`, `…120100-autopay-billing-notification-type` and `…120200-autopay-capture-recovery`; W03–W05 must sort after those.
 
 ### C2. Drizzle schema — `apps/api/src/db/schema/autopay.ts` (W1), exported from `schema/index.ts`
 
