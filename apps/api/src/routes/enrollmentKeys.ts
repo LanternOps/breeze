@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { zValidator } from '../lib/validation';
 import { z } from "zod";
-import { and, eq, sql, desc, inArray, lt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
+import { and, eq, sql, desc, inArray, lt, gt, isNull, isNotNull, or, asc, getTableColumns } from "drizzle-orm";
 import { customAlphabet } from "nanoid";
 import { db, withSystemDbAccessContext } from "../db";
 import { enrollmentKeys, organizations } from "../db/schema";
@@ -351,6 +351,20 @@ async function discardUnusedKeyAfterFailure(
       eq(enrollmentKeys.id, keyId!),
       eq(enrollmentKeys.createdBy, auth.user.id),
       eq(enrollmentKeys.usageCount, 0),
+      // A parent reused across attempts (#7345, POST /add-device-parent) may
+      // back installers delivered by other requests — earlier ones, or a
+      // concurrent tab that reused it after this request began; deleting it
+      // would cascade their bootstrap tokens away. Only tokens issued inside
+      // THIS request may go: they share its transaction, so their created_at
+      // is exactly now() (transaction start). Any other timestamp is another
+      // request's token. (A token whose issuing transaction has not committed
+      // by the time this statement runs is invisible to it — that narrow
+      // window remains.)
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${installerBootstrapTokens}
+        WHERE ${installerBootstrapTokens.parentEnrollmentKeyId} = ${enrollmentKeys.id}
+          AND ${installerBootstrapTokens.createdAt} <> now()
+      )`,
     ];
     const orgScope = auth.orgCondition(enrollmentKeys.orgId);
     if (orgScope) conditions.push(orgScope as ReturnType<typeof eq>);
@@ -1199,6 +1213,96 @@ enrollmentKeyRoutes.get(
   },
 );
 
+type KeyTargetError = { error: string; status: 400 | 403 };
+
+/**
+ * Resolves the organization a new enrollment key is minted in: an org-scope
+ * caller's own org, a partner caller's requested (or only) org, or a system
+ * caller's explicit org. Shared by `POST /` and `POST /add-device-parent` so
+ * both mint under the same rules.
+ */
+async function resolveKeyOrg(
+  auth: AuthContext,
+  requestedOrgId: string | undefined,
+): Promise<{ ok: true; orgId: string } | ({ ok: false } & KeyTargetError)> {
+  if (auth.scope === "organization") {
+    if (!auth.orgId) {
+      return { ok: false, error: "Organization context required", status: 403 };
+    }
+    if (requestedOrgId && requestedOrgId !== auth.orgId) {
+      return {
+        ok: false,
+        error: "Can only create enrollment keys for your organization",
+        status: 403,
+      };
+    }
+    return { ok: true, orgId: auth.orgId };
+  }
+  if (auth.scope === "partner") {
+    let orgId = requestedOrgId;
+    if (!orgId) {
+      const singleOrg = auth.accessibleOrgIds?.[0];
+      if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
+        orgId = singleOrg;
+      } else {
+        return {
+          ok: false,
+          error: "orgId is required when partner has multiple organizations",
+          status: 400,
+        };
+      }
+    }
+    if (!(await ensureOrgAccess(orgId, auth))) {
+      return { ok: false, error: "Access to this organization denied", status: 403 };
+    }
+    return { ok: true, orgId };
+  }
+  if (!requestedOrgId) {
+    return { ok: false, error: "orgId is required", status: 400 };
+  }
+  return { ok: true, orgId: requestedOrgId };
+}
+
+/**
+ * Checks that a new key may be bound to `siteId`: the site is inside the
+ * caller's site ceiling and belongs to `orgId`.
+ *
+ * Site confinement is an application-layer boundary: enrollment_keys RLS
+ * protects only org_id. A restricted organization user must not turn a
+ * known sibling-site UUID into a raw enrollment credential for that site.
+ * Use the canonical request-snapshot closure built by authMiddleware; an
+ * undefined allowlist means unrestricted, while [] denies every site.
+ * Membership changes racing this request take effect on the next request.
+ *
+ * Restricted callers get the same opaque denial for stale-allowlist, foreign
+ * and unknown IDs; unrestricted callers keep the existing validation contract.
+ */
+async function checkKeySite(
+  auth: AuthContext,
+  orgId: string,
+  siteId: string,
+): Promise<KeyTargetError | null> {
+  const hasRestrictedSiteScope =
+    auth.scope === "organization" && auth.allowedSiteIds !== undefined;
+
+  if (hasRestrictedSiteScope && !siteAccessCheck(auth.allowedSiteIds)(siteId)) {
+    return { error: "Access to this site denied", status: 403 };
+  }
+
+  const [site] = await db
+    .select({ id: sites.id })
+    .from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId)))
+    .limit(1);
+  if (!site) {
+    if (hasRestrictedSiteScope) {
+      return { error: "Access to this site denied", status: 403 };
+    }
+    return { error: "siteId does not belong to the specified org", status: 400 };
+  }
+  return null;
+}
+
 // POST /enrollment-keys - Create new enrollment key
 enrollmentKeyRoutes.post(
   "/",
@@ -1213,41 +1317,10 @@ enrollmentKeyRoutes.post(
   async (c) => {
     const auth = c.get("auth");
     const data = c.req.valid("json");
-    let orgId = data.orgId;
 
-    if (auth.scope === "organization") {
-      if (!auth.orgId) {
-        return c.json({ error: "Organization context required" }, 403);
-      }
-      if (data.orgId && data.orgId !== auth.orgId) {
-        return c.json(
-          { error: "Can only create enrollment keys for your organization" },
-          403,
-        );
-      }
-      orgId = auth.orgId;
-    } else if (auth.scope === "partner") {
-      if (!orgId) {
-        const singleOrg = auth.accessibleOrgIds?.[0];
-        if (auth.accessibleOrgIds?.length === 1 && singleOrg) {
-          orgId = singleOrg;
-        } else {
-          return c.json(
-            {
-              error:
-                "orgId is required when partner has multiple organizations",
-            },
-            400,
-          );
-        }
-      }
-      const hasAccess = await ensureOrgAccess(orgId, auth);
-      if (!hasAccess) {
-        return c.json({ error: "Access to this organization denied" }, 403);
-      }
-    } else if (!orgId) {
-      return c.json({ error: "orgId is required" }, 400);
-    }
+    const orgTarget = await resolveKeyOrg(auth, data.orgId);
+    if (!orgTarget.ok) return c.json({ error: orgTarget.error }, orgTarget.status);
+    const orgId = orgTarget.orgId;
 
     // Reject (never clamp) a caller-supplied TTL above the partner cap
     // (fix round 1, #2776 task 3.4). This route has TWO paths to an expiry —
@@ -1268,41 +1341,9 @@ enrollmentKeyRoutes.post(
     const capError = await assertTtlWithinCap(orgId, impliedTtlMinutes);
     if (capError) return c.json({ error: capError }, 400);
 
-    // Site confinement is an application-layer boundary: enrollment_keys RLS
-    // protects only org_id. A restricted organization user must not turn a
-    // known sibling-site UUID into a raw enrollment credential for that site.
-    // Use the canonical request-snapshot closure built by authMiddleware; an
-    // undefined allowlist means unrestricted, while [] denies every site.
-    // Membership changes racing this request take effect on the next request.
-    const hasRestrictedSiteScope =
-      auth.scope === "organization" && auth.allowedSiteIds !== undefined;
-
-    if (
-      data.siteId &&
-      hasRestrictedSiteScope &&
-      !siteAccessCheck(auth.allowedSiteIds)(data.siteId)
-    ) {
-      return c.json({ error: "Access to this site denied" }, 403);
-    }
-
-    // Verify siteId belongs to the target org (if provided). Restricted callers
-    // get the same opaque denial for stale-allowlist, foreign and unknown IDs;
-    // unrestricted callers retain the existing validation contract.
     if (data.siteId) {
-      const [site] = await db
-        .select({ id: sites.id })
-        .from(sites)
-        .where(and(eq(sites.id, data.siteId), eq(sites.orgId, orgId)))
-        .limit(1);
-      if (!site) {
-        if (hasRestrictedSiteScope) {
-          return c.json({ error: "Access to this site denied" }, 403);
-        }
-        return c.json(
-          { error: "siteId does not belong to the specified org" },
-          400,
-        );
-      }
+      const siteError = await checkKeySite(auth, orgId, data.siteId);
+      if (siteError) return c.json({ error: siteError.error }, siteError.status);
     }
 
     const rawKey = generateEnrollmentKey();
@@ -1355,6 +1396,156 @@ enrollmentKeyRoutes.post(
       },
       201,
     );
+  },
+);
+
+// ============================================================
+// POST /enrollment-keys/add-device-parent — find-or-create (#7345)
+// ============================================================
+
+/**
+ * Server-owned name of the Add Device parent key. Part of the reuse
+ * predicate below: a key the caller made by hand in Settings for the same
+ * site never carries it, so it is never quietly turned into the container
+ * for someone's installers.
+ */
+export const ADD_DEVICE_PARENT_KEY_NAME = "Add device";
+
+/**
+ * A parent is reused only while it has at least this long left. The caller
+ * builds the artifact from it immediately, and the installer routes refuse a
+ * parent inside INSTALLER_PARENT_MIN_REMAINING_SECONDS of expiry.
+ */
+const ADD_DEVICE_PARENT_MIN_REMAINING_MINUTES = 5;
+
+const addDeviceParentSchema = z.object({
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid(),
+});
+
+/**
+ * Returns the parent key that Add Device → Download Installer / Generate Link
+ * (and the setup wizard's enroll step) build their artifact from, reusing the
+ * caller's existing one for the site when it is still good, and minting one
+ * only when it is not.
+ *
+ * Before #7345 every click minted its own parent with `POST /`, so repeated
+ * downloads left one live, single-use, 30-day row each, and a link's parent
+ * was dead weight the moment the link existed. Now there is at most one
+ * reusable parent per (org, site, creator):
+ *
+ *  - Reused only when it is the caller's own, for this org and site, carries
+ *    the server-owned name, has never been used (`usage_count = 0`), is not a
+ *    short-link / download / bootstrap / support key, and has more than
+ *    ADD_DEVICE_PARENT_MIN_REMAINING_MINUTES left. An expired, used or
+ *    near-expiry parent is left alone and a fresh one is minted.
+ *  - The raw key is never returned. Neither artifact needs it — the installer
+ *    and link routes take the key id — so the parent is a container for
+ *    bootstrap tokens, not a credential anyone holds. (`POST /` still returns
+ *    the raw key, for Settings and the API.)
+ *  - Each artifact is still its own credential: a download issues a fresh
+ *    bootstrap token with its own device count and expiry, a link mints its
+ *    own short-coded child row. Reuse changes the container, not what an
+ *    installer can do. Deleting or rotating the parent revokes every
+ *    installer built from it, as it did for one installer before.
+ *
+ * Responds 200 `{ ...key, reused: true }` for a reused parent and 201
+ * `{ ...key, reused: false }` for a new one. A client asks the artifact route
+ * to discard the key on failure (`?discardKeyOnFailure=1`) only for a new one.
+ */
+enrollmentKeyRoutes.post(
+  "/add-device-parent",
+  requireScope("organization", "partner", "system"),
+  requirePermission(
+    PERMISSIONS.ORGS_WRITE.resource,
+    PERMISSIONS.ORGS_WRITE.action,
+  ),
+  userRateLimit("enroll-write", 10, 60),
+  requireMfa(),
+  zValidator("json", addDeviceParentSchema),
+  async (c) => {
+    const auth = c.get("auth");
+    const { orgId: requestedOrgId, siteId } = c.req.valid("json");
+
+    const orgTarget = await resolveKeyOrg(auth, requestedOrgId);
+    if (!orgTarget.ok) return c.json({ error: orgTarget.error }, orgTarget.status);
+    const orgId = orgTarget.orgId;
+
+    const siteError = await checkKeySite(auth, orgId, siteId);
+    if (siteError) return c.json({ error: siteError.error }, siteError.status);
+
+    // Two clicks racing for the same (org, site, creator) must not both miss
+    // and mint. The lock is released when the request transaction ends.
+    await db.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`add-device-parent:${orgId}:${siteId}:${auth.user.id}`}))`,
+    );
+
+    const [existing] = await db
+      .select()
+      .from(enrollmentKeys)
+      .where(
+        and(
+          eq(enrollmentKeys.orgId, orgId),
+          eq(enrollmentKeys.siteId, siteId),
+          eq(enrollmentKeys.createdBy, auth.user.id),
+          eq(enrollmentKeys.name, ADD_DEVICE_PARENT_KEY_NAME),
+          // The name is not reserved (POST / accepts any), so also require
+          // the exact shape this route mints: one use, never spent.
+          eq(enrollmentKeys.maxUsage, 1),
+          eq(enrollmentKeys.usageCount, 0),
+          isNull(enrollmentKeys.shortCode),
+          isNull(enrollmentKeys.installerPlatform),
+          isNull(enrollmentKeys.keySecretHash),
+          isNull(enrollmentKeys.sourceLinkKeyId),
+          isNull(enrollmentKeys.bootstrapTokenId),
+          isNull(enrollmentKeys.supportSessionId),
+          gt(
+            enrollmentKeys.expiresAt,
+            new Date(Date.now() + ADD_DEVICE_PARENT_MIN_REMAINING_MINUTES * 60_000),
+          ),
+        ),
+      )
+      .orderBy(desc(enrollmentKeys.expiresAt))
+      .limit(1);
+
+    if (existing) {
+      return c.json({ ...sanitizeEnrollmentKey(existing, true), reused: true }, 200);
+    }
+
+    // The partner cap bounds key lifetime (#2776), defaults included.
+    const ttlMinutes = await clampTtlToCap(orgId, DEFAULT_ENROLLMENT_KEY_TTL_MINUTES);
+    const [created] = await db
+      .insert(enrollmentKeys)
+      .values({
+        orgId,
+        siteId,
+        name: ADD_DEVICE_PARENT_KEY_NAME,
+        // The raw key is generated and dropped: nothing ever needs it.
+        key: hashEnrollmentKey(generateEnrollmentKey()),
+        maxUsage: 1,
+        expiresAt: new Date(Date.now() + ttlMinutes * 60_000),
+        createdBy: auth.user.id,
+      })
+      .returning();
+
+    if (!created) {
+      return c.json({ error: "Failed to create enrollment key" }, 500);
+    }
+
+    writeEnrollmentKeyAudit(c, auth, {
+      orgId: created.orgId,
+      action: "enrollment_key.create",
+      keyId: created.id,
+      keyName: created.name,
+      details: {
+        siteId: created.siteId,
+        maxUsage: created.maxUsage,
+        expiresAt: created.expiresAt,
+        purpose: "add_device_parent",
+      },
+    });
+
+    return c.json({ ...sanitizeEnrollmentKey(created, true), reused: false }, 201);
   },
 );
 
