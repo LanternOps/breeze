@@ -46,12 +46,13 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // WHICH credential expired a session — the archive contract is meaningless
 // unless the outgoing key is the one that reaches Stripe.
 // ---------------------------------------------------------------------------
-const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, constructedKeys } = vi.hoisted(() => ({
+const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, autopayProbeMock, constructedKeys } = vi.hoisted(() => ({
   expireMock: vi.fn(),
   retrieveMock: vi.fn(),
   createMock: vi.fn(),
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn(),
+  autopayProbeMock: vi.fn(),
   constructedKeys: [] as string[],
 }));
 
@@ -60,6 +61,11 @@ vi.mock('stripe', () => ({
     public _key: string;
     accounts = { retrieve: accountsRetrieveMock };
     events = { list: eventsListMock };
+    customers = { update: autopayProbeMock };
+    setupIntents = { update: autopayProbeMock };
+    paymentIntents = { update: autopayProbeMock };
+    paymentMethods = { update: autopayProbeMock };
+    mandates = { retrieve: autopayProbeMock };
     checkout: {
       sessions: {
         expire: (id: string) => unknown;
@@ -200,6 +206,9 @@ beforeEach(() => {
   // survives `clear` and silently drives the next one (a stale
   // complete/paid retrieve turned three retryable cases into charged_repair).
   vi.resetAllMocks();
+  // W01 key validation probes nonexistent objects: permission succeeds without
+  // creating a customer, setup intent, payment intent, or payment method.
+  autopayProbeMock.mockRejectedValue(stripeError('StripeInvalidRequestError', 'resource_missing'));
   constructedKeys.length = 0;
   resetCredentialEraserThrottleForTests();
   delete process.env.STRIPE_SESSION_REVOCATION_MODE;

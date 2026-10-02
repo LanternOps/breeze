@@ -78,6 +78,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'quote.acceptance_recorded (no partner name)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
   { name: 'invoice.sent (partner named)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'invoice.sent (no partner name)', params: { ...MESSAGE, purpose: 'invoice.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
+  { name: 'billing.notice', params: { ...MESSAGE, purpose: 'billing.notice', partnerId: PARTNER_ID }, expectedFrom: DEFAULT_FROM },
 ];
 
 // GOLDEN is hand-written, so a purpose added to the registry with no matching

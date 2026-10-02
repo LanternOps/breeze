@@ -39,6 +39,13 @@ export type McpExemptReason =
    */
   | 'human_only_arming'
   /**
+   * Autopay payment policy administration. The autopay design's v1 non-goals
+   * exclude AI/MCP write tools for money movement; optional read-only status
+   * belongs on get_invoice, not this settings editor.
+   * See docs/superpowers/specs/billing/2026-10-01-autopay-design.md §3.
+   */
+  | 'human_only_autopay'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -173,6 +180,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/aiKillState.ts': { exempt: 'platform_admin' },
   'admin/aiPromptVariants.ts': { exempt: 'platform_admin' },
   'admin/aiToolUsage.ts': { exempt: 'platform_admin' },
+  'admin/autopayRollout.ts': { exempt: 'platform_admin' },
   'admin/deprecations.ts': { exempt: 'platform_admin' },
   'admin/desktopFinalization.ts': { exempt: 'platform_admin' },
   'admin/exchangeRates.ts': { exempt: 'platform_admin' },
@@ -298,6 +306,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'backup/verification.ts': { gap: '#6788' },
   'backup/vmrestore.ts': { tools: ['get_vm_restore_estimate', 'restore_as_vm', 'instant_boot_vm'] },
   'backup/vss.ts': { gap: '#6788' },
+  'billingPaymentSettings.ts': { exempt: 'human_only_autopay', note: 'Partner/org autopay policy settings; AI/MCP writes are excluded by the autopay v1 design (§3).' },
   'billingProfiles.ts': { gap: '#6784' },
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
   'c2c/configs.ts': { gap: '#6788' },
