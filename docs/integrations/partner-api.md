@@ -121,6 +121,7 @@ or user management.
 | `GET /api/v1/partner-api/custom-field-values` | `custom-fields:read` |
 | `GET /api/v1/partner-api/alerts` | `alerts:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets` | `tickets:read` (opt-in) |
+| `GET /api/v1/partner-api/tickets/ids` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>` | `tickets:read` (opt-in) |
 | `GET /api/v1/partner-api/tickets/<ticket-uuid>/comments` | `tickets:read` (opt-in) |
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
@@ -545,9 +546,9 @@ delegation and must be requested explicitly. Nothing is written through it.
 Feed query parameters (all optional): `orgId`, `status` and `priority`
 (comma lists of the core values `new`, `open`, `pending`, `on_hold`,
 `resolved`, `closed` / `low`, `normal`, `high`, `urgent`), `assigneeId`,
-`externalId` (exact match on **this principal's** correlation key, see
-"External correlation" under the write section), `limit` (1-500, default
-100), and exactly one of `since` or `cursor`.
+`externalId` (exact match on **this principal's** correlation key; keys are
+namespaced by service principal, so another integration's ids never match),
+`limit` (1-500, default 100), and exactly one of `since` or `cursor`.
 
 Each feed item is one of two shapes:
 
