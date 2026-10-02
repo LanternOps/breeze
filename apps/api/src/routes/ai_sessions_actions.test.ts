@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// routes/ai.ts reaches the model registry (ticket-draft) -> candidateLoader,
+// which this file's partial schema mock does not cover. Not under test here.
+vi.mock('../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: vi.fn(),
+}));
 import { Hono } from 'hono';
 
 // #3127: depth of the (mocked) short per-phase DB contexts the message-send
@@ -194,6 +200,7 @@ vi.mock('../services/sentry', () => ({
 }));
 
 import { aiRoutes } from './ai';
+import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { db } from '../db';
 import {
   createSession,
@@ -325,28 +332,30 @@ describe('AI routes', () => {
   // ============================================
   describe('POST /ai/sessions/:id/messages — approval-blocked turn settling', () => {
     function mockPreflightOk(sessionOverrides: Record<string, unknown> = {}) {
-      vi.mocked(runPreFlightChecks).mockResolvedValue({
-        ok: true,
-        session: {
-          id: SESSION_ID,
-          orgId: ORG_ID,
-          sdkSessionId: null,
-          model: 'claude-sonnet-4-5-20250929',
-          maxTurns: 50,
-          turnCount: 0,
+      // Preflight decides the transport (W03 Task 7): the env OpenAI-compatible
+      // chat path has no resolved model; every other turn carries one.
+      vi.mocked(runPreFlightChecks).mockImplementation(async () => {
+        const openaiCompatible = openai.provider === 'openai-compatible';
+        return {
+          ok: true,
+          session: {
+            id: SESSION_ID,
+            orgId: ORG_ID,
+            sdkSessionId: null,
+            model: 'claude-sonnet-4-5-20250929',
+            maxTurns: 50,
+            turnCount: 0,
+            systemPrompt: 'sp',
+            title: 'existing title',
+            ...sessionOverrides,
+          },
+          sanitizedContent: 'hello there',
           systemPrompt: 'sp',
-          title: 'existing title',
-          ...sessionOverrides,
-        },
-        sanitizedContent: 'hello there',
-        systemPrompt: 'sp',
-        maxBudgetUsd: undefined,
-        resolved: {
-          source: 'platform',
-          apiKey: 'platform-key',
-          model: 'claude-sonnet-4-5-20250929',
-        },
-      } as any);
+          maxBudgetUsd: undefined,
+          model: openaiCompatible ? null : makeResolvedModel(),
+          openaiCompatible,
+        } as any;
+      });
     }
 
     function makeActiveSession() {

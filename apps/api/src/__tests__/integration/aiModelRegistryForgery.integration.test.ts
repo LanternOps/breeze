@@ -32,6 +32,40 @@ const CONNECTIONS_MIGRATION = readFileSync(
   join(__dirname, '../../../migrations', '2026-11-14-100000-ai-model-registry-connections.sql'),
   'utf8',
 );
+// W03 Task 6B drops the W02 mirror trigger; replaying the W02 file alone would
+// re-create it in this shared database, so every replay is followed by the
+// drop, exactly as the two files apply in order on a real database.
+const DROP_MIRROR_MIGRATION = readFileSync(
+  join(__dirname, '../../../migrations', '2026-11-19-100500-drop-partner-llm-configs-mirror-trigger.sql'),
+  'utf8',
+);
+// #7700 finding 1 widened status_chk / shape_chk for soft-disconnected rows
+// (2026-11-19-100900). Replaying the W02 file's narrower definitions over a
+// shared database that already holds 'disconnected' rows would fail their
+// validation scan, which a real database never does (each file applies once,
+// in order). So the replay adds the two superseded checks NOT VALID and then
+// replays 100900, which re-adds them validated — the same end state.
+const SOFT_DISCONNECT_MIGRATION = readFileSync(
+  join(__dirname, '../../../migrations', '2026-11-19-100900-ai-connections-soft-disconnect.sql'),
+  'utf8',
+);
+function supersededChecksNotValid(sqlText: string): string {
+  const swaps: Array<[string, string]> = [
+    ["CHECK (status IN ('active', 'error'));", "CHECK (status IN ('active', 'error')) NOT VALID;"],
+    ["OR api_key_encrypted IS NOT NULL)\n);", "OR api_key_encrypted IS NOT NULL)\n) NOT VALID;"],
+  ];
+  let out = sqlText;
+  for (const [from, to] of swaps) {
+    if (!out.includes(from)) throw new Error(`W02 connections migration no longer contains: ${from}`);
+    out = out.replace(from, to);
+  }
+  return out;
+}
+async function replayConnectionsMigration(): Promise<void> {
+  await adminSql.unsafe(supersededChecksNotValid(CONNECTIONS_MIGRATION));
+  await adminSql.unsafe(DROP_MIRROR_MIGRATION);
+  await adminSql.unsafe(SOFT_DISCONNECT_MIGRATION);
+}
 
 describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
   it('partner A cannot INSERT a connection for partner B (42501)', async () => {
@@ -72,7 +106,7 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, default_model)
       VALUES (${legacyId}, ${partner.id}, ${sealed!}, '4242', 'fp-legacy', NULL)`;
 
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
 
     const [row] = await adminSql`SELECT * FROM partner_ai_connections WHERE id = ${legacyId}`;
     expect(row).toMatchObject({
@@ -89,7 +123,7 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
       .toThrow();
 
     // Re-applying is a no-op.
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
     const [count] = await adminSql`SELECT count(*)::int AS n FROM partner_ai_connections WHERE partner_id = ${partner.id}`;
     expect(count!.n).toBe(1);
   });
@@ -100,17 +134,20 @@ describe.skipIf(!RUN)('partner_ai_connections (#7600 W02)', () => {
     await expect(seedByokConnection(p.id)).rejects.toMatchObject({ code: '23505' });
   });
 
-  it('a legacy UPDATE (e.g. markPartnerLlmError) is mirrored onto the same-id connection in the same statement', async () => {
+  // W03 Task 6B (R3): the W02 legacy-UPDATE mirror is dropped — the connection
+  // is the authority and a stray legacy write no longer reaches it.
+  it('a legacy UPDATE is no longer mirrored onto the same-id connection (mirror trigger dropped)', async () => {
     const partner = await createPartner();
     const legacyId = randomUUID();
     const sealed = encryptSecret('sk-ant-api03-mirror-5151', { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
     await adminSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint)
                    VALUES (${legacyId}, ${partner.id}, ${sealed}, '5151', 'fp')`;
-    await adminSql.unsafe(CONNECTIONS_MIGRATION);
+    await replayConnectionsMigration();
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE partner_llm_configs SET status = 'error', last_error = 'auth_rejected' WHERE id = ${legacyId} AND config_version = 1`));
     const [row] = await adminSql`SELECT status, last_error FROM partner_ai_connections WHERE id = ${legacyId}`;
-    expect(row).toEqual({ status: 'error', last_error: 'auth_rejected' });
+    expect(row).toEqual({ status: 'active', last_error: null });
+    expect(await adminSql`SELECT 1 FROM pg_trigger WHERE tgname = 'partner_llm_configs_mirror_to_connection'`).toHaveLength(0);
   });
 
   it('the copy works for a NOSUPERUSER NOBYPASSRLS role under system scope (no role-restricted-policy blind spot)', async () => {
@@ -267,7 +304,7 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
     return { a, b, orgA, orgB, offA, offB };
   }
   async function seedSession(orgId: string): Promise<string> {
-    const [row] = await adminSql`INSERT INTO ai_sessions (org_id) VALUES (${orgId}) RETURNING id`;
+    const [row] = await adminSql`INSERT INTO ai_sessions (org_id, model) VALUES (${orgId}, 'claude-sonnet-5-5') RETURNING id`;
     return String(row!.id);
   }
 
@@ -302,8 +339,8 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
       VALUES (${t.orgA.id}, ${siteA!.id}, ${`w02-move-${randomUUID()}`}, 'w02-move-host', 'linux', '22.04', 'x86_64', '0.0.0-test', 'offline')
       RETURNING id`;
     const [session] = await adminSql`
-      INSERT INTO ai_sessions (org_id, device_id, offering_id, offering_partner_id, options)
-      VALUES (${t.orgA.id}, ${device!.id}, ${t.offA}, ${t.a.id}, '{"effort":"high"}')
+      INSERT INTO ai_sessions (org_id, device_id, model, offering_id, offering_partner_id, options)
+      VALUES (${t.orgA.id}, ${device!.id}, 'claude-sonnet-5-5', ${t.offA}, ${t.a.id}, '{"effort":"high"}')
       RETURNING id`;
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE devices SET org_id = ${t.orgB.id}, site_id = ${siteB!.id} WHERE id = ${device!.id}`));

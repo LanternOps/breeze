@@ -44,7 +44,7 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
   keyFingerprint: text('key_fingerprint'),
   catalogEntryId: uuid('catalog_entry_id').references(() => llmProviderCatalog.id),
   baseUrl: text('base_url'),
-  status: text('status', { enum: ['active', 'error'] }).notNull().default('active'),
+  status: text('status', { enum: ['active', 'error', 'disconnected'] }).notNull().default('active'),
   lastError: text('last_error'),
   verifiedAt: timestamp('verified_at', { withTimezone: true }),
   configVersion: integer('config_version').notNull().default(1),
@@ -57,11 +57,13 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
 }, (t) => [
   unique('partner_ai_connections_id_partner_uq').on(t.id, t.partnerId),
   index('partner_ai_connections_partner_idx').on(t.partnerId),
+  // Disconnected rows are kept as provenance (#7700 finding 1) and do not count.
   uniqueIndex('partner_ai_connections_compat_uq').on(t.partnerId)
-    .where(sql`${t.kind} IN ('anthropic_byok', 'catalog')`),
+    .where(sql`${t.kind} IN ('anthropic_byok', 'catalog') AND ${t.status} <> 'disconnected'`),
   check('partner_ai_connections_kind_chk', sql`${t.kind} IN ('anthropic_byok', 'catalog', 'openai_compatible')`),
-  check('partner_ai_connections_status_chk', sql`${t.status} IN ('active', 'error')`),
-  check('partner_ai_connections_shape_chk', sql`(${t.kind} = 'catalog') = (${t.catalogEntryId} IS NOT NULL) AND (${t.kind} = 'openai_compatible') = (${t.baseUrl} IS NOT NULL) AND (${t.kind} NOT IN ('anthropic_byok', 'catalog') OR ${t.apiKeyEncrypted} IS NOT NULL)`),
+  check('partner_ai_connections_status_chk', sql`${t.status} IN ('active', 'error', 'disconnected')`),
+  check('partner_ai_connections_shape_chk', sql`(${t.kind} = 'catalog') = (${t.catalogEntryId} IS NOT NULL) AND (${t.kind} = 'openai_compatible') = (${t.baseUrl} IS NOT NULL) AND (${t.kind} NOT IN ('anthropic_byok', 'catalog') OR ${t.status} = 'disconnected' OR ${t.apiKeyEncrypted} IS NOT NULL)`),
+  check('partner_ai_connections_disconnected_keyless_chk', sql`${t.status} <> 'disconnected' OR ${t.apiKeyEncrypted} IS NULL`),
   check('partner_ai_connections_key_triplet_chk', sql`num_nulls(${t.apiKeyEncrypted}, ${t.keyLast4}, ${t.keyFingerprint}) IN (0, 3)`),
   check('partner_ai_connections_config_version_chk', sql`${t.configVersion} >= 1`),
 ]);
@@ -97,6 +99,9 @@ export const partnerAiModels = pgTable('partner_ai_models', {
   requiredPermission: text('required_permission'),
   refusalFallbackOfferingId: uuid('refusal_fallback_offering_id'),
   lifecycle: text('lifecycle').$type<ModelLifecycle>().notNull().default('available'),
+  /** W03 connection discovery (#7601): NULL until a sync observes the model; never-seen rows are never aged. */
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+  missedSyncCount: integer('missed_sync_count').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -17,7 +17,6 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
-  resolveClientLlmConfigMock,
   reserveAiBudgetMock, releaseUnusedAiBudgetReservationMock, FakeAiBudgetLockTimeoutError,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
@@ -43,7 +42,6 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
-  resolveClientLlmConfigMock: vi.fn(),
   reserveAiBudgetMock: vi.fn(),
   releaseUnusedAiBudgetReservationMock: vi.fn(
     (_input: { orgId: string; reservationId: string }) => Promise.resolve({ kind: 'released' }),
@@ -122,12 +120,14 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
-vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
-  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
+const { resolveSessionTurnMock } = vi.hoisted(() => ({ resolveSessionTurnMock: vi.fn() }));
+// W03 Task 7: an office_chat turn resolves through the registry (session create stays legacy until Task 9).
+vi.mock('../../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: (...args: unknown[]) => resolveSessionTurnMock(...args),
 }));
-
 import { clientAiSessionRoutes } from './sessions';
+import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
 
 const SESSION_ROW = {
@@ -159,14 +159,7 @@ beforeEach(() => {
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
-  resolveClientLlmConfigMock.mockResolvedValue({
-    source: 'partner',
-    partnerId: 'partner-from-org',
-    apiKey: 'partner-key',
-    model: 'claude-opus-4-6',
-    configId: 'config-1',
-    configVersion: 2,
-  });
+  resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'office_chat' }));
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   reserveAiBudgetMock.mockResolvedValue({
     kind: 'reserved',
@@ -230,18 +223,52 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect((await postMessage({ content: 'hi' })).status).toBe(410);
   });
 
-  it('returns ai_unavailable as 503 before touching the SDK manager', async () => {
-    resolveClientLlmConfigMock.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-from-org',
-      reason: 'key_error',
+  it('an ineligible stored model is a recoverable 409 before touching the SDK manager, and takes no reservation', async () => {
+    resolveSessionTurnMock.mockResolvedValue({
+      ok: false, reason: 'model_unavailable', recoverable: true, offeringId: 'off-1',
+      message: 'Model Opus 5.5 is no longer available — choose another.',
     });
 
     const res = await postMessage({ content: 'hi' });
 
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Model Opus 5.5 is no longer available — choose another.', code: 'model_unavailable', recoverable: true,
+    });
     expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+    expect(checkBillingCreditsMock).not.toHaveBeenCalled();
+  });
+
+  it('a failed turn resolution is a generic retryable 503 (captured), never a 500', async () => {
+    resolveSessionTurnMock.mockRejectedValueOnce(new Error('loader failure'));
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+    expect(captureExceptionMock).toHaveBeenCalled();
+    expect(reserveAiBudgetMock).not.toHaveBeenCalled();
+  });
+
+  it('dispatches and reserves exactly the model resolved for the office_chat surface (finding 13)', async () => {
+    const model = makeResolvedModel('anthropic_byok', { surface: 'office_chat' });
+    resolveSessionTurnMock.mockResolvedValue(model);
+    dbInsertMock.mockImplementation(() => ({ values: vi.fn(() => Promise.resolve()) }));
+
+    const res = await postMessage({ content: 'hi' });
+    expect(res.status).toBe(202);
+
+    expect(resolveSessionTurnMock).toHaveBeenCalledWith({ sessionId: SESSION_ID, surface: 'office_chat', userId: null });
+    expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+    const call = managerMock.getOrCreate.mock.calls[0]!;
+    expect(call[6]).toBe(model);
+    expect(call[1]).not.toHaveProperty('model');
+    expect(call[9]).toEqual(expect.objectContaining({ ledgerUserId: null }));
+    expect(reserveAiBudgetMock).toHaveBeenCalledWith(expect.objectContaining({
+      billingSource: 'partner_key', binding: turnBindingFrom(model),
+    }));
+    expect(managerMock.tryTransitionToProcessing).toHaveBeenCalledWith(
+      activeSession, 'res-default', expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
+    );
   });
 
   it('402s on budget exhaustion, 429s on rate limit (preflight per message)', async () => {
@@ -267,7 +294,6 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect((activeSession.inputController as { pushMessage: ReturnType<typeof vi.fn> }).pushMessage)
       .toHaveBeenCalledWith('sum column B please');
     expect(managerMock.startTurnTimeout).toHaveBeenCalledWith(activeSession);
-    expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
     expect(managerMock.getOrCreate).toHaveBeenCalledWith(
       SESSION_ID,
       expect.anything(),
@@ -275,7 +301,7 @@ describe('POST /client-ai/sessions/:id/messages', () => {
       expect.anything(),
       expect.anything(),
       2.5, // #5557: derived from the reservation's reservedCostCents (250 / 100)
-      expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 2 }),
+      expect.objectContaining({ funding: 'partner_key', configVersion: 2, connection: expect.objectContaining({ id: 'conn-1' }) }),
       expect.anything(),
       expect.anything(),
       expect.objectContaining({ injectApprovalModeInstructions: false }),
@@ -549,6 +575,7 @@ describe('#5557 — atomic budget reservation on POST /client-ai/sessions/:id/me
     expect(managerMock.tryTransitionToProcessing).toHaveBeenCalledWith(
       expect.anything(),
       'res-thread-1',
+      expect.objectContaining({ turnBinding: expect.any(Object) }),
     );
   });
 

@@ -2,7 +2,7 @@
  * Mock state + vi.mock module factories that route the LEGACY functions' DB
  * and catalog reads to one parity fixture (#7600 W02; W03 Tasks 1/7 reuse).
  * Dependency-free on purpose: vi.mock factories import it.
- * Every read the oracle triggers is a single-row lookup for the fixture's one
+ * Every read the legacy code triggers is a single-row lookup for the fixture's one
  * partner, keyed by the Drizzle table object passed to .from().
  */
 export const legacyFixtureState: { rows: Map<unknown, unknown[]>; catalogProvider: unknown } = {

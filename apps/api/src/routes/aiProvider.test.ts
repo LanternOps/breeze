@@ -53,7 +53,6 @@ vi.mock('../services/aiModels/platformModels', () => ({
 }));
 
 vi.mock('../services/aiCostTracker', () => ({
-  OFFERABLE_AI_MODELS: Object.freeze(['claude-sonnet-4-6', 'claude-haiku-4-5']),
 }));
 
 vi.mock('../services/partnerLlmConfig', () => {

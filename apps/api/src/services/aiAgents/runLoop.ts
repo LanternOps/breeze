@@ -38,7 +38,6 @@
  * DB touch here self-contexts, and the SDK loop itself runs under
  * `runOutsideDbContext` so the SDK's tool handlers never inherit one.
  */
-import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -69,10 +68,10 @@ import { loadTaskFence, type TaskFence } from '../aiOperator/taskService';
 import { buildTaskOperationKey } from '../aiOperator/operationKey';
 import { TOOL_TIERS, createBreezeMcpServer, listChatSurfaceToolNames } from '../aiAgentSdkTools';
 import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools';
-import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
 import {
   markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from '../aiBudgetReservations';
 import {
@@ -88,9 +87,25 @@ import {
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
-import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
-import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
+import { grantCatalogSdkEgress, sdkModelOptions } from '../aiModels/connectionFactory';
+import {
+  newSdkTurnObservation,
+  observeSdkMessage,
+  sdkTurnUsage,
+  type BilledUsage,
+  type SdkResultLike,
+  type SdkUsageSnapshot,
+  type TurnOutcome,
+} from '../aiModels/invocationUsage';
+import { applyPromptProfile } from '../aiModels/promptProfiles';
+import { refusalHeadline } from '../aiModels/refusals';
+import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
+import { resolveModel } from '../aiModels/resolveModel';
+import { priceUsage, settleInvocation, sumCostCents } from '../aiModels/settleInvocation';
+import { safeErrorMessage } from '../aiModels/safeDbError';
+import { turnBindingFrom } from '../aiModels/turnBinding';
+import { AgentRunBlockedError, blockedOutcome, notifyModelBlocked } from './modelBlocked';
 import type { ToolExecutionContext } from '../toolExecutionContext';
 import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';
 import type { AuthContext } from '../../middleware/auth';
@@ -148,7 +163,6 @@ import {
   type PatchPlanToolRefs,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
-import { legacyAgentModel } from '../aiModels/legacySurfaceModels';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
@@ -164,7 +178,6 @@ import { WorkspaceService } from '../workspace/workspaceService';
 import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
 import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
 import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
-import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
@@ -278,6 +291,9 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         // Execution plane W04 — the frozen inputs and the compute reservation.
         stagedInputs: aiAgentRuns.stagedInputs,
         computeReservedCents: aiAgentRuns.computeReservedCents,
+        // AI model registry W03 — admission's model decision (finding 6).
+        fundingSource: aiAgentRuns.fundingSource,
+        admittedOfferingId: aiAgentRuns.admittedOfferingId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -1327,13 +1343,6 @@ export function computeRunVerdict(
   return outcome.proposedActions.length > 0 ? 'partial' : 'remediated';
 }
 
-interface SdkUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-}
-
 /**
  * How a terminal SDK result maps onto this run's outcome.
  *
@@ -1401,26 +1410,6 @@ export function classifyIntentAwaitingApproval(
   if (intentIds.length === 0) return false;
   const decided = new Set(decidedIntentIds ?? []);
   return intentIds.some((id) => !decided.has(id));
-}
-
-/**
- * Same precedence as `recordUsageFromSdkResult`: trust the SDK's self-reported
- * cost, and price the tokens ourselves only when it reports zero against a
- * non-zero token count (issue #1326 — the SDK cannot price a model id newer
- * than its bundled table).
- */
-function resultCostCents(
-  totalCostUsd: number,
-  usage: SdkUsage,
-  model: string | undefined,
-): number {
-  const reported = Math.round(totalCostUsd * 100 * 100) / 100;
-  if (reported > 0) return reported;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-  const anyTokens = usage.input_tokens > 0 || usage.output_tokens > 0 || cacheRead > 0 || cacheWrite > 0;
-  if (!anyTokens || !model) return 0;
-  return calculateCostCents(model, usage.input_tokens, usage.output_tokens, cacheRead, cacheWrite);
 }
 
 function extractAssistantText(message: unknown): string {
@@ -1857,13 +1846,47 @@ async function driveSdkLoop(
   const wallClockMs = Math.max(1, Math.round(runLimits.wallClockSeconds * 1000));
   const deadlineMs = Date.now() + wallClockMs;
 
-  const llm = await resolveLlmConfigForOrg(run.orgId);
-  if (llm.source === 'unavailable') {
-    throw new AgentRunError('llm_unavailable', `AI is unavailable for org ${run.orgId}`);
+  // AI model registry W03 (Task 12, review finding 6): dispatch the offering
+  // ADMISSION resolved and checked credits for — re-resolved here because the
+  // permitted set, the offering or its connection can change while the run
+  // is queued. The bounded fallback can only keep its connection and funding.
+  // A run admitted before W03 carries no admitted offering and resolves the
+  // policy's bound offering (or the `ai_agents` assignment default).
+  const requestedOfferingId = run.admittedOfferingId ?? effective.offeringId ?? null;
+  const agentModel = await resolveModel({
+    partnerId: ctx.orgPartnerId,
+    orgId: run.orgId,
+    surface: 'ai_agents',
+    ...(requestedOfferingId ? { requested: { offeringId: requestedOfferingId, origin: 'policy' as const } } : {}),
+  });
+  if (!agentModel.ok) {
+    // A keyless deployment raises the hourly platform-key alert (as the one-shot surfaces do).
+    reportIfPlatformKeyMissing(agentModel);
+    throw new AgentRunBlockedError(
+      'model_unavailable',
+      blockedOutcome('model_unavailable', { message: agentModel.message, offeringId: requestedOfferingId }),
+      agentModel.message,
+      // The partner's one-time registry cutover is not done (transient): the
+      // admin's model is not gone, so there is nothing to tell them.
+      { notify: agentModel.reason !== 'registry_unavailable' },
+    );
   }
-  const usableLlm: UsableLlmConfig = llm;
-  const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
-  const model = legacyAgentModel(effective.model, llm.model);
+  if (run.fundingSource && agentModel.funding !== run.fundingSource) {
+    // Never dispatch on a funding source admission did not check (credits,
+    // compute ceiling). The admitted offering's own fallback cannot cross
+    // funding, so this means the binding changed under a queued run.
+    const message = 'The agent\'s AI model changed funding source after the run was admitted. Run it again.';
+    throw new AgentRunBlockedError(
+      'model_unavailable',
+      blockedOutcome('model_unavailable', { message, offeringId: agentModel.offering.id }),
+      message,
+    );
+  }
+  const binding = turnBindingFrom(agentModel);
+  const billingSource: AiBillingSource = agentModel.funding;
+  // Provenance only (resolved_model, the execution-ledger session): the wire
+  // id the SDK is sent comes from sdkModelOptions below.
+  const model = agentModel.logicalModel;
 
   // #5870 — the only log line between admission and termination. Without it
   // a run that is legitimately still thinking (a design run may now run up
@@ -1882,7 +1905,7 @@ async function driveSdkLoop(
   // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
   // model on every task-linked run." Admission stamped the CONFIGURED model
   // (`policySnapshot.effective.model`), which is null whenever the agent
-  // inherits the org's LLM default — the fallback on the line above. This is
+  // follows the `ai_agents` assignment default resolved above. This is
   // the first and only moment the value actually used is known, so it is
   // stamped here rather than guessed at admission.
   //
@@ -2079,11 +2102,30 @@ async function driveSdkLoop(
     // indeterminate outcome only holds this ceiling for the extended TTL
     // below, not the org's entire remaining budget.
     maxHoldCents: runLimits.maxBudgetCentsPerRun,
+    // W03: the turn's rate snapshot + options, written in the reservation
+    // transaction. A re-driven run re-binds its unsettled reservation.
+    binding,
   });
   if (reservation.kind === 'denied') {
     throw new AgentRunError('org_budget_exceeded', reservation.message);
   }
   const reservationId = reservation.reservationId;
+  // A catalog connection's SDK child may open exactly one destination, through
+  // the audited CONNECT proxy (shared with chat, connectionFactory.ts). Null for
+  // platform / direct Anthropic. Nothing is dispatched yet, so a grant failure
+  // releases the reservation it never used.
+  let egress: Awaited<ReturnType<typeof grantCatalogSdkEgress>>;
+  try {
+    egress = await grantCatalogSdkEgress(agentModel, {
+      key: `agent-run:${run.id}`, orgId: run.orgId, aiSessionId: ctx.sessionId ?? null,
+    });
+  } catch (error) {
+    await releaseUnusedAiBudgetReservation({ orgId: run.orgId, reservationId })
+      .catch((releaseError: unknown) => console.error('[aiAgentRunLoop] failed to release an unused AI reservation', {
+        runId: run.id, error: safeErrorMessage(releaseError),
+      }));
+    throw new AgentRunError('llm_unavailable', `AI egress for the agent's catalog connection is unavailable: ${safeErrorMessage(error)}`);
+  }
   const maxBudgetCents = reservation.kind === 'reserved'
     ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
     : runLimits.maxBudgetCentsPerRun;
@@ -2103,20 +2145,27 @@ async function driveSdkLoop(
   let costCents = 0;
   let turnCount = 0;
   let receivedResult = false;
-  const usage: SdkUsage = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_input_tokens: 0,
-    cache_creation_input_tokens: 0,
-  };
+  // W03 billing (W05 spike rules): every result is billed by the registry from
+  // its per-model `modelUsage`. A run is ONE fresh, non-persisted query, so
+  // the snapshot the deltas are taken against lives only for this run: the
+  // first result bills its own `result.usage` (capped by modelUsage), any
+  // later one the per-key delta. Never `total_cost_usd`.
+  const observation = newSdkTurnObservation();
+  let usageSnapshot: SdkUsageSnapshot | null = null;
+  const billed: BilledUsage[] = [];
+  let lastResult: SdkResultLike | null = null;
+  let turnOutcome: TurnOutcome | null = null;
+  let usageConfirmed = true;
 
   try {
     await runOutsideDbContext(async () => {
       const sdkQuery = query({
         prompt: buildAgentRunTaskPrompt(prompt),
         options: {
-          systemPrompt: buildAgentRunSystemPrompt(prompt),
-          model,
+          // model (the resolver's wire id — a catalog endpoint's own id),
+          // fallbackModel (the refusal fallback) and thinking/effort.
+          ...sdkModelOptions(agentModel),
+          systemPrompt: applyPromptProfile('ai_agents', agentModel.promptProfile, buildAgentRunSystemPrompt(prompt)),
           maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
@@ -2125,18 +2174,18 @@ async function driveSdkLoop(
           allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
           abortController,
-          env: buildClaudeSdkChildEnv(usableLlm),
+          env: buildClaudeSdkChildEnv(agentModel.connection.config, process.env,
+            egress ? { egressProxyUrl: egress.proxyUrl } : {}),
           // No transcript persistence in wave 3 — `run.session_id` stays NULL
           // and `summary`/`outcome` carry what a reviewer needs (wave 6).
           persistSession: false,
           settingSources: [],
-          // #7587, #7599: per-model thinking/effort from the model registry — see agentSdkWireOptions.
-          ...agentSdkWireOptions(model),
         },
       });
 
       try {
         for await (const message of sdkQuery) {
+          observeSdkMessage(observation, message);
           if (message.type === 'assistant') {
             const text = extractAssistantText(message);
             if (text) summary = text;
@@ -2146,14 +2195,16 @@ async function driveSdkLoop(
           receivedResult = true;
 
           turnCount += message.num_turns;
-          const messageUsage = message.usage as unknown as SdkUsage;
-          usage.input_tokens += messageUsage.input_tokens ?? 0;
-          usage.output_tokens += messageUsage.output_tokens ?? 0;
-          usage.cache_read_input_tokens =
-            (usage.cache_read_input_tokens ?? 0) + (messageUsage.cache_read_input_tokens ?? 0);
-          usage.cache_creation_input_tokens =
-            (usage.cache_creation_input_tokens ?? 0) + (messageUsage.cache_creation_input_tokens ?? 0);
-          costCents += resultCostCents(message.total_cost_usd, messageUsage, model);
+          lastResult = message as unknown as SdkResultLike;
+          const turn = sdkTurnUsage({
+            binding, observation, result: lastResult, previousSnapshot: usageSnapshot,
+          });
+          usageSnapshot = turn.nextSnapshot ?? usageSnapshot;
+          billed.push(...turn.usage);
+          turnOutcome = turn.outcome;
+          if (!turn.usageConfirmed) usageConfirmed = false;
+          // The mid-stream budget guard below runs on the REGISTRY price.
+          costCents = sumCostCents(priceUsage(binding, billed));
 
           if (message.subtype === 'success' && typeof message.result === 'string' && message.result.trim()) {
             summary = message.result.trim();
@@ -2219,6 +2270,10 @@ async function driveSdkLoop(
     }
   } finally {
     clearTimeout(wallClockTimer);
+    // The SDK child is gone (query closed above): its egress grant goes too.
+    try { egress?.revoke(); } catch (error) {
+      console.warn('[aiAgentRunLoop] egress grant revoke failed (non-fatal)', { runId: run.id, error });
+    }
   }
 
   if (wallClockExceeded) outcome.wallClockExceeded = true;
@@ -2234,30 +2289,70 @@ async function driveSdkLoop(
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
   try {
-    if (receivedResult) {
-      await recordSessionlessSdkUsage(
-        run.orgId,
-        {
-          costCents,
-          usage,
-          numTurns: turnCount,
-          toolExecutionCount: outcome.toolExecutionCount,
-          model,
-        },
-        billingSource,
+    if (receivedResult && turnOutcome) {
+      if (!usageConfirmed) {
+        console.warn('[aiAgentRunLoop] ai_usage_unconfirmed: the run\'s SDK usage is billed short', {
+          runId: run.id, orgId: run.orgId,
+        });
+      }
+      // THE billing path (single cost function): ledger rows + derived
+      // rollups + the platform debit, once, under the reservation.
+      const settled = await settleInvocation({
+        binding,
+        orgId: run.orgId,
+        userId: null,
+        sessionId: null,
+        agentRunId: run.id,
+        sourceRef: null,
+        usage: billed,
+        outcome: turnOutcome,
         reservationId,
-        { surface: 'ai_agents', agentRunId: run.id },
-      );
+        messageCount: Math.max(1, turnCount),
+        toolExecutionCount: outcome.toolExecutionCount,
+      });
+      // The run row carries the billed number (which also prices any model
+      // the CLI switched to on its own at its platform rate).
+      costCents = settled.costCents;
+      // Review S1: deferred but NOT persisted — recorded nowhere (already
+      // reported by settleInvocation). Keep the reservation held.
+      if (settled.unrecorded) await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
     } else {
       await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
     }
   } catch (error) {
-    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    // Settlement errors are DB errors: scrubbed before any log or report (S2).
+    const message = safeErrorMessage(error);
+    console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error: message });
+    captureException(new Error(`agent run settlement failed: ${message}`), undefined, {
+      org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+    });
     await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
-      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
-        runId: run.id,
-        error: markError,
-      }));
+      .catch((markError) => {
+        const markMessage = safeErrorMessage(markError);
+        console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', { runId: run.id, error: markMessage });
+        captureException(new Error(`agent run reservation not retained as indeterminate: ${markMessage}`), undefined, {
+          org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: reservationId,
+        });
+      });
+  }
+
+  // §9.1a: the FINAL answer was a refusal (no fallback, or the fallback
+  // refused too). Not an agent fault — the run ends `blocked` with the
+  // category in its outcome, after its spend was settled above.
+  const finalOutcome = turnOutcome as TurnOutcome | null;
+  if (finalOutcome?.refused && !failure) {
+    const message = refusalHeadline(finalOutcome.refusalCategory);
+    throw new AgentRunBlockedError(
+      'model_refused',
+      blockedOutcome('model_refused', {
+        message,
+        refusalCategory: finalOutcome.refusalCategory,
+        offeringId: binding.offeringId,
+        requestedModel: binding.wireModel,
+      }),
+      message,
+      { spent: { costCents: Math.round(costCents), turnCount } },
+    );
   }
 
   return {
@@ -2269,6 +2364,51 @@ async function driveSdkLoop(
     agentAuth,
     ...(failure ? { failure } : {}),
   };
+}
+
+/**
+ * AI model registry W03 (spec §9.1, §9.1a): the run's model was unavailable at
+ * dispatch, or the model refused. `running → blocked` (circuit-neutral), with
+ * what the run spent when the model was called, then the once-per-agent-per-day
+ * notice. Automations waiting on the run are told it ended through
+ * `ai.agent.run.failed` (the remediation did not happen), with the reason.
+ * Never throws: like every terminalization in this file, a failure here is
+ * logged and reported, and the stalled-run reaper is the backstop.
+ */
+async function terminalizeBlockedRun(ctx: RunContext, err: AgentRunBlockedError): Promise<void> {
+  const { run, agent } = ctx;
+  console.warn('[aiAgentRunLoop] agent run blocked by its AI model', {
+    runId: run.id, orgId: run.orgId, errorCode: err.errorCode,
+  });
+  let moved = false;
+  try {
+    moved = await transitionRunStatus(run.id, 'running', 'blocked', {
+      errorCode: err.errorCode,
+      outcome: err.outcome,
+      finishedAt: new Date(),
+      ...(err.spent ? { costCents: err.spent.costCents, turnCount: err.spent.turnCount } : {}),
+    });
+  } catch (terminalError) {
+    console.error('[aiAgentRunLoop] could not terminalize a blocked run', {
+      runId: run.id, orgId: run.orgId, errorCode: err.errorCode, terminalError,
+    });
+    captureException(terminalError instanceof Error ? terminalError : new Error(String(terminalError)));
+  }
+  if (!moved) return;
+  await safePublish('ai.agent.run.failed', run.orgId, {
+    runId: run.id, agentId: run.agentId, errorCode: err.errorCode, status: 'blocked',
+  });
+  if (!err.notify) return;
+  await notifyModelBlocked({
+    orgId: run.orgId,
+    agentId: run.agentId,
+    agentName: agent.name,
+    agent: { orgId: agent.orgId, partnerId: agent.partnerId, recipients: agent.recipients },
+    reason: err.errorCode,
+    message: err.message,
+  }).catch((notifyError: unknown) => {
+    console.error('[aiAgentRunLoop] model-blocked notify failed (non-fatal)', { runId: run.id, error: notifyError });
+  });
 }
 
 /**
@@ -2516,6 +2656,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
       result,
     );
   } catch (error) {
+    if (error instanceof AgentRunBlockedError) {
+      await terminalizeBlockedRun(ctx, error);
+      return;
+    }
     const errorCode = error instanceof AgentRunError
       ? error.errorCode
       : error instanceof AgentRunOwnershipError
@@ -2627,10 +2771,11 @@ async function finalizeWorkspaceForRun(
   try {
     // EVERY billing source (spec §5.6): a BYOK partner pays Anthropic for
     // tokens, but the microVM is ours. `settleComputeCents` performs the
-    // credit deduction itself, and only for `platform`. The source is
-    // re-resolved here rather than threaded from `driveSdkLoop`, because this
-    // runs on the throw path too — where that value may never have existed.
-    const billingSource: AiBillingSource = await getLlmBillingSourceForOrg(ctx.run.orgId);
+    // credit deduction itself, and only for `platform`. The source is the
+    // one ADMISSION resolved and checked credits for (W03, quorum #4) — read
+    // off the run row, so it exists on the throw path too. NULL = a run
+    // admitted before W03: the previous fail-safe.
+    const billingSource: AiBillingSource = ctx.run.fundingSource ?? 'platform';
     await settleComputeCents(ctx.run.orgId, ctx.run.id, cents, billingSource);
     // Stamp the measured provider numbers beside the cents the settle wrote.
     await inSystemDbContext(() => db

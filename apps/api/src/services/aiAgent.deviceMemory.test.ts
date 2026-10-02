@@ -31,6 +31,15 @@ vi.mock('./brainDeviceContext', () => ({
   getActiveDeviceContext: (...args: unknown[]) => getActiveDeviceContextMock(...args),
 }));
 
+// W03 Task 9 (#7601): createSession picks its model through the registry.
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId: vi.fn(async () => 'partner-1') }));
+vi.mock('./aiModels/sessionModel', () => ({
+  chooseSessionModel: vi.fn(async () => ({
+    offeringId: 'off-1', offeringPartnerId: 'partner-1', options: null,
+    model: 'claude-sonnet-4-6', billingSource: 'platform',
+  })),
+}));
+
 import { buildSystemPrompt } from './aiAgent';
 
 const DEVICE_ID = '44444444-4444-4444-4444-444444444444';

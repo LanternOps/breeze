@@ -78,8 +78,12 @@ import {
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 import { recordActionIntentMetric } from './actionIntents/metrics';
-import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigResolver';
-import { llmUnusableCode } from './llm/llmAvailability';
+import { resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import { isOpenAICompatibleProvider, isPlatformLlmConfigured } from './llm/llmAvailability';
+import type { AiSurface } from '@breeze/shared';
+import type { ResolveFailureReason } from './aiModels/eligibility';
+import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
+import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
@@ -371,12 +375,36 @@ export type PreFlightResult = {
   sanitizedContent: string;
   systemPrompt: string;
   maxBudgetUsd: number | undefined;
-  resolved: UsableLlmConfig;
+  /**
+   * The turn's model from the registry (W03 Task 7): dispatch, admission and
+   * settlement all take it unchanged. Null only on the deployment-wide env
+   * OpenAI-compatible chat path (W06 absorbs it), which is platform-funded.
+   */
+  model: ResolvedModel | null;
+  openaiCompatible: boolean;
 } | {
   ok: false;
   error: string;
   status?: number;
+  /** A recoverable model-resolution failure (the route answers 409 with it). */
+  code?: ResolveFailureReason;
 };
+
+/**
+ * A turn whose model cannot be resolved. `connection_unavailable` while the
+ * deployment has no platform credential keeps the pre-registry
+ * `ai_not_configured` contract (the web client localizes it); the cutover gate
+ * is transient (503); anything else is the recoverable 409 "choose another".
+ */
+function unresolvedTurn(turn: ModelUnavailable): Extract<PreFlightResult, { ok: false }> {
+  if (turn.reason === 'connection_unavailable' && !isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
+    return { ok: false, error: 'ai_not_configured', status: 503 };
+  }
+  if (turn.reason === 'registry_unavailable') {
+    return { ok: false, error: turn.message, status: 503, code: turn.reason };
+  }
+  return { ok: false, error: turn.message, status: 409, code: turn.reason };
+}
 
 /**
  * Validates rate limits, budget, session status, expiration, and sanitizes input.
@@ -395,24 +423,36 @@ export async function runPreFlightChecks(
   }
   const orgId = session.orgId;
 
-  let resolved;
-  try {
-    resolved = await resolveLlmConfigForOrg(orgId);
-  } catch (error) {
-    captureException(error, undefined, { service: 'aiAgentSdk', orgId });
-    return {
-      ok: false,
-      error: 'AI configuration could not be loaded. Try again.',
-      status: 503,
-    };
-  }
-  // The script builder always runs the Agent SDK; chat can also run on the
-  // platform's OpenAI-compatible provider.
-  if (llmUnusableCode(resolved, session.type === 'script_builder' ? 'agent_sdk' : 'chat') === 'ai_not_configured') {
-    return { ok: false, error: 'ai_not_configured', status: 503 };
-  }
-  if (resolved.source === 'unavailable') {
-    return { ok: false, error: 'ai_unavailable', status: 503 };
+  // Spec §9: every turn re-resolves the session's stored offering + options
+  // (bounded fallback, recoverable refusal) — funding included, decided here,
+  // before any admission check. The script builder always runs the Agent SDK;
+  // chat can instead run on the deployment-wide env OpenAI-compatible provider,
+  // which keeps its legacy resolution until W06 absorbs it.
+  const surface: AiSurface = session.type === 'script_builder' ? 'script_builder' : 'chat';
+  const openaiCompatible = surface === 'chat' && isOpenAICompatibleProvider();
+  let model: ResolvedModel | null = null;
+  if (openaiCompatible) {
+    let legacy;
+    try {
+      legacy = await resolveLlmConfigForOrg(orgId);
+    } catch (error) {
+      captureException(error, undefined, { service: 'aiAgentSdk', orgId });
+      return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
+    }
+    // The platform path is always configured here (the env provider is the
+    // credential). A partner config — usable or not — is refused exactly as
+    // the route used to refuse it.
+    if (legacy.source !== 'platform') return { ok: false, error: 'ai_unavailable', status: 503 };
+  } else {
+    let turn;
+    try {
+      turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id });
+    } catch (error) {
+      captureException(error, undefined, { service: 'aiAgentSdk', orgId });
+      return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
+    }
+    if (!turn.ok) return unresolvedTurn(turn);
+    model = turn;
   }
 
   // Rate limits
@@ -426,10 +466,9 @@ export async function runPreFlightChecks(
 
   // Budget
   try {
-    const budgetError = await checkBudget(
-      orgId,
-      resolved.source === 'partner' ? 'partner_key' : 'platform',
-    );
+    // Funding from the RESOLVED offering (quorum #4); the env
+    // OpenAI-compatible path is platform-funded by construction.
+    const budgetError = await checkBudget(orgId, model?.funding ?? 'platform');
     if (budgetError) return { ok: false, error: budgetError };
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
@@ -525,7 +564,7 @@ export async function runPreFlightChecks(
   // A durable reservation is acquired immediately before provider dispatch by
   // the route. Returning an advisory remaining-budget snapshot here would
   // recreate the check-then-spend race this preflight must not authorize.
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, resolved };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, model, openaiCompatible };
 }
 
 /**

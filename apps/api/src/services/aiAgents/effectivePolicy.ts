@@ -46,13 +46,16 @@ type PolicyRowFields = Pick<
   | 'actAssets'
   | 'instructions'
   | 'cooldownSeconds'
->;
+> & Partial<Pick<AiAgentRow, 'offeringId'>>;
 
 export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
   return {
     enabled: row.enabled,
     mode: row.mode,
     model: row.model ?? null,
+    // AI model registry W03: the offering `model` was bound to at write time
+    // (agentModelBinding.ts). Absent on a sparse row → unbound.
+    offeringId: row.offeringId ?? null,
     toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
     protectedResources: aiAgentProtectedResourcesSchema.parse(row.protectedResources ?? {}),
     limits: aiAgentLimitsSchema.parse(row.limits ?? {}),
@@ -127,6 +130,7 @@ function partnerProvenance(): AiAgentPolicyProvenance {
     enabled: 'partner',
     mode: 'partner',
     model: 'partner',
+    offeringId: 'partner',
     toolAllowlist: 'partner',
     protectedResources: 'partner',
     limits: 'partner',
@@ -233,6 +237,13 @@ export function mergeAgentPolicies(
     ),
     mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
     model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
+    // AI model registry W03 (W02 handoff #5): the registry binding is NOT
+    // gated on the legacy ai_budgets.allowed_models list above — the registry
+    // projected that list into the ai_agents permitted set, which the run's
+    // resolveModel re-checks at admission and dispatch (it can only narrow).
+    // Same precedence as the W02 projection: the org row's binding, else the
+    // partner baseline's, else the assignment default (null).
+    offeringId: pick('offeringId', org.offeringId ?? partner.offeringId ?? null, org.offeringId ? 'org' : 'partner'),
     toolAllowlist: pick('toolAllowlist', intersectToolRefs(partner.toolAllowlist, org.toolAllowlist), 'merged'),
     protectedResources: pick('protectedResources', {
       services: union(partner.protectedResources.services, org.protectedResources.services),

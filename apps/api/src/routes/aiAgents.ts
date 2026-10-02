@@ -45,6 +45,7 @@ import {
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
+import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { readAiKillState } from '../services/aiKillState';
@@ -260,6 +261,12 @@ export function mapError(c: Context, err: unknown) {
   }
   if (err instanceof AgentKindConflictError) {
     return c.json({ error: err.message, code: err.code }, 409);
+  }
+  // AI model registry W03 (Step 7A): the policy model could not be bound to a
+  // registry offering — 400 invalid_model / not_permitted, or 503
+  // registry_unavailable while the partner's one-time cutover is pending.
+  if (err instanceof AgentModelNotAllowedError) {
+    return c.json({ error: err.message, code: err.code }, err.status);
   }
   // Membership-validation failure on recipients (services/aiAgents/recipients.ts):
   // actionable client error — the body names exactly which ids were refused.

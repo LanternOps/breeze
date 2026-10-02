@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// routes/ai.ts reaches the model registry (ticket-draft) -> candidateLoader,
+// which this file's partial schema mock does not cover. Not under test here.
+vi.mock('../services/aiModels/sessionModel', () => ({
+  resolveSessionTurn: vi.fn(),
+}));
 import { Hono } from 'hono';
 
 // #6396: own-session chat routes are gated on the dedicated ai_sessions:use
@@ -60,7 +66,6 @@ vi.mock('../services/aiCostTracker', () => ({
   getSessionHistory: vi.fn().mockResolvedValue([]),
   getUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
-  recordUsage: vi.fn(),
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({

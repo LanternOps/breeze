@@ -16,6 +16,7 @@ import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
 import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 
 const mockResolveLiveSessionToolAuthority = vi.fn(async (session: any): Promise<any> => ({
   ok: true,
@@ -73,11 +74,21 @@ vi.mock('./llm/llmConfigResolver', () => ({
   resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
 }));
 
-// The real decision, observed: which transport a session type is checked for.
+const mockIsOpenAICompatibleProvider = vi.fn(() => false);
 vi.mock('./llm/llmAvailability', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
-  return { ...actual, llmUnusableCode: vi.fn(actual.llmUnusableCode) };
+  return {
+    ...actual,
+    llmUnusableCode: vi.fn(actual.llmUnusableCode),
+    isOpenAICompatibleProvider: () => mockIsOpenAICompatibleProvider(),
+  };
 });
+
+// W03 Task 7: every Agent SDK turn resolves through the registry.
+const mockResolveSessionTurn = vi.fn();
+vi.mock('./aiModels/sessionModel', () => ({
+  resolveSessionTurn: (...args: unknown[]) => mockResolveSessionTurn(...args),
+}));
 
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
@@ -395,11 +406,9 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
-    mockResolveLlmConfigForOrg.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
+    mockIsOpenAICompatibleProvider.mockReturnValue(false);
+    mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('platform'));
+    mockResolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'gpt-4o-mini' });
   });
 
   // --- Session ---
@@ -408,94 +417,125 @@ describe('runPreFlightChecks', () => {
     mockGetSession.mockResolvedValue(null);
     const result = await runPreFlightChecks('bad-id', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Session not found' });
+    expect(mockResolveSessionTurn).not.toHaveBeenCalled();
   });
 
-  it('returns the ai_unavailable 503 contract before rate, budget, or SDK preparation', async () => {
-    mockResolveLlmConfigForOrg.mockResolvedValue({
-      source: 'unavailable',
-      partnerId: 'partner-1',
-      reason: 'key_error',
-    });
+  // --- Model resolution (W03 Task 7: resolveSessionTurn, funding before admission) ---
 
+  it('resolves the stored session turn on the chat surface for the requesting user', async () => {
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'chat', userId: auth.user.id });
+    expect(mockResolveLlmConfigForOrg).not.toHaveBeenCalled();
+  });
+
+  it('a script-builder session resolves on the script_builder surface', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ type: 'script_builder' }));
+    await runPreFlightChecks('session-1', 'hello', auth);
+    expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'script_builder', userId: auth.user.id });
+  });
+
+  it('returns exactly the resolved model and checks the budget with ITS funding (finding 13)', async () => {
+    const model = makeResolvedModel('anthropic_byok');
+    mockResolveSessionTurn.mockResolvedValue(model);
+    mockGetSession.mockResolvedValue(makeSession({ orgId: 'org-session-99' }));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
-    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-1');
-    expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
-    expect(mockCheckBudget).not.toHaveBeenCalled();
-    expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.model).toBe(model);
+      expect(result.openaiCompatible).toBe(false);
+    }
+    expect(mockCheckBudget).toHaveBeenCalledWith('org-session-99', 'partner_key');
   });
 
-  // #3922 phase 2: a partner pinned to a catalog endpoint that the platform
-  // delists resolves as unavailable, and the turn must 503 rather than fall
-  // back to the platform key or to api.anthropic.com with the partner's key.
-  it.each(['provider_delisted', 'catalog_disabled', 'model_unverified'] as const)(
-    'returns the ai_unavailable 503 contract for catalog reason %s',
+  it.each(['model_unavailable', 'not_permitted', 'permission_required', 'plan_required', 'connection_unavailable', 'tools_unsupported', 'unpriced'] as const)(
+    'an ineligible stored model (%s) is a recoverable 409 with its message, before rate, budget or any spend',
     async (reason) => {
-      mockResolveLlmConfigForOrg.mockResolvedValue({
-        source: 'unavailable',
-        partnerId: 'partner-1',
-        reason,
-      });
-
-      const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-      expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
-      expect(mockCheckBudget).not.toHaveBeenCalled();
+      vi.stubEnv('ANTHROPIC_API_KEY', 'platform-key');
+      try {
+        mockResolveSessionTurn.mockResolvedValue({
+          ok: false, reason, recoverable: true, offeringId: 'off-1', message: 'Model Opus 5.5 is no longer available — choose another.',
+        });
+        const result = await runPreFlightChecks('session-1', 'hello', auth);
+        expect(result).toEqual({
+          ok: false, error: 'Model Opus 5.5 is no longer available — choose another.', status: 409, code: reason,
+        });
+        expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+        expect(mockCheckBudget).not.toHaveBeenCalled();
+        expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
     },
   );
 
-  it('returns the ai_not_configured 503 contract when the platform path has no model key, before any spend', async () => {
+  it('registry_unavailable (cutover in progress) is a retryable 503 carrying its code', async () => {
+    mockResolveSessionTurn.mockResolvedValue({
+      ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'AI configuration is being upgraded. Try again in a moment.',
+    });
+    expect(await runPreFlightChecks('session-1', 'hello', auth)).toEqual({
+      ok: false, error: 'AI configuration is being upgraded. Try again in a moment.', status: 503, code: 'registry_unavailable',
+    });
+  });
+
+  it('keeps the ai_not_configured 503 contract when the connection is unavailable because the deployment has no platform credential', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
     vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
     try {
-      mockResolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'claude-sonnet-4-6' });
-
+      mockResolveSessionTurn.mockResolvedValue({
+        ok: false, reason: 'connection_unavailable', recoverable: true, offeringId: 'off-1', message: 'x',
+      });
       const result = await runPreFlightChecks('session-1', 'hello', auth);
-
       expect(result).toEqual({ ok: false, error: 'ai_not_configured', status: 503 });
-      expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
       expect(mockCheckBudget).not.toHaveBeenCalled();
-      expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it('checks a script-builder session against the Agent SDK transport, every other session against chat', async () => {
-    const { llmUnusableCode } = await import('./llm/llmAvailability');
-    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'script_builder' }));
-    await runPreFlightChecks('session-1', 'hello', auth);
-    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'agent_sdk');
-    mockGetSession.mockResolvedValueOnce(makeSession({ type: 'general' }));
-    await runPreFlightChecks('session-1', 'hello', auth);
-    expect(llmUnusableCode).toHaveBeenLastCalledWith(expect.objectContaining({ source: 'platform' }), 'chat');
-  });
-
   it('captures resolver failures and returns a generic retryable 503', async () => {
     const error = new Error('raw resolver failure');
-    mockResolveLlmConfigForOrg.mockRejectedValueOnce(error);
-
+    mockResolveSessionTurn.mockRejectedValueOnce(error);
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(result).toEqual({
-      ok: false,
-      error: 'AI configuration could not be loaded. Try again.',
-      status: 503,
-    });
-    expect(mockCaptureException).toHaveBeenCalledWith(error, undefined, {
-      service: 'aiAgentSdk',
-      orgId: 'org-1',
-    });
+    expect(result).toEqual({ ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 });
+    expect(mockCaptureException).toHaveBeenCalledWith(error, undefined, { service: 'aiAgentSdk', orgId: 'org-1' });
     expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
   });
 
-  it('resolves from the persisted session org instead of the caller partner token', async () => {
-    mockGetSession.mockResolvedValue(makeSession({ orgId: 'org-session-99' }));
+  // --- Env OpenAI-compatible chat (W06 absorbs it; legacy resolution, finding 12) ---
 
-    await runPreFlightChecks('session-1', 'hello', makeAuth({ partnerId: null, scope: 'system' }));
+  it('env openai-compatible chat with no platform credential: legacy platform resolution, no registry call, platform budget', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+    try {
+      mockIsOpenAICompatibleProvider.mockReturnValue(true);
+      mockGetSession.mockResolvedValue(makeSession({ offeringId: null }));
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(result).toMatchObject({ ok: true, model: null, openaiCompatible: true });
+      expect(mockResolveSessionTurn).not.toHaveBeenCalled();
+      expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-1');
+      expect(mockCheckBudget).toHaveBeenCalledWith('org-1', 'platform');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
-    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-session-99');
+  it('env openai-compatible chat refuses a partner config exactly as the route used to (503 ai_unavailable)', async () => {
+    mockIsOpenAICompatibleProvider.mockReturnValue(true);
+    mockResolveLlmConfigForOrg.mockResolvedValue({
+      source: 'partner', partnerId: 'p1', apiKey: 'k', model: 'claude-sonnet-4-6', configId: 'c1', configVersion: 1, endpoint: { kind: 'anthropic' },
+    });
+    expect(await runPreFlightChecks('session-1', 'hello', auth)).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+    expect(mockCheckBudget).not.toHaveBeenCalled();
+  });
+
+  it('env openai-compatible: a script-builder session still runs the Agent SDK through the registry', async () => {
+    mockIsOpenAICompatibleProvider.mockReturnValue(true);
+    mockGetSession.mockResolvedValue(makeSession({ type: 'script_builder' }));
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toMatchObject({ ok: true, openaiCompatible: false });
+    expect(mockResolveSessionTurn).toHaveBeenCalledWith(expect.objectContaining({ surface: 'script_builder' }));
   });
 
   // --- Rate limits use session's org, not auth's org ---
@@ -523,24 +563,6 @@ describe('runPreFlightChecks', () => {
   });
 
   // --- Budget uses session's org ---
-
-  it('passes session orgId (not auth orgId) to budget check', async () => {
-    const sessionOrg = 'org-session-99';
-    mockGetSession.mockResolvedValue(makeSession({ orgId: sessionOrg }));
-    mockCheckBudget.mockResolvedValue(null);
-    mockResolveLlmConfigForOrg.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-sonnet-4-6',
-      configId: 'config-1',
-      configVersion: 2,
-    });
-
-    await runPreFlightChecks('session-1', 'hello', auth);
-
-    expect(mockCheckBudget).toHaveBeenCalledWith(sessionOrg, 'partner_key');
-  });
 
   it('returns error when budget is exceeded', async () => {
     mockCheckBudget.mockResolvedValue('Monthly budget exhausted');
@@ -760,11 +782,8 @@ describe('runPreFlightChecks', () => {
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBeUndefined();
-      expect(result.resolved).toEqual({
-        source: 'platform',
-        apiKey: 'platform-key',
-        model: 'claude-sonnet-4-6',
-      });
+      expect(result.model).toEqual(makeResolvedModel('platform'));
+      expect(result.openaiCompatible).toBe(false);
     }
   });
 });

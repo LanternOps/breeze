@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
-const { queryMock, recordUsageMock, capturedQueryArgs, settleApprovalWaitsMock } = vi.hoisted(() => ({
+const { queryMock, settleInvocationMock, capturedQueryArgs, settleApprovalWaitsMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
-  recordUsageMock: vi.fn(() => Promise.resolve()),
+  settleInvocationMock: vi.fn(async (_input: unknown) => ({ costCents: 0, invocationIds: ['i1'], deferred: false })),
   capturedQueryArgs: [] as Array<{ prompt: unknown; options: Record<string, unknown> }>,
   settleApprovalWaitsMock: vi.fn(() => false),
 }));
@@ -32,18 +32,19 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: recordUsageMock,
-  // Pure helper on the done path — kept real so these tests exercise the actual
-  // summing rule. A factory that omits it does NOT yield undefined: vitest
-  // throws on the access, the throw escapes the result handler, and both
-  // recordExtraUsage and the `done` publish are skipped. That surfaces as a
-  // baffling "Number of calls: 0" rather than a missing-export error.
-  sumInputTokens: (u: Record<string, number | null | undefined> | null | undefined) =>
-    (u?.input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0),
+// W03 Task 7: turns settle through settleInvocation at the bound registry
+// rate; the quote that feeds `done` and the per-user hook stays real.
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: settleInvocationMock,
 }));
 vi.mock('./aiBudgetReservations', () => ({
   markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
@@ -62,13 +63,16 @@ vi.mock('./clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined })
 import { StreamingSessionManager } from './streamingSessionManager';
 import type { AuthContext } from '../middleware/auth';
 import type { AiStreamEvent } from '@breeze/shared/types/ai';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
+import type { SettleInvocationInput } from './aiModels/settleInvocation';
+import type { UsableLlmConfig } from './llm/llmConfigResolver';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 
 const DB_SESSION = {
   orgId: ORG,
   sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
@@ -81,13 +85,9 @@ const AUTH = {
   user: { id: 'beefbeef-1111-4222-8333-444455556666', email: 'finance.user@contoso.com' },
 } as unknown as AuthContext;
 
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
+const PLATFORM_CONFIG = makeResolvedModel('platform');
 
-const PARTNER_CONFIG = {
+const PARTNER_LLM_CONFIG = {
   source: 'partner' as const,
   partnerId: '1a1a1a1a-1111-4222-8333-444455556666',
   apiKey: 'partner-key-v1',
@@ -97,13 +97,27 @@ const PARTNER_CONFIG = {
   endpoint: { kind: 'anthropic' as const },
 };
 
+/** The resolver's answer for a direct-Anthropic BYOK connection carrying `config` (W03). */
+function partnerModel(config: Extract<UsableLlmConfig, { source: 'partner' }>) {
+  return makeResolvedModel('anthropic_byok', {
+    partnerId: config.partnerId,
+    connection: { id: config.configId, kind: 'anthropic_byok', config },
+    configVersion: config.configVersion,
+  });
+}
+
+const PARTNER_CONFIG = partnerModel(PARTNER_LLM_CONFIG);
+
 const RESULT_MSG = {
   type: 'result',
   subtype: 'success',
   total_cost_usd: 0.03,
   usage: { input_tokens: 100, output_tokens: 50 },
+  modelUsage: { 'claude-sonnet-5-5': { inputTokens: 100, outputTokens: 50 } },
   num_turns: 1,
 };
+/** 100 in × 200 + 50 out × 1000 cents/M (FIXTURE_STD_RATES) — the registry price, not the SDK's $0.03. */
+const RESULT_COST_CENTS = (100 * 200 + 50 * 1000) / 1e6;
 
 function deferred() {
   let resolve!: () => void;
@@ -166,41 +180,8 @@ describe('getOrCreate — approval-mode prompt injection option', () => {
   });
 });
 
-describe('getOrCreate — resolved LLM configuration snapshots', () => {
-  it('uses the resolved partner model unless the stored session has an explicit model', async () => {
-    const gate = deferred();
-    mockSdkQuery([], gate.promise);
-    const resolved = { ...PARTNER_CONFIG, model: 'claude-opus-4-6' };
-
-    const inherited = await manager.getOrCreate(
-      'sess-model-inherited',
-      { ...DB_SESSION, model: null },
-      AUTH,
-      undefined,
-      'BASE PROMPT',
-      undefined,
-      resolved,
-    );
-    const explicit = await manager.getOrCreate(
-      'sess-model-explicit',
-      { ...DB_SESSION, model: 'claude-haiku-4-5' },
-      AUTH,
-      undefined,
-      'BASE PROMPT',
-      undefined,
-      resolved,
-    );
-
-    expect(inherited.model).toBe('claude-opus-4-6');
-    expect(capturedQueryArgs[0]!.options.model).toBe('claude-opus-4-6');
-    expect(explicit.model).toBe('claude-haiku-4-5');
-    expect(capturedQueryArgs[1]!.options.model).toBe('claude-haiku-4-5');
-
-    gate.resolve();
-    await Promise.all([inherited.processorPromise, explicit.processorPromise]);
-  });
-
-  it('reuses the SDK query when the source and partner config snapshot still match', async () => {
+describe('getOrCreate — live-query key (spec §9.2)', () => {
+  it('reuses the SDK query when the live-query key still matches', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
 
@@ -208,16 +189,12 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
       'sess-config-match', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
     );
     const second = await manager.getOrCreate(
-      'sess-config-match', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, { ...PARTNER_CONFIG },
+      'sess-config-match', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, partnerModel({ ...PARTNER_LLM_CONFIG }),
     );
 
     expect(second).toBe(first);
     expect(queryMock).toHaveBeenCalledTimes(1);
-    expect(second.llmConfigSnapshot).toEqual({
-      source: 'partner',
-      configId: PARTNER_CONFIG.configId,
-      configVersion: 1,
-    });
+    expect(second.liveKey).toBe(liveQueryKey(turnBindingFrom(PARTNER_CONFIG)));
 
     gate.resolve();
     await first.processorPromise;
@@ -231,7 +208,7 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
       'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
     );
     first.state = 'processing';
-    const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
+    const rotated = partnerModel({ ...PARTNER_LLM_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 });
 
     const second = await manager.getOrCreate(
       'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
@@ -242,11 +219,7 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
     expect(first.abortController.signal.aborted).toBe(false);
     expect(first.query.close).not.toHaveBeenCalled();
     expect(queryMock).toHaveBeenCalledTimes(1);
-    expect(first.llmConfigSnapshot).toEqual({
-      source: 'partner',
-      configId: PARTNER_CONFIG.configId,
-      configVersion: 1,
-    });
+    expect(first.liveKey).toBe(liveQueryKey(turnBindingFrom(PARTNER_CONFIG)));
 
     gate.resolve();
     await first.processorPromise;
@@ -273,7 +246,7 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
       'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
     );
     first.state = 'idle';
-    const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
+    const rotated = partnerModel({ ...PARTNER_LLM_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 });
     const second = await manager.getOrCreate(
       'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
     );
@@ -286,22 +259,18 @@ describe('getOrCreate — resolved LLM configuration snapshots', () => {
       { type: 'done' },
     ]));
     expect(infoSpy).toHaveBeenCalledWith(
-      '[StreamingSessionManager] rotating idle AI session after provider configuration change',
+      '[StreamingSessionManager] rotating idle AI session after model/provider change',
       {
         breezeSessionId: 'sess-config-rotated',
-        oldConfigVersion: 1,
-        newConfigVersion: 2,
+        from: liveQueryKey(turnBindingFrom(PARTNER_CONFIG)),
+        to: liveQueryKey(turnBindingFrom(rotated)),
       },
     );
     expect(queryMock).toHaveBeenCalledTimes(2);
     expect(capturedQueryArgs[1]!.options.env).toEqual(expect.objectContaining({
       ANTHROPIC_API_KEY: 'partner-key-v2',
     }));
-    expect(second.llmConfigSnapshot).toEqual({
-      source: 'partner',
-      configId: PARTNER_CONFIG.configId,
-      configVersion: 2,
-    });
+    expect(second.liveKey).toBe(liveQueryKey(turnBindingFrom(rotated)));
 
     oldGate.resolve();
     await first.processorPromise;
@@ -337,13 +306,11 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
     await session.processorPromise;
     await consumer;
 
-    // 0.03 USD → 3 cents (recordUsageFromSdkResult rounding, aiCostTracker.ts:272)
-    expect(recordExtraUsage).toHaveBeenCalledWith({ inputTokens: 100, outputTokens: 50, costCents: 3 });
-    expect(recordUsageMock).toHaveBeenCalled(); // org-level recording still happens
-    expect(events).toContainEqual({
-      type: 'done',
-      usage: { inputTokens: 100, outputTokens: 50, costCents: 3 },
-    });
+    // The registry price of the turn's usage — never the SDK's total_cost_usd.
+    const usage = { inputTokens: 100, outputTokens: 50, costCents: expect.closeTo(RESULT_COST_CENTS, 6) };
+    expect(recordExtraUsage).toHaveBeenCalledWith(usage);
+    expect(settleInvocationMock).toHaveBeenCalledTimes(1); // org-level settlement still happens
+    expect(events).toContainEqual({ type: 'done', usage });
   });
 
   it('records usage against the session org for a partner-scope login (auth.orgId is null) — #3087 regression guard', async () => {
@@ -370,16 +337,13 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
     gate.resolve();
     await session.processorPromise;
 
-    expect(recordUsageMock).toHaveBeenCalledWith(
-      'sess-partner-usage',
-      ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
-      expect.objectContaining({ total_cost_usd: 0.03 }),
-      'platform',
-      // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
-      undefined,
-      // 6th arg: no budget reservation is attached to this legacy fixture.
-      undefined,
-    );
+    expect(settleInvocationMock).toHaveBeenCalledTimes(1);
+    expect(settleInvocationMock.mock.calls[0]![0] as SettleInvocationInput).toMatchObject({
+      sessionId: 'sess-partner-usage',
+      orgId: ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
+      binding: expect.objectContaining({ funding: 'platform' }),
+      reservationId: undefined, // no budget reservation is attached to this fixture
+    });
   });
 });
 

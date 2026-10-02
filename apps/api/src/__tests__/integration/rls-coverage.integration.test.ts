@@ -101,6 +101,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'ai_model_registry_state', // W03 cutover coordinator: one row, no tenant column (#7601). Forced RLS, single system-only policy — only the system-context cutover sweep reads/writes its lease and completion stamp. No org_id / device_id / partner_id, so no cascade, merge or export registration applies.
   'ai_platform_models', // AI model registry W01 (#7599): system-wide platform model catalog (Anthropic model ids, capabilities, operator prices, option support). No tenant column and NO RLS — same posture as llm_provider_catalog; every request context reads it for pricing and capabilities. Writes are gated to the ai-model-discovery worker and the platform-admin + MFA /admin/ai-models routes. No org_id / device_id, so no cascade, merge or export registration applies. Plan: docs/superpowers/plans/ai-mcp/2026-09-30-ai-model-registry-w01-platform-catalog.md.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
@@ -328,6 +329,12 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // (enabled AND partner_id = breeze_current_partner_id()). Forge proofs:
   // aiModelRegistryForgery.integration.test.ts.
   ['partner_ai_models', 'partner_id'],
+  // ai_model_registry_partner_cutover (#7601 W03 Task 6A): partner axis; reads
+  // on system OR breeze_has_partner_access, writes system-only (the cutover
+  // runs in system context). FK ON DELETE CASCADE from partners, plus
+  // cascadeDeletePartner's partner_id sweep. No org_id → no org cascade /
+  // merge / export entry.
+  ['ai_model_registry_partner_cutover', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.

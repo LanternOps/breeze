@@ -828,6 +828,10 @@ export interface PartnerSettings {
     html?: string | null;
   }>>;
   ml?: MlFeatureSettings;
+  /** AI model registry (#7598). Residency fails closed in resolveModel. */
+  ai?: {
+    residencyRequired?: boolean;
+  };
 }
 
 /** ML feature switches (`settings.ml`), same shape on partners and organizations. */

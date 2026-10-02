@@ -56,8 +56,8 @@ function argCount(text: string, open: number): number {
  */
 const NOT_THE_TRACKER: Record<string, string> = {
   // A local `const recordUsage = async () => …` closure that settles the
-  // topology token reservation. Topology's model cost is recorded by
-  // recordUsageFromSdkResult on the session path.
+  // topology token reservation. Topology's model cost is settled by
+  // settleInvocation on the session path.
   'services/topology/aiInvestigation.ts': 'local closure named recordUsage',
 };
 
@@ -78,9 +78,24 @@ describe('every AI cost record carries an invocation-ledger context (#7600 W02)'
     }
   });
 
+  // W03 Task 12: agent runs (the last caller) settle through settleInvocation;
+  // Task 17 deleted the function. A reintroduced one would bill a run twice.
+  it('recordSessionlessSdkUsage has no callers left (agent runs settle through the registry)', () => {
+    const callers: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
+      let at = text.indexOf('recordSessionlessSdkUsage(');
+      while (at !== -1) {
+        const isDefinition = /function\s+$/.test(text.slice(Math.max(0, at - 20), at));
+        if (!isDefinition && !isCommentLine(text, at)) callers.push(`${rel(file)}:${text.slice(0, at).split('\n').length}`);
+        at = text.indexOf('recordSessionlessSdkUsage(', at + 1);
+      }
+    }
+    expect(callers).toEqual([]);
+  });
+
   it.each([
     ['recordUsage(', 11],
-    ['recordSessionlessSdkUsage(', 5],
   ] as const)('every %s call passes the ledger argument', (callee, required) => {
     const offenders: string[] = [];
     let scanned = 0;
@@ -100,8 +115,11 @@ describe('every AI cost record carries an invocation-ledger context (#7600 W02)'
         at = text.indexOf(callee, at + callee.length);
       }
     }
-    // Guards against a scanner that silently matches nothing.
-    expect(scanned).toBeGreaterThan(0);
+    // W03 Task 13: the last cost-tracker `recordUsage(` callers (catalog
+    // enrichment, extension AI, workspace enrichment) settle through the
+    // registry now, so NO call site remains and a reintroduced one would bill
+    // twice. Task 17 deleted the function.
+    expect(scanned).toBe(0);
     expect(offenders).toEqual([]);
   });
 });

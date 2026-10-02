@@ -27,6 +27,7 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+import { AgentModelNotAllowedError } from '../services/aiAgents/agentModelErrors';
 // Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
 // below) — needed so a PATCH test can construct the exact instance
 // `updateAgentMock` rejects with.
@@ -4530,6 +4531,39 @@ describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
+  });
+});
+
+// AI model registry W03 (Task 12 Step 7A): the policy model is bound to a
+// registry offering at write time; a refusal is an actionable 400 (503 while
+// the partner's registry cutover is pending).
+describe('PATCH /ai-agents/:id — policy model binding (AI model registry W03)', () => {
+  function patchAgent(app: Hono, body: unknown, id = AGENT_ID) {
+    return app.request(`/ai-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s with code not_permitted when the model is outside the ai_agents permitted set', async () => {
+    updateAgentMock.mockRejectedValueOnce(new AgentModelNotAllowedError('This AI model is not permitted for AI agents here. Choose another model.', 'not_permitted'));
+
+    const res = await patchAgent(buildApp(), { model: 'claude-haiku-4-5' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'This AI model is not permitted for AI agents here. Choose another model.', code: 'not_permitted',
+    });
+  });
+
+  it('503s with code registry_unavailable while the registry cutover is pending', async () => {
+    updateAgentMock.mockRejectedValueOnce(new AgentModelNotAllowedError('AI configuration is being upgraded. Try again in a moment.', 'registry_unavailable'));
+
+    const res = await patchAgent(buildApp(), { model: 'claude-opus-5-5' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
   });
 });
 

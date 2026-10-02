@@ -102,7 +102,7 @@ describe('durable AI budget reservations', () => {
     )).rejects.toMatchObject({ cause: { code: '42501' } });
 
     const [foreignSession] = await withDbAccessContext(orgContext(foreignOrg.id), () =>
-      db.insert(aiSessions).values({ orgId: foreignOrg.id }).returning({ id: aiSessions.id }),
+      db.insert(aiSessions).values({ orgId: foreignOrg.id, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id }),
     );
     if (!foreignSession) throw new Error('expected foreign session fixture');
     await expect(withDbAccessContext(orgContext(ownOrg.id), () =>
@@ -118,7 +118,7 @@ describe('durable AI budget reservations', () => {
     )).rejects.toMatchObject({ cause: { code: '23503' } });
 
     const [ownSession] = await withDbAccessContext(orgContext(ownOrg.id), () =>
-      db.insert(aiSessions).values({ orgId: ownOrg.id }).returning({ id: aiSessions.id }),
+      db.insert(aiSessions).values({ orgId: ownOrg.id, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id }),
     );
     if (!ownSession) throw new Error('expected own session fixture');
     const sessionReservation = await withDbAccessContext(orgContext(ownOrg.id), () => reserveAiBudget({
@@ -563,7 +563,7 @@ describe('durable AI budget reservations', () => {
   it('refuses to reuse one idempotency key for a different dispatch', async () => {
     const org = await makeOrgWithBudget(null, null);
     const [session] = await withDbAccessContext(orgContext(org.id), () =>
-      db.insert(aiSessions).values({ orgId: org.id }).returning({ id: aiSessions.id }));
+      db.insert(aiSessions).values({ orgId: org.id, model: 'claude-sonnet-5-5' }).returning({ id: aiSessions.id }));
     if (!session) throw new Error('expected a session fixture');
 
     await withDbAccessContext(orgContext(org.id), () => reserveAiBudget({

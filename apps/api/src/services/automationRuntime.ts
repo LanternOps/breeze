@@ -1565,6 +1565,9 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   compute_credits_exhausted: false,
   too_many_input_devices: false,
   workspace_unavailable: false,
+  // AI model registry W03: a configuration gate (the agents' model is
+  // unavailable), never a data-integrity bug.
+  model_unavailable: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

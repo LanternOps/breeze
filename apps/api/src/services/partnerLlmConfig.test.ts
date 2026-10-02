@@ -1,6 +1,5 @@
-import { createHash, createHmac } from 'node:crypto';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { inspect } from 'node:util';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -9,34 +8,29 @@ const CATALOG_ENTRY_ID = '44444444-4444-4444-8444-444444444444';
 const CATALOG_REVISION_ID = '55555555-5555-4555-8555-555555555555';
 const API_KEY = 'sk-ant-api03-unit-test-key-1234567890';
 
-const { anthropicState, captureExceptionMock, dbState, catalogState } = vi.hoisted(() => {
+const { anthropicState, captureExceptionMock, catalogState, reg, order } = vi.hoisted(() => {
   class MockAnthropicApiError extends Error {
     constructor(message: string, readonly status?: number) {
       super(message);
       this.name = 'APIError';
     }
   }
-
+  const order: string[] = [];
   return {
     anthropicState: {
-      constructorOptions: [] as Array<{ apiKey?: string }>,
+      constructorOptions: [] as Array<Record<string, unknown>>,
       create: vi.fn(),
       apiErrorClass: MockAnthropicApiError,
     },
     captureExceptionMock: vi.fn(),
-    dbState: {
-      insertResults: [] as unknown[][],
-      selectResults: [] as unknown[][],
-      updateResults: [] as unknown[][],
-      deleteResults: [] as unknown[][],
-      insertedValues: [] as Array<Record<string, unknown>>,
-      updateSets: [] as Array<Record<string, unknown>>,
-      updateWheres: [] as unknown[],
-      deleteWheres: [] as unknown[],
-    },
-    catalogState: {
-      catalogEnabled: true,
-      getListedProviderByEntryId: vi.fn(),
+    catalogState: { catalogEnabled: true, getListedProviderByEntryId: vi.fn() },
+    order,
+    /** The registry as the facade sees it: one compat connection or none. */
+    reg: {
+      compat: null as null | { id: string; kind: 'anthropic_byok' | 'catalog'; catalogEntryId: string | null; legacyDefaultModel: string | null },
+      cutOver: true,
+      statusRow: null as null | Record<string, unknown>,
+      statusFrom: [] as unknown[],
     },
   };
 });
@@ -44,8 +38,8 @@ const { anthropicState, captureExceptionMock, dbState, catalogState } = vi.hoist
 vi.mock('@anthropic-ai/sdk', () => {
   class MockAnthropic {
     static APIError = anthropicState.apiErrorClass;
-    messages = { create: anthropicState.create };
-    constructor(options: { apiKey?: string }) {
+    messages = { create: (...args: unknown[]) => { order.push('probe'); return anthropicState.create(...args); } };
+    constructor(options: Record<string, unknown>) {
       anthropicState.constructorOptions.push(options);
     }
   }
@@ -62,28 +56,54 @@ vi.mock('./aiModels/platformModels', () => ({
   isOfferablePlatformModel: (...args: unknown[]) => isOfferablePlatformModelMock(...args),
 }));
 
-const reconcileState = vi.hoisted(() => ({ calls: [] as string[] }));
-const lockPartnerRegistryReconcileMock = vi.hoisted(() => vi.fn(async (_partnerId: string) => undefined));
+const legacy = vi.hoisted(() => ({
+  lock: vi.fn(async (_partnerId: string) => { order.push('lock'); }),
+  reconcile: vi.fn(),
+}));
 vi.mock('./aiModels/legacyReconcile', () => ({
-  lockPartnerRegistryReconcile: lockPartnerRegistryReconcileMock,
-  reconcilePartnerFromLegacyInTx: vi.fn(async (partnerId: string) => {
-    reconcileState.calls.push(partnerId);
-    return { partnerId };
-  }),
+  lockPartnerRegistryReconcile: legacy.lock,
+  reconcilePartnerFromLegacyInTx: legacy.reconcile,
 }));
 
-vi.mock('./sentry', () => ({
-  captureException: captureExceptionMock,
-}));
+const cutover = vi.hoisted(() => ({ ensure: vi.fn() }));
+vi.mock('./aiModels/registryCutover', () => ({ ensurePartnerCutover: cutover.ensure }));
 
-vi.mock('./llmProviderCatalog', () => ({
-  getListedProviderByEntryId: catalogState.getListedProviderByEntryId,
+const conns = vi.hoisted(() => ({
+  getCompatConnection: vi.fn(),
+  getConnectionKeyMaterial: vi.fn(),
+  decryptConnectionKey: vi.fn(),
 }));
+vi.mock('./aiModels/connections', () => {
+  class ConnectionKeyError extends Error {
+    constructor(message: string, readonly code: string) { super(message); this.name = 'ConnectionKeyError'; }
+  }
+  return { ...conns, ConnectionKeyError };
+});
+
+const remap = vi.hoisted(() => ({
+  lockCompatConnection: vi.fn(),
+  connectCompat: vi.fn(),
+  disconnectCompat: vi.fn(),
+  changeCompatDefaultModel: vi.fn(),
+  rotateCompatKey: vi.fn(),
+  setCompatCatalogEntry: vi.fn(),
+  bumpCompatConfigVersion: vi.fn(),
+  switchCompatKind: vi.fn(),
+}));
+vi.mock('./aiModels/compatRemap', () => {
+  class RegistryNotCutOverError extends Error { constructor() { super('not cut over'); this.name = 'RegistryNotCutOverError'; } }
+  class CompatConnectionMissingError extends Error { constructor() { super('missing'); this.name = 'CompatConnectionMissingError'; } }
+  return { ...remap, RegistryNotCutOverError, CompatConnectionMissingError };
+});
+
+const discovery = vi.hoisted(() => ({ enqueue: vi.fn() }));
+vi.mock('../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: discovery.enqueue }));
+
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
+vi.mock('./llmProviderCatalog', () => ({ getListedProviderByEntryId: catalogState.getListedProviderByEntryId }));
 
 // Only the feature flag is stubbed. `buildCatalogEndpointSnapshot` stays REAL:
-// it is the single shared definition of "usable endpoint + wire model", and a
-// hand-rolled copy here would let this file's probe assertions pass against a
-// mapping the resolver no longer performs.
+// it is the single shared definition of "usable endpoint + wire model".
 vi.mock('./llm/llmConfigResolver', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./llm/llmConfigResolver')>()),
   isLlmProviderCatalogEnabled: () => catalogState.catalogEnabled,
@@ -104,49 +124,16 @@ vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
   db: {
-    insert: vi.fn(() => ({
-      values: vi.fn((values: Record<string, unknown>) => {
-        dbState.insertedValues.push(values);
-        return {
-          onConflictDoNothing: vi.fn(() => ({
-            returning: vi.fn(() => Promise.resolve(dbState.insertResults.shift() ?? [])),
-          })),
-        };
-      }),
-    })),
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve(dbState.selectResults.shift() ?? [])),
-        })),
-      })),
-    })),
-    update: vi.fn(() => ({
-      set: vi.fn((values: Record<string, unknown>) => {
-        dbState.updateSets.push(values);
-        return {
-          where: vi.fn((condition: unknown) => {
-            dbState.updateWheres.push(condition);
-            return {
-              returning: vi.fn(() => Promise.resolve(dbState.updateResults.shift() ?? [])),
-            };
-          }),
-        };
-      }),
-    })),
-    delete: vi.fn(() => ({
-      where: vi.fn((condition: unknown) => {
-        dbState.deleteWheres.push(condition);
-        return {
-          returning: vi.fn(() => Promise.resolve(dbState.deleteResults.shift() ?? [])),
-        };
+      from: vi.fn((table: unknown) => {
+        reg.statusFrom.push(table);
+        return { where: vi.fn(() => ({ limit: vi.fn(async () => (reg.statusRow ? [reg.statusRow] : [])) })) };
       }),
     })),
   },
 }));
 
-import { decryptSecret, encryptSecret } from './secretCrypto';
-import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
+import { partnerAiConnections } from '../db/schema';
 import {
   deletePartnerLlmConfig,
   getPartnerLlmStatus,
@@ -156,57 +143,16 @@ import {
   updatePartnerLlmEndpoint,
 } from './partnerLlmConfig';
 import { buildGuardedLlmFetch, LlmEgressViolationError } from './llm/guardedLlmFetch';
-import { captureException } from './sentry';
+import { CompatConnectionMissingError, RegistryNotCutOverError } from './aiModels/compatRemap';
 
-const originalEncryptionEnv = {
-  key: process.env.APP_ENCRYPTION_KEY,
-  keyId: process.env.APP_ENCRYPTION_KEY_ID,
-  keyring: process.env.APP_ENCRYPTION_KEYRING,
-};
+const byok = (over: Partial<NonNullable<typeof reg.compat>> = {}) =>
+  ({ id: CONFIG_ID, kind: 'anthropic_byok' as const, catalogEntryId: null, legacyDefaultModel: null, ...over });
+const catalogConn = (over: Partial<NonNullable<typeof reg.compat>> = {}) =>
+  byok({ kind: 'catalog', catalogEntryId: CATALOG_ENTRY_ID, legacyDefaultModel: 'claude-sonnet-4-6', ...over });
 
-process.env.APP_ENCRYPTION_KEY = 'partner-llm-unit-test-key-material';
-process.env.APP_ENCRYPTION_KEY_ID = 'partner-llm-test';
-delete process.env.APP_ENCRYPTION_KEYRING;
-
-function expectedFingerprint(value: string): string {
-  const encryptionKey = createHash('sha256')
-    .update('partner-llm-unit-test-key-material')
-    .digest();
-  const hex = createHmac('sha256', encryptionKey).update(value).digest('hex');
-  return `fp1:partner-llm-test:${hex}`;
-}
-
-function apiKeyAad(id: string): string {
-  const spec = encryptedColumnRegistry.find(
-    (entry) => entry.table === 'partner_llm_configs' && entry.column === 'api_key_encrypted',
-  );
-  if (!spec) throw new Error('partner LLM encrypted-column registration missing');
-  return columnAad(spec, id);
-}
-
-function compileSql(expression: unknown): { sql: string; params: unknown[] } {
-  const { sql, params } = new PgDialect().sqlToQuery(expression as never);
-  return { sql, params };
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  reconcileState.calls.length = 0;
-  anthropicState.constructorOptions.length = 0;
-  dbState.insertResults.length = 0;
-  dbState.selectResults.length = 0;
-  dbState.updateResults.length = 0;
-  dbState.deleteResults.length = 0;
-  dbState.insertedValues.length = 0;
-  dbState.updateSets.length = 0;
-  dbState.updateWheres.length = 0;
-  dbState.deleteWheres.length = 0;
-  anthropicState.create.mockResolvedValue({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
-  catalogState.catalogEnabled = true;
-  catalogState.getListedProviderByEntryId.mockReset();
-  vi.mocked(buildGuardedLlmFetch).mockClear();
-  vi.mocked(buildGuardedLlmFetch).mockReturnValue('guarded-fetch-sentinel' as never);
-});
+/** Every registry-native write the facade can issue. */
+const WRITES = ['connectCompat', 'disconnectCompat', 'changeCompatDefaultModel', 'rotateCompatKey', 'setCompatCatalogEntry', 'bumpCompatConfigVersion', 'switchCompatKind'] as const;
+const writesIssued = () => WRITES.filter((name) => remap[name].mock.calls.length > 0);
 
 function listedProvider(overrides: Record<string, unknown> = {}) {
   return {
@@ -232,693 +178,441 @@ function listedProvider(overrides: Record<string, unknown> = {}) {
   };
 }
 
-afterAll(() => {
-  if (originalEncryptionEnv.key === undefined) delete process.env.APP_ENCRYPTION_KEY;
-  else process.env.APP_ENCRYPTION_KEY = originalEncryptionEnv.key;
-  if (originalEncryptionEnv.keyId === undefined) delete process.env.APP_ENCRYPTION_KEY_ID;
-  else process.env.APP_ENCRYPTION_KEY_ID = originalEncryptionEnv.keyId;
-  if (originalEncryptionEnv.keyring === undefined) delete process.env.APP_ENCRYPTION_KEYRING;
-  else process.env.APP_ENCRYPTION_KEYRING = originalEncryptionEnv.keyring;
+beforeEach(() => {
+  vi.clearAllMocks();
+  order.length = 0;
+  anthropicState.constructorOptions.length = 0;
+  anthropicState.create.mockResolvedValue({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
+  catalogState.catalogEnabled = true;
+  catalogState.getListedProviderByEntryId.mockReset();
+  vi.mocked(buildGuardedLlmFetch).mockReturnValue('guarded-fetch-sentinel' as never);
+  reg.compat = null;
+  reg.cutOver = true;
+  reg.statusRow = null;
+  reg.statusFrom = [];
+  cutover.ensure.mockImplementation(async () => { order.push('gate'); return reg.cutOver; });
+  conns.getCompatConnection.mockImplementation(async () => reg.compat);
+  conns.getConnectionKeyMaterial.mockImplementation(async (id: string) => ({ id, partnerId: PARTNER_ID, apiKeyEncrypted: 'enc:sealed' }));
+  conns.decryptConnectionKey.mockReturnValue(API_KEY);
+  remap.lockCompatConnection.mockImplementation(async () => (reg.compat
+    ? { ...reg.compat, configVersion: 4, connectedBy: USER_ID, verifiedAt: null }
+    : null));
+  for (const name of WRITES) remap[name].mockImplementation(async () => { order.push(name); return { configVersion: 5 }; });
+  remap.connectCompat.mockImplementation(async () => { order.push('connectCompat'); return 'new-conn'; });
+  discovery.enqueue.mockResolvedValue(undefined);
+  remap.disconnectCompat.mockImplementation(async () => { order.push('disconnectCompat'); return true; });
+  remap.rotateCompatKey.mockImplementation(async () => { order.push('rotateCompatKey'); return { configVersion: 8, defaultModel: 'claude-haiku-4-5' }; });
+  isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
+    ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'].includes(model));
 });
 
 describe('savePartnerLlmKey', () => {
-  it('leaves the existing row untouched when Anthropic rejects the probe', async () => {
-    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rejected', 401));
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({
-      name: 'PartnerLlmError',
-      status: 400,
-      message: expect.stringContaining('rejected'),
-    });
-
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
+  it.each([
+    [401, 400],
+    [403, 409],
+    [429, 503],
+  ])('maps an Anthropic %i probe rejection to %i and writes nothing', async (upstream, status) => {
+    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rejected', upstream));
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }))
+      .rejects.toMatchObject({ name: 'PartnerLlmError', status });
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('maps an Anthropic permission rejection to 409 without persisting', async () => {
-    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('forbidden', 403));
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
-  });
-
-  it('rethrows a non-APIError from the probe without wrapping or persisting', async () => {
+  it('rethrows a non-APIError from the probe without wrapping or writing', async () => {
     const error = new Error('unexpected programming failure');
     anthropicState.create.mockRejectedValue(error);
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toBe(error);
-
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toBe(error);
+    expect(writesIssued()).toEqual([]);
   });
 
   it('maps another Anthropic 4xx rejection to 400 without exposing the response body', async () => {
     const error = new anthropicState.apiErrorClass('sensitive upstream response', 404);
     anthropicState.create.mockRejectedValue(error);
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({
       name: 'PartnerLlmError',
       status: 400,
       message: 'Anthropic rejected the verification request (HTTP 404). The probe model may be unavailable — contact support if this persists.',
     });
-
-    expect(captureException).toHaveBeenCalledWith(error, undefined, { service: 'partnerLlmConfig' });
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
+    expect(captureExceptionMock).toHaveBeenCalledWith(error, undefined, { service: 'partnerLlmConfig' });
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('maps Anthropic rate limiting to a transient 503 without persisting', async () => {
-    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rate limited', 429));
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 503 });
-
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
-  });
-
-  it('rejects an encrypted-envelope paste before probing or writing', async () => {
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: 'enc:v3:key:pretend.payload.here', userId: USER_ID }),
-    ).rejects.toBeInstanceOf(PartnerLlmError);
-
+  it('rejects an encrypted-envelope paste before the gate, the probe or any write', async () => {
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: 'enc:v3:key:pretend.payload.here', userId: USER_ID }))
+      .rejects.toBeInstanceOf(PartnerLlmError);
+    expect(cutover.ensure).not.toHaveBeenCalled();
     expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('probes first and persists a row-bound ciphertext, last4, HMAC fingerprint, and version 1', async () => {
-    dbState.insertResults.push([{ id: CONFIG_ID, configVersion: 1 }]);
-
-    const result = await savePartnerLlmKey({
-      partnerId: PARTNER_ID,
-      apiKey: `  ${API_KEY}  `,
-      userId: USER_ID,
+  it('a first key probes the public API, then connects a BYOK connection (version 1, tracking the deployment default)', async () => {
+    const result = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: `  ${API_KEY}  `, userId: USER_ID });
+    // Pinned to the public API through the connection factory: a partner key
+    // never follows an ambient ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN.
+    expect(anthropicState.constructorOptions).toEqual([{ apiKey: API_KEY, authToken: null, baseURL: 'https://api.anthropic.com' }]);
+    expect(anthropicState.create).toHaveBeenCalledWith({ model: 'claude-sonnet-4-6', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
+    expect(remap.connectCompat).toHaveBeenCalledWith(PARTNER_ID, {
+      kind: 'anthropic_byok', apiKey: API_KEY, catalogEntryId: null, connectedBy: USER_ID, defaultModel: null, verifiedAt: expect.any(Date),
     });
-
-    expect(anthropicState.constructorOptions).toEqual([{ apiKey: API_KEY }]);
-    expect(anthropicState.create).toHaveBeenCalledWith({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'ping' }],
-    });
-    const values = dbState.insertedValues[0]!;
-    expect(values.apiKeyEncrypted).not.toBe(API_KEY);
-    expect(String(values.apiKeyEncrypted)).not.toContain(API_KEY);
-    expect(decryptSecret(String(values.apiKeyEncrypted), { aad: apiKeyAad(String(values.id)) })).toBe(API_KEY);
-    expect(values.keyLast4).toBe('7890');
-    expect(values.keyFingerprint).toBe(expectedFingerprint(API_KEY));
-    expect(values.configVersion).toBe(1);
-    expect(values.status).toBe('active');
-    expect(values.lastError).toBeNull();
-    expect(result).toMatchObject({
-      last4: '7890',
-      model: 'claude-sonnet-4-6',
-      configVersion: 1,
-      verifiedAt: expect.any(Date),
-    });
+    expect(writesIssued()).toEqual(['connectCompat']);
+    expect(result).toMatchObject({ last4: '7890', model: 'claude-sonnet-4-6', configVersion: 1, verifiedAt: expect.any(Date) });
   });
 
-  it('re-encrypts against the existing row id and increments the version on replacement', async () => {
-    dbState.insertResults.push([]);
-    // First select: the pre-probe lookup of the partner's currently-selected
-    // endpoint (none here, so the probe targets direct Anthropic as before).
-    dbState.selectResults.push([{ catalogEntryId: null, defaultModel: 'claude-haiku-4-5' }]);
-    // Second select: the existing insert/update flow's on-conflict fallback.
-    dbState.selectResults.push([{ id: CONFIG_ID, defaultModel: 'claude-haiku-4-5' }]);
-    dbState.updateResults.push([{ configVersion: 8 }]);
-
+  it('a replacement key rotates the connection in place (no remap) and reports its pinned model', async () => {
+    reg.compat = byok({ legacyDefaultModel: 'claude-haiku-4-5' });
     const result = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
-
-    const updates = dbState.updateSets[0]!;
-    expect(decryptSecret(String(updates.apiKeyEncrypted), { aad: apiKeyAad(CONFIG_ID) })).toBe(API_KEY);
-    expect(updates.status).toBe('active');
-    expect(updates.lastError).toBeNull();
-    expect(compileSql(updates.configVersion)).toEqual({
-      sql: '"partner_llm_configs"."config_version" + 1',
-      params: [],
-    });
-    expect(compileSql(dbState.updateWheres[0])).toEqual({
-      sql: '("partner_llm_configs"."partner_id" = $1 and "partner_llm_configs"."id" = $2)',
-      params: [PARTNER_ID, CONFIG_ID],
-    });
+    expect(remap.rotateCompatKey).toHaveBeenCalledWith(PARTNER_ID, { apiKey: API_KEY, connectedBy: USER_ID, verifiedAt: expect.any(Date) });
+    expect(writesIssued()).toEqual(['rotateCompatKey']);
     expect(result).toMatchObject({ model: 'claude-haiku-4-5', configVersion: 8 });
   });
 
   it('probes the currently-selected catalog endpoint instead of direct Anthropic when rotating the key', async () => {
+    reg.compat = catalogConn();
     catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
-    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
-    dbState.insertResults.push([]);
-    dbState.selectResults.push([{ id: CONFIG_ID, defaultModel: 'claude-sonnet-4-6' }]);
-    dbState.updateResults.push([{ configVersion: 4 }]);
-
     await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
-
     expect(catalogState.getListedProviderByEntryId).toHaveBeenCalledWith(CATALOG_ENTRY_ID);
-    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(
-      expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }),
-    );
+    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }));
     expect(anthropicState.constructorOptions).toEqual([{
-      baseURL: 'https://openrouter.ai/api/v1',
-      apiKey: API_KEY,
-      authToken: null,
-      fetch: 'guarded-fetch-sentinel',
+      baseURL: 'https://openrouter.ai/api/v1', apiKey: API_KEY, authToken: null, fetch: 'guarded-fetch-sentinel',
     }]);
-    expect(anthropicState.create).toHaveBeenCalledWith({
-      model: 'anthropic/claude-sonnet-4-6',
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'ping' }],
-    });
+    expect(anthropicState.create).toHaveBeenCalledWith({ model: 'anthropic/claude-sonnet-4-6', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
+    expect(writesIssued()).toEqual(['rotateCompatKey']);
   });
 
-  it('rejects a key rotation when the currently-selected catalog endpoint was delisted, without persisting', async () => {
-    catalogState.getListedProviderByEntryId.mockResolvedValue(null);
-    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
+  it.each([
+    ['delisted', () => catalogState.getListedProviderByEntryId.mockResolvedValue(null)],
+    ['catalog selection disabled', () => { catalogState.catalogEnabled = false; }],
+  ])('rejects a key rotation when the selected catalog endpoint is %s, without probing or writing', async (_why, arrange) => {
+    reg.compat = catalogConn();
+    arrange();
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
     expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.insertedValues).toHaveLength(0);
-    expect(dbState.updateSets).toHaveLength(0);
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('rejects a key rotation targeting a catalog endpoint while catalog selection is disabled', async () => {
-    catalogState.catalogEnabled = false;
-    dbState.selectResults.push([{ catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6' }]);
-
-    await expect(
-      savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
-    expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
-    expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.insertedValues).toHaveLength(0);
+  it('refuses (409) when the endpoint changed between the probe and the write', async () => {
+    reg.compat = byok();
+    remap.lockCompatConnection.mockResolvedValueOnce({ ...catalogConn(), configVersion: 9, connectedBy: null, verifiedAt: null });
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
+    expect(writesIssued()).toEqual([]);
   });
 });
 
 describe('updatePartnerLlmConfig', () => {
-  beforeEach(() => {
-    isOfferablePlatformModelMock.mockImplementation(async (model: string) =>
-      ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-fable-5'].includes(model));
-  });
-
   it('accepts a default the registry offers that W00 never listed (W01 #7599)', async () => {
+    reg.compat = byok();
     isOfferablePlatformModelMock.mockResolvedValue(true);
-    dbState.updateResults.push([{ configVersion: 3 }]);
     await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'vendor-new-model' }))
-      .resolves.toEqual({ defaultModel: 'vendor-new-model', configVersion: 3 });
+      .resolves.toEqual({ defaultModel: 'vendor-new-model', configVersion: 5 });
+    expect(remap.changeCompatDefaultModel).toHaveBeenCalledWith(PARTNER_ID, 'vendor-new-model');
   });
 
-  it('rejects a W00 id the operator stopped offering, without writing (W01 #7599)', async () => {
-    isOfferablePlatformModelMock.mockResolvedValue(false);
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
+  it.each(['claude-made-up-model', 'claude-haiku-3'])('rejects %s (not offerable) before the gate, without writing', async (model) => {
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: model }))
       .rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
-    expect(dbState.updateSets).toHaveLength(0);
+    expect(cutover.ensure).not.toHaveBeenCalled();
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('rejects an unknown default model without writing', async () => {
-    await expect(
-      updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-made-up-model' }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
-    expect(dbState.updateSets).toHaveLength(0);
+  it('a null default goes back to tracking the deployment default', async () => {
+    reg.compat = byok({ legacyDefaultModel: 'claude-haiku-4-5' });
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: null });
+    expect(remap.changeCompatDefaultModel).toHaveBeenCalledWith(PARTNER_ID, null);
   });
 
-  it('increments the config version with SQL when updating the default model', async () => {
-    dbState.updateResults.push([{ configVersion: 9 }]);
-
-    await expect(updatePartnerLlmConfig({
-      partnerId: PARTNER_ID,
-      defaultModel: 'claude-haiku-4-5',
-    })).resolves.toEqual({
-      defaultModel: 'claude-haiku-4-5',
-      configVersion: 9,
-    });
-
-    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
-      sql: '"partner_llm_configs"."config_version" + 1',
-      params: [],
-    });
-    expect(compileSql(dbState.updateWheres[0])).toEqual({
-      sql: '"partner_llm_configs"."partner_id" = $1',
-      params: [PARTNER_ID],
-    });
+  it('409s without a connection and writes nothing', async () => {
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
+      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 409, message: 'Connect an Anthropic API key before selecting a model.' });
+    expect(writesIssued()).toEqual([]);
   });
 });
 
 describe('getPartnerLlmStatus', () => {
-  it('preserves null defaultModel so callers can distinguish platform inheritance', async () => {
-    dbState.selectResults.push([{
-      provider: 'anthropic',
-      keyLast4: '7890',
-      defaultModel: null,
-      status: 'active',
-      verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
-      lastError: null,
-      catalogEntryId: null,
-    }]);
-
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
-      configured: true,
-      defaultModel: null,
-      catalogEntryId: null,
-    });
+  it('reads the registry connection and preserves a null defaultModel (platform inheritance)', async () => {
+    reg.statusRow = { keyLast4: '7890', defaultModel: null, status: 'active', verifiedAt: new Date('2026-08-23T12:00:00.000Z'), lastError: null, catalogEntryId: null };
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: true, defaultModel: null, catalogEntryId: null });
+    expect(reg.statusFrom).toEqual([partnerAiConnections]);
   });
 
   it('surfaces the selected catalog entry id', async () => {
-    dbState.selectResults.push([{
-      provider: 'anthropic',
-      keyLast4: '7890',
-      defaultModel: 'claude-sonnet-4-6',
-      status: 'active',
-      verifiedAt: new Date('2026-08-23T12:00:00.000Z'),
-      lastError: null,
-      catalogEntryId: CATALOG_ENTRY_ID,
-    }]);
-
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
-      catalogEntryId: CATALOG_ENTRY_ID,
-    });
+    reg.statusRow = { keyLast4: '7890', defaultModel: 'claude-sonnet-4-6', status: 'active', verifiedAt: null, lastError: null, catalogEntryId: CATALOG_ENTRY_ID };
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID });
   });
 
-  it('reports catalogEntryId null when unconfigured', async () => {
-    dbState.selectResults.push([]);
-
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({
-      configured: false,
-      catalogEntryId: null,
-    });
+  it('reports the platform when unconfigured', async () => {
+    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: false, status: 'platform', catalogEntryId: null });
   });
 });
 
 describe('deletePartnerLlmConfig', () => {
-  it.each([
-    [[{ id: CONFIG_ID }], true],
-    [[], false],
-  ] as const)('returns whether a config row was deleted', async (deletedRows, expected) => {
-    dbState.deleteResults.push([...deletedRows]);
-
-    await expect(deletePartnerLlmConfig(PARTNER_ID)).resolves.toBe(expected);
-    expect(compileSql(dbState.deleteWheres[0])).toEqual({
-      sql: '"partner_llm_configs"."partner_id" = $1',
-      params: [PARTNER_ID],
-    });
+  it.each([true, false])('disconnects natively and returns whether a connection existed (%s)', async (existed) => {
+    remap.disconnectCompat.mockResolvedValueOnce(existed);
+    await expect(deletePartnerLlmConfig(PARTNER_ID)).resolves.toBe(existed);
+    expect(remap.disconnectCompat).toHaveBeenCalledWith(PARTNER_ID);
   });
 });
 
-function encryptedApiKeyRow(): string {
-  const encrypted = encryptSecret(API_KEY, { aad: apiKeyAad(CONFIG_ID) });
-  if (!encrypted) throw new Error('test setup: could not encrypt fixture API key');
-  return encrypted;
-}
-
 describe('updatePartnerLlmEndpoint', () => {
-  it('rejects when no Anthropic key is connected yet', async () => {
-    dbState.selectResults.push([]);
+  const select = (catalogEntryId: string | null, acknowledgeDataNote = true) =>
+    updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId, acknowledgeDataNote, userId: USER_ID });
 
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-    expect(dbState.updateSets).toHaveLength(0);
+  it('rejects when no Anthropic key is connected yet', async () => {
+    await expect(select(CATALOG_ENTRY_ID)).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('reverts to direct Anthropic without probing when catalogEntryId is null', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    dbState.updateResults.push([{ configVersion: 5 }]);
-
-    const result = await updatePartnerLlmEndpoint({
-      partnerId: PARTNER_ID,
-      catalogEntryId: null,
-      acknowledgeDataNote: false,
-      userId: USER_ID,
-    });
-
-    expect(result).toEqual({ catalogEntryId: null, configVersion: 5, slug: null, revision: null });
+  it('reverting an already-direct partner to direct only advances config_version (no probe)', async () => {
+    reg.compat = byok();
+    await expect(select(null, false)).resolves.toEqual({ catalogEntryId: null, configVersion: 5, slug: null, revision: null });
+    expect(writesIssued()).toEqual(['bumpCompatConfigVersion']);
     expect(anthropicState.create).not.toHaveBeenCalled();
     expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
-    expect(dbState.updateSets[0]).toMatchObject({ catalogEntryId: null });
-    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
-      sql: '"partner_llm_configs"."config_version" + 1',
-      params: [],
+  });
+
+  it('catalog → direct switches kind with the same key and keeps the model (no probe)', async () => {
+    reg.compat = catalogConn({ legacyDefaultModel: 'claude-haiku-4-5' });
+    await select(null, false);
+    expect(remap.switchCompatKind).toHaveBeenCalledWith(PARTNER_ID, {
+      kind: 'anthropic_byok', apiKey: API_KEY, catalogEntryId: null, defaultModel: 'claude-haiku-4-5',
     });
+    expect(conns.getConnectionKeyMaterial).toHaveBeenCalledWith(CONFIG_ID);
+    expect(anthropicState.create).not.toHaveBeenCalled();
   });
 
-  it('rejects selecting a delisted catalog entry, without persisting', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(null);
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
+  it.each([
+    ['a delisted entry', () => catalogState.getListedProviderByEntryId.mockResolvedValue(null), true, 409],
+    ['a missing data-note consent', () => catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: 'Prompts transit OpenRouter.' })), false, 400],
+    ['an unverified model', () => { reg.compat = byok({ legacyDefaultModel: 'claude-haiku-4-5' }); catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider()); }, true, 409],
+    ['catalog selection disabled', () => { catalogState.catalogEnabled = false; }, true, 409],
+  ] as const)('rejects %s without probing or writing', async (_why, arrange, ack, status) => {
+    reg.compat = byok();
+    arrange();
+    await expect(select(CATALOG_ENTRY_ID, ack)).rejects.toMatchObject({ name: 'PartnerLlmError', status });
     expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.updateSets).toHaveLength(0);
-  });
-
-  it('requires acknowledgeDataNote when the active revision carries a data note', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(
-      listedProvider({ dataNote: 'Prompts transit OpenRouter.' }),
-    );
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: false,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
-
-    expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.updateSets).toHaveLength(0);
+    expect(writesIssued()).toEqual([]);
   });
 
   it('does not require consent when the active revision carries no data note', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
+    reg.compat = byok();
     catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    dbState.updateResults.push([{ configVersion: 2 }]);
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: false,
-        userId: USER_ID,
-      }),
-    ).resolves.toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID, configVersion: 2 });
+    await expect(select(CATALOG_ENTRY_ID, false)).resolves.toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID, configVersion: 5 });
   });
 
-  it('rejects when the model configured for this partner is not verified on the entry', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-haiku-4-5' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
-    expect(anthropicState.create).not.toHaveBeenCalled();
-    expect(dbState.updateSets).toHaveLength(0);
+  it.each([
+    [new anthropicState.apiErrorClass('rejected', 401), 400],
+    [new LlmEgressViolationError('blocked'), 503],
+  ])('probes the selected endpoint through the guarded client and writes nothing on probe failure', async (error, status) => {
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    anthropicState.create.mockRejectedValue(error);
+    await expect(select(CATALOG_ENTRY_ID)).rejects.toMatchObject({ name: 'PartnerLlmError', status });
+    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }));
+    expect(writesIssued()).toEqual([]);
   });
 
-  it('rejects selection while catalog selection is disabled, without persisting', async () => {
-    catalogState.catalogEnabled = false;
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 409 });
-
-    expect(catalogState.getListedProviderByEntryId).not.toHaveBeenCalled();
-    expect(dbState.updateSets).toHaveLength(0);
+  // #7587: a catalog revision only serves the models it mapped AND verified,
+  // so the selection pins the model just validated.
+  it('direct → catalog switches kind with the same key, pinning the validated model; returns slug + revision', async () => {
+    reg.compat = byok({ legacyDefaultModel: null });
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await expect(select(CATALOG_ENTRY_ID)).resolves.toEqual({ catalogEntryId: CATALOG_ENTRY_ID, configVersion: 5, slug: 'openrouter', revision: 3 });
+    expect(remap.switchCompatKind).toHaveBeenCalledWith(PARTNER_ID, {
+      kind: 'catalog', apiKey: API_KEY, catalogEntryId: CATALOG_ENTRY_ID, defaultModel: 'claude-sonnet-4-6',
+    });
+    expect(anthropicState.create).toHaveBeenCalledWith({ model: 'anthropic/claude-sonnet-4-6', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] });
   });
 
-  it('probes the selected endpoint through the guarded client and persists nothing on probe failure', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    anthropicState.create.mockRejectedValue(new anthropicState.apiErrorClass('rejected', 401));
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 400 });
-
-    expect(buildGuardedLlmFetch).toHaveBeenCalledWith(
-      expect.objectContaining({ allowedOrigin: 'https://openrouter.ai' }),
-    );
-    expect(anthropicState.create).toHaveBeenCalledWith({
-      model: 'anthropic/claude-sonnet-4-6',
-      max_tokens: 1,
-      messages: [{ role: 'user', content: 'ping' }],
-    });
-    expect(dbState.updateSets).toHaveLength(0);
+  it('catalog → another catalog entry edits the connection in place', async () => {
+    reg.compat = catalogConn();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await select(CATALOG_ENTRY_ID);
+    expect(remap.setCompatCatalogEntry).toHaveBeenCalledWith(PARTNER_ID, { catalogEntryId: CATALOG_ENTRY_ID, pinnedModel: 'claude-sonnet-4-6' });
+    expect(writesIssued()).toEqual(['setCompatCatalogEntry']);
   });
 
-  it('maps a blocked-egress probe failure to a 503 without persisting', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    anthropicState.create.mockRejectedValue(new LlmEgressViolationError('blocked'));
-
-    await expect(
-      updatePartnerLlmEndpoint({
-        partnerId: PARTNER_ID,
-        catalogEntryId: CATALOG_ENTRY_ID,
-        acknowledgeDataNote: true,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ name: 'PartnerLlmError', status: 503 });
-
-    expect(dbState.updateSets).toHaveLength(0);
-  });
-
-  it('sets catalogEntryId and bumps configVersion on a successful probe, returning slug + revision for auditing', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    dbState.updateResults.push([{ configVersion: 6 }]);
-
-    const result = await updatePartnerLlmEndpoint({
-      partnerId: PARTNER_ID,
-      catalogEntryId: CATALOG_ENTRY_ID,
-      acknowledgeDataNote: true,
-      userId: USER_ID,
-    });
-
-    expect(result).toEqual({
-      catalogEntryId: CATALOG_ENTRY_ID,
-      configVersion: 6,
-      slug: 'openrouter',
-      revision: 3,
-    });
-    expect(dbState.updateSets[0]).toMatchObject({ catalogEntryId: CATALOG_ENTRY_ID });
-    expect(compileSql(dbState.updateSets[0]?.configVersion)).toEqual({
-      sql: '"partner_llm_configs"."config_version" + 1',
-      params: [],
-    });
-  });
-
-  // #7587: a catalog revision only serves the models it mapped AND verified, so
-  // a catalog selection must never keep tracking the moving platform default —
-  // the next default change (sonnet-4-6 → sonnet-5-5) would turn the partner
-  // `model_unverified` / ai_unavailable overnight. Pin the model just validated.
-  it('pins the validated model when the partner was tracking the platform default', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    dbState.updateResults.push([{ configVersion: 7 }]);
-
-    await updatePartnerLlmEndpoint({
-      partnerId: PARTNER_ID,
-      catalogEntryId: CATALOG_ENTRY_ID,
-      acknowledgeDataNote: true,
-      userId: USER_ID,
-    });
-
-    // resolveDefaultModel is mocked to claude-sonnet-4-6 in this file.
-    expect(dbState.updateSets[0]).toMatchObject({
-      catalogEntryId: CATALOG_ENTRY_ID,
-      defaultModel: 'claude-sonnet-4-6',
-    });
-  });
-
-  it('does not change the model when reverting to direct Anthropic', async () => {
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
-    dbState.updateResults.push([{ configVersion: 8 }]);
-
-    await updatePartnerLlmEndpoint({
-      partnerId: PARTNER_ID,
-      catalogEntryId: null,
-      acknowledgeDataNote: false,
-      userId: USER_ID,
-    });
-
-    expect(dbState.updateSets[0]).not.toHaveProperty('defaultModel');
+  it('refuses (409) when the connection was replaced between validation and the write', async () => {
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    remap.lockCompatConnection.mockResolvedValueOnce({ ...byok({ id: 'replaced' }), configVersion: 1, connectedBy: null, verifiedAt: null });
+    await expect(select(CATALOG_ENTRY_ID)).rejects.toMatchObject({ status: 409 });
+    expect(writesIssued()).toEqual([]);
   });
 });
 
-describe('registry facade (#7600 W02)', () => {
-  it('getPartnerLlmStatus reads the registry connection, not partner_llm_configs', async () => {
-    const { db } = await import('../db');
-    const fromTables: unknown[] = [];
-    vi.mocked(db.select).mockImplementationOnce(() => ({
-      from: vi.fn((table: unknown) => {
-        fromTables.push(table);
-        return { where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ keyLast4: '1234', defaultModel: null, status: 'active', verifiedAt: null, lastError: null, catalogEntryId: null }])) })) };
-      }),
-    }) as never);
-    const { partnerAiConnections } = await import('../db/schema');
-    await expect(getPartnerLlmStatus(PARTNER_ID)).resolves.toMatchObject({ configured: true, keyLast4: '1234', defaultModel: null });
-    expect(fromTables).toEqual([partnerAiConnections]);
-  });
-
-  it('every successful write reconciles the partner inside the write transaction', async () => {
-    isOfferablePlatformModelMock.mockResolvedValue(true);
-    dbState.insertResults.push([{ id: CONFIG_ID, configVersion: 1 }]);
-    dbState.selectResults.push([]); // resolveProbeEndpointForPartner: no catalog pin
+describe('authority flip (#7601 Task 6B): registry-native writes, never a re-projection', () => {
+  const everyWrite = async () => {
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
     await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
-    dbState.updateResults.push([{ configVersion: 2 }]);
     await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
-    dbState.deleteResults.push([{ id: CONFIG_ID }]);
-    await deletePartnerLlmConfig(PARTNER_ID);
-    expect(reconcileState.calls).toEqual([PARTNER_ID, PARTNER_ID, PARTNER_ID]);
-  });
-
-  it('a rejected probe or validation reconciles nothing', async () => {
-    isOfferablePlatformModelMock.mockResolvedValue(false);
-    anthropicState.create.mockRejectedValueOnce(new anthropicState.apiErrorClass('bad key', 401));
-    dbState.selectResults.push([]);
-    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 400 });
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-made-up-model' })).rejects.toMatchObject({ status: 400 });
-    expect(reconcileState.calls).toEqual([]);
-    expect(lockPartnerRegistryReconcileMock).not.toHaveBeenCalled();
-  });
-
-  // Task 12→13 carry: the reconcile lock must be the FIRST statement of the
-  // write transaction. Taken after the legacy write, the mirror trigger's row
-  // lock on partner_ai_connections would be held while waiting on a boot sweep
-  // that holds the advisory lock and wants that row (40P01).
-  it('takes the reconcile advisory lock before the legacy write, on every write path', async () => {
-    const { db } = await import('../db');
-    const firstCall = (fn: unknown) => (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder[0]!;
-    isOfferablePlatformModelMock.mockResolvedValue(true);
-
-    dbState.insertResults.push([{ id: CONFIG_ID, configVersion: 1 }]);
-    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
-    expect(lockPartnerRegistryReconcileMock).toHaveBeenCalledWith(PARTNER_ID);
-    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.insert));
-
-    vi.clearAllMocks();
-    dbState.updateResults.push([{ configVersion: 2 }]);
-    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
-    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
-
-    vi.clearAllMocks();
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: null }]);
-    dbState.updateResults.push([{ configVersion: 3 }]);
-    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
-    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
-
-    vi.clearAllMocks();
-    dbState.selectResults.push([{ id: CONFIG_ID, apiKeyEncrypted: encryptedApiKeyRow(), defaultModel: 'claude-sonnet-4-6' }]);
-    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider({ dataNote: null }));
-    dbState.updateResults.push([{ configVersion: 4 }]);
     await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
-    // The probe ran before the transaction opened: no lock is held across the network call.
-    expect(firstCall(anthropicState.create)).toBeLessThan(firstCall(lockPartnerRegistryReconcileMock));
-    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.update));
-
-    vi.clearAllMocks();
-    dbState.deleteResults.push([{ id: CONFIG_ID }]);
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
     await deletePartnerLlmConfig(PARTNER_ID);
-    expect(firstCall(lockPartnerRegistryReconcileMock)).toBeLessThan(firstCall(db.delete));
-    expect(reconcileState.calls).toEqual([PARTNER_ID, PARTNER_ID, PARTNER_ID, PARTNER_ID, PARTNER_ID]);
+  };
+
+  it('no write path ever calls the legacy projection', async () => {
+    await everyWrite();
+    expect(writesIssued().length).toBeGreaterThan(0);
+    expect(legacy.reconcile).not.toHaveBeenCalled();
   });
 
-  // Task 12→13 carry: a Drizzle query error's message and params carry the SQL
-  // parameters (here: key ciphertext and fingerprint). It must never reach the
-  // route's error handler, the console or Sentry.
-  it('maps a raw database failure inside the write to a safe 500 that keeps only the SQLSTATE', async () => {
-    const { db } = await import('../db');
-    const pgCause = Object.assign(new Error('duplicate key value violates unique constraint "x"'), {
+  it('every write is gated on the cutover, then probes outside the transaction, then locks, then writes', async () => {
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    expect(order).toEqual(['gate', 'probe', 'lock', 'switchCompatKind']);
+    order.length = 0;
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
+    expect(order).toEqual(['gate', 'lock', 'changeCompatDefaultModel']);
+    order.length = 0;
+    await deletePartnerLlmConfig(PARTNER_ID);
+    expect(order).toEqual(['gate', 'lock', 'disconnectCompat']);
+  });
+
+  it('a partner that cannot be cut over now gets a retryable 503 on every write, and nothing is probed or written', async () => {
+    reg.cutOver = false;
+    reg.compat = byok();
+    const writes = [
+      () => savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }),
+      () => updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }),
+      () => updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID }),
+      () => deletePartnerLlmConfig(PARTNER_ID),
+    ];
+    for (const write of writes) await expect(write()).rejects.toMatchObject({ name: 'PartnerLlmError', status: 503 });
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    expect(legacy.lock).not.toHaveBeenCalled();
+    expect(writesIssued()).toEqual([]);
+  });
+
+  it('the in-transaction cutover re-check (RegistryNotCutOverError) also maps to 503; a vanished connection to 409', async () => {
+    remap.disconnectCompat.mockRejectedValueOnce(new RegistryNotCutOverError(PARTNER_ID));
+    await expect(deletePartnerLlmConfig(PARTNER_ID)).rejects.toMatchObject({ status: 503 });
+    reg.compat = byok();
+    remap.changeCompatDefaultModel.mockRejectedValueOnce(new CompatConnectionMissingError());
+    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' })).rejects.toMatchObject({ status: 409 });
+  });
+
+  // createConnection's insert can fail with a DrizzleQueryError whose message
+  // and params carry the key ciphertext and fingerprint: never surfaced.
+  it('maps a raw database failure inside the write (e.g. the connection insert) to a safe 500 that keeps only the SQLSTATE', async () => {
+    const pgCause = Object.assign(new Error('duplicate key value violates unique constraint "partner_ai_connections_compat_uq"'), {
       code: '23505',
       detail: 'Key (api_key_encrypted)=(enc:v3:SECRET-CIPHERTEXT) already exists.',
     });
+    class DrizzleQueryError extends Error {}
     const drizzleError = Object.assign(
-      new Error('Failed query: insert into "partner_llm_configs" params: enc:v3:SECRET-CIPHERTEXT,fp1:SECRET-FINGERPRINT'),
+      new DrizzleQueryError('Failed query: insert into "partner_ai_connections" params: enc:v3:SECRET-CIPHERTEXT,fp1:SECRET-FINGERPRINT'),
       { cause: pgCause, params: ['enc:v3:SECRET-CIPHERTEXT', 'fp1:SECRET-FINGERPRINT'] },
     );
-    vi.mocked(db.insert).mockImplementationOnce(() => { throw drizzleError; });
+    remap.connectCompat.mockRejectedValueOnce(drizzleError);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e);
+      const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
       expect(error).toBeInstanceOf(PartnerLlmError);
       expect(error).toMatchObject({ status: 500 });
-      const err = error as PartnerLlmError;
-      const cause = err.cause as Error & { code?: unknown };
-      expect(cause.code).toBe('23505');
-      const { inspect } = await import('node:util');
+      expect((error.cause as { code?: unknown }).code).toBe('23505');
       const surfaces = [
-        inspect(err, { showHidden: true, depth: 10 }),
+        inspect(error, { showHidden: true, depth: 10 }),
         ...consoleError.mock.calls.map((args) => args.map((a) => inspect(a, { showHidden: true, depth: 10 })).join(' ')),
       ].join('\n');
       expect(surfaces).not.toContain('SECRET');
+      expect(surfaces).not.toContain(API_KEY);
     } finally {
       consoleError.mockRestore();
     }
-    expect(reconcileState.calls).toEqual([]);
   });
 
   it('keeps the primary Postgres message (no values) on the sanitized cause', async () => {
-    const { db } = await import('../db');
     class PostgresError extends Error {}
     const pgError = Object.assign(new PostgresError('deadlock detected'), {
       code: '40P01',
       parameters: ['enc:v3:SECRET-CIPHERTEXT'],
-      query: 'insert into partner_llm_configs ... SECRET',
+      query: 'update partner_ai_connections ... SECRET',
     });
-    vi.mocked(db.insert).mockImplementationOnce(() => { throw pgError; });
+    reg.compat = byok();
+    remap.rotateCompatKey.mockRejectedValueOnce(pgError);
     const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e) as PartnerLlmError;
     expect(error).toBeInstanceOf(PartnerLlmError);
     const cause = error.cause as Error & { code?: unknown };
     expect(cause.code).toBe('40P01');
     expect(cause.message).toContain('deadlock detected');
-    const { inspect } = await import('node:util');
     expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain('SECRET');
   });
 
-  // Review fix: a bug in the reconcile/projection carries no SQL values, so it
-  // must surface with its own message and stack, not a sanitized shell.
-  it('surfaces a non-query error from the reconcile with its message and stack intact', async () => {
-    const { reconcilePartnerFromLegacyInTx } = await import('./aiModels/legacyReconcile');
-    const bug = new Error('projection: x');
-    vi.mocked(reconcilePartnerFromLegacyInTx).mockRejectedValueOnce(bug);
-    isOfferablePlatformModelMock.mockResolvedValue(true);
-    dbState.updateResults.push([{ configVersion: 2 }]);
-    const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
-    expect(error).toBe(bug);
-    expect((error as Error).message).toBe('projection: x');
-    expect((error as Error).stack).toContain('projection: x');
+  it('a key that cannot be sealed maps to a 500 without the key', async () => {
+    const { ConnectionKeyError } = await import('./aiModels/connections');
+    remap.connectCompat.mockRejectedValueOnce(new ConnectionKeyError('Could not encrypt the connection key.', 'key_rejected'));
+    const error = await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: 'PartnerLlmError', status: 500 });
+    expect(inspect(error, { showHidden: true, depth: 10 })).not.toContain(API_KEY);
   });
 
-  it('passes a PartnerLlmError thrown inside the write through unchanged (a 409 reconciles nothing)', async () => {
-    isOfferablePlatformModelMock.mockResolvedValue(true);
-    dbState.updateResults.push([]);
-    await expect(updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }))
-      .rejects.toMatchObject({ name: 'PartnerLlmError', status: 409, message: 'Connect an Anthropic API key before selecting a model.' });
-    expect(reconcileState.calls).toEqual([]);
+  it('surfaces a non-query error from a remap with its message and stack intact', async () => {
+    reg.compat = byok();
+    const bug = new Error('remap: x');
+    remap.changeCompatDefaultModel.mockRejectedValueOnce(bug);
+    const error = await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' }).catch((e: unknown) => e);
+    expect(error).toBe(bug);
+    expect((error as Error).stack).toContain('remap: x');
+  });
+});
+
+describe('connection discovery triggers (#7601 Task 16, spec §6: on connect and on key/endpoint rotation)', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const enqueuedAfterWrite = (write: (typeof WRITES)[number]) => {
+    expect(discovery.enqueue.mock.invocationCallOrder[0]!).toBeGreaterThan(remap[write].mock.invocationCallOrder[0]!);
+  };
+
+  it('a first key enqueues discovery for the NEW connection, after the write', async () => {
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('new-conn'));
+    enqueuedAfterWrite('connectCompat');
+  });
+
+  it('a key rotation enqueues discovery for the rotated connection', async () => {
+    reg.compat = byok();
+    await savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith(CONFIG_ID));
+    enqueuedAfterWrite('rotateCompatKey');
+  });
+
+  it('a kind switch (direct → catalog, catalog → direct) enqueues discovery for the replacement connection', async () => {
+    remap.switchCompatKind.mockResolvedValue({ connectionId: 'switched-conn', configVersion: 5 });
+    reg.compat = byok();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('switched-conn'));
+    discovery.enqueue.mockClear();
+    reg.compat = catalogConn();
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith('switched-conn'));
+  });
+
+  it('a different catalog entry on the same connection enqueues discovery for it', async () => {
+    reg.compat = catalogConn();
+    catalogState.getListedProviderByEntryId.mockResolvedValue(listedProvider());
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: CATALOG_ENTRY_ID, acknowledgeDataNote: true, userId: USER_ID });
+    await vi.waitFor(() => expect(discovery.enqueue).toHaveBeenCalledWith(CONFIG_ID));
+    enqueuedAfterWrite('setCompatCatalogEntry');
+  });
+
+  it('edits that change no key or endpoint, disconnects and refused writes enqueue nothing', async () => {
+    reg.compat = byok();
+    await updatePartnerLlmConfig({ partnerId: PARTNER_ID, defaultModel: 'claude-haiku-4-5' });
+    await updatePartnerLlmEndpoint({ partnerId: PARTNER_ID, catalogEntryId: null, acknowledgeDataNote: false, userId: USER_ID });
+    await deletePartnerLlmConfig(PARTNER_ID);
+    remap.lockCompatConnection.mockResolvedValueOnce({ ...catalogConn(), configVersion: 9, connectedBy: null, verifiedAt: null });
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).rejects.toMatchObject({ status: 409 });
+    await flush();
+    expect(discovery.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('a failed enqueue (Redis down) never fails the committed save', async () => {
+    discovery.enqueue.mockRejectedValue(new Error('redis down'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(savePartnerLlmKey({ partnerId: PARTNER_ID, apiKey: API_KEY, userId: USER_ID })).resolves.toMatchObject({ configVersion: 1 });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalled());
+    expect(inspect(errors.mock.calls)).not.toContain(API_KEY);
+    errors.mockRestore();
   });
 });

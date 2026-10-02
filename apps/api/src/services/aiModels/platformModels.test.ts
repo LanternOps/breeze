@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiPlatformModelRow } from '../../db/schema';
-import { startPlatformModelSnapshotRefresher, toPlatformModel } from './platformModels';
+import {
+  PLATFORM_KEY_INFERENCE_GEOS,
+  effectivePlatformInferenceGeos,
+  getPlatformInferenceGeo,
+  startPlatformModelSnapshotRefresher,
+  toPlatformModel,
+  warnOnUnsupportedPlatformInferenceGeo,
+} from './platformModels';
 import { clearPlatformModelSnapshot, isPlatformModelSnapshotLoaded, peekPlatformModel } from './platformModelSnapshot';
 import { SEEDED_PLATFORM_MODELS } from './__fixtures__/seededPlatformModels';
 
@@ -106,5 +113,43 @@ describe('startPlatformModelSnapshotRefresher', () => {
     expect(load).toHaveBeenCalledTimes(1);
     expect(stopB).toBe(stopA);
     stopA();
+  });
+});
+
+describe('platform inference geography (W01 D3: the platform key accepts us and global; eu is a 400)', () => {
+  const saved = process.env.AI_PLATFORM_INFERENCE_GEO;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AI_PLATFORM_INFERENCE_GEO;
+    else process.env.AI_PLATFORM_INFERENCE_GEO = saved;
+  });
+
+  it('the platform key serves exactly us and global', () => {
+    expect([...PLATFORM_KEY_INFERENCE_GEOS]).toEqual(['us', 'global']);
+  });
+
+  it('getPlatformInferenceGeo reads the env (trimmed, lowercased); unset/blank → null', async () => {
+    delete process.env.AI_PLATFORM_INFERENCE_GEO;
+    await expect(getPlatformInferenceGeo()).resolves.toBeNull();
+    process.env.AI_PLATFORM_INFERENCE_GEO = '   ';
+    await expect(getPlatformInferenceGeo()).resolves.toBeNull();
+    process.env.AI_PLATFORM_INFERENCE_GEO = ' US ';
+    await expect(getPlatformInferenceGeo()).resolves.toBe('us');
+  });
+
+  it('effective geos: the key\'s set when the row lists none, else the intersection', () => {
+    expect(effectivePlatformInferenceGeos([])).toEqual(['us', 'global']);
+    expect(effectivePlatformInferenceGeos(['eu', 'us'])).toEqual(['us']);
+    expect(effectivePlatformInferenceGeos(['eu'])).toEqual([]);
+  });
+
+  it('warns (non-fatal) only when the configured value is outside the supported set', () => {
+    const warn = vi.fn();
+    expect(warnOnUnsupportedPlatformInferenceGeo({}, warn)).toBe(false);
+    expect(warnOnUnsupportedPlatformInferenceGeo({ AI_PLATFORM_INFERENCE_GEO: 'us' }, warn)).toBe(false);
+    expect(warnOnUnsupportedPlatformInferenceGeo({ AI_PLATFORM_INFERENCE_GEO: 'global' }, warn)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+    expect(warnOnUnsupportedPlatformInferenceGeo({ AI_PLATFORM_INFERENCE_GEO: 'eu' }, warn)).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/AI_PLATFORM_INFERENCE_GEO="eu".*us, global/);
   });
 });

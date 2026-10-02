@@ -40,8 +40,19 @@ vi.mock('./effectiveSettings', () => ({
 }));
 
 vi.mock('./aiCostTracker', () => ({
-  recordUsageFromSdkResult: vi.fn(() => Promise.resolve()),
   sumInputTokens: () => 0,
+}));
+vi.mock('./aiBudgetReservations', () => ({
+  markAiBudgetReservationIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
+  readSdkUsageSnapshot: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/platformModels', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/platformModels')>()),
+  getPlatformModelByModelId: vi.fn(async () => null),
+}));
+vi.mock('./aiModels/settleInvocation', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation: vi.fn(async () => ({ costCents: 0, invocationIds: [], deferred: false })),
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({
@@ -71,6 +82,7 @@ vi.mock('./toolSources/resolver', () => ({
 }));
 
 import { StreamingSessionManager } from './streamingSessionManager';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AuthContext } from '../middleware/auth';
 
@@ -80,18 +92,13 @@ const USER_ID = 'eeeeeeee-1111-4222-8333-444455556666';
 const DB_SESSION = {
   orgId: ORG_ID,
   sdkSessionId: null,
-  model: 'claude-sonnet-4-5-20250929',
   maxTurns: 50,
   turnCount: 0,
   systemPrompt: null,
   deviceId: null,
 };
 
-const PLATFORM_CONFIG = {
-  source: 'platform' as const,
-  apiKey: 'platform-key',
-  model: 'claude-sonnet-4-6',
-};
+const PLATFORM_CONFIG = makeResolvedModel('platform');
 
 function makeAuth(): AuthContext {
   return {

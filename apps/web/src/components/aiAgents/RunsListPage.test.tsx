@@ -108,6 +108,15 @@ describe('RunsListPage', () => {
     expect(screen.getByTestId('runs-list-row-run-3')).toHaveTextContent('Anomaly');
   });
 
+  it('labels a blocked run (AI model registry W03) and treats it as terminal, not live', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, id: 'run-b', status: 'blocked' as const, runVerdict: null }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-b')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-row-run-b')).toHaveTextContent('Blocked');
+    expect(screen.queryByTestId('run-live-indicator')).not.toBeInTheDocument();
+  });
+
   it('shows an error state when the list fails to load', async () => {
     mockEndpoints({ runsOk: false, runsStatus: 500 });
     render(<RunsListPage />);

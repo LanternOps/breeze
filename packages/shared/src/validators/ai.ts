@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { scriptParameterDefinitionsSchema } from './scriptParameterDefinitions';
+import { offeringOptionsSchema } from './aiModelOptions';
 
 // ============================================
 // Page Context Validators
@@ -59,6 +60,11 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
 
 export const createAiSessionSchema = z.object({
   pageContext: aiPageContextSchema.optional(),
+  /** Registry offering to run this session on (#7598 W03). */
+  offeringId: z.string().uuid().optional(),
+  /** Per-call options the user chose; absent keys follow the assignment. */
+  options: offeringOptionsSchema.partial().optional(),
+  /** @deprecated W03: a model id is mapped to the partner's offering for it; W05 removes it. */
   model: z.string().max(100).optional(),
   title: z.string().max(255).optional()
 });

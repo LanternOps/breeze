@@ -976,10 +976,12 @@ It uses the same isolation model as Graph-read: the Entra certificate and Key Va
 | `ANTHROPIC_BASE_URL` | — | **Self-hosted only.** Point the AI Agent at an Anthropic-compatible `/v1/messages` backend (vLLM 0.23+, LiteLLM). Must be an `http(s)` URL. Permitted only when `IS_HOSTED` is explicitly `false` (or `0`/`no`/`off`); refused at boot if `IS_HOSTED` is `true`, unset, or invalid. |
 | `ANTHROPIC_AUTH_TOKEN` | — | Bearer token for the custom backend (use instead of `ANTHROPIC_API_KEY` when `ANTHROPIC_BASE_URL` is set). |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Override the default model id for a raw vLLM backend. Leave unset with a LiteLLM gateway that aliases `claude-sonnet-5-5` → your model (releases before the Sonnet 5.5 default used `claude-sonnet-4-6`; update the alias when you upgrade). |
+| `AI_PLATFORM_INFERENCE_GEO` | — | Optional. Inference geography sent to Claude for platform-key traffic, where the model and transport support it. Allowed values: `us` or `global`. Unset = the provider default. `eu` is **not** accepted by the platform key: setting it (or any other value) makes every platform model unavailable (`residency_unavailable`) rather than sending traffic elsewhere, and the API logs a warning at startup. EU residency is not available on the platform key. |
 | `AI_TOOL_SEARCH` | `auto` | AI chat tool loading. `auto`: on the Anthropic API, chat sends a small core tool set and loads the rest on demand through tool search; on any other `ANTHROPIC_BASE_URL` or BYO provider it sends every tool, because many gateways reject tool-search blocks. `on`: also use tool search on a custom base URL (only if your gateway forwards `tool_reference` blocks). `off`: always send every tool. Helper, scripts and AI agents always use a fixed tool set. |
 | `BREEZE_AI_SCRIPT_AUTHORING_ENABLED` | `true` | **v0.113.0+.** Lets the AI assistant and background agents write a script as a reviewed proposal ([AI Script Authoring](/features/ai-script-authoring/)). Set `false` to hide the `propose_script` / `get_script_proposal` tools and the `/api/v1/ai/script-proposals` routes entirely. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`; any other value stops the API from starting. The shipped Compose file defaults it to `true` as well. This flag does **not** control the unattended lane, which stays off until a partner raises its ceiling and an organization opts in. |
 | `BREEZE_AI_ARTIFACT_CAPTURE_ENABLED` | `false` | **v0.117.0+.** Store oversized AI tool results (redacted) in your object storage so the assistant can page back through them with `read_artifact`, instead of receiving a truncated result. Off by default because it writes blobs your organizations can download. Setting it `true` requires an artifact bucket and keys: `ARTIFACT_S3_BUCKET_US` / `ARTIFACT_S3_BUCKET_EU` (matching your region) or `S3_BUCKET`, plus `ARTIFACT_S3_ACCESS_KEY` / `ARTIFACT_S3_SECRET_KEY` or `S3_ACCESS_KEY` / `S3_SECRET_KEY`. Without them, or with a value that is not a boolean, the API refuses to start. |
-| `BREEZE_AI_SCRIPT_REVIEWER_MODEL` | — | **v0.113.0+.** Platform-default model for the independent reviewer that examines every AI-authored script proposal. Unset = the platform default (`ANTHROPIC_MODEL` when set, otherwise the Sonnet-class fallback). A partner or organization can name its own reviewer model on its script-authoring policy, which takes precedence. |
+| `BREEZE_AI_SCRIPT_REVIEWER_MODEL` | — | **Deprecated.** The script reviewer's model is now the `script_reviewer` assignment in the AI model registry, and your value was migrated there. Until the AI Providers & Models settings page ships, new partners still inherit this value when their registry is first created. A reviewer model set on a script-authoring policy no longer takes effect. |
+| `WORKSPACE_CONTENT_LLM_MODEL` | — | **Deprecated.** The extension and Workspace enrichment model is now the `extension_content` assignment in the AI model registry, and your value was migrated there. Until the AI Providers & Models settings page ships, new partners still inherit this value when their registry is first created. |
 
 ### AI Operator (preview, off by default)
 
@@ -1030,12 +1032,12 @@ to boot when `ANTHROPIC_BASE_URL` is present, and the value is also stripped
 from the SDK subprocess environment — so a stray or unmapped `IS_HOSTED` can
 never redirect platform AI traffic to a third-party endpoint.
 
-Cost tracking is best-effort. The SDK can't price a non-Anthropic model id, so
-it reports `total_cost_usd: 0`; Breeze then falls back to token-based pricing,
-and an **unrecognized model id is priced at conservative Opus-tier
-`DEFAULT_PRICING` ($5/$25 per MTok)** — i.e. likely an *over*-estimate for a
-cheap local model, not `$0`. For accurate accounting, add the served model id to
-`MODEL_PRICING` in `aiCostTracker.ts`, or use the openai-compatible path's
+Cost tracking uses the platform model registry, never the SDK's own cost
+figure. When `ANTHROPIC_MODEL` names a model the registry doesn't list, Breeze
+adds it once (when your partners move to the registry) and prices it at
+conservative Opus-tier rates ($5/$25 per MTok) — likely an *over*-estimate for
+a cheap local model, not `$0`. For accurate accounting, set that model's
+prices on **Admin → AI models**, or use the openai-compatible path's
 `MCP_LLM_PRICE_*` overrides.
 
 ## Warranty lookups

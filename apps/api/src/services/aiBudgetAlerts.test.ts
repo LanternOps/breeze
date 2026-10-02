@@ -9,7 +9,6 @@ vi.mock('../db', () => ({
   getCurrentDbAccessContext: vi.fn(() => undefined),
 }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn(), DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: [50, 80, 95] }));
-vi.mock('./llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../jobs/aiBudgetAlertDelivery', () => ({ enqueueAiBudgetAlertDelivery: vi.fn().mockResolvedValue(undefined) }));
 
@@ -17,7 +16,6 @@ import { computeBudgetPct, evaluateAiBudgetThresholds, normalizeAlertThresholds,
 import { enqueueAiBudgetAlertDelivery } from '../jobs/aiBudgetAlertDelivery';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
-import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 
 describe('normalizeAlertThresholds', () => {
   it('sorts and dedupes', () => {
@@ -58,6 +56,7 @@ describe('periodKeysFor', () => {
 describe('evaluateAiBudgetThresholds', () => {
   const dialect = new PgDialect();
   const executed: string[] = [];
+  const executedParams: unknown[][] = [];
   // Queue of per-call return values, consumed in call order. Using a queue (rather
   // than chained `mockResolvedValueOnce`) so every call — including the advisory-lock
   // `tx.execute` between the usage read and the insert — still runs through the
@@ -65,13 +64,15 @@ describe('evaluateAiBudgetThresholds', () => {
   let responses: unknown[] = [];
   beforeEach(() => {
     executed.length = 0;
+    executedParams.length = 0;
     responses = [];
     (db as unknown as Record<string, unknown>).execute = vi.fn(async (q: SQL) => {
-      executed.push(dialect.sqlToQuery(q).sql);
+      const compiled = dialect.sqlToQuery(q);
+      executed.push(compiled.sql);
+      executedParams.push(compiled.params);
       return responses.length > 0 ? responses.shift() : [{ id: 'evt-1' }];
     });
     (db as unknown as Record<string, unknown>).transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db));
-    vi.mocked(getLlmBillingSourceForOrg).mockReset().mockResolvedValue('platform');
     vi.mocked(runOutsideDbContext).mockClear();
     vi.mocked(withSystemDbAccessContext).mockClear();
     vi.mocked(getCurrentDbAccessContext).mockReset().mockReturnValue(undefined);
@@ -174,8 +175,54 @@ describe('evaluateAiBudgetThresholds', () => {
     const created = await evaluateAiBudgetThresholds('org1');
 
     expect(created).toEqual([]);
-    expect(getLlmBillingSourceForOrg).not.toHaveBeenCalled();
     expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  // Task 15 (#7601): the alert carries the funding of the spend it alerts on —
+  // the billing_source the ledger settlement stamped on the ai_cost_usage row
+  // it evaluated — never a per-org inference.
+  const insertedAlertParams = () => {
+    const i = executed.findIndex((t) => t.includes('INSERT INTO ai_budget_alert_events'));
+    expect(i).toBeGreaterThanOrEqual(0);
+    return executedParams[i]!;
+  };
+
+  it('labels the alert with the billing source of the rollup row it evaluated', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600, billing_source: 'partner_key' }], [], [{ id: 'evt-1' }]];
+
+    await evaluateAiBudgetThresholds('org1');
+
+    expect(executed[0]).toContain('billing_source');
+    expect(insertedAlertParams()).toContain('partner_key');
+    expect(insertedAlertParams()).not.toContain('platform');
+  });
+
+  it('labels each period from its own rollup row', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: 1000, alertThresholdPercents: [50, 80, 95] } as never);
+    // daily: usage, lock, insert; monthly: usage, lock, insert
+    responses = [
+      [{ total_cost_cents: 960, billing_source: 'platform' }], [], [{ id: 'evt-d' }],
+      [{ total_cost_cents: 9600, billing_source: 'partner_key' }], [], [{ id: 'evt-m' }],
+    ];
+
+    await evaluateAiBudgetThresholds('org1');
+
+    const inserts = executed
+      .map((t, i) => ({ t, p: executedParams[i]! }))
+      .filter(({ t }) => t.includes('INSERT INTO ai_budget_alert_events'));
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0]!.p).toContain('platform');
+    expect(inserts[1]!.p).toContain('partner_key');
+  });
+
+  it('labels the alert platform when the rollup row carries no funding label', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue({ enabled: true, monthlyBudgetCents: 10000, dailyBudgetCents: null, alertThresholdPercents: [50, 80, 95] } as never);
+    responses = [[{ total_cost_cents: 9600, billing_source: null }], [], [{ id: 'evt-1' }]];
+
+    await evaluateAiBudgetThresholds('org1');
+
+    expect(insertedAlertParams()).toContain('platform');
   });
 
   it('namespaces the advisory lock under a shared ai-budget-alerts keyspace (finding #4)', async () => {

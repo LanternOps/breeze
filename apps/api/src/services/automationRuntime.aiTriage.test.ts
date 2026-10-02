@@ -82,6 +82,8 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   compute_credits_exhausted: 'succeeded',
   too_many_input_devices: 'succeeded',
   workspace_unavailable: 'succeeded',
+  // AI model registry W03: a configuration gate, not an integrity failure.
+  model_unavailable: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };

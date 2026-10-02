@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 
-const mockResolveDefaultModel = vi.hoisted(() => vi.fn(() => 'claude-resolved-model'));
-
-vi.mock('./aiAgent', () => ({
-  resolveDefaultModel: mockResolveDefaultModel,
+const m = vi.hoisted(() => ({ resolveModel: vi.fn(), anthropicClientFor: vi.fn() }));
+vi.mock('./aiModels/resolveModel', () => ({ resolveModel: m.resolveModel }));
+vi.mock('./aiModels/connectionFactory', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/connectionFactory')>()),
+  anthropicClientFor: m.anthropicClientFor,
 }));
 
 describe('runWingetReleaseTest validation', () => {
@@ -48,15 +50,6 @@ vi.mock('node:child_process', () => ({
   execFile: mockExecFile,
 }));
 
-vi.mock('@anthropic-ai/sdk', () => {
-  class Anthropic {
-    messages = {
-      create: mockMessagesCreate,
-    };
-  }
-  return { default: Anthropic };
-});
-
 // promisify(execFile) means our mock receives a node-style callback as its
 // last argument. Translate that into either an error or a successful
 // { stdout, stderr } response.
@@ -86,6 +79,12 @@ describe('runWingetReleaseTest outcomes', () => {
   beforeEach(() => {
     mockExecFile.mockReset();
     mockMessagesCreate.mockReset();
+    m.resolveModel.mockReset();
+    m.anthropicClientFor.mockReset();
+    m.resolveModel.mockResolvedValue(
+      makeResolvedModel('platform', { surface: 'patch_test', partnerId: null, orgId: null, wireModel: 'claude-resolved-model', logicalModel: 'claude-resolved-model' }),
+    );
+    m.anthropicClientFor.mockReturnValue({ messages: { create: mockMessagesCreate } });
     process.env.WIN_TEST_VM_TARGET = 'user@test-vm';
     process.env.WIN_TEST_VM_SSH_KEY = '/tmp/test-key';
   });
@@ -160,9 +159,10 @@ describe('runWingetReleaseTest outcomes', () => {
     expect(result.notes).toMatch(/Claude analysis failed/i);
   });
 
-  it('uses the centrally resolved default model for Claude analysis', async () => {
+  it('resolves the platform-only patch_test surface and calls through the factory', async () => {
     mockExecFile.mockImplementation(execCallback({ stdout: 'upgrade ok' }));
     mockMessagesCreate.mockResolvedValueOnce({
+      stop_reason: 'end_turn',
       content: [{ type: 'text', text: '{"result":"pass","notes":"upgrade succeeded"}' }],
     });
 
@@ -170,9 +170,20 @@ describe('runWingetReleaseTest outcomes', () => {
     const result = await runWingetReleaseTest({ packageId: 'Mozilla.Firefox', version: '121.0' });
 
     expect(result.result).toBe('pass');
-    expect(mockMessagesCreate).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'claude-resolved-model',
-    }));
-    expect(mockMessagesCreate.mock.calls[0]?.[0]?.model).not.toBe('claude-sonnet-4-5-20250929');
+    expect(m.resolveModel).toHaveBeenCalledWith({ partnerId: null, orgId: null, surface: 'patch_test', maxTokens: 512 });
+    expect(m.anthropicClientFor).toHaveBeenCalledWith(expect.objectContaining({ surface: 'patch_test' }), null);
+    expect(mockMessagesCreate.mock.calls[0]![0]).toMatchObject({ model: 'claude-resolved-model', max_tokens: 512 });
+  });
+
+  it('no eligible platform model -> inconclusive, never a guessed model', async () => {
+    mockExecFile.mockImplementation(execCallback({ stdout: 'upgrade ok' }));
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'unpriced', recoverable: true, offeringId: null, message: 'm' });
+
+    const { runWingetReleaseTest } = await import('./aiPatchTestRunner');
+    const result = await runWingetReleaseTest({ packageId: 'Mozilla.Firefox', version: '121.0' });
+
+    expect(result.result).toBe('inconclusive');
+    expect(m.anthropicClientFor).not.toHaveBeenCalled();
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
   });
 });

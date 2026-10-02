@@ -103,6 +103,9 @@ export const JOB_SCHEDULES = {
   'invoice-overdue-sweep': '8 6 * * *',
   // AI model registry W01 (#7599): daily Anthropic model discovery for the platform key.
   'ai-model-discovery-sync': '38 6 * * *',
+  // AI model registry W03 (#7601): daily fan-out of one discovery job per
+  // BYOK/catalog connection, ten minutes after the platform sync.
+  'ai-model-discovery-connections': '48 6 * * *',
   'event-log-retention': '3 7 * * *',
   'hardware-health-retention': '8 7 * * *',
   'time-sync-retention': '18 7 * * *',

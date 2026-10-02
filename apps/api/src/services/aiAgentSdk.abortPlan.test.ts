@@ -16,6 +16,8 @@ import { db } from '../db';
 // Mocks (mirror aiAgentSdk.test.ts)
 // ============================================
 
+// W03: preflight resolves through the registry; these suites never reach it.
+vi.mock('./aiModels/sessionModel', () => ({ resolveSessionTurn: vi.fn() }));
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

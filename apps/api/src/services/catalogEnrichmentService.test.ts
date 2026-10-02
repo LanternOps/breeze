@@ -1,29 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, calculateCostCents, calculateCatalogCostCents, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, captureException, captureMessage, resolveModel, readOrgPartnerId, anthropicClientFor, settleInvocation, reserveAiBudget, markAiBudgetReservationIndeterminate, releaseUnusedAiBudgetReservation } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
   checkUserAiRateLimit: vi.fn(async (): Promise<string | null> => null),
-  recordUsage: vi.fn(async () => {}),
-  calculateCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
-  calculateCatalogCostCents: vi.fn<(...args: unknown[]) => number>(() => 1),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
-  getAnthropicClientForPartner: vi.fn(),
-  resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
+  resolveModel: vi.fn(),
+  readOrgPartnerId: vi.fn(),
+  anthropicClientFor: vi.fn(),
+  settleInvocation: vi.fn(async (_input: unknown) => ({ costCents: 0, invocationIds: [], deferred: false })),
   reserveAiBudget: vi.fn(),
   markAiBudgetReservationIndeterminate: vi.fn(),
   releaseUnusedAiBudgetReservation: vi.fn(),
 }));
-vi.mock('@anthropic-ai/sdk', () => ({
-  default: class { messages = { create }; },
-}));
-vi.mock('./aiAgent', () => ({ resolveDefaultModel: () => 'claude-sonnet-4-6' }));
 vi.mock('./aiCostTracker', () => ({
-  checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage,
-  calculateCostCents,
-  calculateCatalogCostCents,
+  checkBudget, checkAiRateLimit, checkUserAiRateLimit,
 }));
 vi.mock('./aiBudgetReservations', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./aiBudgetReservations')>()),
@@ -32,19 +25,31 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
   releaseUnusedAiBudgetReservation,
 }));
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
-vi.mock('./llm/llmConfigResolver', () => ({
-  getAnthropicClientForPartner,
-  resolveWireModel,
-  LlmUnavailableError: class LlmUnavailableError extends Error {
-    constructor() {
-      super('AI is unavailable for this partner.');
-      this.name = 'LlmUnavailableError';
-    }
-  },
+vi.mock('./aiModels/resolveModel', () => ({ resolveModel }));
+vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId }));
+// Real createMessage over the fake client; only the client factory is replaced.
+vi.mock('./aiModels/connectionFactory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModels/connectionFactory')>()),
+  anthropicClientFor,
+}));
+// Real pricing (priceUsage / sumCostCents / costEstimator); only settlement is mocked.
+vi.mock('./aiModels/settleInvocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiModels/settleInvocation')>()),
+  settleInvocation,
 }));
 
-import { enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
-import { LlmUnavailableError } from './llm/llmConfigResolver';
+import { aiEnrichmentProvider, enrichCatalogItem, enrichDistributorListing, polishCatalogText, EnrichmentError } from './catalogEnrichmentService';
+import { LlmUnavailableError } from './llm/llmUnavailableError';
+import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
+import { turnBindingFrom } from './aiModels/turnBinding';
+
+const RESERVATION_ID = '55555555-5555-4555-8555-555555555555';
+const byok = () => makeResolvedModel('anthropic_byok', { surface: 'catalog_enrichment' });
+/** 0.01 cent per output token and free input: output tokens price as n / 100 cents. */
+const outputOnlyPricing = () => makeResolvedModel('anthropic_byok', {
+  surface: 'catalog_enrichment',
+  rateSnapshot: { source: 'linked_platform', standard: { inputCentsPerM: 0, outputCentsPerM: 10_000, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } },
+});
 
 const actor = { userId: 'u1', orgId: 'o1', partnerId: 'p1' };
 
@@ -60,31 +65,41 @@ function aiMessage(json: object, webSearchRequests = 0) {
   };
 }
 
+function catalogWithFallback() {
+  const base = makeResolvedModel('catalog', { surface: 'catalog_enrichment' });
+  return makeResolvedModel('catalog', {
+    surface: 'catalog_enrichment',
+    refusalFallback: {
+      offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+      wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+    } as never,
+  });
+}
+const REFUSED = {
+  model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' },
+  content: [], usage: { input_tokens: 70, output_tokens: 3 },
+};
+
 beforeEach(() => {
   create.mockReset();
-  getAnthropicClientForPartner.mockReset();
-  getAnthropicClientForPartner.mockResolvedValue({
-    client: { messages: { create } },
-    resolved: { source: 'partner', partnerId: 'p1', apiKey: 'partner-key', model: 'claude-sonnet-4-6' },
-  });
+  resolveModel.mockReset().mockResolvedValue(byok());
+  readOrgPartnerId.mockReset().mockResolvedValue('p1');
+  anthropicClientFor.mockReset().mockReturnValue({ messages: { create } });
+  settleInvocation.mockClear();
   captureMessage.mockClear();
   captureException.mockClear();
-  checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
+  checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear();
   reserveAiBudget.mockClear(); markAiBudgetReservationIndeterminate.mockClear(); releaseUnusedAiBudgetReservation.mockClear();
-  resolveWireModel.mockReset();
-  resolveWireModel.mockImplementation((_resolved: unknown, model: string) => ({ model }));
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
-  calculateCostCents.mockReset().mockReturnValue(1);
-  calculateCatalogCostCents.mockReset().mockReturnValue(1);
   reserveAiBudget.mockResolvedValue({
     kind: 'unlimited',
-    reservationId: '55555555-5555-4555-8555-555555555555',
+    reservationId: RESERVATION_ID,
     dailyPeriodKey: '2026-09-06',
     monthlyPeriodKey: '2026-09-01',
     status: 'active',
   });
-  markAiBudgetReservationIndeterminate.mockResolvedValue({ kind: 'indeterminate', reservationId: '55555555-5555-4555-8555-555555555555' });
-  releaseUnusedAiBudgetReservation.mockResolvedValue({ kind: 'released', reservationId: '55555555-5555-4555-8555-555555555555' });
+  markAiBudgetReservationIndeterminate.mockResolvedValue({ kind: 'indeterminate', reservationId: RESERVATION_ID });
+  releaseUnusedAiBudgetReservation.mockResolvedValue({ kind: 'released', reservationId: RESERVATION_ID });
 });
 
 describe('enrichCatalogItem', () => {
@@ -97,7 +112,7 @@ describe('enrichCatalogItem', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+    resolveModel.mockResolvedValue(outputOnlyPricing());
     create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }));
 
     await enrichCatalogItem('UPS', 'hardware', actor);
@@ -114,7 +129,7 @@ describe('enrichCatalogItem', () => {
       monthlyPeriodKey: '2026-09-01',
       status: 'active',
     });
-    calculateCostCents.mockImplementation((_model, _inputTokens, outputTokens) => Number(outputTokens) / 100);
+    resolveModel.mockResolvedValue(outputOnlyPricing());
 
     await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toMatchObject({
       code: 'AI_LIMIT', status: 429,
@@ -122,16 +137,42 @@ describe('enrichCatalogItem', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('settles actual paid web-search requests in addition to token cost', async () => {
-    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }, 2));
+  it('resolves catalog_enrichment for the acting user, admits with its funding, settles every turn incl. web-search fees', async () => {
+    const model = byok();
+    resolveModel.mockResolvedValue(model);
+    create
+      .mockResolvedValueOnce({
+        model: 'claude-sonnet-5-5', stop_reason: 'pause_turn', content: [{ type: 'text', text: '' }],
+        usage: { input_tokens: 500, output_tokens: 20, server_tool_use: { web_search_requests: 2 } },
+      })
+      .mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }));
 
-    await enrichCatalogItem('UPS', 'hardware', actor);
+    await aiEnrichmentProvider.enrich('Contoso Widget', 'hardware', actor);
 
-    expect(recordUsage).toHaveBeenCalledWith(
-      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', undefined,
-      '55555555-5555-4555-8555-555555555555', 2,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: 'p1', orgId: 'o1', userId: 'u1', surface: 'catalog_enrichment',
+    }));
+    expect(checkBudget).toHaveBeenCalledWith('o1', 'partner_key');
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o1', billingSource: 'partner_key', binding: turnBindingFrom(model as never),
+    }));
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const settled = settleInvocation.mock.calls[0]![0] as Record<string, any>;
+    expect(settled.usage).toHaveLength(2);
+    expect(settled.usage[0].webSearchRequests).toBe(2);
+    expect(settled.sourceRef).toBe('catalog_enrich');
+    expect(settled.reservationId).toBe(RESERVATION_ID);
+    expect(settled.userId).toBe('u1');
+    // Billing is the registry's job: no SDK/provider cost field travels with the settlement.
+    expect(settled).not.toHaveProperty('costUsd');
+  });
+
+  it('a system-initiated enrichment is not user-initiated (no permission gate)', async () => {
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'catalog_enrichment' }));
+    create.mockResolvedValueOnce(aiMessage({ name: 'UPS', itemType: 'hardware' }));
+    await aiEnrichmentProvider.enrich('x', 'hardware', { ...actor, systemInitiated: true });
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ userId: null }));
+    expect((settleInvocation.mock.calls[0]![0] as { userId: unknown }).userId).toBeNull();
   });
 
   it('does not dispatch after a durable budget denial', async () => {
@@ -155,6 +196,20 @@ describe('enrichCatalogItem', () => {
     });
   });
 
+  it('a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    resolveModel.mockResolvedValue(catalogWithFallback());
+    create.mockResolvedValueOnce(REFUSED).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(enrichCatalogItem('UPS', 'hardware', actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'catalog_enrich',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 70, output: 3 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+  });
+
   it('maps AI fields to a draft + price guidance and never sets unitPrice', async () => {
     create.mockResolvedValueOnce(aiMessage({
       name: 'APC Back-UPS 600VA', description: 'Battery backup',
@@ -170,37 +225,18 @@ describe('enrichCatalogItem', () => {
     // No explicit costEstimate in the AI output → falls back to priceLow.
     expect(res.estimatedCost).toBe(80);
     expect(res.provenance.source).toBe('ai_enrich');
-    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: 'o1', userId: 'u1', sessionId: null, agentRunId: null,
+      sourceRef: 'catalog_enrich', reservationId: RESERVATION_ID,
+    }));
     expect(checkBudget).toHaveBeenCalledWith('o1', 'partner_key');
-    expect(recordUsage).toHaveBeenCalledWith(
-      null,
-      'o1',
-      'claude-sonnet-4-6',
-      100,
-      50,
-      true,
-      'partner_key',
-      undefined,
-      '55555555-5555-4555-8555-555555555555',
-      0,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
+    expect(anthropicClientFor).toHaveBeenCalledWith(expect.objectContaining({ ok: true }), { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
-  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
-    const CATALOG_PRICING = {
-      catalogEntryId: 'entry-1',
-      revisionId: 'rev-1',
-      inputCentsPerM: 300,
-      outputCentsPerM: 1500,
-      cacheReadCentsPerM: 30,
-      cacheWriteCentsPerM: 375,
-    };
-    resolveWireModel.mockReturnValue({
-      model: 'anthropic/claude-sonnet-4-6',
-      catalogPricing: CATALOG_PRICING,
-    });
+  it('sends the WIRE model to the provider and binds the revision rates', async () => {
+    const catalog = makeResolvedModel('catalog', { surface: 'catalog_enrichment' });
+    resolveModel.mockResolvedValue(catalog);
     create.mockResolvedValueOnce(aiMessage({
       name: 'APC Back-UPS 600VA', description: 'Battery backup',
       itemType: 'hardware', unitOfMeasure: 'each', taxable: true, taxCategory: null,
@@ -210,20 +246,14 @@ describe('enrichCatalogItem', () => {
     await enrichCatalogItem('apc 600va ups', undefined, actor);
 
     // A catalog gateway 404s on the platform-logical id.
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
-    );
-    // …while the ledger keeps the logical id and prices from the revision.
-    expect(recordUsage).toHaveBeenCalledWith(
-      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
-      '55555555-5555-4555-8555-555555555555',
-      0,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5' }));
+    // …while settlement is priced from the revision snapshot bound at admission.
+    const settled = settleInvocation.mock.calls[0]![0] as { binding: { rateSnapshot: { source: string } } };
+    expect(settled.binding.rateSnapshot.source).toBe('catalog');
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
-    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+    anthropicClientFor.mockImplementationOnce(() => { throw new LlmUnavailableError(); });
 
     await expect(enrichCatalogItem('APC Back-UPS 600VA', 'hardware', actor)).rejects.toMatchObject({
       name: 'EnrichmentError',
@@ -411,7 +441,7 @@ describe('enrichCatalogItem', () => {
       .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
     expect(create).not.toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 
   it('still allows an org-less call that DECLARES itself system-initiated', async () => {
@@ -428,7 +458,7 @@ describe('enrichCatalogItem', () => {
     // DECLARED by the caller, never inferred from an ambient db scope.
     expect(create).toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 });
 
@@ -463,7 +493,7 @@ describe('enrichDistributorListing', () => {
   });
 
   it('keeps raw values but logs and captures a broken partner credential', async () => {
-    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+    anthropicClientFor.mockImplementationOnce(() => { throw new LlmUnavailableError(); });
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     const res = await enrichDistributorListing('Some product', 'hardware', actor);
@@ -504,11 +534,11 @@ describe('polishCatalogText', () => {
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
     expect(res.factChanges).toBeNull();
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
+    expect(anthropicClientFor).toHaveBeenCalledWith(expect.objectContaining({ ok: true }), { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
-    getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+    anthropicClientFor.mockImplementationOnce(() => { throw new LlmUnavailableError(); });
 
     await expect(polishCatalogText({ name: 'APC Back-UPS 600VA' }, actor)).rejects.toMatchObject({
       name: 'EnrichmentError',
@@ -521,22 +551,11 @@ describe('polishCatalogText', () => {
   /**
    * Mirrors the `enrichCatalogItem` case above. Polish is a SECOND outbound
    * surface in this service with its own turn runner (`runPolishTurn`) and its
-   * own `recordUsage` call in a `finally`, so it can regress independently of
-   * enrich — and did not have a wire-model test at all (#3922 W3 review round 2).
+   * own settlement in a `finally`, so it can regress independently of enrich.
    */
-  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
-    const CATALOG_PRICING = {
-      catalogEntryId: 'entry-1',
-      revisionId: 'rev-1',
-      inputCentsPerM: 300,
-      outputCentsPerM: 1500,
-      cacheReadCentsPerM: 30,
-      cacheWriteCentsPerM: 375,
-    };
-    resolveWireModel.mockReturnValue({
-      model: 'anthropic/claude-sonnet-4-6',
-      catalogPricing: CATALOG_PRICING,
-    });
+  it('sends the WIRE model to the provider and binds the revision rates', async () => {
+    const catalog = makeResolvedModel('catalog', { surface: 'catalog_enrichment' });
+    resolveModel.mockResolvedValue(catalog);
     create.mockResolvedValueOnce(aiMessage({
       name: 'APC Back-UPS 600VA UPS',
       description: 'APC Back-UPS 600VA battery backup with 7 outlets.',
@@ -547,38 +566,44 @@ describe('polishCatalogText', () => {
       actor,
     );
 
-    // Translated against the config this call resolved, keyed on the LOGICAL id.
-    expect(resolveWireModel).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'partner', partnerId: 'p1' }),
-      'claude-sonnet-4-6',
-    );
     // A catalog gateway 404s on the platform-logical id.
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
-    );
-    // …while the ledger keeps the logical id and prices from the revision, NOT
-    // Anthropic list rates.
-    expect(recordUsage).toHaveBeenCalledWith(
-      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
-      '55555555-5555-4555-8555-555555555555',
-      0,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5' }));
+    // …and settlement prices from the revision snapshot, NOT Anthropic list rates.
+    const settled = settleInvocation.mock.calls[0]![0] as { binding: { rateSnapshot: { source: string } }; sourceRef: string };
+    expect(settled.binding.rateSnapshot.source).toBe('catalog');
+    expect(settled.sourceRef).toBe('catalog_polish');
   });
 
-  it('meters the stricter RETRY turn at the revision rates too', async () => {
-    const CATALOG_PRICING = {
-      catalogEntryId: 'entry-1',
-      revisionId: 'rev-1',
-      inputCentsPerM: 300,
-      outputCentsPerM: 1500,
-      cacheReadCentsPerM: 30,
-      cacheWriteCentsPerM: 375,
-    };
-    resolveWireModel.mockReturnValue({
-      model: 'anthropic/claude-sonnet-4-6',
-      catalogPricing: CATALOG_PRICING,
+  it('polish: a refused attempt whose client-side fallback then throws is settled (billed) as an error, not left indeterminate', async () => {
+    resolveModel.mockResolvedValue(catalogWithFallback());
+    create.mockResolvedValueOnce(REFUSED).mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor)).rejects.toThrow('connection reset');
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRef: 'catalog_polish',
+      usage: [expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5', tokens: expect.objectContaining({ input: 70, output: 3 }) })],
+      outcome: expect.objectContaining({ stopReason: 'error' }),
+    }));
+  });
+
+  it('polish: a budget stop before any dispatch releases the reservation (nothing to settle)', async () => {
+    reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved', reservationId: RESERVATION_ID, reservedCostCents: 0,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
     });
+    resolveModel.mockResolvedValue(outputOnlyPricing());
+
+    await expect(polishCatalogText({ name: 'apc back-ups 600va' }, actor)).rejects.toBeDefined();
+    expect(create).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: 'o1', reservationId: RESERVATION_ID });
+  });
+
+  it('settles the stricter RETRY turn too (every attempt, one settlement)', async () => {
+    resolveModel.mockResolvedValue(makeResolvedModel('catalog', { surface: 'catalog_enrichment' }));
     // Both turns drift, so both run and both spend.
     create
       .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
@@ -587,18 +612,11 @@ describe('polishCatalogText', () => {
     await polishCatalogText({ name: 'apc back-ups 600va' }, actor);
 
     expect(create).toHaveBeenCalledTimes(2);
-    // Both turns went to the wire id…
-    expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      model: 'anthropic/claude-sonnet-4-6',
-    }));
-    // …and the single accumulated `recordUsage` in the `finally` prices the
-    // combined spend from the revision snapshot.
-    expect(recordUsage).toHaveBeenCalledWith(
-      null, 'o1', 'claude-sonnet-4-6', 200, 100, true, 'partner_key', CATALOG_PRICING,
-      '55555555-5555-4555-8555-555555555555',
-      0,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
+    expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({ model: 'anthropic/claude-sonnet-5.5' }));
+    expect(settleInvocation).toHaveBeenCalledTimes(1);
+    const settled = settleInvocation.mock.calls[0]![0] as { usage: Array<{ tokens: { input: number; output: number } }> };
+    expect(settled.usage.reduce((n, u) => n + u.tokens.input, 0)).toBe(200);
+    expect(settled.usage.reduce((n, u) => n + u.tokens.output, 0)).toBe(100);
   });
 
   it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
@@ -708,7 +726,7 @@ describe('polishCatalogText', () => {
       .rejects.toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
     expect(create).not.toHaveBeenCalled();
     expect(checkBudget).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 
   it('keeps the per-user rate limit on the declared system-initiated org-less path', async () => {
@@ -839,19 +857,10 @@ describe('polishCatalogText', () => {
     const res = await polishCatalogText({ name: 'apc 600va ups' }, actor);
     expect(res.factChanges).not.toBeNull();
     // Tokens were really spent on both turns — they must still be billed.
-    expect(recordUsage).toHaveBeenCalledWith(
-      null,
-      'o1',
-      expect.any(String),
-      200,
-      100,
-      true,
-      'partner_key',
-      undefined,
-      '55555555-5555-4555-8555-555555555555',
-      0,
-      { surface: 'catalog_enrichment', userId: 'u1' },
-    );
+    const settled = settleInvocation.mock.calls[0]![0] as { usage: Array<{ tokens: { input: number; output: number } }>; reservationId: string };
+    expect(settled.usage.reduce((n, u) => n + u.tokens.input, 0)).toBe(200);
+    expect(settled.usage.reduce((n, u) => n + u.tokens.output, 0)).toBe(100);
+    expect(settled.reservationId).toBe(RESERVATION_ID);
   });
 });
 
@@ -866,7 +875,7 @@ describe('org-less catalog AI is refused before any provider work', () => {
     create.mockReset();
     reserveAiBudget.mockReset();
     checkUserAiRateLimit.mockClear();
-    getAnthropicClientForPartner.mockClear();
+    resolveModel.mockClear();
   });
 
   it('refuses enrichCatalogItem with no organization, before resolving a provider client', async () => {
@@ -879,10 +888,10 @@ describe('org-less catalog AI is refused before any provider work', () => {
     // previous behaviour was a per-user rate limit plus a console warning, then
     // a dispatch — paid web-search turns on the platform key that no ledger
     // ever saw.
-    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(resolveModel).not.toHaveBeenCalled();
     expect(reserveAiBudget).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
-    expect(recordUsage).not.toHaveBeenCalled();
+    expect(settleInvocation).not.toHaveBeenCalled();
   });
 
   it('refuses polishCatalogText with no organization, before resolving a provider client', async () => {
@@ -891,7 +900,7 @@ describe('org-less catalog AI is refused before any provider work', () => {
 
     expect(thrown).toBeInstanceOf(EnrichmentError);
     expect(thrown).toMatchObject({ code: 'AI_ORG_REQUIRED', status: 400 });
-    expect(getAnthropicClientForPartner).not.toHaveBeenCalled();
+    expect(resolveModel).not.toHaveBeenCalled();
     expect(reserveAiBudget).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
     // The per-user rate limit is no longer what stands between an org-less

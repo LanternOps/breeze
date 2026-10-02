@@ -483,6 +483,12 @@ export function processStreamEvent(
     case 'script_proposal_update':
       return currentAssistantId;
 
+    // §9.1a: the refusal explanation already streamed as ordinary
+    // message_start/content_delta/message_end events and renders as the
+    // assistant message. This structured twin is for the W05 model picker.
+    case 'model_refusal':
+      return currentAssistantId;
+
     default: {
       /*
        * Every member of `AiStreamEvent` must be handled above. If a new event

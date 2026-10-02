@@ -2155,7 +2155,8 @@
         "failed": "Başarısız",
         "cancelled": "İptal edildi",
         "expired": "Süresi doldu",
-        "skipped": "Atlandı"
+        "skipped": "Atlandı",
+        "blocked": "Engellendi"
       },
       "verdicts": {
         "remediated": "Giderildi",

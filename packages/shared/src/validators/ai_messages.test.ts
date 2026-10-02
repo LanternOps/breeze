@@ -160,6 +160,25 @@ describe('createAiSessionSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  // W03 (#7601): a session names a registry offering + per-call options.
+  it('accepts an offering id and partial options', () => {
+    const result = createAiSessionSchema.safeParse({ offeringId: VALID_UUID, options: { effort: 'high' } });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toMatchObject({ offeringId: VALID_UUID, options: { effort: 'high' } });
+  });
+
+  it('rejects a non-uuid offering id', () => {
+    expect(createAiSessionSchema.safeParse({ offeringId: 'off-1' }).success).toBe(false);
+  });
+
+  it.each([
+    [{ effort: 'ludicrous' }],
+    [{ speed: 'warp' }],
+    [{ inferenceGeo: 'eu' }],
+  ])('rejects options %j outside the option schema (strict, no geo)', (options) => {
+    expect(createAiSessionSchema.safeParse({ options }).success).toBe(false);
+  });
+
   it('should reject title over 255 chars', () => {
     const result = createAiSessionSchema.safeParse({
       title: 'x'.repeat(256),

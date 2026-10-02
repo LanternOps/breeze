@@ -8,11 +8,13 @@
  *
  * W03 (Task 6A) calls reconcilePartnerFromLegacyInTx ONCE per partner, in the
  * same transaction as a durable per-partner cutover row (gated in resolveModel,
- * plus a leased post-serve() sweep), deletes the boot sweep below, and never
- * re-projects a cut-over partner.
+ * plus a leased post-serve() sweep — services/aiModels/registryCutover.ts),
+ * no longer runs reconcileAllPartnersFromLegacy at boot, and never re-projects
+ * a cut-over partner.
  */
 import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import type { ModelRates } from '@breeze/shared';
 import { AI_SCRIPT_REVIEWER_MODEL } from '../../config/env';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -33,7 +35,6 @@ import {
 // The leaf module, not aiAgentSdk.ts: that one drags the chat route graph into
 // every importer (worker entrypoint closure, partnerLlmConfig cycle).
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from '../aiAgentSessionLimits';
-import { getLegacyModelRates } from '../aiCostTracker';
 import { resolveDefaultModel } from '../aiModel';
 import {
   buildDesiredRegistryState,
@@ -42,7 +43,7 @@ import {
   type LegacySnapshot,
   type OfferingKey,
 } from './legacyProjection';
-import { legacyExtensionModel } from './legacySurfaceModels';
+import { getLegacyModelRates, legacyExtensionModel } from './legacySurfaceModels';
 import { safeErrorMessage } from './safeDbError';
 
 export interface ReconcileReport {
@@ -56,6 +57,12 @@ export interface ReconcileReport {
   bootstrapPlatformModels: string[];
   /** Tenant-typed ids with no platform row, dropped instead of bootstrapped (legacyProjection onPlatform). */
   unknownPlatformModelsSkipped: number;
+  /**
+   * Every offering id the FINAL projection pass upserted (sorted, unique) —
+   * exactly the partner's projected offering set. The W03 cutover disables
+   * every other enabled offering of the partner (registryCutover.ts).
+   */
+  producedOfferingIds: string[];
 }
 
 export function readLegacyProjectionEnv(): LegacyProjectionEnv {
@@ -148,11 +155,23 @@ export async function loadLegacySnapshot(partnerId: string): Promise<LegacySnaps
   };
 }
 
-export async function ensureLegacyPlatformModel(modelId: string): Promise<string> {
+/**
+ * Bootstrap the platform row for a DEPLOYMENT-sourced id (the env default /
+ * reviewer / extension model) that has none. Legacy served that id on the
+ * platform key and billed it at `rates` (getLegacyModelRates: its listed rate,
+ * else the default-rate fallback), so the row is created OFFERED at exactly
+ * those rates (#7601 gap A: otherwise a self-hosted gateway model loses AI at
+ * cutover). Capabilities stay null; the candidate loader resolves unknown
+ * capabilities on the platform key as legacy ran the id. An existing row is
+ * never touched (ON CONFLICT DO NOTHING): seeded and operator-edited rows win.
+ */
+export async function ensureLegacyPlatformModel(modelId: string, rates: ModelRates): Promise<string> {
   assertSystemContext();
   await db.execute(sql`
-    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle)
-    VALUES ('anthropic', ${modelId}, ${modelId}, false, false, 'available')
+    INSERT INTO ai_platform_models (provider, model_id, display_name, platform_offered, is_platform_default, lifecycle,
+                                    input_cents_per_m, output_cents_per_m, cache_read_cents_per_m, cache_write_cents_per_m)
+    VALUES ('anthropic', ${modelId}, ${modelId}, true, false, 'available',
+            ${rates.inputCentsPerM}, ${rates.outputCentsPerM}, ${rates.cacheReadCentsPerM}, ${rates.cacheWriteCentsPerM})
     ON CONFLICT (model_id) DO NOTHING`);
   const [row] = await db.select({ id: aiPlatformModels.id }).from(aiPlatformModels).where(eq(aiPlatformModels.modelId, modelId)).limit(1);
   if (!row) throw new Error(`could not bootstrap ai_platform_models row for ${modelId}`);
@@ -211,8 +230,8 @@ async function upsertOfferings(desired: DesiredRegistryState, partnerId: string,
       if (!platformModelId) {
         // Only deployment-sourced ids reach here (projection invariant): a
         // tenant-typed id must never create a global catalog row.
-        if (!o.needsBootstrapPlatformRow) throw new Error(`legacyReconcile: platform offering ${o.key} has no platform row and is not bootstrappable`);
-        platformModelId = await ensureLegacyPlatformModel(o.modelId);
+        if (!o.needsBootstrapPlatformRow || !o.price) throw new Error(`legacyReconcile: platform offering ${o.key} has no platform row and is not bootstrappable`);
+        platformModelId = await ensureLegacyPlatformModel(o.modelId, o.price);
         report.bootstrapPlatformModels.push(o.modelId);
       }
       const [row] = await db.insert(partnerAiModels)
@@ -355,7 +374,7 @@ export async function lockPartnerRegistryReconcile(partnerId: string): Promise<v
 export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: LegacyProjectionEnv = readLegacyProjectionEnv()): Promise<ReconcileReport> {
   assertSystemContext();
   await lockPartnerRegistryReconcile(partnerId);
-  const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [], unknownPlatformModelsSkipped: 0 };
+  const report: ReconcileReport = { partnerId, connection: 'none', offeringsUpserted: 0, assignmentsUpserted: 0, assignmentsDeleted: 0, agentsRebound: 0, sessionsRebound: 0, bootstrapPlatformModels: [], unknownPlatformModelsSkipped: 0, producedOfferingIds: [] };
 
   const snapshot = await loadLegacySnapshot(partnerId);
   // A compat connection whose id has no legacy row is an orphan (the legacy
@@ -366,6 +385,9 @@ export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: Leg
     .where(and(
       eq(partnerAiConnections.partnerId, partnerId),
       inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+      // Never a soft-disconnected row (#7700 finding 1): deleting it would
+      // cascade away offerings the ledger may still reference.
+      ne(partnerAiConnections.status, 'disconnected'),
       snapshot.config ? ne(partnerAiConnections.id, snapshot.config.id) : sql`true`,
     ))
     .orderBy(asc(partnerAiConnections.id));
@@ -386,6 +408,7 @@ export async function reconcilePartnerFromLegacyInTx(partnerId: string, env: Leg
   if (snapshot.config) report.connection = await mirrorConnection(snapshot);
 
   const ids = await upsertOfferings(desired, partnerId, report);
+  report.producedOfferingIds = [...new Set(ids.values())].sort();
   await applyAssignments(desired, partnerId, snapshot.orgIds, ids, report);
   await rebind(desired, partnerId, snapshot.orgIds, ids, report);
   return report;

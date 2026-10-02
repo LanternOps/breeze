@@ -1,9 +1,8 @@
 /** The LegacyProjectionEnv a fixture's env implies (#7600 W02; W03 Tasks 1/7 import it). Reads fixture.env, never process.env. */
 import { resolveReviewerDefaultModel } from '../../../config/env';
-import { getLegacyModelRates } from '../../aiCostTracker';
 import { resolveDefaultModel } from '../../aiModel';
 import type { LegacyProjectionEnv } from '../legacyProjection';
-import { legacyExtensionModel } from '../legacySurfaceModels';
+import { getLegacyModelRates, legacyExtensionModel } from '../legacySurfaceModels';
 import type { ParityFixture } from './harness';
 
 export function projectionEnvFor(fixture: ParityFixture): LegacyProjectionEnv {

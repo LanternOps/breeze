@@ -187,11 +187,35 @@ export const SENTRY_EVENT_CODES = [
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
   /**
-   * AI model registry W01 (#7599): usage reached calculateCostCents with a
-   * NaN, infinite or negative token count. It was priced as 0, so that spend
-   * went unbilled; the upstream usage parser is wrong.
+   * AI model registry W03 (#7601): the billing service refused a KEYED credit
+   * debit with a 4xx (bad input, key reused with another amount, auth). The
+   * reservation is stamped credits_debit_failed_at for an operator; the sweep
+   * does not retry it (listFailedCreditDebits / clearCreditDebitFailure).
    */
-  'ai_usage_invalid_token_count',
+  'ai_credit_debit_rejected',
+  /** W03 (#7601): a keyed credit debit stayed unconfirmed (5xx / transport) through every retry. */
+  'ai_credit_debit_retries_exhausted',
+  /**
+   * W03 (#7601, PR #7700 finding 5): a deferred (pending) AI settlement failed
+   * every replay attempt and was stamped pending_settlement_dead_at. Its spend
+   * is unrecorded until an operator acts (listDeadPendingSettlements).
+   */
+  'ai_settlement_replay_dead',
+  /**
+   * W03 (#7601, PR #7700 review S1): a settlement blocked twice on the org lock
+   * AND its pending_settlement write failed (or another one already held the
+   * slot). The spend is recorded nowhere; the reservation is left
+   * indeterminate. Tags carry org_id + ai_reservation_id for reconciliation.
+   */
+  'ai_settlement_unrecorded',
+  /**
+   * W03 (#7601, W05 spike): an Agent SDK cumulative modelUsage component went
+   * DOWN against the session's snapshot (the CLI's counters restarted, or a
+   * glitch). The snapshot is re-baselined to the current reading and the turn
+   * bills its own result.usage capped by modelUsage, unconfirmed (#7700
+   * review finding 3).
+   */
+  'ai_usage_snapshot_regressed',
   /**
    * Execution plane W04 (#5715): the sandbox backend's create circuit opened
    * after 5 consecutive failures — no analysis run can start in this region

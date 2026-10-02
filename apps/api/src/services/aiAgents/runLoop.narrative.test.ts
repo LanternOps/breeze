@@ -251,22 +251,29 @@ vi.mock('../../jobs/agentNotifyRetryWorker', () => ({ enqueueAgentNotifyRetry })
 const scheduleFixWatch = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
 vi.mock('../../jobs/fixWatchWorker', () => ({ scheduleFixWatch }));
 
-const resolveLlmConfigForOrg = vi.hoisted(() =>
-  vi.fn<(orgId: string) => Promise<{ source: string; apiKey?: string; model: string }>>());
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg }));
+// AI model registry W03 (Task 12): the run loop resolves `ai_agents` through
+// the registry and settles through the single billing path.
+const resolveModel = vi.hoisted(() => vi.fn());
+vi.mock('../aiModels/resolveModel', () => ({ resolveModel }));
+const settleInvocation = vi.hoisted(() =>
+  vi.fn<(input: Record<string, unknown>) => Promise<{ costCents: number; invocationIds: string[]; deferred: boolean }>>(
+    async () => ({ costCents: 0, invocationIds: [], deferred: false })));
+vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
+  settleInvocation,
+}));
 
 const buildClaudeSdkChildEnv = vi.hoisted(() =>
   vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
 vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-const recordSessionlessSdkUsage = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined));
-const calculateCostCents = vi.hoisted(() => vi.fn<(...args: unknown[]) => number>(() => 0));
-vi.mock('../aiCostTracker', () => ({ recordSessionlessSdkUsage, calculateCostCents }));
+vi.mock('../aiCostTracker', () => ({}));
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
 vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReservationIndeterminate }));
 
 import { createAgentRunPostToolUse, createAgentRunPreToolUse, executeAgentRun } from './runLoop';
+import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
 import type { AgentRunOutcome } from './runLoop';
 import { NarrativePersistConflictError } from './narrativeReport';
 
@@ -506,7 +513,7 @@ beforeEach(() => {
   completeToolExecution.mockResolvedValue(undefined);
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
-  resolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: 'sk-test', model: 'claude-fallback' });
+  resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
   resolveRecipientUserIds.mockResolvedValue([]);
   enqueueAgentNotifyRetry.mockResolvedValue(undefined);
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });

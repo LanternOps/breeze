@@ -13,23 +13,11 @@ import {
   type ExtensionAiInvokeInput,
 } from '@breeze/extension-sdk';
 import {
-  calculateCatalogCostCents,
-  calculateCostCents,
   checkAiRateLimit,
   checkBudgetDetailed,
   checkSystemAiRateLimit,
-  deductBillingCredits,
-  isPricedModel,
-  recordUsage,
 } from './aiCostTracker';
-import {
-  buildAnthropicClient,
-  LlmOrgResolutionError,
-  markPartnerLlmError,
-  resolveLlmConfigForOrg,
-  resolveWireModel,
-  type UsableLlmConfig,
-} from './llm/llmConfigResolver';
+import { markPartnerLlmError, type UsableLlmConfig } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
 import {
   markAiBudgetReservationIndeterminate,
@@ -37,7 +25,16 @@ import {
   releaseUnusedAiBudgetReservation,
   reserveAiBudget,
 } from './aiBudgetReservations';
-import { EXTENSION_AI_DEFAULT_MODEL, legacyExtensionModel } from './aiModels/legacySurfaceModels';
+import { isPlatformLlmConfigured } from './llm/llmAvailability';
+import { reportPlatformKeyMissing } from './llm/platformKeyAlert';
+import { findOfferingIdByModel, readOrgPartnerId } from './aiModels/candidateLoader';
+import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageOutcome } from './aiModels/connectionFactory';
+import { messagesUsage, messagesUsageAfterDispatchError } from './aiModels/invocationUsage';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { ensurePartnerCutover } from './aiModels/registryCutover';
+import { resolveModel } from './aiModels/resolveModel';
+import { costEstimator, settleInvocation } from './aiModels/settleInvocation';
+import { turnBindingFrom } from './aiModels/turnBinding';
 
 
 function errorMessage(error: unknown): string {
@@ -127,62 +124,57 @@ async function classifyProviderFailure(
 export function buildExtensionAiContext(): ExtensionAiContext {
   return {
     async invoke(input: ExtensionAiInvokeInput) {
-      const model = legacyExtensionModel(input.model);
-      if (!isPricedModel(model)) {
-        // PERMANENT: the model id is a deployment constant (a
-        // WORKSPACE_CONTENT_LLM_MODEL typo, or an id retired from the pricing
-        // table). Every retry reproduces it exactly, so a retrying caller must
-        // degrade instead of burning its attempts.
-        throw new ExtensionAiError(
-          'ai_unavailable',
-          `AI model "${model}" is not available for metered extension use.`,
-          { permanent: true },
-        );
-      }
-
-      // Resolve through the ORG (not a re-derived partner id): a missing
-      // organization row must abort, never collapse into "no partner" and get
-      // billed to the platform key — the one fallback BYOK forbids.
-      let resolved;
-      try {
-        resolved = await resolveLlmConfigForOrg(input.orgId);
-      } catch (error) {
-        if (error instanceof LlmOrgResolutionError) {
-          throw new ExtensionAiError('ai_unavailable', error.message);
+      const partnerId = await readOrgPartnerId(input.orgId);
+      // A missing organization row must abort, never collapse into "no partner"
+      // and get billed to the platform key: the one fallback BYOK forbids.
+      if (!partnerId) throw new ExtensionAiError('ai_unavailable', 'AI is unavailable for this organization.');
+      const ledgerUserId = input.principal.type === 'user' && input.principal.id ? input.principal.id : null;
+      let offeringId: string | undefined;
+      if (input.model) {
+        // The lookup reads assignments: never against a partner not yet cut over. Transient.
+        if (!(await ensurePartnerCutover(partnerId))) {
+          throw new ExtensionAiError('ai_unavailable', 'AI configuration is being upgraded. Try again in a moment.');
         }
-        throw error;
+        offeringId = (await findOfferingIdByModel({
+          partnerId, orgId: input.orgId, surface: 'extension_content', modelId: input.model,
+        })) ?? undefined;
+        if (!offeringId) {
+          // PERMANENT: a model id the partner has not enabled; every retry reproduces it.
+          throw new ExtensionAiError(
+            'ai_unavailable',
+            `AI model "${input.model}" is not available for extension use.`,
+            { permanent: true },
+          );
+        }
       }
-
-      if (resolved.source === 'unavailable') {
-        // A partner BYOK config exists but is broken (bad key / unreadable
-        // ciphertext). Fail loud for that partner; do NOT serve them platform AI.
-        throw new ExtensionAiError(
-          'ai_unavailable',
-          'AI is unavailable until the partner Anthropic API key is reconnected.',
-        );
+      const resolved = await resolveModel({
+        partnerId,
+        orgId: input.orgId,
+        userId: ledgerUserId,
+        surface: 'extension_content',
+        maxTokens: input.maxTokens,
+        ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
+      });
+      if (!resolved.ok) {
+        if (resolved.reason === 'connection_unavailable') {
+          // No platform credential at all: this deployment simply has no AI.
+          // Distinct, PERMANENT code so features degrade (skip the AI step)
+          // instead of retrying a configuration that will not appear on its own.
+          if (!isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk')) {
+            reportPlatformKeyMissing();
+            throw new ExtensionAiError('not_configured', 'AI is not configured on this deployment.', { permanent: true });
+          }
+          // A configured connection that is broken (rejected / unreadable key):
+          // TRANSIENT and loud. Never degrade quietly, never serve the platform key.
+          throw new ExtensionAiError('ai_unavailable', resolved.message);
+        }
+        throw new ExtensionAiError('ai_unavailable', resolved.message, {
+          // registry_unavailable is a transient cutover failure: retryable.
+          permanent: resolved.reason !== 'registry_unavailable',
+        });
       }
-
-      if (!resolved.apiKey?.trim()) {
-        // No partner key AND no platform key: this deployment simply has no AI.
-        // Distinct code so features degrade (skip the AI step) instead of
-        // retrying a configuration that is never going to appear on its own.
-        throw new ExtensionAiError(
-          'not_configured',
-          'AI is not configured on this deployment.',
-          { permanent: true },
-        );
-      }
-
-      const usable: UsableLlmConfig = resolved;
-      const billingSource = usable.source === 'partner' ? 'partner_key' : 'platform';
-      // Catalog-backed endpoints speak a provider-specific model id and carry
-      // a signed revision pricing snapshot. Resolve both before reserving so a
-      // missing verified binding is a proven pre-dispatch failure.
-      const wire = resolveWireModel(usable, model);
-      const calculateWireCostCents = (inputTokens: number, outputTokens: number) =>
-        wire.catalogPricing
-          ? calculateCatalogCostCents(wire.catalogPricing, inputTokens, outputTokens)
-          : calculateCostCents(model, inputTokens, outputTokens);
+      const billingSource = resolved.funding;
+      const binding = turnBindingFrom(resolved);
 
       const rateLimitError = input.principal.type === 'user' && input.principal.id
         ? await checkAiRateLimit(input.principal.id, input.orgId)
@@ -210,6 +202,7 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         orgId: input.orgId,
         idempotencyKey: `extension-ai:${crypto.randomUUID()}`,
         billingSource,
+        binding,
       });
       if (reservation.kind === 'denied') {
         throw new ExtensionAiError('budget_exceeded', reservation.message, {
@@ -221,67 +214,101 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         prompt: JSON.stringify({ system: input.system, messages: input.messages }),
         requestedMaxOutputTokens: input.maxTokens,
         budgetCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : undefined,
-        calculateCostCents: calculateWireCostCents,
+        calculateCostCents: costEstimator(resolved),
       });
       if (maxTokens === null) {
-        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId });
+        // Nothing was sent. A failing release must not replace the budget
+        // answer (S8): the hold just expires on its TTL.
+        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId }).catch((releaseError) => {
+          const scrubbed = safeErrorMessage(releaseError);
+          console.error('[extension-ai] releasing an unused reservation failed', { reservationId, error: scrubbed });
+          captureException(new Error(`extension AI reservation release failed: ${scrubbed}`), undefined, {
+            org_id: input.orgId, ai_reservation_id: reservationId,
+          });
+        });
         throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
       }
 
-      const client = buildAnthropicClient(usable);
-      let response: Awaited<ReturnType<typeof client.messages.create>>;
+      const client = anthropicClientFor(resolved, { surface: 'workspace_enrichment', orgId: input.orgId });
+      let outcome: MessageOutcome;
       try {
-        response = await client.messages.create({
-          model: wire.model,
+        outcome = await createMessage(client, resolved, {
           max_tokens: maxTokens,
           system: input.system,
           messages: input.messages,
         });
       } catch (error) {
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
-        throw await classifyProviderFailure(error, usable);
+        // A refused attempt that completed before its fallback threw was
+        // billed by the provider: settle it. Nothing completed → the outcome
+        // is unknown and the reservation stays indeterminate.
+        const completed = attemptsOf(error);
+        let settled = false;
+        if (completed.length > 0) {
+          try {
+            await settleInvocation({
+              binding, orgId: input.orgId, userId: ledgerUserId,
+              sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
+              ...messagesUsageAfterDispatchError(binding, completed), reservationId, toolExecutionCount: 1,
+            });
+            settled = true;
+          } catch (settleError) {
+            // Settlement errors are DB errors: scrubbed before any log or report.
+            const scrubbed = safeErrorMessage(settleError);
+            console.error('[extension-ai] settling a failed dispatch failed', { reservationId, error: scrubbed });
+            captureException(new Error(`extension AI settlement failed: ${scrubbed}`), undefined, {
+              org_id: input.orgId, ai_reservation_id: reservationId,
+            });
+          }
+        }
+        if (!settled) {
+          await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+            .catch((markError) => captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`)));
+        }
+        throw await classifyProviderFailure(dispatchCause(error), resolved.connection.config);
       }
 
-      const text = response.content
+      const text = outcome.message.content
         .filter((block) => block.type === 'text')
-        .map((block) => block.text)
+        .map((block) => (block as { text: string }).text)
         .join('');
-      const inputTokens = response.usage?.input_tokens ?? 0;
-      const outputTokens = response.usage?.output_tokens ?? 0;
+      const billed = messagesUsage(binding, outcome.attempts);
 
+      const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
+        .catch((markError) => {
+          captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`), undefined, {
+            org_id: input.orgId, ai_reservation_id: reservationId,
+          });
+        });
       try {
-        await recordUsage(
-          null,
-          input.orgId,
-          model,
-          inputTokens,
-          outputTokens,
-          true,
-          billingSource,
-          wire.catalogPricing,
-          reservationId,
-          0,
-          { surface: 'extension_content' },
-        );
+        // The one billing path: priced from the bound registry rate, written to
+        // the ledger, and (platform funding) drawn down from prepaid credits.
+        const settled = await settleInvocation({
+          binding, orgId: input.orgId, userId: ledgerUserId,
+          sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
+          ...billed, reservationId, toolExecutionCount: 1,
+        });
+        // S1: deferred but not persisted (already reported): keep the hold.
+        if (settled.unrecorded) await holdIndeterminate();
       } catch (error) {
-        await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
-          .catch((markError) => captureException(markError));
-        throw error;
-      }
-      if (billingSource === 'platform') {
-        // recordUsage only moves counters; the prepaid credit balance that
-        // checkBillingCredits gates on is drawn down here (mirrors what
-        // recordUsageFromSdkResult does for the chat path). Partner-key spend is
-        // billed by Anthropic to the partner, so it is deliberately excluded.
-        await deductBillingCredits(input.orgId, calculateWireCostCents(inputTokens, outputTokens));
+        // The provider was paid but the spend could not be recorded. Settlement
+        // errors are DB errors: never rethrown raw to the extension (S8).
+        const scrubbed = safeErrorMessage(error);
+        console.error('[extension-ai] settlement after a paid call failed', { reservationId, error: scrubbed });
+        captureException(new Error(`extension AI settlement failed: ${scrubbed}`), undefined, {
+          org_id: input.orgId, ai_reservation_id: reservationId,
+        });
+        await holdIndeterminate();
+        throw new ExtensionAiError('ai_unavailable', 'AI usage could not be recorded; try again shortly.', { permanent: false });
       }
 
       return {
         text,
-        model,
+        model: billed.outcome.servedModel,
         billingSource,
-        usage: { inputTokens, outputTokens },
+        usage: {
+          inputTokens: billed.usage.reduce((n, u) => n + u.tokens.input + u.tokens.cacheRead + u.tokens.cacheWrite, 0),
+          outputTokens: billed.usage.reduce((n, u) => n + u.tokens.output, 0),
+        },
       };
     },
   };

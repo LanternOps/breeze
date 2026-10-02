@@ -100,6 +100,11 @@ import { buildAuthContextForIntent } from '../../services/actionIntents/actorCon
 import { IntentScopeLostError } from '../../services/actionIntents/intentTargetScope';
 import { revalidateApprovedIntentForRelease } from '../../services/actionIntents/revalidateRelease';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { usePlatformAiKeyPlaceholder } from './helpers/platformAiKey';
+
+// W03 (#7601): agent admission resolves the agent's model first; the
+// platform default is only usable with a platform key configured.
+usePlatformAiKeyPlaceholder();
 
 const TOOL_NAME = 'manage_services';
 const SERVICE_NAME = 'spooler';

@@ -282,6 +282,9 @@ describe('settleAiBudgetReservationDurably', () => {
     dbMock.execute
       .mockRejectedValueOnce(lockTimeout())
       .mockRejectedValueOnce(lockTimeout())
+      // ...the settle input is persisted to pending_settlement (W03 #7601;
+      // reservation row only, no org lock)...
+      .mockResolvedValueOnce([{ id: RESERVATION_ID }])
       // ...then the indeterminate marking succeeds: org lock, reservation read,
       // the UPDATE.
       .mockResolvedValueOnce([{ id: ORG_ID }])
@@ -289,7 +292,7 @@ describe('settleAiBudgetReservationDurably', () => {
       .mockResolvedValueOnce([]);
 
     await expect(settleAiBudgetReservationDurably(settleInput))
-      .resolves.toMatchObject({ kind: 'deferred_indeterminate', reservationId: RESERVATION_ID });
+      .resolves.toMatchObject({ kind: 'deferred_indeterminate', reservationId: RESERVATION_ID, persisted: true });
 
     // The 24h indeterminate window now applies, so a reconciliation can still
     // settle it — and the lost spend is visible rather than silent.

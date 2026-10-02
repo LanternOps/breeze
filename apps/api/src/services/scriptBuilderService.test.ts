@@ -15,10 +15,18 @@ vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: getEffectiveAiBudg
 
 import { createScriptBuilderSession } from './scriptBuilderService';
 
+const CHOICE = {
+  offeringId: 'off-1',
+  offeringPartnerId: 'partner-1',
+  options: { effort: 'high' as const },
+  model: 'claude-opus-4-6',
+  billingSource: 'partner_key' as const,
+};
+
 describe('createScriptBuilderSession', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('persists the model resolved for the authenticated partner instead of a hardcoded default', async () => {
+  it('persists the registry choice (offering, its partner, options, model snapshot, funding) — W03 #7601', async () => {
     getEffectiveAiBudgetMock.mockResolvedValue({ maxTurnsPerSession: 50 });
     const values = vi.fn(() => ({
       returning: vi.fn(() => Promise.resolve([{ id: 'session-1', orgId: 'org-1' }])),
@@ -32,10 +40,13 @@ describe('createScriptBuilderSession', () => {
         user: { id: 'user-1' },
       } as any,
       { title: 'Builder' },
-      'claude-opus-4-6',
+      CHOICE,
     );
 
-    expect(values).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-4-6' }));
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      offeringId: 'off-1', offeringPartnerId: 'partner-1', options: { effort: 'high' },
+      model: 'claude-opus-4-6', billingSource: 'partner_key',
+    }));
   });
 
   // #6473 — script builder sessions run through the same runPreFlightChecks
@@ -55,7 +66,7 @@ describe('createScriptBuilderSession', () => {
         user: { id: 'user-1' },
       } as any,
       { title: 'Builder' },
-      'claude-opus-4-6',
+      CHOICE,
     );
 
     expect(getEffectiveAiBudgetMock).toHaveBeenCalledWith('org-1');

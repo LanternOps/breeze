@@ -42,7 +42,7 @@ import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
 import { buildWireParams, toMessagesApiParams } from '../aiModels/wireParams';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { buildGuardedLlmFetch } from './guardedLlmFetch';
+import { createAnthropicClient } from '../aiModels/connectionFactory';
 import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './sdkChildEnvGuards';
 
 /**
@@ -274,19 +274,18 @@ export { LlmEgressViolationError } from './guardedLlmFetch';
  * registered in `middleware/selfManagedDbContextRoutes.ts`.
  */
 function buildAnthropicClient(input: FidelityCheckInput): Anthropic {
-  return new Anthropic({
-    baseURL: input.baseUrl,
-    ...(input.authMode === 'x-api-key'
-      ? { apiKey: input.apiKey, authToken: null }
-      : { authToken: input.apiKey, apiKey: null }),
-    fetch: buildGuardedLlmFetch({
-      allowedOrigin: new URL(input.baseUrl).origin,
+  return createAnthropicClient({
+    apiKey: input.apiKey,
+    target: {
+      kind: 'endpoint',
+      baseUrl: input.baseUrl,
+      authMode: input.authMode,
       // `llm_egress_events` is org-scoped (see `llmEgressRecorder.ts`), and the
       // harness is a platform-admin vetting tool with no tenant behind it —
       // there is no org/partner to attribute a row to. Partner traffic is
       // recorded where it has a tenant: the resolver-built clients in Wave 3.
       recordEgress: () => {},
-    }) as unknown as typeof fetch,
+    },
     timeout: DIRECT_REQUEST_TIMEOUT_MS,
     maxRetries: 1,
   });

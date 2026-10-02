@@ -648,3 +648,36 @@ describe('topology investigation events (M4)', () => {
     expect(state.messages.find((m) => m.role === 'assistant')?.content ?? '').toBe('');
   });
 });
+
+/**
+ * §9.1a (W03 #7601): the refusal explanation already streamed as ordinary
+ * message events; the structured `model_refusal` twin must not add a second
+ * (blank) bubble or touch the transcript.
+ */
+describe('model_refusal is inert for the transcript', () => {
+  it('leaves messages and streaming state unchanged and keeps the current assistant id', () => {
+    const state: StreamableState = {
+      ...makeState(),
+      messages: [
+        { id: 'u1', role: 'user', content: 'hi', createdAt: new Date(0) },
+        { id: 'a1', role: 'assistant', content: 'I can\'t help with that.', createdAt: new Date(0), isStreaming: false },
+      ],
+    };
+    const before = JSON.stringify(state);
+    let calls = 0;
+    let patched: StreamableState = state;
+    const next = processStreamEvent(
+      {
+        type: 'model_refusal', category: 'cyber',
+        alternatives: [{ offeringId: 'off-2', displayName: 'Haiku' }], docsUrl: 'https://example.com/refusals',
+      },
+      (fn) => { calls += 1; patched = { ...patched, ...fn(patched) }; },
+      () => patched,
+      'a1',
+    );
+    expect(next).toBe('a1');
+    expect(calls).toBe(0);
+    expect(JSON.stringify(patched)).toBe(before);
+    expect(patched.messages).toHaveLength(2);
+  });
+});

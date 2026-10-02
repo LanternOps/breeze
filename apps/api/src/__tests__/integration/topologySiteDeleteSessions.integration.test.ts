@@ -31,7 +31,7 @@ const GRANTS = [
 async function seedSession(orgId: string, userId: string, siteId: string | null) {
   const db = getTestDb();
   const [session] = await db.insert(aiSessions).values({
-    orgId, userId, ...(siteId ? { type: 'topology', topologySiteId: siteId } : {}),
+    orgId, userId, model: 'claude-sonnet-5-5', ...(siteId ? { type: 'topology', topologySiteId: siteId } : {}),
   }).returning({ id: aiSessions.id });
   const [message] = await db.insert(aiMessages).values({ sessionId: session!.id, role: 'user', content: 'why is the uplink down?' })
     .returning({ id: aiMessages.id });

@@ -2,7 +2,7 @@
 import { boolean, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, index } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
-/** Prices are integer cents per million tokens, matching MODEL_PRICING units. */
+/** Prices are integer cents per million tokens, matching the platform model registry's rate units. */
 export interface LlmProviderModelMapEntry {
   providerModel: string;          // the id sent to the endpoint (e.g. 'anthropic/claude-sonnet-4-6' on OpenRouter)
   inputCentsPerM: number;

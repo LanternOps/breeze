@@ -1,19 +1,21 @@
 /**
  * AI model registry (spec §6): Anthropic model discovery. W01 covers the
  * platform key (`syncPlatformModels`); W03 adds `syncConnectionModels` for
- * BYOK.
+ * BYOK and catalog connections.
  *
  * Discovery NEVER enables, prices, deletes, or changes an assignment. New ids
  * land unpriced and unoffered, and the operator is alerted.
  */
-import Anthropic from '@anthropic-ai/sdk';
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { ModelLifecycle } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiPlatformModels } from '../../db/schema';
+import { aiPlatformModels, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
+import { createAnthropicClient, type AnthropicClientTarget } from './connectionFactory';
+import { decryptConnectionKey, getConnection, getConnectionKeyMaterial, type PartnerAiConnection } from './connections';
 import { refreshPlatformModelSnapshot, upsertDiscoveredPlatformModel, type DiscoveredModelInput } from './platformModels';
+import { safeErrorMessage } from './safeDbError';
 
 export const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 export type AnthropicModelInfo = DiscoveredModelInput;
@@ -21,12 +23,16 @@ export type AnthropicModelInfo = DiscoveredModelInput;
 /** A plain model identifier; anything else is skipped rather than shown to operators. */
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
 
-export async function discoverAnthropicModels(apiKey: string | undefined): Promise<AnthropicModelInfo[]> {
+export async function discoverAnthropicModels(
+  apiKey: string | undefined,
+  target: AnthropicClientTarget = { kind: 'anthropic' },
+): Promise<AnthropicModelInfo[]> {
   const key = apiKey?.trim();
   if (!key) throw new Error('discoverAnthropicModels: an API key is required');
-  // Forced origin and no auth token: the SDK would otherwise pick up
-  // ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from the environment.
-  const client = new Anthropic({ apiKey: key, authToken: null, baseURL: ANTHROPIC_API_ORIGIN, timeout: 30_000, maxRetries: 2 });
+  // Default target pins the public origin with no auth token: the SDK would
+  // otherwise pick up ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from the
+  // environment. Built through the connection factory (the only constructor).
+  const client = createAnthropicClient({ apiKey: key, target, timeout: 30_000, maxRetries: 2 });
   const models: AnthropicModelInfo[] = [];
   for await (const model of client.models.list({ limit: 100 })) {
     if (typeof model.id !== 'string' || !MODEL_ID_PATTERN.test(model.id)) {
@@ -218,8 +224,9 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
             .where(inArray(aiPlatformModels.id, write.toNotify.map((row) => row.id))),
         'aiModels.markNotified'));
       } catch (error) {
-        console.warn('[aiModels] could not mark discovered models as notified; they will be re-alerted on the next sync:', error);
-        captureException(error instanceof Error ? error : new Error(String(error)));
+        const message = safeErrorMessage(error);
+        console.warn('[aiModels] could not mark discovered models as notified; they will be re-alerted on the next sync:', message);
+        captureException(new Error(`AI model discovery notify mark failed: ${message}`));
       }
     }
   }
@@ -227,7 +234,9 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
   try {
     await refreshPlatformModelSnapshot();
   } catch (error) {
-    console.warn('[aiModels] snapshot refresh after sync failed; the periodic refresher will retry:', error);
+    const message = safeErrorMessage(error);
+    console.warn('[aiModels] snapshot refresh after sync failed; the periodic refresher will retry:', message);
+    captureException(new Error(`AI platform model snapshot refresh after sync failed: ${message}`));
   }
 
   return {
@@ -238,5 +247,207 @@ export async function syncPlatformModels(options: SyncPlatformModelsOptions = {}
     markedMissing: write.markedMissing,
     retired: write.retired,
     operatorNotified,
+  };
+}
+
+// ── W03 (#7601, Task 16): BYOK and catalog connections ─────────────────────
+
+/** Spec §6 names; the rule itself is W01's {@link computeLifecycleAfterSync}. */
+export const MISSING_AFTER_SUCCESSFUL_SYNCS = LIFECYCLE_MISSING_AFTER_SYNCS;
+export const RETIRED_AFTER_DAYS = LIFECYCLE_RETIRED_AFTER_MS / 86_400_000;
+
+export interface ConnectionSyncReport {
+  connectionId: string;
+  status: 'ok' | 'failed' | 'skipped';
+  discovered: number;
+  added: number;
+  markedMissing: number;
+  markedRetired: number;
+  error?: string;
+  /** Skipped because the key or endpoint changed while listing: run it again (with the new material). */
+  retry?: boolean;
+}
+
+export interface SyncConnectionModelsDeps {
+  discoverAnthropicModels: typeof discoverAnthropicModels;
+}
+
+interface FoundModel { modelId: string; capabilities: unknown }
+
+/** Offerings discovery owns. Manual (and platform) rows are the admin's: never aged. */
+const DISCOVERY_OWNED_SOURCES = ['discovered', 'catalog'] as const;
+
+const sysTx = <T>(fn: () => Promise<T>, label: string) =>
+  runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
+
+/** Safe to store and log: SQL values scrubbed (safeDbError), the connection key never echoed. */
+function connectionSyncError(error: unknown, apiKey: string | null): string {
+  let message = safeErrorMessage(error);
+  if (apiKey) message = message.split(apiKey).join('[redacted]');
+  return message.slice(0, 500);
+}
+
+async function listConnectionModels(
+  conn: PartnerAiConnection,
+  deps: SyncConnectionModelsDeps,
+  keyRef: { key: string | null },
+): Promise<FoundModel[]> {
+  if (conn.kind === 'anthropic_byok') {
+    const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
+    if (!material) throw new Error('The connection no longer exists.');
+    keyRef.key = decryptConnectionKey(material);
+    // The partner's key, pinned to the public API (connection factory target):
+    // never the platform key, never an ambient ANTHROPIC_BASE_URL.
+    const models = await deps.discoverAnthropicModels(keyRef.key, { kind: 'anthropic' });
+    // W01 rule: an empty listing is a failure, never a mass "missing".
+    if (models.length === 0) throw new Error('the Models API returned no models');
+    return models.map((model) => ({ modelId: model.id, capabilities: model.capabilities ?? null }));
+  }
+  // Catalog: mirror the entry's CURRENT listed revision, only models both
+  // mapped and verified. The revision is the platform's vetted listing, so the
+  // gateway itself is not called. Lazy: keeps this module's import graph light.
+  const [{ getListedProviderByEntryId }, { isLlmProviderCatalogEnabled }] = await Promise.all([
+    import('../llmProviderCatalog'),
+    import('../llm/llmConfigResolver'),
+  ]);
+  if (!isLlmProviderCatalogEnabled()) throw new Error('Catalog endpoints are disabled on this deployment.');
+  const provider = conn.catalogEntryId ? await getListedProviderByEntryId(conn.catalogEntryId) : null;
+  if (!provider) throw new Error('The catalog provider for this connection is not listed.');
+  return [...new Set(provider.verifiedModels)]
+    .filter((id) => Object.hasOwn(provider.modelMap, id))
+    .map((id) => ({ modelId: id, capabilities: null }));
+}
+
+/**
+ * Spec §6 for ONE connection (`ai-model-discovery` job `sync-connection`).
+ * New ids land as DISABLED offerings (BYOK: linked to the platform row when
+ * the ids match). Lifecycle follows W01's rule, only for rows discovery owns
+ * and has seen at least once. Never enables, never touches an assignment,
+ * never deletes; a failed listing records `discovery_error` and changes no
+ * lifecycle.
+ */
+export async function syncConnectionModels(
+  connectionId: string,
+  now: Date = new Date(),
+  deps: SyncConnectionModelsDeps = { discoverAnthropicModels },
+): Promise<ConnectionSyncReport> {
+  const base = { connectionId, discovered: 0, added: 0, markedMissing: 0, markedRetired: 0 };
+  const conn = await sysTx(() => getConnection(connectionId), 'aiModels.syncConnection.read');
+  if (!conn) return { ...base, status: 'skipped', error: 'connection not found' };
+  if (conn.kind !== 'anthropic_byok' && conn.kind !== 'catalog') {
+    return { ...base, status: 'skipped', error: `${conn.kind} discovery arrives in a later wave` };
+  }
+  if (conn.status === 'disconnected') return { ...base, status: 'skipped', error: 'connection disconnected' };
+
+  // Network call outside any DB context (#1105).
+  const keyRef: { key: string | null } = { key: null };
+  let found: FoundModel[];
+  try {
+    found = await listConnectionModels(conn, deps, keyRef);
+  } catch (error) {
+    const message = connectionSyncError(error, keyRef.key);
+    console.warn(`[aiModels] connection ${conn.id} model discovery failed: ${message}`);
+    try {
+      await sysTx(() => db.update(partnerAiConnections)
+        .set({ discoveryError: message })
+        .where(eq(partnerAiConnections.id, conn.id)), 'aiModels.syncConnection.recordError');
+    } catch (writeError) {
+      console.warn(`[aiModels] could not record discovery_error on connection ${conn.id}: ${safeErrorMessage(writeError)}`);
+    }
+    return { ...base, status: 'failed', error: message };
+  }
+
+  const seen = new Set(found.map((f) => f.modelId));
+  const outcome = await sysTx(async () => {
+    // Row lock: serialises overlapping syncs of this connection (missed-sync
+    // counts never double-increment) and facade writes. A key or endpoint
+    // change since the listing makes the listing stale.
+    const [current] = await db
+      .select({ kind: partnerAiConnections.kind, configVersion: partnerAiConnections.configVersion, catalogEntryId: partnerAiConnections.catalogEntryId })
+      .from(partnerAiConnections)
+      .where(eq(partnerAiConnections.id, conn.id))
+      .for('update');
+    if (!current) return { kind: 'gone' as const };
+    if (current.kind !== conn.kind || current.configVersion !== conn.configVersion || current.catalogEntryId !== conn.catalogEntryId) {
+      return { kind: 'superseded' as const };
+    }
+
+    const platformIds = new Map<string, string>();
+    if (conn.kind === 'anthropic_byok' && seen.size > 0) {
+      const platformRows = await db
+        .select({ id: aiPlatformModels.id, modelId: aiPlatformModels.modelId })
+        .from(aiPlatformModels)
+        .where(inArray(aiPlatformModels.modelId, [...seen]));
+      for (const row of platformRows) platformIds.set(row.modelId, row.id);
+    }
+    const source = conn.kind === 'anthropic_byok' ? 'discovered' : 'catalog';
+
+    let added = 0;
+    for (const f of found) {
+      const capabilities = f.capabilities === null ? null : JSON.stringify(f.capabilities);
+      const rows = await db.execute<{ inserted: boolean }>(sql`
+        INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, model_id, source,
+          capabilities, enabled, lifecycle, last_seen_at, missed_sync_count)
+        VALUES (${conn.partnerId}::uuid, ${conn.id}::uuid, ${platformIds.get(f.modelId) ?? null}::uuid, ${f.modelId}, ${source},
+          ${capabilities}::jsonb, false, 'available', ${now.toISOString()}::timestamptz, 0)
+        ON CONFLICT (connection_id, model_id) WHERE connection_id IS NOT NULL DO UPDATE SET
+          lifecycle = 'available',
+          last_seen_at = EXCLUDED.last_seen_at,
+          missed_sync_count = 0,
+          platform_model_id = COALESCE(partner_ai_models.platform_model_id, EXCLUDED.platform_model_id),
+          capabilities = CASE WHEN partner_ai_models.source = 'discovered'
+                              THEN COALESCE(EXCLUDED.capabilities, partner_ai_models.capabilities)
+                              ELSE partner_ai_models.capabilities END,
+          updated_at = now()
+        RETURNING (xmax = 0) AS inserted`);
+      // enabled is deliberately never written on conflict: discovery never enables (spec §6).
+      if (rows[0]?.inserted) added += 1;
+    }
+
+    const owned = await db
+      .select({
+        id: partnerAiModels.id,
+        modelId: partnerAiModels.modelId,
+        lifecycle: partnerAiModels.lifecycle,
+        missedSyncCount: partnerAiModels.missedSyncCount,
+        lastSeenAt: partnerAiModels.lastSeenAt,
+      })
+      .from(partnerAiModels)
+      .where(and(
+        eq(partnerAiModels.connectionId, conn.id),
+        inArray(partnerAiModels.source, [...DISCOVERY_OWNED_SOURCES]),
+      ));
+    let markedMissing = 0;
+    let markedRetired = 0;
+    for (const row of owned) {
+      if (row.modelId !== null && seen.has(row.modelId)) continue;
+      // Never-seen rows (lastSeenAt NULL: projected offerings, aliases the
+      // listing omits) come back unchanged — W01's guard.
+      const next = computeLifecycleAfterSync(row, false, now);
+      if (next.lifecycle === row.lifecycle && next.missedSyncCount === row.missedSyncCount) continue;
+      await db.update(partnerAiModels)
+        .set({ lifecycle: next.lifecycle, missedSyncCount: next.missedSyncCount, updatedAt: now })
+        .where(eq(partnerAiModels.id, row.id));
+      if (next.lifecycle !== row.lifecycle && next.lifecycle === 'missing') markedMissing += 1;
+      if (next.lifecycle !== row.lifecycle && next.lifecycle === 'retired') markedRetired += 1;
+    }
+
+    await db.update(partnerAiConnections)
+      .set({ lastDiscoveredAt: now, discoveryError: null })
+      .where(eq(partnerAiConnections.id, conn.id));
+    return { kind: 'written' as const, added, markedMissing, markedRetired };
+  }, 'aiModels.syncConnection.write');
+
+  if (outcome.kind === 'gone') return { ...base, status: 'skipped', error: 'connection not found' };
+  if (outcome.kind === 'superseded') {
+    return { ...base, status: 'skipped', retry: true, error: 'connection changed during sync' };
+  }
+  return {
+    ...base,
+    status: 'ok',
+    discovered: found.length,
+    added: outcome.added,
+    markedMissing: outcome.markedMissing,
+    markedRetired: outcome.markedRetired,
   };
 }

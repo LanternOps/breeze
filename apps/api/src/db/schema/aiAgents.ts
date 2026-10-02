@@ -202,6 +202,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // `analysis`-profile run — `{ handles, deviceIds, region }`. NULL for every
   // other profile. Read DEFENSIVELY (jsonb has no compile-time shape).
   stagedInputs: jsonb('staged_inputs').$type<AiAgentRunStagedInputs>(),
+  /** AI model registry W03 (#7601): funding of the offering resolved at admission. NULL = admitted before W03. */
+  fundingSource: text('funding_source').$type<'platform' | 'partner_key'>(),
+  /** W03 (review finding 6): the offering admission resolved; the run dispatches this one or is blocked. No FK (provenance id). */
+  admittedOfferingId: uuid('admitted_offering_id'),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.

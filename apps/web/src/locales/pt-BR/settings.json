@@ -2155,7 +2155,8 @@
         "failed": "Falhou",
         "cancelled": "Cancelada",
         "expired": "Expirada",
-        "skipped": "Ignorada"
+        "skipped": "Ignorada",
+        "blocked": "Bloqueada"
       },
       "verdicts": {
         "remediated": "Corrigido",
