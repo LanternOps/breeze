@@ -70,8 +70,18 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     const isRefresh = (r: { method(): string; url(): string }) =>
       r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
     page.on('request', (r) => { if (isRefresh(r)) inflightRefreshes.add(r); });
-    page.on('requestfinished', (r) => inflightRefreshes.delete(r));
-    page.on('requestfailed', (r) => inflightRefreshes.delete(r));
+    const refreshFailures: string[] = [];
+    page.on('requestfinished', (r) => { if (isRefresh(r)) inflightRefreshes.delete(r); });
+    page.on('response', (res) => {
+      if (!isRefresh(res.request())) return;
+      const status = res.status();
+      if (status < 200 || status >= 300) refreshFailures.push(`HTTP ${status}`);
+    });
+    page.on('requestfailed', (r) => {
+      if (!isRefresh(r)) return;
+      inflightRefreshes.delete(r);
+      refreshFailures.push(`request failed: ${r.failure()?.errorText ?? 'unknown'}`);
+    });
     page.on('response', (res) => {
       if (res.request().method() !== 'POST') return;
       if (!new URL(res.url()).pathname.endsWith('/auth/login')) return;
@@ -175,7 +185,17 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
       idlePolls = inflightRefreshes.size === 0 ? idlePolls + 1 : 0;
       await page.waitForTimeout(150);
     }
-    await ctx.storageState({ path: statePath });
+    // Snapshot, then re-check: a refresh that started during the final poll
+    // sleep or the snapshot itself, or any refresh that failed, voids the state.
+    const state = await ctx.storageState();
+    if (inflightRefreshes.size > 0 || refreshFailures.length > 0) {
+      throw new Error(
+        `[auth-state] login's POST /auth/refresh did not complete cleanly ` +
+          `(${inflightRefreshes.size} in flight; failures: ${refreshFailures.join(', ') || 'none'}); ` +
+          'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
+      );
+    }
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
   } finally {
     await ctx.close();
   }
