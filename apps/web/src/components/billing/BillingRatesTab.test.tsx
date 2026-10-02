@@ -325,14 +325,14 @@ it('keeps price rows editable across a failed save and retries the identical bod
 });
 
 it.each([
-  ['lacks partner-wide access', { partnerWide: false, grant: true }],
-  ['lacks billing_profiles:write', { partnerWide: true, grant: false }],
-])('is read-only when the user %s (#7597)', async (_label, { partnerWide, grant }) => {
+  ['lacks partner-wide access', { partnerWide: false, grant: true, notice: /full partner org access/i }],
+  ['lacks billing_profiles:write', { partnerWide: true, grant: false, notice: /view-only access to billing rates/i }],
+])('is read-only when the user %s (#7597)', async (_label, { partnerWide, grant, notice }) => {
   canManagePartnerWide = partnerWide; hasWriteGrant = grant;
   render(<BillingRatesTab />);
   await screen.findByTestId('billing-profile-row-p1');
   await screen.findByTestId('work-type-row-remote');
-  expect(screen.getByTestId('billing-rates-readonly')).toBeInTheDocument();
+  expect(screen.getByTestId('billing-rates-readonly')).toHaveTextContent(notice);
   expect(screen.getByTestId('billing-profile-create')).toBeDisabled();
   expect(screen.queryByTestId('billing-profile-clone-p1')).not.toBeInTheDocument();
   expect(screen.queryByTestId('billing-profile-default-p1')).not.toBeInTheDocument();
@@ -346,6 +346,10 @@ it.each([
   fireEvent.click(screen.getByTestId('billing-profile-edit-p1'));
   expect(screen.getByTestId('billing-profile-name')).toBeDisabled();
   expect(screen.queryByTestId('billing-profile-save')).not.toBeInTheDocument();
+  expect(screen.getByTestId('billing-rate-base')).toBeDisabled();
+  // Enter-key submit must not reach the API either.
+  fireEvent.submit(screen.getByTestId('billing-profile-name').closest('form')!);
+  expect(vi.mocked(fetchWithAuth).mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
 });
 it('stays editable when canManagePartnerWide is absent (stale session)', async () => {
   canManagePartnerWide = undefined;
