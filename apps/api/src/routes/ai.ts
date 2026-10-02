@@ -88,7 +88,7 @@ import { loadContinuationSummary, withContinuationContext } from '../services/ai
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
-import { continuationMessage, planModelTransition, readPreviousTurn } from '../services/aiModels/modelTransition';
+import { continuationMessage, planModelTransition, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
 import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
@@ -983,6 +983,14 @@ aiRoutes.post(
     const continuationSummary = !topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId
       ? await inRequestDb(() => loadContinuationSummary(sessionId))
       : null;
+    if (!topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId && continuationSummary === null) {
+      // The continuation was created with a summary; it is gone (or unreadable).
+      // The turn proceeds without the prior context — report it, never content.
+      console.warn('[AI] continuation summary missing on the first turn; sending without prior context', {
+        orgId: dbSession.orgId, sessionId, continuedFromSessionId: dbSession.continuedFromSessionId,
+      });
+      captureException(new Error('continuation summary missing on first turn'), undefined, { org_id: dbSession.orgId });
+    }
 
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
@@ -1026,10 +1034,14 @@ aiRoutes.post(
     let transition: Awaited<ReturnType<typeof planModelTransition>>;
     try {
       previous = await readPreviousTurn({ orgId: dbSession.orgId, sessionId });
+      // The preflight's session row predates resolveModel's lazy partner
+      // cutover, which stamps a pre-W03 session's offering_id: re-read it so a
+      // plain same-offering message is not refused as fit_unverifiable.
+      const freshOfferingId = await readSessionOfferingId({ orgId: dbSession.orgId, sessionId });
       transition = await planModelTransition({
         orgId: dbSession.orgId,
         sdkSessionId: dbSession.sdkSessionId,
-        sessionOfferingId: dbSession.offeringId ?? null,
+        sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
         previous,
         target: model,
         systemPrompt: topology ? topology.systemPrompt : systemPrompt,
@@ -1042,6 +1054,15 @@ aiRoutes.post(
     }
     if (transition.kind === 'continuation_required') {
       await abortTopology();
+      // A continuation (routes/aiSessionContinue.ts) refuses topology
+      // sessions, so offering one here would be a dead end.
+      if (topology) {
+        return c.json({
+          error: 'The AI model for this investigation changed. Start a new investigation to continue.',
+          code: 'topology_model_changed',
+          recoverable: true,
+        }, 409);
+      }
       const answer: AiContinuationRequired = {
         error: continuationMessage(transition.reason, model.offering.displayName),
         code: 'continuation_required',

@@ -35,8 +35,11 @@ describe('describeTurnModel (W05 spike constraint 5)', () => {
   });
   it('a failing name lookup is shown as the id, never fails the turn model', async () => {
     const failing = { platformDisplayName: vi.fn(async () => { throw new Error('db down'); }) };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const t = await describeTurnModel({ binding, outcome: outcome({ servedModel: 'claude-opus-4-8', fallbackUsed: true }), display: turnDisplayFrom(resolved) }, failing);
     expect(t.servedDisplayName).toBe('claude-opus-4-8');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[turnModel]'), { servedModel: 'claude-opus-4-8', error: 'db down' });
+    warn.mockRestore();
   });
   it('a configured refusal fallback that served uses its offering name', async () => {
     const withFb = makeResolvedModel('platform', {
@@ -60,9 +63,14 @@ describe('describeTurnModel (W05 spike constraint 5)', () => {
 describe('lastTurnModelOf', () => {
   it('parses a persisted turn model and rejects anything else', () => {
     const tm = { requestedModel: OPUS, requestedDisplayName: 'Opus 5.5', servedModel: OPUS, servedDisplayName: 'Opus 5.5', fallbackUsed: false, appliedOptions: { effort: 'high' }, fastDowngraded: false };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(lastTurnModelOf({ lastTurnModel: tm })).toEqual(tm);
-    expect(lastTurnModelOf({ lastTurnModel: { servedModel: 1 } })).toBeNull();
     expect(lastTurnModelOf({ lastTurnModel: null })).toBeNull();
     expect(lastTurnModelOf({})).toBeNull();
+    // Absent is normal and silent; only a stored value that does not parse is reported.
+    expect(warn).not.toHaveBeenCalled();
+    expect(lastTurnModelOf({ id: 'sess-1', lastTurnModel: { servedModel: 1 } })).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[turnModel]'), expect.objectContaining({ sessionId: 'sess-1' }));
+    warn.mockRestore();
   });
 });

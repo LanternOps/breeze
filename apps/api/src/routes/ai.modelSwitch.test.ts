@@ -206,11 +206,14 @@ vi.mock('../services/sentry', () => ({
 const tr = vi.hoisted(() => ({
   readPreviousTurn: vi.fn<(...a: unknown[]) => Promise<import('../services/aiModels/modelTransition').PreviousTurn | null>>(async () => null),
   planModelTransition: vi.fn<(...a: unknown[]) => Promise<import('../services/aiModels/modelTransition').ModelTransition>>(async () => ({ kind: 'fresh' })),
+  // undefined = no row: the route keeps the preflight snapshot.
+  readSessionOfferingId: vi.fn<(...a: unknown[]) => Promise<string | null | undefined>>(async () => undefined),
 }));
 vi.mock('../services/aiModels/modelTransition', async (orig) => ({
   ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
   readPreviousTurn: tr.readPreviousTurn,
   planModelTransition: tr.planModelTransition,
+  readSessionOfferingId: tr.readSessionOfferingId,
 }));
 
 import { aiRoutes } from './ai';
@@ -339,6 +342,48 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
       expect.anything(), RESERVATION_ID, expect.objectContaining({ turnBinding: binding }),
     );
+  });
+
+  it('the planner gets the session offering re-read AFTER resolveModel (its lazy cutover stamps it), not the preflight snapshot (M2)', async () => {
+    vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+      ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: null } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+    });
+    const depths: number[] = [];
+    tr.readSessionOfferingId.mockImplementationOnce(async () => { depths.push(dbCtx.depth); return OFF; });
+    await (await postWithModel(app)).text();
+    expect(tr.readSessionOfferingId).toHaveBeenCalledWith({ orgId: ORG_ID, sessionId: SESSION_ID });
+    expect(tr.planModelTransition).toHaveBeenCalledWith(expect.objectContaining({ sessionOfferingId: OFF }));
+    // #3127: read with no request DB context held.
+    expect(depths).toEqual([0]);
+  });
+
+  it('a same-model turn reserves with the carried rates of earlier switches and is NOT a modelSwitch', async () => {
+    const carried = [{ wireModel: 'claude-opus-5-5', rateSnapshot: { source: 'linked_platform' as const, standard: { inputCentsPerM: 500, outputCentsPerM: 2500, cacheReadCentsPerM: 50, cacheWriteCentsPerM: 625 } } }];
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'same_model', carriedRates: carried });
+    await (await postWithModel(app, { offeringId: OFF })).text();
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ binding: withCarriedRates(turnBindingFrom(model), carried) }));
+    expect(vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]![9]).toMatchObject({ modelSwitch: false });
+  });
+
+  it('a topology turn whose model changed gets a topology-specific 409 (continuations refuse topology sessions)', async () => {
+    vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+      ok: true, session: { ...DB_SESSION, type: 'topology', sdkSessionId: 'sdk-1', offeringId: 'off-sonnet' } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+    });
+    topo.prepare.mockResolvedValueOnce({
+      ok: true,
+      prepared: { kind: 'live', runtime: { abort: topo.abort }, prompt: 'TOPOLOGY PROMPT', systemPrompt: 'TOPOLOGY SYSTEM', allowedMcpTools: [] },
+    });
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'continuation_required', reason: 'cross_connection' });
+    const res = await postWithModel(app);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'The AI model for this investigation changed. Start a new investigation to continue.',
+      code: 'topology_model_changed', recoverable: true,
+    });
+    expect(topo.abort).toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
   });
 
   it('an offering change while a turn is in flight → 409 turn_in_progress (spike constraint 3)', async () => {

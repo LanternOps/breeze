@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import type { AiContinuationReason } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { AiBillingSource } from '../aiCostTracker';
+import { captureException } from '../sentry';
 import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
 import { checkTranscriptFit, defaultTranscriptFitDeps, type TranscriptFit, type TranscriptFitDeps } from './transcriptFit';
@@ -58,8 +59,20 @@ export async function readPreviousTurn(input: { orgId: string; sessionId: string
     LIMIT 1
   `)));
   const row = rowsOf<{ id: string; model_binding: unknown }>(result)[0];
-  const b = parseTurnBinding(row?.model_binding);
-  if (!row || !b) return null;
+  if (!row) return null;
+  const b = parseTurnBinding(row.model_binding);
+  if (!b) {
+    // A binding this build cannot read (e.g. written by a newer build before a
+    // rollback) reads as "no previous turn" — the switch guard agrees — but
+    // it means the session's switch provenance is lost: report it.
+    console.warn('[modelTransition] newest chat-turn binding does not parse; planning as if no previous turn', {
+      orgId: input.orgId, sessionId: input.sessionId, reservationId: row.id,
+    });
+    captureException(new Error('chat-turn model binding does not parse'), undefined, {
+      org_id: input.orgId, ai_reservation_id: row.id,
+    });
+    return null;
+  }
   return {
     reservationId: row.id,
     wireModel: b.wireModel,
@@ -90,6 +103,23 @@ export async function hasActiveChatTurn(input: { orgId: string; sessionId: strin
     LIMIT 1
   `)));
   return rowsOf(result).length > 0;
+}
+
+/**
+ * The session's CURRENT `ai_sessions.offering_id`, read fresh. The messages
+ * route's preflight snapshot is taken BEFORE resolveModel's lazy partner
+ * cutover stamps a pre-W03 session's offering, so planning against the
+ * snapshot would refuse a plain same-offering message as fit_unverifiable.
+ * Own system context, scoped by id AND org; undefined when there is no row.
+ */
+export async function readSessionOfferingId(input: { orgId: string; sessionId: string }): Promise<string | null | undefined> {
+  const result = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{ offering_id: string | null }>(sql`
+    SELECT offering_id FROM ai_sessions
+    WHERE id = ${input.sessionId}::uuid AND org_id = ${input.orgId}::uuid
+    LIMIT 1
+  `)));
+  const row = rowsOf<{ offering_id: string | null }>(result)[0];
+  return row ? (row.offering_id ?? null) : undefined;
 }
 
 export async function planModelTransition(

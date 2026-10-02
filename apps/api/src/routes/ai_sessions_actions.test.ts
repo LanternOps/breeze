@@ -11,6 +11,7 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
   ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
   readPreviousTurn: vi.fn(async () => null),
   planModelTransition: vi.fn(async () => ({ kind: 'fresh' })),
+  readSessionOfferingId: vi.fn(async () => undefined),
 }));
 import { Hono } from 'hono';
 

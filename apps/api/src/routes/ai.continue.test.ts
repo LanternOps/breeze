@@ -238,6 +238,7 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
   ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
   readPreviousTurn: tr.readPreviousTurn,
   planModelTransition: tr.planModelTransition,
+  readSessionOfferingId: vi.fn(async () => undefined),
   hasActiveChatTurn: tr.hasActiveChatTurn,
 }));
 
@@ -250,6 +251,8 @@ vi.mock('../services/aiModels/continuation', async (orig) => ({
 }));
 
 import { aiRoutes } from './ai';
+import { getEffectiveAiBudget } from '../services/effectiveSettings';
+import { captureException } from '../services/sentry';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks } from '../services/aiAgentSdk';
@@ -536,6 +539,24 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
     expect(insertContinuationSession).toHaveBeenCalled();
   });
 
+  it.each([
+    ['the budget read', () => vi.mocked(getEffectiveAiBudget).mockRejectedValueOnce(new Error('settings down'))],
+    ['the session insert', () => vi.mocked(insertContinuationSession).mockRejectedValueOnce(new Error('insert failed'))],
+  ])('a failure in %s AFTER the summary was billed → 502 continuation_create_failed, reported with its ids', async (_label, arm) => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    arm();
+    const res = await post(app, { model: { offeringId: OFF } });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: 'continuation_create_failed', error: expect.any(String) });
+    expect(settleInvocation).toHaveBeenCalled();   // the summary was charged before the failure
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('continuation'), expect.objectContaining({
+      orgId: ORG_ID, reservationId: RESERVATION_ID, sessionId: SESSION_ID,
+    }));
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { org_id: ORG_ID, ai_reservation_id: RESERVATION_ID });
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+    err.mockRestore();
+  });
+
   it('another user\'s chat is a 404 (owner-bound)', async () => {
     vi.mocked(getSessionMessages).mockResolvedValueOnce(null);
     expect((await post(app, { model: { offeringId: OFF } })).status).toBe(404);
@@ -645,10 +666,16 @@ describe('first turn of a continuation (W05)', () => {
     expect(streamingSessionManager.tryTransitionToProcessing).not.toHaveBeenCalled();
   });
 
-  it('a continuation whose summary row is gone sends the plain turn', async () => {
+  it('a continuation whose summary row is gone sends the plain turn, and reports it (logging gap)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     preflightWith({ sdkSessionId: null, continuedFromSessionId: 'old-1' });
     vi.mocked(loadContinuationSummary).mockResolvedValueOnce(null);
     await (await postMessage(app)).text();
     expect(vi.mocked(active.inputController.pushMessage).mock.calls[0]![0]).toBe('hi');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuation summary'), {
+      orgId: ORG_ID, sessionId: SESSION_ID, continuedFromSessionId: 'old-1',
+    });
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { org_id: ORG_ID });
+    warn.mockRestore();
   });
 });

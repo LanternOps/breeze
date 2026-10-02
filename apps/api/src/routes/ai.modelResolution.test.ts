@@ -210,6 +210,7 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
   ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
   readPreviousTurn: tr.readPreviousTurn,
   planModelTransition: tr.planModelTransition,
+  readSessionOfferingId: vi.fn(async () => undefined),
 }));
 
 import { aiRoutes } from './ai';

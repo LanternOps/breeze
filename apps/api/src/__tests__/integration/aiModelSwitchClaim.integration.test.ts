@@ -11,7 +11,7 @@ import {
   AiBudgetSessionBusyError, persistPendingSettlement, releaseUnusedAiBudgetReservation, reserveAiBudget,
 } from '../../services/aiBudgetReservations';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
-import { hasActiveChatTurn, readPreviousTurn } from '../../services/aiModels/modelTransition';
+import { hasActiveChatTurn, readPreviousTurn, readSessionOfferingId } from '../../services/aiModels/modelTransition';
 import { settleInvocation } from '../../services/aiModels/settleInvocation';
 import { turnBindingFrom, withCarriedRates } from '../../services/aiModels/turnBinding';
 import type { OfferingOptions } from '@breeze/shared';
@@ -192,6 +192,13 @@ describe.skipIf(!RUN)('model switch claim (W05)', () => {
     expect(String((await stamped()).offering_id)).toBe(seed.offeringId);
     await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: inFlight });
     await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: replayed });
+  });
+
+  it('readSessionOfferingId reads the CURRENT stamp, scoped by id AND org (M2)', async () => {
+    const { seed, other, claim, idOf } = await setup();
+    idOf(await claim(other));
+    expect(await readSessionOfferingId({ orgId: seed.orgId, sessionId: seed.chatSessionId })).toBe(other);
+    expect(await readSessionOfferingId({ orgId: randomUUID(), sessionId: seed.chatSessionId })).toBeUndefined();
   });
 
   it('two concurrent claims with different offerings: one wins, the loser stamps nothing', async () => {

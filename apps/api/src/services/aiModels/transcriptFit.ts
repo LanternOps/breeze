@@ -16,6 +16,12 @@ export const TRANSCRIPT_FIT_HEADROOM_RATIO = 0.1;
 /** The CLI's per-request output ceiling the fit must leave room for (spike: 32 000 on Haiku 4.5). */
 export const TRANSCRIPT_FIT_OUTPUT_ALLOWANCE_CAP = 32_000;
 /** Connection kinds whose endpoint can count tokens for the target model. W06/W07 add theirs. */
+/**
+ * The token count runs on the request path before anything is reserved: a
+ * slow or failing count endpoint must not stall the message (the SDK default
+ * is 10 minutes with 2 retries). A failure reads as unverifiable → continue.
+ */
+export const TRANSCRIPT_FIT_COUNT_TIMEOUT_MS = 10_000;
 export const COUNTABLE_KINDS: ReadonlySet<string> = new Set(['platform', 'anthropic_byok', 'catalog']);
 
 export type TranscriptFit =
@@ -41,7 +47,7 @@ export const defaultTranscriptFitDeps: TranscriptFitDeps = {
       model: target.wireModel,
       system: body.system,
       messages: body.messages as never,
-    });
+    }, { timeout: TRANSCRIPT_FIT_COUNT_TIMEOUT_MS, maxRetries: 0 });
     return counted.input_tokens;
   },
 };
@@ -137,7 +143,10 @@ export async function checkTranscriptFit(
   let messages: CountMessage[];
   try {
     messages = transcriptForCount(await deps.readTranscript(input.sdkSessionId), input.target.wireModel);
-  } catch {
+  } catch (err) {
+    console.warn('[transcriptFit] transcript unreadable; the switch will continue instead of resume', {
+      sdkSessionId: input.sdkSessionId, error: err instanceof Error ? err.message : String(err),
+    });
     return { kind: 'unverifiable', reason: 'no_transcript' };
   }
   // No transcript on THIS replica (or none persisted) proves nothing about fit.

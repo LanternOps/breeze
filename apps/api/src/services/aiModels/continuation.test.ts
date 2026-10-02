@@ -105,8 +105,12 @@ describe('fitContinuationTranscript (Codex review finding 10)', () => {
     expect(countTokens.mock.calls[0]![0]).toBe(small);
   });
   it('when counting fails, falls back to a conservative character cap', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const t = await fitContinuationTranscript({ messages: msgs, target: small, orgId: 'o1' }, { countTokens: vi.fn(async () => { throw new Error('no count'); }) });
     expect(t.text.length).toBeLessThanOrEqual(Math.floor((50_000 - 32_000 - 8_000) / 2) + 200);
+    // Logging gap: the fallback is visible, with the model and never the transcript.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[continuation]'), { wireModel: small.wireModel, error: 'no count' });
+    warn.mockRestore();
   });
 });
 

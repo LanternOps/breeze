@@ -54,7 +54,12 @@ export async function describeTurnModel(
   } else {
     // An id the binding does not know (the CLI swapped on its own): the
     // catalog name if there is one, else the id — never the requested name.
-    servedDisplayName = (await deps.platformDisplayName(served).catch(() => null)) ?? served;
+    servedDisplayName = (await deps.platformDisplayName(served).catch((err: unknown) => {
+      console.warn('[turnModel] served-model display name lookup failed; showing the id', {
+        servedModel: served, error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    })) ?? served;
   }
   return {
     requestedModel: binding.wireModel,
@@ -82,7 +87,14 @@ export async function persistLastTurnModel(input: { orgId: string; sessionId: st
 }
 
 /** The persisted provenance of a loaded session row, or null when absent / unparseable. */
-export function lastTurnModelOf(session: { lastTurnModel?: unknown }): AiTurnModel | null {
+export function lastTurnModelOf(session: { id?: string; lastTurnModel?: unknown }): AiTurnModel | null {
+  if (session.lastTurnModel === null || session.lastTurnModel === undefined) return null;
   const parsed = aiTurnModelSchema.safeParse(session.lastTurnModel);
-  return parsed.success ? (parsed.data as AiTurnModel) : null;
+  if (parsed.success) return parsed.data as AiTurnModel;
+  // A stored value this build cannot read (e.g. a newer build's shape): shown
+  // as absent, but reported. Issue paths only — never the stored values.
+  console.warn('[turnModel] persisted last_turn_model does not parse; reading it as absent', {
+    sessionId: session.id ?? null, issues: parsed.error.issues.map((i) => i.path.join('.')),
+  });
+  return null;
 }

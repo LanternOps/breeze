@@ -201,6 +201,25 @@ describe('turn_model (W05 spike constraint 5)', () => {
     expect(sets).toContainEqual({ lastTurnModel: turnModel });
   });
 
+  it('a CLI refusal fallback reaches turn_model: published and persisted name the SERVED model with fallbackUsed', async () => {
+    const HAIKU = 'claude-haiku-4-5';
+    // A resumed query (snapshot present): the fallback key is NEW this turn.
+    m.snapshots.set('s-th', { version: 1, models: { 'claude-sonnet-5-5': { tokens: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 }, webSearchRequests: 0 } } });
+    const events = await published([
+      ...thinkingTurn,
+      { type: 'system', subtype: 'model_refusal_fallback', api_refusal_category: 'cyber' },
+      sdkResult({
+        usage: { input_tokens: 300, output_tokens: 40 },
+        modelUsage: { 'claude-sonnet-5-5': { inputTokens: 1100, outputTokens: 110 }, [HAIKU]: { inputTokens: 300, outputTokens: 40 } },
+      }),
+    ]);
+    const turnModel = events.find((e) => e.type === 'turn_model')!.turnModel;
+    expect(turnModel).toMatchObject({ requestedModel: 'claude-sonnet-5-5', servedModel: HAIKU, servedDisplayName: HAIKU, fallbackUsed: true });
+    const sets = vi.mocked(db.update).mock.results.flatMap((r) =>
+      (r.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map((c) => c[0] as Record<string, unknown>));
+    expect(sets).toContainEqual({ lastTurnModel: turnModel });
+  });
+
   it('a failed persist never fails the turn: it is reported, and turn_model and done still publish', async () => {
     vi.mocked(db.update).mockImplementation(() => { throw new Error('db down'); });
     const events = await published([...thinkingTurn, sdkResult({})]);

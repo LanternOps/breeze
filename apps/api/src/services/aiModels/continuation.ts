@@ -72,7 +72,10 @@ export async function fitContinuationTranscript(
       counted = await deps.countTokens(input.target, {
         system: SUMMARY_SYSTEM_PROMPT, messages: [{ role: 'user', content: [{ type: 'text', text: t.text }] }],
       }, input.orgId);
-    } catch {
+    } catch (err) {
+      console.warn('[continuation] token count failed; trimming the transcript to a conservative character cap', {
+        wireModel: input.target.wireModel, error: err instanceof Error ? err.message : String(err),
+      });
       return buildContinuationTranscript(input.messages, Math.floor(limit / 2));
     }
     if (counted <= limit) return t;

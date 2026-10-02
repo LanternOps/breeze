@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
+
+// M3: the default countTokens goes through the connection factory's client.
+const cf = vi.hoisted(() => ({
+  countTokens: vi.fn(async () => ({ input_tokens: 4321 })),
+  anthropicClientFor: vi.fn(),
+}));
+vi.mock('./connectionFactory', () => ({
+  anthropicClientFor: cf.anthropicClientFor.mockImplementation(() => ({ messages: { countTokens: cf.countTokens } })),
+}));
+
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import {
+  TRANSCRIPT_FIT_COUNT_TIMEOUT_MS,
   checkTranscriptFit,
+  defaultTranscriptFitDeps,
   fitLimit,
   transcriptForCount,
   type TranscriptFitDeps,
@@ -76,6 +88,14 @@ describe('checkTranscriptFit (W05 spike constraint 1)', () => {
     expect(await checkTranscriptFit(input, deps(1, [])))
       .toEqual({ kind: 'unverifiable', reason: 'no_transcript' });
   });
+  it('an unreadable transcript is no_transcript and is logged with the SDK session id, never content (logging gap)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const d = deps(1);
+    d.readTranscript = vi.fn(async () => { throw new Error('ENOENT session file'); });
+    expect(await checkTranscriptFit(input, d)).toEqual({ kind: 'unverifiable', reason: 'no_transcript' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[transcriptFit]'), { sdkSessionId: 'sdk-1', error: 'ENOENT session file' });
+    warn.mockRestore();
+  });
   it('a model with no known window is unverifiable', async () => {
     const t = { ...haiku, limits: { maxInputTokens: null, maxOutputTokens: 64_000 } };
     const d = deps(1);
@@ -128,5 +148,18 @@ describe('transcriptForCount', () => {
     expect(transcriptForCount(entries, HAIKU)).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'a' }, img, { type: 'text', text: '[tool_result] shot' }] },
     ]);
+  });
+});
+
+describe('defaultTranscriptFitDeps.countTokens (M3)', () => {
+  it('bounds the provider call: a 10 s timeout and no SDK retries (it runs before anything is reserved)', async () => {
+    expect(TRANSCRIPT_FIT_COUNT_TIMEOUT_MS).toBe(10_000);
+    const n = await defaultTranscriptFitDeps.countTokens(haiku, { system: 's', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }] }, 'org-1');
+    expect(n).toBe(4321);
+    expect(cf.anthropicClientFor).toHaveBeenCalledWith(haiku, { surface: 'one_shot_token_count', orgId: 'org-1' });
+    expect(cf.countTokens).toHaveBeenCalledWith(
+      expect.objectContaining({ model: HAIKU, system: 's' }),
+      { timeout: TRANSCRIPT_FIT_COUNT_TIMEOUT_MS, maxRetries: 0 },
+    );
   });
 });

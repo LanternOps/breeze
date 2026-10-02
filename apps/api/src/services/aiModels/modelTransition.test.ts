@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// readPreviousTurn's read and report (logging gap): the DB row and Sentry.
+const dbm = vi.hoisted(() => ({ rows: [] as Array<{ id: string; model_binding: unknown }> }));
+vi.mock('../../db', () => ({
+  db: { execute: vi.fn(async () => dbm.rows) },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
+}));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
-import { planModelTransition, type PreviousTurn } from './modelTransition';
+import { planModelTransition, readPreviousTurn, type PreviousTurn } from './modelTransition';
+import { captureException } from '../sentry';
 import type { TranscriptFitDeps } from './transcriptFit';
 
 const SONNET = 'claude-sonnet-5-5';
@@ -71,6 +82,12 @@ describe('planModelTransition', () => {
     });
     expect(deps.countTokens.mock.calls[0]![0].wireModel).toBe(HAIKU);
   });
+  it('a CHAINED switch carries every model switched away from: Opus → Sonnet → Haiku carries [opus, sonnet]', async () => {
+    count = 100_000;
+    const opus = { wireModel: 'claude-opus-5-5', rateSnapshot: R(500) };
+    const r = await planModelTransition({ ...base, previous: { ...prevSonnet, carriedRates: [opus] } }, deps);
+    expect(r).toMatchObject({ kind: 'switch_resume', carriedRates: [opus, { wireModel: SONNET, rateSnapshot: R(300) }] });
+  });
   it('same connection, smaller target that does not fit → continuation_required transcript_too_large', async () => {
     count = 212_762;
     expect(await planModelTransition(base, deps)).toMatchObject({ kind: 'continuation_required', reason: 'transcript_too_large' });
@@ -86,5 +103,24 @@ describe('planModelTransition', () => {
     expect(await planModelTransition({ ...base, previous: null, sessionOfferingId: 'off-platform-haiku' }, deps))
       .toEqual({ kind: 'continuation_required', reason: 'fit_unverifiable' });
     expect(deps.countTokens).not.toHaveBeenCalled();
+  });
+});
+
+describe('readPreviousTurn', () => {
+  it('a newest chat turn whose binding does not parse reads as no previous turn, and is reported (never silently)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    dbm.rows = [{ id: 'res-x', model_binding: { v: 2 } }];
+    expect(await readPreviousTurn({ orgId: 'org-1', sessionId: 'sess-1' })).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[modelTransition]'), { orgId: 'org-1', sessionId: 'sess-1', reservationId: 'res-x' });
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, { org_id: 'org-1', ai_reservation_id: 'res-x' });
+    warn.mockRestore();
+  });
+  it('no chat turn at all is null and silent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    dbm.rows = [];
+    expect(await readPreviousTurn({ orgId: 'org-1', sessionId: 'sess-1' })).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

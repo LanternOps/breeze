@@ -231,11 +231,28 @@ export async function continueAiSession(
   // Best-effort cost accounting; never fails the request.
   await settle(summary.attempts);
 
-  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(session.orgId));
-  const created = await inRequestDb(() => insertContinuationSession({
-    source: session, userId: auth.user.id, choice: target, maxTurns: budget.maxTurnsPerSession,
-    summary: summary.summary, omittedMessages: transcript.omittedMessages,
-  }));
+  // The summary is already billed: a failure from here on must be loud, not
+  // an unhandled 500 that hides a charge with nothing to show for it.
+  let created;
+  try {
+    const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(session.orgId));
+    created = await inRequestDb(() => insertContinuationSession({
+      source: session, userId: auth.user.id, choice: target, maxTurns: budget.maxTurnsPerSession,
+      summary: summary.summary, omittedMessages: transcript.omittedMessages,
+    }));
+  } catch (err) {
+    const message = safeErrorMessage(err);
+    console.error('[AI] continuation chat not created after its summary was billed', {
+      orgId: session.orgId, reservationId, sessionId, error: message,
+    });
+    captureException(new Error(`continuation chat not created after summary billed: ${message}`), undefined, {
+      org_id: session.orgId, ai_reservation_id: reservationId,
+    });
+    return c.json({
+      code: 'continuation_create_failed',
+      error: 'The summary was made, but the new chat could not be created. Try again.',
+    }, 502);
+  }
   writeRouteAudit(c, {
     orgId: session.orgId,
     action: 'ai.session.continue',
