@@ -69,13 +69,17 @@ export async function ensureAppRole(): Promise<boolean> {
 
     // 3. Grant CONNECT on whichever database we are currently attached to
     //    (don't hardcode "breeze" — the compose file allows POSTGRES_DB to be
-    //    overridden).
+    //    overridden). TEMPORARY too, explicitly: the AI chargeback monthly
+    //    close (services/aiChargeback/chargeRun.ts, #7608) freezes its
+    //    candidate set in a CREATE TEMP TABLE, and PostgreSQL's default PUBLIC
+    //    TEMP grant is commonly revoked by hardened or managed databases.
     const dbRow = await client`SELECT current_database() AS db`;
     const dbName = dbRow[0]?.db as string | undefined;
     if (dbName) {
       // Quote the identifier to be safe against unusual db names.
       const quoted = '"' + dbName.replace(/"/g, '""') + '"';
       await client.unsafe(`GRANT CONNECT ON DATABASE ${quoted} TO breeze_app`);
+      await client.unsafe(`GRANT TEMPORARY ON DATABASE ${quoted} TO breeze_app`);
     }
 
     // 4. Table/sequence privileges + default privileges so future migrations
