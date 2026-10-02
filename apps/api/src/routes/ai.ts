@@ -664,7 +664,11 @@ aiRoutes.post(
     } catch (err) {
       if (err instanceof FailoverExhaustedError) {
         // Every hop runWithFailover tried is already settled on its own reservation.
-        console.error('[AI] Ticket draft failed on every configured model:', safeErrorMessage(err.lastError));
+        console.error('[AI] Ticket draft failed on every configured model:', safeErrorMessage(err.lastError), {
+          stop: err.stop, admission: err.admissionMessage,
+        });
+        // The backup's credits / budget refused it: say so, like hop 0's own denial (402).
+        if (err.stop === 'admission_denied' && err.admissionMessage) return c.json({ error: err.admissionMessage }, 402);
         return c.json({ error: 'ai_unavailable' }, 503);
       }
       const reservationId = current.reservationId;

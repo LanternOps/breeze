@@ -811,6 +811,20 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       expect(routeMocks.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: 'org1', reservationId: HOP0_RESERVATION });
     });
 
+    it('the backup is refused by its own credits check: 402 with that message, hop 0 settled, nothing reserved for the backup', async () => {
+      routeMocks.checkBudgetDetailedMock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+      vi.mocked(draftTicketFromTranscript).mockRejectedValueOnce(providerFailure([]));
+
+      const res = await postDraft(SESSION_ID, partnerAuth);
+
+      expect(res.status).toBe(402);
+      expect(await res.json()).toEqual({ error: 'You are out of AI credits.' });
+      expect(routeMocks.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+    });
+
     it('no usable backup answers 503 ai_unavailable with hop 0 already settled and nothing held', async () => {
       routeMocks.resolveSessionTurnMock.mockReset();
       routeMocks.resolveSessionTurnMock

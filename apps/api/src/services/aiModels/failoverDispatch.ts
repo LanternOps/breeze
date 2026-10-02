@@ -23,6 +23,7 @@
  * the hop unsettled, so the surface's W03 failure handling is unchanged.
  */
 import {
+  markAiBudgetReservationIndeterminate,
   reserveAiBudget,
   type AiBudgetNamespace,
   type ClientAiBudgetCaps,
@@ -30,7 +31,9 @@ import {
 import { checkBudgetDetailed } from '../aiCostTracker';
 import { MessageDispatchError, type MessageAttempt } from './connectionFactory';
 import { classifyProviderError, hopIdempotencyKey, MAX_FAILOVER_HOP, type ProviderFailureCause } from './failover';
+import { captureException } from '../sentry';
 import { noteProviderFailure } from './offeringHealth';
+import { safeErrorMessage } from './safeDbError';
 import type { FailoverOrigin, ResolvedModel, ResolveModelResult } from './resolveModel';
 import { settleInvocation } from './settleInvocation';
 import { turnBindingFrom, type TurnBinding } from './turnBinding';
@@ -73,6 +76,17 @@ export class FailoverExhaustedError extends Error {
   }
 }
 
+/** A failover step failed for an internal reason (DB, binding conflict): logged scrubbed and reported, never swallowed. */
+function reportInternalFailure(step: string, hop: FailoverHop, error: unknown): void {
+  const message = safeErrorMessage(error);
+  console.error('[failover] internal step failed; the dispatch ends without a backup', {
+    step, surface: hop.resolved.surface, hop: hop.index, reservationId: hop.reservationId, error: message,
+  });
+  captureException(new Error(`AI failover ${step} failed: ${message}`), undefined, {
+    ...(hop.resolved.orgId ? { org_id: hop.resolved.orgId } : {}), ai_reservation_id: hop.reservationId,
+  });
+}
+
 export async function runWithFailover<T>(input: {
   first: FailoverHop;
   reResolve: (args: { excludeOfferingIds: string[]; cause: ProviderFailureCause; origin: FailoverOrigin }) => Promise<ResolveModelResult>;
@@ -98,15 +112,41 @@ export async function runWithFailover<T>(input: {
     await noteProviderFailure(hop.resolved, cause);
     if (hop.resolved.failoverRemaining.length === 0 || hop.index + 1 > MAX_FAILOVER_HOP) throw error;
 
-    await input.settleFailedHop(hop, error);                                                 // F4
-    const next = await input.reResolve({ excludeOfferingIds: [...tried], cause, origin });  // F1 vs the origin, F2
+    // F4. From here on every exit is a FailoverExhaustedError, whose contract
+    // is "the failed hop is handled": a throw in these internal steps never
+    // leaks to the surface with `current` still pointing at a hop it would
+    // then settle or release a second time (PR #7775 review).
+    try {
+      await input.settleFailedHop(hop, error);
+    } catch (settleError) {
+      // Unknown whether the settle wrote: hold the hop (W03's unknown-outcome state).
+      reportInternalFailure('settle_failed_hop', hop, settleError);
+      if (hop.resolved.orgId) {
+        await markAiBudgetReservationIndeterminate({ orgId: hop.resolved.orgId, reservationId: hop.reservationId })
+          .catch((markError: unknown) => reportInternalFailure('mark_failed_hop_indeterminate', hop, markError));
+      }
+      throw new FailoverExhaustedError(error, hop, 'no_next_hop');
+    }
+    let next: ResolveModelResult;
+    try {
+      next = await input.reResolve({ excludeOfferingIds: [...tried], cause, origin });       // F1 vs the origin, F2
+    } catch (resolveError) {
+      reportInternalFailure('re_resolve', hop, resolveError);
+      throw new FailoverExhaustedError(error, hop, 'no_next_hop');
+    }
     if (!next.ok || next.offering.id === null || tried.includes(next.offering.id)) {
       throw new FailoverExhaustedError(error, hop, 'no_next_hop');
     }
     const binding = turnBindingFrom(next);
     const index = hop.index + 1;
     const idempotencyKey = hopIdempotencyKey(baseKey, index);
-    const reservation = await input.reserveHop(next, binding, idempotencyKey);               // F3
+    let reservation: HopReservation;
+    try {
+      reservation = await input.reserveHop(next, binding, idempotencyKey);                    // F3
+    } catch (reserveError) {
+      reportInternalFailure('reserve_next_hop', hop, reserveError);
+      throw new FailoverExhaustedError(error, hop, 'no_next_hop');
+    }
     if (!reservation.ok) throw new FailoverExhaustedError(error, hop, 'admission_denied', reservation.message);
     console.warn('[failover] dispatching the next hop', {
       surface: next.surface, fromOfferingId: hop.resolved.offering.id, toOfferingId: next.offering.id,

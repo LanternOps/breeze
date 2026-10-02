@@ -8,10 +8,13 @@ const h = vi.hoisted(() => ({
     dailyPeriodKey: 'd', monthlyPeriodKey: 'm', status: 'active',
   })),
   settleInvocation: vi.fn(async (..._a: unknown[]) => ({ costCents: 0, invocationIds: ['inv'], deferred: false })),
+  markIndeterminate: vi.fn(async (..._a: unknown[]) => undefined),
+  captureException: vi.fn(),
 }));
 vi.mock('./offeringHealth', () => ({ noteProviderFailure: h.noteProviderFailure }));
 vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed: h.checkBudgetDetailed }));
-vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget: h.reserveAiBudget }));
+vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget: h.reserveAiBudget, markAiBudgetReservationIndeterminate: h.markIndeterminate }));
+vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('./settleInvocation', () => ({ settleInvocation: h.settleInvocation }));
 
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
@@ -136,6 +139,37 @@ describe('runWithFailover', () => {
       attempt: vi.fn().mockRejectedValue(overloaded()), settleFailedHop: vi.fn(async () => undefined),
     }).catch((x) => x);
     expect(e).toBeInstanceOf(FailoverExhaustedError);
+  });
+
+  it('the failed hop\'s settlement throws: the hop is marked indeterminate, reported, and the dispatch ends handled (FailoverExhaustedError)', async () => {
+    const reResolve = vi.fn();
+    const e = await runWithFailover({
+      first: first(), reResolve, reserveHop: vi.fn(), attempt: vi.fn().mockRejectedValue(overloaded()),
+      settleFailedHop: vi.fn(async () => { throw new Error('db down'); }),
+    }).catch((x) => x);
+    expect(e).toBeInstanceOf(FailoverExhaustedError);
+    expect(e.lastError).toMatchObject({ status: 529 });
+    expect(h.markIndeterminate).toHaveBeenCalledWith({ orgId: 'org-1', reservationId: 'res0' });
+    expect(h.captureException).toHaveBeenCalled();
+    expect(reResolve).not.toHaveBeenCalled();
+  });
+
+  it('a re-resolution or reservation that throws after the hop was settled ends handled; the settled hop is never touched again', async () => {
+    for (const broken of ['reResolve', 'reserveHop'] as const) {
+      vi.clearAllMocks();
+      const e = await runWithFailover({
+        first: first(),
+        reResolve: broken === 'reResolve' ? vi.fn(async () => { throw new Error('db down'); }) : vi.fn(async () => backup),
+        reserveHop: broken === 'reserveHop' ? vi.fn(async () => { throw new Error('binding conflict'); }) : reserveFailoverHop({ orgId: 'org-1' }),
+        attempt: vi.fn().mockRejectedValue(overloaded()),
+        settleFailedHop: vi.fn(async () => undefined),
+      }).catch((x) => x);
+      expect(e).toBeInstanceOf(FailoverExhaustedError);
+      expect([e.stop, e.lastHop.reservationId]).toEqual(['no_next_hop', 'res0']);
+      expect(e.lastError).toMatchObject({ status: 529 });
+      expect(h.markIndeterminate).not.toHaveBeenCalled();
+      expect(h.captureException).toHaveBeenCalled();
+    }
   });
 
   it('two failing hops: each settled on its own reservation, the third serves under base:hop:2', async () => {
