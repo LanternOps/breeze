@@ -26,7 +26,7 @@ export interface TopologyPhysicalRelationshipAttributes {
   association?: 'wired' | 'wireless' | 'vpn' | 'teleport' | 'unknown' | 'uplink'; endpointKey?: string; uplinkEndpointKey?: string;
   fdbSelection?: 'selected' | 'competing' | 'excluded' | 'none'; alternativeRelationshipIds?: string[]; alternativeRelationshipsOmitted?: number;
 }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; }
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context' | 'lldp' | 'cdp' | 'fdb' | 'unifi'; createdBy?: string; physical?: TopologyPhysicalRelationshipAttributes; halfDefault?: true; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.

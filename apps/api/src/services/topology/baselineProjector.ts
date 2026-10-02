@@ -1,4 +1,4 @@
-import { canonicalFactValue, topologyFactKey } from './collectionFactKeys';
+import { canonicalFactValue, halfDefaultRoutePairs, topologyFactKey } from './collectionFactKeys';
 import { createHash } from 'node:crypto';
 import { topologyCidrSchema, type NodeKind, type RelationshipKind } from '@breeze/shared';
 import { canonicalIdentityKey } from './identity';
@@ -24,7 +24,7 @@ export function projectBaselineTopology(input:BaselineProjectionInput):TopologyP
     return id;
   };
   const interfaceFor=(key:string)=>[...delta.interfaces,...input.interfaces].find(i=>i.ownerNodeId===originNodeId&&i.interfaceKey===key&&i.epoch===source.producerEpoch)?.id??null;
-  const relationship=(kind:RelationshipKind,rowKey:string,targetNodeId:string,interfaceId:string|null,material:unknown,evidence:'observed'|'inferred')=>{
+  const relationship=(kind:RelationshipKind,rowKey:string,targetNodeId:string,interfaceId:string|null,material:unknown,evidence:'observed'|'inferred',extra:{halfDefault?:true}={})=>{
     const sourceKey=`os:${context}:${opaque([kind,originNodeId,material])}`;
     const canonicalKey=canonicalIdentityKey(scope,kind,sourceKey);
     const old=input.relationships.find(r=>r.canonicalKey===canonicalKey);
@@ -32,7 +32,7 @@ export function projectBaselineTopology(input:BaselineProjectionInput):TopologyP
     delta.relationships.push({...scope,id,kind,canonicalKey,identityMaterial:{version:1,kind,sourceKey},sourceNodeId:originNodeId,targetNodeId,
       sourceInterfaceId:interfaceId,targetInterfaceId:null,logicalContext:{contextKey:context,...(interfaceId?{interfaceId}:{})},
       directness:'unknown',confidence:evidence==='observed'?'high':'low',evidenceClass:evidence,lifecycle:'active',
-      firstSupportedAt:old?.firstSupportedAt??run.effectiveAt,lastSupportedAt:run.effectiveAt,supportCount:1n,attributes:{method:'os_network_context'}});
+      firstSupportedAt:old?.firstSupportedAt??run.effectiveAt,lastSupportedAt:run.effectiveAt,supportCount:1n,attributes:{method:'os_network_context',...extra}});
     const observationId=stableLegacyId(`${run.id}:${rowKey}:${id}`);
     const freshUntil=new Date(run.effectiveAt.getTime()+Math.max(run.expectedIntervalSeconds*3,900)*1000);
     delta.observations.push({...scope,id:observationId,runId:run.id,observationKey:opaque([rowKey,id]),subjectNodeId:originNodeId,
@@ -60,15 +60,27 @@ export function projectBaselineTopology(input:BaselineProjectionInput):TopologyP
       value.parentInterfaceId=interfaceFor(row.parentInterfaceKey);
     }
   }
-  if (section.kind==='routes') for (const row of section.rows) {
-    if (!['0.0.0.0/0','::/0'].includes(row.destinationPrefix)||!['unicast','on_link'].includes(row.routeType)) continue;
-    for (const hop of row.nextHops) {
-      // An on-link/unknown gateway is presentation-only, never a canonical device.
-      if (!hop.address) continue;
-      const key=hop.interfaceKey??row.interfaceKey;
-      const interfaceId=key?interfaceFor(key):null;
-      const gateway=node('gateway',['gateway',row.family,hop.address,hop.zone,key],hop.address);
-      relationship('default_route',topologyFactKey(row.rowKey,hop),gateway,interfaceId,[row.rowKey,row.tableKey,row.metric,hop],'observed');
+  if (section.kind==='routes') {
+    for (const row of section.rows) {
+      if (!['0.0.0.0/0','::/0'].includes(row.destinationPrefix)||!['unicast','on_link'].includes(row.routeType)) continue;
+      for (const hop of row.nextHops) {
+        // An on-link/unknown gateway is presentation-only, never a canonical device.
+        if (!hop.address) continue;
+        const key=hop.interfaceKey??row.interfaceKey;
+        const interfaceId=key?interfaceFor(key):null;
+        const gateway=node('gateway',['gateway',row.family,hop.address,hop.zone,key],hop.address);
+        relationship('default_route',topologyFactKey(row.rowKey,hop),gateway,interfaceId,[row.rowKey,row.tableKey,row.metric,hop],'observed');
+      }
+    }
+    // VPN half-default pairs (#7820) are a default route through the tunnel. They
+    // are emitted only when the tunnel interface resolves: an unattributed route
+    // would fold into the observer's sole LAN membership and split its gateway
+    // group, so without the interface the pair stays unreported, never guessed.
+    for (const {low,high,hop,factKey} of halfDefaultRoutePairs(section.rows)) {
+      const interfaceId=hop.interfaceKey?interfaceFor(hop.interfaceKey):null;
+      if (!interfaceId) continue;
+      const gateway=node('gateway',['gateway',low.family,hop.address,hop.zone,hop.interfaceKey],hop.address);
+      relationship('default_route',factKey,gateway,interfaceId,['half_default',low.tableKey,low.rowKey,low.metric,high.rowKey,high.metric,hop],'observed',{halfDefault:true});
     }
   }
   return delta;

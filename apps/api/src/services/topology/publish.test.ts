@@ -97,6 +97,20 @@ describe('physical relationship publication variants (D15.4)', () => {
       targetNodeId: '00000000-0000-4000-8000-0000000000b2', evidenceClass: 'observed', confidence: 'high', attributes: { method: 'lldp' },
     }] as never })).toThrow();
   });
+  it('accepts the half-default marker only on an OS-observed default route (#7820)', () => {
+    const logical = (kind: 'default_route' | 'network_member', attributes: Record<string, unknown>) => {
+      const sourceKey = `os:half:${kind}`;
+      return validatePublicationInput(scope, { ...input, relationships: [{
+        id: '00000000-0000-4000-8000-0000000000ac', ...scope, kind, canonicalKey: canonicalIdentityKey(scope, kind, sourceKey),
+        identityMaterial: { version: 1, kind, sourceKey }, sourceNodeId: '00000000-0000-4000-8000-0000000000b1',
+        targetNodeId: '00000000-0000-4000-8000-0000000000b2', evidenceClass: 'observed', confidence: 'high', attributes,
+      }] as never });
+    };
+    expect(logical('default_route', { method: 'os_network_context', halfDefault: true }).relationships[0]!.attributes.halfDefault).toBe(true);
+    expect(() => logical('network_member', { method: 'os_network_context', halfDefault: true })).toThrow();
+    expect(() => logical('default_route', { method: 'manual', halfDefault: true })).toThrow();
+    expect(() => logical('default_route', { method: 'os_network_context', halfDefault: false })).toThrow();
+  });
   it('rejects unknown, oversized or misplaced physical attributes', () => {
     expect(() => publishRows(physicalRow({ attributes: { method: 'lldp', physical: { resolution: 'resolved', extra: 1 } } }))).toThrow();
     expect(() => publishRows(physicalRow({ attributes: { method: 'lldp', physical: { bridgeContext: 'x'.repeat(256) } } }))).toThrow();
