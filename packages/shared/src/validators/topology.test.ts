@@ -44,6 +44,7 @@ import {
   reportKindSchema,
   topologyViewSchema,
 } from './topology';
+import { graphNodeSchema, topologyNetworkClass } from './topology';
 
 const SITE_ID = '11111111-1111-4111-8111-111111111111';
 const NODE_ID = '22222222-2222-4222-8222-222222222222';
@@ -412,5 +413,60 @@ describe('M2 physical read contracts (D11)', () => {
     expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, details: { state: 'unavailable', reason: 'legacy_summary_only' } }).success).toBe(true);
     expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, observations: [{ ...evidenceResponse.observations[0], attributes: {} }] }).success).toBe(false);
     expect(relationshipEvidenceResponseSchema.safeParse({ ...evidenceResponse, details: { state: 'gone', reason: null } }).success).toBe(false);
+  });
+});
+
+describe('grouped overview contract (2026-10-02)', () => {
+  const inventory = {
+    source: 'device', name: 'DRT-HYG3', addresses: ['10.1.2.57', 'fe80::1c2a'], mac: 'aa:bb:cc:dd:ee:ff',
+    vendor: null, model: null, os: 'windows 10.0.19045', type: 'workstation',
+    presence: { state: 'offline', source: 'agent', agentStatus: 'offline', lastSeenAt: '2026-10-01T22:00:00.000Z' },
+  };
+  const group = {
+    kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix: '10.1.2.0/24', address: null,
+    gatewayAddresses: ['10.1.2.100'], conflict: false, observerCount: 20,
+    members: [{ nodeId: NODE_ID, placement: 'observed', primary: true, stale: false }, { nodeId: NODE_2_ID, placement: 'address_match', primary: true, stale: false }],
+    canonicalNodeIds: [NODE_ID],
+  };
+  const groupNode = { ...graphResponse.presentation.nodes[0], id: 'presentation:overview:abc123:net-0123456789abcdef0123456789abcdef01234567',
+    role: 'network_group', label: '10.1.2.0/24', group };
+
+  it('accepts optional inventory on graph nodes and keeps nodes without it valid', () => {
+    const node = graphResponse.nodes[0];
+    expect(graphNodeSchema.safeParse(node).success).toBe(true);
+    expect(graphNodeSchema.safeParse({ ...node, inventory }).success).toBe(true);
+    expect(graphNodeSchema.safeParse({ ...node, inventory: { ...inventory, addresses: Array(9).fill('10.0.0.1') } }).success).toBe(false);
+    expect(graphNodeSchema.safeParse({ ...node, inventory: { ...inventory, presence: { ...inventory.presence, state: 'healthy' } } }).success).toBe(false);
+    expect(graphNodeSchema.safeParse({ ...node, inventory: { ...inventory, extra: 1 } }).success).toBe(false);
+  });
+
+  it('accepts group metadata on presentation nodes with the 64-char id segment', () => {
+    expect(presentationNodeSchema.safeParse(groupNode).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, members: [{ nodeId: 'presentation:x', placement: 'observed', primary: true, stale: false }] } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, kind: 'switch' } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, members: [{ ...group.members[0], placement: 'guessed' }] } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, authority: true }).success).toBe(false);
+  });
+
+  it('labels aggregate edges with a presentation role without inventing authority', () => {
+    const edge = { ...graphResponse.presentation.edges[0], role: 'routes_via' };
+    expect(presentationEdgeSchema.safeParse(edge).success).toBe(true);
+    expect(presentationEdgeSchema.safeParse({ ...edge, role: 'cable' }).success).toBe(false);
+    expect(presentationEdgeSchema.safeParse({ ...edge, role: 'shared_devices', contributingRelationshipIds: [] }).success).toBe(false);
+  });
+
+  it('round-trips a whole grouped response', () => {
+    const response = { ...graphResponse, nodes: [{ ...graphResponse.nodes[0], inventory }], presentation: { nodes: [groupNode], edges: graphResponse.presentation.edges } };
+    expect(graphResponseSchema.safeParse(response).success).toBe(true);
+  });
+
+  it.each([
+    ['10.1.2.0/24', 'lan'], ['192.168.0.0/16', 'lan'], ['2600:100e:b238:76c8::/64', 'lan'],
+    ['169.254.0.0/16', 'link_local'], ['fe80::/64', 'link_local'],
+    ['100.124.30.54/32', 'host'], ['fd60:da62:3322::e3c/128', 'host'],
+    ['100.64.0.0/10', 'overlay'], ['100.100.0.0/16', 'overlay'], ['fd7a:115c:a1e0::/48', 'overlay'],
+    ['0.0.0.0/0', 'other'], ['::/0', 'other'], ['10.0.0.0/7', 'other'],
+  ])('classifies %s as %s', (prefix, expected) => {
+    expect(topologyNetworkClass(prefix)).toBe(expected);
   });
 });
