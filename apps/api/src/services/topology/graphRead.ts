@@ -234,7 +234,7 @@ export function presentNode(row: NodeRow, canEdit: boolean, health?: GraphNode['
 const KNOWN_METHODS: ReadonlySet<string> = new Set(OBSERVATION_METHODS);
 /** OS baseline rows carry method `os_network_context`; report what was actually read (interfaces vs routes). */
 const OS_CONTEXT_METHODS: Readonly<Record<string, ObservationMethod>> = { network_member: 'os_interface', default_route: 'os_route' };
-function relationshipMethods(row: Pick<RelationshipRow, 'legacy' | 'method' | 'evidenceClass'> & { kind: string }): ObservationMethod[] {
+function relationshipMethods(row: { kind: string; legacy: boolean; method?: string | null; evidenceClass: string }): ObservationMethod[] {
   if (row.legacy) return ['legacy'];
   if (row.method === 'os_network_context') return OS_CONTEXT_METHODS[row.kind] ? [OS_CONTEXT_METHODS[row.kind]!] : [];
   if (row.method && KNOWN_METHODS.has(row.method)) return [row.method as ObservationMethod];
