@@ -7,6 +7,7 @@ import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
 import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
+import { stampChargeback } from './aiChargeback/stampChargeback';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
 import { getPlatformModelByModelId } from './aiModels/platformModels';
 import { platformRateSnapshot } from './aiModels/pricing';
@@ -1042,6 +1043,11 @@ export async function settleAiBudgetReservation(
   const fingerprint = settlementFingerprint(input, totals, cost);
 
   return inReservationTransaction('aiBudgetReservations.settle', async () => {
+    // W10 (#7608): stamp the chargeback snapshot in THIS transaction (the ledger
+    // write), before the org lock so the card read never extends its hold.
+    // `input` itself stays unstamped: it is what settlementFingerprint hashed and
+    // what persistPendingSettlement stores, so a replay is stamped at replay.
+    const stamped = input.invocations ? await stampChargeback(input.orgId, input.invocations) : undefined;
     await lockOrganizationRow(input.orgId, 'settlement', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
 
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
@@ -1105,7 +1111,7 @@ export async function settleAiBudgetReservation(
       }
       const binding = parseTurnBinding(reservation.model_binding);
       if (binding) await assertInvocationsMatchBinding(binding, input.invocations);
-      for (const row of input.invocations) {
+      for (const row of stamped!) {
         // Ambient db = this transaction (P10): the ledger row commits or rolls
         // back with the rollups derived from it below.
         invocationIds.push(await recordInvocation(row));
@@ -1187,8 +1193,9 @@ export async function recordInvocationsWithRollups(input: {
   const totals = ledgerTotals(input.invocations);
   const cost = moneyString(totals.actualCostCents, 'actualCostCents');
   return inReservationTransaction('aiBudgetReservations.recordInvocations', async () => {
+    const stamped = await stampChargeback(input.orgId, input.invocations); // W10 (#7608): the ledger write
     const ids: string[] = [];
-    for (const row of input.invocations) ids.push(await recordInvocation(row));
+    for (const row of stamped) ids.push(await recordInvocation(row));
     await applyUsageRollups({
       orgId: input.orgId,
       sessionId: input.sessionId ?? null,
