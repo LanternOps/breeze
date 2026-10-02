@@ -556,10 +556,10 @@ export interface AiAgentActAssets {
 export interface AiAgentPolicy {
   enabled: boolean;
   mode: AiAgentMode;
-  model: string | null;
   /**
-   * AI model registry W03: the registry offering the policy's `model` is bound
-   * to (`ai_agents.offering_id`, written at policy-write time). Org row's
+   * AI model registry W03: the registry offering the policy is bound to
+   * (`ai_agents.offering_id`, written at policy-write time; the policy `model`
+   * string was retired in W08, #7606). Org row's
    * binding wins, else the partner baseline's; null = follow the `ai_agents`
    * assignment. Optional because snapshots frozen before W03 lack it — read it
    * as `?? null`. The run-time resolver re-checks it against the `ai_agents`
@@ -787,11 +787,10 @@ export interface AiAgentDto {
   name: string;
   enabled: boolean;
   mode: AiAgentMode;
-  model: string | null;
   /**
-   * AI model registry W05: the registry offering the policy model is bound to
+   * AI model registry W05: the registry offering the policy is bound to
    * (`ai_agents.offering_id`); null = the agent follows the `ai_agents`
-   * assignment default. `model` is its provenance snapshot.
+   * assignment default.
    */
   offeringId: string | null;
   orgId: string | null;

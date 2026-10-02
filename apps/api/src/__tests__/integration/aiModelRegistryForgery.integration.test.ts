@@ -256,8 +256,8 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
   it('an agent policy cannot bind another partner\'s offering (23514 partner row, 23503 org row)', async () => {
     const t = await twoPartners();
     const user = await createUser({ partnerId: t.a.id });
-    const partnerAgent = await seedAgent({ partnerId: t.a.id, createdBy: user.id, model: 'claude-sonnet-5-5' });
-    const orgAgent = await seedAgent({ orgId: t.orgA.id, createdBy: user.id, model: 'claude-haiku-4-5' });
+    const partnerAgent = await seedAgent({ partnerId: t.a.id, createdBy: user.id });
+    const orgAgent = await seedAgent({ orgId: t.orgA.id, createdBy: user.id });
     await expect(withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.b.id} WHERE id = ${partnerAgent}`)))
       .rejects.toMatchObject({ cause: { code: '23514' } });
@@ -267,11 +267,11 @@ describe.skipIf(!RUN)('ai_sessions / ai_agents offering bindings (#7600 W02)', (
     await expect(withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offB}, offering_partner_id = ${t.a.id} WHERE id = ${orgAgent}`)))
       .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'ai_agents_offering_fk' } });
-    // The legitimate binding works and leaves the legacy model untouched.
+    // The legitimate binding works.
     await withSystemDbAccessContext(() => db.execute(sql`
       UPDATE ai_agents SET offering_id = ${t.offA}, offering_partner_id = ${t.a.id} WHERE id = ${partnerAgent}`));
-    const [row] = await adminSql`SELECT model FROM ai_agents WHERE id = ${partnerAgent}`;
-    expect(row!.model).toBe('claude-sonnet-5-5');
+    const [row] = await adminSql`SELECT offering_id, offering_partner_id FROM ai_agents WHERE id = ${partnerAgent}`;
+    expect(row).toMatchObject({ offering_id: t.offA, offering_partner_id: t.a.id });
   });
 
   it.each(['ai_sessions_offering_org_partner_fk', 'ai_agents_offering_org_partner_fk'])(

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ALERT_SEVERITIES } from '../constants';
+import { retiredAiModelField } from './retiredAiModelFields';
 import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
@@ -263,10 +264,11 @@ export const aiAgentActAssetsSchema = aiAgentActAssetsPatchSchema.transform((v) 
 export const aiAgentPolicyFieldsSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(AI_AGENT_MODES).default('off'),
-  model: z.string().trim().min(1).max(100).nullable().default(null),
+  // Retired (W08, #7606): rejected with 400 naming offeringId, never stripped.
+  model: retiredAiModelField('model'),
   // AI model registry W05: the picker binds by registry offering id (null =
   // clear → the ai_agents assignment default). No default: absent means the
-  // write does not choose by offering. Sent with a non-null `model` → 400.
+  // write does not choose by offering.
   offeringId: z.string().uuid().nullable().optional(),
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).default([]),
   protectedResources: aiAgentProtectedResourcesSchema.prefault({}),
@@ -308,7 +310,8 @@ export const updateAiAgentSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   enabled: z.boolean().optional(),
   mode: z.enum(AI_AGENT_MODES).optional(),
-  model: z.string().trim().min(1).max(100).nullable().optional(),
+  // Retired (W08, #7606): rejected with 400 naming offeringId, never stripped.
+  model: retiredAiModelField('model'),
   offeringId: z.string().uuid().nullable().optional(),
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
   protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),

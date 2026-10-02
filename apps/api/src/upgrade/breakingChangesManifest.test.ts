@@ -25,6 +25,7 @@ const RECORDED_ENTRY_IDS = [
   'ai-provider-endpoints',
   'ai-script-policy-reviewer-model',
   'client-ai-policy-allowed-models',
+  'ai-agent-policy-model',
 ] as const;
 
 describe('breaking-changes.json', () => {
@@ -122,6 +123,7 @@ describe('retired AI model fields match their message (#7606)', () => {
   it.each([
     ['ai-script-policy-reviewer-model', 'reviewerModel'],
     ['client-ai-policy-allowed-models', 'allowedModels'],
+    ['ai-agent-policy-model', 'model'],
   ] as const)('%s', (id, field) => {
     const entry = BREAKING_CHANGES_MANIFEST.entries.find((e) => e.id === id)!;
     expect(entry, id).toBeDefined();

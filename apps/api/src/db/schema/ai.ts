@@ -229,7 +229,6 @@ export const aiBudgets = pgTable('ai_budgets', {
   monthlyBudgetCents: integer('monthly_budget_cents'),
   dailyBudgetCents: integer('daily_budget_cents'),
   maxTurnsPerSession: integer('max_turns_per_session').notNull().default(50),
-  allowedModels: jsonb('allowed_models').default(['claude-sonnet-4-5-20250929']),
   messagesPerMinutePerUser: integer('messages_per_minute_per_user').notNull().default(20),
   messagesPerHourPerOrg: integer('messages_per_hour_per_org').notNull().default(200),
   approvalMode: aiApprovalModeEnum('approval_mode').notNull().default('per_step'),

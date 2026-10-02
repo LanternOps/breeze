@@ -600,6 +600,8 @@ describe('retiring columns (#7606)', () => {
     for (const [table, col] of [
       ['ai_script_policies', 'reviewer_model'],
       ['client_ai_org_policies', 'allowed_models'],
+      ['ai_agents', 'model'],
+      ['ai_budgets', 'allowed_models'],
     ] as const) {
       expect(CORE_TENANT_EXPORT_POLICY[table]!.columns[col], `${table}.${col}`).toMatchObject({ decision: 'exclude', mayBeAbsent: true });
     }

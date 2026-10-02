@@ -1696,12 +1696,10 @@ export async function createAndEnqueueAgentRun(
         taskStepKey: input.task?.taskStepKey ?? null,
         taskAttemptOrdinal: input.task?.attemptOrdinal ?? null,
         promptVersion: input.task?.promptVersion ?? null,
-        // The CONFIGURED model, which is all admission knows. `runLoop.ts`
-        // overwrites this with the model it actually used the moment it
-        // resolves `effective.model ?? llm.model` — that fallback to the org's
-        // LLM default is invisible here, and spec §6.2 asks for the RESOLVED
-        // model, not the requested one.
-        resolvedModel: input.task ? (resolved.effective.model ?? null) : null,
+        // Stamped by runLoop.ts with the model the run actually used, once
+        // resolveModel has bound the offering (spec §6.2). Admission knows only
+        // the offering, not a model string (W08: the policy model string is gone).
+        resolvedModel: null,
         // Execution plane W04 — the frozen input allowlist. NULL for every
         // other profile (`stagedInputs` is only ever set in step 4d).
         stagedInputs,

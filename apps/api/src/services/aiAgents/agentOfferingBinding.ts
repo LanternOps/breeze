@@ -44,7 +44,7 @@ export async function bindAgentOffering(
   offeringId: string | null,
   writer: AgentPolicyWriter,
 ): Promise<AgentModelBinding> {
-  if (offeringId === null) return { model: null, offeringId: null, offeringPartnerId: null };
+  if (offeringId === null) return { offeringId: null, offeringPartnerId: null };
   const partnerId = owner.partnerId ?? (owner.orgId ? await readOrgPartnerId(owner.orgId) : null);
   if (!partnerId) throw new AgentModelNotAllowedError(UNAVAILABLE, 'not_permitted');
   if (!(await ensurePartnerCutover(partnerId))) {
@@ -78,5 +78,5 @@ export async function bindAgentOffering(
   }
   if (reason === 'not_permitted') throw new AgentModelNotAllowedError(UNAVAILABLE, 'not_permitted');
   if (reason !== null) throw new AgentModelNotAllowedError(unavailableMessage(reason), 'model_unavailable');
-  return { model: candidate.logicalModel, offeringId, offeringPartnerId: partnerId };
+  return { offeringId, offeringPartnerId: partnerId };
 }

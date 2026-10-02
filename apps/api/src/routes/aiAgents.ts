@@ -165,8 +165,7 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     name: row.name,
     enabled: row.enabled,
     mode: row.mode,
-    model: row.model,
-    // AI model registry W05: the offering the policy model is bound to (null = follows the assignment).
+    // AI model registry W05: the offering the policy is bound to (null = follows the assignment).
     offeringId: row.offeringId ?? null,
     orgId: row.orgId,
     partnerId: row.partnerId,

@@ -81,11 +81,15 @@ export async function seedOffering(input: {
   return String(row!.id);
 }
 
-/** Seeds a live ai_agents row (kind 'triage') owned by a partner OR an org. */
-export async function seedAgent(input: { partnerId?: string; orgId?: string; createdBy: string; model?: string | null }): Promise<string> {
+/**
+ * Seeds a live ai_agents row (kind 'triage') owned by a partner OR an org. No
+ * `model`: the policy model string was retired in W08 (#7606) and W08b drops
+ * the column, so a raw INSERT naming it would break after the drop.
+ */
+export async function seedAgent(input: { partnerId?: string; orgId?: string; createdBy: string }): Promise<string> {
   const [row] = await fixtureSql`
-    INSERT INTO ai_agents (partner_id, org_id, kind, name, created_by, model)
-    VALUES (${input.partnerId ?? null}, ${input.orgId ?? null}, 'triage', 'W02 fixture', ${input.createdBy}, ${input.model ?? null})
+    INSERT INTO ai_agents (partner_id, org_id, kind, name, created_by)
+    VALUES (${input.partnerId ?? null}, ${input.orgId ?? null}, 'triage', 'W02 fixture', ${input.createdBy})
     RETURNING id`;
   return String(row!.id);
 }

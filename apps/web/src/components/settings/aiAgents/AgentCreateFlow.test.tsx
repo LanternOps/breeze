@@ -64,7 +64,6 @@ function makeAgents(): AiAgentDto[] {
       name: 'Org patcher',
       enabled: true,
       mode: 'shadow',
-      model: null,
       orgId: 'org-1',
       partnerId: null,
       ownerScope: 'organization',

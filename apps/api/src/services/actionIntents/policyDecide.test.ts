@@ -230,7 +230,6 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
   effective: {
     enabled: true,
     mode: 'act',
-    model: null,
     toolAllowlist: ['manage_services'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: {

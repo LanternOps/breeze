@@ -42,7 +42,6 @@ type Rule = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /** path (repo-relative, '/'-separated) → why it may contain a model literal. ≥ 20 chars each. */
 const MODEL_LITERAL_ALLOWLIST: Record<string, string> = {
   'apps/api/src/services/aiModel.ts': 'Bootstrap fallback for a fresh self-host before the first platform sync (index invariant #1).',
-  'apps/api/src/db/schema/ai.ts': 'Stale ai_budgets.allowed_models column default; W08 (#7606) drops it with the column. (The ai_sessions.model default is dropped in Task 9.)',
 };
 /** Directory prefixes whose files may carry model literals. */
 const MODEL_LITERAL_ALLOWLIST_PREFIXES: Record<string, string> = {

@@ -55,6 +55,7 @@ export const RETIRED_IDENTIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
   ['getCompatConnection', /\bgetCompatConnection\b/],
   ['PartnerLlmError', /\bPartnerLlmError\b/],
   ['_ignoredReviewerModel', /_ignoredReviewerModel/],
+  ['bindAgentModel', /\bbindAgentModel\b/],
 ];
 
 function walk(dir: string, out: string[]): string[] {

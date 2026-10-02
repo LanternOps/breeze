@@ -76,6 +76,23 @@
       "removedIn": "0.122.0",
       "removalBehaviour": "A request that includes allowedModels is rejected with HTTP 400 naming the field and its replacement. Nothing else in the request is applied.",
       "references": ["#7598", "#7601", "#7602", "#7606"]
+    },
+    {
+      "id": "ai-agent-policy-model",
+      "title": "The model string on AI agent policies retired",
+      "kind": "api-request-field",
+      "surfaces": [
+        { "endpoint": "POST /api/v1/ai/agents", "fields": ["model"] },
+        { "endpoint": "PATCH /api/v1/ai/agents/:id", "fields": ["model"] },
+        { "endpoint": "POST /api/v1/ai/agents/preview", "fields": ["model"] }
+      ],
+      "replacement": "Send offeringId: the id of an enabled model from GET /api/v1/ai/models, permitted for the AI agents feature; null follows the AI agents default. Agent responses carry offeringId and no longer include model.",
+      "deprecatedIn": "0.121.0",
+      "deprecationBehaviour": "Translated: a model string was looked up and stored as the matching offering.",
+      "earliestRemovalDate": "2026-10-02",
+      "removedIn": "0.122.0",
+      "removalBehaviour": "A request that includes model (any value, including null) is rejected with HTTP 400 naming offeringId. Nothing else in the request is applied.",
+      "references": ["#7598", "#7603", "#7606"]
     }
   ]
 }
