@@ -1,9 +1,9 @@
 import { and, eq, ne, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { timeEntries, ticketParts } from '../db/schema';
+import { aiUsageCharges, timeEntries, ticketParts } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
 import type { InvoiceLineSourceType } from './invoiceTypes';
-import type { BillingStatus } from '@breeze/shared';
+import { roundToCurrency, type BillingStatus } from '@breeze/shared';
 
 export interface DraftLineSpec {
   sourceType: InvoiceLineSourceType;
@@ -243,4 +243,63 @@ export async function gatherTicketBillables(ticketId: string, headerCurrency: st
     partitionTimeEntries(te, headerCurrency),
     partitionByCurrency(parts, headerCurrency, ticketPartToLineSpec)
   );
+}
+
+// ---------------------------------------------------------------------------
+// AI chargeback (#7608): monthly AI usage charges as billable sources
+// ---------------------------------------------------------------------------
+
+/** AI usage lines are non-taxable by default (decided 2026-10-02, #7598). One
+ *  constant so a later per-card or per-partner tax setting has one place to
+ *  replace. */
+export const AI_USAGE_LINE_TAXABLE = false;
+
+/** One AI chargeback charge (#7608) as a billable source row. */
+export type AiUsageChargeRow = {
+  id: string; servedModel: string; modelLabel: string; periodStart: string; usagePeriodStart: string;
+  invocationCount: number; inputTokens: number; outputTokens: number; cacheReadTokens: number;
+  cacheWriteTokens: number; amount: string | null; currencyCode: string;
+};
+
+/** AI usage line rule (#7608 RR5): one line per charge, quantity 1, unit price =
+ *  the charge amount, already rounded once in its own currency by the monthly
+ *  close (RR4), so the line total equals the charge amount. A late
+ *  (carried-forward) charge says which month the usage was from. Never a $0 or
+ *  unpriced line: the gather only reads 'not_billed' charges, and an unpriced
+ *  one reaching here is a programming error. */
+export function aiUsageChargeToLineSpec(r: AiUsageChargeRow, currencyCode: string): DraftLineSpec {
+  if (r.amount == null) throw new Error(`AI usage charge ${r.id} is unpriced and cannot become an invoice line`);
+  const month = r.periodStart.slice(0, 7);
+  const usageMonth = r.usagePeriodStart.slice(0, 7);
+  const tokens = r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheWriteTokens;
+  const late = usageMonth !== month ? ` (usage from ${usageMonth})` : '';
+  const unitPrice = roundToCurrency(r.amount, currencyCode);
+  return {
+    sourceType: 'ai_usage', sourceId: r.id, catalogItemId: null, ticketId: null,
+    description: `AI usage — ${r.modelLabel} — ${month}${late} · ${r.invocationCount} requests · ${tokens} tokens`,
+    quantity: '1.00', unitPrice, costBasis: null, taxable: AI_USAGE_LINE_TAXABLE, customerVisible: true,
+    lineTotal: computeLineTotal('1.00', unitPrice, currencyCode), isUnapprovedTime: false, workedMinutes: null,
+  };
+}
+
+/** Unbilled AI usage charges for an org whose billing period (period_start, a
+ *  UTC month start) falls in [from, to] — the same UTC calendar dates
+ *  assembleDraftFromOrg builds `from`/`to` from. Only 'not_billed' is gathered:
+ *  'no_charge' (rounded to zero), 'unpriced' (no client price) and 'billed'
+ *  never are. Other-currency charges come back under `blockedByCurrency`,
+ *  never converted. Runs under the caller's RLS context. */
+export async function gatherOrgAiUsageCharges(orgId: string, from: Date, to: Date, headerCurrency: string): Promise<AssemblyResult> {
+  const rows = await db.select({
+    id: aiUsageCharges.id, servedModel: aiUsageCharges.servedModel, modelLabel: aiUsageCharges.modelLabel,
+    periodStart: aiUsageCharges.periodStart, usagePeriodStart: aiUsageCharges.usagePeriodStart,
+    invocationCount: aiUsageCharges.invocationCount, inputTokens: aiUsageCharges.inputTokens,
+    outputTokens: aiUsageCharges.outputTokens, cacheReadTokens: aiUsageCharges.cacheReadTokens,
+    cacheWriteTokens: aiUsageCharges.cacheWriteTokens, amount: aiUsageCharges.amount, currencyCode: aiUsageCharges.currencyCode,
+  }).from(aiUsageCharges).where(and(
+    eq(aiUsageCharges.orgId, orgId),
+    eq(aiUsageCharges.billingStatus, 'not_billed'),
+    gte(aiUsageCharges.periodStart, from.toISOString().slice(0, 10)),
+    lte(aiUsageCharges.periodStart, to.toISOString().slice(0, 10)),
+  )).orderBy(aiUsageCharges.periodStart, aiUsageCharges.usagePeriodStart, aiUsageCharges.servedModel, aiUsageCharges.id);
+  return partitionByCurrency(rows, headerCurrency, aiUsageChargeToLineSpec);
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   timeEntryToLineSpec, ticketPartToLineSpec, partitionByCurrency, partitionTimeEntries, mergeAssembly,
-  isMissingRateGap, UNKNOWN_CURRENCY_KEY, type DraftLineSpec
+  isMissingRateGap, UNKNOWN_CURRENCY_KEY, type DraftLineSpec,
+  aiUsageChargeToLineSpec, AI_USAGE_LINE_TAXABLE
 } from './invoiceAssembly';
 
 // #6461: single source of truth for "is this row a gap" shared with
@@ -305,5 +306,43 @@ describe('minimums and rounding on invoice lines (#4628 W03)', () => {
       'USD'
     );
     expect(spec.workedMinutes).toBeNull();
+  });
+});
+
+describe('aiUsageChargeToLineSpec (#7608)', () => {
+  const row = { id: 'ch-1', servedModel: 'w10-test-model', modelLabel: 'W10 Test', periodStart: '2026-11-01',
+    usagePeriodStart: '2026-11-01', invocationCount: 1204, inputTokens: 3_000_000, outputTokens: 200_000,
+    cacheReadTokens: 0, cacheWriteTokens: 0, amount: '41.27', currencyCode: 'USD' };
+  it('one line, quantity 1, line total equals the charge amount (RR5)', () => {
+    expect(aiUsageChargeToLineSpec(row, 'USD')).toMatchObject({
+      sourceType: 'ai_usage', sourceId: 'ch-1', quantity: '1.00', unitPrice: '41.27', lineTotal: '41.27',
+      taxable: false, customerVisible: true, ticketId: null, catalogItemId: null, costBasis: null,
+      isUnapprovedTime: false, workedMinutes: null,
+      description: 'AI usage — W10 Test — 2026-11 · 1204 requests · 3200000 tokens',
+    });
+  });
+  it('AI usage lines are non-taxable by default (decided 2026-10-02, #7598) via one constant', () => {
+    expect(AI_USAGE_LINE_TAXABLE).toBe(false);
+    expect(aiUsageChargeToLineSpec(row, 'USD').taxable).toBe(AI_USAGE_LINE_TAXABLE);
+  });
+  it('labels a late (carried-forward) charge with its usage month', () => {
+    expect(aiUsageChargeToLineSpec({ ...row, periodStart: '2026-12-01' }, 'USD').description)
+      .toBe('AI usage — W10 Test — 2026-12 (usage from 2026-11) · 1204 requests · 3200000 tokens');
+  });
+  it('counts every token kind in the description', () => {
+    expect(aiUsageChargeToLineSpec({ ...row, cacheReadTokens: 50, cacheWriteTokens: 7 }, 'USD').description)
+      .toBe('AI usage — W10 Test — 2026-11 · 1204 requests · 3200057 tokens');
+  });
+  it('a JPY charge is a whole-yen line', () => {
+    expect(aiUsageChargeToLineSpec({ ...row, amount: '1234.00', currencyCode: 'JPY' }, 'JPY'))
+      .toMatchObject({ unitPrice: '1234.00', lineTotal: '1234.00' });
+  });
+  it('refuses an unpriced charge (never a $0 line)', () => {
+    expect(() => aiUsageChargeToLineSpec({ ...row, amount: null }, 'USD')).toThrow(/unpriced/);
+  });
+  it('partitions by the charge currency: an EUR charge on a USD draft is blocked, never converted', () => {
+    const out = partitionByCurrency([row, { ...row, id: 'ch-eur', currencyCode: 'EUR' }], 'USD', aiUsageChargeToLineSpec);
+    expect(out.included.map((s) => s.sourceId)).toEqual(['ch-1']);
+    expect(out.blockedByCurrency.EUR!.map((s) => [s.sourceId, s.lineTotal])).toEqual([['ch-eur', '41.27']]);
   });
 });
