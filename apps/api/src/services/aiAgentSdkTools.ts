@@ -33,7 +33,7 @@ import {
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
@@ -3162,7 +3162,8 @@ export function buildBreezeSdkTools(
       'manage_monitor_definitions',
       registryDescription('manage_monitor_definitions'),
       {
-        action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        action: z.enum(['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+        kind: monitorKindSchema.optional(),
         monitorId: uuid.optional(),
         definition: z.record(z.string(), z.unknown()).optional(),
         configPolicyId: uuid.optional(),
