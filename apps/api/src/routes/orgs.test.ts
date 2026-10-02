@@ -5394,6 +5394,12 @@ describe('org routes', () => {
   };
 
   describe('GET /orgs/sites', () => {
+    // The list also runs a 4th grouped query for removedDeviceCount (#7471);
+    // default it to "no removed devices" so count/page mocks stay focused.
+    beforeEach(() => {
+      vi.mocked(db.select).mockReturnValue(mockSiteDeviceCounts([]));
+    });
+
     // #5315 — the per-site deviceCount filtered only `isEphemeral`, so a
     // decommissioned device still inflated the Sites table while the record's
     // Devices tab (GET /devices) excluded it. Assert on the COMPILED predicate:
@@ -5441,6 +5447,27 @@ describe('org routes', () => {
       expect(compiled.sql).toContain('<>');
       expect(compiled.params).toContain('decommissioned');
       expect(compiled.params).toContainEqual({ __column: 'devices.status' });
+    });
+
+    it('reports removedDeviceCount separately from deviceCount (#7471)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }) } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ offset: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([{ id: 'site-1' }]) }) })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce(mockSiteDeviceCounts([]))
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 2 }]));
+
+      const res = await app.request('/orgs/sites?orgId=11111111-1111-1111-1111-111111111111');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({ id: 'site-1', deviceCount: 0, removedDeviceCount: 2 });
     });
 
     it('should return sites with pagination', async () => {
@@ -5964,6 +5991,70 @@ describe('org routes', () => {
       expect(lockSiteForDelete).toHaveBeenCalledWith(expect.anything(), 'site-1');
       expect(deleteSiteOwnedTopologyAlerts).toHaveBeenCalledWith(expect.anything(), '11111111-1111-1111-1111-111111111111', 'site-1');
     });
+
+    // #7471 — devices.site_id is NO ACTION; removed (decommissioned) rows keep
+    // their site, so the delete used to 500 on 23503 while the list showed 0.
+    describe.each([
+      { name: 'only removed devices', row: { removed: 2, other: 0 }, msg: /2 removed devices.*permanently deleted/ },
+      { name: 'only active devices', row: { removed: 0, other: 1 }, msg: /1 device still assigned/ },
+      { name: 'removed and active devices', row: { removed: 3, other: 2 }, msg: /2 devices still assigned.* and 3 removed devices/ },
+    ])('site still referenced by devices ($name)', ({ row, msg }) => {
+      it('returns 409 SITE_HAS_DEVICES and never deletes the site', async () => {
+        setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: '11111111-1111-1111-1111-111111111111' }])
+            })
+          })
+        } as any);
+        const txDelete = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+        const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([row])) })) }));
+        vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+          ...siteDeleteTxOver(db),
+          select: txSelect,
+          delete: txDelete,
+        }));
+
+        const res = await app.request('/orgs/sites/site-1', { method: 'DELETE' });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.code).toBe('SITE_HAS_DEVICES');
+        expect(body.error).toMatch(msg);
+        expect(body.removedDeviceCount).toBe(row.removed);
+        expect(txDelete).not.toHaveBeenCalled();
+        // The removed/other split must hinge on status = 'decommissioned' (the
+        // mocked schema renders columns blank, so assert on operator + params).
+        const projection = (txSelect.mock.calls[0] as unknown as [Record<string, SQL>])[0];
+        const removedSql = new PgDialect().sqlToQuery(projection.removed!);
+        const otherSql = new PgDialect().sqlToQuery(projection.other!);
+        expect(removedSql.sql).toMatch(/filter \(where .* = 'decommissioned'\)/);
+        expect(otherSql.sql).toMatch(/filter \(where .* <> 'decommissioned'\)/);
+        expect(removedSql.params).toContainEqual({ __column: 'devices.status' });
+        expect(otherSql.params).toContainEqual({ __column: 'devices.status' });
+      });
+    });
+
+    it('deletes when the guard reports zero devices (explicit zero row)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: '11111111-1111-1111-1111-111111111111' }])
+          })
+        })
+      } as any);
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+        ...siteDeleteTxOver(db),
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([{ removed: 0, other: 0 }])) })) })),
+        delete: vi.fn(() => ({ where: vi.fn(() => Object.assign(Promise.resolve(), { returning: vi.fn(() => Promise.resolve([])) })) })),
+      }));
+
+      const res = await app.request('/orgs/sites/site-1', { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   // Per-user site confinement (allowedSiteIds). A site-confined org user must
@@ -6119,6 +6210,12 @@ describe('org routes', () => {
     });
 
     describe('GET /orgs/sites (list)', () => {
+      // The list also runs a 4th grouped query for removedDeviceCount (#7471);
+      // default it to "no removed devices" so count/page mocks stay focused.
+      beforeEach(() => {
+        vi.mocked(db.select).mockReturnValue(mockSiteDeviceCounts([]));
+      });
+
       it('returns an empty page without querying when allowedSiteIds is empty', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: [] });
 
@@ -6159,7 +6256,7 @@ describe('org routes', () => {
 
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.data).toEqual([{ id: 'site-x', deviceCount: 3 }]);
+        expect(body.data).toEqual([{ id: 'site-x', deviceCount: 3, removedDeviceCount: 0 }]);
         expect(body.data.map((s: { id: string }) => s.id)).not.toContain('site-y');
         // Meaningful assertion: the handler must have intersected the query with
         // inArray(sites.id, allowedSiteIds). This fails if the intersection in

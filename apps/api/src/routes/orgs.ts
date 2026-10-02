@@ -2941,6 +2941,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
   // non-empty page so an empty list never issues a `site_id IN ()` query.
   const deviceCountBySite = new Map<string, number>();
+  const removedCountBySite = new Map<string, number>();
   const siteIds = data.map((s) => s.id);
   if (siteIds.length > 0) {
     const counts = await db
@@ -2959,11 +2960,24 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
     for (const row of counts) {
       deviceCountBySite.set(row.siteId, Number(row.count));
     }
+    // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
+    // block site deletion, so surface them next to the active count — the
+    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
+    const removedCounts = await db
+      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+      .from(devices)
+      .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
+      .groupBy(devices.siteId);
+    for (const row of removedCounts) {
+      removedCountBySite.set(row.siteId, Number(row.count));
+    }
   }
 
   const dataWithCounts = data.map((site) => ({
     ...withMaskedSettings(site),
-    deviceCount: deviceCountBySite.get(site.id) ?? 0
+    deviceCount: deviceCountBySite.get(site.id) ?? 0,
+    removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
   }));
 
   // Ride the org's resolved enrollment defaults along on this response (#2776).
@@ -3212,6 +3226,24 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   // Both counts land on the audit row.
   const removed = await db.transaction(async (tx) => {
     if (!(await lockSiteForDelete(tx, site.id))) return null;
+    // #7471 — devices.site_id is NO ACTION, so ANY device row still pointing at
+    // the site (including soft-deleted 'decommissioned' ones, which the Sites
+    // list does not count) aborts the delete with 23503 → opaque 500. Count them
+    // here, under the site row lock, and refuse with a 409 that says what to do.
+    // Removed rows are deliberately NOT detached: they keep their site for
+    // history/reporting until an operator permanently deletes them.
+    const [siteDevices] = await tx
+      .select({
+        removed: sql<number>`count(*) filter (where ${devices.status} = 'decommissioned')`,
+        other: sql<number>`count(*) filter (where ${devices.status} <> 'decommissioned')`,
+      })
+      .from(devices)
+      .where(eq(devices.siteId, site.id));
+    const removedDevices = Number(siteDevices?.removed ?? 0);
+    const otherDevices = Number(siteDevices?.other ?? 0);
+    if (removedDevices > 0 || otherDevices > 0) {
+      return { blocked: { removedDevices, otherDevices } } as const;
+    }
     const removedTopologyAlerts = await deleteSiteOwnedTopologyAlerts(tx, site.orgId, site.id);
     const topologyAiSessions = await deleteSiteTopologyAiSessions(tx, { orgId: site.orgId, siteId: site.id });
     await tx.delete(sites).where(eq(sites.id, id));
@@ -3219,6 +3251,22 @@ orgRoutes.delete('/sites/:id', requireScope('organization', 'partner', 'system')
   });
   if (removed === null) {
     return c.json({ error: 'Site not found' }, 404);
+  }
+  if (removed.blocked) {
+    const { removedDevices, otherDevices } = removed.blocked;
+    const parts: string[] = [];
+    if (otherDevices > 0) {
+      parts.push(`${otherDevices} device${otherDevices === 1 ? '' : 's'} still assigned to it (move or remove them first; this includes Quick Support sessions the list hides)`);
+    }
+    if (removedDevices > 0) {
+      parts.push(`${removedDevices} removed device${removedDevices === 1 ? '' : 's'} that must be permanently deleted first (Devices → show removed → Delete permanently)`);
+    }
+    return c.json({
+      error: `This site cannot be deleted: it still has ${parts.join(' and ')}.`,
+      code: 'SITE_HAS_DEVICES',
+      removedDeviceCount: removedDevices,
+      deviceCount: otherDevices,
+    }, 409);
   }
   const { removedTopologyAlerts, topologyAiSessions } = removed;
   const siteDeleteDetails = {
