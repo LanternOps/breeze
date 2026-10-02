@@ -172,16 +172,24 @@ func DiscardOutput() {
 }
 
 // InitShipper initializes the log shipper (call after enrollment).
+//
+// shipperMu is held only for the pointer swap. Stop and Start both run
+// outside it: Start logs when it applies a persisted set_log_level override,
+// and the old shipper's override loop may be logging while Stop waits for it.
+// Those records go through shippingHandler.Handle, which read-locks
+// shipperMu, so doing either under the write lock deadlocks (#7416).
 func InitShipper(cfg ShipperConfig) {
+	shipper := NewShipper(cfg)
+
 	shipperMu.Lock()
-	defer shipperMu.Unlock()
+	old := globalShipper
+	globalShipper = shipper
+	shipperMu.Unlock()
 
-	if globalShipper != nil {
-		globalShipper.Stop()
+	if old != nil {
+		old.Stop()
 	}
-
-	globalShipper = NewShipper(cfg)
-	globalShipper.Start()
+	shipper.Start()
 }
 
 // StopShipper gracefully stops the log shipper.
@@ -245,8 +253,19 @@ type shippingHandler struct {
 	groups []string
 }
 
+// Enabled admits a record if EITHER the local handler or the shipper wants
+// it. Consulting only the local handler (log_level, default info) meant slog
+// discarded Debug records before Handle ran, so a set_log_level=debug
+// override could never ship a debug line (#7416). Handle re-checks the local
+// level so such records do not leak into the local log.
 func (h *shippingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.base.Enabled(ctx, level)
+	if h.base.Enabled(ctx, level) {
+		return true
+	}
+	shipperMu.RLock()
+	shipper := globalShipper
+	shipperMu.RUnlock()
+	return shipper != nil && shipper.ShouldShip(level)
 }
 
 func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error {
@@ -282,7 +301,11 @@ func (h *shippingHandler) Handle(ctx context.Context, record slog.Record) error 
 	}
 
 	// Still write to local handler, without the shipping marker and with
-	// typed-nil errors defused (see localAttrs).
+	// typed-nil errors defused (see localAttrs) — but only at the local level:
+	// Enabled also admits records that are here purely to be shipped.
+	if !h.base.Enabled(ctx, record.Level) {
+		return nil
+	}
 	return h.base.Handle(ctx, localRecord(record))
 }
 

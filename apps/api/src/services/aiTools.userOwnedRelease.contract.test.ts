@@ -138,13 +138,13 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
  */
 const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — set_agent_log_level / capture_agent_pprof: `userId` is an
-  // `aiQueueCommandForExecution`/`aiExecuteCommand` option, not a column
-  // write. Both route through commandQueue.ts's `queueCommand`, which calls
+  // `aiExecuteCommand` option, not a column write. Both route through
+  // commandQueue.ts's `queueCommand`, which calls
   // `resolveCommandCreatedBy` before the `device_commands.created_by` insert
   // — a synthetic (aiAgents) id degrades to NULL there instead of reaching
   // the FK raw.
-  ['services/aiToolsAgentLogs.ts:294', 'aiQueueCommandForExecution -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsAgentLogs.ts:378', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:359', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsAgentLogs.ts:436', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — trigger_agent_upgrade / trigger_agent_restart: same aiExecuteCommand
   // -> resolveCommandCreatedBy path.
   ['services/aiToolsAgentMgmt.ts:442', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
@@ -343,7 +343,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
     expect(commandQueueSrc).toMatch(/export async function resolveCommandCreatedBy/);
 
     const agentLogsSrc = readFileSync(join(API_SRC, 'services/aiToolsAgentLogs.ts'), 'utf8');
-    expect(agentLogsSrc).toMatch(/aiQueueCommandForExecution\(auth, 'set_agent_log_level'/);
+    expect(agentLogsSrc).toMatch(/aiExecuteCommand\(auth, 'set_agent_log_level'/);
     expect(agentLogsSrc).toMatch(/aiExecuteCommand\(auth, 'capture_agent_pprof'/);
 
     const agentMgmtSrc = readFileSync(join(API_SRC, 'services/aiToolsAgentMgmt.ts'), 'utf8');

@@ -814,6 +814,8 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			HTTPClient:   nil, // will use default
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			// Restores a set_log_level override across restarts (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
@@ -2142,6 +2144,8 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentVersion: version + "-helper",
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
+			// Follows the agent's set_log_level override (#7416).
+			LevelOverridePath: config.LogLevelOverridePath(),
 		})
 		// Dev builds ship info-level logs for performance tuning and diagnostics.
 		if strings.HasPrefix(version, "dev-") && cfg.LogShippingLevel == "warn" {
