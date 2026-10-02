@@ -402,6 +402,25 @@ Navigate to **Settings → AI Usage** to view:
 
 Cost data is stored alongside the conversation history.
 
+### Model quality
+
+The **AI usage by model** card has two views. **Spend** shows cost, tokens and refusals by the model that served each call. **Quality** shows how conversations went, grouped by model, feature, or model family:
+
+| Column | What it counts |
+|---|---|
+| Conversations | Chat sessions and agent runs whose last model call in the period was on that row |
+| Cost / conversation | Average spend on that row for each conversation that used it |
+| Refusal rate | Calls the model declined, per call |
+| Failover rate | Calls that moved to a backup model because this one failed or was unavailable |
+| Flag rate | Sessions a person flagged. Automatic flags after a tool error are listed separately |
+| Left for another model | Conversations that switched model, or continued in a new session on another model |
+| Turns to resolve | Median messages a technician sent in sessions that finished without a person's flag or a move to a new session |
+| Agent runs completed | Agent runs that completed, out of runs that finished |
+
+A call served by a refusal fallback or a backup model counts toward the model that was **chosen**, so a model that often needs its fallback shows it. A conversation counts toward the model it last used, and a switch counts toward the model it left. A session counts as finished when it is closed, expired, or idle for 24 hours.
+
+Breeze has no explicit "this was solved" signal, so **Turns to resolve** is an estimate. Compare rows with many conversations; rows with fewer than 20 are marked. Columns that need data this server does not record yet show "—".
+
 ### Billing credit integration
 
 When a billing service is configured (`BILLING_SERVICE_URL` and `BILLING_SERVICE_API_KEY`), AI sessions check the organization's credit balance before starting. If credits are exhausted, the user sees a message to purchase more credits. After each chat turn, that turn's estimated cost is deducted from the balance. Each turn is charged only for its own usage (v0.120.0+; earlier releases charged some chat turns the running total of the conversation so far).
