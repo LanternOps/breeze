@@ -56,8 +56,8 @@ Disabled behavior: 403 with the family's `code`, as the other strict gates.
 
 Mechanics, matching the code today:
 - "Enable all" is the hand-written `enableAllVisibility()` literal in `OrgPortalSettingsEditor.tsx`. It does not derive from `PORTAL_VISIBILITY_FLAG_KEYS`, and it also sets `enableDevices`. A flag stays out of "Enable all" simply by not being in that literal.
-- Because that is a hand-written list, outside-ness is enforced two ways: a new `PORTAL_SENSITIVE_FLAG_KEYS` list in `portalFlags.ts` (containing `enableNetworkAlerts`, `enablePatchDetail`, `enableVulnerabilityDetail`), and a test in `OrgPortalSettingsEditor.test.tsx` that clicks "Enable all" and asserts every flag in that list stays `false`. A future edit cannot silently move a sensitive flag into "Enable all".
-- The sensitive list and the gate typing land with wave 5, the first sensitive family, unless the maintainer wants them earlier.
+- Because that is a hand-written list, outside-ness is enforced two ways: a new `PORTAL_SENSITIVE_FLAG_KEYS` list in `portalFlags.ts` (starting with `enableNetworkAlerts` and gaining `enablePatchDetail` and `enableVulnerabilityDetail` with waves 5 and 6), and a test in `OrgPortalSettingsEditor.test.tsx` that clicks "Enable all" and asserts every flag in that list stays `false`. A future edit cannot silently move a sensitive flag into "Enable all".
+- The sensitive list and its "Enable all" test land with wave 1, so the guard exists before the first sensitive family. The gate typing widens with wave 5, the first sensitive family gated by a 403.
 
 **Who sees it.** Portal users have no roles. Turning on wave 5 or 6 shows a per-host missing-patch and CVE/KEV map to every portal login of that organization. The editor description for those toggles says this plainly.
 
@@ -68,7 +68,7 @@ Ordered by delivery wave, from least to most sensitive.
 | Wave | Family | Flag (proposed) | "Enable all" | Primary sources |
 |---|---|---|---|---|
 | 1 | Hardware health | `enableHardwareHealth` | Yes | `deviceHardwareHealth`, `deviceHardwareComponents`, `deviceHardwareEvents`, `deviceDisks`, `devices.batteryStatus` |
-| 2 | Hardware inventory | `enableHardwareInventory` | Yes | `deviceHardware`, `deviceMemoryModules` |
+| 2 | Hardware inventory | `enableHardwareInventory` | Yes | `deviceHardware`, `deviceMemoryModules`, `deviceNetwork`, `deviceConnections` |
 | 3 | Performance | `enablePerformanceMetrics` | Yes | `metricRollups`, `deviceMetrics` |
 | 4 | Software inventory | `enableSoftwareInventory` | Yes | `softwareInventory` |
 | 5 | Patch detail | `enablePatchDetail` | No | `patches`, `devicePatches` |
@@ -125,7 +125,7 @@ Connections (`deviceConnections`): aggregate counts by `protocol` and `state` on
 - From `deviceMetrics.interfaceStats`, per interface: `name`, `speed`, `inBytesPerSec`, `outBytesPerSec`, `inErrors`, `outErrors`.
 - Ranges: 24h, 7d, 30d.
 
-**Exclude:** `customMetrics`, `processCount`, `deviceProcessSamples`, disk byte and op counters, and from `interfaceStats` the cumulative counters and packets (`inBytes`, `outBytes`, `inPackets`, `outPackets`). The tenant export policy marks `interface_stats` and `custom_metrics` as open (not yet reviewed), so `interfaceStats` is exposed only through this closed field list and `customMetrics` stays out.
+**Exclude:** `customMetrics`, `processCount`, `deviceProcessSamples`, disk byte and op counters, and from `interfaceStats` the cumulative counters and packets (`inBytes`, `outBytes`, `inPackets`, `outPackets`). The tenant export policy lists `interface_stats` and `custom_metrics` as `excludedOpen` (open containers deliberately kept out of the export), so `interfaceStats` is exposed only through this closed field list and `customMetrics` stays out.
 
 **Notes:** see section 8.
 
@@ -156,7 +156,7 @@ Connections (`deviceConnections`): aggregate counts by `protocol` and `state` on
 
 **Notes:**
 - Showing `accepted` tells the customer the administrator chose to live with a finding. The status is shown, never the note or who accepted.
-- `matchConfidence` is not exposed. It is also not used as a filter: the population is every `open` row for the organization, the same one the existing overview counts in `openBySeverity` and `kevCount`, so the detail totals match the overview. A null `matchConfidence` is the OS-vulnerability path (precise) and is kept.
+- The list returns all four statuses (`open`, `patched`, `mitigated`, `accepted`) and takes a `status` filter that defaults to `open`. The default population is every `open` row for the organization, the same one the existing overview counts in `openBySeverity` and `kevCount`, so the default totals match the overview. `matchConfidence` is not exposed and is not used as a filter. A null `matchConfidence` is the OS-vulnerability path (precise) and is kept.
 - Affected software name and version come straight from `softwareInventory` and do not depend on `enableSoftwareInventory`.
 - Overlaps with `enableSecurity`: `GET /portal/security/overview` already returns `vulnerabilities.openBySeverity`, `kevCount` and `lastDetectedAt`. This family adds per-finding detail only and does not repeat those aggregates. It reuses `vulnerabilitySeverityForFindings` where they meet.
 
@@ -185,7 +185,7 @@ All routes sit behind `portalAuthMiddleware` and use the existing pagination DTO
 
 ## 8. Data notes
 
-**Performance windows and retention.** 24h reads the 5-minute buckets, 7d and 30d read the hourly buckets. Rollup retention floors are 30, 365 and 730 days (5 minutes, hourly, daily) and the defaults are 90, 548 and 1095 days, both in `services/metricRollupRetention.ts` (lines 22 to 31), so a 30-day view holds under any configuration. Raw `device_metrics` retention defaults to 30 days, is set by `DEVICE_METRICS_RETENTION_DAYS` and clamped to 1 to 365.
+**Performance windows and retention.** 24h reads the 5-minute buckets, 7d and 30d read the hourly buckets. Rollup retention floors are 30, 365 and 730 days (5 minutes, hourly, daily) and the defaults are 90, 548 and 1095 days, both in `services/metricRollupRetention.ts` (lines 22-32), so a 30-day view holds under any configuration. Raw `device_metrics` retention defaults to 30 days, is set by `DEVICE_METRICS_RETENTION_DAYS` and clamped to 1 to 365.
 
 **Network volume.** The agent reports `networkInBytes` as the delta since the previous sample (`agent/internal/collectors/metrics.go`), and the console sums it per bucket. The portal does the same. Bytes are not in `ROLLUP_METRIC_NAMES`, so the volume comes from the raw table. When raw retention is shorter than the requested range, the response says so instead of presenting a partial total as complete. Adding bytes to the rollups is out of scope. `interfaceStats` also lives only in the raw table, as jsonb with up to 100 interfaces per sample, so it follows the same retention and the same coverage notice.
 
@@ -216,7 +216,7 @@ Following the existing portal test conventions (`*.test.ts` next to each route):
 
 ## 11. Rollout
 
-One family per PR, in wave order, after this spec merges. Wave 1 is the pilot for the mechanics (section 3), so pattern feedback lands on the lowest-risk data. Each wave is independently mergeable and reviewable. Each PR touching `OrgPortalSettingsEditor.tsx` states the setting's home, level, resolver and the number of places the concept is configured before and after, as the PR template requires. The feature lifecycle (parent issue and one wave issue per family) is set up by the maintainers after this spec merges, and each family PR body uses `Closes #<wave issue>`. Waves 5 and 6 are sequenced after the earlier waves are accepted and carry the sensitive-flag mechanics. The on-hold items are not in the sequence.
+One family per PR, in wave order, after this spec merges. Wave 1 is the pilot for the mechanics (section 3), so pattern feedback lands on the lowest-risk data. Each wave is independently mergeable and reviewable. Each PR touching `OrgPortalSettingsEditor.tsx` states the setting's home, level, resolver and the number of places the concept is configured before and after, as the PR template requires. The feature lifecycle (parent issue and one wave issue per family) is set up by the maintainers after this spec merges, and each family PR body uses `Closes #<wave issue>`. Wave 1 also lands the sensitive-flag list and its test. Waves 5 and 6 are sequenced after the earlier waves are accepted, add their flags to that list, and wave 5 widens the gate typing. The on-hold items are not in the sequence.
 
 ## 12. Non-goals
 
@@ -244,7 +244,7 @@ Decided by the author, confirmed or corrected by the maintainer:
 10. **`interfaceStats` (wave 3).** Included as per-interface name, speed, rates and errors.
 11. **Performance flag name.** `enablePerformanceMetrics`.
 12. **Patch severity (wave 5).** Effective severity through the existing overlay.
-13. **Sensitive flags.** `PORTAL_SENSITIVE_FLAG_KEYS` plus the "Enable all" test, landing with wave 5.
+13. **Sensitive flags.** `PORTAL_SENSITIVE_FLAG_KEYS` plus the "Enable all" test, landing with wave 1. The list grows with waves 5 and 6.
 
 Open for the maintainer:
 
