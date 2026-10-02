@@ -1329,9 +1329,6 @@ describe('user-owned release attribution (#6200)', () => {
   });
 });
 
-// #6665: an AI chat had no way to see a scheduled patch job that removed an
-// app on a device, so it wrongly told a tech "not initiated by Breeze at
-// all". device_history closes that read gap.
 // #7827: partner-scope callers have orgId=null; the org must come from the
 // device row, never from accessibleOrgIds[0].
 describe('manage_patches device-scoped actions resolve the device org (#7827)', () => {
@@ -1349,6 +1346,9 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
     canAccessOrg: () => true,
     orgCondition: () => undefined,
   } as any;
+  afterEach(() => {
+    vi.mocked(db.insert).mockClear();
+  });
   const dialect = new PgDialect();
   const paramsOf = (cond: unknown) => dialect.sqlToQuery(cond as any).params;
 
@@ -1377,8 +1377,73 @@ describe('manage_patches device-scoped actions resolve the device org (#7827)', 
     expect(historyParams).toContain('org-device');
     expect(historyParams).not.toContain('org-first');
   });
+  const lookupMock = (orgId = 'org-device') => {
+    const where = vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId }]),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where }) } as never);
+    return where;
+  };
+  const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const inputFor = (action: string): Record<string, unknown> =>
+    action === 'rollback' ? { action, patchId, deviceIds: [deviceId] } : { action, deviceId };
+
+  it("list with deviceId uses the device's own org for device_patches and scope", async () => {
+    const lookupWhere = lookupMock();
+    const listWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({
+        limit: vi.fn().mockReturnValue({ offset: vi.fn().mockResolvedValue([]) }),
+      }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: listWhere }) }),
+    } as never);
+
+    const result = JSON.parse(await tool.handler({ action: 'list', deviceId }, partnerAuth));
+
+    expect(result.error).toBeUndefined();
+    expect(result.scope).toEqual({ deviceId });
+    expect(paramsOf(lookupWhere.mock.calls[0]![0])).not.toContain('org-first');
+    const params = paramsOf(listWhere.mock.calls[0]![0]);
+    expect(params).toContain('org-device');
+    expect(params).not.toContain('org-first');
+  });
+
+  it('rollback resolves the device under a partner-scope caller', async () => {
+    const lookupWhere = lookupMock();
+    const insertValues = vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'rb-1' }]) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+    const result = JSON.parse(await tool.handler(inputFor('rollback'), partnerAuth));
+
+    expect(result.success).toBe(true);
+    expect(paramsOf(lookupWhere.mock.calls[0]![0])).not.toContain('org-first');
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ deviceId }));
+  });
+
+  it.each(['list', 'rollback', 'device_history'])('%s denies a device outside caller scope', async (action) => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }),
+    } as never);
+    const result = JSON.parse(await tool.handler(inputFor(action), partnerAuth));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
+
+  it.each(['list', 'rollback', 'device_history'])('%s denies a site-restricted caller for an out-of-site device', async (action) => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: 'site-other', orgId: 'org-device' }]) }),
+      }),
+    } as never);
+    const restricted = { ...partnerAuth, allowedSiteIds: ['site-ok'], canAccessSite: (id: string | null) => id === 'site-ok' };
+    const result = JSON.parse(await tool.handler(inputFor(action), restricted));
+    expect(result.error).toMatch(/not found or access denied/i);
+  });
 });
 
+// #6665: an AI chat had no way to see a scheduled patch job that removed an
+// app on a device, so it wrongly told a tech "not initiated by Breeze at
+// all". device_history closes that read gap.
 describe('manage_patches:device_history (#6665)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
