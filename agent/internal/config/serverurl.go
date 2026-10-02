@@ -65,7 +65,7 @@ func PersistedServerURL(cfgFile string) (string, error) {
 		path = defaultConfigFilePath()
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := readConfigFileBytes(path)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
