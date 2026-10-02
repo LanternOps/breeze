@@ -82,29 +82,6 @@ export type UsableLlmConfig = Exclude<ResolvedLlmConfig, { source: 'unavailable'
 
 export { LlmUnavailableError };
 
-export class LlmOrgResolutionError extends Error {
-  readonly orgId: string;
-
-  constructor(orgId: string) {
-    super(`Organization ${orgId} could not be resolved for AI configuration.`);
-    this.name = 'LlmOrgResolutionError';
-    this.orgId = orgId;
-  }
-}
-
-async function readOrganizationPartnerId(orgId: string): Promise<string | null | undefined> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const [organization] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgId))
-        .limit(1);
-      return organization?.partnerId;
-    }),
-  );
-}
-
 /**
  * #7601 W03 Task 6B: the partner's AI configuration is its compat
  * (anthropic_byok | catalog) connection — the /ai/provider facade writes only
@@ -318,19 +295,16 @@ export async function resolveLlmConfig(partnerId: string | null): Promise<Resolv
   };
 }
 
-export async function resolveLlmConfigForOrg(orgId: string): Promise<ResolvedLlmConfig> {
-  const partnerId = await readOrganizationPartnerId(orgId);
-  if (partnerId === undefined) throw new LlmOrgResolutionError(orgId);
-  return resolveLlmConfig(partnerId ?? null);
-}
-
 /**
- * Readiness view of `resolveLlmConfigForOrg` + `llmUnusableCode` for a caller
- * ALREADY inside a system DB context (topology AI readiness, review R1): the
- * same decisions — no partner config means the platform path, which is usable
- * only with a platform credential (`isPlatformLlmConfigured`); an `error`
- * status, an undecryptable key or an unusable catalog pin means unavailable —
- * read on the caller's own connection. Returns null when a model can be
+ * Readiness view of `resolveLlmConfig` + `llmUnusableCode` for an org, for a
+ * caller ALREADY inside a system DB context (topology AI readiness, review
+ * R1): the same decisions — no partner config means the platform path, which
+ * is usable with a platform credential (`isPlatformLlmConfigured`) or (W06)
+ * with a live OpenAI-compatible connection of the partner's (an env
+ * deployment's env-managed connection, or a BYO gateway; the deployment may
+ * have no Anthropic key at all); an `error` status, an undecryptable key or
+ * an unusable catalog pin means unavailable — read on the caller's own
+ * connection. Returns null when a model can be
  * called. It never escapes to a second pooled connection (the resolver's
  * `runOutsideDbContext` reads would, which under a held transaction is the
  * #6671 pool-exhaustion shape) and has no side effects: it never marks a
@@ -341,20 +315,34 @@ export async function llmUnusableCodeForOrgInSystemContext(orgId: string): Promi
   if (getCurrentDbAccessContext()?.scope !== 'system') {
     throw new Error('llmUnusableCodeForOrgInSystemContext requires a held system DB context');
   }
-  const platform = (): LlmUnusableCode | null => (isPlatformLlmConfigured() ? null : 'ai_not_configured');
   const [organization] = await db
     .select({ partnerId: organizations.partnerId })
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
   if (!organization) return 'ai_unavailable';
-  if (!organization.partnerId) return platform();
+  const partnerId = organization.partnerId;
+  if (!partnerId) return isPlatformLlmConfigured() ? null : 'ai_not_configured';
   const [row] = await db
     .select(compatConfigColumns())
     .from(partnerAiConnections)
-    .where(compatConnectionOf(organization.partnerId))
+    .where(compatConnectionOf(partnerId))
     .limit(1);
-  if (!row) return platform();
+  if (!row) {
+    if (isPlatformLlmConfigured()) return null;
+    // Approximate like the rest of this view: the turn's own resolution still
+    // decides whether an eligible offering on it answers chat.
+    const [gateway] = await db
+      .select({ id: partnerAiConnections.id })
+      .from(partnerAiConnections)
+      .where(and(
+        eq(partnerAiConnections.partnerId, partnerId),
+        eq(partnerAiConnections.kind, 'openai_compatible'),
+        eq(partnerAiConnections.status, 'active'),
+      ))
+      .limit(1);
+    return gateway ? null : 'ai_not_configured';
+  }
   if (row.status === 'error') return 'ai_unavailable';
   try {
     decryptConnectionKey({ id: row.id, apiKeyEncrypted: row.apiKeyEncrypted });

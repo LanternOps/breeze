@@ -23,11 +23,9 @@ import {
   UNTRUSTED_FIELD_MAX_LENGTH,
 } from './aiInputSanitizer';
 import { looksLikeInternalErrorDetail } from './aiToolErrors';
-import { LlmUnavailableError, resolveLlmConfigForOrg } from './llm/llmConfigResolver';
+import { LlmUnavailableError } from './llm/llmConfigResolver';
 import { readOrgPartnerId } from './aiModels/candidateLoader';
 import { chooseSessionModel, type SessionModelChoice } from './aiModels/sessionModel';
-import { InvalidSessionModelError } from './aiModels/invalidSessionModelError';
-import { isOpenAICompatibleProvider, LlmNotConfiguredError, llmUnusableCode } from './llm/llmAvailability';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { authorizeTopologySessionSite } from './topology/aiToolGate';
 import { topologySessionAccessCondition } from './topology/aiSessionAccess';
@@ -91,8 +89,6 @@ export async function createSession(
     /** Registry offering to run the session on (W03 #7601). */
     offeringId?: string;
     options?: Partial<OfferingOptions>;
-    /** @deprecated W03: mapped to the partner's offering for this model id; W05 removes it. */
-    model?: string;
     title?: string;
     orgId?: string;
     delegantM365ConnectionId?: string;
@@ -219,34 +215,16 @@ export async function createSession(
   // The session's model is picked through the registry (W03 #7601): a
   // requested offering is a strict user choice, and a refused one stores
   // nothing. No session without a model to answer it.
-  let choice: Pick<SessionModelChoice, 'offeringId' | 'options' | 'model' | 'billingSource'> & {
+  const partnerId = await readOrgPartnerId(orgId);
+  if (!partnerId) throw new LlmUnavailableError();
+  // Topology sessions are `chat` too (spec §4).
+  const choice: Pick<SessionModelChoice, 'offeringId' | 'options' | 'model' | 'billingSource'> & {
     offeringPartnerId: string | null;
-  };
-  if (isOpenAICompatibleProvider()) {
-    // Env OpenAI-compatible chat (review finding 12): legacy resolution, no
-    // offering, until W06 absorbs this path. Such a deployment may have no
-    // Anthropic credential, so the registry would refuse every new chat.
-    const resolved = await resolveLlmConfigForOrg(orgId);
-    if (llmUnusableCode(resolved) === 'ai_not_configured') throw new LlmNotConfiguredError();
-    if (resolved.source === 'unavailable') throw new LlmUnavailableError();
-    if (options.offeringId || options.options || (options.model !== undefined && options.model !== resolved.model)) {
-      throw new InvalidSessionModelError('Model selection is not available on this deployment.', 'invalid_model');
-    }
-    choice = {
-      offeringId: null, offeringPartnerId: null, options: null, model: resolved.model,
-      billingSource: resolved.source === 'partner' ? 'partner_key' : 'platform',
-    };
-  } else {
-    const partnerId = await readOrgPartnerId(orgId);
-    if (!partnerId) throw new LlmUnavailableError();
-    // Topology sessions are `chat` too (spec §4).
-    choice = await chooseSessionModel({
-      partnerId, orgId, userId: auth.user.id, surface: 'chat',
-      ...(options.offeringId ? { offeringId: options.offeringId } : {}),
-      ...(options.options ? { options: options.options } : {}),
-      ...(options.model !== undefined ? { legacyModel: options.model } : {}),
-    });
-  }
+  } = await chooseSessionModel({
+    partnerId, orgId, userId: auth.user.id, surface: 'chat',
+    ...(options.offeringId ? { offeringId: options.offeringId } : {}),
+    ...(options.options ? { options: options.options } : {}),
+  });
 
   // #6473 — without this, every new session fell back to the `ai_sessions`
   // schema column default (50) regardless of the configured org/partner

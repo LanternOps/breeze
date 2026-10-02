@@ -45,12 +45,22 @@ export const modelRatesSchema = z.object({
 }).strict();
 export type ModelRates = z.infer<typeof modelRatesSchema>;
 
+/**
+ * Manual-budget thinking for `budget`-mode models (spec §7 table: "Thinking:
+ * off / on (budget)"). W05 (#7603). Meaningless on adaptive models, which
+ * ignore it; buildWireParams reads it only in its budget branch.
+ */
+export const BUDGET_THINKING_STATES = ['off', 'on'] as const;
+export type BudgetThinking = (typeof BUDGET_THINKING_STATES)[number];
+
 /** Per-call knobs (spec §4). Every key is optional: absent = inherit / provider default. */
 export const offeringOptionsSchema = z.object({
   effort: z.enum(EFFORT_LEVELS).optional(),
   thinkingDisplay: z.enum(THINKING_DISPLAYS).optional(),
   speed: z.enum(MODEL_SPEEDS).optional(),
+  budgetThinking: z.enum(BUDGET_THINKING_STATES).optional(),
 }).strict();
+
 export type OfferingOptions = z.infer<typeof offeringOptionsSchema>;
 
 /** What a model accepts for each knob, plus the inference geographies it can serve. */

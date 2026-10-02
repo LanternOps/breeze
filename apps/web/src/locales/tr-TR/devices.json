@@ -1921,6 +1921,10 @@
       "noReason": "Ajan bir neden bildirmedi",
       "failedAt": "Son kurulum denemesi başarısız oldu: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Yüklendi, yeniden başlatma gerekli",
+      "installedAt": "{{when}} tarihinde yüklendi. Cihaz yeniden başlatılana kadar bekleyen olarak listelenir."
+    },
     "approval": {
       "approved": "Onaylandı",
       "approvedTitle": "El ile onaylandı.",

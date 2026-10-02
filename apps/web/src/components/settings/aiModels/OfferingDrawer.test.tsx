@@ -174,4 +174,13 @@ describe('OfferingDrawer', () => {
     render(<OfferingDrawer offering={row({ id: OFF, connectionId: null, funding: 'platform' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.queryByTestId('ai-offering-verify')).toBeNull();
   });
+
+  it('explains the tool-calling test for a gateway offering only', () => {
+    const gw = row({ id: OFF, connectionId: CONN, funding: 'partner_key', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null } });
+    const { unmount } = render(<OfferingDrawer offering={gw} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByTestId('ai-offering-verify-hint').textContent).toMatch(/tool-calling test/i);
+    unmount();
+    render(<OfferingDrawer offering={row({ id: OFF, connectionId: CONN, funding: 'partner_key' })} offerings={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByTestId('ai-offering-verify-hint')).toBeNull();
+  });
 });

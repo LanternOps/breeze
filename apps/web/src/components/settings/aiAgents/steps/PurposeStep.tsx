@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AI_AGENT_KINDS, type AiAgentDto, type AiAgentKind } from '@breeze/shared';
 import ModeChoice from '../ModeChoice';
+import AgentModelSelect from '../AgentModelSelect';
 import { freeKinds, firstFreeKind, type Draft } from '../agentDraft';
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
@@ -30,15 +31,6 @@ export interface PurposeStepProps {
  * name, and instructions. Mirrors `AiAgentForm.tsx`'s field order and test
  * ids everywhere the same control is reused (`ModeChoice`, the owner-scope
  * fieldset, the no-baseline hint, the name field, the instructions fieldset).
- *
- * Deviation from spec §4.6's literal "name, model, instructions": there is no
- * `model` field anywhere in this codebase's agent policy UI today —
- * `AiAgentForm.tsx`'s `Draft` has never carried one, `createAiAgentSchema`'s
- * `model` always defaults to `null` server-side, and no i18n/test-id
- * convention exists to follow. Adding a first-of-its-kind model selector is
- * out of scope for a task whose job is to reuse the drawer's existing
- * fields — it would need its own design pass (an options source, a default,
- * a save-body slot), not a copy of something that already exists.
  */
 export default function PurposeStep({
   draft,
@@ -204,6 +196,12 @@ export default function PurposeStep({
           </p>
         )}
       </div>
+
+      <AgentModelSelect
+        orgId={draft.ownerScope === 'partner' ? null : orgId}
+        value={draft.offeringId}
+        onChange={(offeringId) => patch({ offeringId, offeringIdTouched: true })}
+      />
 
       <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
         <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">

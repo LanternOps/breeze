@@ -45,6 +45,10 @@ Every row on a profile -- the work-type rows and the required "All other work" r
 - **Included** -- the work is covered by the customer's plan. The entry still appears on the ticket and in the customer portal as contract-covered, but it carries no rate and adds nothing to any invoice total. The billables CSV export reports it in its `included_minutes` column (worked minutes).
 - **Non-billable** -- internal or goodwill work. Never billed, and no rate is stamped.
 
+## AI usage
+
+A billing profile also sets whether, and at what price, a client is billed for the AI usage Breeze meters: a coverage setting, a markup on cost, and an optional per-model price list. See [AI usage chargeback](/features/ai-usage-chargeback/).
+
 ## Minimums and rounding
 
 A **minimum** is set per row -- for example, "On-site has a one-hour minimum" -- because different kinds of work justify different minimum call-out times. **Rounding** is set once for the whole profile -- for example, "we bill in 15-minute blocks" -- because it reflects how the MSP as a whole bills, not a property of any one work type.

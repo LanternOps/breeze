@@ -13,12 +13,14 @@
 import { eq } from 'drizzle-orm';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
-  CONFIGURABLE_AI_SURFACES,
+  CONFIGURABLE_AI_SURFACE_ROLES,
+  isGatewayConnectionKind,
   TOOL_REQUIRING_SURFACES,
   type AiAssignmentRowDto,
   type AiConnectionDto,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
+  type AiOfferingVerificationDto,
   type AiOrgModelDefaultsDto,
   type AiSurface,
   type OfferingOptions,
@@ -41,7 +43,9 @@ import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from 
 import { listConnections, type PartnerAiConnection } from './connections';
 import { listOfferings, type Offering } from './offerings';
 import { listAssignmentRows } from './assignmentRows';
-import { mergeEffectiveAssignment } from './assignments';
+import { mergeEffectiveAssignment, selectRoleRows } from './assignments';
+import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
+import { isEnvManaged, isEnvReleased } from './gatewayConnections';
 
 const TOOL_SURFACES = new Set<string>(TOOL_REQUIRING_SURFACES);
 
@@ -62,11 +66,27 @@ export async function buildCatalogSummary(): Promise<AiModelsSnapshotDto['catalo
   }));
 }
 
+/**
+ * W06: a gateway offering's verification as the UI shows it, judged against the
+ * connection's CURRENT endpoint fingerprint (a base-URL change makes it stale).
+ * Only the record's state, time, harness version and scrubbed summary leave —
+ * never the tree or the fingerprint. null for every non-gateway offering.
+ */
+function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingVerificationDto | null {
+  if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
+  const { state, record } = verifiedGatewayCapabilities(
+    o.capabilities,
+    endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
+  );
+  return { state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null };
+}
+
 function offeringDto(
   o: Offering,
   c: LoadedCandidate,
   blocker: AiOfferingDto['enableBlocker'],
   defaultFor: AiOfferingDto['defaultFor'],
+  conn: PartnerAiConnection | undefined,
 ): AiOfferingDto {
   const own = o.priceInputCentsPerM === null || o.priceOutputCentsPerM === null
     || o.priceCacheReadCentsPerM === null || o.priceCacheWriteCentsPerM === null
@@ -104,6 +124,7 @@ function offeringDto(
     enableBlocker: blocker,
     defaultFor,
     updatedAt: o.updatedAt.toISOString(),
+    verification: verificationDto(o, conn),
   };
 }
 
@@ -143,6 +164,7 @@ function synthesizedPlatformOffering(
     enableBlocker: enableBlockerFor(platformCandidateFacts(partnerId, pm, platformGeo), ctx),
     defaultFor: [],
     updatedAt: null,
+    verification: null,
   };
 }
 
@@ -171,7 +193,7 @@ function isLiveConnection(c: PartnerAiConnection): c is LiveConnection {
   return c.status !== 'disconnected';
 }
 
-/** Callers pass only role-'default' rows; a role outside the shared list is a programming error, never a DTO. */
+/** A role outside the shared write-role list is a programming error, never a DTO. */
 function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
   const role = AI_ASSIGNMENT_WRITE_ROLES.find((known) => known === r.role);
   if (!role) throw new Error(`assignmentRowDto: unexpected assignment role '${r.role}'`);
@@ -182,6 +204,8 @@ function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
     permittedOfferingIds: r.permittedOfferingIds,
     allowUserChoice: r.allowUserChoice,
     options: (r.options ?? null) as OfferingOptions | null,
+    fallbackOfferingIds: r.fallbackOfferingIds ?? null,
+    fallbackMayCrossFunding: r.fallbackMayCrossFunding ?? null,
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -198,6 +222,7 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     // Every assignment (partner and org level) whose offerings belong to this partner.
     db.select({
       surface: aiModelAssignments.surface,
+      role: aiModelAssignments.role,
       orgId: aiModelAssignments.orgId,
       defaultOfferingId: aiModelAssignments.defaultOfferingId,
     })
@@ -208,17 +233,27 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
   const connections = listedConnections.filter(isLiveConnection);
   // A disconnected connection's offerings stay as provenance (W03) but are
   // never shown: not in the Models card, the defaults pickers or defaultFor.
-  const liveConnectionIds = new Set(connections.map((c) => c.id));
-  const offerings = listedOfferings.filter((o) => o.connectionId === null || liveConnectionIds.has(o.connectionId));
+  const connectionsById = new Map<string, PartnerAiConnection>(connections.map((c) => [c.id, c]));
+  const offerings = listedOfferings.filter((o) => o.connectionId === null || connectionsById.has(o.connectionId));
 
   const offeringDtos: AiOfferingDto[] = [];
   for (const o of offerings) {
     const c = await loadOfferingCandidate(o.id, partnerId);
     if (!c) continue;
+    // One entry per (surface, level, org): an offering that is both the ai_agents
+    // default and one of its role defaults (W09) is listed once.
+    const seen = new Set<string>();
     const defaultFor = allRows
       .filter((r) => r.defaultOfferingId === o.id)
-      .map((r) => ({ surface: r.surface as AiSurface, level: r.orgId === null ? 'partner' as const : 'org' as const, orgId: r.orgId }));
-    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor));
+      .map((r) => ({ surface: r.surface as AiSurface, level: r.orgId === null ? 'partner' as const : 'org' as const, orgId: r.orgId }))
+      .filter((d) => {
+        const k = `${d.surface}/${d.level}/${d.orgId ?? ''}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    const conn = o.connectionId === null ? undefined : connectionsById.get(o.connectionId);
+    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn));
   }
   const added = new Set(offerings.filter((o) => o.connectionId === null).map((o) => o.platformModelId));
   for (const pm of platformModels) {
@@ -252,37 +287,51 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     lastDiscoveredAt: null,
     discoveryError: null,
     funding: 'platform',
+    baseUrl: null,
+    managedBy: null,
+    envReleased: false,
   };
-  const partnerConns: AiConnectionDto[] = connections.map((c) => ({
-    id: c.id,
-    kind: c.kind,
-    name: c.name,
-    status: c.status,
-    lastError: c.lastError,
-    keyLast4: c.keyLast4,
-    inferenceGeo: c.inferenceGeo,
-    ...effectiveGeo(c.inferenceGeo, platformGeo),
-    supportedInferenceGeos: unionGeos(offeringDtos, c.id),
-    catalogEntryId: c.catalogEntryId,
-    catalogName: c.catalogEntryId ? catalogNames.get(c.catalogEntryId) ?? null : null,
-    configVersion: c.configVersion,
-    verifiedAt: c.verifiedAt?.toISOString() ?? null,
-    lastDiscoveredAt: c.lastDiscoveredAt?.toISOString() ?? null,
-    discoveryError: c.discoveryError,
-    funding: 'partner_key',
-  }));
+  const partnerConns: AiConnectionDto[] = connections.map((c) => {
+    const gateway = isGatewayConnectionKind(c.kind);
+    return {
+      id: c.id,
+      kind: c.kind,
+      name: c.name,
+      status: c.status,
+      lastError: c.lastError,
+      keyLast4: c.keyLast4,
+      // D7: a BYO endpoint's geography is unverifiable — it never claims, inherits or serves one.
+      inferenceGeo: gateway ? null : c.inferenceGeo,
+      ...(gateway ? effectiveGeo(null, null) : effectiveGeo(c.inferenceGeo, platformGeo)),
+      supportedInferenceGeos: gateway ? [] : unionGeos(offeringDtos, c.id),
+      catalogEntryId: c.catalogEntryId,
+      catalogName: c.catalogEntryId ? catalogNames.get(c.catalogEntryId) ?? null : null,
+      configVersion: c.configVersion,
+      verifiedAt: c.verifiedAt?.toISOString() ?? null,
+      lastDiscoveredAt: c.lastDiscoveredAt?.toISOString() ?? null,
+      discoveryError: c.discoveryError,
+      funding: 'partner_key' as const,
+      // Gateway kinds only; the base URL never carries credentials (byoBaseUrlSchema / byoEndpointPolicy refuse them).
+      baseUrl: gateway ? c.baseUrl : null,
+      managedBy: gateway && isEnvManaged(c) ? 'env' as const : null,
+      envReleased: gateway && isEnvReleased(c),
+    };
+  });
 
   return {
     partner: { residencyRequired: facts.residencyRequired, plan: facts.plan, hosted },
     connections: platformConfigured ? [platformConn, ...partnerConns] : partnerConns,
     offerings: offeringDtos,
-    defaults: CONFIGURABLE_AI_SURFACES.map((surface) => {
-      const p = partnerRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
+    // W09: one entry per (surface, role); a role entry shows the partner's own
+    // role row only (null = the role inherits the feature default).
+    defaults: CONFIGURABLE_AI_SURFACE_ROLES.map(({ surface, role }) => {
+      const p = partnerRows.find((r) => r.surface === surface && r.role === role) ?? null;
       return {
         surface,
+        role,
         requiresTools: TOOL_SURFACES.has(surface),
         partner: p && assignmentRowDto(p),
-        orgOverrideCount: allRows.filter((r) => r.surface === surface && r.orgId !== null).length,
+        orgOverrideCount: allRows.filter((r) => r.surface === surface && r.role === role && r.orgId !== null).length,
       };
     }),
     catalog,
@@ -317,26 +366,34 @@ export async function buildOrgModelDefaults(input: {
     offerings,
     canEdit: input.canEdit,
     canEditReviewer: input.canEditReviewer,
-    surfaces: CONFIGURABLE_AI_SURFACES.map((surface) => {
-      const p = partnerRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
-      const o = orgRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
-      const eff = mergeEffectiveAssignment({ surface, role: 'default', partner: p, org: o });
+    // W09: one entry per (surface, role), merged with selectRoleRows exactly as
+    // the resolver merges it (D2), so the view never disagrees with dispatch.
+    surfaces: CONFIGURABLE_AI_SURFACE_ROLES.map(({ surface, role }) => {
+      const picked = selectRoleRows([...partnerRows, ...orgRows].filter((r) => r.surface === surface), role);
+      const eff = mergeEffectiveAssignment({ surface, role, ...picked });
+      const p = picked.partner;
+      const own = orgRows.find((r) => r.surface === surface && r.role === role) ?? null;
       return {
         surface,
+        role,
         requiresTools: TOOL_SURFACES.has(surface),
         inherited: {
           defaultOfferingId: p?.defaultOfferingId ?? null,
           permittedOfferingIds: p?.permittedOfferingIds ?? null,
           allowUserChoice: p?.allowUserChoice ?? true,
           options: (p?.options ?? {}) as OfferingOptions,
+          fallbackOfferingIds: [...(p?.fallbackOfferingIds ?? [])],
+          fallbackMayCrossFunding: p?.fallbackMayCrossFunding ?? false,
         },
-        org: o && assignmentRowDto(o),
+        org: own && assignmentRowDto(own),
         effective: {
           defaultOfferingId: eff.defaultOfferingId,
           defaultSource: eff.defaultSource,
           permittedOfferingIds: eff.permitted.kind === 'all' ? null : [...eff.permitted.offeringIds],
           allowUserChoice: eff.allowUserChoice,
           options: eff.options,
+          fallbackOfferingIds: [...eff.fallbackOfferingIds],
+          fallbackMayCrossFunding: eff.fallbackMayCrossFunding,
         },
       };
     }),

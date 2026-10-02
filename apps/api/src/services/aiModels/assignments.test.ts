@@ -7,6 +7,7 @@ import {
   clampOrgOptions,
   isPermitted,
   mergeEffectiveAssignment,
+  selectRoleRows,
   type AssignmentRowInput,
 } from './assignments';
 
@@ -149,5 +150,59 @@ describe('tighten-only property: no org row can widen any partner choice', () =>
     if ((pc ?? true) === false) expect(eff.allowUserChoice).toBe(false);
     if (pe && eff.options.effort) expect(EFFORT_LEVELS.indexOf(eff.options.effort)).toBeLessThanOrEqual(EFFORT_LEVELS.indexOf(pe));
     if (eff.defaultSource === 'org') expect(isPermitted(eff.permitted, eff.defaultOfferingId!)).toBe(true);
+  });
+});
+
+describe('clampOrgOptions: budgetThinking (W05)', () => {
+  it.each([
+    [{}, { budgetThinking: 'off' }, 'off', []],
+    [{ budgetThinking: 'on' }, { budgetThinking: 'off' }, 'off', []],
+    [{ budgetThinking: 'on' }, { budgetThinking: 'on' }, 'on', []],
+    [{}, { budgetThinking: 'on' }, undefined, ['org_budget_thinking_clamped']],
+    [{ budgetThinking: 'off' }, { budgetThinking: 'on' }, 'off', ['org_budget_thinking_clamped']],
+    [{ budgetThinking: 'on' }, null, 'on', []],
+  ] as const)('partner %j + org %j → %s', (partner, org, expected, warnings) => {
+    const r = clampOrgOptions(partner, org);
+    expect(r.options.budgetThinking).toBe(expected);
+    expect(r.warnings).toEqual(warnings);
+  });
+});
+
+describe('W09 roles (D2): role row, else default row; an org default override never erases a partner role default', () => {
+  const pD = { ...row({ id: 'pD', role: 'default', defaultOfferingId: A, permittedOfferingIds: [A, B, C], fallbackOfferingIds: [B] }), orgId: null };
+  const pT = { ...row({ id: 'pT', role: 'triage', defaultOfferingId: C, permittedOfferingIds: [A, B, C], fallbackOfferingIds: [A] }), orgId: null };
+  const oD = { ...row({ id: 'oD', role: 'default', defaultOfferingId: B, permittedOfferingIds: [B, C], fallbackOfferingIds: [C], allowUserChoice: false, fallbackMayCrossFunding: false }), orgId: 'org-1' };
+  const oT = { ...row({ id: 'oT', role: 'triage', defaultOfferingId: B }), orgId: 'org-1' };
+  const merged = (rows: Array<AssignmentRowInput & { orgId: string | null }>, role: string) =>
+    mergeEffectiveAssignment({ surface: 'ai_agents', role, ...selectRoleRows(rows, role) });
+
+  it('a role with no rows of its own inherits the default rows (W02 unchanged)', () => {
+    const eff = merged([pD, oD], 'triage');
+    expect([eff.defaultOfferingId, eff.defaultSource]).toEqual([B, 'org']);
+    expect(eff.sources).toMatchObject({ partnerRowId: 'pD', orgRowId: 'oD' });
+  });
+
+  it('the partner triage default survives an org DEFAULT override', () => {
+    const eff = merged([pD, pT, oD], 'triage');
+    expect([eff.defaultOfferingId, eff.defaultSource]).toEqual([C, 'partner']);
+    expect(eff.fallbackOfferingIds).toEqual([A]); // the org default row's fallbacks are not applied
+  });
+
+  it('...while the org default row still narrows the role', () => {
+    const eff = merged([pD, pT, oD], 'triage');
+    expect(eff.permitted).toEqual({ kind: 'list', offeringIds: [B, C] });
+    expect(eff.allowUserChoice).toBe(false);
+    expect(eff.fallbackMayCrossFunding).toBe(false);
+  });
+
+  it('an org TRIAGE row overrides the partner triage default (inside the permitted set)', () => {
+    const eff = merged([pD, pT, oD, oT], 'triage');
+    expect([eff.defaultOfferingId, eff.defaultSource]).toEqual([B, 'org']);
+  });
+
+  it('the default role is unaffected', () => {
+    const eff = merged([pD, pT, oD], 'default');
+    expect([eff.defaultOfferingId, eff.defaultSource]).toEqual([B, 'org']);
+    expect(eff.fallbackOfferingIds).toEqual([C]);
   });
 });

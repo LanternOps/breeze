@@ -17,9 +17,21 @@ export class AiUsagePage extends BasePage {
   saveButton = () => this.page.getByTestId('ai-budget-save');
   firedRungs = () => this.page.getByTestId('ai-budget-fired-rungs');
 
+  breakdown = () => this.page.getByTestId('ai-usage-breakdown');
+  viewQuality = () => this.page.getByTestId('ai-usage-view-quality');
+  viewSpend = () => this.page.getByTestId('ai-usage-view-spend');
+  qualityPanel = () => this.page.getByTestId('ai-quality-breakdown');
+  qualityGroup = (g: 'model' | 'surface' | 'prompt_profile') => this.page.getByTestId(`ai-quality-groupby-${g}`);
+
   async goto() {
     await this.page.goto(this.url);
     await this.waitUntilReady();
+  }
+
+  /** Deep link to a Quality grouping; waits for the usage card's island to hydrate. */
+  async gotoQuality(group: 'model' | 'surface' | 'prompt_profile' = 'model') {
+    await this.page.goto(`${this.url}#quality-by-${group}`);
+    await waitForAppReady(this.page, 'ai-usage-breakdown');
   }
 
   /**

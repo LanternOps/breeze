@@ -8,7 +8,12 @@ import PartnerBillingSettingsPage from './PartnerBillingSettingsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { partnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// canManagePartnerWide mirrors /users/me (API's canManagePartnerWidePolicies); undefined = not yet known.
+let canManagePartnerWide: boolean | undefined = true;
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (sel: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) => sel({ user: { canManagePartnerWide } }),
+}));
 // Grants for the billing-write gate (invoices:write, same as the PATCH route).
 let canWrite = true;
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canWrite }) }));
@@ -47,6 +52,7 @@ describe('PartnerBillingSettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     canWrite = true;
+    canManagePartnerWide = true;
     window.location.hash = '';
   });
 
@@ -91,6 +97,33 @@ describe('PartnerBillingSettingsPage', () => {
     expect(screen.getByTestId('partner-billing-prefix')).toBeDisabled();
     expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
     expect(screen.getByTestId('partner-billing-readonly')).toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+  });
+
+  it('shows the plain notice (not the partner-wide one) when both the grant and partner-wide access are missing', async () => {
+    canWrite = false;
+    canManagePartnerWide = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-readonly')).not.toHaveTextContent(/all organizations/i);
+    expect(screen.getByTestId('partner-billing-currency')).toBeDisabled();
+  });
+
+  it('is read-only with a partner-wide-specific notice when invoices:write is held but partner-wide access is not (#7517)', async () => {
+    canManagePartnerWide = false;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-currency')).toBeDisabled();
+    expect(screen.queryByTestId('partner-billing-save')).not.toBeInTheDocument();
+    expect(screen.getByTestId('partner-billing-readonly')).toHaveTextContent(/all organizations/i);
+  });
+
+  it('stays editable when partner-wide capability is not yet known (server still enforces)', async () => {
+    canManagePartnerWide = undefined;
+    fetchMock.mockResolvedValue(json({ currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30 }));
+    renderPage();
+    expect(await screen.findByTestId('partner-billing-currency')).toBeEnabled();
+    expect(screen.getByTestId('partner-billing-save')).toBeEnabled();
   });
 
   it('keeps the form editable with a Save button when invoices:write is held', async () => {

@@ -20,14 +20,23 @@
 import './setup';
 
 import { randomUUID } from 'node:crypto';
+import { eq, sql } from 'drizzle-orm';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { getTestDb } from './setup';
 import { authMiddleware } from '../../middleware/auth';
 import { patchRoutes } from '../../routes/patches';
 import { patchesRoutes as devicePatchesRoutes } from '../../routes/devices/patches';
-import { devices, patches, devicePatches, patchJobs, patchJobResults } from '../../db/schema';
-import { createIntegrationTestClient, type IntegrationTestClient } from './db-utils';
+import { devices, patches, devicePatches, patchJobs, patchJobResults, deviceCommands } from '../../db/schema';
+import {
+  createIntegrationTestClient,
+  createOrganization,
+  createPartner,
+  createSite,
+  type IntegrationTestClient,
+} from './db-utils';
+import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
 
 const BATTERY_ERROR = 'preflight check "battery" failed: running on battery power (battery: 76%)';
 
@@ -40,7 +49,12 @@ function buildApp(): Hono {
 }
 
 let agentSeq = 0;
-async function seedDevice(orgId: string, siteId: string, hostname: string): Promise<string> {
+async function seedDevice(
+  orgId: string,
+  siteId: string,
+  hostname: string,
+  opts: { pendingReboot?: boolean; lastSeenAt?: Date; uptimeSeconds?: number } = {},
+): Promise<string> {
   agentSeq++;
   const [row] = await getTestDb()
     .insert(devices)
@@ -57,6 +71,9 @@ async function seedDevice(orgId: string, siteId: string, hostname: string): Prom
       agentVersion: '0.0.0-test',
       status: 'online',
       enrolledAt: new Date(),
+      pendingReboot: opts.pendingReboot ?? false,
+      lastSeenAt: opts.lastSeenAt ?? null,
+      uptimeSeconds: opts.uptimeSeconds ?? null,
     })
     .returning({ id: devices.id });
   if (!row) throw new Error('seedDevice: no row returned');
@@ -95,7 +112,10 @@ async function seedResult(opts: {
   patchId: string;
   status: 'failed' | 'completed' | 'running';
   errorMessage?: string | null;
+  rebootRequired?: boolean;
   createdAt: Date;
+  /** Defaults to createdAt (null while running). */
+  completedAt?: Date;
 }) {
   const tdb = getTestDb();
   const [job] = await tdb
@@ -109,8 +129,9 @@ async function seedResult(opts: {
     patchId: opts.patchId,
     status: opts.status,
     errorMessage: opts.errorMessage ?? null,
+    rebootRequired: opts.rebootRequired ?? false,
     startedAt: opts.createdAt,
-    completedAt: opts.status === 'running' ? null : opts.createdAt,
+    completedAt: opts.status === 'running' ? null : (opts.completedAt ?? opts.createdAt),
     createdAt: opts.createdAt,
   });
 }
@@ -206,5 +227,439 @@ describe('#4223 — last install failure surfaces on patch list + device patches
     const clean = body.data.pending.find((p: { id: string }) => p.id === cleanPatch);
     expect(failed.installFailure).toMatchObject({ deviceCount: 1, error: BATTERY_ERROR });
     expect(clean.installFailure).toBeNull();
+  });
+});
+
+/**
+ * #7680 — the device Patches tab's per-patch Install button queues a bare
+ * `install_patches` device command (no `patchJobId`), so its outcome never
+ * reached `patch_job_results`. The install-failure overlay read only that
+ * table, so an OLDER scheduled-job failure ("Server-side timeout: no response
+ * from agent after 120 minutes") kept rendering as "Install failed" after a
+ * newer per-device install had completed. And a Windows update that installed
+ * but needs a restart to finish stays `IsInstalled=0` to WUA, so the next scan
+ * re-reported it as pending with nothing saying the install had actually run.
+ */
+const OLD_TIMEOUT_ERROR = 'Server-side timeout: no response from agent after 120 minutes';
+const WUA_FAILURE = 'WUA install: install failed with result code 4: 0x80240022';
+
+async function seedDeviceInstallCommand(opts: {
+  deviceId: string;
+  patchIds: string[];
+  status: 'pending' | 'sent' | 'completed' | 'failed' | 'timeout' | 'cancelled';
+  at: Date;
+  results?: Array<Record<string, unknown>>;
+  envelopeError?: string;
+  /** Replaces the device-route payload (e.g. vulnerability remediation's `{ patchIds }`). */
+  payload?: Record<string, unknown>;
+}): Promise<void> {
+  const terminal = opts.status === 'completed' || opts.status === 'failed' || opts.status === 'timeout';
+  const summary = opts.results
+    ? {
+        success: !opts.results.some((r) => r.status === 'failed'),
+        installedCount: opts.results.filter((r) => r.status === 'installed').length,
+        failedCount: opts.results.filter((r) => r.status === 'failed').length,
+        rebootRequired: opts.results.some((r) => r.rebootRequired === true),
+        results: opts.results,
+      }
+    : null;
+  await getTestDb().insert(deviceCommands).values({
+    deviceId: opts.deviceId,
+    type: 'install_patches',
+    // Default: exactly what POST /devices/:id/patches/install enqueues — no patchJobId.
+    payload: opts.payload ?? {
+      patchIds: opts.patchIds,
+      patches: opts.patchIds.map((id) => ({ id, source: 'microsoft', externalId: 'KB5126052', packageId: null, title: 'KB5126052' })),
+    },
+    status: opts.status,
+    createdAt: new Date(opts.at.getTime() - 108_000),
+    executedAt: opts.status === 'pending' ? null : new Date(opts.at.getTime() - 108_000),
+    completedAt: terminal ? opts.at : null,
+    // The stored envelope: the handler's payload is a JSON STRING in stdout.
+    result: terminal
+      ? {
+          status: opts.status,
+          exitCode: opts.status === 'completed' ? 0 : 1,
+          ...(summary ? { stdout: JSON.stringify(summary) } : {}),
+          ...(opts.envelopeError ? { error: opts.envelopeError } : {}),
+          durationMs: 108_000,
+        }
+      : null,
+  });
+}
+
+type DeviceTabRow = {
+  id: string;
+  installFailure: { deviceCount: number; error: string | null; failedAt: string } | null;
+  awaitingRestart?: { installedAt: string } | null;
+};
+
+describe('#7680 — per-device installs on the patch status overlay', () => {
+  let client: IntegrationTestClient;
+  let orgId: string;
+  let siteId: string;
+
+  beforeEach(async () => {
+    client = await createIntegrationTestClient(buildApp(), { scope: 'organization' });
+    orgId = client.env.organization.id;
+    siteId = client.env.site.id;
+  });
+
+  async function deviceTabRow(deviceId: string, patchId: string): Promise<DeviceTabRow> {
+    const res = await client.get(`/devices/${deviceId}/patches`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.data.pending.find((p: DeviceTabRow) => p.id === patchId);
+    expect(row).toBeDefined();
+    return row;
+  }
+
+  async function listRow(patchId: string): Promise<ListRow> {
+    const res = await client.get(`/patches?orgId=${orgId}&limit=200`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.data.find((p: ListRow) => p.id === patchId);
+    expect(row).toBeDefined();
+    return row;
+  }
+
+  it('a newer per-device install that needs a restart supersedes an older job failure and reads as awaiting restart', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-reporter', { pendingReboot: true });
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedResult({
+      orgId, deviceId, patchId, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR,
+      createdAt: new Date(Date.now() - 3 * 24 * 3600_000),
+    });
+    const installedAt = new Date(Date.now() - 10 * 60_000);
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'completed', at: installedAt,
+      results: [{ id: patchId, status: 'installed', rebootRequired: true, message: 'installed but not verified — reboot may be required' }],
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toBeNull();
+    expect(row.awaitingRestart).toEqual({ installedAt: installedAt.toISOString() });
+
+    const fleet = await listRow(patchId);
+    expect(fleet.installFailure).toBeNull();
+  });
+
+  it('reports a newer failed per-device install with its own reason, not the older job error', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-wua-fail');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedResult({
+      orgId, deviceId, patchId, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR,
+      createdAt: new Date(Date.now() - 3 * 24 * 3600_000),
+    });
+    const failedAt = new Date(Date.now() - 5 * 60_000);
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'failed', at: failedAt,
+      results: [{ id: patchId, status: 'failed', error: WUA_FAILURE }],
+      envelopeError: '1 patch operations failed',
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toEqual({ deviceCount: 1, error: WUA_FAILURE, failedAt: failedAt.toISOString() });
+    expect(row.awaitingRestart ?? null).toBeNull();
+
+    const fleet = await listRow(patchId);
+    expect(fleet.installFailure).toEqual({ deviceCount: 1, error: WUA_FAILURE, failedAt: failedAt.toISOString() });
+  });
+
+  it('reports a timed-out per-device install with the reaper reason', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-timeout');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    const timedOutAt = new Date(Date.now() - 5 * 60_000);
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'timeout', at: timedOutAt, envelopeError: OLD_TIMEOUT_ERROR,
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toEqual({ deviceCount: 1, error: OLD_TIMEOUT_ERROR, failedAt: timedOutAt.toISOString() });
+  });
+
+  it('an older per-device install does not hide a newer job failure', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-newer-job-fail');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'completed', at: new Date(Date.now() - 2 * 3600_000),
+      results: [{ id: patchId, status: 'installed', rebootRequired: false }],
+    });
+    const failedAt = new Date(Date.now() - 60_000);
+    await seedResult({ orgId, deviceId, patchId, status: 'failed', errorMessage: BATTERY_ERROR, createdAt: failedAt });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toEqual({ deviceCount: 1, error: BATTERY_ERROR, failedAt: failedAt.toISOString() });
+  });
+
+  it('a queued per-device retry supersedes an older failure', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-queued-retry');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedResult({
+      orgId, deviceId, patchId, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR,
+      createdAt: new Date(Date.now() - 3600_000),
+    });
+    await seedDeviceInstallCommand({ deviceId, patchIds: [patchId], status: 'sent', at: new Date() });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toBeNull();
+  });
+
+  it('a cancelled per-device install is not an attempt and leaves the failure visible', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-cancelled');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    const failedAt = new Date(Date.now() - 3600_000);
+    await seedResult({ orgId, deviceId, patchId, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR, createdAt: failedAt });
+    await seedDeviceInstallCommand({ deviceId, patchIds: [patchId], status: 'cancelled', at: new Date() });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toEqual({ deviceCount: 1, error: OLD_TIMEOUT_ERROR, failedAt: failedAt.toISOString() });
+  });
+
+  it('a per-device install of a DIFFERENT patch does not touch this patch', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-other-patch', { pendingReboot: true });
+    const failedPatch = await seedPatch();
+    const otherPatch = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, failedPatch, 'pending');
+    await seedDevicePatch(orgId, deviceId, otherPatch, 'pending');
+    const failedAt = new Date(Date.now() - 3600_000);
+    await seedResult({ orgId, deviceId, patchId: failedPatch, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR, createdAt: failedAt });
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [otherPatch], status: 'completed', at: new Date(),
+      results: [{ id: otherPatch, status: 'installed', rebootRequired: true }],
+    });
+
+    const failed = await deviceTabRow(deviceId, failedPatch);
+    expect(failed.installFailure).toEqual({ deviceCount: 1, error: OLD_TIMEOUT_ERROR, failedAt: failedAt.toISOString() });
+    expect(failed.awaitingRestart ?? null).toBeNull();
+    const other = await deviceTabRow(deviceId, otherPatch);
+    expect(other.awaitingRestart).not.toBeNull();
+  });
+
+  it('does not read as awaiting restart once the device has restarted', async () => {
+    // pendingReboot self-clears on the first post-reboot heartbeat; a patch the
+    // scan still offers after that did not finish installing.
+    const deviceId = await seedDevice(orgId, siteId, 'win11-rebooted', { pendingReboot: false });
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'completed', at: new Date(Date.now() - 3600_000),
+      results: [{ id: patchId, status: 'installed', rebootRequired: true }],
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toBeNull();
+    expect(row.awaitingRestart ?? null).toBeNull();
+  });
+
+  it('a skipped per-device install supersedes the failure without claiming an install', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-skipped', { pendingReboot: true });
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedResult({
+      orgId, deviceId, patchId, status: 'failed', errorMessage: OLD_TIMEOUT_ERROR,
+      createdAt: new Date(Date.now() - 3600_000),
+    });
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'completed', at: new Date(),
+      results: [{ id: patchId, status: 'skipped', skipReason: 'not_offered', rebootRequired: false }],
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toBeNull();
+    expect(row.awaitingRestart ?? null).toBeNull();
+  });
+
+  it('a scheduled-job install that reported reboot required reads as awaiting restart', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-job-reboot', { pendingReboot: true });
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    const installedAt = new Date(Date.now() - 20 * 60_000);
+    await seedResult({ orgId, deviceId, patchId, status: 'completed', rebootRequired: true, createdAt: installedAt });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toBeNull();
+    expect(row.awaitingRestart).toEqual({ installedAt: installedAt.toISOString() });
+  });
+
+  it('a queued job that fails AFTER a later per-device install is the newer attempt', async () => {
+    // The job's result row is created at dispatch (offline queue), so start
+    // time alone would let the per-device install hide the job's later failure.
+    const deviceId = await seedDevice(orgId, siteId, 'win11-offline-job');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'completed', at: new Date(Date.now() - 3600_000),
+      results: [{ id: patchId, status: 'installed', rebootRequired: false }],
+    });
+    const failedAt = new Date(Date.now() - 60_000);
+    await seedResult({
+      orgId, deviceId, patchId, status: 'failed', errorMessage: BATTERY_ERROR,
+      createdAt: new Date(Date.now() - 3 * 3600_000), completedAt: failedAt,
+    });
+
+    const row = await deviceTabRow(deviceId, patchId);
+    expect(row.installFailure).toEqual({ deviceCount: 1, error: BATTERY_ERROR, failedAt: failedAt.toISOString() });
+  });
+
+  it('counts devices across both sources on the fleet list', async () => {
+    const a = await seedDevice(orgId, siteId, 'fleet-a-job-fail');
+    const b = await seedDevice(orgId, siteId, 'fleet-b-job-fail-then-installed');
+    const c = await seedDevice(orgId, siteId, 'fleet-c-device-fail');
+    const patchId = await seedPatch();
+    for (const d of [a, b, c]) await seedDevicePatch(orgId, d, patchId, 'pending');
+    await seedResult({ orgId, deviceId: a, patchId, status: 'failed', errorMessage: 'A: job failed', createdAt: new Date(Date.now() - 3 * 3600_000) });
+    await seedResult({ orgId, deviceId: b, patchId, status: 'failed', errorMessage: 'B: job failed', createdAt: new Date(Date.now() - 3 * 3600_000) });
+    await seedDeviceInstallCommand({
+      deviceId: b, patchIds: [patchId], status: 'completed', at: new Date(Date.now() - 3600_000),
+      results: [{ id: patchId, status: 'installed', rebootRequired: false }],
+    });
+    const cFailedAt = new Date(Date.now() - 10 * 60_000);
+    await seedDeviceInstallCommand({
+      deviceId: c, patchIds: [patchId], status: 'failed', at: cFailedAt,
+      results: [{ id: patchId, status: 'failed', error: 'C: WUA failed' }],
+    });
+
+    const fleet = await listRow(patchId);
+    expect(fleet.installFailure).toEqual({ deviceCount: 2, error: 'C: WUA failed', failedAt: cFailedAt.toISOString() });
+  });
+
+  it("reads vulnerability remediation's { patchIds } payload, including a multi-patch array", async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-remediation');
+    const patchId = await seedPatch();
+    const sibling = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDevicePatch(orgId, deviceId, sibling, 'pending');
+    const failedAt = new Date(Date.now() - 5 * 60_000);
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [sibling, patchId], status: 'failed', at: failedAt,
+      payload: { patchIds: [sibling, patchId] },
+      results: [{ id: sibling, status: 'installed' }, { id: patchId, status: 'failed', error: WUA_FAILURE }],
+    });
+
+    expect((await deviceTabRow(deviceId, patchId)).installFailure).toEqual({ deviceCount: 1, error: WUA_FAILURE, failedAt: failedAt.toISOString() });
+    expect((await deviceTabRow(deviceId, sibling)).installFailure).toBeNull();
+  });
+
+  it('ignores job-owned install_patches commands (patch_job_results is their record)', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-job-command');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'failed', at: new Date(),
+      payload: { patchJobId: '99999999-9999-4999-8999-999999999999', patchIds: [patchId] },
+      results: [{ id: patchId, status: 'failed', error: WUA_FAILURE }],
+    });
+
+    expect((await deviceTabRow(deviceId, patchId)).installFailure).toBeNull();
+  });
+
+  it('ignores per-device installs older than the lookback', async () => {
+    const deviceId = await seedDevice(orgId, siteId, 'win11-ancient');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'failed', at: new Date(Date.now() - 100 * 24 * 3600_000),
+      results: [{ id: patchId, status: 'failed', error: WUA_FAILURE }],
+    });
+
+    expect((await deviceTabRow(deviceId, patchId)).installFailure).toBeNull();
+  });
+
+  it('ignores a per-device install queued while the device belonged to another org', async () => {
+    const otherPartner = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: otherPartner.id });
+    const deviceId = await seedDevice(orgId, siteId, 'win11-moved-in');
+    const patchId = await seedPatch();
+    await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId, patchIds: [patchId], status: 'failed', at: new Date(),
+      results: [{ id: patchId, status: 'failed', error: 'previous owner: install failed' }],
+    });
+    await getTestDb()
+      .update(deviceCommands)
+      .set({ submittedOrgId: otherOrg.id })
+      .where(eq(deviceCommands.deviceId, deviceId));
+
+    expect((await deviceTabRow(deviceId, patchId)).installFailure).toBeNull();
+  });
+
+  describe('awaiting restart vs. the last known boot', () => {
+    const installAt = () => new Date(Date.now() - 3600_000);
+
+    it('still awaiting restart when the device booted before the install', async () => {
+      const deviceId = await seedDevice(orgId, siteId, 'win11-booted-yesterday', {
+        pendingReboot: true, lastSeenAt: new Date(), uptimeSeconds: 24 * 3600,
+      });
+      const patchId = await seedPatch();
+      await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+      await seedDeviceInstallCommand({
+        deviceId, patchIds: [patchId], status: 'completed', at: installAt(),
+        results: [{ id: patchId, status: 'installed', rebootRequired: true }],
+      });
+
+      expect((await deviceTabRow(deviceId, patchId)).awaitingRestart).not.toBeNull();
+    });
+
+    it('not awaiting restart when the device booted after the install', async () => {
+      // pendingReboot can be set again by something else after the restart.
+      const deviceId = await seedDevice(orgId, siteId, 'win11-booted-since', {
+        pendingReboot: true, lastSeenAt: new Date(), uptimeSeconds: 10 * 60,
+      });
+      const patchId = await seedPatch();
+      await seedDevicePatch(orgId, deviceId, patchId, 'pending');
+      await seedDeviceInstallCommand({
+        deviceId, patchIds: [patchId], status: 'completed', at: installAt(),
+        results: [{ id: patchId, status: 'installed', rebootRequired: true }],
+      });
+
+      expect((await deviceTabRow(deviceId, patchId)).awaitingRestart ?? null).toBeNull();
+    });
+  });
+});
+
+describe('#7680 — per-device install attempts stay inside the tenant (RLS only, no app-layer narrowing)', () => {
+  it("another partner's per-device install on the same patch never reaches this tenant's overlay", async () => {
+    const tdb = getTestDb();
+    const patchId = await seedPatch();
+
+    const partnerA = await createPartner();
+    const orgA = await createOrganization({ partnerId: partnerA.id });
+    const siteA = await createSite({ orgId: orgA.id });
+    const deviceA = await seedDevice(orgA.id, siteA.id, 'tenant-a-device');
+    await seedDevicePatch(orgA.id, deviceA, patchId, 'pending');
+    const aFailedAt = new Date(Date.now() - 3600_000);
+    await seedResult({ orgId: orgA.id, deviceId: deviceA, patchId, status: 'failed', errorMessage: 'A: job failed', createdAt: aFailedAt });
+
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+    const siteB = await createSite({ orgId: orgB.id });
+    const deviceB = await seedDevice(orgB.id, siteB.id, 'tenant-b-device');
+    await seedDevicePatch(orgB.id, deviceB, patchId, 'pending');
+    await seedDeviceInstallCommand({
+      deviceId: deviceB, patchIds: [patchId], status: 'failed', at: new Date(),
+      results: [{ id: patchId, status: 'failed', error: 'B-SECRET: tenant B failure text' }],
+    });
+    // Sanity: B's command really is in the table the overlay reads.
+    const [bCommands] = await tdb.select({ n: sql<number>`count(*)::int` }).from(deviceCommands).where(eq(deviceCommands.deviceId, deviceB));
+    expect(bCommands?.n).toBe(1);
+
+    const partnerAContext: DbAccessContext = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [partnerA.id],
+      userId: null,
+    };
+    // No orgId / deviceId narrowing: only RLS on devices + device_patches
+    // stands between tenant A and device B's command.
+    const failures = await withDbAccessContext(partnerAContext, () => loadPatchInstallFailures([patchId]));
+    expect(failures.get(patchId)).toEqual({ deviceCount: 1, error: 'A: job failed', failedAt: aFailedAt.toISOString() });
   });
 });

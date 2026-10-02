@@ -36,16 +36,30 @@ export interface BillingRule {
   fellBackToNoCard: boolean;
 }
 
+/**
+ * THE card resolver (#4628 §3.3; reused by AI chargeback #7608): the org's
+ * assigned card if it is in the org's currency, else the partner default in
+ * that currency, else none. Match-or-skip: a card in another currency is never
+ * used and never converted. The loader filters inactive cards first.
+ */
+export function selectCard<C extends { currencyCode: string }>(input: {
+  orgCurrency: string | null;
+  assignedCard: C | null;
+  partnerDefaultCard: C | null;
+}): C | null {
+  if (input.orgCurrency === null) return null;
+  if (input.assignedCard?.currencyCode === input.orgCurrency) return input.assignedCard;
+  if (input.partnerDefaultCard?.currencyCode === input.orgCurrency) return input.partnerDefaultCard;
+  return null;
+}
+
 export function resolveBillingRule(input: {
   orgCurrency: string | null;
   assignedCard: ResolvedCard | null;
   partnerDefaultCard: ResolvedCard | null;
   workTypeId: string | null;
 }): BillingRule {
-  const card = input.orgCurrency === null ? null
-    : input.assignedCard?.currencyCode === input.orgCurrency ? input.assignedCard
-      : input.partnerDefaultCard?.currencyCode === input.orgCurrency ? input.partnerDefaultCard
-        : null;
+  const card = selectCard(input);
 
   if (!card) {
     return {

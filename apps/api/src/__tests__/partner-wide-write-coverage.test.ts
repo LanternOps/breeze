@@ -219,6 +219,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
 
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
+  'services/autopay/billingPaymentSettings.ts': 'C4 settings mutators have one HTTP caller, routes/billingPaymentSettings.ts, which checks billing:manage plus canManagePartnerWidePolicies before partner writes; service parsers reject owner changes and fee writes',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
   'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
@@ -271,7 +272,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/aiModels/offerings.ts': 'enableOffering is reached from offeringWrites.ts (gated at routes/aiModels/offerings.ts: BILLING_MANAGE + canManagePartnerWidePolicies) and the W02/W03 projection. Partner-axis only, every write pinned to input.partnerId',
   'services/aiModels/assignmentWrites.ts': 'partner rows gated at routes/aiModels/assignments.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); org rows are org-scoped overrides gated at routes/aiModels/orgAssignments.ts (ORGS_WRITE + canAccessOrg + MFA) and can never write a partner row (org_id set, offering_partner_id from the org)',
   'services/aiModels/offeringWrites.ts': 'gated at routes/aiModels/offerings.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis only, every write pinned to input.partnerId from auth',
-  'services/aiModels/connectionSettings.ts': 'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
+  'services/aiModels/gatewayConnections.ts': 'W06 (#7604) gateway connection + manual model writes: partner-axis registry writes pinned to input.partnerId from auth, reached only from routes/aiModels/connections.ts (BILLING_MANAGE + MFA + requirePartnerWide → canManagePartnerWidePolicies, shared.ts) and the env bootstrap (system scope, its own partner); never sets capabilities',
+  'services/aiModels/envOpenAiBootstrapStore.ts': 'W06 (#7604) Task 15 env bootstrap: boot-time only (no route reaches it), system context under the partner registry lock, every write pinned to the partner id being bootstrapped from the partner list; creates/re-syncs the env-managed connection + its offering and re-points that partner\'s chat default once (MCP_LLM_PROVIDER=openai-compatible, refused on hosted)',
+  'services/aiModels/offeringVerificationStore.ts': 'W06 (#7604) Task 12: worker-only writer of a gateway offering\'s verification record (capabilities), run by the ai-model-discovery verify-offering job under system scope for the job\'s (offeringId, partnerId); the route that queues it (routes/aiModels/offerings.ts /verify) is gated BILLING_MANAGE + MFA + requirePartnerWide. Never enables, never takes caller-supplied capabilities',
+  'services/aiModels/connectionSettings.ts':'gated at routes/aiModels/connections.ts (BILLING_MANAGE + canManagePartnerWidePolicies + MFA); partner-axis, pinned to input.partnerId from auth',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
   'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
   'services/partnerServicePrincipalKeys.ts': 'gated at routes/partnerServicePrincipals.ts capability check',

@@ -44,7 +44,7 @@ vi.mock('../../db', async () => {
 vi.mock('../permissions', () => ({ getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfigForOrg: mocks.llm, llmUnusableCodeForOrgInSystemContext: mocks.providerUsable }));
+vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfig: mocks.llm, llmUnusableCodeForOrgInSystemContext: mocks.providerUsable }));
 vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
 
 import * as dbModule from '../../db';

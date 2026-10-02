@@ -86,6 +86,22 @@ describe('recordLlmEgressEvent', () => {
     );
   });
 
+  it('persists connection_id for gateway traffic (W06)', async () => {
+    recordLlmEgressEvent({
+      ...BASE,
+      surface: 'gateway_forward',
+      connectionId: '00000000-0000-4000-8000-0000000000c1',
+    });
+    await drainLlmEgressQueue();
+
+    expect(valuesMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        surface: 'gateway_forward',
+        connectionId: '00000000-0000-4000-8000-0000000000c1',
+      }),
+    );
+  });
+
   it('escapes a held request DB context before opening the system one', async () => {
     recordLlmEgressEvent(BASE);
     await drainLlmEgressQueue();

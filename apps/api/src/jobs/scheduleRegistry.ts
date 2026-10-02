@@ -76,6 +76,8 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * so an unused slot is easy to spot.
  */
 export const JOB_SCHEDULES = {
+  // Fine-grained billing outbox tick; intentionally outside the coarse collision grid.
+  'billing-notice-dispatch': '* * * * *',
   // ---------------------------------------------------------------- daily tier
   // Minutes ≡ 3 (mod 5), one job per (hour, minute).
   'device-metrics-retention': '3 0 * * *',
@@ -98,6 +100,10 @@ export const JOB_SCHEDULES = {
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
   // Ten minutes after the billing sweep so the two never hold the pool together.
   'deliverable-sweep': '18 5 * * *',
+  // AI chargeback W10 (#7608): daily close of the last UTC month (no-op once
+  // closed). Daily tier, minute ≡ 3 (mod 5), twenty minutes after contract
+  // billing so the two billing producers never hold the pool together.
+  'ai-chargeback-sweep': '28 5 * * *',
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',

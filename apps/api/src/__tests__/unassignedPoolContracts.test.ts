@@ -57,6 +57,9 @@ const REACH_FILES = [
   'services/reportSeries/targets.ts',
   // Series W04 Combine: candidates and adoption only in series-eligible orgs.
   'services/reportSeries/combine.ts',
+  // #7363: partner-wide automation webhook runs under a partner context over
+  // the partner's customer orgs.
+  'services/automationWebhookContext.ts',
 ];
 /** file -> reason. Add only with a reason a reviewer can check. */
 const REACH_EXEMPT: Record<string, string> = {};

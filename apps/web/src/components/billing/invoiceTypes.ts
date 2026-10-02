@@ -304,6 +304,7 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   bank_transfer: 'Bank transfer',
   card: 'Card',
   other: 'Other',
+  ach_debit: 'ACH debit',
 };
 
 // Money/date formatters live in ./shared/format (the canonical copies, shared

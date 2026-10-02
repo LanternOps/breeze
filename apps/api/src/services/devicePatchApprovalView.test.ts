@@ -32,12 +32,12 @@ vi.mock('../db/schema', () => ({
   OUTSTANDING_DEVICE_PATCH_STATUSES: ['pending'],
 }));
 
-vi.mock('./featureConfigResolver', () => ({ resolvePatchConfigDetailsForDevice: vi.fn() }));
+vi.mock('./featureConfigResolver', () => ({ resolvePatchConfigPolicyForDevice: vi.fn() }));
 vi.mock('./configPolicyPatching', () => ({ loadPolicyLocalPatchConfig: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
-import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
+import { resolvePatchConfigPolicyForDevice } from './featureConfigResolver';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { loadDevicePatchApprovalView } from './devicePatchApprovalView';
 
@@ -70,7 +70,7 @@ function chain(resolveAt: 'where' | 'limit', rows: unknown[]) {
 
 /** The device's effective policy links ring "Workstations Ring" with the given ring auto-approve. */
 function mockRingPolicy(ringAutoApprove: Record<string, unknown>, ringDeferralDays = 0, ringPartnerId = PARTNER) {
-  vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+  vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
   vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue({
     configPolicyId: 'cp-1', configPolicyName: 'Workstations', orgId: ORG, featureLinkId: 'fl-1',
     featurePolicyId: RING, sourcePolicyId: 'cp-1', inherited: false,
@@ -94,7 +94,7 @@ function mockEvaluatorReads(pending: unknown[], approvals: unknown[] = []) {
 
 beforeEach(() => {
   vi.mocked(db.select).mockReset();
-  vi.mocked(resolvePatchConfigDetailsForDevice).mockReset();
+  vi.mocked(resolvePatchConfigPolicyForDevice).mockReset();
   vi.mocked(loadPolicyLocalPatchConfig).mockReset();
 });
 
@@ -142,7 +142,7 @@ describe('loadDevicePatchApprovalView (#7625)', () => {
   });
 
   it('with no patch policy, nothing auto-approves and the ring is null', async () => {
-    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue(null);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue(null);
     mockEvaluatorReads([row({ patchId: P4 })]);
 
     const view = await loadDevicePatchApprovalView(DEV, ORG);

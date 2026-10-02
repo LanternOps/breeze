@@ -8,7 +8,9 @@
 import { eq } from 'drizzle-orm';
 import {
   emptyOptionSupport,
+  isGatewayConnectionKind,
   type AiSurface,
+  type GatewayConnectionKind,
   type EffortLevel,
   type OfferingOptions,
   type OptionRates,
@@ -38,6 +40,8 @@ import {
 } from './connections';
 import type { CandidateFacts, ConnectionKind, PartnerPlan } from './eligibility';
 import { PARTNER_PLAN_ORDER } from './eligibility';
+import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
+import { gatewayCandidate } from './gatewayCandidate';
 import { findOfferingIdForModel, getOffering, type Offering } from './offerings';
 import {
   effectivePlatformInferenceGeos,
@@ -51,11 +55,18 @@ import type { RateSnapshot } from './pricing';
 import { toPromptProfile, type PromptProfile } from './promptProfiles';
 import { safeErrorMessage } from './safeDbError';
 
-export interface ResolvedConnection {
-  id: string | null;
-  kind: Exclude<ConnectionKind, 'openai_compatible'>;
-  config: UsableLlmConfig;
-}
+/**
+ * The dispatchable connection a candidate resolved to. Anthropic-dialect kinds
+ * carry a UsableLlmConfig (key inside, as before). Gateway kinds (W06) carry a
+ * `source: 'gateway'` config plus the decrypted credential SEPARATELY: the
+ * credential is handed only to the loopback model gateway's grant, never to an
+ * SDK child env, a log line, a persisted binding or an error message.
+ */
+export type ResolvedConnection =
+  | { id: string | null; kind: Exclude<ConnectionKind, GatewayConnectionKind>; config: UsableLlmConfig }
+  | { id: string; kind: GatewayConnectionKind; config: GatewayConnectionConfig; credential: GatewayCredential };
+
+export type GatewayResolvedConnection = Extract<ResolvedConnection, { kind: GatewayConnectionKind }>;
 
 export interface AllowedOptions {
   effort?: EffortLevel[];
@@ -87,7 +98,7 @@ export interface LoadedCandidate {
 /** W01's empty support: nothing selectable, `speed` is always at least `standard`. */
 export const EMPTY_OPTION_SUPPORT: OptionSupport = Object.freeze(emptyOptionSupport()) as OptionSupport;
 
-const UNVERIFIED_CAPABILITIES: DerivedCapabilities = {
+export const UNVERIFIED_CAPABILITIES: DerivedCapabilities = {
   thinkingMode: 'unknown',
   effortLevels: [],
   supportsTools: false,
@@ -219,9 +230,10 @@ async function platformCandidate(
   offering: Offering | null,
 ): Promise<LoadedCandidate> {
   const platformGeo = await systemRead(() => getPlatformInferenceGeo());
-  // Anthropic credentials only ('agent_sdk' transport): the deployment-wide
-  // env OpenAI-compatible chat path is NOT a platform offering (W06 absorbs it)
-  // and must never make a platform Claude model look dispatchable.
+  // Anthropic credentials only ('agent_sdk' transport): an MCP_LLM_*
+  // OpenAI-compatible endpoint is an env-managed gateway connection with its
+  // own offerings (envOpenAiBootstrap.ts), never a platform offering, and must
+  // never make a platform Claude model look dispatchable.
   const configured = isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk');
   const standard = platformRate(row);
   const config: UsableLlmConfig = { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: row.modelId };
@@ -263,6 +275,9 @@ async function platformCandidate(
 }
 
 async function connectionCandidate(offering: Offering, conn: PartnerAiConnection): Promise<LoadedCandidate> {
+  // W06: gateway kinds never read the linked platform row (no price or
+  // capability inheritance) and take their capabilities only from verification.
+  if (isGatewayConnectionKind(conn.kind)) return gatewayCandidate({ offering, conn });
   const linked = offering.platformModelId
     ? await systemRead(() => getPlatformModelById(offering.platformModelId!))
     : null;
@@ -352,7 +367,7 @@ async function connectionCandidate(offering: Offering, conn: PartnerAiConnection
     const sameIdRow = await systemRead(() => getPlatformModelByModelId(logicalModel));
     promptProfile = toPromptProfile(sameIdRow?.promptProfile);
   } else {
-    // anthropic_byok (openai_compatible is filtered by eligibility; W06).
+    // anthropic_byok (gateway kinds returned above; W06).
     if (!rate && linked) {
       const linkedStandard = platformRate(linked);
       if (linkedStandard) rate = { source: 'linked_platform', standard: linkedStandard };
@@ -500,11 +515,29 @@ export async function readOrgPartnerId(orgId: string): Promise<string | null> {
 /** The stored model choice of a session (W02 columns, P11); the only ai_sessions read the resolver makes. */
 export async function readSessionModelRow(
   sessionId: string,
-): Promise<{ orgId: string; offeringId: string | null; options: Partial<OfferingOptions> | null } | null> {
+): Promise<{
+  orgId: string;
+  offeringId: string | null;
+  options: Partial<OfferingOptions> | null;
+  /** W09 (D5): history the SDK would resume (turns run, or a persisted SDK transcript). */
+  turnCount: number;
+  sdkSessionId: string | null;
+} | null> {
   const [row] = await systemRead(() => db
-    .select({ orgId: aiSessions.orgId, offeringId: aiSessions.offeringId, options: aiSessions.options })
+    .select({
+      orgId: aiSessions.orgId, offeringId: aiSessions.offeringId, options: aiSessions.options,
+      turnCount: aiSessions.turnCount, sdkSessionId: aiSessions.sdkSessionId,
+    })
     .from(aiSessions)
     .where(eq(aiSessions.id, sessionId))
     .limit(1));
-  return row ? { orgId: row.orgId, offeringId: row.offeringId ?? null, options: (row.options ?? null) as Partial<OfferingOptions> | null } : null;
+  return row
+    ? {
+        orgId: row.orgId,
+        offeringId: row.offeringId ?? null,
+        options: (row.options ?? null) as Partial<OfferingOptions> | null,
+        turnCount: Number(row.turnCount ?? 0),
+        sdkSessionId: row.sdkSessionId ?? null,
+      }
+    : null;
 }

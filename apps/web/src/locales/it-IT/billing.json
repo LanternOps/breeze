@@ -1910,7 +1910,8 @@
       "check": "Assegno",
       "bank_transfer": "Bonifico bancario",
       "card": "Carta",
-      "other": "Altro"
+      "other": "Altro",
+      "ach_debit": "Addebito ACH"
     },
     "payments": {
       "amount": "Importo",
@@ -2291,7 +2292,8 @@
     "saveButton": "Salva impostazioni di fatturazione",
     "saveError": "Impossibile salvare le impostazioni di fatturazione.",
     "saveSuccess": "Impostazioni di fatturazione salvate",
-    "readOnlyNotice": "Hai accesso in sola lettura alle impostazioni di fatturazione. Chiedi a un amministratore di modificarle."
+    "readOnlyNotice": "Hai accesso in sola lettura alle impostazioni di fatturazione. Chiedi a un amministratore di modificarle.",
+    "readOnlyNoPartnerWideNotice": "Le impostazioni di fatturazione si applicano a tutte le organizzazioni, quindi modificarle richiede l'accesso completo alle organizzazioni del partner. Hai accesso in sola lettura."
   },
   "shared": {
     "documentWorkspace": {
@@ -2344,7 +2346,8 @@
     "currencyWarning": "Il profilo di fatturazione assegnato usa {{currency}}. Dopo questa modifica si applicherà il profilo predefinito del partner nella valuta corrispondente.",
     "loadError": "Impossibile caricare i profili di fatturazione.",
     "saveError": "Impossibile salvare il profilo di fatturazione.",
-    "partialSave": "Il profilo di fatturazione è stato salvato, ma le altre impostazioni di fatturazione no. Salva di nuovo per completare."
+    "partialSave": "Il profilo di fatturazione è stato salvato, ma le altre impostazioni di fatturazione no. Salva di nuovo per completare.",
+    "aiUsage": "Utilizzo IA: {{summary}}"
   },
   "rates": {
     "title": "Tariffe",
@@ -2378,6 +2381,41 @@
     "minimumSummary": "Minimo {{minutes}} min",
     "roundingSummary": "Arrotonda a {{minutes}} min",
     "inherits": "Usa Tutti gli altri lavori",
-    "currencyHelp": "Non è possibile cambiare la valuta di un profilo predefinito o con tariffe. Un arrotondamento vuoto significa nessun arrotondamento."
+    "currencyHelp": "Non è possibile cambiare la valuta di un profilo predefinito o con tariffe. Un arrotondamento vuoto significa nessun arrotondamento.",
+    "ai": {
+      "column": "Utilizzo IA",
+      "sectionTitle": "Utilizzo dell'IA",
+      "sectionHelp": "Come viene addebitato l'utilizzo dell'assistente IA da parte delle organizzazioni con questo profilo di fatturazione. Fatturi il costo di Breeze più un ricarico oppure imposti un prezzo per modello.",
+      "coverage": "Fatturazione dell'utilizzo IA",
+      "coverageBillable": "Fatturabile",
+      "coverageIncluded": "Incluso",
+      "coverageNotBilled": "Non fatturato",
+      "markup": "Ricarico sul costo (%)",
+      "markupHelp": "Aggiunto al costo in USD di Breeze per ogni richiesta. 25 fattura il costo più il 25%. Lasci vuoto per fatturare solo i modelli del listino.",
+      "markupInvalid": "Inserisca una percentuale da 0 a 1000 con al massimo due decimali.",
+      "priceListTitle": "Listino prezzi",
+      "priceListHelp": "I prezzi sono in {{currency}} per milione di token. Un modello nel listino usa il proprio prezzo invece del ricarico.",
+      "priceListEmpty": "Nessun prezzo per modello.",
+      "addRate": "Aggiungi prezzo del modello",
+      "removeRate": "Rimuovi",
+      "modelId": "Modello",
+      "modelPlaceholder": "Scelga o digiti un ID modello",
+      "inputPrice": "Ingresso",
+      "outputPrice": "Uscita",
+      "cacheReadPrice": "Lettura cache",
+      "cacheWritePrice": "Scrittura cache",
+      "rowInvalid": "Inserisca un ID modello e tutti e quattro i prezzi, ad esempio 3.00 o 0.30.",
+      "rowDuplicate": "Questo modello è già nel listino.",
+      "choicesUnavailable": "I suggerimenti di modelli non sono disponibili. Digiti invece un ID modello.",
+      "usdOnlyWarning": "Il ricarico si applica solo ai profili in USD; aggiunga un listino in {{currency}} o l'utilizzo verrà registrato senza prezzo.",
+      "summaryBillableMarkup": "Fatturabile · costo +{{percent}}%",
+      "summaryBillablePriceList_one": "Fatturabile · listino ({{count}} modello)",
+      "summaryBillablePriceList_other": "Fatturabile · listino ({{count}} modelli)",
+      "summaryBillablePriceListMarkup_one": "Fatturabile · listino ({{count}} modello), gli altri costo +{{percent}}%",
+      "summaryBillablePriceListMarkup_other": "Fatturabile · listino ({{count}} modelli), gli altri costo +{{percent}}%",
+      "summaryBillableUnpriced": "Fatturabile · senza prezzo",
+      "summaryIncluded": "Incluso",
+      "summaryNotBilled": "Non fatturato"
+    }
   }
 }

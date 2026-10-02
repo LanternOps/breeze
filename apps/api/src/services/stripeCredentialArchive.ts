@@ -1,5 +1,7 @@
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { invoiceCollectionAttempts, orgPaymentMethods, orgAutopayEnrollments } from '../db/schema/autopay';
 import Stripe from 'stripe';
-import { and, eq, isNull, isNotNull, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, isNotNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   invoiceStripePayments,
@@ -27,7 +29,7 @@ import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 
 /** Stripe's outer dispute window; the earliest a superseded secret may go. */
 export const CREDENTIAL_RETENTION_MS = 120 * 24 * 60 * 60 * 1000;
-/** Hard cap: destroyed at this point whatever the dependent sessions say. */
+/** Hard cap applies only after active collection attempts resolve. */
 export const CREDENTIAL_RETENTION_HARD_CAP_MS = 400 * 24 * 60 * 60 * 1000;
 
 // Pinned API version — must match partnerStripe.ts. The SDK default moves on upgrade.
@@ -107,6 +109,17 @@ export async function archiveSupersededCredential(
       isNull(invoiceStripePayments.revocationCredentialId),
       sql`${invoiceStripePayments.revocationState} IN ('active', 'revocation_requested', 'legacy_unbounded')`,
     ));
+
+
+  await db.update(invoiceStripePayments).set({ revocationCredentialId: archived.id, updatedAt: now }).where(and(
+    eq(invoiceStripePayments.stripeAccountId, input.stripeAccountId),
+    eq(invoiceStripePayments.stripeObjectType, 'payment_intent'),
+    isNull(invoiceStripePayments.revocationCredentialId),
+    sql`exists (select 1 from ${invoiceCollectionAttempts}
+      where (${invoiceCollectionAttempts.invoiceStripePaymentId} = ${invoiceStripePayments.id}
+        or ${invoiceCollectionAttempts.stripePaymentIntentId} = ${invoiceStripePayments.stripeObjectId})
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])})`,
+  ));
 
   return archived.id;
 }
@@ -206,7 +219,8 @@ export async function getSupersededStripeCredential(
  * what was retained survives) once either:
  *   - the 120-day window has elapsed AND no session mapping on that account is
  *     still non-terminal, or
- *   - the 400-day hard cap has elapsed, unconditionally.
+ *   - the 400-day hard cap has elapsed.
+ * Active collection attempts retain credentials beyond either window until resolved.
  *
  * Caller supplies a SYSTEM context. Returns the number of secrets destroyed.
  */
@@ -230,7 +244,18 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
     .limit(500);
 
   let erased = 0;
+  let skipped = 0;
   for (const candidate of candidates) {
+    const [activeAttempt] = await db.select({ id: invoiceCollectionAttempts.id })
+      .from(invoiceCollectionAttempts)
+      .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
+      .innerJoin(orgAutopayEnrollments, eq(orgAutopayEnrollments.id, orgPaymentMethods.enrollmentId))
+      .where(and(
+        eq(orgAutopayEnrollments.partnerId, candidate.partnerId),
+        eq(orgAutopayEnrollments.stripeAccountId, candidate.stripeAccountId),
+        inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]),
+      )).limit(1);
+    if (activeAttempt) { skipped++; continue; }
     const pastHardCap = candidate.eraseHardCapAt.getTime() <= now.getTime();
     if (!pastHardCap) {
       const [dependent] = await db.select({ id: invoiceStripePayments.id })
@@ -242,7 +267,7 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
         .limit(1);
       // A session that can still be paid keeps its key alive: destroying it now
       // would convert a retryable revocation into a permanent `revocation_blocked`.
-      if (dependent) continue;
+      if (dependent) { skipped++; continue; }
     }
 
     await db.update(stripeConnectCredentials)
@@ -275,6 +300,7 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
       });
     }
   }
+  if (skipped) console.info('[stripeCredentialArchive] credential erasure deferred', { skipped, erased });
   return erased;
 }
 

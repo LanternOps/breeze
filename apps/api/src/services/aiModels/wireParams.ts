@@ -7,8 +7,9 @@
  * - `toAgentSdkOptions` for `query()`;
  * - `toMessagesApiParams` for raw `messages.create` one-shots.
  *
- * Neither adapter carries `display: 'updates'`, `speed` or `inferenceGeo`
- * yet. The W01 spike (docs/superpowers/specs/ai-mcp/2026-09-30-ai-model-registry-w01-spike-findings.md)
+ * Neither adapter carries `display: 'updates'` or `inferenceGeo` yet, and
+ * `speed` reaches the Agent SDK only behind W05 lab gate L1
+ * (`AGENT_SDK_FAST_MODE_VERIFIED`). The W01 spike (docs/superpowers/specs/ai-mcp/2026-09-30-ai-model-registry-w01-spike-findings.md)
  * found, on Agent SDK 0.3.286:
  * - D1: the SDK CLI rejects `display: 'updates'`;
  * - D2: `speed: 'fast'` travels via `settings: { fastMode: true }`;
@@ -22,6 +23,27 @@ import type { ThinkingMode } from './capabilities';
 
 export const THINKING_DISPLAY_UPDATES_BETA = 'thinking-display-updates-2026-08-18';
 export const FAST_MODE_BETA = 'fast-mode-2026-02-01';
+/** The Agent SDK version the W01 (D1–D3) and W05 (resume, fast) findings were verified on. */
+export const VERIFIED_AGENT_SDK_VERSION = '0.3.286';
+
+/**
+ * W05 lab gate L1: fast mode reaches the wire on the Agent SDK (W01 D2), but
+ * the CLI silently retries a 429 at standard (W05 spike Q4). Fast is carried
+ * only once L1 has shown the served-speed signal (`fast_mode_state`) is
+ * reliable. Flip this in the same PR that records L1's evidence. While false,
+ * `transportCarries('agent_sdk').speed` is false, so `resolveModel`'s
+ * clampSupport drops `fast` and Fast is never offered or applied in chat.
+ */
+export const AGENT_SDK_FAST_MODE_VERIFIED = false;
+let agentSdkFastOverride: boolean | null = null;
+/** Test seam. null restores the shipped constant. */
+export function __setAgentSdkFastVerifiedForTests(v: boolean | null): void { agentSdkFastOverride = v; }
+export function agentSdkCarriesFast(): boolean { return agentSdkFastOverride ?? AGENT_SDK_FAST_MODE_VERIFIED; }
+
+/** W05: the manual thinking budget sent when a budget-mode model has thinking on. */
+export const BUDGET_THINKING_DEFAULT_TOKENS = 8192;
+/** The API's floor for `budget_tokens` (spec §7: ≥ 1024 and < max_tokens). */
+export const MIN_BUDGET_THINKING_TOKENS = 1024;
 
 export type WireThinking =
   | { type: 'adaptive'; display?: ThinkingDisplay }
@@ -69,11 +91,18 @@ export function buildWireParams(input: BuildWireParamsInput): WireParams {
       applied.effort = requested.effort;
     }
   } else if (thinkingMode === 'budget') {
-    // v1: budget-mode models run with thinking off. This is W00 parity for
-    // Haiku 4.5. OfferingOptions has no on/off knob yet; the chat picker
-    // (W05) adds it, and only then does this branch emit `enabled` with a
-    // budget below `maxTokens`. Until then `maxTokens` is only validated.
-    wire.thinking = { type: 'disabled' };
+    // Spec §7: "Thinking: off / on (budget)". Off (or unset) keeps W00 parity
+    // for Haiku 4.5 — thinking disabled, because an omitted param lets the
+    // SDK CLI switch extended thinking ON (#7587). On sends a manual budget
+    // strictly below max_tokens, never the CLI's 31,999 default (W05 spike).
+    const budget = Math.min(BUDGET_THINKING_DEFAULT_TOKENS, input.maxTokens - 1);
+    if (requested.budgetThinking === 'on' && budget >= MIN_BUDGET_THINKING_TOKENS) {
+      wire.thinking = { type: 'enabled', budget_tokens: budget };
+      applied.budgetThinking = 'on';
+    } else {
+      wire.thinking = { type: 'disabled' };
+      if (requested.budgetThinking === 'off') applied.budgetThinking = 'off';
+    }
   }
   // 'none' and 'unknown': no thinking param, no effort (spec §7 table).
 
@@ -109,11 +138,13 @@ function assertCarriable(wire: WireParams, transport: 'agent_sdk' | 'messages_ap
   if (wire.thinking?.type === 'adaptive' && wire.thinking.display === 'updates') {
     throw new UnsupportedWireOptionError('thinkingDisplay:updates', transport);
   }
-  if (wire.speed) throw new UnsupportedWireOptionError('speed', transport);
+  if (wire.speed && !(transport === 'agent_sdk' && agentSdkCarriesFast())) {
+    throw new UnsupportedWireOptionError('speed', transport);
+  }
   if (wire.inferenceGeo) throw new UnsupportedWireOptionError('inferenceGeo', transport);
 }
 
-export type AgentSdkThinkingOptions = Pick<Options, 'thinking' | 'effort'>;
+export type AgentSdkThinkingOptions = Pick<Options, 'thinking' | 'effort' | 'settings'>;
 
 /**
  * Agent SDK `query()` options. "Send nothing" is spelled `{ type: 'disabled' }`
@@ -122,13 +153,15 @@ export type AgentSdkThinkingOptions = Pick<Options, 'thinking' | 'effort'>;
  */
 export function toAgentSdkOptions(wire: WireParams): AgentSdkThinkingOptions {
   assertCarriable(wire, 'agent_sdk');
+  // W01 D2: settings.fastMode → `speed: "fast"` + the fast-mode beta on the wire.
+  const fast: Pick<Options, 'settings'> = wire.speed === 'fast' ? { settings: { fastMode: true } } : {};
   const thinking = wire.thinking;
-  if (!thinking || thinking.type === 'disabled') return { thinking: { type: 'disabled' } };
-  if (thinking.type === 'enabled') return { thinking: { type: 'enabled', budgetTokens: thinking.budget_tokens } };
+  if (!thinking || thinking.type === 'disabled') return { thinking: { type: 'disabled' }, ...fast };
+  if (thinking.type === 'enabled') return { thinking: { type: 'enabled', budgetTokens: thinking.budget_tokens }, ...fast };
   const adaptive = thinking.display
     ? { type: 'adaptive' as const, display: thinking.display as 'omitted' | 'summarized' }
     : { type: 'adaptive' as const };
-  return wire.effort ? { thinking: adaptive, effort: wire.effort } : { thinking: adaptive };
+  return wire.effort ? { thinking: adaptive, effort: wire.effort, ...fast } : { thinking: adaptive, ...fast };
 }
 
 export interface MessagesApiThinkingParams {

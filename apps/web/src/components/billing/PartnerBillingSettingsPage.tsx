@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
@@ -43,7 +43,13 @@ export default function PartnerBillingSettingsPage() {
   const [saving, setSaving] = useState(false);
   // Same grant the PATCH /partner/billing-settings route requires (invoices:write).
   const { can } = usePermissions();
-  const canWrite = can('invoices', 'write');
+  const hasWriteGrant = can('invoices', 'write');
+  // The route ALSO requires partner-wide access (requirePartnerWideBillingAdmin →
+  // canManagePartnerWidePolicies). Read the API's answer from /users/me instead of
+  // re-deriving it; absent (stale session) is treated as capable — the server
+  // still enforces and the 403 toast remains the backstop (#7517).
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const canWrite = hasWriteGrant && canManagePartnerWide;
   const [activeTab, setActiveTab] = useHashTab<BillingTab>(BILLING_TABS, 'defaults');
 
   const [currencyCode, setCurrencyCode] = useState('USD');
@@ -216,7 +222,7 @@ export default function PartnerBillingSettingsPage() {
       >
       {!canWrite && (activeTab === 'defaults' || activeTab === 'documents') && (
         <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" data-testid="partner-billing-readonly">
-          {t('partnerBillingSettings.readOnlyNotice')}
+          {hasWriteGrant ? t('partnerBillingSettings.readOnlyNoPartnerWideNotice') : t('partnerBillingSettings.readOnlyNotice')}
         </p>
       )}
       {activeTab === 'defaults' && (

@@ -113,7 +113,10 @@ describe('ai store page-context org rebinding (#5684)', () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ id: 'session-org-b', orgId: ORG_B }));
     await useAiStore.getState().createSession();
 
-    const [url, init] = fetchWithAuthMock.mock.calls[0] as [string, RequestInit];
+    // setPageContext's rebind also reloads the model menu (W05), so find the create call by URL.
+    const createCall = fetchWithAuthMock.mock.calls.find((c) => c[0] === '/ai/sessions');
+    expect(createCall).toBeDefined();
+    const [url, init] = createCall as [string, RequestInit];
     expect(url).toBe('/ai/sessions');
     expect(JSON.parse(String(init.body)).pageContext).toEqual(deviceBContext);
     expect(useAiStore.getState().sessionId).toBe('session-org-b');

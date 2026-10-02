@@ -1,16 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const configRef = vi.hoisted(() => ({ provider: 'anthropic' as string, throws: false }));
-
-vi.mock('../../config/validate', () => ({
-  getConfig: vi.fn(() => {
-    if (configRef.throws) throw new Error('getConfig() called before validateConfig()');
-    return { MCP_LLM_PROVIDER: configRef.provider };
-  }),
-}));
-
 import {
-  isOpenAICompatibleProvider,
   isPlatformLlmConfigured,
   LlmNotConfiguredError,
   llmUnusableCode,
@@ -28,8 +18,6 @@ const PARTNER = {
 };
 
 beforeEach(() => {
-  configRef.provider = 'anthropic';
-  configRef.throws = false;
   for (const key of PLATFORM_LLM_CREDENTIAL_ENV_KEYS) vi.stubEnv(key, '');
 });
 
@@ -55,16 +43,14 @@ describe('llmUnusableCode — the one "can a model be called" decision', () => {
     }
   });
 
-  it('accepts a platform on the OpenAI-compatible provider with no Anthropic credential', () => {
-    configRef.provider = 'openai-compatible';
-    expect(llmUnusableCode({ source: 'platform', apiKey: undefined, model: 'm' })).toBeNull();
-  });
-
-  it('does not count the OpenAI-compatible provider for Agent-SDK-only surfaces (script builder)', () => {
-    configRef.provider = 'openai-compatible';
-    expect(llmUnusableCode({ source: 'platform', apiKey: undefined, model: 'm' }, 'agent_sdk')).toBe('ai_not_configured');
-    expect(llmUnusableCode({ source: 'platform', apiKey: 'sk-platform', model: 'm' }, 'agent_sdk')).toBeNull();
-    expect(llmUnusableCode(PARTNER, 'agent_sdk')).toBeNull();
+  it('W06: an env OpenAI-compatible deployment is not a platform credential on any transport (it is an env-managed registry connection)', () => {
+    vi.stubEnv('MCP_LLM_PROVIDER', 'openai-compatible');
+    vi.stubEnv('MCP_LLM_BASE_URL', 'http://10.0.0.5:8000/v1');
+    for (const transport of ['chat', 'agent_sdk'] as const) {
+      expect(llmUnusableCode({ source: 'platform', apiKey: undefined, model: 'm' }, transport)).toBe('ai_not_configured');
+      expect(llmUnusableCode({ source: 'platform', apiKey: 'sk-platform', model: 'm' }, transport)).toBeNull();
+      expect(llmUnusableCode(PARTNER, transport)).toBeNull();
+    }
   });
 
   it('treats a partner BYO key as usable and a broken partner config as unavailable (not "not configured")', () => {
@@ -80,11 +66,6 @@ describe('isPlatformLlmConfigured', () => {
     expect(isPlatformLlmConfigured()).toBe(true);
   });
 
-  it('fails closed to "not OpenAI-compatible" before the config is validated', () => {
-    configRef.throws = true;
-    expect(isOpenAICompatibleProvider()).toBe(false);
-    expect(isPlatformLlmConfigured()).toBe(false);
-  });
 });
 
 describe('LlmNotConfiguredError', () => {

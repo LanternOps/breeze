@@ -84,6 +84,11 @@ func normalizeOS(goos string) string {
 }
 
 func defaultDataDir() string {
+	// A support session keeps all files (a quarantine included) in its
+	// private folder, never the installed agent's machine-wide one (#7629).
+	if config.UserWorkspaceActive() {
+		return config.GetDataDir()
+	}
 	switch runtime.GOOS {
 	case "windows":
 		programData := os.Getenv("ProgramData")
@@ -624,60 +629,18 @@ func collectEncryptionDetailsDarwin() (map[string]any, error) {
 }
 
 func collectEncryptionDetailsLinux() (map[string]any, error) {
-	type lsblkNode struct {
-		Name       string      `json:"name"`
-		Type       string      `json:"type"`
-		Mountpoint string      `json:"mountpoint"`
-		Fstype     string      `json:"fstype"`
-		Children   []lsblkNode `json:"children"`
-	}
-	type lsblkPayload struct {
-		Blockdevices []lsblkNode `json:"blockdevices"`
-	}
-
-	output, err := runCommand(8*time.Second, "lsblk", "-J", "-o", "NAME,TYPE,MOUNTPOINT,FSTYPE")
+	report, err := collectLinuxEncryption()
 	if err != nil {
 		return nil, err
 	}
+	return linuxEncryptionDetails(report), nil
+}
 
-	var payload lsblkPayload
-	if err := json.Unmarshal([]byte(output), &payload); err != nil {
-		return nil, err
-	}
-
-	volumes := make([]map[string]any, 0)
-	var walk func(node lsblkNode, inheritedProtected bool)
-	walk = func(node lsblkNode, inheritedProtected bool) {
-		isProtected := inheritedProtected ||
-			strings.EqualFold(node.Type, "crypt") ||
-			strings.Contains(strings.ToLower(node.Fstype), "luks")
-
-		if strings.TrimSpace(node.Mountpoint) != "" {
-			method := "none"
-			if isProtected {
-				method = "luks"
-			}
-			volumes = append(volumes, map[string]any{
-				"mount":     node.Mountpoint,
-				"device":    node.Name,
-				"method":    method,
-				"protected": isProtected,
-			})
-		}
-
-		for _, child := range node.Children {
-			walk(child, isProtected)
-		}
-	}
-
-	for _, node := range payload.Blockdevices {
-		walk(node, false)
-	}
-
+func linuxEncryptionDetails(report linuxEncryptionReport) map[string]any {
 	return map[string]any{
 		"source":  "lsblk",
-		"volumes": volumes,
-	}, nil
+		"volumes": report.Volumes,
+	}
 }
 
 func collectEncryptionDetails() (map[string]any, error) {
@@ -1150,13 +1113,13 @@ func CollectStatus(cfg *config.Config) (SecurityStatus, error) {
 	}
 	status.FirewallEnabled = firewallEnabled
 
-	encryptionEnabled, encErr := getEncryptionStatus()
+	encryptionEnabled, encDetails, encErr := collectEncryptionPosture()
 	if encErr != nil {
 		errs = append(errs, encErr)
 	}
 	status.EncryptionStatus = encryptionString(encryptionEnabled, encErr)
-	if details, err := collectEncryptionDetails(); err == nil {
-		status.EncryptionDetails = details
+	if encDetails != nil {
+		status.EncryptionDetails = encDetails
 	}
 
 	if localAdmins, err := collectLocalAdminSummary(); err == nil {
@@ -1336,6 +1299,24 @@ func getFirewallStatusLinux() (bool, error) {
 	return false, fmt.Errorf("unable to determine firewall status")
 }
 
+// collectEncryptionPosture returns the headline encryption state and the
+// per-volume details. On Linux both come from a single lsblk evaluation so
+// the headline always matches the "/" volume in the details (#7478).
+func collectEncryptionPosture() (enabled bool, details map[string]any, statusErr error) {
+	if runtime.GOOS == "linux" {
+		report, err := collectLinuxEncryption()
+		if err != nil {
+			return false, nil, err
+		}
+		return report.RootProtected, linuxEncryptionDetails(report), report.RootErr
+	}
+	enabled, statusErr = getEncryptionStatus()
+	if d, err := collectEncryptionDetails(); err == nil {
+		details = d
+	}
+	return enabled, details, statusErr
+}
+
 func getEncryptionStatus() (bool, error) {
 	switch runtime.GOOS {
 	case "windows":
@@ -1385,26 +1366,11 @@ func getEncryptionStatusDarwin() (bool, error) {
 }
 
 func getEncryptionStatusLinux() (bool, error) {
-	if !hasCommand("lsblk") {
-		return false, fmt.Errorf("lsblk not found")
-	}
-
-	output, err := runCommand(5*time.Second, "lsblk", "-o", "TYPE,MOUNTPOINT", "-nr")
+	report, err := collectLinuxEncryption()
 	if err != nil {
 		return false, err
 	}
-
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		if fields[0] == "crypt" && fields[1] == "/" {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return report.RootProtected, report.RootErr
 }
 
 func hasCommand(name string) bool {

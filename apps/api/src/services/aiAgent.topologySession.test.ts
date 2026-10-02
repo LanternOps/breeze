@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 const { authorizeSiteMock } = vi.hoisted(() => ({ authorizeSiteMock: vi.fn() }));
 
 vi.mock('../db', () => ({
@@ -33,7 +32,6 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 vi.mock('./topology/aiToolGate', async (original) => ({ ...await original<object>(), authorizeTopologySessionSite: authorizeSiteMock }));
 
@@ -69,7 +67,6 @@ function expectInsert() {
 describe('createSession topology pinning (M4-D2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({ source: 'platform', apiKey: 'k', model: 'claude-sonnet-4-6' });
     authorizeSiteMock.mockResolvedValue({ scope: { orgId: ORG_B, siteId: SITE } });
   });
 

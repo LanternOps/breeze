@@ -166,6 +166,25 @@ describe('sentry service', () => {
     expect(setTagMock).toHaveBeenCalledWith('backup_dispatch_issue', 'redelivery-refused');
   });
 
+  // AI chargeback (#7608): a failed or expired monthly close is only
+  // recoverable if the operator can find the org and the month.
+  it('captureException and captureMessage keep the AI chargeback org_id + ai_charge_period_start tags', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureException, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureException(new Error('close failed'), undefined, { org_id: 'org-1', ai_charge_period_start: '2026-11-01' });
+    expect(setTagMock).toHaveBeenCalledWith('org_id', 'org-1');
+    expect(setTagMock).toHaveBeenCalledWith('ai_charge_period_start', '2026-11-01');
+
+    setTagMock.mockClear();
+    captureMessage('AI chargeback: usage expired', {
+      eventCode: 'ai_chargeback_usage_expired', tags: { org_id: 'org-1', ai_charge_period_start: '2026-11-01' },
+    });
+    expect(setTagMock).toHaveBeenCalledWith('ai_charge_period_start', '2026-11-01');
+    expect(setTagMock).toHaveBeenCalledWith('event_code', 'ai_chargeback_usage_expired');
+  });
+
   // #3022: a CONNECT_TIMEOUT already arrives tagged `pg_code:CONNECT_TIMEOUT`,
   // but that bucket mixes two unrelated failures — a handshake that really
   // failed, and a main thread too busy to run the socket callbacks. These tags

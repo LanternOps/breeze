@@ -14,6 +14,7 @@ interface EpochRow {
   mfaEpoch: number;
   emailEpoch: number;
   passwordResetEpoch: number;
+  credentialEpoch: number;
 }
 
 export class EpochAdvancePreconditionError extends Error {
@@ -45,16 +46,27 @@ export class EpochAdvancePreconditionError extends Error {
  * |                       | `invalidateMfaAssuranceAfterFactorChange` (#2385)         |                                                                    |
  * | `email_epoch`         | committed email change (#2428)                            | `email_verification_tokens.email_epoch` vs live row at consume     |
  * | `password_reset_epoch`| forgot-password issue, password change/reset              | reset-token envelope vs live row (routes/auth/password.ts)         |
+ * | `credential_epoch`    | password change/reset, invite acceptance, admin status    | `api_keys.creator_credential_epoch` vs live row                    |
+ * |                       | change (#7489)                                            | (middleware/apiKeyAuth.ts)                                         |
  *
  * `email_epoch` and `password_reset_epoch` are deliberately NOT JWT claims:
  * they gate purpose-specific artifacts (verification links, reset tokens), and
  * the session cutoff those changes need comes from `auth_epoch`, which every
  * caller advancing them also advances.
+ *
+ * `credential_epoch` exists because `auth_epoch` is a SESSION epoch: ordinary
+ * logout, a role change and an email change all advance it, and a long-lived
+ * credential that outlives sessions by design (a human API key) must not die
+ * on those (#7489). Advance it only where the user's sign-in credential is
+ * replaced or voided — never on logout. It is never a JWT claim, and every
+ * caller advancing it also advances `auth_epoch`. Forgot-password ISSUE must
+ * not advance it: that path is unauthenticated, so anyone could kill a user's
+ * keys by requesting a reset link.
  */
 export async function advanceUserEpochs(
   tx: Tx,
   userId: string,
-  fields: { auth?: boolean; mfa?: boolean; email?: boolean; passwordReset?: boolean },
+  fields: { auth?: boolean; mfa?: boolean; email?: boolean; passwordReset?: boolean; credential?: boolean },
   expected?: {
     authEpoch?: number;
     mfaEpoch?: number;
@@ -69,6 +81,7 @@ export async function advanceUserEpochs(
   if (fields.mfa) set.mfaEpoch = sql`${users.mfaEpoch} + 1`;
   if (fields.email) set.emailEpoch = sql`${users.emailEpoch} + 1`;
   if (fields.passwordReset) set.passwordResetEpoch = sql`${users.passwordResetEpoch} + 1`;
+  if (fields.credential) set.credentialEpoch = sql`${users.credentialEpoch} + 1`;
 
   const conditions = [eq(users.id, userId)];
   if (expected?.authEpoch !== undefined) conditions.push(eq(users.authEpoch, expected.authEpoch));
@@ -89,6 +102,7 @@ export async function advanceUserEpochs(
       mfaEpoch: users.mfaEpoch,
       emailEpoch: users.emailEpoch,
       passwordResetEpoch: users.passwordResetEpoch,
+      credentialEpoch: users.credentialEpoch,
     });
   if (!row && expected) throw new EpochAdvancePreconditionError();
   if (!row) throw new Error(`advanceUserEpochs: user ${userId} not found`);

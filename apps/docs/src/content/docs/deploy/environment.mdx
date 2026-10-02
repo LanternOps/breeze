@@ -114,6 +114,8 @@ Together, these detect and reclaim database connections stuck at session start (
 | `APPLE_APP_ATTEST_APP_ID` | `D8W6N2JYMA.com.breeze.rmm` | | Apple's `<TeamID>.<bundle id>` App Attest identifier, checked when an iPhone registers as a level-4 approver device. It's hashed into the attestation, so a wrong value rejects every genuine attestation rather than accepting a foreign one. Only override it if you build your own signed iOS app. |
 | `APPLE_APP_ATTEST_ENVIRONMENT` | `production` | | Which App Attest environment's attestations are accepted. Only the exact value `development` opts into accepting development-build attestations; anything else (a typo, a stray space) is treated as `production` and logs a warning — the wrong value can only ever reject a genuine attestation, never admit a forged one. |
 | `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` | `525600` (365 days) | | Ceiling on the lifetime a caller may request when creating an enrollment key through `POST /partner-api/v1/enrollment-keys` |
+| `AGENT_ENROLL_RATE_LIMIT` | `10` | | Agent enrollments allowed per source IP per window on `POST /api/v1/agents/enroll`. Machines behind one NAT address share the bucket, so raise it before enrolling a site with more than ~10 machines at once. Must be a positive integer (the API refuses to boot otherwise) |
+| `AGENT_ENROLL_RATE_WINDOW_SECONDS` | `60` | | Window, in seconds, for `AGENT_ENROLL_RATE_LIMIT` |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT` | `10` | | Enrollment-key creations per hour per service principal on the Partner API |
 | `PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT` | `100` | | Enrollment-key creations per hour per partner, across all of that partner's service principals |
 | `WEBAUTHN_RP_ID` | derived from `PUBLIC_APP_URL` | | Set only when the browser reaches the app on a different host than `PUBLIC_APP_URL` (for example `WEBAUTHN_RP_ID=localhost` on a local stack). Without a correct value, every passkey ceremony fails with "The RP ID ... is invalid for this domain." |
@@ -1022,8 +1024,11 @@ recognised Claude model id, Breeze sends adaptive thinking and an effort level
 `drop_params: true`). If it can do neither, set `ANTHROPIC_MODEL` to your
 backend's own model id instead; Breeze then sends thinking `disabled`, as
 before. For an
-OpenAI-dialect-only endpoint, use the separate `MCP_LLM_*` openai-compatible
-path instead (chat-only, no tool-use).
+OpenAI-dialect-only endpoint, use `MCP_LLM_PROVIDER=openai-compatible` with the
+`MCP_LLM_*` variables instead. At boot Breeze creates a read-only, env-managed
+connection per partner with one priced, auto-verified model that supports tools
+(see [Bring Your Own LLM Key](/features/bring-your-own-llm-key/#instance-wide-openai-compatible-endpoint)).
+Hosted deployments refuse `MCP_LLM_PROVIDER=openai-compatible`.
 
 `ANTHROPIC_BASE_URL` is **fail-closed**: it is honored only when self-host is
 affirmatively declared (`IS_HOSTED` explicitly `false`/`0`/`no`/`off`). If
@@ -1038,7 +1043,7 @@ adds it once (when your partners move to the registry) and prices it at
 conservative Opus-tier rates ($5/$25 per MTok) — likely an *over*-estimate for
 a cheap local model, not `$0`. For accurate accounting, set that model's
 prices on **Admin → AI models**, or use the openai-compatible path's
-`MCP_LLM_PRICE_*` overrides.
+`MCP_LLM_PRICE_INPUT_PER_M_USD` / `MCP_LLM_PRICE_OUTPUT_PER_M_USD` variables.
 
 ## Warranty lookups
 

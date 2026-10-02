@@ -12,6 +12,44 @@ function makeState(): StreamableState {
   };
 }
 
+describe('W05 events', () => {
+  function harness() {
+    const h = { state: { ...makeState() } as StreamableState };
+    return {
+      get state() { return h.state; },
+      set: (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; },
+      get: () => h.state,
+    };
+  }
+  it('thinking_state toggles thinking; done clears it', () => {
+    const h = harness();
+    processStreamEvent({ type: 'thinking_state', state: 'started' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(true);
+    processStreamEvent({ type: 'thinking_state', state: 'stopped' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(false);
+    processStreamEvent({ type: 'thinking_state', state: 'started' }, h.set, h.get, null);
+    processStreamEvent({ type: 'done' }, h.set, h.get, null);
+    expect(h.state.thinking).toBe(false);
+  });
+  it('turn_model records what ran', () => {
+    const h = harness();
+    const turnModel = { requestedModel: 'a', requestedDisplayName: 'A', servedModel: 'b', servedDisplayName: 'B', fallbackUsed: true, appliedOptions: {}, fastDowngraded: false };
+    processStreamEvent({ type: 'turn_model', turnModel }, h.set, h.get, null);
+    expect(h.state.turnModel).toEqual(turnModel);
+  });
+  it('model_refusal records the suggested alternatives for the menu', () => {
+    const h = harness();
+    processStreamEvent({ type: 'model_refusal', category: 'cyber', alternatives: [{ offeringId: 'x', displayName: 'X' }], docsUrl: 'https://docs' }, h.set, h.get, null);
+    expect(h.state.refusalAlternatives).toEqual(['x']);
+  });
+  it('message_start clears stale refusal suggestions', () => {
+    const h = harness();
+    h.set(() => ({ refusalAlternatives: ['x'] }));
+    processStreamEvent({ type: 'message_start', messageId: 'm1' }, h.set, h.get, null);
+    expect(h.state.refusalAlternatives).toEqual([]);
+  });
+});
+
 function makeActivePlan(): ActivePlan {
   return {
     planId: 'plan-1',
@@ -676,8 +714,20 @@ describe('model_refusal is inert for the transcript', () => {
       'a1',
     );
     expect(next).toBe('a1');
-    expect(calls).toBe(0);
-    expect(JSON.stringify(patched)).toBe(before);
+    // Task 13 (W05): the only state it may touch is the suggestion list for the
+    // model menu; the transcript and streaming state stay exactly as they were.
+    expect(calls).toBe(1);
+    expect(patched.refusalAlternatives).toEqual(['off-2']);
+    expect(JSON.stringify({ ...patched, refusalAlternatives: undefined })).toBe(before);
     expect(patched.messages).toHaveLength(2);
+  });
+});
+
+describe('turn_model staleness', () => {
+  it("message_start clears the previous turn's what-ran so a missing turn_model never shows it", () => {
+    const h = { state: { ...makeState(), turnModel: { requestedModel: 'a' } as never } as StreamableState };
+    const set = (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; };
+    processStreamEvent({ type: 'message_start', messageId: 'm2' } as AiStreamEvent, set, () => h.state, null);
+    expect(h.state.turnModel).toBeNull();
   });
 });

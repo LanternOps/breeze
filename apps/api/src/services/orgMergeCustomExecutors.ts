@@ -32,7 +32,8 @@
  * Contract, deliberately narrow so the engine stays uniform:
  *   - every executor runs inside the engine's ONE Phase-B transaction
  *     (`db` here is the ambient transaction proxy — never opens its own);
- *   - every executor leaves ZERO rows behind under the loser org;
+ *   - authority-only and enrollment-only rows are explicitly retained by their
+ *     policy; moved history severs all authority references;
  *   - `dropped` counts rows actually DELETEd, `moved` counts rows repointed,
  *     and `notes` carries anything an operator must see in the merge
  *     summary's `warnings` (demotions, deactivations, neutralizations and
@@ -55,6 +56,7 @@
  * children are re-homed onto the surviving definition (after recipient
  * collisions are deduplicated).
  */
+import { autopayMergeExecutors } from './autopay/merge';
 import { sql, type SQL } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
@@ -1667,6 +1669,7 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
+  ...autopayMergeExecutors,
   caller_verification_subject_bindings: moveBindings,
   automation_resource_bindings: mergeAutomationResourceBindings,
   tool_sources: mergeToolSources,

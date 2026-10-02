@@ -75,6 +75,7 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
   ticket_sla_attainment: { period: { kind: 'last_full_month' }, groupBy: 'organization', includeNoSla: true },
   technician_time_billability: { period: { kind: 'last_30_days' }, groupBy: 'technician', weeklyCapacityHours: 40 },
   ar_aging: { groupBy: 'organization', includePaidInPeriod: false },
+  ai_usage_by_client: { period: { kind: 'last_full_month' }, groupBy: 'organization' },
 };
 
 describe('parseStoredReportConfig — per-type lookup keeps the loose contract', () => {

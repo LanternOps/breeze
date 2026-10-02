@@ -31,6 +31,19 @@ export interface AiConnectionDto {
   lastDiscoveredAt: string | null;
   discoveryError: string | null;
   funding: 'platform' | 'partner_key';
+  /** openai_compatible only (W06). Never contains credentials. */
+  baseUrl: string | null;
+  /**
+   * 'env' = bootstrapped from MCP_LLM_* (envOpenAiBootstrap.ts). Read-only:
+   * the API refuses partner edits with 409 managed_by_env.
+   */
+  managedBy: 'env' | null;
+  /**
+   * An env connection whose MCP_LLM_* variables are no longer set. Still
+   * read-only (it holds the operator's endpoint and key); the partner may only
+   * disconnect it. Always false unless managedBy is 'env'.
+   */
+  envReleased: boolean;
 }
 
 /** Why the enable switch is disabled (the subset of ResolveFailureReason the enable gate can return). */
@@ -74,6 +87,17 @@ export interface AiOfferingDto {
   /** Surfaces (partner or org rows) that use this offering as their default. */
   defaultFor: Array<{ surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }>;
   updatedAt: string | null;
+  /** Gateway-connection offerings only; null for platform / anthropic_byok / catalog. */
+  verification: AiOfferingVerificationDto | null;
+}
+
+export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+export interface AiOfferingVerificationDto {
+  state: OfferingVerificationState;
+  at: string | null;
+  harnessVersion: string | null;
+  /** Short, scrubbed reason for 'failed' (≤ 200 chars). */
+  summary: string | null;
 }
 
 export interface AiAssignmentRowDto {
@@ -83,14 +107,20 @@ export interface AiAssignmentRowDto {
   permittedOfferingIds: string[] | null;
   allowUserChoice: boolean | null;
   options: OfferingOptions | null;
+  /** W09: ordered failover list (null = none on this row). */
+  fallbackOfferingIds: string[] | null;
+  /** W09: null on an org row = inherit. */
+  fallbackMayCrossFunding: boolean | null;
   updatedAt: string | null;
 }
 
 export interface AiSurfaceDefaultsDto {
   surface: AiSurface;
+  /** W09: one entry per (surface, role); `default` first. */
+  role: string;
   requiresTools: boolean;
   partner: AiAssignmentRowDto | null;
-  /** Count of org overrides for this surface (link to orgs, not edited here). */
+  /** Count of org overrides for this (surface, role) (link to orgs, not edited here). */
   orgOverrideCount: number;
 }
 
@@ -105,11 +135,12 @@ export interface AiModelsSnapshotDto {
 
 export interface AiOrgSurfaceDefaultsDto {
   surface: AiSurface;
+  role: string;
   requiresTools: boolean;
   /** The partner row's values = what an all-blank org row inherits. */
-  inherited: { defaultOfferingId: string | null; permittedOfferingIds: string[] | null; allowUserChoice: boolean; options: OfferingOptions };
+  inherited: { defaultOfferingId: string | null; permittedOfferingIds: string[] | null; allowUserChoice: boolean; options: OfferingOptions; fallbackOfferingIds: string[]; fallbackMayCrossFunding: boolean };
   org: AiAssignmentRowDto | null;
-  effective: { defaultOfferingId: string | null; defaultSource: 'org' | 'partner' | 'none'; permittedOfferingIds: string[] | null; allowUserChoice: boolean; options: OfferingOptions };
+  effective: { defaultOfferingId: string | null; defaultSource: 'org' | 'partner' | 'none'; permittedOfferingIds: string[] | null; allowUserChoice: boolean; options: OfferingOptions; fallbackOfferingIds: string[]; fallbackMayCrossFunding: boolean };
 }
 
 export interface AiOrgModelDefaultsDto {
@@ -139,6 +170,8 @@ export interface AiUsageRowDto {
   /** refusals / invocations, 0..1; 0 when invocations = 0. */
   refusalRate: number;
   fallbacks: number;
+  /** W09: rows served by a failover hop (failover_hop > 0). */
+  failovers: number;
   /**
    * groupBy=model only (absent otherwise): the connection that served these
    * calls has since been disconnected (W03 soft-disconnect keeps it as ledger

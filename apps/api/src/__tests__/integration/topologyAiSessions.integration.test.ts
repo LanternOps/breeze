@@ -1,33 +1,44 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-// Provider governance and the model itself are mocked (tests never reach a
-// model or the network). Everything else — auth, RLS, Redis quotas, the
-// session/transport, persistence — is real.
-const provider = vi.hoisted(() => ({ chatStream: vi.fn() }));
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
+// Only the Agent SDK subprocess is faked (tests never reach a model or the
+// network): since W06 every chat turn — topology included — runs the Agent
+// SDK on a registry-resolved model. Everything else — auth, RLS, the registry,
+// Redis quotas, the session/transport, persistence, settlement — is real.
+const sdk = vi.hoisted(() => ({
+  turn: null as null | { chunks: string[]; before?: () => Promise<void> },
+  calls: [] as Array<{ systemPrompt: unknown; prompt: string; model: unknown }>,
 }));
-vi.mock('../../config/validate', async (original) => {
-  const actual = await original<{ getConfig: () => Record<string, unknown> }>();
-  return {
-    ...actual,
-    getConfig: () => ({ ...(() => { try { return actual.getConfig(); } catch { return {}; } })(), MCP_LLM_PROVIDER: 'openai-compatible', MCP_LLM_BASE_URL: 'http://llm.invalid', MCP_LLM_API_KEY: 'k', MCP_LLM_MODEL: 'test-model',
-      MCP_LLM_PRICE_INPUT_PER_M_USD: 0, MCP_LLM_PRICE_OUTPUT_PER_M_USD: 0 }),
-  };
-});
-// The SDK transport must never run here: a real model call is a test bug.
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: () => { throw new Error('SDK transport must not run in this suite'); }, tool: () => ({}), createSdkMcpServer: () => ({}) }));
-vi.mock('../../services/llm/openaiCompatibleProvider', () => ({
-  OpenAICompatibleProvider: class {
-    chatStream = (...args: unknown[]) => provider.chatStream(...args);
-    computeCostUsd = () => 0;
-    maxOutputTokensForBudgetUsd = () => 4000;
-  },
+vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@anthropic-ai/claude-agent-sdk')>()),
+  query: (args: { prompt: AsyncIterable<{ message?: { content?: unknown } }>; options?: { systemPrompt?: unknown; model?: string } }) => ({
+    async *[Symbol.asyncIterator]() {
+      for await (const input of args.prompt) {
+        const content = input?.message?.content;
+        sdk.calls.push({ systemPrompt: args.options?.systemPrompt, prompt: typeof content === 'string' ? content : JSON.stringify(content), model: args.options?.model });
+        const turn = sdk.turn;
+        if (!turn) throw new Error('SDK transport ran with no scripted turn');
+        if (turn.before) await turn.before();
+        const model = args.options?.model ?? 'unknown';
+        yield { type: 'system', subtype: 'init', session_id: `sdk-${randomUUID()}` };
+        yield { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model, content: [], usage: { input_tokens: 100, output_tokens: 0 } } } };
+        yield { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } };
+        for (const text of turn.chunks) yield { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } };
+        yield { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 50 } } };
+        yield { type: 'assistant', message: { role: 'assistant', model, content: [{ type: 'text', text: turn.chunks.join('') }], usage: { input_tokens: 100, output_tokens: 50 } } };
+        yield {
+          type: 'result', subtype: 'success', stop_reason: 'end_turn', num_turns: 1, total_cost_usd: 0,
+          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          modelUsage: { [model]: { inputTokens: 100, outputTokens: 50, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0 } },
+        };
+      }
+    },
+    interrupt: async () => undefined,
+    close: () => undefined,
+  }),
 }));
 
 import { aiRoutes } from '../../routes/ai';
@@ -38,6 +49,9 @@ import { consumeTopologyAiBudget, recordTopologyAiTokenUsage, refundTopologyAiTo
 import { canonicalIdentityKey } from '../../services/topology/identity';
 import { createSite, setupTestEnvironment, type TestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
+import { seedPlatformRegistryForPartner } from './helpers/aiModelRegistrySeed';
+import { closeRegistryFixtures } from './aiModelRegistryFixtures';
+import { streamingSessionManager } from '../../services/streamingSessionManager';
 
 /**
  * M4 Task 3 against real Postgres + Redis through the real AI routes: a
@@ -46,6 +60,15 @@ import { getTestDb } from './setup';
  * secret, an invalid citation) reach SSE or history, refuses a current answer
  * after a device MOVE, and enforces quotas atomically in Redis.
  */
+// The platform connection's credential (never dialled: the SDK is faked).
+const savedPlatformKey = process.env.ANTHROPIC_API_KEY;
+beforeAll(() => { process.env.ANTHROPIC_API_KEY = 'sk-ant-w06-integration-placeholder'; });
+afterAll(async () => {
+  if (savedPlatformKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = savedPlatformKey;
+  await closeRegistryFixtures();
+});
+
 const PERMS = [{ resource: 'topology', action: 'read' }, { resource: 'devices', action: 'read' }, { resource: 'ai_sessions', action: 'use' }];
 const ctxFor = (orgId: string, userId = randomUUID()) => ({ auth: { user: { id: userId } }, permissions: {}, scope: { orgId, siteId: randomUUID() } }) as never;
 
@@ -80,11 +103,7 @@ const call = (token: string, method: string, path: string, body?: unknown) => ap
 });
 
 function stream(chunks: string[], before?: () => Promise<void>) {
-  provider.chatStream.mockImplementation(async function* () {
-    if (before) await before();
-    for (const delta of chunks) yield { type: 'content_delta', delta };
-    yield { type: 'message_end', inputTokens: 100, outputTokens: 50 };
-  });
+  sdk.turn = { chunks, before };
 }
 
 function sseEvents(text: string): Array<{ type: string; [key: string]: unknown }> {
@@ -173,6 +192,7 @@ describe('topology investigation turn through the real AI routes (M4 Task 3, rea
 
   beforeEach(async () => {
     env = await setupTestEnvironment({ rolePermissions: PERMS });
+    await seedPlatformRegistryForPartner(env.partner.id);
     token = await mfaToken(env);
     ids = await seed(env);
     const res = await call(token, 'POST', '/sessions', { pageContext: { type: 'topology', siteId: env.site.id, subject: { kind: 'relationship', id: ids.rel }, view: 'overview', graphRevision: '3' } });
@@ -180,7 +200,7 @@ describe('topology investigation turn through the real AI routes (M4 Task 3, rea
     expect(res.status, JSON.stringify(body)).toBe(201);
     sessionId = body.id;
   });
-  afterEach(() => provider.chatStream.mockReset());
+  afterEach(() => { sdk.turn = null; sdk.calls.length = 0; streamingSessionManager.remove(sessionId); });
 
   async function ask(question = 'Why is this link failing?') {
     const res = await call(token, 'POST', `/sessions/${sessionId}/messages`, { content: question });
@@ -202,11 +222,11 @@ describe('topology investigation turn through the real AI routes (M4 Task 3, rea
     expect(explanations[0]!.explanation.findings[0]).toMatchObject({ kind: 'finding', citationIds: [ids.rel] });
     expect(explanations[0]!.explanation.findings[1]).toMatchObject({ kind: 'hypothesis', citationIds: [] });
     // The model saw only aliases and fenced data: no host name, no org/site id.
-    const [, init] = provider.chatStream.mock.calls[0]! as [Array<{ content: string }>, unknown];
-    const prompt = JSON.stringify(provider.chatStream.mock.calls[0]![0]);
+    expect(sdk.calls).toHaveLength(1);
+    expect(sdk.calls[0]!.prompt).toContain('"schemaVersion"');   // the capture saw the real evidence prompt
+    const prompt = JSON.stringify(sdk.calls[0]);
     expect(prompt).not.toContain('core-sw-01');
     expect(prompt).not.toContain(env.organization.id);
-    expect(init).toMatchObject({ maxTokens: 2000 });
     const history = await rows();
     expect(history.map((r) => r.role).sort()).toEqual(['assistant', 'user']);
     expect(JSON.parse(history.find((r) => r.role === 'assistant')!.content!)).toEqual(explanations[0]!.explanation);
@@ -239,7 +259,7 @@ describe('topology investigation turn through the real AI routes (M4 Task 3, rea
     await getTestDb().execute(sql`UPDATE organizations SET settings = ${JSON.stringify({ topologyFeatureFlags: { materialization: true, ui: true, ai: false } })}::jsonb WHERE id = ${env.organization.id}::uuid`);
     const refused = await ask();
     expect(refused.res.status).toBe(403);
-    expect(provider.chatStream).not.toHaveBeenCalled();
+    expect(sdk.calls).toHaveLength(0);
     const other = await createSite({ orgId: env.organization.id });
     await getTestDb().update(organizationUsers).set({ siteIds: [other.id] })
       .where(and(eq(organizationUsers.userId, env.user.id), eq(organizationUsers.orgId, env.organization.id)));

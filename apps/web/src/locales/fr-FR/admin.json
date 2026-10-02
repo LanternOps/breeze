@@ -704,6 +704,33 @@
         "save": "Impossible d'enregistrer le modèle.",
         "refresh": "Impossible de mettre en file d'attente l'actualisation des modèles.",
         "invalidRates": "Saisissez les quatre tarifs sous forme de nombres non négatifs, ou laissez les quatre vides."
+      },
+      "variants": {
+        "title": "Variantes de prompt",
+        "subtitle": "Consignes ajoutées au prompt système d'une fonctionnalité pour une famille de modèles, comparées au prompt de base chez tous les partenaires. Les variantes changent à chaque version.",
+        "range": "Du {{from}} au {{to}}.",
+        "base": "Prompt de base",
+        "columns": {
+          "variant": "Variante",
+          "state": "État",
+          "conversations": "Conversations",
+          "flagRate": "Taux de signalement",
+          "refusalRate": "Taux de refus",
+          "leftRate": "Passées à un autre modèle",
+          "turns": "Tours jusqu'à la résolution",
+          "costPerConversation": "Coût / conversation"
+        },
+        "states": {
+          "staged": "Préparée",
+          "candidate": "Candidate",
+          "active": "Active",
+          "retired": "Retirée"
+        },
+        "lowSample": "Moins de {{min}} conversations : trop peu pour comparer",
+        "incumbent": "Titulaire",
+        "loading": "Chargement des variantes de prompt…",
+        "empty": "Aucune variante de prompt n'est enregistrée.",
+        "error": "Impossible de charger le rapport des variantes de prompt."
       }
     }
   },

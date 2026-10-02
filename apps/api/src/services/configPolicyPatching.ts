@@ -2,7 +2,7 @@ import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
 import { patchInlineSettingsSchema, policyAppRuleSchema } from '@breeze/shared/validators';
 import { db } from '../db';
-import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
+import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
 import { captureException } from './sentry';
 import {
   configurationPolicies,
@@ -207,16 +207,18 @@ export async function resolvePatchPolicyReference(
     };
   }
 
-  // System context (#2822). `patch_policies` is partner-axis, and the four
-  // routes in routes/configurationPolicies/patchJobs.ts that consume this are
-  // requireScope('organization','partner','system'). Under an org-scoped
-  // caller the read returned zero rows and fell through to
-  // `classification: 'missing_target', valid: false` — so the UI reported a
-  // perfectly good update ring as "invalid" (400 on POST /:id/patch-job,
-  // `ok: 0` on GET /patch-inventory) while the scheduler, which runs
-  // system-scoped, happily executed that same job. Self-tenanted by the
-  // caller-derived `partnerId`, so no cross-partner reach.
-  const [patchPolicy] = await readWithPartnerAxisVisibility(() =>
+  // #2822 / #7647. `patch_policies` is partner-axis, and the four routes in
+  // routes/configurationPolicies/patchJobs.ts that consume this are
+  // requireScope('organization','partner','system'). A plain request-context
+  // read under an org-scoped caller used to return zero rows and fall through
+  // to `classification: 'missing_target', valid: false` — so the UI reported a
+  // perfectly good update ring as "invalid" while the system-scoped scheduler
+  // executed the same job. The table's own-partner SELECT branch now makes it
+  // legible in place to any context whose own partner is `partnerId`;
+  // readOwnPartnerAxisRows only escapes (second pooled connection) for a
+  // context that cannot see it. Self-tenanted by the caller-derived
+  // `partnerId`, so no cross-partner reach.
+  const [patchPolicy] = await readOwnPartnerAxisRows(partnerId, () =>
     db
       .select({
         id: patchPolicies.id,

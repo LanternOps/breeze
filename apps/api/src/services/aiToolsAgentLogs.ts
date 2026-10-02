@@ -17,12 +17,74 @@ import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
 import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
+import { aiExecuteCommand } from './aiDispatch';
+import type { CommandResult } from './commandQueue';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+/**
+ * Turn the agent's `set_log_level` command result into the tool response.
+ * Only a completed command that names the level it applied counts as
+ * success; everything else is an `error` with the command id so the operator
+ * can inspect the stored result.
+ *
+ * Agents built before #7416 report only `newLevel`/`durationMinutes`: their
+ * override lives in the service's memory, is lost on restart and never
+ * reaches the desktop helper, so `persisted` is reported as false for them.
+ */
+export function summarizeSetLogLevelResult(result: CommandResult): Record<string, unknown> {
+  const commandId = result.commandId ?? null;
+  if (result.status === 'timeout') {
+    return {
+      error: 'The agent did not confirm the log level change within 30 seconds. It may still apply when the agent picks the command up; check the command result before relying on it.',
+      commandId,
+    };
+  }
+  if (result.status !== 'completed') {
+    return { error: result.error || 'Setting the log level failed', commandId };
+  }
+
+  let reported: Record<string, unknown>;
+  try {
+    reported = JSON.parse(result.stdout || '{}');
+  } catch {
+    return { error: 'The agent returned an unreadable result for the log level change', commandId };
+  }
+  const appliedLevel = typeof reported.appliedLevel === 'string'
+    ? reported.appliedLevel
+    : typeof reported.newLevel === 'string' ? reported.newLevel : undefined;
+  if (!appliedLevel) {
+    return { error: 'The agent completed the command but did not report the level it applied', commandId };
+  }
+
+  const persisted = reported.persisted === true;
+  const response: Record<string, unknown> = {
+    commandId,
+    status: 'applied',
+    appliedLevel,
+    durationMinutes: reported.durationMinutes,
+    persisted,
+  };
+  if (typeof reported.baseLevel === 'string') response.baseLevel = reported.baseLevel;
+  if (typeof reported.expiresAt === 'string') response.expiresAt = reported.expiresAt;
+
+  if (persisted) {
+    // persisted means the service wrote the file; helpers apply it on their
+    // next poll, and nothing reports back from them.
+    response.note = 'Helper processes (desktop, user and backup helpers) apply the override within 30 seconds; helpers older than this agent version ignore it.';
+  } else {
+    const reason = typeof reported.persistError === 'string'
+      ? ` (${reported.persistError})`
+      : reported.persisted === undefined
+        ? ' (this agent version predates persistent overrides)'
+        : ' (the agent did not report whether the override was saved)';
+    response.warning = `Applied to the running agent service only${reason}: it will be lost if the service restarts and does not reach the desktop helper, so WebRTC/remote-desktop diagnostics stay at their configured level.`;
+  }
+  return response;
 }
 
 export interface AgentLogQueryFilters {
@@ -251,7 +313,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           },
           durationMinutes: {
             type: 'number',
-            description: 'Auto-revert after this many minutes (default: 60)',
+            description: 'Auto-revert after this many minutes (default: 60, max: 1440)',
           },
         },
         required: ['deviceId', 'level'],
@@ -287,22 +349,18 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
-        const result = await aiQueueCommandForExecution(auth, 'set_agent_log_level', deviceId, 'set_log_level', {
+        // Wait for the agent's result instead of returning "queued": a
+        // command that never ran used to look exactly like one that
+        // succeeded (#7416).
+        const result = await aiExecuteCommand(auth, 'set_agent_log_level', deviceId, 'set_log_level', {
           level,
           durationMinutes,
         }, {
           userId: auth.user.id,
+          timeoutMs: 30000,
         });
 
-        if (result.error) {
-          return JSON.stringify({ error: result.error });
-        }
-
-        return JSON.stringify({
-          commandId: result.command?.id ?? null,
-          status: 'queued',
-          message: `Log level will be set to ${level} for ${durationMinutes} minutes`,
-        });
+        return JSON.stringify(summarizeSetLogLevelResult(result));
       } catch (err) {
         const message = sanitizeThrownToolError('agent-logs', err);
         console.error('[ai:set_agent_log_level]', message, err);

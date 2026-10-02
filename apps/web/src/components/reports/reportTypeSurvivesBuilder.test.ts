@@ -55,6 +55,8 @@ describe('reportTypeSurvivesBuilder', () => {
     expect(reportTypeSurvivesBuilder('ticket_sla_attainment')).toBe(false);
     expect(reportTypeSurvivesBuilder('technician_time_billability')).toBe(false);
     expect(reportTypeSurvivesBuilder('ar_aging')).toBe(false);
+    // #7608 W10: curated business report with its own options form.
+    expect(reportTypeSurvivesBuilder('ai_usage_by_client')).toBe(false);
     // backup_status → devices (#6013 W05): curated template with its own
     // options form; the builder must not claim to author it.
     expect(reportTypeSurvivesBuilder('backup_status')).toBe(false);

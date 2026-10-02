@@ -267,7 +267,31 @@
       "geoProviderDefault": "Predeterminado del proveedor",
       "supportedGeos": "Admite: {{geos}}",
       "refreshQueued": "Actualización de modelos en cola",
-      "refreshFailed": "No se pudo poner en cola la actualización de modelos."
+      "refreshFailed": "No se pudo poner en cola la actualización de modelos.",
+      "alreadyConnected": "Ya conectada",
+      "addKind": {
+        "anthropic_byok": "Clave de API de Anthropic",
+        "openai_compatible": "Endpoint compatible con OpenAI"
+      },
+      "openai": {
+        "name": "Nombre",
+        "baseUrl": "URL base",
+        "baseUrlHelp": "La URL que termina antes de /chat/completions, p. ej. https://llm.example.com/v1. Breeze alojado solo se conecta a endpoints https públicos.",
+        "apiKey": "Clave de API (opcional)",
+        "apiKeyHelp": "Se guarda cifrada y no se vuelve a mostrar. Los servidores locales como Ollama o vLLM suelen no necesitar ninguna.",
+        "optional": "Opcional",
+        "keepKey": "Déjalo en blanco para conservar la clave actual",
+        "removeKey": "Quitar la clave guardada",
+        "keyTooShort": "La clave debe tener al menos {{min}} caracteres.",
+        "keyRequiredForNewUrl": "Ingresa la clave para la nueva URL o quita la clave. La clave guardada nunca se envía a una URL nueva.",
+        "envManaged": "Esta conexión la administra el entorno de la instancia (variables MCP_LLM_*). Cámbiala allí; no se puede editar aquí.",
+        "envReleased": "Esta conexión se configuró desde el entorno de la instancia (variables MCP_LLM_*), que ya no la administra. No se puede editar aquí; puedes desconectarla.",
+        "envManagedBadge": "Administrada por el entorno",
+        "noKey": "Sin clave",
+        "discovered_one": "Se encontró {{count}} modelo · {{when}}",
+        "discovered_other": "Se encontraron {{count}} modelos · {{when}}",
+        "partialSaved": "Se guardó el endpoint o la clave, pero no el nombre. Vuelve a abrir la conexión para renombrarla."
+      }
     },
     "drawer": {
       "titleCreate": "Agregar conexión",
@@ -337,7 +361,16 @@
       "registry_unavailable": "La configuración de IA se está actualizando. Inténtalo de nuevo en un momento.",
       "approvals_decide_required": "Cambiar el modelo del revisor de scripts requiere el permiso approvals:decide.",
       "queue_unavailable": "La cola de solicitudes no está disponible. Inténtelo de nuevo en un momento.",
-      "registry_busy": "Hay otro cambio de configuración de IA en curso. Inténtalo de nuevo en un momento."
+      "registry_busy": "Hay otro cambio de configuración de IA en curso. Inténtalo de nuevo en un momento.",
+      "crossesFunding": "Ese modelo de respaldo se paga con otra fuente. Primero permita la conmutación entre créditos de Breeze y su propia clave de API.",
+      "egress_blocked": "Esa dirección no está permitida.",
+      "invalid_url": "Esa URL no es válida.",
+      "managed_by_env": "Esta conexión la administra el entorno de la instancia y no se puede cambiar aquí.",
+      "connection_in_use": "Una función aún usa un modelo de esta conexión. Elige primero otro modelo predeterminado.",
+      "duplicate_model": "Ese ID de modelo ya existe en esta conexión.",
+      "geo_not_supported": "Este tipo de conexión no puede definir una región de inferencia.",
+      "key_required_for_new_endpoint": "Ingresa la clave para la nueva URL (o quita la clave).",
+      "too_many_models": "Esta conexión ya tiene la cantidad máxima de modelos agregados manualmente."
     },
     "org": {
       "title": "Modelos predeterminados",
@@ -364,7 +397,13 @@
         "org": "Anulación de la organización",
         "partner": "Predeterminado del socio",
         "none": "Sin predeterminado"
-      }
+      },
+      "noCrossFunding": "No conmutar entre créditos de Breeze y la clave propia del socio",
+      "crossFundingLocked": "No permitido por el socio",
+      "fallbackInherit_one": "Heredar — {{count}} modelo de respaldo (socio)",
+      "fallbackInherit_other": "Heredar — {{count}} modelos de respaldo (socio)",
+      "fallbackOnlyThese": "Solo estos modelos de respaldo",
+      "noBackups": "Sin modelos de respaldo"
     },
     "models": {
       "title": "Modelos",
@@ -392,7 +431,27 @@
       "disableTitle": "¿Desactivar {{name}}?",
       "disableMessage": "Estas funciones usan este modelo como predeterminado. Se quedarán sin modelo hasta que elijas otro:",
       "disableAnyway": "Desactivar de todos modos",
-      "orgOverrides": "Anulaciones de organización afectadas: {{count}}"
+      "orgOverrides": "Anulaciones de organización afectadas: {{count}}",
+      "verification": {
+        "verified": "Verificado",
+        "unverified": "Sin verificar",
+        "failed": "Falló la verificación",
+        "failedWithSummary": "Falló la verificación: {{summary}}",
+        "stale": "Verificar de nuevo: cambió el endpoint"
+      },
+      "setPriceToEnable": "Define un precio para activarlo",
+      "manual": {
+        "add": "Agregar modelo",
+        "empty": "Aún no hay modelos. Agrega uno a mano o actualiza la conexión para detectarlos.",
+        "title": "Agregar un modelo",
+        "modelId": "ID del modelo",
+        "modelIdHelp": "Exactamente como lo espera el endpoint, p. ej. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Usa solo letras, dígitos y . _ : / @ + -, sin espacios.",
+        "displayName": "Nombre visible (opcional)",
+        "pricesHint": "Opcional. Centavos por 1 M de tokens. Completa los cuatro o déjalos todos en blanco y define un precio antes de activarlo.",
+        "added": "Modelo agregado",
+        "failed": "No se pudo agregar el modelo."
+      }
     },
     "offering": {
       "displayName": "Nombre para mostrar",
@@ -446,7 +505,8 @@
       "saveFailed": "No se pudo guardar el modelo. Inténtalo de nuevo.",
       "verify": "Verificar",
       "verifyQueued": "Verificación del modelo en cola",
-      "verifyFailed": "No se pudo poner en cola la verificación del modelo."
+      "verifyFailed": "No se pudo poner en cola la verificación del modelo.",
+      "verifyGatewayHint": "Ejecuta una breve prueba de llamadas a herramientas contra tu endpoint (usa unos miles de tokens)."
     },
     "defaults": {
       "title": "Valores predeterminados por función",
@@ -489,7 +549,18 @@
         "fast": "Rápido"
       },
       "unavailableModel": "{{model}} (no disponible)",
-      "unavailableUnknown": "Modelo no disponible"
+      "unavailableUnknown": "Modelo no disponible",
+      "roleInherit": "Igual que el predeterminado de los agentes de IA",
+      "fallbacks": "Modelos de respaldo, en orden",
+      "addFallback": "Agregar un modelo de respaldo…",
+      "moveUp": "Subir",
+      "moveDown": "Bajar",
+      "removeFallback": "Quitar",
+      "fallbackUnavailable": "Un modelo que ya no está disponible",
+      "crossFunding": "Permitir la conmutación entre créditos de Breeze y su propia clave de API",
+      "crossFundingHelp": "Si está activado, un respaldo pagado con la otra fuente puede atender una solicitud. Se factura a la fuente que realmente la atendió.",
+      "fundingPlatform": "Créditos de Breeze",
+      "fundingOwnKey": "Su clave de API"
     },
     "usage": {
       "title": "Uso de IA por modelo",
@@ -517,7 +588,14 @@
       "error": "No se pudo cargar el desglose de uso.",
       "disconnected": "Desconectada",
       "disconnectedHint": "La conexión que atendió estas llamadas ya se desconectó.",
-      "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba."
+      "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba.",
+      "view": {
+        "label": "Mostrar",
+        "spend": "Gasto",
+        "quality": "Calidad"
+      },
+      "failovers": "Conmutaciones",
+      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible"
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -525,6 +603,64 @@
       "noDefault": "sin valor predeterminado",
       "partner": "Valores predeterminados del socio",
       "org": "Anulación de esta organización"
+    },
+    "quality": {
+      "title": "Calidad de los modelos",
+      "subtitleAll": "Cómo van las conversaciones en cada modelo en todas las organizaciones: rechazos, marcas, cambios a otro modelo y turnos hasta resolver.",
+      "subtitleOrg": "Cómo van las conversaciones en cada modelo para la organización seleccionada.",
+      "groupBy": {
+        "model": "Modelo",
+        "surface": "Función",
+        "prompt_profile": "Familia de modelos"
+      },
+      "columns": {
+        "conversations": "Conversaciones",
+        "costPerConversation": "Costo / conversación",
+        "refusalRate": "Tasa de rechazo",
+        "failoverRate": "Tasa de failover",
+        "flagRate": "Tasa de marcado",
+        "leftRate": "Pasó a otro modelo",
+        "turnsToResolution": "Turnos hasta resolver",
+        "agentCompletion": "Ejecuciones de agente completadas"
+      },
+      "help": {
+        "conversations": "Sesiones de chat y ejecuciones de agente cuya última llamada de modelo en este período fue en esta fila.",
+        "costPerConversation": "Gasto promedio en esta fila por cada conversación que la usó.",
+        "refusalRate": "Llamadas de modelo que el modelo rechazó, por llamada.",
+        "failoverRate": "Llamadas que pasaron a un modelo de respaldo porque este falló o no estaba disponible.",
+        "flagRate": "Sesiones que una persona marcó. Las marcas automáticas tras un error de herramienta se cuentan por separado.",
+        "leftRate": "Conversaciones que cambiaron a otro modelo o continuaron en una sesión nueva con otro modelo.",
+        "turnsToResolution": "Mediana de mensajes enviados por un técnico en sesiones que terminaron sin marca de una persona ni paso a una sesión nueva. Incluye la sesión de la que continuó.",
+        "agentCompletion": "Ejecuciones de agente completadas, del total de ejecuciones finalizadas."
+      },
+      "profiles": {
+        "claude-frontier": "Claude de frontera",
+        "claude-standard": "Claude estándar",
+        "claude-small": "Claude pequeño",
+        "generic": "Otros modelos"
+      },
+      "unrecorded": "Sin registrar",
+      "unattributed": "No atribuido a un modelo",
+      "removedModel": "Modelo eliminado",
+      "platformConnection": "Plataforma Breeze",
+      "notRecorded": "Aún no se registra en este servidor",
+      "switchesOnly": "Solo cambios",
+      "few": "Pocas conversaciones",
+      "autoFlagged_one": "{{count}} marcada automáticamente",
+      "autoFlagged_other": "{{count}} marcadas automáticamente",
+      "leftBreakdown": "{{switched}} cambiaron, {{continued}} continuaron",
+      "resolvedCount_one": "{{count}} resuelta",
+      "resolvedCount_other": "{{count}} resueltas",
+      "loading": "Cargando calidad…",
+      "empty": "No hay llamadas de modelo en este período.",
+      "error": "No se pudo cargar la vista de calidad.",
+      "timeout": "Este rango es demasiado grande para resumirlo rápido. Elige un rango más corto.",
+      "footnote": "Una conversación cuenta para el último modelo que usó, y un cambio cuenta para el modelo que dejó. Las llamadas atendidas por un respaldo cuentan para el modelo elegido. Los conteos empiezan cuando se activó el seguimiento de calidad. Interpreta con cuidado los números pequeños."
+    },
+    "roles": {
+      "triage": "Triaje (primera revisión)",
+      "analysis": "Análisis (investigar y planificar)",
+      "remediation": "Corrección (actuar en los dispositivos)"
     }
   },
   "partnerDefaults": {
@@ -2345,6 +2481,14 @@
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
       "charactersLeft": "Quedan {{count}} caracteres",
+      "model": "Modelo",
+      "modelDefault": "Usar el predeterminado ({{model}})",
+      "modelDefaultUnknown": "el predeterminado de los agentes de IA",
+      "modelRequiresRole": "requiere {{roles}}",
+      "modelRequiresPermission": "requiere el permiso de modelos de IA premium",
+      "modelUnavailable": "El modelo guardado ya no está disponible. Elige otro.",
+      "modelLoadFailed": "No se pudieron cargar los modelos. El agente conserva su modelo actual.",
+      "modelHint": "Define el predeterminado y los modelos permitidos en Proveedores y modelos de IA.",
       "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones.",
       "supervisedActionKeysHint": "Operaciones que este agente puede ejecutar SIN que una persona haga clic en aprobar, cuando existe una política coincidente y el límite de exposición de la organización tiene margen. Cada una igual pasa por las protecciones en vivo, el interruptor de apagado y los límites por organización en el momento de la ejecución.",
       "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",

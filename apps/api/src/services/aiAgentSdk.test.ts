@@ -69,18 +69,24 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
-const mockResolveLlmConfigForOrg = vi.fn();
-vi.mock('./llm/llmConfigResolver', () => ({
-  resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
-}));
-
-const mockIsOpenAICompatibleProvider = vi.fn(() => false);
 vi.mock('./llm/llmAvailability', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
   return {
     ...actual,
     llmUnusableCode: vi.fn(actual.llmUnusableCode),
-    isOpenAICompatibleProvider: () => mockIsOpenAICompatibleProvider(),
+  };
+});
+
+// W06: an env OpenAI-compatible deployment (MCP_LLM_PROVIDER) is plain config;
+// chat on it resolves through the registry like every other surface.
+const envConfig = vi.hoisted(() => ({ provider: null as string | null }));
+vi.mock('../config/validate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/validate')>();
+  return {
+    ...actual,
+    getConfig: () => (envConfig.provider
+      ? ({ MCP_LLM_PROVIDER: envConfig.provider } as unknown as ReturnType<typeof actual.getConfig>)
+      : actual.getConfig()),
   };
 });
 
@@ -406,9 +412,8 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
-    mockIsOpenAICompatibleProvider.mockReturnValue(false);
+    envConfig.provider = null;
     mockResolveSessionTurn.mockResolvedValue(makeResolvedModel('platform'));
-    mockResolveLlmConfigForOrg.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'gpt-4o-mini' });
   });
 
   // --- Session ---
@@ -425,7 +430,6 @@ describe('runPreFlightChecks', () => {
   it('resolves the stored session turn on the chat surface for the requesting user', async () => {
     await runPreFlightChecks('session-1', 'hello', auth);
     expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'chat', userId: auth.user.id });
-    expect(mockResolveLlmConfigForOrg).not.toHaveBeenCalled();
   });
 
   it('a script-builder session resolves on the script_builder surface', async () => {
@@ -442,7 +446,6 @@ describe('runPreFlightChecks', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.model).toBe(model);
-      expect(result.openaiCompatible).toBe(false);
     }
     expect(mockCheckBudget).toHaveBeenCalledWith('org-session-99', 'partner_key');
   });
@@ -502,40 +505,28 @@ describe('runPreFlightChecks', () => {
     expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
   });
 
-  // --- Env OpenAI-compatible chat (W06 absorbs it; legacy resolution, finding 12) ---
+  // --- Env OpenAI-compatible deployment (W06: one runtime, through the registry) ---
 
-  it('env openai-compatible chat with no platform credential: legacy platform resolution, no registry call, platform budget', async () => {
+  it('env OpenAI-compatible deployment: chat resolves through the registry to the env-managed offering (no legacy branch)', async () => {
+    envConfig.provider = 'openai-compatible';
     vi.stubEnv('ANTHROPIC_API_KEY', '');
     vi.stubEnv('ANTHROPIC_AUTH_TOKEN', '');
     vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
     try {
-      mockIsOpenAICompatibleProvider.mockReturnValue(true);
-      mockGetSession.mockResolvedValue(makeSession({ offeringId: null }));
-      const result = await runPreFlightChecks('session-1', 'hello', auth);
-      expect(result).toMatchObject({ ok: true, model: null, openaiCompatible: true });
-      expect(mockResolveSessionTurn).not.toHaveBeenCalled();
-      expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-1');
-      expect(mockCheckBudget).toHaveBeenCalledWith('org-1', 'platform');
+      const model = makeResolvedModel('openai_compatible', { surface: 'chat' });
+      mockResolveSessionTurn.mockResolvedValue(model);
+      const r = await runPreFlightChecks('session-1', 'hello', auth);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.model.connection.kind).toBe('openai_compatible');
+      expect(r.model).toBe(model);
+      expect(r).not.toHaveProperty('openaiCompatible');
+      expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'chat', userId: auth.user.id });
+      // Funding is the resolved offering's, never an assumed platform path.
+      expect(mockCheckBudget).toHaveBeenCalledWith('org-1', 'partner_key');
     } finally {
       vi.unstubAllEnvs();
     }
-  });
-
-  it('env openai-compatible chat refuses a partner config exactly as the route used to (503 ai_unavailable)', async () => {
-    mockIsOpenAICompatibleProvider.mockReturnValue(true);
-    mockResolveLlmConfigForOrg.mockResolvedValue({
-      source: 'partner', partnerId: 'p1', apiKey: 'k', model: 'claude-sonnet-4-6', configId: 'c1', configVersion: 1, endpoint: { kind: 'anthropic' },
-    });
-    expect(await runPreFlightChecks('session-1', 'hello', auth)).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
-    expect(mockCheckBudget).not.toHaveBeenCalled();
-  });
-
-  it('env openai-compatible: a script-builder session still runs the Agent SDK through the registry', async () => {
-    mockIsOpenAICompatibleProvider.mockReturnValue(true);
-    mockGetSession.mockResolvedValue(makeSession({ type: 'script_builder' }));
-    const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toMatchObject({ ok: true, openaiCompatible: false });
-    expect(mockResolveSessionTurn).toHaveBeenCalledWith(expect.objectContaining({ surface: 'script_builder' }));
   });
 
   // --- Rate limits use session's org, not auth's org ---
@@ -783,7 +774,6 @@ describe('runPreFlightChecks', () => {
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBeUndefined();
       expect(result.model).toEqual(makeResolvedModel('platform'));
-      expect(result.openaiCompatible).toBe(false);
     }
   });
 });

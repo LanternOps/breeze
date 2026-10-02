@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExtensionAiError, type ExtensionAiInvokeInput } from '@breeze/extension-sdk';
 
 const {
@@ -59,7 +59,11 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
 }));
 
 vi.mock('./llm/llmConfigResolver', () => ({ markPartnerLlmError }));
-vi.mock('./llm/llmAvailability', () => ({ isPlatformLlmConfigured }));
+// Partial: the SDK-child env builder (via connectionFactory) reads the real credential key list.
+vi.mock('./llm/llmAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./llm/llmAvailability')>()),
+  isPlatformLlmConfigured,
+}));
 vi.mock('./llm/platformKeyAlert', () => ({ reportPlatformKeyMissing }));
 vi.mock('./aiModels/resolveModel', () => ({ resolveModel }));
 vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId, findOfferingIdByModel }));
@@ -74,8 +78,11 @@ vi.mock('./aiModels/settleInvocation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./aiModels/settleInvocation')>()),
   settleInvocation,
 }));
+// W09 failover cools a failed offering down in Redis: never touched here.
+vi.mock('./aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 
 import { buildExtensionAiContext } from './extensionAi';
+import { LlmUnavailableError } from './llm/llmUnavailableError';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { turnBindingFrom } from './aiModels/turnBinding';
 
@@ -549,6 +556,51 @@ describe('buildExtensionAiContext', () => {
       expect(markPartnerLlmError).not.toHaveBeenCalled();
     });
 
+    it('W06: a gateway 401 (expired or invalid grant) raises ai_unavailable and NEVER marks the connection broken', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway 403 (model not bound to the grant) raises ai_unavailable without a stamp', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(403, 'This connection is not authorised for the requested model.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway connection is dispatched and settled like any other partner_key connection', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+
+      const result = await buildExtensionAiContext().invoke(input);
+
+      expect(result.billingSource).toBe('partner_key');
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'qwen2.5-coder:7b' }));
+      expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ reservationId: RESERVATION_ID }));
+    });
+
+    it('a client that cannot be built is refused BEFORE any reservation is taken (no leaked hold)', async () => {
+      anthropicClientFor.mockImplementationOnce(() => {
+        throw new LlmUnavailableError('This AI model needs an organization context on this surface.');
+      });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(reserveAiBudget).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
+
     it('rethrows a permanent per-request 4xx unchanged so the caller can fail soft', async () => {
       const rejection = apiError(400, 'prompt too long');
       create.mockRejectedValueOnce(rejection);
@@ -697,6 +749,184 @@ describe('buildExtensionAiContext', () => {
         code: 'rate_limited',
       });
       expect(create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('W09 failover (#7607)', () => {
+    const HOP0_RESERVATION = '55555555-5555-4555-8555-555555555555';
+    const HOP1_RESERVATION = '66666666-6666-4666-8666-666666666666';
+    const reserved = (reservationId: string, reservedCostCents: number) => ({
+      kind: 'reserved', reservationId, reservedCostCents,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    const overloaded = () => Object.assign(new Error('Overloaded'), {
+      status: 529, error: { type: 'error', error: { type: 'overloaded_error' } },
+    });
+    // Free input, 0.01 cent per output token: max_tokens = reservedCostCents * 100.
+    const rates = { source: 'linked_platform' as const, standard: { inputCentsPerM: 0, outputCentsPerM: 10_000, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } };
+    const primary = () => makeResolvedModel('anthropic_byok', {
+      surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, wireModel: 'claude-sonnet-5-5',
+      rateSnapshot: rates, failoverRemaining: ['k'],
+    });
+    const backup = () => makeResolvedModel('platform', {
+      surface: 'extension_content', offering: { id: 'k', displayName: 'K' }, wireModel: 'claude-haiku-4-5',
+      rateSnapshot: { ...rates, source: 'platform' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+    });
+    const settledRows = () => settleInvocation.mock.calls.map((c) => {
+      const arg = c[0] as { binding: { offeringId: string }; usage: unknown[]; reservationId: string };
+      return [arg.binding.offeringId, arg.reservationId, arg.usage.length];
+    });
+    let warnSpy: { mockRestore: () => void };
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued *Once values: reset what these cases script.
+      resolveModel.mockReset();
+      reserveAiBudget.mockReset();
+      create.mockReset();
+      checkBudgetDetailed.mockReset();
+      checkBudgetDetailed.mockResolvedValue(null);
+      resolveModel.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+      reserveAiBudget
+        .mockResolvedValueOnce(reserved(HOP0_RESERVATION, 4))
+        .mockResolvedValueOnce(reserved(HOP1_RESERVATION, 2));
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => warnSpy.mockRestore());
+
+    it('a 529 fails over; each hop is reserved, sized and settled on its own, and the SERVED hop is reported', async () => {
+      create.mockRejectedValueOnce(overloaded()).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        partnerId: PARTNER_ID, orgId: ORG_ID, userId: USER_ID, surface: 'extension_content', maxTokens: 512,
+        excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+        failoverOrigin: { offeringId: 'p', funding: 'partner_key', connectionId: 'conn-1' },
+      }));
+      expect(checkBudgetDetailed).toHaveBeenLastCalledWith(ORG_ID, 'platform');
+      const keys = reserveAiBudget.mock.calls.map((c) => (c[0] as { idempotencyKey: string }).idempotencyKey);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(/^extension-ai:/);
+      expect(keys[1]).toBe(`${keys[0]}:hop:1`);
+      // Each hop's max_tokens comes from ITS OWN reservation (4¢ → 400, 2¢ → 200).
+      expect(create.mock.calls.map((c) => [(c[0] as { model: string }).model, (c[0] as { max_tokens: number }).max_tokens]))
+        .toEqual([['claude-sonnet-5-5', 400], ['claude-haiku-4-5', 200]]);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(settleInvocation.mock.calls.every(([arg]) => (arg as { sourceRef: string }).sourceRef === 'extension:workspace_enrichment')).toBe(true);
+      expect(out).toMatchObject({ model: 'claude-haiku-4-5', billingSource: 'platform' });
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    });
+
+    it('a refusal answered before its fallback threw never fails over (burned tokens bill on hop 0)', async () => {
+      resolveModel.mockReset();
+      const base = makeResolvedModel('catalog', { surface: 'extension_content' });
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('catalog', {
+        surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+        refusalFallback: {
+          offeringId: 'fb', displayName: 'Haiku', wireModel: 'anthropic/claude-haiku-4.5',
+          wireParams: { betas: [], applied: {} }, options: {}, rateSnapshot: base.rateSnapshot,
+        } as never,
+      })).mockResolvedValueOnce(backup());
+      create
+        .mockResolvedValueOnce({ ...response(''), model: 'anthropic/claude-sonnet-5.5', stop_reason: 'refusal', stop_details: { category: 'cyber' } })
+        .mockRejectedValueOnce(overloaded());
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError' });
+      expect(resolveModel).toHaveBeenCalledTimes(1);
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 1]]);
+    });
+
+    it('with no fallback list configured, a 529 keeps the W03 single-reservation behaviour', async () => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValue(byok());
+      create.mockRejectedValueOnce(overloaded());
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({ name: 'ExtensionAiError', code: 'ai_unavailable' });
+      expect(resolveModel).toHaveBeenCalledTimes(1);
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settleInvocation).not.toHaveBeenCalled();
+      expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: HOP0_RESERVATION });
+    });
+
+    it('a backup refused at admission throws a transient ai_unavailable with hop 0 already settled and nothing held', async () => {
+      create.mockRejectedValueOnce(overloaded());
+      checkBudgetDetailed
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false,
+      });
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    const gatewayPrimary = () => makeResolvedModel('openai_compatible', {
+      surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, rateSnapshot: rates, failoverRemaining: ['k'],
+    });
+
+    it.each([
+      ['a gateway 529', () => overloaded(), 'overloaded'],
+      ['a gateway 429', () => Object.assign(apiError(429, 'rate limited'), { error: { type: 'error', error: { type: 'rate_limit_error' } } }), 'rate_limited'],
+      ['a gateway 502', () => apiError(502, 'upstream unavailable'), 'server_error'],
+    ] as const)('%s fails over like any provider\'s, and the connection is never marked', async (_label, failure, cause) => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(failure()).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        excludeOfferingIds: ['p'], failoverCause: cause,
+        failoverOrigin: { offeringId: 'p', funding: 'partner_key', connectionId: 'conn-oai' },
+      }));
+      expect(out).toMatchObject({ billingSource: 'platform', model: 'claude-haiku-4-5' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a gateway 401 (expired grant or rejected endpoint key) fails over without ever stamping the connection', async () => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.')).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({ failoverCause: 'auth_failed' }));
+      expect(out).toMatchObject({ billingSource: 'platform' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a failover hop whose client cannot be built releases THAT hop\'s reservation and raises a transient ai_unavailable', async () => {
+      create.mockRejectedValueOnce(overloaded());
+      anthropicClientFor
+        .mockReturnValueOnce({ messages: { create } })
+        .mockImplementationOnce(() => { throw new LlmUnavailableError('This AI model needs an organization context on this surface.'); });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: HOP1_RESERVATION });
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    });
+
+    it('a rejected partner credential is still stamped when the backup serves', async () => {
+      create.mockRejectedValueOnce(apiError(401, 'invalid x-api-key')).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(out).toMatchObject({ billingSource: 'platform' });
+      expect(markPartnerLlmError).toHaveBeenCalledWith({ configId: 'conn-1', configVersion: 2, reason: 'auth_rejected' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
     });
   });
 });

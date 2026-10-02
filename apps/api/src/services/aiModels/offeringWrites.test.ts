@@ -518,4 +518,47 @@ describe('updateOfferingDetails', () => {
       expect(h.dbUpdateReturning).not.toHaveBeenCalled();
     });
   });
+
+  describe('an offering on an env-managed (MCP_LLM_*) connection', () => {
+    const envOffering = () => row({ source: 'manual', connectionId: 'c-env', platformModelId: null, modelId: 'qwen', enabled: true, priceInputCentsPerM: 15 });
+    const gatewayCandidate = () => candidate({ connectionId: 'c-env', funding: 'partner_key' }, {
+      platform: null, connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, rate: { source: 'offering', standard: RATES },
+    });
+    beforeEach(() => {
+      h.getOffering.mockResolvedValue(envOffering());
+      h.loadOfferingCandidate.mockResolvedValue(gatewayCandidate());
+    });
+
+    it.each([
+      ['managed', { managedBy: 'env', envModel: 'qwen' }],
+      ['released', { managedBy: 'env', envModel: 'qwen', envReleasedAt: '2026-10-01T00:00:00.000Z' }],
+    ])('%s: a price edit is refused (409 managed_by_env), nothing written', async (_l, providerConfig) => {
+      h.dbSelectRows = [[{ providerConfig }]];
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, prices: { ...RATES, inputCentsPerM: 1 } } }).catch((e) => e);
+      expect(err).toBeInstanceOf(RegistryWriteError);
+      expect([err.status, err.code]).toEqual([409, 'managed_by_env']);
+      expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('a rename is refused too (the name comes from MCP_LLM_MODEL)', async () => {
+      h.dbSelectRows = [[{ providerConfig: { managedBy: 'env' } }]];
+      const err = await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, displayName: 'Mine' } }).catch((e) => e);
+      expect([err.status, err.code]).toEqual([409, 'managed_by_env']);
+      expect(h.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('access policy (required permission) stays the partner\'s to set', async () => {
+      h.dbSelectRows = [[{ providerConfig: { managedBy: 'env' } }]];
+      h.dbUpdateReturning.mockResolvedValue([envOffering()]);
+      await updateOfferingDetails({ partnerId: P, offeringId: OFF, patch: { expectedUpdatedAt: at, requiredPermission: 'ai_models:premium' } });
+      expect(h.lastSet).toMatchObject({ requiredPermission: 'ai_models:premium' });
+    });
+
+    it('enable/disable stays allowed (an operational switch, no key or price involved)', async () => {
+      h.dbSelectRows = [[]];   // no assignment defaults to it; the env state is never consulted here
+      h.enableOffering.mockResolvedValue(envOffering());
+      await setOfferingEnabled({ partnerId: P, offeringId: OFF, enabled: false, force: false });
+      expect(h.enableOffering).toHaveBeenCalledWith({ partnerId: P, offeringId: OFF, enabled: false });
+    });
+  });
 });

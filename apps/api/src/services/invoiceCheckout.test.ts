@@ -1,4 +1,7 @@
+const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
+vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { isSelfManagedDbContextRoute } from '../middleware/selfManagedDbContextRoutes';
 
 // DB mock: select().from().where().limit() resolves to the next queued row set;
 // insert().values() is a thenable so the mapping-row write awaits cleanly.
@@ -29,6 +32,8 @@ vi.mock('../db', () => {
     for (const m of ['select', 'from', 'where', 'limit', 'for']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
+      const first = rows[0];
+      if (first && typeof first === 'object' && 'currencyCode' in first && 'balance' in first) reservation.invoice = first as Record<string, unknown>;
       return Promise.resolve(rows).then(resolve);
     };
     (chain as { insert: unknown }).insert = vi.fn(() => ({
@@ -38,6 +43,7 @@ vi.mock('../db', () => {
   };
   return {
     db: makeChain(),
+    hasDbAccessContext: () => false,
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
     withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
@@ -99,10 +105,18 @@ function expectedIdempotencyKey(base: string): string {
 
 describe('createInvoicePayLink', () => {
   beforeEach(() => {
+    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' }));
     vi.clearAllMocks();
     dbResults.length = 0;
     insertValuesMock.mockReset();
   });
+
+it('refuses a reserved invoice before calling Stripe', async () => {
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
+  await expect(createInvoicePayLink(INV_ID, actor)).rejects.toMatchObject({ status: 409, code: 'COLLECTION_IN_PROGRESS' });
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
 
   it('SEC-150: refuses to reach Stripe at all while a revocation is in flight', async () => {
     // The gate has to fire BEFORE checkout.sessions.create, not after: a session
@@ -372,5 +386,17 @@ describe('createInvoicePayLink', () => {
     sessionsCreateMock.mockRejectedValue(cardErr);
 
     await expect(createInvoicePayLink(INV_ID, actor)).rejects.toBe(cardErr);
+  });
+});
+
+ describe('Checkout request transaction ownership', () => {
+  it.each([
+    '/api/v1/invoices/invoice-id/pay-link',
+    '/api/v1/invoices/public/token/pay',
+    '/api/v1/portal/invoices/invoice-id/pay',
+    '/api/v1/portal/quotes/quote-id/pay',
+  ])('POST %s owns its short DB contexts', path => {
+    expect(isSelfManagedDbContextRoute('POST', path)).toBe(true);
+    expect(isSelfManagedDbContextRoute('GET', path)).toBe(false);
   });
 });

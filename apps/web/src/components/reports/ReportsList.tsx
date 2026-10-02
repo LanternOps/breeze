@@ -52,6 +52,7 @@ import {
   type IdentityAccessSummary,
   type TicketSlaSummary,
   type TechnicianTimeSummary,
+  type AiUsageByClientSummary,
   type ArAgingSummary,
   type ReportType as SharedReportType
 } from '@breeze/shared';
@@ -467,6 +468,8 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             | TicketSlaSummary
             | TechnicianTimeSummary
             | ArAgingSummary
+            // #7608 W10 — AI usage by client.
+            | AiUsageByClientSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.

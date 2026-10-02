@@ -72,3 +72,19 @@ Connecting and disconnecting Stripe requires billing management permission plus 
 - [Invoices](/features/invoices/) -- send payment links from issued invoices
 - [Customer Portal](/features/portal/) -- where customers view and pay online
 - [Recurring Contracts](/features/contracts/) -- auto-generated invoices can be paid online too
+
+### Restricted-key permissions
+
+For existing invoice checkout, the key must read the Stripe account and Events and have Checkout Sessions write access. Breeze also checks the following permissions for automatic payments:
+
+| Stripe resource | Required access |
+| --- | --- |
+| Customers | Write |
+| SetupIntents | Write |
+| PaymentIntents | Write |
+| PaymentMethods | Write |
+| Mandates | Read |
+
+Saving or refreshing the key checks these permissions without creating a payment or saving a customer's payment method. A missing automatic-payment permission does not disable existing card checkout. Automatic payments remain unavailable until every required permission is present and the feature is enabled for your partner account. Use **Refresh** after updating a restricted key's permissions.
+
+Automatic payments support Stripe accounts in the United States, Canada, United Kingdom, European Economic Area, Australia and New Zealand. Bank-account debit requires a United States Stripe account and a USD invoice. Existing one-time invoice checkout remains card-only.

@@ -41,5 +41,5 @@ func trimNotifyField(value string, max int) string {
 	if max <= 0 || len(value) <= max {
 		return value
 	}
-	return value[:max]
+	return truncateUTF8(value, max)
 }

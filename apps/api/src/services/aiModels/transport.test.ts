@@ -21,7 +21,11 @@ describe('transport', () => {
     expect(defaultTransport('patch_test')).toBe('messages_api');
   });
   it('carriage is exactly what W01\'s adapter accepts, per transport', () => {
-    expect(transportCarries('agent_sdk')).toEqual({ speed: false, inferenceGeo: true, thinkingDisplayUpdates: true });
-    expect(transportCarries('messages_api')).toEqual({ speed: false, inferenceGeo: false, thinkingDisplayUpdates: false });
+    expect(transportCarries('agent_sdk')).toEqual({ speed: false, inferenceGeo: true, thinkingDisplayUpdates: true, budgetThinking: true });
+    expect(transportCarries('messages_api')).toEqual({ speed: false, inferenceGeo: false, thinkingDisplayUpdates: false, budgetThinking: false });
+  });
+  it('only the Agent SDK carries budget thinking (W05)', () => {
+    expect(transportCarries('agent_sdk').budgetThinking).toBe(true);
+    expect(transportCarries('messages_api').budgetThinking).toBe(false);
   });
 });

@@ -16,6 +16,12 @@ export const SURFACE_LABEL_KEYS: Record<AiSurface, string> = {
   patch_test: 'aiModels.surfaces.patch_test',
 };
 
+export const ROLE_LABEL_KEYS = {
+  triage: 'aiModels.roles.triage',
+  analysis: 'aiModels.roles.analysis',
+  remediation: 'aiModels.roles.remediation',
+} as const;
+
 export const ENABLE_BLOCKER_KEYS: Record<OfferingEnableBlocker, string> = {
   model_unavailable: 'aiModels.blockers.model_unavailable',
   unpriced: 'aiModels.blockers.unpriced',
@@ -35,11 +41,20 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   invalid: 'aiModels.errors.invalid',
   tools_unsupported: 'aiModels.errors.tools_unsupported',
   widens_partner: 'aiModels.errors.widens_partner',
+  crosses_funding: 'aiModels.errors.crossesFunding',
   write_failed: 'aiModels.errors.write_failed',
   registry_unavailable: 'aiModels.errors.registry_unavailable',
   registry_busy: 'aiModels.errors.registry_busy',
   queue_unavailable: 'aiModels.errors.queue_unavailable',
   APPROVALS_DECIDE_REQUIRED: 'aiModels.errors.approvals_decide_required',
+  egress_blocked: 'aiModels.errors.egress_blocked',
+  invalid_url: 'aiModels.errors.invalid_url',
+  managed_by_env: 'aiModels.errors.managed_by_env',
+  connection_in_use: 'aiModels.errors.connection_in_use',
+  duplicate_model: 'aiModels.errors.duplicate_model',
+  geo_not_supported: 'aiModels.errors.geo_not_supported',
+  key_required_for_new_endpoint: 'aiModels.errors.key_required_for_new_endpoint',
+  too_many_models: 'aiModels.errors.too_many_models',
 };
 
 /**
@@ -66,7 +81,7 @@ export const DEFAULT_SOURCE_KEYS = {
  * which feature blocks the change). The `friendly` hook leaves those alone so
  * the toast keeps the specifics.
  */
-const SERVER_MESSAGE_CODES = new Set(['invalid', 'conflict', 'not_eligible', 'unpriced', 'tools_unsupported', 'widens_partner', 'offering_in_use']);
+const SERVER_MESSAGE_CODES = new Set(['invalid', 'conflict', 'not_eligible', 'unpriced', 'tools_unsupported', 'widens_partner', 'offering_in_use', 'egress_blocked', 'invalid_url']);
 
 /** `friendly` hook for runAction: localises the codes that carry no specifics. */
 export function registryFriendly(t: TFunction) {

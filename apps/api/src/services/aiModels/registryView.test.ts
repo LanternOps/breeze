@@ -54,6 +54,8 @@ vi.mock('./assignmentRows', () => ({
 }));
 
 import { buildCatalogSummary, buildOrgModelDefaults, buildPartnerModelsSnapshot } from './registryView';
+import { endpointFingerprint } from './gatewayCapabilities';
+import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 
 const P = '22222222-2222-4222-8222-222222222222';
 const ORG = '33333333-3333-4333-8333-333333333333';
@@ -209,11 +211,11 @@ describe('buildPartnerModelsSnapshot', () => {
     ]);
   });
 
-  it('returns one defaults row per configurable surface, never patch_test', async () => {
+  it('returns one defaults row per configurable (surface, role), never patch_test', async () => {
     h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true })];
-    h.allRows = [{ surface: 'chat', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', orgId: 'o2', defaultOfferingId: null }];
+    h.allRows = [{ surface: 'chat', role: 'default', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', role: 'default', orgId: 'o2', defaultOfferingId: null }];
     const s = await buildPartnerModelsSnapshot(P);
-    expect(s.defaults).toHaveLength(9);
+    expect(s.defaults).toHaveLength(12); // 9 surfaces + ai_agents' three escalation roles
     expect(s.defaults.map((d) => d.surface)).not.toContain('patch_test');
     const chat = s.defaults.find((d) => d.surface === 'chat')!;
     expect(chat.requiresTools).toBe(true);
@@ -252,6 +254,86 @@ describe('buildPartnerModelsSnapshot', () => {
     });
   });
 
+  describe('W06 gateway (openai_compatible) connections', () => {
+    const G = '99999999-9999-4999-8999-999999999999';
+    const URL_ = 'https://llm.example.com/v1';
+    const fp = (baseUrl: string) => endpointFingerprint({ kind: 'openai_compatible', baseUrl, providerConfig: null });
+    const record = (o: Record<string, unknown>) => ({
+      breeze_verification: {
+        harnessVersion: FIDELITY_HARNESS_VERSION, endpointFingerprint: fp(URL_), at: '2026-10-01T00:00:00.000Z',
+        passed: true, toolUse: true, adaptiveEffort: false, summary: null, ...o,
+      },
+      tool_use: { supported: true },
+    });
+    const gw = (id: string, capabilities: unknown) =>
+      offering({ id, source: 'discovered', connectionId: G, platformModelId: null, modelId: `m-${id}`, capabilities });
+    const O1 = '10000000-0000-4000-8000-000000000001';
+    const O2 = '10000000-0000-4000-8000-000000000002';
+    const O3 = '10000000-0000-4000-8000-000000000003';
+    const O4 = '10000000-0000-4000-8000-000000000004';
+
+    it('connection DTO: baseUrl + managedBy, never key material, and no inference geography (D7)', async () => {
+      h.platformGeo = 'us';
+      h.connections = [
+        conn({ id: C, kind: 'anthropic_byok' }),
+        conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' }, keyLast4: null }),
+      ];
+      setOfferings([gw(O1, null)]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const g = s.connections.find((c) => c.id === G)!;
+      expect(g).toMatchObject({
+        kind: 'openai_compatible', baseUrl: URL_, managedBy: 'env', funding: 'partner_key',
+        inferenceGeo: null, effectiveInferenceGeo: null, inferenceGeoSource: 'provider_default', supportedInferenceGeos: [],
+      });
+      expect(JSON.stringify(g)).not.toMatch(/cipher|"fp"|keyFingerprint|apiKeyEncrypted|providerConfig/);
+      // Anthropic-dialect and platform connections expose no base URL and are never env-managed here.
+      expect(s.connections.find((c) => c.id === C)).toMatchObject({ baseUrl: null, managedBy: null, effectiveInferenceGeo: 'us' });
+      expect(s.connections[0]).toMatchObject({ kind: 'platform', baseUrl: null, managedBy: null });
+    });
+
+    it('a released env connection stays managedBy env (read-only) and is flagged envReleased (the partner may disconnect it)', async () => {
+      h.connections = [
+        conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } }),
+        conn({ id: C, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' } }),
+      ];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.find((c) => c.id === G)).toMatchObject({ managedBy: 'env', envReleased: true });
+      expect(s.connections.find((c) => c.id === C)).toMatchObject({ managedBy: 'env', envReleased: false });
+      expect(s.connections[0]).toMatchObject({ kind: 'platform', envReleased: false });
+    });
+
+    it('a user-created gateway connection is not managedBy env', async () => {
+      h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.find((c) => c.id === G)!.managedBy).toBeNull();
+    });
+
+    it('offering DTO carries the verification state against the CURRENT endpoint fingerprint; non-gateway offerings carry null', async () => {
+      h.connections = [conn({ id: C, kind: 'anthropic_byok' }), conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
+      h.platformModels = [pm({ id: 'pm-1' })];
+      setOfferings([
+        gw(O1, record({})),
+        gw(O2, record({ endpointFingerprint: fp('https://old.example.com/v1') })),
+        gw(O3, record({ passed: false, toolUse: false, summary: 'tool_call: no tool call returned' })),
+        gw(O4, null),
+        offering({ id: A }),
+        offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }),
+      ]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const v = (id: string | null) => s.offerings.find((o) => o.id === id)!.verification;
+      expect(v(O1)).toEqual({ state: 'verified', at: '2026-10-01T00:00:00.000Z', harnessVersion: FIDELITY_HARNESS_VERSION, summary: null });
+      expect(v(O2)).toMatchObject({ state: 'stale', at: '2026-10-01T00:00:00.000Z' });
+      expect(v(O3)).toMatchObject({ state: 'failed', summary: 'tool_call: no tool call returned' });
+      expect(v(O4)).toEqual({ state: 'unverified', at: null, harnessVersion: null, summary: null });
+      expect(v(A)).toBeNull();
+      expect(v(B)).toBeNull();
+      expect(v(null)).toBeNull(); // synthesized platform row
+      // The raw tree / record never reaches the DTO.
+      expect(JSON.stringify(s.offerings)).not.toContain('breeze_verification');
+      expect(JSON.stringify(s.offerings)).not.toContain(fp(URL_));
+    });
+  });
+
   it('includes the catalog only when the catalog flag is on', async () => {
     h.providers = [{ entryId: 'e1', slug: 's', name: 'Prov', dataNote: null, verifiedModels: ['m1', 'constructor'], modelMap: { m1: 'x' } }];
     expect((await buildPartnerModelsSnapshot(P)).catalog).toEqual([]);
@@ -259,6 +341,52 @@ describe('buildPartnerModelsSnapshot', () => {
     const s = await buildPartnerModelsSnapshot(P);
     expect(s.catalogEnabled).toBe(true);
     expect(s.catalog).toEqual([{ entryId: 'e1', slug: 's', name: 'Prov', dataNote: null, models: ['m1'] }]);
+  });
+});
+
+describe('W09 role rows and fallback lists in the views', () => {
+  it('lists one defaults entry per (surface, role), ai_agents with its three stages', async () => {
+    const snap = await buildPartnerModelsSnapshot(P);
+    expect(snap.defaults.filter((d) => d.surface === 'ai_agents').map((d) => d.role)).toEqual(['default', 'triage', 'analysis', 'remediation']);
+    expect(snap.defaults.find((d) => d.surface === 'chat')).toMatchObject({ role: 'default' });
+  });
+
+  it('a role entry carries its own row (with the fallback list) and counts only that role\'s org overrides', async () => {
+    h.partnerRows = [
+      assignment({ surface: 'ai_agents', orgId: null, defaultOfferingId: A, allowUserChoice: true }),
+      assignment({ surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, allowUserChoice: true, fallbackOfferingIds: [A], fallbackMayCrossFunding: false }),
+    ];
+    h.allRows = [{ surface: 'ai_agents', role: 'triage', orgId: 'o1', defaultOfferingId: null }, { surface: 'ai_agents', role: 'default', orgId: 'o2', defaultOfferingId: null }];
+    const s = await buildPartnerModelsSnapshot(P);
+    const triage = s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'triage')!;
+    expect(triage.partner).toMatchObject({ role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.orgOverrideCount).toBe(1);
+    expect(s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'analysis')!.partner).toBeNull();
+    expect(s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'default')!.partner).toMatchObject({ fallbackOfferingIds: null, fallbackMayCrossFunding: null });
+  });
+
+  it('the org view merges a role exactly as the resolver does (D2)', async () => {
+    h.partnerRows = [
+      { surface: 'ai_agents', role: 'default', orgId: null, defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: new Date() },
+      { surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, permittedOfferingIds: null, allowUserChoice: true, options: null, fallbackOfferingIds: [A], fallbackMayCrossFunding: false, updatedAt: new Date() },
+    ];
+    h.orgRows = [{ surface: 'ai_agents', role: 'default', orgId: ORG, defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: null, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: new Date() }];
+    const view = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
+    const triage = view.surfaces.find((s) => s.surface === 'ai_agents' && s.role === 'triage')!;
+    expect(triage.effective).toMatchObject({ defaultOfferingId: B, defaultSource: 'partner', fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.inherited).toMatchObject({ defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.org).toBeNull();     // no org row for (ai_agents, triage) itself
+    expect(view.surfaces.filter((s) => s.surface === 'ai_agents').map((s) => s.role)).toEqual(['default', 'triage', 'analysis', 'remediation']);
+  });
+
+  it('an org\'s empty fallback list shows as "no backups", not the partner list (Codex 8)', async () => {
+    h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true, fallbackOfferingIds: [B], fallbackMayCrossFunding: true })];
+    h.orgRows = [assignment({ surface: 'chat', orgId: ORG, fallbackOfferingIds: [], fallbackMayCrossFunding: false })];
+    const view = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
+    const chat = view.surfaces.find((s) => s.surface === 'chat')!;
+    expect(chat.inherited).toMatchObject({ fallbackOfferingIds: [B], fallbackMayCrossFunding: true });
+    expect(chat.org).toMatchObject({ fallbackOfferingIds: [], fallbackMayCrossFunding: false });
+    expect(chat.effective).toMatchObject({ fallbackOfferingIds: [], fallbackMayCrossFunding: false });
   });
 });
 

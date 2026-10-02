@@ -42,7 +42,15 @@ vi.mock('../services/tenantStatus', () => ({
 
 vi.mock('../db/schema', () => ({
   apiKeys: {},
-  organizations: {}
+  organizations: {},
+  // Sentinel columns so the mint guard's WHERE predicate can be inspected.
+  users: {
+    id: { col: 'users.id' },
+    status: { col: 'users.status' },
+    authEpoch: { col: 'users.auth_epoch' },
+    mfaEpoch: { col: 'users.mfa_epoch' },
+    credentialEpoch: { col: 'users.credential_epoch' },
+  }
 }));
 
 // The §1.4 rotation delegation ceiling resolves the key's delegating creator
@@ -208,59 +216,140 @@ describe('api keys routes', () => {
     expect(body.warning).toBeDefined();
   });
 
-  it('snapshots the creator live auth/mfa epoch from the request token onto a newly minted key', async () => {
-    let insertedValues: Record<string, unknown> | undefined;
-    vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn((values: Record<string, unknown>) => {
-        insertedValues = values;
-        return {
-          returning: vi.fn().mockResolvedValue([{
-            id: KEY_ID,
-            orgId: ORG_ID,
-            name: 'Primary Key',
-            keyPrefix: 'brz_abc12345',
-            scopes: ['read'],
-            expiresAt: null,
-            rateLimit: 1000,
-            createdBy: 'user-123',
-            createdAt: new Date(),
-            status: 'active'
-          }])
-        };
-      })
-    } as any);
-    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
-      c.set('auth', {
-        scope: 'organization',
-        partnerId: null,
-        orgId: ORG_ID,
-        token: { aep: 5, mep: 2 },
-        user: { id: 'user-123', email: 'test@example.com' },
-        canAccessOrg: (orgId: string) => orgId === ORG_ID
+  describe('creator epoch snapshot at mint (#7489)', () => {
+    function mockInsertCapture() {
+      const captured: { values?: Record<string, unknown> } = {};
+      vi.mocked(db.insert).mockReturnValue({
+        values: vi.fn((values: Record<string, unknown>) => {
+          captured.values = values;
+          return {
+            returning: vi.fn().mockResolvedValue([{
+              id: KEY_ID,
+              orgId: ORG_ID,
+              name: 'Primary Key',
+              keyPrefix: 'brz_abc12345',
+              scopes: [],
+              expiresAt: null,
+              rateLimit: 1000,
+              createdBy: 'user-123',
+              createdAt: new Date(),
+              status: 'active'
+            }])
+          };
+        })
+      } as any);
+      return captured;
+    }
+
+    function mockLiveCreatorRow(rows: Array<Record<string, unknown>>) {
+      const captured: { where?: unknown } = {};
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn((predicate: unknown) => {
+            captured.where = predicate;
+            return { limit: vi.fn(() => Promise.resolve(rows)) };
+          })
+        }))
+      } as any);
+      return captured;
+    }
+
+    // Flatten a drizzle SQL tree into its leaf chunks (columns + bound values).
+    function sqlLeaves(node: unknown, out: unknown[] = []): unknown[] {
+      const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
+      if (!chunks) {
+        out.push(node);
+        return out;
+      }
+      for (const chunk of chunks) sqlLeaves(chunk, out);
+      return out;
+    }
+
+    // `eq(col, value)` renders as [col, " = ", value]: find the value bound to col.
+    function boundValue(leaves: unknown[], col: string): unknown {
+      const i = leaves.findIndex((l) => (l as { col?: string } | null)?.col === col);
+      if (i < 0) return undefined;
+      const rest = leaves.slice(i + 1).find((l) => {
+        const text = (l as { value?: unknown } | null)?.value;
+        return !(Array.isArray(text) && text.every((t) => typeof t === 'string'));
       });
-      c.set('permissions', {
-        permissions: [{ resource: '*', action: '*' }],
-        partnerId: null,
-        orgId: ORG_ID,
-        roleId: 'role-1',
-        scope: 'organization'
+      return rest;
+    }
+
+    function authWithToken(token: Record<string, unknown>) {
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'organization',
+          partnerId: null,
+          orgId: ORG_ID,
+          token,
+          user: { id: 'user-123', email: 'test@example.com' },
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        c.set('permissions', {
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: null,
+          orgId: ORG_ID,
+          roleId: 'role-1',
+          scope: 'organization'
+        });
+        return next();
       });
-      return next();
+    }
+
+    function createKey() {
+      return app.request('/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: ORG_ID, name: 'Primary Key', scopes: [], rateLimit: 1000 })
+      });
+    }
+
+    it('stamps the creator live credential epoch (plus the token auth/mfa epochs) onto a newly minted key', async () => {
+      const captured = mockInsertCapture();
+      authWithToken({ aep: 5, mep: 2 });
+      const guard = mockLiveCreatorRow([{ credentialEpoch: 3 }]);
+
+      const res = await createKey();
+
+      expect(res.status).toBe(201);
+      // The live read is guarded on this session's validated epochs and an
+      // active creator — without those conditions it could stamp a credential
+      // epoch newer than the minting session, or mint for a disabled user.
+      const leaves = sqlLeaves(guard.where);
+      expect(boundValue(leaves, 'users.id')).toBe('user-123');
+      expect(boundValue(leaves, 'users.status')).toBe('active');
+      expect(boundValue(leaves, 'users.auth_epoch')).toBe(5);
+      expect(boundValue(leaves, 'users.mfa_epoch')).toBe(2);
+      expect(captured.values).toMatchObject({
+        creatorAuthEpoch: 5,
+        creatorMfaEpoch: 2,
+        creatorCredentialEpoch: 3,
+      });
     });
 
-    const res = await app.request('/api-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orgId: ORG_ID,
-        name: 'Primary Key',
-        scopes: [],
-        rateLimit: 1000
-      })
+    it('refuses to mint when the session epochs no longer match the creator live row', async () => {
+      // The guarded read matched no row: the creator's auth/mfa epoch moved
+      // (or they were disabled) after authMiddleware validated this request.
+      mockInsertCapture();
+      authWithToken({ aep: 5, mep: 2 });
+      mockLiveCreatorRow([]);
+
+      const res = await createKey();
+
+      expect(res.status).toBe(401);
+      expect(db.insert).not.toHaveBeenCalled();
     });
 
-    expect(res.status).toBe(201);
-    expect(insertedValues).toMatchObject({ creatorAuthEpoch: 5, creatorMfaEpoch: 2 });
+    it('refuses to mint an unbound key when the request token carries no epoch claims', async () => {
+      mockInsertCapture();
+      authWithToken({ mfa: true });
+
+      const res = await createKey();
+
+      expect(res.status).toBe(401);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects wildcard scopes on API key creation', async () => {

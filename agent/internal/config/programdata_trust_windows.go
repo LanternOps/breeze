@@ -122,9 +122,18 @@ func readProgramDataPathSecurity(path string) (programDataPathSecurity, error) {
 	if err != nil {
 		return programDataPathSecurity{}, fmt.Errorf("get security info on %s: %w", path, err)
 	}
+	if err := parseProgramDataSecurity(sd, path, &sec); err != nil {
+		return programDataPathSecurity{}, err
+	}
+	return sec, nil
+}
+
+// parseProgramDataSecurity fills sec's owner and DACL from sd (read by path or
+// from a handle).
+func parseProgramDataSecurity(sd *windows.SECURITY_DESCRIPTOR, path string, sec *programDataPathSecurity) error {
 	owner, _, err := sd.Owner()
 	if err != nil {
-		return programDataPathSecurity{}, fmt.Errorf("read owner on %s: %w", path, err)
+		return fmt.Errorf("read owner on %s: %w", path, err)
 	}
 	if owner != nil {
 		sec.OwnerSID = owner.String()
@@ -132,18 +141,18 @@ func readProgramDataPathSecurity(path string) (programDataPathSecurity, error) {
 	dacl, _, err := sd.DACL()
 	if err != nil {
 		if errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND) {
-			return sec, nil // no DACL present: DACLPresent stays false
+			return nil // no DACL present: DACLPresent stays false
 		}
-		return programDataPathSecurity{}, fmt.Errorf("read DACL on %s: %w", path, err)
+		return fmt.Errorf("read DACL on %s: %w", path, err)
 	}
 	if dacl == nil {
-		return sec, nil // NULL DACL
+		return nil // NULL DACL
 	}
 	sec.DACLPresent = true
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return programDataPathSecurity{}, fmt.Errorf("read DACL entry %d on %s: %w", i, path, err)
+			return fmt.Errorf("read DACL entry %d on %s: %w", i, path, err)
 		}
 		e := programDataACE{Type: ace.Header.AceType, Flags: ace.Header.AceFlags, Mask: uint32(ace.Mask)}
 		if e.Type == aceTypeAccessAllowed || e.Type == aceTypeAccessDenied {
@@ -151,7 +160,7 @@ func readProgramDataPathSecurity(path string) (programDataPathSecurity, error) {
 		}
 		sec.ACEs = append(sec.ACEs, e)
 	}
-	return sec, nil
+	return nil
 }
 
 // resetProgramDataTreeContents sweeps dir without following links. A link

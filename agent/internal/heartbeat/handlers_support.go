@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -30,6 +33,15 @@ var (
 	// the running executable, which under `go test` is the test binary.
 	supportSelfDeleteFn = scheduleSupportSelfDelete
 )
+
+// supportWorkDirPrefix is the name every support folder carries (see
+// supportWorkDir in internal/agentapp). The folder is only ever removed, in
+// process or after exit, when its name has this prefix.
+const supportWorkDirPrefix = "breeze-support-"
+
+func isSupportWorkDir(dir string) bool {
+	return dir != "" && strings.HasPrefix(filepath.Base(dir), supportWorkDirPrefix)
+}
 
 // handleSupportEnd tears down an ephemeral Quick Support client: the
 // technician ended the session (or the server revoked it), so this process
@@ -106,15 +118,76 @@ func supportCleanup(h *Heartbeat) {
 		h.wsDesktopMgr.StopAll()
 	}
 
-	// Belt-and-braces against ever removing a real install's config dir: the
-	// workspace is only ever the temp directory runSupportSession created.
-	if h.supportWorkDir != "" {
-		if err := os.RemoveAll(h.supportWorkDir); err != nil {
-			log.Warn("could not remove Quick Support workspace", "path", h.supportWorkDir, "error", err.Error())
-		}
+	// Release the files the session still holds open in its folder (its log)
+	// before removing it: on Windows an open file keeps the folder in place.
+	// Logging is discarded from here on, so nothing re-creates the log.
+	if h.supportReleaseFiles != nil {
+		h.supportReleaseFiles()
 	}
 
-	supportSelfDeleteFn()
+	// Belt-and-braces against ever removing a real install's config dir: the
+	// workspace is only ever the temp directory runSupportSession created.
+	// A failure is not logged: logging was discarded by the release above.
+	// Whatever this process still holds is removed by the post-exit cleanup.
+	if isSupportWorkDir(h.supportWorkDir) {
+		_ = removeSupportWorkDir(h.supportWorkDir)
+	}
+
+	// Removes the executable, and whatever of the folder this process still
+	// held, once the process has exited. A no-op if teardown already started
+	// it (ScheduleSupportSelfCleanup).
+	h.scheduleSupportSelfCleanup()
+}
+
+// removeSupportWorkDir removes dir, retrying briefly: on Windows a handle that
+// is being closed, or an antivirus scan of a just-written file, can make the
+// first attempt fail with a sharing violation.
+func removeSupportWorkDir(dir string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
+}
+
+// scheduleSupportSelfCleanup starts the post-exit cleanup once per process.
+func (h *Heartbeat) scheduleSupportSelfCleanup() {
+	h.supportSelfCleanupOnce.Do(func() {
+		workDir := h.supportWorkDir
+		if !isSupportWorkDir(workDir) {
+			workDir = ""
+		}
+		supportSelfDeleteFn(workDir)
+	})
+}
+
+// ScheduleSupportSelfCleanup starts, at the beginning of a support session's
+// teardown, the cleanup that runs after this process exits: it deletes the
+// executable and removes the support folder. runSupportSession calls it
+// first, before the agent shuts down, because closing the console window
+// allows only about five seconds before Windows ends the process, and the
+// shutdown can take longer. supportCleanup starts it too (for the
+// technician-ended path); only the first call does anything.
+func (h *Heartbeat) ScheduleSupportSelfCleanup() {
+	if h == nil || !h.supportMode {
+		return
+	}
+	h.scheduleSupportSelfCleanup()
+}
+
+// SetSupportFileReleaser registers what supportCleanup calls to close the
+// files the session holds open in its folder (the log) before removing it.
+func (h *Heartbeat) SetSupportFileReleaser(release func()) {
+	if h == nil {
+		return
+	}
+	h.supportReleaseFiles = release
 }
 
 // RunSupportCleanup runs the Quick Support teardown from outside this package.
@@ -128,49 +201,54 @@ func (h *Heartbeat) RunSupportCleanup() {
 	supportCleanupFn(h)
 }
 
-// SetSupportSessionNotifier wires console callbacks fired when a remote
-// desktop session connects/disconnects. The stop callback is CHAINED onto
-// whatever the heartbeat already registered (the peer-disconnect notification
-// to the API) rather than replacing it.
+// Environment variables that carry the cleanup's paths to cmd.exe.
+const (
+	supportCleanupExeEnv = "BREEZE_SUPPORT_CLEANUP_EXE"
+	supportCleanupDirEnv = "BREEZE_SUPPORT_CLEANUP_DIR"
+)
+
+// buildSupportSelfDeleteCmdLine renders the Windows trampoline command line
+// and the environment entries it reads its paths from. Extracted (like
+// buildWindowsUninstallScript) so the exact text is unit-testable on any host
+// without spawning cmd.exe.
 //
-// Must be called right after startAgent returns and before any session can
-// start; the desktop manager's hooks are plain fields set at construction.
+// The paths are passed in the environment, never written into the line:
+// cmd.exe expands %NAME% anywhere in its command line, quoted or not, with no
+// escape, so a user or file name containing % would otherwise make it delete
+// a different path. They are read with delayed expansion (cmd /V:ON,
+// !NAME!), which happens after the FOR loop variable is substituted and does
+// not re-read the value, so neither a %NAME% nor a %i in a path is replaced.
 //
-// onStop takes (sessionID, reason string) — reason mirrors Session's
-// LastStopReason() (#5300) and is "" for a routine disconnect.
-func (h *Heartbeat) SetSupportSessionNotifier(onStart func(sessionID string), onStop func(sessionID, reason string)) {
-	if h == nil || h.desktopMgr == nil {
-		return
+// It polls about once a second for up to a minute: the executable cannot be
+// deleted while this process is still running, and a file it still holds
+// keeps the folder in place, so the first attempt that can succeed is the one
+// after exit. It stops as soon as both are gone. workDir "" deletes only the
+// executable.
+func buildSupportSelfDeleteCmdLine(exePath, workDir string) (string, []string) {
+	exeRef := `"!` + supportCleanupExeEnv + `!"`
+	env := []string{supportCleanupExeEnv + "=" + exePath}
+	steps := `ping 127.0.0.1 -n 2 >NUL & del /f /q ` + exeRef + ` 2>NUL`
+	done := `if not exist ` + exeRef
+	if workDir != "" {
+		dirRef := `"!` + supportCleanupDirEnv + `!"`
+		env = append(env, supportCleanupDirEnv+"="+workDir)
+		steps += ` & rmdir /s /q ` + dirRef + ` 2>NUL`
+		done += ` if not exist ` + dirRef
 	}
-	previousStop := h.desktopMgr.OnSessionStopped
-	h.desktopMgr.OnSessionStarted = onStart
-	h.desktopMgr.OnSessionStopped = func(sessionID, reason string) {
-		if previousStop != nil {
-			previousStop(sessionID, reason)
-		}
-		if onStop != nil {
-			onStop(sessionID, reason)
-		}
-	}
+	return fmt.Sprintf(`cmd /V:ON /C for /L %%i in (1,1,60) do (%s & %s exit)`, steps, done), env
 }
 
-// buildSupportSelfDeleteCmdLine renders the Windows trampoline command line.
-// Extracted (like buildWindowsUninstallScript) so the exact text is
-// unit-testable on any host without spawning cmd.exe.
-func buildSupportSelfDeleteCmdLine(exePath string) string {
-	return fmt.Sprintf(`cmd /C ping 127.0.0.1 -n 3 >NUL & del /f "%s"`, exePath)
-}
-
-// scheduleSupportSelfDelete removes this executable after the process exits.
-// Best-effort by nature: if it fails, the user is left with a downloaded file
-// they can delete, not with anything installed or running.
-func scheduleSupportSelfDelete() {
+// scheduleSupportSelfDelete deletes this executable, and removes workDir
+// (unless ""), after the process exits. Best-effort by nature: if it fails,
+// the user is left with a downloaded file they can delete, not with anything
+// installed or running.
+func scheduleSupportSelfDelete(workDir string) {
 	exePath, err := os.Executable()
 	if err != nil || exePath == "" {
 		log.Warn("could not resolve own executable path; skipping Quick Support self-delete", "error", fmt.Sprint(err))
 		return
 	}
-	if err := startSupportSelfDelete(exePath); err != nil {
+	if err := startSupportSelfDelete(exePath, workDir); err != nil {
 		log.Warn("could not schedule Quick Support self-delete", "path", exePath, "error", err.Error())
 	}
 }

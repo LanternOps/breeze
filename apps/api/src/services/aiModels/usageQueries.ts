@@ -18,6 +18,10 @@
  * with a single priced leg carries the provider's own stop reason (also
  * 'refusal' when the provider declined). So refusalRate is "declined calls per
  * model call", not per turn.
+ *
+ * Failovers (W09) = rows served by a failover hop (failover_hop > 0): the
+ * primary failed before any output and a backup model served the call. Under
+ * groupBy=model they land on the model that served them.
  */
 import { sql, type SQL } from 'drizzle-orm';
 import type { AiUsageBreakdownDto, AiUsageGroupBy, AiUsageRowDto } from '@breeze/shared';
@@ -46,7 +50,10 @@ function orgScope(accessibleOrgIds: string[] | null): SQL {
   return sql`AND i.org_id IN (${sql.join(accessibleOrgIds.map((id) => sql`${id}::uuid`), sql`, `)})`;
 }
 
-function where(input: UsageQueryInput): SQL {
+/** The ledger scope every AI-usage read shares (spend here, quality in qualityQueries.ts). */
+export type LedgerScopeInput = Pick<UsageQueryInput, 'from' | 'to' | 'orgId' | 'accessibleOrgIds'>;
+
+export function ledgerWhere(input: LedgerScopeInput): SQL {
   return sql`i.ledger_mode = 'authoritative'
     AND i.created_at >= ${`${input.from}T00:00:00.000Z`}::timestamptz
     AND i.created_at < ${nextDayIso(input.to)}::timestamptz
@@ -60,7 +67,8 @@ const AGGREGATES = sql`
   SUM(i.input_tokens + i.cache_read_tokens + i.cache_write_tokens)::text AS input_tokens,
   SUM(i.output_tokens)::text AS output_tokens,
   COUNT(*) FILTER (WHERE i.stop_reason = 'refusal')::text AS refusals,
-  COUNT(*) FILTER (WHERE i.fallback_used)::text AS fallbacks`;
+  COUNT(*) FILTER (WHERE i.fallback_used)::text AS fallbacks,
+  COUNT(*) FILTER (WHERE i.failover_hop > 0)::text AS failovers`;
 
 const ORDER_AND_LIMIT = sql`ORDER BY SUM(i.cost_cents) DESC NULLS LAST, COUNT(*) DESC
     LIMIT 200`;
@@ -97,14 +105,14 @@ function buildModelQuery(input: UsageQueryInput): SQL {
   return sql`
     SELECT g.funding_source || ':' || COALESCE(g.connection_id::text, 'platform') || ':' || g.served_model AS key,
       COALESCE(ml.name, spm.display_name, g.served_model) AS label,
-      g.invocations, g.cost_cents, g.input_tokens, g.output_tokens, g.refusals, g.fallbacks,
+      g.invocations, g.cost_cents, g.input_tokens, g.output_tokens, g.refusals, g.fallbacks, g.failovers,
       COALESCE(gc.status = 'disconnected', false) AS connection_disconnected
     FROM (
       SELECT i.funding_source, i.connection_id, i.served_model, MIN(i.requested_model) AS requested_model,
         ${AGGREGATES},
         SUM(i.cost_cents) AS sort_cost, COUNT(*) AS sort_count
       FROM ai_invocations i
-      WHERE ${where(input)}
+      WHERE ${ledgerWhere(input)}
       GROUP BY i.funding_source, i.connection_id, i.served_model
       ORDER BY SUM(i.cost_cents) DESC NULLS LAST, COUNT(*) DESC
       LIMIT 200
@@ -130,7 +138,7 @@ export function buildUsageQuery(input: UsageQueryInput): SQL {
     SELECT ${g.key} AS key, ${g.label} AS label, ${AGGREGATES}
     FROM ai_invocations i
     ${g.join}
-    WHERE ${where(input)}
+    WHERE ${ledgerWhere(input)}
     GROUP BY 1
     ${ORDER_AND_LIMIT}`;
 }
@@ -138,6 +146,8 @@ export function buildUsageQuery(input: UsageQueryInput): SQL {
 type RawRow = {
   key?: string; label?: string | null; invocations: string; cost_cents: string | null;
   input_tokens: string | null; output_tokens: string | null; refusals: string; fallbacks: string;
+  /** W09: rows served by a failover hop (failover_hop > 0). */
+  failovers: string;
   /** groupBy=model only. */
   connection_disconnected?: boolean;
 };
@@ -155,6 +165,7 @@ export function toUsageRow(r: RawRow): AiUsageRowDto {
     refusals,
     refusalRate: invocations === 0 ? 0 : refusals / invocations,
     fallbacks: Number(r.fallbacks ?? 0),
+    failovers: Number(r.failovers ?? 0),
     ...(r.connection_disconnected === undefined ? {} : { connectionDisconnected: r.connection_disconnected === true }),
   };
 }
@@ -165,11 +176,11 @@ export function defaultUsageRange(now: Date = new Date()): { from: string; to: s
   return { from: `${to.slice(0, 8)}01`, to };
 }
 
-const EMPTY: RawRow = { invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0' };
+const EMPTY: RawRow = { invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0', failovers: '0' };
 
 export async function queryAiUsageBreakdown(input: UsageQueryInput): Promise<AiUsageBreakdownDto> {
   const rows = await db.execute<RawRow>(buildUsageQuery(input));
-  const [total] = await db.execute<RawRow>(sql`SELECT ${AGGREGATES} FROM ai_invocations i WHERE ${where(input)}`);
+  const [total] = await db.execute<RawRow>(sql`SELECT ${AGGREGATES} FROM ai_invocations i WHERE ${ledgerWhere(input)}`);
   const { key: _k, label: _l, ...totals } = toUsageRow(total ?? EMPTY);
   return { groupBy: input.groupBy, from: input.from, to: input.to, orgId: input.orgId, rows: [...rows].map(toUsageRow), totals };
 }

@@ -333,7 +333,8 @@ const namespaceDuplicateBaselines = {
     // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
-    'admin.json': 37,
+    // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
+    'admin.json': 40,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
@@ -495,7 +496,8 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in French.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) fr-FR: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
-    'settings.json': 184,
+    // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
+    'settings.json': 185,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -517,7 +519,8 @@ const namespaceDuplicateBaselines = {
     // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
-    'admin.json': 37,
+    // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
+    'admin.json': 40,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
@@ -675,7 +678,8 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in Canadian French.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) fr-CA: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
-    'settings.json': 189,
+    // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
+    'settings.json': 190,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1102,7 +1106,8 @@ const namespaceDuplicateBaselines = {
     // a sample display name. Localising them would change the protected-literal
     // occurrence count that localeParity.test.ts:513 pins against English.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 74,
+    // #7609 aiModels.quality.groupBy.model: "Model" is the identical word in Turkish.
+    'settings.json': 75,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

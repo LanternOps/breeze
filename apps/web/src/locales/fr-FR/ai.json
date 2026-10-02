@@ -506,5 +506,48 @@
       "expired": "expiré",
       "skipped": "ignoré"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Choisir un modèle",
+    "default": "(par défaut)",
+    "suggested": "Suggéré",
+    "context": "Contexte de {{size}}",
+    "price": "{{input}} en entrée / {{output}} en sortie par M de jetons",
+    "requiresRole": "Nécessite {{roles}}",
+    "requiresPermission": "Nécessite l'autorisation d'accès aux modèles d'IA premium",
+    "effort": "Niveau d'effort",
+    "effortDefault": "Par défaut",
+    "effortLevels": {
+      "low": "Faible",
+      "medium": "Moyen",
+      "high": "Élevé",
+      "xhigh": "Très élevé",
+      "max": "Maximal"
+    },
+    "fast": "Rapide ({{input}} en entrée / {{output}} en sortie par M)",
+    "thinking": "Réflexion"
+  },
+  "aiThinking": {
+    "label": "Réflexion en cours… {{seconds}} s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Réponse de {{model}}",
+    "fast": "Rapide",
+    "fellBack": "{{requested}} a refusé ; un autre modèle a répondu",
+    "fastDowngraded": "Le mode rapide n'était pas disponible ; exécuté à vitesse standard"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} utilise une autre connexion IA ; ce chat ne peut donc pas y basculer.",
+      "connection_changed": "La connexion IA a changé depuis la dernière réponse ; ce chat ne peut donc pas changer de modèle.",
+      "transcript_too_large": "Cette conversation est trop longue pour {{model}}.",
+      "fit_unverifiable": "Breeze n'a pas pu confirmer que cette conversation convient à {{model}}."
+    },
+    "messageKept": "Votre message est conservé. Poursuivez dans un nouveau chat qui part d'un résumé de celui-ci, ou gardez le modèle actuel.",
+    "continue": "Poursuivre avec {{model}} dans un nouveau chat",
+    "keep": "Garder le modèle actuel",
+    "created": "Nouveau chat sur {{model}} démarré à partir d'un résumé.",
+    "failed": "Impossible de démarrer le nouveau chat. Réessayez.",
+    "openFailed": "Le nouveau chat a été créé, mais n'a pas pu être ouvert. Retrouvez-le dans votre historique ; votre message n'a pas été envoyé."
   }
 }

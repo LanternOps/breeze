@@ -14,6 +14,7 @@ import {
   Plus,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Timer,
   X
 } from 'lucide-react';
@@ -72,6 +73,13 @@ import {
   arAgingOptionsFromConfig,
   type ArAgingOptions,
 } from './ArAgingOptionsForm';
+import {
+  DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS,
+  AiUsageByClientOptionsForm,
+  aiUsageByClientConfigFromOptions,
+  aiUsageByClientOptionsFromConfig,
+  type AiUsageByClientOptions,
+} from './AiUsageByClientOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
@@ -154,6 +162,7 @@ const reportTypeValues: TemplateReportType[] = [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  'ai_usage_by_client',
   'devices',
   'alerts',
   'patches',
@@ -207,6 +216,21 @@ const defaultTemplates: ReportTemplate[] = [
     },
     icon: Banknote,
     tone: { iconBg: 'bg-cyan-500/15', iconColor: 'text-cyan-600' },
+    group: 'business'
+  },
+  {
+    id: 'ai_usage_by_client',
+    name: 'AI usage by client',
+    description:
+      'Platform AI usage per client for the period: requests, tokens, Breeze cost, the amount to charge from the client\'s billing profile, and what has already been invoiced. Included usage and unpriced models are shown separately, never blended in.',
+    defaults: {
+      name: 'AI usage by client',
+      type: 'ai_usage_by_client',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Sparkles,
+    tone: { iconBg: 'bg-violet-500/15', iconColor: 'text-violet-600' },
     group: 'business'
   },
   {
@@ -552,7 +576,7 @@ const TemplatePreviewImage = ({ template, alt }: { template: ReportTemplate; alt
  * The Default range tile for a business report type (#3198). Those types have
  * no ad-hoc date range — the server refuses one — but they do have a real
  * period: the one a saved report stored, else the config schema's own default
- * (a full calendar month for ticket_sla_attainment / technician_time_billability).
+ * (a full calendar month for ticket_sla_attainment / technician_time_billability / ai_usage_by_client).
  * ar_aging has no period at all — it is a running balance as of the run date,
  * or as of the fixed date a saved report pinned.
  */
@@ -565,7 +589,7 @@ function businessDefaultRange(template: ReportTemplate, t: (key: string) => stri
       ? saved.asOf
       : t('reports.reportTemplates.spec.asOfRunDate');
   }
-  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability') {
+  if (type === 'ticket_sla_attainment' || type === 'technician_time_billability' || type === 'ai_usage_by_client') {
     switch (periodKind) {
       case 'last_full_month': return t('reports.reportPeriod.kinds.last_full_month');
       case 'last_30_days': return t('reports.reportPeriod.kinds.last_30_days');
@@ -651,6 +675,7 @@ export default function ReportTemplates() {
   const [ticketSlaOptions, setTicketSlaOptions] = useState<TicketSlaOptions>(DEFAULT_TICKET_SLA_OPTIONS);
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
+  const [aiUsageOptions, setAiUsageOptions] = useState<AiUsageByClientOptions>(DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
   // Create-only ownership for the business modal. The selector renders only
   // for a resolved partner-scope token; everyone else creates org-owned.
   const {
@@ -872,6 +897,7 @@ export default function ReportTemplates() {
         setTicketSlaOptions(saved ? ticketSlaOptionsFromConfig(saved) : DEFAULT_TICKET_SLA_OPTIONS);
         setTechnicianTimeOptions(saved ? technicianTimeOptionsFromConfig(saved) : DEFAULT_TECHNICIAN_TIME_OPTIONS);
         setArAgingOptions(saved ? arAgingOptionsFromConfig(saved) : DEFAULT_AR_AGING_OPTIONS);
+        setAiUsageOptions(saved ? aiUsageByClientOptionsFromConfig(saved) : DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
         setOwnerScope(defaultOwnerScope);
         setBusinessTemplate(template);
         return;
@@ -924,6 +950,18 @@ export default function ReportTemplates() {
             submitLabel={t('reports.arAgingOptions.createReport')}
             onSubmit={() => {
               void handleCreateDirect(template, arAgingConfigFromOptions(arAgingOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'ai_usage_by_client':
+        return (
+          <AiUsageByClientOptionsForm
+            {...shared}
+            value={aiUsageOptions}
+            onChange={setAiUsageOptions}
+            submitLabel={t('reports.aiUsageByClientOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, aiUsageByClientConfigFromOptions(aiUsageOptions), effectiveOwnerScope);
             }}
           />
         );

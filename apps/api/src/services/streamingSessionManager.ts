@@ -26,7 +26,8 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 // real runtime cycle. TypeScript erases this one.
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { grantCatalogSdkEgress, sdkModelOptions } from './aiModels/connectionFactory';
+import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
+import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -37,12 +38,14 @@ import {
   type SdkTurnUsageResult,
   type TurnOutcome,
 } from './aiModels/invocationUsage';
-import { applyPromptProfile } from './aiModels/promptProfiles';
+import { noteProviderFailureForBinding } from './aiModels/offeringHealth';
+import { promptProvenanceFor, renderSystemPrompt, type PromptProvenance } from './aiModels/promptProfiles';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
 import { liveQueryKey, turnBindingFrom, type TurnBinding } from './aiModels/turnBinding';
 import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type RefusalAlternative } from './aiModels/refusals';
+import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -51,16 +54,12 @@ import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits 
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
-import { isRecognizedSelfHostSignal } from '../config/env';
-import type { ResolvedLlmEndpoint, UsableLlmConfig } from './llm/llmConfigResolver';
-import { PLATFORM_LLM_CREDENTIAL_ENV_KEYS } from './llm/llmAvailability';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './llm/sdkChildEnvGuards';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -163,148 +162,90 @@ const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
 
-const SDK_CHILD_ENV_ALLOWLIST = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  // ANTHROPIC_MODEL (#1412): raw-vLLM model id override. Harmless to forward
-  // (the model is also passed explicitly via options.model); not a redirect
-  // vector, so unlike ANTHROPIC_BASE_URL it needs no hosted gating.
-  'ANTHROPIC_MODEL',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_AGENT_SDK_CLIENT_APP',
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'NODE_EXTRA_CA_CERTS',
-  'SSL_CERT_FILE',
-  'SSL_CERT_DIR',
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'SystemRoot',
-  'COMSPEC',
-] as const;
-
-// The platform credentials — the same set `isPlatformLlmConfigured` counts as
-// "a model provider is configured", so readiness and the subprocess agree.
-const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>(PLATFORM_LLM_CREDENTIAL_ENV_KEYS);
+// The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
+// re-exported so existing importers (scripts, tests) keep working.
+export { buildClaudeSdkChildEnv } from './aiModels/sdkChildEnv';
 
 /**
- * Proxy configuration the parent process may carry. Forwarded as-is for
- * platform and direct-Anthropic partner sessions (an operator's outbound proxy
- * is legitimate there), but DROPPED wholesale for a catalog session: those must
- * traverse the grant-scoped CONNECT proxy, and a parent `NO_PROXY=*` (or a
- * lowercase `https_proxy` shadowing our uppercase one) would quietly restore
- * direct, unpinned egress to the provider (#3922, quorum P4).
+ * A model-gateway capability path: the grant token (32 random bytes,
+ * base64url) is the only credential a gateway child holds, and the CLI may
+ * echo its base URL in an error line.
  */
-const SDK_CHILD_ENV_PROXY_KEYS = new Set<string>([
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-]);
+const GATEWAY_CAPABILITY_PATH = /\/g\/[A-Za-z0-9_-]{43,}/g;
 
-/** The catalog endpoint of a partner session, or null for every other shape. */
-function catalogEndpointOf(
-  resolved: UsableLlmConfig,
-): Extract<ResolvedLlmEndpoint, { kind: 'catalog' }> | null {
-  return resolved.source === 'partner' && resolved.endpoint.kind === 'catalog'
-    ? resolved.endpoint
-    : null;
-}
-
-export function buildClaudeSdkChildEnv(
-  resolved: UsableLlmConfig,
-  source: NodeJS.ProcessEnv = process.env,
-  options: { egressProxyUrl?: string } = {},
-): Record<string, string> {
-  const catalogEndpoint = catalogEndpointOf(resolved);
-
-  const env: Record<string, string> = {
-    CI: 'true',
-    CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
-    // HOME is forwarded below; without these the CLI prepends the host's
-    // Claude Code auto-memory to every request (#7444). Shared by every return
-    // path because they all return this object.
-    ...SDK_CHILD_HOST_CONTEXT_GUARDS,
-  };
-
-  for (const key of SDK_CHILD_ENV_ALLOWLIST) {
-    if (resolved.source === 'partner' && SDK_CHILD_ENV_CREDENTIAL_KEYS.has(key)) continue;
-    if (catalogEndpoint && SDK_CHILD_ENV_PROXY_KEYS.has(key)) continue;
-    const value = source[key];
-    if (typeof value === 'string' && value.length > 0) {
-      env[key] = value;
-    }
-  }
-
-  // `resolved.source === 'partner'` is implied by a catalog endpoint existing;
-  // it is restated so `resolved.apiKey` narrows to a required string.
-  if (catalogEndpoint && resolved.source === 'partner') {
-    const { egressProxyUrl } = options;
-    // No proxy URL means no grant, and no grant means the child would dial the
-    // provider itself with none of the allowlisting, DNS pinning, or egress
-    // audit this whole path exists for. Refuse to build such an environment
-    // rather than start a subprocess that silently egresses unguarded.
-    if (!egressProxyUrl) {
-      throw new Error(
-        'A catalog LLM session requires an egress proxy URL; refusing to build an unproxied child environment.',
-      );
-    }
-    // The endpoint's own URL — deliberately NOT the parent's
-    // ANTHROPIC_BASE_URL, which is never in the allowlist and stays irrelevant
-    // here whatever IS_HOSTED says (#1412 governs the PLATFORM path only).
-    env.ANTHROPIC_BASE_URL = catalogEndpoint.baseUrl;
-    // Exactly one credential var; the other was already excluded above with the
-    // rest of the parent's credentials, so the SDK cannot fall back to a
-    // platform key and leak it to a third party.
-    if (catalogEndpoint.authMode === 'bearer') {
-      env.ANTHROPIC_AUTH_TOKEN = resolved.apiKey;
-    } else {
-      env.ANTHROPIC_API_KEY = resolved.apiKey;
-    }
-    env.HTTPS_PROXY = egressProxyUrl;
-    env.HTTP_PROXY = egressProxyUrl;
-    // Explicit and empty: an unset NO_PROXY would let the parent's (already
-    // dropped) value or a library default exempt hosts from the proxy.
-    env.NO_PROXY = '';
-    return env;
-  }
-
-  if (resolved.source === 'partner') {
-    env.ANTHROPIC_API_KEY = resolved.apiKey;
-    return env;
-  }
-
-  // ANTHROPIC_BASE_URL (#1412): forward ONLY when self-host is affirmatively
-  // declared (IS_HOSTED explicitly false/0/no/off). Fail-closed — unset / empty
-  // / garbage / truthy IS_HOSTED all strip it, so a stray/misconfigured value
-  // (including the #570 unmapped-IS_HOSTED footgun) can never redirect platform
-  // AI traffic to a third-party backend. The config validator also boot-refuses
-  // this combo; this is defense-in-depth at the actual subprocess boundary (the
-  // function reads process.env directly, not the validated config singleton).
-  const anthropicBaseUrl = source.ANTHROPIC_BASE_URL;
-  if (
-    isRecognizedSelfHostSignal(source.IS_HOSTED)
-    && typeof anthropicBaseUrl === 'string'
-    && anthropicBaseUrl.length > 0
-  ) {
-    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
-  }
-
-  return env;
+function redactSdkStderrText(data: string): string {
+  return redactAiToolOutputText(data.replace(GATEWAY_CAPABILITY_PATH, '/g/[redacted]'));
 }
 
 export function redactClaudeSdkStderr(data: string): string {
-  return redactAiToolOutputText(data).trim();
+  return redactSdkStderrText(data).trim();
+}
+
+/** Longest stderr line buffered before it is flushed unterminated; also the cap on one logged entry. */
+const SDK_STDERR_MAX_LINE = 16 * 1024;
+/** Characters kept back when an over-long line is flushed, so a token cut there is matched whole later. */
+const SDK_STDERR_CARRY = 64;
+const SDK_STDERR_MARKER = /error|Error|FATAL/;
+
+/**
+ * Line-buffered, redacting sink for one SDK child's stderr. The CLI's stderr
+ * arrives in arbitrary chunks, so a secret (a gateway grant token in a /g/
+ * URL, a key) can be split across two of them; redacting each chunk on its own
+ * would let both halves through. Text is therefore held until a newline and
+ * each write's batch of complete lines is redacted as a whole before it is
+ * logged (only when it carries an error marker, as before). A line longer
+ * than SDK_STDERR_MAX_LINE is redacted as buffered and flushed except for its
+ * last SDK_STDERR_CARRY characters, which stay buffered: a token that is
+ * incomplete at the cut lies wholly inside them and is matched once the rest
+ * arrives. Every logged entry is at most SDK_STDERR_MAX_LINE characters.
+ * `flush()` (child exit / session teardown) logs whatever is left; it is
+ * idempotent.
+ */
+export function createSdkStderrRedactor(emit: (text: string) => void): { write(data: string): void; flush(): void } {
+  let pending = '';
+  // The current (unterminated) line already had a marked part logged.
+  let continuing = false;
+
+  const emitRedacted = (text: string): void => {
+    const redacted = redactSdkStderrText(text);
+    for (let i = 0; i < redacted.length; i += SDK_STDERR_MAX_LINE) {
+      const part = redacted.slice(i, i + SDK_STDERR_MAX_LINE).trim();
+      if (part) emit(part);
+    }
+  };
+
+  return {
+    write(data: string): void {
+      pending += data;
+      const nl = pending.lastIndexOf('\n');
+      if (nl >= 0) {
+        const batch = pending.slice(0, nl + 1);
+        pending = pending.slice(nl + 1);
+        if (continuing || SDK_STDERR_MARKER.test(batch)) emitRedacted(batch);
+        continuing = false;
+      }
+      if (pending.length > SDK_STDERR_MAX_LINE) {
+        const marked = continuing || SDK_STDERR_MARKER.test(pending);
+        // Redact BEFORE cutting, so a complete secret anywhere in the buffer is
+        // replaced whole; only redacted text is ever logged or carried.
+        const redacted = redactSdkStderrText(pending);
+        const cut = Math.max(0, redacted.length - SDK_STDERR_CARRY);
+        if (marked) {
+          for (let i = 0; i < cut; i += SDK_STDERR_MAX_LINE) {
+            const part = redacted.slice(i, Math.min(i + SDK_STDERR_MAX_LINE, cut)).trim();
+            if (part) emit(part);
+          }
+          continuing = true;
+        }
+        pending = redacted.slice(cut);
+      }
+    },
+    flush(): void {
+      if (pending && (continuing || SDK_STDERR_MARKER.test(pending))) emitRedacted(pending);
+      pending = '';
+      continuing = false;
+    },
+  };
 }
 
 // ============================================
@@ -503,6 +444,25 @@ export interface ActiveSession {
    * recreating the query (the price is not part of `liveKey`).
    */
   turnBinding: TurnBinding;
+  /**
+   * W05: display names of the current turn's bound model and its refusal
+   * fallback (for `turn_model`). Seeded at creation, re-bound by the winner of
+   * `tryTransitionToProcessing` alongside `turnBinding`.
+   */
+  turnDisplay: TurnDisplay;
+  /**
+   * W05: index of the thinking content block the model is in, while a
+   * `thinking_state: started` is outstanding; null otherwise. On the session
+   * (not the processor) so the turn timeout can close it too.
+   */
+  thinkingBlockIndex?: number | null;
+  /**
+   * W11 (#7609): the prompt profile and variant this live query's system
+   * prompt was built with. Fixed for the query's life, as the system prompt
+   * is; every settlement of a turn on this query records it (the per-turn
+   * `turnBinding` may carry a newer profile — liveQueryKey ignores it).
+   */
+  readonly promptProvenance: PromptProvenance;
   /** The Breeze users.id the ledger attributes turns to; null for helper / Office / system. */
   readonly ledgerUserId: string | null;
   /** Refusal-fallback system messages seen during the current turn (W03 Task 5). */
@@ -527,7 +487,13 @@ export interface ActiveSession {
    * invoked by `remove()` so a torn-down, rotated or evicted session stops
    * being able to reach the provider immediately.
    */
+  /**
+   * Releases every grant the SDK child holds (catalog CONNECT grant; gateway
+   * grant + deny-all proxy grant, W06). Idempotent; called on every teardown.
+   */
   revokeEgressGrant?: () => void;
+  /** Logs any buffered (redacted) SDK stderr tail. Idempotent; called on teardown. */
+  flushSdkStderr?: () => void;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -803,11 +769,10 @@ export class StreamingSessionManager {
   private lastCapacityAlarmAt = 0;
 
   constructor() {
-    // No `runOutsideDbContext` wrapper around this `setInterval`, unlike the
-    // OpenAI twin (llm/openaiSessionManager.ts). That manager is a LAZY
-    // singleton first constructed inside an AI request handler, so its timer
-    // would inherit the requester's AsyncLocalStorage scope on every tick for
-    // the life of the process. This one is a MODULE-LEVEL singleton
+    // No `runOutsideDbContext` wrapper around this `setInterval`: a LAZY
+    // singleton first constructed inside an AI request handler would need one,
+    // because its timer would inherit the requester's AsyncLocalStorage scope
+    // on every tick for the life of the process. This one is a MODULE-LEVEL singleton
     // (bottom of file), constructed at import time with no ambient context, so
     // the sweep starts clean. `markSessionsExpired` still re-enters the escape
     // per statement — that is what actually guarantees the write's context,
@@ -844,7 +809,7 @@ export class StreamingSessionManager {
   tryTransitionToProcessing(
     session: ActiveSession,
     budgetReservationId?: string,
-    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding },
+    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding; turnDisplay?: TurnDisplay },
   ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
@@ -865,6 +830,10 @@ export class StreamingSessionManager {
     // reservation carries; settlement bills exactly that.
     if (turn?.turnBinding) {
       session.turnBinding = turn.turnBinding;
+    }
+    // W05: and the display names `turn_model` reports for that binding.
+    if (turn?.turnDisplay) {
+      session.turnDisplay = turn.turnDisplay;
     }
     session.refusalObservation = newSdkTurnObservation();
     // The state and its staleness clock move together: eviction reads
@@ -929,6 +898,13 @@ export class StreamingSessionManager {
       toolSearch?: boolean;
       /** The Breeze users.id the ledger attributes this session's turns to (null: helper / Office / system). */
       ledgerUserId?: string | null;
+      /**
+       * W05: this turn deliberately switches model (planModelTransition said
+       * `switch_resume`). An idle live query with a different key is
+       * recreated — `resume` + this turn's resolved options, never setModel
+       * (spike D3) — silently: the user asked for it.
+       */
+      modelSwitch?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -949,7 +925,11 @@ export class StreamingSessionManager {
           // lets the route's existing concurrent-message guard return a 409
           // without killing an in-flight stream mid-response.
         } else if (existing.state === 'idle') {
-          if (existing.liveKey !== key) {
+          if (existing.liveKey !== key && options?.modelSwitch) {
+            console.info('[StreamingSessionManager] model switch: recreating the idle query with resume', {
+              breezeSessionId, from: existing.liveKey, to: key,
+            });
+          } else if (existing.liveKey !== key) {
             console.info(
               '[StreamingSessionManager] rotating idle AI session after model/provider change',
               { breezeSessionId, from: existing.liveKey, to: key },
@@ -1034,8 +1014,11 @@ export class StreamingSessionManager {
       loadApprovalWaitBudgetMs(dbSession.orgId),
     ]);
 
+    // Catalog provenance stamp only (below). A gateway connection (W06) has no
+    // catalog revision: its provenance is llm_egress_events.connection_id and
+    // ai_invocations.connection_id, so the stamp clears both columns.
     const connectionConfig = resolved.connection.config;
-    const catalogEndpoint = catalogEndpointOf(connectionConfig);
+    const catalogEndpoint = connectionConfig.source === 'gateway' ? null : catalogEndpointOf(connectionConfig);
 
     // Device-bound sessions execute tools under the DEVICE's org, not the
     // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
@@ -1085,12 +1068,19 @@ export class StreamingSessionManager {
     // query and processorPromise are filled in after creation.
     const now = Date.now();
     const resumeSdkSessionId = dbSession.sdkSessionId ?? undefined;
+    // W11: the canary is sticky per breeze session — the same session keeps
+    // its variant across query re-creations while the registry is unchanged.
+    const promptProvenance = promptProvenanceFor({
+      surface: binding.surface, profile: resolved.promptProfile, subjectId: breezeSessionId,
+    });
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
       deviceId,
       liveKey: key,
       turnBinding: binding,
+      turnDisplay: turnDisplayFrom(resolved),
+      promptProvenance,
       ledgerUserId: options?.ledgerUserId ?? null,
       refusalObservation: newSdkTurnObservation(),
       forceRecreate: false,
@@ -1193,14 +1183,15 @@ export class StreamingSessionManager {
     // `mcpServerFactory`, `createBreezeMcpServer` — would otherwise leak the
     // grant until the process restarted, since `remove()` never runs for a
     // session that was never registered.
-    // Shared with agent runs (aiModels/connectionFactory.grantCatalogSdkEgress):
-    // null for a non-catalog connection; audited CONNECT grant otherwise.
-    const egress = await grantCatalogSdkEgress(resolved, {
+    // Shared with agent runs (aiModels/connectionFactory.prepareSdkChild, the
+    // one SDK-child seam): the child env plus every grant it needs — an
+    // audited CONNECT grant for a catalog connection, a gateway grant and a
+    // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
+    const child = await prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
     });
-    const egressProxyUrl = egress?.proxyUrl;
-    const revokeEgressGrant = egress?.revoke;
-    if (revokeEgressGrant) session.revokeEgressGrant = revokeEgressGrant;
+    const revokeEgressGrant = child.revoke;
+    session.revokeEgressGrant = revokeEgressGrant;
 
     // Durable per-session provenance (#3922 phase 2). `billing_source` stays
     // 'partner_key' for direct and catalog BYOK alike, so these two columns are
@@ -1256,9 +1247,11 @@ export class StreamingSessionManager {
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
+    const stderrLog = createSdkStderrRedactor((text) => console.error('[SDK-stderr]', breezeSessionId, text));
+    session.flushSdkStderr = () => stderrLog.flush();
     try {
       runOutsideDbContextSafe(() => {
-        const childEnv = buildClaudeSdkChildEnv(connectionConfig, process.env, { egressProxyUrl });
+        const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
           childEnv,
@@ -1267,7 +1260,7 @@ export class StreamingSessionManager {
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
-            systemPrompt: applyPromptProfile(binding.surface, resolved.promptProfile, effectiveSystemPrompt),
+            systemPrompt: renderSystemPrompt(effectiveSystemPrompt, session.promptProvenance),
             // model (the resolver's wire id — a catalog endpoint's own id),
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
@@ -1280,14 +1273,17 @@ export class StreamingSessionManager {
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },
+            // Gateway connections only: an empty temp working directory, so
+            // the environment context sent upstream names no host path.
+            ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+            // Gateway connections only, after maxBudgetUsd: the registry price
+            // of the bound models, so the SDK's budget cap is not a guess.
+            ...(child.queryOptions ?? {}),
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
-            stderr: (data: string) => {
-              if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-                console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
-              }
-            },
+            // Redacted per complete line, never per chunk (see createSdkStderrRedactor).
+            stderr: (data: string) => stderrLog.write(data),
           }
         });
 
@@ -1298,7 +1294,7 @@ export class StreamingSessionManager {
         session.processorPromise.catch((err) => {
           captureException(err);
           console.error('[StreamingSessionManager] Background processor error:', err);
-        });
+        }).finally(() => stderrLog.flush());
       });
     } catch (err) {
       // The subprocess never started (a rejected child env, a query() throw).
@@ -1306,7 +1302,11 @@ export class StreamingSessionManager {
       // `this.sessions`, so `remove()` will never run for it and the grant
       // would leak until the process restarted. The grant is taken immediately
       // above this block precisely so there is no un-covered window.
-      try { revokeEgressGrant?.(); } catch { /* teardown must not mask err */ }
+      // Reported, never rethrown: the teardown must not mask `err`.
+      try { revokeEgressGrant(); } catch (revokeErr) {
+        captureException(revokeErr);
+        console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', breezeSessionId, revokeErr);
+      }
       throw err;
     }
 
@@ -1350,12 +1350,14 @@ export class StreamingSessionManager {
     try { session.query.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
     }
-    // Release the CONNECT-proxy allowance (catalog sessions only). Done on
-    // every teardown path — rotation, eviction, processor exit — so a session
-    // that is going away cannot keep a tunnel to the provider open.
+    // Release the child's grants (catalog CONNECT allowance; gateway grant +
+    // deny-all proxy grant). Done on every teardown path — rotation, eviction,
+    // processor exit — so a session that is going away cannot keep a tunnel
+    // to the provider, or a gateway grant, open.
     try { session.revokeEgressGrant?.(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', sessionId, err);
     }
+    try { session.flushSdkStderr?.(); } catch { /* logging must not block teardown */ }
     session.eventBus.closeAll();
     session.state = 'closed';
     this.sessions.delete(sessionId);
@@ -1443,6 +1445,7 @@ export class StreamingSessionManager {
           this.remove(session.breezeSessionId);
           return;
         }
+        this.stopThinking(session);
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -1586,7 +1589,10 @@ export class StreamingSessionManager {
               session.lastActivityAt = Date.now();
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
-              if ('delta' in event && event.delta.type === 'text_delta') {
+              if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
+                // W05: a long think is stream progress, not a wedged turn.
+                session.lastActivityAt = Date.now();
+              } else if ('delta' in event && event.delta.type === 'text_delta') {
                 // Stream progress keeps the turn alive for eviction purposes.
                 session.lastActivityAt = Date.now();
                 // Topology M4: raw provider text goes to the server-only output
@@ -1595,7 +1601,20 @@ export class StreamingSessionManager {
                 else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
               }
             } else if (event.type === 'content_block_start') {
-              if ('content_block' in event && event.content_block.type === 'text') {
+              if ('content_block' in event
+                && (event.content_block.type === 'thinking' || event.content_block.type === 'redacted_thinking')) {
+                // W05: never a silent pause while the model reasons (spec §11).
+                // The block's text is empty without `thinkingDisplay` (W01 D1),
+                // so the stream carries a state, not text. Topology turns
+                // publish fixed phases only and are excluded.
+                session.lastActivityAt = Date.now();
+                if (!session.topologyInvestigation) {
+                  if (session.thinkingBlockIndex == null) {
+                    session.eventBus.publish({ type: 'thinking_state', state: 'started' });
+                  }
+                  session.thinkingBlockIndex = event.index;
+                }
+              } else if ('content_block' in event && event.content_block.type === 'text') {
                 // #5106: every text content_block_start AFTER the first one in
                 // this assistant message means a tool_use block sat between
                 // two text blocks (text -> tool_use -> text). Emit a
@@ -1643,6 +1662,8 @@ export class StreamingSessionManager {
                     input: {},
                   });
               }
+            } else if (event.type === 'content_block_stop' && event.index === session.thinkingBlockIndex) {
+              this.stopThinking(session);
             } else if (event.type === 'message_delta') {
               if (messageStarted) {
                 session.eventBus.publish({
@@ -1807,6 +1828,12 @@ export class StreamingSessionManager {
           case 'result': {
             // Clear per-turn timeout on result
             this.clearTurnTimeout(session);
+            // W05: a turn that ends mid-thought still closes the indicator.
+            this.stopThinking(session);
+            // The binding/display this turn ran under (read before anything
+            // awaits; nothing can re-bind them while the turn is processing).
+            const turnBinding = session.turnBinding;
+            const turnDisplay = session.turnDisplay;
             // Topology M4: validate BEFORE anything is persisted or streamed.
             const topologyTurn = Boolean(session.topologyInvestigation);
             if (topologyTurn) {
@@ -1857,6 +1884,13 @@ export class StreamingSessionManager {
               await this.publishRefusal(session, turn.outcome.refusalCategory);
             }
 
+            // W05 (spike constraint 5): what actually ran — the served model and
+            // applied options from the turn's OUTCOME, never the request — then
+            // persisted so a reload shows exactly what was published.
+            if (!topologyTurn) {
+              await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
@@ -1879,10 +1913,21 @@ export class StreamingSessionManager {
     } catch (err) {
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
+      this.stopThinking(session);
+      // A topology turn never surfaces transport/provider text, sanitized or
+      // not: it ends in the same fixed failure as a failed result (W06 made
+      // this the only topology transport).
+      const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
-      session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
+      session.eventBus.publish({
+        type: 'error',
+        message: topologyTurn ? 'The topology explanation could not be completed.' : sanitizeErrorForClient(err),
+      });
       session.eventBus.publish({ type: 'done' });
     } finally {
+      // W05: a turn that ended without a `result` mid-thought (teardown,
+      // crash) still closes the indicator.
+      this.stopThinking(session);
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.
       await this.abortTopologyTurn(session);
@@ -1983,6 +2028,17 @@ export class StreamingSessionManager {
     const turn: SdkTurnUsageResult = sdkTurnUsage({ binding, observation, result: billable, previousSnapshot });
     const tokens = billedTokenTotals(turn.usage);
 
+    // W09 (#7607, D5): a chat turn is never replayed on another model. A turn
+    // that FAILED on a classified provider error before any output cools its
+    // offering, so the next message resolves to a healthy fallback
+    // (resolveModel). Fire-and-forget: the cooldown fails open.
+    const turnFailed = !result || result.subtype !== 'success' || (result as { is_error?: unknown }).is_error === true;
+    if (turnFailed && observation.providerFailure && !observation.sawOutput) {
+      void noteProviderFailureForBinding(binding, observation.providerFailure.cause).catch((err) => {
+        console.warn('[StreamingSessionManager] cooldown write failed:', safeErrorMessage(err));
+      });
+    }
+
     let costCents: number;
     try {
       costCents = await quoteInvocationCents(binding, turn.usage);
@@ -2016,6 +2072,9 @@ export class StreamingSessionManager {
         usage: turn.usage,
         outcome: turn.outcome,
         reservationId,
+        // W11: the live query's prompt, not the claimed binding's profile (a
+        // reused query keeps the system prompt it was created with).
+        prompt: session.promptProvenance,
         toolExecutionCount,
         turnCount: result ? (result.num_turns ?? 0) : 1,
         sdkUsage: {
@@ -2054,6 +2113,45 @@ export class StreamingSessionManager {
         reservationId, error: safeErrorMessage(err),
       });
       (session.unsettledReservationIds ??= []).push(reservationId);
+    }
+  }
+
+  /**
+   * W05: close an outstanding `thinking_state: started` (idempotent). Every
+   * turn end — result, error, timeout, teardown — calls this, so a client is
+   * never left showing "Thinking…" over a finished turn.
+   */
+  private stopThinking(session: ActiveSession): void {
+    if (session.thinkingBlockIndex == null) return;
+    session.thinkingBlockIndex = null;
+    session.eventBus.publish({ type: 'thinking_state', state: 'stopped' });
+  }
+
+  /**
+   * W05 (spike constraint 5): publish the turn's `turn_model` and persist it as
+   * ai_sessions.last_turn_model. Provenance is informative: a failure here is
+   * reported loudly but never fails the turn (`done` still follows).
+   */
+  private async publishTurnModel(
+    session: ActiveSession,
+    binding: TurnBinding,
+    display: TurnDisplay,
+    outcome: TurnOutcome,
+  ): Promise<void> {
+    let turnModel;
+    try {
+      turnModel = await describeTurnModel({ binding, outcome, display });
+    } catch (err) {
+      captureException(err);
+      console.error('[StreamingSessionManager] Failed to describe the turn model:', safeErrorMessage(err));
+      return;
+    }
+    session.eventBus.publish({ type: 'turn_model', turnModel });
+    try {
+      await persistLastTurnModel({ orgId: session.orgId, sessionId: session.breezeSessionId, turnModel });
+    } catch (err) {
+      captureException(reportableError(err), undefined, { org_id: session.orgId });
+      console.error('[StreamingSessionManager] Failed to persist last_turn_model; a reload will not show what ran this turn:', safeErrorMessage(err));
     }
   }
 

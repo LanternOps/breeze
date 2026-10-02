@@ -49,16 +49,22 @@ export const REPORT_TYPES = [
   // Backup Provider Integration W05 (#6013): generated on demand from the
   // unified backup health read model. Not portal-visible, not managed evidence.
   'backup_status',
+  // AI chargeback W10 (#7608): per-client AI usage and chargeable amounts over
+  // the authoritative ai_invocations ledger. Business type (msp_staff, partner
+  // capable); never portal-visible, never managed evidence.
+  'ai_usage_by_client',
 ] as const satisfies readonly string[];
 
 export type ReportType = (typeof REPORT_TYPES)[number];
 
-/** The #3198 Phase 1 trio. Used by the registry's scope table and by W03's
- *  "Business" template grouping. */
+/** The business report types: the #3198 Phase 1 trio, plus ai_usage_by_client
+ *  (#7608 W10). Used by the registry's scope table and by W03's "Business"
+ *  template grouping. */
 export const BUSINESS_REPORT_TYPES = [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  'ai_usage_by_client',
 ] as const satisfies readonly ReportType[];
 
 export type BusinessReportType = (typeof BUSINESS_REPORT_TYPES)[number];
@@ -74,6 +80,8 @@ export const BUSINESS_REPORT_REQUIRED_PERMISSIONS = {
   ticket_sla_attainment: [PERMISSION_GRANTS.TICKETS_READ],
   technician_time_billability: [PERMISSION_GRANTS.TIME_ENTRIES_READ, PERMISSION_GRANTS.TICKETS_READ],
   ar_aging: [PERMISSION_GRANTS.INVOICES_READ],
+  // Money owed AND every AI session in the org: both reads are required.
+  ai_usage_by_client: [PERMISSION_GRANTS.INVOICES_READ, PERMISSION_GRANTS.AI_SESSIONS_READ_ALL],
 } as const satisfies Record<BusinessReportType, readonly PermissionGrant[]>;
 
 const REPORT_TYPE_SET: ReadonlySet<string> = new Set(REPORT_TYPES);

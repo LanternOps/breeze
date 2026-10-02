@@ -364,6 +364,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // NULL for intent_id), so topologicalCascadeOrder()'s runtime pg_constraint
   // read is what actually orders the DELETE, not this list's alphabetization.
   'ai_unattended_exposure',
+  // ai_usage_charge_* (AI chargeback W10, #7608): shape 1. claims → charges is
+  // the only FK between them (claims first; NO ACTION, so the order matters);
+  // run_id is a snapshot id (no FK). Neither is append-only, so neither is in
+  // AUDIT_ADMIN_REQUIRED_TABLES.
+  'ai_usage_charge_claims',
+  'ai_usage_charge_runs',
+  'ai_usage_charges',
   'alert_correlation_groups',
   'alert_correlation_members',
   'alert_rules',
@@ -424,6 +431,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'backup_storage_sessions',
   'backup_verifications',
   'bare_metal_recoveries',
+  'billing_link_tokens',
+  'billing_notice_outbox',
+  'billing_payment_settings',
   'brain_device_context',
   'browser_extensions',
   'browser_policies',
@@ -588,6 +598,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'incident_evidence',
   'incidents',
   'installer_bootstrap_tokens',
+  'invoice_autopay_schedules',
+  'invoice_collection_attempts',
   'invoice_documents',
   // Same '_' < 's' prefix-extension trap: invoice_line_devices sorts BEFORE
   // invoice_lines. It is also the FK child, so children-before-parents and
@@ -673,6 +685,8 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'oauth_grants',
   'oauth_refresh_tokens',
   'onedrive_device_state',
+  'org_autopay_consents',
+  'org_autopay_enrollments',
   'org_billing_profile_assignments',
   // org_documents (service deliverables W03). Alphabetical slot only: the list
   // is STATIC and alphabetised (the contract test asserts exactly that), while
@@ -684,6 +698,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // tenantCascade.integration.test.ts. The self-FK on supersedes_document_id is
   // ignored by that sort by design (one DELETE clears the whole org's rows).
   'org_documents',
+  'org_payment_methods',
   'org_ticket_settings',
   // organization_external_links (#3242): external-system linkage rows. The
   // composite FK to organizations (id, partner_id) carries ON DELETE CASCADE,
@@ -1215,6 +1230,7 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
  * grants so ordinary app paths can append/read but cannot mutate them.
  */
 const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
+  'org_autopay_consents',
   'audit_logs',
   'audit_log_chain',
   'audit_chain_anchors',

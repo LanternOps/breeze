@@ -13,6 +13,7 @@ export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
 export * from './aiModelRegistry';
+export * from './aiModelQuality';
 
 // ============================================
 // Multi-Tenancy Types
@@ -998,3 +999,5 @@ export * from './businessReports';
 // ============================================
 
 export * from './backupStatusReport';
+export * from './aiModelChoices';
+export * from './autopay';

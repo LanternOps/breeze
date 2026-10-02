@@ -42,6 +42,8 @@ function baseDraft(overrides: Partial<Draft> = {}): Draft {
     scriptIds: [],
     ticketAutonomousWrites: false,
     alertCategories: [],
+    offeringId: null,
+    offeringIdTouched: false,
     ...overrides,
   };
 }
@@ -280,5 +282,21 @@ describe('buildAgentSaveBody scriptIds (#5089 review)', () => {
     expect(partner.actAssets.scriptIds).toEqual([]);
     const org = buildAgentSaveBody({ ...base, ownerScope: 'organization', scriptIds: [] }, { isCreate: false, orgId: 'org-1' }) as { actAssets: { scriptIds: string[] } };
     expect(org.actAssets.scriptIds).toEqual([]);
+  });
+});
+
+describe('offeringId in the save body (W05)', () => {
+  const opts = (isCreate: boolean) => ({ isCreate, orgId: 'org-1' });
+  it('create sends a chosen offering, and nothing for "use the default"', () => {
+    expect(buildAgentSaveBody(baseDraft({ offeringId: 'opus', offeringIdTouched: true }), opts(true))).toMatchObject({ offeringId: 'opus' });
+    expect(buildAgentSaveBody(baseDraft({ offeringId: null }), opts(true))).not.toHaveProperty('offeringId');
+  });
+  it('update sends offeringId only when the user changed it (an unrelated edit never re-binds the model)', () => {
+    expect(buildAgentSaveBody(baseDraft({ offeringId: 'opus', offeringIdTouched: false }), opts(false))).not.toHaveProperty('offeringId');
+    expect(buildAgentSaveBody(baseDraft({ offeringId: null, offeringIdTouched: true }), opts(false))).toMatchObject({ offeringId: null });
+  });
+  it("draftFrom reads the agent's offering", () => {
+    const agent = { offeringId: 'opus' } as unknown as Parameters<typeof draftFrom>[0];
+    expect(draftFrom(agent, { ownerScope: 'partner', kind: 'patch' })).toMatchObject({ offeringId: 'opus', offeringIdTouched: false });
   });
 });

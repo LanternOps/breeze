@@ -40,7 +40,10 @@ vi.mock('./platformModels', async (orig) => ({
   getPlatformInferenceGeo: m.getPlatformInferenceGeo,
 }));
 vi.mock('../llmProviderCatalog', () => ({ getListedProviderByEntryId: m.getListedProviderByEntryId }));
-vi.mock('../llm/llmAvailability', () => ({ isPlatformLlmConfigured: m.isPlatformLlmConfigured }));
+vi.mock('../llm/llmAvailability', async (orig) => ({
+  ...(await orig<typeof import('../llm/llmAvailability')>()),
+  isPlatformLlmConfigured: m.isPlatformLlmConfigured,
+}));
 vi.mock('../llm/llmConfigResolver', async (orig) => ({
   ...(await orig<typeof import('../llm/llmConfigResolver')>()),
   isLlmProviderCatalogEnabled: m.isLlmProviderCatalogEnabled,
@@ -439,9 +442,42 @@ describe('unknown capabilities on an Anthropic connection (W01 D4 + W00 wire par
     m.getOffering.mockResolvedValue({
       ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: null, source: 'manual', modelId: 'claude-sonnet-4-6', ...PRICE,
     });
-    m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible' });
+    m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', configVersion: 4, apiKeyEncrypted: 'enc' });
     const c = (await loadOfferingCandidate('off-1', 'p1'))!;
     expect(c.capabilities).toEqual({ thinkingMode: 'unknown', effortLevels: [], supportsTools: false, supportsVision: false });
+  });
+
+  it('openai_compatible dispatches through the gateway branch (W06): gateway config + credential, offering price only', async () => {
+    m.getOffering.mockResolvedValue({
+      ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: 'pm-1', source: 'discovered', modelId: 'qwen2.5-coder:7b', ...PRICE,
+    });
+    m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', inferenceGeo: 'eu' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', configVersion: 4, apiKeyEncrypted: 'enc' });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.connection).toEqual({
+      id: 'conn-9', kind: 'openai_compatible',
+      config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p1', connectionId: 'conn-9', configVersion: 4, baseUrl: 'https://llm.example.com/v1' },
+      credential: { secret: 'sk-partner' },
+    });
+    expect(c.funding).toBe('partner_key');
+    expect(c.wireModel).toBe('qwen2.5-coder:7b');
+    expect(c.facts.rate?.source).toBe('offering');
+    expect(c.facts.inferenceGeo).toBeNull();
+    // The linked platform row is never consulted for a gateway kind (no price/capability inheritance).
+    expect(m.getPlatformModelById).not.toHaveBeenCalled();
+  });
+
+  it('openai_compatible on a disconnected connection is unusable (its NULL key is not "keyless")', async () => {
+    m.getOffering.mockResolvedValue({
+      ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: null, source: 'discovered', modelId: 'qwen2.5-coder:7b', ...PRICE,
+    });
+    m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', status: 'disconnected' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
+    const c = (await loadOfferingCandidate('off-1', 'p1'))!;
+    expect(c.connection).toBeNull();
+    expect(c.facts.connection.keyUsable).toBe(false);
+    expect(checkEligibility(c.facts, { ...ELIGIBILITY_CTX, surface: 'catalog_enrichment' })).toBe('connection_unavailable');
   });
 });
 

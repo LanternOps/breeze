@@ -372,11 +372,21 @@ vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
   settleInvocation,
 }));
-const grantCatalogSdkEgress = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<{ proxyUrl: string; revoke: () => void } | null>>(async () => null));
+// W11: an active ai_agents/claude-small variant; the fixture's default profile
+// (claude-standard) has none, so every other test sends the base agent prompt.
+vi.mock('../aiModels/promptVariants', async (orig) => ({
+  ...(await orig<typeof import('../aiModels/promptVariants')>()),
+  PROMPT_VARIANTS: [
+    { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'active', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
+  ],
+}));
+// W06: the run loop's SDK child env + grants come from the one seam,
+// connectionFactory.prepareSdkChild (its own behaviour: prepareSdkChild.test.ts).
+const prepareSdkChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; cwd?: string; queryOptions?: Record<string, unknown>; revoke: () => void }>>());
 vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/connectionFactory')>()),
-  grantCatalogSdkEgress,
+  prepareSdkChild,
 }));
 const notifyModelBlocked = vi.hoisted(() => vi.fn<(input: Record<string, unknown>) => Promise<void>>(async () => undefined));
 vi.mock('./modelBlocked', async (importOriginal) => ({
@@ -384,17 +394,34 @@ vi.mock('./modelBlocked', async (importOriginal) => ({
   notifyModelBlocked,
 }));
 
-const buildClaudeSdkChildEnv = vi.hoisted(() =>
-  vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
-vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
-vi.mock('../aiCostTracker', () => ({}));
+const checkBudgetDetailed = vi.hoisted(() => vi.fn<(orgId: string, funding: string) => Promise<{ message: string } | null>>(async () => null));
+vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed }));
+
+// AI model registry W09 (#7607): the run's failover hop. `startHopFor` stays
+// REAL (the resume rule is what the re-drive cases pin); the DB-writing and
+// resolving helpers are scripted per test.
+const nextAgentHop = vi.hoisted(() => vi.fn());
+const probeAgentHop = vi.hoisted(() => vi.fn());
+const recordServedHop = vi.hoisted(() => vi.fn(async () => undefined));
+const markStaleHopReservations = vi.hoisted(() => vi.fn(async () => 0));
+vi.mock('./agentRunFailover', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agentRunFailover')>()),
+  nextAgentHop,
+  probeAgentHop,
+  recordServedHop,
+  markStaleHopReservations,
+}));
+const noteProviderFailure = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure }));
 
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+const releaseUnusedAiBudgetReservation = vi.hoisted(() => vi.fn(async () => ({ kind: 'released' })));
 vi.mock('../aiBudgetReservations', () => ({
   reserveAiBudget,
   markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
 }));
 
 // checkToolPermission must NEVER be reachable from an agent run. Spying through
@@ -483,6 +510,11 @@ function seedRows(options: {
   /** AI model registry W03 — what admission resolved; undefined = a pre-W03 run (both NULL). */
   admittedOfferingId?: string | null;
   fundingSource?: 'platform' | 'partner_key' | null;
+  /** AI model registry W09 — the hop a re-driven run last recorded; undefined = none (all NULL). */
+  servedOfferingId?: string | null;
+  servedFundingSource?: 'platform' | 'partner_key' | null;
+  servedFailoverHop?: number | null;
+  servedFailoverCause?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -507,6 +539,10 @@ function seedRows(options: {
     correlationGroupId: options.correlationGroupId === undefined ? null : options.correlationGroupId,
     admittedOfferingId: options.admittedOfferingId ?? null,
     fundingSource: options.fundingSource ?? null,
+    servedOfferingId: options.servedOfferingId ?? null,
+    servedFundingSource: options.servedFundingSource ?? null,
+    servedFailoverHop: options.servedFailoverHop ?? null,
+    servedFailoverCause: options.servedFailoverCause ?? null,
   }]];
   dbMockState.rowQueues.ai_agents = [[{
     id: AGENT_ID,
@@ -709,7 +745,7 @@ beforeEach(() => {
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
   resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
-  grantCatalogSdkEgress.mockResolvedValue(null);
+  prepareSdkChild.mockImplementation(async () => ({ env: { CI: 'true' }, revoke: vi.fn() }));
   // The billed number the real settlement returns: the registry price.
   settleInvocation.mockImplementation(async (input) => ({
     costCents: realSettle.sumCostCents(realSettle.priceUsage(
@@ -772,36 +808,124 @@ describe('executeAgentRun', () => {
     }));
   });
 
+  it('W11: an agent run on a claude-small model sends the ai_agents variant and settles with it', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', promptProfile: 'claude-small' }));
+    await executeAgentRun(RUN_ID);
+    expect(String(lastQueryOptions!.systemPrompt)).toMatch(/\n\n## Model Guidance\nAgent guidance\.$/);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, prompt: { profile: 'claude-small', variant: 'ai_agents/claude-small@1' },
+    }));
+  });
+
+  it('W11: the default profile sends the unchanged agent prompt', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(String(lastQueryOptions!.systemPrompt)).not.toContain('## Model Guidance');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ prompt: { profile: 'claude-standard', variant: null } }));
+  });
+
   // -------------------------------------------------------------------------
   // AI model registry W03 (Task 12): resolve, translate, fund, settle
   // -------------------------------------------------------------------------
 
-  it('catalog agent runs send the TRANSLATED wire model through a proxied env (legacy sent the logical id)', async () => {
+  it('catalog agent runs send the TRANSLATED wire model through the prepareSdkChild env (legacy sent the logical id)', async () => {
     seedRows();
     const catalog = makeResolvedModel('catalog', { surface: 'ai_agents' });
     resolveModel.mockResolvedValue(catalog);
     const revoke = vi.fn();
-    grantCatalogSdkEgress.mockResolvedValue({ proxyUrl: 'http://127.0.0.1:9999', revoke });
+    prepareSdkChild.mockResolvedValue({ env: { HTTPS_PROXY: 'http://127.0.0.1:9999' }, revoke });
 
     await executeAgentRun(RUN_ID);
 
     expect(lastQueryOptions!.model).toBe('anthropic/claude-sonnet-5.5');
-    expect(grantCatalogSdkEgress).toHaveBeenCalledWith(catalog, {
+    expect(prepareSdkChild).toHaveBeenCalledWith(catalog, {
       key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1',
     });
-    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
-      catalog.connection.config, process.env, { egressProxyUrl: 'http://127.0.0.1:9999' },
-    );
+    expect(lastQueryOptions!.env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:9999' });
     // The grant never outlives the run.
     expect(revoke).toHaveBeenCalledTimes(1);
   });
 
-  it('a non-catalog run builds an unproxied child env from the resolved connection', async () => {
+  it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {
     seedRows();
     await executeAgentRun(RUN_ID);
-    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'platform' }), process.env, {},
+    expect(prepareSdkChild).toHaveBeenCalledWith(
+      expect.objectContaining({ connection: expect.objectContaining({ kind: 'platform' }) }),
+      { key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1' },
     );
+    expect(lastQueryOptions!.env).toEqual({ CI: 'true' });
+    // No working-directory override outside gateway connections.
+    expect(lastQueryOptions).not.toHaveProperty('cwd');
+  });
+
+  it('W06: a gateway (openai_compatible) run spawns on the prepareSdkChild env and revokes its grants when the run ends', async () => {
+    seedRows();
+    const gateway = makeResolvedModel('openai_compatible', { surface: 'ai_agents' });
+    resolveModel.mockResolvedValue(gateway);
+    const revoke = vi.fn();
+    const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/tok', ANTHROPIC_API_KEY: 'breeze-gateway' };
+    prepareSdkChild.mockResolvedValue({ env, cwd: '/tmp/breeze-sdk-run', revoke });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(prepareSdkChild).toHaveBeenCalledWith(gateway, {
+      key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1',
+    });
+    expect(lastQueryOptions!.model).toBe('qwen2.5-coder:7b');
+    expect(lastQueryOptions!.env).toEqual(env);
+    // The child runs in the isolated working directory the seam handed out.
+    expect(lastQueryOptions!.cwd).toBe('/tmp/breeze-sdk-run');
+    expect(JSON.stringify(lastQueryOptions!.env)).not.toContain('sk-fixture-upstream');
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('W06: a gateway child\'s query options (registry pricing for the SDK budget cap) reach query()', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    const managedSettings = { modelPricing: { overrides: { 'qwen2.5-coder:7b': { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } } };
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, cwd: '/tmp/breeze-sdk-run', queryOptions: { managedSettings }, revoke: vi.fn() });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.managedSettings).toEqual(managedSettings);
+    // The SDK cap stays on: it now prices the run at the offering's rates.
+    expect(typeof lastQueryOptions!.maxBudgetUsd).toBe('number');
+  });
+
+  it('W06: a gateway child that cannot express its price to the SDK spawns without the SDK budget cap', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, queryOptions: { maxBudgetUsd: undefined }, revoke: vi.fn() });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.maxBudgetUsd).toBeUndefined();
+  });
+
+  it('the child grants are revoked when the SDK query throws', async () => {
+    seedRows();
+    const revoke = vi.fn();
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, revoke });
+    queryMock.mockImplementation(() => { throw new Error('spawn failed'); });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('a prepareSdkChild failure dispatches nothing, releases the unused reservation and fails llm_unavailable', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    prepareSdkChild.mockRejectedValue(new Error('gateway could not start'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({
+      orgId: ORG_ID, reservationId: '00000000-0000-4000-8000-0000000000e1',
+    });
+    expect(finalTransition()?.patch).toMatchObject({ errorCode: 'llm_unavailable' });
   });
 
   it('dispatches with the resolver\'s wire params (thinking/effort) and its refusal fallback', async () => {
@@ -829,7 +953,7 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(resolveModel).toHaveBeenCalledWith({
-      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents',
+      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis',
       requested: { offeringId: 'off-77', origin: 'policy' },
     });
   });
@@ -2674,13 +2798,21 @@ describe('executeAgentRun', () => {
     }));
   });
 
+  it('the run loop resolves the same role admission did (act-mode full -> remediation)', async () => {
+    seedRows({ effective: policy({ mode: 'act' }), modeAtStart: 'act' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ surface: 'ai_agents', role: 'remediation' }));
+  });
+
   it('a policy with no bound offering follows the ai_agents assignment default', async () => {
     seedRows({ effective: policy({ model: null }) });
     resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', logicalModel: 'claude-default-x' }));
 
     await executeAgentRun(RUN_ID);
 
-    expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents' });
+    expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis' });
     expect(createAgentRunSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'claude-default-x' }),
     );
@@ -3438,5 +3570,468 @@ describe('finalizeVerdict → persistAlertVerdict wiring (P2-1, Task 8, review r
     const final = finalTransition()!;
     expect(final.to).toBe('completed');
     expect(final.patch.errorCode).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI model registry W09 (#7607, Task 11): an agent run fails over between
+// hops only on a classified PRE-OUTPUT provider failure, each hop on its own
+// reservation key, binding, funding and SDK child grants.
+// ---------------------------------------------------------------------------
+describe('W09 run failover', () => {
+  const USAGE = { input_tokens: 1000, output_tokens: 400 };
+  const primary = () => makeResolvedModel('platform', {
+    surface: 'ai_agents', role: 'analysis', offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+  });
+  const backup = (over: Partial<ReturnType<typeof makeResolvedModel>> = {}) => makeResolvedModel('anthropic_byok', {
+    surface: 'ai_agents', role: 'analysis', offering: { id: 'k', displayName: 'K' },
+    failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [], ...over,
+  });
+  const retry = (attempt: number) => ({
+    type: 'system', subtype: 'api_retry', attempt, max_retries: 10, retry_delay_ms: 0, error_status: 529, error: 'overloaded',
+  });
+  const successResult = () => resultMessage({ usage: USAGE });
+  const errorResult = () => resultMessage({
+    subtype: 'error_during_execution', is_error: true, usage: { input_tokens: 0, output_tokens: 0 },
+  });
+  /** A pre-output provider error that still reports billed tokens (Codex review 1). */
+  const errorResultWithUsage = (o: { status: number; usage: Record<string, number> }) => resultMessage({
+    subtype: 'success', is_error: true, api_error_status: o.status, result: `API Error: ${o.status}`, usage: o.usage,
+  });
+  /**
+   * A tool the model ran: drives the MCP pre/post hooks exactly like
+   * `scriptQuery` does. Deliberately yields NO assistant `tool_use` frame, so
+   * `sawOutput` stays false and only the "a tool executed in this hop" guard
+   * can stop the failover.
+   */
+  const toolUseThenExecute = (tool: string) => ({ __tool: tool });
+  type Step = Record<string, unknown>;
+  const queryOptions: Array<Record<string, unknown>> = [];
+
+  /** The n-th `query()` call gets the n-th script. A step after an abort throws, as the real iterator does. */
+  function scriptQueries(scripts: Step[][]) {
+    let n = 0;
+    queryMock.mockImplementation((params: { prompt: unknown; options: Record<string, unknown> }) => {
+      lastQueryOptions = params.options;
+      queryOptions.push(params.options);
+      const script = scripts[n++] ?? [];
+      const signal = (params.options.abortController as AbortController).signal;
+      const generator = (async function* () {
+        for (const step of script) {
+          if (signal.aborted) throw new Error('AbortError');
+          if (typeof step.__throw === 'string') throw new Error(step.__throw);
+          if (typeof step.__tool === 'string') {
+            const verdict = await hooks.pre!(step.__tool, {});
+            preVerdicts.push(verdict);
+            await hooks.post!(step.__tool, {}, verdict.allowed ? '{"ok":true}' : JSON.stringify({ error: verdict.error }), !verdict.allowed, 5);
+            continue;
+          }
+          yielded.push(step);
+          yield step;
+        }
+      })();
+      return Object.assign(generator, { close: closeMock, interrupt: vi.fn() });
+    });
+  }
+
+  const reserveKeys = () => reserveAiBudget.mock.calls.map((c) => {
+    const input = c[0] as { idempotencyKey: string; billingSource: string };
+    return [input.idempotencyKey, input.billingSource];
+  });
+  const settles = () => settleInvocation.mock.calls.map((c) => c[0] as {
+    binding: { offeringId: string | null; failover?: { hop: number; cause: string } }; usage: unknown[]; reservationId: string;
+  });
+
+  beforeEach(() => {
+    queryOptions.length = 0;
+    nextAgentHop.mockReset();
+    // Default: a usable backup exists, so the CLI may be aborted for it.
+    probeAgentHop.mockReset().mockResolvedValue({ ok: true, resolved: backup() });
+    recordServedHop.mockReset().mockResolvedValue(undefined);
+    markStaleHopReservations.mockReset().mockResolvedValue(0);
+    noteProviderFailure.mockReset().mockResolvedValue(undefined);
+    checkBudgetDetailed.mockReset().mockResolvedValue(null);
+    let reservation = 0;
+    reserveAiBudget.mockImplementation(async () => ({
+      kind: 'unlimited', reservationId: `res-${reservation++}`, dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01', status: 'active',
+    }));
+  });
+
+  it('fails over after the CLI\'s retry budget; each hop reserves and settles on its own key', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [retry(1), retry(2)],     // hop 0: aborted by shouldFailOverNow
+      [successResult()],        // hop 1 serves
+    ]);
+    await executeAgentRun(RUN_ID);
+
+    expect(reserveKeys()).toEqual([
+      [`ai-agent-run:${RUN_ID}`, 'platform'],
+      [`ai-agent-run:${RUN_ID}:hop:1`, 'partner_key'],
+    ]);
+    expect(settles().map((s) => [s.binding.offeringId, s.usage.length, s.reservationId])).toEqual([
+      ['p', 0, 'res-0'], ['k', 1, 'res-1'],
+    ]);
+    expect(noteProviderFailure).toHaveBeenCalledWith(expect.objectContaining({ offering: { id: 'p', displayName: 'P' } }), 'overloaded');
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({
+      runId: RUN_ID, orgId: ORG_ID, partnerId: PARTNER_ID, tried: ['p'], cause: 'overloaded', hop: 1,
+      origin: { offeringId: 'p', funding: 'platform', connectionId: null },
+    }));
+    // Each hop has its own SDK controller and child grant key; hop 0's was aborted.
+    expect(queryOptions).toHaveLength(2);
+    expect((queryOptions[0]!.abortController as AbortController).signal.aborted).toBe(true);
+    expect(queryOptions[1]!.abortController).not.toBe(queryOptions[0]!.abortController);
+    expect(prepareSdkChild.mock.calls.map((c) => (c[1] as { key: string }).key)).toEqual([
+      `agent-run:${RUN_ID}`, `agent-run:${RUN_ID}:1`,
+    ]);
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('each hop prepares its OWN SDK child for its own model, and a hop\'s grants are revoked before the next hop\'s are opened', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    const first = primary();
+    resolveModel.mockResolvedValueOnce(first);
+    // The backup is a gateway connection: the failover crosses into it.
+    const gatewayBackup = makeResolvedModel('openai_compatible', {
+      surface: 'ai_agents', role: 'analysis', offering: { id: 'k', displayName: 'K' },
+      failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+    });
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: gatewayBackup });
+    const events: string[] = [];
+    const revoke0 = vi.fn(() => { events.push('revoke-0'); });
+    const revoke1 = vi.fn(() => { events.push('revoke-1'); });
+    const managedSettings = { modelPricing: { overrides: { 'qwen2.5-coder:7b': { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } } };
+    prepareSdkChild
+      .mockImplementationOnce(async () => { events.push('prepare-0'); return { env: { HOP: '0' }, revoke: revoke0 }; })
+      .mockImplementationOnce(async () => {
+        events.push('prepare-1');
+        return { env: { HOP: '1' }, cwd: '/tmp/breeze-sdk-hop1', queryOptions: { managedSettings }, revoke: revoke1 };
+      });
+    scriptQueries([
+      [retry(1), retry(2)],     // hop 0: aborted by shouldFailOverNow
+      [successResult()],        // hop 1 (gateway) serves
+    ]);
+    await executeAgentRun(RUN_ID);
+
+    expect(prepareSdkChild).toHaveBeenCalledTimes(2);
+    expect(prepareSdkChild).toHaveBeenNthCalledWith(1, first, { key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1' });
+    expect(prepareSdkChild).toHaveBeenNthCalledWith(2, gatewayBackup, { key: `agent-run:${RUN_ID}:1`, orgId: ORG_ID, aiSessionId: 'session-1' });
+    // Hop 0's grants are gone before hop 1's are opened; each revoked exactly once.
+    expect(events).toEqual(['prepare-0', 'revoke-0', 'prepare-1', 'revoke-1']);
+    expect(revoke0).toHaveBeenCalledTimes(1);
+    expect(revoke1).toHaveBeenCalledTimes(1);
+    // Each query spawned on its own hop's child.
+    expect(queryOptions[0]!.env).toEqual({ HOP: '0' });
+    expect(queryOptions[0]).not.toHaveProperty('cwd');
+    expect(queryOptions[0]).not.toHaveProperty('managedSettings');
+    expect(queryOptions[1]!.env).toEqual({ HOP: '1' });
+    expect(queryOptions[1]!.cwd).toBe('/tmp/breeze-sdk-hop1');
+    expect(queryOptions[1]!.managedSettings).toEqual(managedSettings);
+    expect(queryOptions[1]!.model).toBe('qwen2.5-coder:7b');
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('a failover hop whose SDK child cannot be prepared releases ITS reservation (not the settled hop\'s) and fails llm_unavailable', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    const revoke0 = vi.fn();
+    prepareSdkChild
+      .mockImplementationOnce(async () => ({ env: { HOP: '0' }, revoke: revoke0 }))
+      .mockImplementationOnce(async () => { throw new Error('gateway could not start'); });
+    scriptQueries([[retry(1), retry(2)]]);
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(revoke0).toHaveBeenCalledTimes(1);
+    // Hop 0 was settled on its own reservation; hop 1's was never used.
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: 'res-1' });
+    expect(finalTransition()?.patch).toMatchObject({ errorCode: 'llm_unavailable' });
+  });
+
+  it('a tool executed before the failure → no failover, the hop settles normally', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    scriptQueries([[toolUseThenExecute('query_devices'), retry(5), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(noteProviderFailure).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.binding.offeringId)).toEqual(['p']);
+  });
+
+  it('nothing configured → W03 behaviour: no abort on retries, one reservation on the W03 key', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce({ ...primary(), failoverRemaining: [] });
+    scriptQueries([[retry(1), retry(2), retry(3), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}`, 'platform']]);
+    expect(yielded).toHaveLength(4); // every retry reached the loop: nothing aborted the CLI's own retries
+    expect(prepareSdkChild.mock.calls.map((c) => (c[1] as { key: string }).key)).toEqual([`agent-run:${RUN_ID}`]);
+  });
+
+  it('a re-driven run resumes on its persisted hop key and offering', async () => {
+    seedRows({
+      admittedOfferingId: 'p', fundingSource: 'platform',
+      servedOfferingId: 'k', servedFundingSource: 'partner_key', servedFailoverHop: 1, servedFailoverCause: 'overloaded',
+    });
+    resolveModel.mockResolvedValueOnce(backup());
+    scriptQueries([[successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+      requested: { offeringId: 'k', origin: 'policy' },
+      failoverOrigin: { offeringId: 'p', funding: 'platform', connectionId: null },
+      failoverCause: 'overloaded',
+    }));
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}:hop:1`, 'partner_key']]);
+    expect(prepareSdkChild.mock.calls.map((c) => (c[1] as { key: string }).key)).toEqual([`agent-run:${RUN_ID}:1`]);
+    expect(recordServedHop).not.toHaveBeenCalled();
+  });
+
+  it('a queued run whose admitted offering went ineligible may cross funding only via a configured failover that is admitted', async () => {
+    // Not a configured walk (failover null): W03's blocked run, nothing reserved.
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(makeResolvedModel('anthropic_byok', {
+      surface: 'ai_agents', offering: { id: 'k', displayName: 'K' }, failover: null,
+    }));
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).toBe('blocked');
+    expect(checkBudgetDetailed).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+
+    // A configured walk whose funding is NOT admitted: blocked too, nothing recorded.
+    vi.clearAllMocks();
+    transitionRunStatus.mockResolvedValue(true);
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(backup());
+    checkBudgetDetailed.mockResolvedValueOnce({ message: 'AI budget exhausted' });
+    await executeAgentRun(RUN_ID);
+    expect(checkBudgetDetailed).toHaveBeenCalledWith(ORG_ID, 'partner_key');
+    expect(finalTransition()!.to).toBe('blocked');
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+
+    // A configured, admitted walk: recorded as hop 1 BEFORE its reservation.
+    vi.clearAllMocks();
+    transitionRunStatus.mockResolvedValue(true);
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(backup());
+    scriptQueries([[successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(recordServedHop).toHaveBeenCalledWith(RUN_ID, { offeringId: 'k', funding: 'partner_key', hop: 1, cause: 'overloaded' });
+    expect(recordServedHop.mock.invocationCallOrder[0]!).toBeLessThan(reserveAiBudget.mock.invocationCallOrder[0]!);
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}:hop:1`, 'partner_key']]);
+  });
+
+  it('an error RESULT with usage is billed on its hop before failing over (Codex 1)', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [errorResultWithUsage({ status: 401, usage: USAGE })],   // pre-output, but tokens were billed
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({ cause: 'auth_failed' }));
+    expect(settles()[0]).toMatchObject({ binding: { offeringId: 'p' }, reservationId: 'res-0' });
+    expect(settles()[0]!.usage.length).toBeGreaterThan(0);
+    expect(settles()[1]).toMatchObject({ binding: { offeringId: 'k' }, reservationId: 'res-1' });
+    // The run's cost is both hops' billed spend.
+    const perHop = registryCents({ input: USAGE.input_tokens, output: USAGE.output_tokens });
+    expect(finalTransition()!.patch.costCents).toBe(Math.round(perHop * 2));
+  });
+
+  it('a hop transition after the deadline dispatches nothing more, and records no hop that never ran (Codex 7, PR #7775 review)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+      resolveModel.mockResolvedValueOnce(primary());
+      // The deadline passes during the transition, BEFORE the next hop is resolved and recorded.
+      noteProviderFailure.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 10 * 60 * 60 * 1000);
+      });
+      nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+      scriptQueries([[retry(1), retry(2)]]);
+      await executeAgentRun(RUN_ID);
+      // The run row never names a hop that was not dispatched.
+      expect(nextAgentHop).not.toHaveBeenCalled();
+      expect(recordServedHop).not.toHaveBeenCalled();
+      expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      // The failed hop was settled on its own reservation; nothing is left held.
+      expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a hop whose spend already reaches the run budget records no next hop (PR #7775 review)', async () => {
+    seedRows({
+      admittedOfferingId: 'p', fundingSource: 'platform',
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxBudgetCentsPerRun: 10 } as AiAgentLimits }),
+    });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 50_000 } })]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).budgetExceeded).toBe(true);
+  });
+
+  // PR #7775 review (D8): only a hop that ENDED on a classified provider
+  // status may fail over after the fact. A timeout / reset / exception is an
+  // unknown outcome: W03's no-result path, never a $0 in-loop settlement.
+  it('a retry then an SDK exception → no failover; the reservation is kept indeterminate, not settled at zero', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[retry(1), { __throw: 'socket hang up' }]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: 'res-0' });
+  });
+
+  it('a retry then an UNCLASSIFIED error result → no failover (the stale retry cause does not count)', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[retry(1), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+  });
+
+  it('a classified 401 error result with no output and no tool → fails over', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 0 } })],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({ cause: 'auth_failed', hop: 1 }));
+    expect(reserveKeys().map(([k]) => k)).toEqual([`ai-agent-run:${RUN_ID}`, `ai-agent-run:${RUN_ID}:hop:1`]);
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('the CLI\'s own final classified api-error message, then an error result → fails over', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [{ type: 'assistant', error: 'authentication_failed', message: { content: [] } }, errorResult()],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({ cause: 'auth_failed' }));
+  });
+
+  it('a classified 401 error result after a tool executed → no failover', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[toolUseThenExecute('query_devices'), errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 0 } })]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+  });
+
+  it('output before the failure → no failover, one reservation (pins the sawOutput wiring)', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the device.' }] } },
+      retry(5), errorResult(),
+    ]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(yielded).toHaveLength(3);
+  });
+
+  // PR #7775 review: the CLI is only aborted for a backup that can actually serve.
+  it('a fallback list but no usable backup → no abort; the CLI\'s retries run out, W03 behaviour', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    probeAgentHop.mockReset().mockResolvedValue({ ok: false, reason: 'no_next_hop', message: 'No other AI model is available for this agent.' });
+    scriptQueries([[retry(1), retry(2), retry(3), retry(4), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(yielded).toHaveLength(5); // nothing aborted the CLI's own retries
+    expect(probeAgentHop).toHaveBeenCalledTimes(1); // once per hop, cached
+    expect(probeAgentHop).toHaveBeenCalledWith(expect.objectContaining({ tried: ['p'], hop: 1, cause: 'overloaded' }));
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}`, 'platform']]);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+  });
+
+  it('a failed-over hop whose settlement AND indeterminate mark both fail is reported, never silent', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    settleInvocation.mockRejectedValueOnce(new Error('settle down'));
+    markAiBudgetReservationIndeterminate.mockRejectedValueOnce(new Error('mark down'));
+    scriptQueries([[retry(1), retry(2)], [successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: 'res-0' });
+    const ids = { org_id: ORG_ID, ai_agent_run_id: RUN_ID, ai_reservation_id: 'res-0' };
+    const report = (re: RegExp) => captureException.mock.calls.find(([e]) => re.test(String((e as Error).message)));
+    expect(report(/hop settlement failed/)?.[2]).toEqual(ids);
+    expect(report(/not retained as indeterminate/)?.[2]).toEqual(ids);
+  });
+
+  it('a backup lookup that throws is reported and distinguishable from "no backup configured"', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockRejectedValueOnce(new Error('connection terminated'));
+    scriptQueries([[retry(1), retry(2)]]);
+    await executeAgentRun(RUN_ID);
+    const report = captureException.mock.calls.find(([e]) => /backup model lookup failed/.test(String((e as Error).message)));
+    expect(report?.[2]).toEqual({ org_id: ORG_ID, ai_agent_run_id: RUN_ID });
+    // Only the error code is persisted; the Sentry report above is what tells a DB error from "no backup".
+    expect(finalTransition()!.patch.errorCode).toBe('llm_unavailable');
+  });
+
+  it('no next hop → the failed hop is settled once and the run fails; nothing is left for the post-loop settlement', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: false, reason: 'no_next_hop', message: 'No other AI model is available for this agent.' });
+    scriptQueries([[retry(1), retry(2)]]);
+    await executeAgentRun(RUN_ID);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+    expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('llm_unavailable');
+  });
+
+  it('a re-drive marks earlier hops\' stale reservations before reserving its own, keeping the row\'s provenance', async () => {
+    seedRows({
+      admittedOfferingId: 'p', fundingSource: 'platform',
+      servedOfferingId: 'k', servedFundingSource: 'partner_key', servedFailoverHop: 1, servedFailoverCause: 'overloaded',
+    });
+    // The resolver's own provenance for the resumed hop differs; the run row's wins.
+    resolveModel.mockResolvedValueOnce(backup({ failover: { fromOfferingId: 'p', hop: 2, cause: 'server_error' } }));
+    scriptQueries([[successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(markStaleHopReservations).toHaveBeenCalledWith({ runId: RUN_ID, orgId: ORG_ID, uptoHop: 1 });
+    expect(markStaleHopReservations.mock.invocationCallOrder[0]!).toBeLessThan(reserveAiBudget.mock.invocationCallOrder[0]!);
+    expect(settles()[0]!.binding.failover).toEqual({ fromOfferingId: 'p', hop: 1, cause: 'overloaded' });
   });
 });

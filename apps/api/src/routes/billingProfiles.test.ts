@@ -14,6 +14,7 @@ const { listWorkTypes, createWorkType, updateWorkType, archiveWorkType, authRef,
 const profileMocks = vi.hoisted(() => ({
   listProfiles: vi.fn(), getProfile: vi.fn(), createProfile: vi.fn(), updateProfile: vi.fn(),
   replaceProfileRows: vi.fn(), saveProfile: vi.fn(), cloneProfile: vi.fn(), writeRouteAudit: vi.fn(),
+  listAiModelChoices: vi.fn(),
 }));
 vi.mock('../services/billingProfileService', () => ({
   ...profileMocks,
@@ -443,5 +444,26 @@ describe('billing profile routes', () => {
     profileMocks.createProfile.mockRejectedValue(new BillingProfileServiceError('Duplicate', 409, 'PROFILE_NAME_TAKEN'));
     expect((await profileRequest('POST', '/', { name: 'Standard', currencyCode: 'USD', baseCoverage: 'billable' })).status).toBe(409);
     expect(profileMocks.writeRouteAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /ai-model-choices (#7608)', () => {
+  it('returns the acting partner\'s model choices under billing_profiles:read', async () => {
+    profileMocks.listAiModelChoices.mockResolvedValue([{ modelId: 'w10-test-a', label: 'A', source: 'offering' }]);
+    const res = await billingProfilesRoutes.request('/ai-model-choices');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ choices: [{ modelId: 'w10-test-a', label: 'A', source: 'offering' }] });
+    expect(profileMocks.listAiModelChoices).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+  });
+  it('is 403 without billing_profiles:read', async () => {
+    permsRef.current = { permissions: [] };
+    const res = await billingProfilesRoutes.request('/ai-model-choices');
+    expect(res.status).toBe(403);
+    expect(profileMocks.listAiModelChoices).not.toHaveBeenCalled();
+    permsRef.current = { permissions: [{ resource: 'billing_profiles', action: 'read' }, { resource: 'billing_profiles', action: 'write' }] };
+  });
+  it('is 403 for an org-scope token', async () => {
+    authRef.current = { scope: 'organization', partnerId: null };
+    expect((await billingProfilesRoutes.request('/ai-model-choices')).status).toBe(403);
   });
 });

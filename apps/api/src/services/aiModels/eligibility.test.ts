@@ -67,7 +67,12 @@ describe('checkEligibility — one row per spec §9 step 2 rule', () => {
       platformFacts({ connection: { kind: 'platform', status: 'unconfigured', keyUsable: false } }), {}, 'connection_unavailable'],
     ['connection in error', byokFacts({ connection: { kind: 'anthropic_byok', status: 'error', keyUsable: true } }), {}, 'connection_unavailable'],
     ['connection key undecryptable', byokFacts({ connection: { kind: 'anthropic_byok', status: 'active', keyUsable: false } }), {}, 'connection_unavailable'],
-    ['openai_compatible is W06', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true } }), {}, 'connection_unavailable'],
+    ['openai_compatible is dispatchable (W06)', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, rate: { ...RATE, source: 'offering' } }), {}, null],
+    ['openai_compatible with an undecryptable key', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: false } }), {}, 'connection_unavailable'],
+    ['openai_compatible disconnected', byokFacts({ connection: { kind: 'openai_compatible', status: 'disconnected', keyUsable: false } }), {}, 'connection_unavailable'],
+    ['openai_compatible unverified on a tool surface', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false }), { surface: 'chat' }, 'tools_unsupported'],
+    ['openai_compatible unverified on a non-tool surface', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false }), { surface: 'catalog_enrichment' }, null],
+    ['openai_compatible under required residency', byokFacts({ connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, inferenceGeo: null }), { residencyRequired: true }, 'residency_unavailable'],
     ['catalog model not mapped+verified in the current revision',
       byokFacts({ connection: { kind: 'catalog', status: 'active', keyUsable: true }, catalog: { usable: false } }), {}, 'model_unavailable'],
     ['catalog model usable', byokFacts({ connection: { kind: 'catalog', status: 'active', keyUsable: true }, catalog: { usable: true }, rate: { ...RATE, source: 'catalog' } }), {}, null],
@@ -206,10 +211,16 @@ describe('checkEnableEligibility (W04 enable gate; one rule table)', () => {
     expect(checkEnableEligibility(f, ctx)).toBeNull();
   });
 
-  it('treats a not-yet-dispatchable connection kind as model_unavailable for enabling', () => {
-    const f = facts({ platform: null, connection: { kind: 'openai_compatible', status: 'active', keyUsable: true } });
-    expect(checkEnableEligibility(f, ctx)).toBe('model_unavailable');
-    expect(enableBlockerFor(f, ctx)).toBe('model_unavailable');
+  it('an openai_compatible offering is enableable (W06: the kind is dispatchable; tools are decided per surface)', () => {
+    const f = facts({ platform: null, connection: { kind: 'openai_compatible', status: 'active', keyUsable: true }, supportsTools: false });
+    expect(checkEnableEligibility(f, ctx)).toBeNull();
+    expect(enableBlockerFor(f, ctx)).toBeNull();
+  });
+
+  it('an openai_compatible offering on a disconnected connection stays blocked as connection_unavailable', () => {
+    const f = facts({ platform: null, connection: { kind: 'openai_compatible', status: 'disconnected', keyUsable: false } });
+    expect(checkEnableEligibility(f, ctx)).toBe('connection_unavailable');
+    expect(enableBlockerFor(f, ctx)).toBe('connection_unavailable');
   });
 
   it('enableBlockerFor folds a foreign offering into model_unavailable', () => {

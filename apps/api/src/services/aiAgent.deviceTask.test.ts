@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -51,7 +50,6 @@ vi.mock('./llm/llmConfigResolver', () => ({
       this.name = 'LlmUnavailableError';
     }
   },
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
 // W03 Task 9 (#7601): createSession picks its model through the registry.
@@ -89,15 +87,6 @@ const auth: any = {
 describe('createSession device binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'partner',
-      partnerId: 'partner-1',
-      apiKey: 'partner-key',
-      model: 'claude-opus-4-6',
-      configId: 'config-1',
-      configVersion: 2,
-      endpoint: { kind: 'anthropic' },
-    });
   });
 
   it('resolves the session model through the registry before insert (W03 #7601)', async () => {
@@ -115,13 +104,13 @@ describe('createSession device binding', () => {
     }));
   });
 
-  it('passes an explicit model as the legacy lookup key', async () => {
+  it('passes no legacyModel to chooseSessionModel (W05)', async () => {
     const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
     insertMock.mockReturnValueOnce({ values: valuesSpy });
 
-    await createSession(auth, { model: 'claude-haiku-4-5' });
+    await createSession(auth, {});
 
-    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ legacyModel: 'claude-haiku-4-5' }));
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.not.objectContaining({ legacyModel: expect.anything() }));
   });
 
   it('throws ai_unavailable before insert when the registry has no usable model', async () => {

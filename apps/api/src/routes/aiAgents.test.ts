@@ -4565,6 +4565,38 @@ describe('PATCH /ai-agents/:id — policy model binding (AI model registry W03)'
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
   });
+
+  // W05 (#7603): the picker's path binds by offering id, judged for the WRITER.
+  const OFFERING_ID = '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a01';
+
+  it('PATCH with an offering the writer may not use → 403 permission_required (W05)', async () => {
+    updateAgentMock.mockRejectedValueOnce(new AgentModelNotAllowedError('Your role does not allow this AI model. Choose another model.', 'permission_required'));
+
+    const res = await patchAgent(buildApp(), { offeringId: OFFERING_ID });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'permission_required' });
+  });
+
+  it('PATCH forwards offeringId to the service; a non-uuid offeringId is a 400 before it (W05)', async () => {
+    updateAgentMock.mockResolvedValueOnce({ ...agentRow(), offeringId: OFFERING_ID });
+    const ok = await patchAgent(buildApp(), { offeringId: OFFERING_ID });
+    expect(ok.status).toBe(200);
+    expect(updateAgentMock).toHaveBeenCalledWith(expect.anything(), AGENT_ID, expect.objectContaining({ offeringId: OFFERING_ID }));
+    expect((await ok.json()).data).toMatchObject({ offeringId: OFFERING_ID });
+
+    updateAgentMock.mockClear();
+    const bad = await patchAgent(buildApp(), { offeringId: 'opus' });
+    expect(bad.status).toBe(400);
+    expect(updateAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('the agent DTO carries offeringId, null when unbound (W05)', async () => {
+    getAgentMock.mockResolvedValueOnce(agentRow());
+    const res = await buildApp().request(`/ai-agents/${AGENT_ID}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toHaveProperty('offeringId', null);
+  });
 });
 
 describe('POST /ai-agents/:id/enable', () => {

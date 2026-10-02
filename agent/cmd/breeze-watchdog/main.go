@@ -383,10 +383,13 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	}
 	maybeMigrateLegacyInstall()
 
-	cfg, err := config.Load("")
+	cfg, err := loadWatchdogConfig(stopCh)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
+	}
+	if cfg == nil {
+		return // stopped while waiting for a config it can use
 	}
 
 	wdCfg := watchdog.Config{
@@ -1320,7 +1323,7 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_agent", map[string]any{
 			"version": resp.UpgradeTo,
 		})
-		if err := doUpdateAgent(resp.UpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+		if err := doUpdateAgent(resp.UpgradeTo, serverURL, tokens, journal); err != nil {
 			journal.Log(watchdog.LevelError, "failover.upgrade_agent_failed", map[string]any{
 				"version": resp.UpgradeTo,
 				"error":   err.Error(),
@@ -1331,7 +1334,7 @@ func processHeartbeatResponse(
 		journal.Log(watchdog.LevelInfo, "failover.upgrade_watchdog", map[string]any{
 			"version": resp.WatchdogUpgradeTo,
 		})
-		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, cfg, tokens, journal); err != nil {
+		if err := doUpdateWatchdog(resp.WatchdogUpgradeTo, serverURL, tokens, journal); err != nil {
 			journal.Log(watchdog.LevelError, "failover.upgrade_watchdog_failed", map[string]any{
 				"version": resp.WatchdogUpgradeTo,
 				"error":   err.Error(),
@@ -1451,7 +1454,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateAgent(targetVersion, fc.BaseURL, cfg, tokens, journal)
+			err := doUpdateAgent(targetVersion, fc.BaseURL, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = failoverUpdateErrMsg(err)
@@ -1467,7 +1470,7 @@ func handleFailoverCommand(
 			resultStatus = "failed"
 			errMsg = "missing version in payload"
 		} else {
-			err := doUpdateWatchdog(targetVersion, fc.BaseURL, cfg, tokens, journal)
+			err := doUpdateWatchdog(targetVersion, fc.BaseURL, tokens, journal)
 			if err != nil {
 				resultStatus = "failed"
 				errMsg = failoverUpdateErrMsg(err)
@@ -1490,16 +1493,37 @@ func handleFailoverCommand(
 	}
 }
 
+// updateTrustConfigFn re-reads the machine config through the shared loader
+// (which refuses one another account could have written); a seam for tests.
+var updateTrustConfigFn = func() (*config.Config, error) { return config.Load("") }
+
+// updateTrustConfig returns the config an update takes its trust inputs from
+// — pinned update-signing keys, the signing-key requirement and the backup
+// server — read at update time through the loader's trust check, never the
+// copy loaded at start. A refused read refuses the update.
+func updateTrustConfig(journal *watchdog.Journal, component string) (*config.Config, error) {
+	cfg, err := updateTrustConfigFn()
+	if err != nil {
+		journal.Log(watchdog.LevelError, "update.config_refused", map[string]any{"component": component, "error": err.Error()})
+		return nil, fmt.Errorf("refusing to update the %s: the agent config could not be read and checked: %w", component, err)
+	}
+	return cfg, nil
+}
+
 // doUpdateAgent creates an updater and downloads the target version for the
 // agent binary. serverURL is a provider (func() string) resolved at download
 // time — during a failover the watchdog's FailoverClient retargets itself to
 // the promoted backup (SetBaseURL), and passing c.BaseURL here means binary
 // downloads follow that promotion instead of pinning the dead primary captured
 // in cfg at startup (#2478).
-func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+func doUpdateAgent(targetVersion string, serverURL func() string, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
+	}
+	cfg, err := updateTrustConfig(journal, "agent")
+	if err != nil {
+		return err
 	}
 	binaryPath := agentBinaryPath()
 	u := updater.New(&updater.Config{
@@ -1538,10 +1562,14 @@ func doUpdateAgent(targetVersion string, serverURL func() string, cfg *config.Co
 // serverURL is a provider resolved at download time so a self-update follows
 // the FailoverClient's backup-server-URL promotion during a failover rather
 // than pinning the startup primary (#2478).
-func doUpdateWatchdog(targetVersion string, serverURL func() string, cfg *config.Config, tokens *tokenHolder, journal *watchdog.Journal) error {
+func doUpdateWatchdog(targetVersion string, serverURL func() string, tokens *tokenHolder, journal *watchdog.Journal) error {
 	tok := tokens.Get()
 	if tok == nil {
 		return fmt.Errorf("no auth token available")
+	}
+	cfg, err := updateTrustConfig(journal, "watchdog")
+	if err != nil {
+		return err
 	}
 	exePath, err := os.Executable()
 	if err != nil {

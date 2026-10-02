@@ -703,6 +703,29 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     expect(setArg.providerConfig.accessKey).toBe('fresh-access-key');
     expect(setArg.providerConfig.secretKey).toBe('fresh-secret-key');
   });
+  it('get omits the stored encryption key and provider credentials from the result', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      encryption: true,
+      encryptionKey: 'stored-backup-encryption-key',
+      providerConfig: {
+        bucket: 'backups', region: 'us-east-1', accessKey: 'stored-access-key', secretKey: 'stored-secret-key',
+      },
+    });
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler({ action: 'get', configId: BACKUP_CONFIG_ID }, makeOrgAuth());
+
+    expect(output).not.toContain('stored-backup-encryption-key');
+    expect(output).not.toContain('stored-access-key');
+    expect(output).not.toContain('stored-secret-key');
+    const parsed = JSON.parse(output);
+    expect(parsed.config).not.toHaveProperty('encryptionKey');
+    expect(parsed.config).toMatchObject({ id: BACKUP_CONFIG_ID, name: 'S3 backup', encryption: true });
+    expect(parsed.config.providerConfig).toMatchObject({ bucket: 'backups', region: 'us-east-1' });
+  });
 });
 
 /**

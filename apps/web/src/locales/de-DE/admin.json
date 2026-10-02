@@ -704,6 +704,33 @@
         "save": "Das Modell konnte nicht gespeichert werden.",
         "refresh": "Die Modellaktualisierung konnte nicht eingereiht werden.",
         "invalidRates": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer."
+      },
+      "variants": {
+        "title": "Prompt-Varianten",
+        "subtitle": "Zusätzliche Hinweise im System-Prompt einer Funktion für eine Modellfamilie, verglichen mit dem Basis-Prompt über alle Partner hinweg. Varianten ändern sich mit Releases.",
+        "range": "{{from}} bis {{to}}.",
+        "base": "Basis-Prompt",
+        "columns": {
+          "variant": "Variante",
+          "state": "Status",
+          "conversations": "Unterhaltungen",
+          "flagRate": "Markierungsrate",
+          "refusalRate": "Ablehnungsrate",
+          "leftRate": "Zu anderem Modell gewechselt",
+          "turns": "Schritte bis zur Lösung",
+          "costPerConversation": "Kosten / Unterhaltung"
+        },
+        "states": {
+          "staged": "Vorbereitet",
+          "candidate": "Kandidat",
+          "active": "Aktiv",
+          "retired": "Zurückgezogen"
+        },
+        "lowSample": "Weniger als {{min}} Unterhaltungen – zu wenige für einen Vergleich",
+        "incumbent": "Amtierend",
+        "loading": "Prompt-Varianten werden geladen…",
+        "empty": "Keine Prompt-Varianten registriert.",
+        "error": "Der Bericht zu den Prompt-Varianten konnte nicht geladen werden."
       }
     }
   },

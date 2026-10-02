@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
@@ -14,8 +15,30 @@ func init() {
 	handlerRegistry[tools.CmdTakeScreenshot] = handleTakeScreenshot
 }
 
+// errSupportOneShotScreenAccess refuses a one-shot screen capture or input
+// command in a Quick Support session. There the user is shown who is viewing
+// their screen only while a desktop session runs (the viewing indicator
+// follows the stream managers), and a one-shot capture or input is not one,
+// so it would happen with no indicator on screen. The technician uses the
+// remote desktop session the user accepted instead.
+var errSupportOneShotScreenAccess = errors.New("screenshots and computer actions are not available in a Quick Support session; use the remote desktop session")
+
+// supportOneShotScreenAccessRefusal returns the refusal for cmdType in a
+// Quick Support session, or nil on an installed agent.
+func (h *Heartbeat) supportOneShotScreenAccessRefusal(cmdType string, start time.Time) *tools.CommandResult {
+	if h == nil || !h.supportMode {
+		return nil
+	}
+	log.Warn("refusing a one-shot screen command in a Quick Support session", "type", cmdType)
+	r := tools.NewErrorResult(errSupportOneShotScreenAccess, time.Since(start).Milliseconds())
+	return &r
+}
+
 func handleTakeScreenshot(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if refusal := h.supportOneShotScreenAccessRefusal(tools.CmdTakeScreenshot, start); refusal != nil {
+		return *refusal
+	}
 
 	// Service mode (Session 0): route through IPC to user helper which has a display.
 	// Linux is excluded: no IPC helper on Linux in Phase 1, so take the direct

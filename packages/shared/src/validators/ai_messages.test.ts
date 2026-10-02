@@ -147,17 +147,9 @@ describe('createAiSessionSchema', () => {
   it('should accept session with all fields', () => {
     const result = createAiSessionSchema.safeParse({
       pageContext: { type: 'dashboard' },
-      model: 'claude-3-opus',
       title: 'Help with server issue',
     });
     expect(result.success).toBe(true);
-  });
-
-  it('should reject model over 100 chars', () => {
-    const result = createAiSessionSchema.safeParse({
-      model: 'x'.repeat(101),
-    });
-    expect(result.success).toBe(false);
   });
 
   // W03 (#7601): a session names a registry offering + per-call options.

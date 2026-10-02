@@ -5,7 +5,7 @@ import { accountingEntityMappings } from '../db/schema/accounting';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { recomputeInvoiceStatus } from './invoiceService';
 import { emitInvoiceEvent } from './invoiceEvents';
-import { fromMinorUnits } from './stripeMoney';
+import { fromMinorUnits, toMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
@@ -116,7 +116,8 @@ export async function recordStripePayment(
       .where(eq(invoiceStripePayments.id, pre.id)).limit(1).for('update');
     if (!mapping) throw new Error(`Mapping for stripe object ${input.stripeObjectId} disappeared`);
     if (mapping.invoicePaymentId) return { kind: 'noop', invoiceId: mapping.invoiceId };
-    if (mapping.status === 'failed' || mapping.status === 'refunded' || mapping.status === 'disputed') {
+    if ((mapping.status === 'failed' && mapping.stripeObjectType !== 'payment_intent')
+        || mapping.status === 'refunded' || mapping.status === 'disputed') {
       return { kind: 'noop', invoiceId: mapping.invoiceId };
     }
     if (mapping.status === 'partially_refunded' || mapping.status === 'partially_disputed') {
@@ -151,23 +152,25 @@ export async function recordStripePayment(
     if (mapping.stripePaymentIntentId && mapping.stripePaymentIntentId !== input.stripePaymentIntentId) {
       return terminalFail(`payment intent mismatch (event=${input.stripePaymentIntentId} mapping=${mapping.stripePaymentIntentId})`);
     }
-    if (mapping.amount != null && toCents(input.amount) !== toCents(mapping.amount)) {
-      return terminalFail(`amount mismatch (event=${input.amount} mapping=${mapping.amount})`);
+    const principalAmount = mapping.amount ?? input.amount;
+    const principalMinor = toMinorUnits(principalAmount, input.currency);
+    const feeMinor = toMinorUnits(mapping.feeAmount ?? '0.00', input.currency);
+    const grossMinor = principalMinor + feeMinor;
+    if (!Number.isSafeInteger(grossMinor) || grossMinor <= 0
+        || toMinorUnits(input.amount, input.currency) !== grossMinor) {
+      return terminalFail(`amount mismatch (event=${input.amount} principal=${principalAmount} fee=${mapping.feeAmount ?? '0.00'})`);
     }
-    // The locked row's balance is authoritative against the locking writers
-    // (recordPayment, voidPayment, this path): each holds the invoice row lock
-    // while recomputeInvoiceStatus persists it. reflectStripeRefund below does
-    // NOT take the lock before its recompute — deliberately deferred (#3803
-    // item 1), so a refund racing this path can still interleave.
-    if (toCents(input.amount) > toCents(inv.balance)) {
-      return terminalFail('overpayment: payment exceeds balance');
+    if (principalMinor > toMinorUnits(inv.balance, inv.currencyCode)) {
+      return terminalFail('overpayment: principal exceeds balance');
     }
 
     const receivedAt = input.receivedAt ?? new Date().toISOString().slice(0, 10);
     const [payment] = await db.insert(invoicePayments).values({
-      invoiceId: inv.id, orgId: inv.orgId, amount: Number(input.amount).toFixed(2),
-      method: 'card', reference: input.stripePaymentIntentId,
-      receivedAt, recordedBy: null, note: null
+      invoiceId: inv.id, orgId: inv.orgId,
+      amount: fromMinorUnits(principalMinor, inv.currencyCode),
+      method: mapping.paymentMethodType === 'us_bank_account' ? 'ach_debit' : 'card',
+      reference: input.stripePaymentIntentId,
+      receivedAt, recordedBy: null, note: null,
     }).returning();
 
     // Guarded link: only an UNLINKED mapping may take this payment id. Under the
@@ -192,10 +195,8 @@ export async function recordStripePayment(
     await markSiblingRevocationIntentInTx(inv.id, input.stripeObjectId, db);
 
     await recomputeInvoiceStatus(inv.id);
-    // Gross amount is what settles the invoice, so gross is what QuickBooks gets
-    // (spec decision 8). DepositToAccountRef is omitted by the provider, so the
-    // receipt lands in Undeposited Funds and the bookkeeper records the
-    // processor fee at deposit time. Fee expense entries are out of scope.
+    // Only principal settles the invoice and enters this accounting payment
+    // outbox. The mapping preserves the fee separately for W5 fee-income posting.
     // `db` here IS the transaction handle — this callback runs inside the
     // enclosing withSystemDbAccessContext transaction, so the mapping row (the
     // outbox) commits with the payment or not at all.

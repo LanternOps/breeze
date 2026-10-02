@@ -21,6 +21,7 @@ import {
   UnexecutableReportScopeError,
 } from './reportErrors';
 import {
+  aiUsageByClientConfigSchema,
   arAgingConfigSchema,
   backupStatusReportConfigSchema,
   endpointManagementConfigSchema,
@@ -343,6 +344,19 @@ const generators = {
     generate: async (scope, config, authority) => {
       const { generateArAgingReport } = await import('./businessReports/arAgingReport');
       return generateArAgingReport(scope, config, authority);
+    },
+  },
+  // AI chargeback W10 (#7608). Same shape as the #3198 business types: the
+  // generator takes the ReportScope and runs its own `runInReportScope`.
+  ai_usage_by_client: {
+    type: 'ai_usage_by_client', label: 'AI usage by client',
+    configSchema: aiUsageByClientConfigSchema, supportedScopes: ORG_OR_PARTNER,
+    execution: 'user', audience: 'msp_staff',
+    requiredPermissions: BUSINESS_REPORT_REQUIRED_PERMISSIONS.ai_usage_by_client,
+    detailRowCap: BUSINESS_DETAIL_ROW_CAP,
+    generate: async (scope, config, authority) => {
+      const { generateAiUsageByClientReport } = await import('./businessReports/aiUsageByClientReport');
+      return generateAiUsageByClientReport(scope, config, authority);
     },
   },
 } satisfies { readonly [K in ReportType]: ReportTypeDef & { type: K } };

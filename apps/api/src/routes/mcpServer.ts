@@ -24,7 +24,7 @@ import { z } from 'zod';
 import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
-import { getToolDefinitions, executeTool, getToolTier, getToolDomain } from '../services/aiTools';
+import { getToolDefinitions, executeTool, getToolTier, getToolDomain, aiTools, toolManagesDbContext } from '../services/aiTools';
 import { isTopologyAiToolName } from '../services/topology/aiToolGate';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
@@ -47,6 +47,7 @@ import { alertSiteScopeByDeviceIds } from './alerts/helpers';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
@@ -196,7 +197,7 @@ async function readJsonRpcBodyWithLimit(
 
 /**
  * Cheap, side-effect-free predicate: does this request's body already look
- * like a `tools/call` against a tenant (BYO MCP) tool? Used only to decide
+ * like a `tools/call` against a tenant tool or a self-managed core action? Used only to decide
  * whether the auth middleware may skip opening the ambient per-request DB
  * transaction — see MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment.
  *
@@ -216,10 +217,14 @@ async function isMcpTenantToolCallRequest(c: Context): Promise<boolean> {
     if (parsed.tooLarge || parsed.parseError || !parsed.body || typeof parsed.body !== 'object') {
       return false;
     }
-    const body = parsed.body as { method?: unknown; params?: { name?: unknown } };
+    const body = parsed.body as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     if (body.method !== 'tools/call') return false;
     const name = body.params?.name;
-    return typeof name === 'string' && isTenantToolName(name);
+    if (typeof name !== 'string') return false;
+    if (isTenantToolName(name)) return true;
+    const input = body.params?.arguments;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
+    return toolManagesDbContext(aiTools.get(resolveDeprecatedToolAlias(name)), input as Record<string, unknown>);
   } catch {
     return false;
   }
@@ -289,7 +294,7 @@ async function mcpAuthMiddleware(c: Context, next: Next) {
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: a cheap, side-effect-free
   // peek at the JSON-RPC body decides whether the auth middlewares below may
   // skip opening the ambient per-request DB transaction. Set unconditionally
-  // (false for every non-tenant-tool-call request) so the two middlewares
+  // (false for requests outside these explicit opt-ins) so the two middlewares
   // never fall back to a stale value from a prior request.
   c.set(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY, await isMcpTenantToolCallRequest(c));
 
@@ -2502,7 +2507,16 @@ async function readOrgScopedResource(
   table: any,
   columns: Record<string, any>,
   orgCondition: ReturnType<AuthContext['orgCondition']>,
-  options?: { extraConditions?: SQL[]; limit?: number; orderBy?: any }
+  options?: {
+    extraConditions?: SQL[];
+    limit?: number;
+    orderBy?: any;
+    /**
+     * Apply the tool-result field rules (secret-named keys, header maps) to the
+     * rows. Needed for any resource that returns an open JSON column.
+     */
+    redactFields?: boolean;
+  }
 ): Promise<JsonRpcResponse> {
   const conditions: SQL[] = [...(options?.extraConditions || [])];
   if (orgCondition) conditions.push(orgCondition);
@@ -2514,8 +2528,13 @@ async function readOrgScopedResource(
   )
     .limit(options?.limit ?? 50);
 
+  // Round-trip through JSON first so Date values are strings, as they are for
+  // tool results, before the field walk sees them.
+  const rows = options?.redactFields
+    ? redactToolOutputFields(JSON.parse(JSON.stringify(result)), redactAiToolOutputText)
+    : result;
   return jsonRpcResult(id, {
-    contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(result, null, 2) }]
+    contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(rows, null, 2) }]
   });
 }
 
@@ -2686,7 +2705,7 @@ async function handleResourcesRead(
         // automations have NO catalog read branch — org-scope callers do NOT
         // see partner-wide automations (aligns with routes/automations.ts).
         orgScopeCatalogRead: false,
-      }), { limit: 200 });
+      }), { limit: 200, redactFields: true });
     }
 
     // Handle dynamic resource URIs: breeze://devices/{id}

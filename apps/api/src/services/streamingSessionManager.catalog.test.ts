@@ -14,6 +14,7 @@
  *  3. a session pinned to a catalog revision rotates when that revision moves,
  *     exactly as it already rotates on key rotation.
  */
+import { existsSync, readdirSync } from 'node:fs';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const {
@@ -141,6 +142,7 @@ import type { ResolvedModel } from './aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom } from './aiModels/turnBinding';
 import type { SettleInvocationInput } from './aiModels/settleInvocation';
 import { captureException, captureMessage } from './sentry';
+import { closeModelGateway } from './aiModels/gateway';
 import * as dbModule from '../db';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
@@ -529,6 +531,31 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     await session.processorPromise;
   });
 
+  it('SDK stderr: a grant token split across two stderr chunks is never logged, and the tail is flushed on remove', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde';
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-stderr', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
+    );
+    const stderr = capturedQueryArgs[0]!.options.stderr as (data: string) => void;
+    stderr(`API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token.slice(0, 21)}`);
+    stderr(`${token.slice(21)}/v1/messages Error\n`);
+    stderr(`FATAL retry /g/${token.slice(0, 10)}`);
+    stderr(`${token.slice(10)} (no newline before exit)`);
+    manager.remove('sess-catalog-stderr');
+
+    const logged = errors.mock.calls.filter((c) => c[0] === '[SDK-stderr]').map((c) => String(c[2]));
+    expect(logged.join('')).not.toContain(token);
+    expect(logged.join('\n')).toContain('/g/[redacted]/v1/messages');
+    expect(logged.join('\n')).toContain('FATAL retry /g/[redacted]');
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
   it('revokes the grant when the session is removed', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
@@ -591,6 +618,8 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     expect(getLlmEgressProxyMock).not.toHaveBeenCalled();
     expect(grantMock).not.toHaveBeenCalled();
     expect(recordLlmEgressEventMock).not.toHaveBeenCalled();
+    // No working-directory override outside gateway connections.
+    expect(capturedQueryArgs[0]!.options).not.toHaveProperty('cwd');
   });
 
   it('fails the session create loudly when the egress proxy cannot start', async () => {
@@ -985,5 +1014,148 @@ describe('getOrCreate — catalog revision rotation', () => {
 
     gate.resolve();
     await first.processorPromise;
+  });
+});
+
+// ============================================
+// Gateway (W06 openai_compatible) sessions
+// ============================================
+
+describe('getOrCreate — gateway (openai_compatible) sessions (W06 Task 9)', () => {
+  let manager: StreamingSessionManager;
+  const gatewayResolved = () => makeResolvedModel('openai_compatible', { orgId: ORG });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedQueryArgs.length = 0;
+    sessionUpdates.length = 0;
+    sessionUpdateContexts.length = 0;
+    dbState.systemDepth = 0;
+    dbState.nextReturningRows.length = 0;
+    grantMock.mockReturnValue({ proxyUrl: PROXY_URL });
+    getLlmEgressProxyMock.mockResolvedValue({
+      grant: grantMock,
+      revoke: revokeMock,
+      port: () => 45677,
+      close: () => Promise.resolve(),
+    });
+    manager = new StreamingSessionManager();
+  });
+
+  afterEach(async () => {
+    manager.shutdown();
+    await closeModelGateway();
+  });
+
+  it('spawns on the loopback gateway with a placeholder key and a deny-all proxy grant; no credential in the env', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-gw', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+
+    // Deny-all: a null destination, under a per-dispatch key.
+    expect(grantMock).toHaveBeenCalledWith(expect.stringMatching(/^sess-gw:gateway:/), null, expect.any(Function));
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    expect(env).toEqual(expect.objectContaining({
+      ANTHROPIC_API_KEY: 'breeze-gateway',
+      HTTPS_PROXY: PROXY_URL,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'qwen2.5-coder:7b',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      ENABLE_TOOL_SEARCH: 'false',
+    }));
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/g\/[A-Za-z0-9_-]{43}$/);
+    expect(env.NO_PROXY).toBe(`127.0.0.1:${new URL(env.ANTHROPIC_BASE_URL!).port}`);
+    // The child runs in its own empty temp directory, not the API's cwd.
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(typeof cwd).toBe('string');
+    expect(existsSync(cwd)).toBe(true);
+    expect(cwd.startsWith(process.cwd())).toBe(false);
+    expect(JSON.stringify(env)).not.toContain('sk-fixture-upstream');
+    expect(capturedQueryArgs[0]!.options.model).toBe('qwen2.5-coder:7b');
+    expect(recordLlmEgressEventMock).toHaveBeenCalledWith(expect.objectContaining({
+      surface: 'sdk_session_create', host: 'llm.example.com', connectionId: 'conn-oai', orgId: ORG, aiSessionId: 'sess-gw',
+    }));
+    // No catalog provenance: the stamp clears both columns.
+    expect(sessionUpdates).toContainEqual(expect.objectContaining({ catalogEntryId: null, catalogRevisionId: null }));
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('revokes the gateway grant and the proxy grant when the session is removed', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const session = await manager.getOrCreate(
+      'sess-gw-remove', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    const proxyKey = grantMock.mock.calls[0]![0] as string;
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(200);
+
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(existsSync(cwd)).toBe(true);
+
+    manager.remove('sess-gw-remove');
+
+    expect(revokeMock).toHaveBeenCalledWith(proxyKey);
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    // The shared private working directory outlives one session (resumes and
+    // other sessions use it); it stays empty.
+    expect(existsSync(cwd)).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
+  it('revokes both grants when the SDK query itself throws', async () => {
+    queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
+      capturedQueryArgs.push(args);
+      throw new Error('spawn EACCES');
+    });
+
+    await expect(manager.getOrCreate(
+      'sess-gw-boom', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    )).rejects.toThrow('spawn EACCES');
+
+    const env = capturedQueryArgs[0]!.options.env as Record<string, string>;
+    expect(revokeMock).toHaveBeenCalledWith(grantMock.mock.calls[0]![0]);
+    expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    expect(manager.get('sess-gw-boom')).toBeUndefined();
+  });
+
+  it('a rotated idle session releases the old grants and takes fresh ones', async () => {
+    const oldGate = deferred();
+    const newGate = deferred();
+    const gates = [oldGate.promise, newGate.promise];
+    queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
+      const gate = gates[capturedQueryArgs.length]!;
+      capturedQueryArgs.push(args);
+      return { async *[Symbol.asyncIterator]() { await gate; }, interrupt: vi.fn(), close: vi.fn() };
+    });
+
+    const first = await manager.getOrCreate(
+      'sess-gw-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, gatewayResolved(),
+    );
+    first.state = 'idle';
+    const second = await manager.getOrCreate(
+      'sess-gw-rotate', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
+      makeResolvedModel('openai_compatible', { orgId: ORG, configVersion: 4 }),
+    );
+
+    expect(second).not.toBe(first);
+    const [oldEnv, newEnv] = capturedQueryArgs.map((a) => a.options.env as Record<string, string>);
+    expect(revokeMock).toHaveBeenCalledWith(grantMock.mock.calls[0]![0]);
+    expect(revokeMock).not.toHaveBeenCalledWith(grantMock.mock.calls[1]![0]);
+    expect((await fetch(`${oldEnv!.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    expect((await fetch(`${newEnv!.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(200);
+
+    oldGate.resolve();
+    await first.processorPromise;
+    newGate.resolve();
+    await second.processorPromise;
   });
 });

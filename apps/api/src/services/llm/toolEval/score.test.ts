@@ -63,7 +63,7 @@ it('renders accuracy, missed prompts, expectations, observed actions and tokens'
   });
   const markdown = renderMarkdownReport({
     generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', suite: 'chat', toolSearch: 'off', surfaceSearch: 'production',
-    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, promptVariant: null, meanFirstCallInputTokens: 456,
     toolSearchEnabled: false, meanContextTokensToFirstTool: 789,
     cases: [{ ...score, expected: c.expect, inputTokens: 456, cacheReadInputTokens: 10,
       cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false,
@@ -86,7 +86,7 @@ it('renders the observed cell as "<tool> (not exposed)" when unavailableTool is 
   const score = scoreFirstCall({ ...c, id: 'g05' }, { toolUses: [{ name: 'mcp__breeze__manage_tickets', input: {} }] }, allowed);
   const markdown = renderMarkdownReport({
     generatedAt: '2026-09-19T00:00:00Z', model: 'test-model', suite: 'chat', toolSearch: 'off', surfaceSearch: 'production',
-    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, meanFirstCallInputTokens: 456,
+    surface: 'chat', meanContextTokensAtFirstTool: 0, meanApiCallsToFirstTool: 1, meanCostCentsToFirstTool: 0, systemPromptBytes: 123, promptVariant: null, meanFirstCallInputTokens: 456,
     toolSearchEnabled: false, meanContextTokensToFirstTool: 789,
     cases: [{ ...score, expected: c.expect, inputTokens: 456, cacheReadInputTokens: 10,
       cacheCreationInputTokens: 20, ttftMs: null, toolSearchUsed: false,

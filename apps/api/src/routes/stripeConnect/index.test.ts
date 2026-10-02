@@ -107,6 +107,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+      autopayMissingPermissions: ['mandates_read'],
     });
     (getPartnerStripeAccountSnapshot as any).mockResolvedValue({
       connected: true,
@@ -128,6 +130,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
+      autopayMissingPermissions: ['mandates_read'],
     });
     (disconnectPartnerStripe as any).mockResolvedValue(undefined);
   });
@@ -143,6 +147,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z',
+      autopayMissingPermissions: ['mandates_read'],
       reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
     expect(savePartnerStripeKey).toHaveBeenCalledWith({
@@ -265,6 +271,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z',
+      autopayMissingPermissions: ['mandates_read'],
       cacheState: 'fresh',
       stale: false,
       error: null,
@@ -280,6 +288,12 @@ describe('stripe-connect (API-key) routes', () => {
         details: { defaultCurrency: 'EUR', accountCountry: 'DE' },
       },
     );
+  });
+
+  it('POST /refresh returns persisted autopay readiness facts', async () => {
+    const response = await stripeConnectRoutes.request('/refresh', { method: 'POST' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ autopayCapabilitiesCheckedAt: '2026-10-01T00:00:00.000Z', autopayMissingPermissions: ['mandates_read'] });
   });
 
   it('POST /refresh returns the PartnerStripeError status and message', async () => {

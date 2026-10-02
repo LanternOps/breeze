@@ -3,11 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
-
 import { authMiddleware } from '../../middleware/auth';
 import { getSession, getSessionMessages, listSessions, searchSessions } from '../../services/aiAgent';
 import { getSessionHistory } from '../../services/aiCostTracker';

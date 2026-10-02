@@ -20,8 +20,8 @@ import type { InvoiceActor } from './invoiceTypes';
  *
  * DB context (#1448): callers on a Stripe-bound request path (portal pay route)
  * invoke this with NO ambient context; the quote read below runs in its own
- * short system context (a no-op nest when a caller already holds one, e.g. the
- * AI tool path), and createInvoicePayLink likewise scopes each of its DB steps
+ * short system context (including the self-managed AI create_pay_link action),
+ * and createInvoicePayLink likewise scopes each of its DB steps
  * so checkout.sessions.create runs outside any transaction. Tenant access is
  * enforced by assertQuoteAccess against the actor, not by RLS scope.
  */

@@ -223,6 +223,29 @@ type SessionManager struct {
 	// channel opens. Protected by mu.
 	lastDesktopState    string
 	lastDesktopUsername string
+
+	// activityObserver, if set, is called after every direct stop
+	// (StopSession, StopAllSessions) so a caller that mirrors whether any
+	// capture is running can look again at once. It must not block. Set it
+	// with SetActivityObserver.
+	activityObserver atomic.Pointer[func()]
+}
+
+// SetActivityObserver registers fn to be called after every StopSession and
+// StopAllSessions, on the stopping goroutine and with no manager lock held.
+// fn must not block. A nil fn clears it.
+func (m *SessionManager) SetActivityObserver(fn func()) {
+	if fn == nil {
+		m.activityObserver.Store(nil)
+		return
+	}
+	m.activityObserver.Store(&fn)
+}
+
+func (m *SessionManager) notifyActivity() {
+	if fn := m.activityObserver.Load(); fn != nil {
+		(*fn)()
+	}
 }
 
 // NewSessionManager creates a new session manager.
@@ -435,6 +458,7 @@ func (m *SessionManager) StopSession(sessionID string) {
 	if session != nil {
 		session.Stop()
 	}
+	m.notifyActivity()
 }
 
 // StopAllSessions tears down all active desktop sessions.
@@ -450,6 +474,7 @@ func (m *SessionManager) StopAllSessions() {
 	for _, s := range sessions {
 		s.Stop()
 	}
+	m.notifyActivity()
 }
 
 // maxStopReasonBytes bounds the text StopWithReason records. Every source we

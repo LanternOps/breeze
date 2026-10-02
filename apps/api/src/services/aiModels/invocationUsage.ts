@@ -15,12 +15,15 @@
  * - `total_cost_usd` / `costUSD` are cumulative estimates: telemetry only.
  * - The CLI can switch the session model on its own (refusal fallback, even
  *   with no `fallbackModel` configured) and silently retries fast mode as
- *   standard on a 429. Requested ≠ served; SDK usage is never billed as fast.
+ *   standard on a 429. Requested ≠ served; SDK usage is billed fast only when
+ *   the result reports `fast_mode_state: 'on'` and no frame of the turn
+ *   reported cooldown/off (W05; carried only after lab gate L1).
  * - Interrupted turns under-count and aborted turns emit no result. Both are
  *   billed short (never double): an aborted turn leaves the snapshot alone so
  *   the next turn's delta picks up whatever the CLI persisted.
  */
 import { z } from 'zod';
+import { classifySdkAssistantError, type ProviderFailureCause } from './failover';
 import type { TokenComponents } from './pricing';
 import type { TurnBinding } from './turnBinding';
 
@@ -31,7 +34,11 @@ export interface BilledUsage {
   model: string;
   tokens: TokenComponents;
   webSearchRequests: number;
-  /** 'fast' only when the provider's response explicitly confirmed it. The Agent SDK never can. */
+  /**
+   * 'fast' only when the provider confirmed it: the Messages API's `usage.speed`,
+   * or on the Agent SDK the result's `fast_mode_state: 'on'` with no cooldown/off
+   * seen during the turn, and only on the bound wire model (W05).
+   */
   speedServed: SpeedServed;
   /** The model id the provider reported serving, when it reports one (Messages API). Null for the SDK. */
   providerModel: string | null;
@@ -54,6 +61,7 @@ export interface TurnOutcome {
   servedModel: string;             // main-loop model at turn end (a requested id, comparable to the binding)
   providerModel: string | null;    // the provider-reported id of the final response (Messages API only)
   sdkReportedCostUsd: number | null;   // telemetry only; cumulative as the SDK reports it
+  fastDowngraded: boolean;         // fast was requested but not (confirmed) served (W05)
 }
 
 // ---------------------------------------------------------------------------
@@ -64,19 +72,78 @@ export interface SdkTurnObservation {
   /** fallbackModel is null when the CLI swapped without naming the model (it then shows up as a new modelUsage key). */
   refusalFallback: { fallbackModel: string | null; category: string | null } | null;
   refusalNoFallback: { category: string | null } | null;
+  /** W05: some frame of the turn reported fast mode not serving (cooldown / off). */
+  fastNotOnSeen: boolean;
+  /**
+   * W09 (#7607): the last failover-eligible provider failure the CLI reported
+   * this turn. `terminal` = the CLI reported it as the request's final failure
+   * (its own api-error assistant message, or the result's `api_error_status`),
+   * not an `api_retry` it may still recover from. A less specific result
+   * status never overwrites a terminal cause (#7784).
+   */
+  providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number; terminal: boolean } | null;
+  /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
+  sawOutput: boolean;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null };
+  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false };
 }
 
-/** Feed EVERY SDK message of the turn through this (system messages are the only ones it reads). */
+const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
+
+/** Feed EVERY SDK message of the turn through this. */
 export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): void {
   if (!message || typeof message !== 'object') return;
   const m = message as {
     type?: unknown; subtype?: unknown; scope?: unknown; fallback_model?: unknown; api_refusal_category?: unknown;
+    error?: unknown; error_status?: unknown; attempt?: unknown; api_error_status?: unknown;
+    message?: { content?: unknown }; event?: { type?: unknown };
   };
+  // W05: any frame that reports fast mode not serving (rate-limit cooldown,
+  // or off) during the turn means at least part of it ran at standard.
+  const fastState = (message as { fast_mode_state?: unknown }).fast_mode_state;
+  if (fastState === 'cooldown' || fastState === 'off') obs.fastNotOnSeen = true;
+
+  // W09: a classified provider status failure (D8). An error the classifier
+  // does not recognise (a timeout or reset after send, an invalid request, an
+  // unknown model, …) CLEARS any earlier cause: the latest failure decides,
+  // and a turn must never fail over on a stale 529 after an unknown outcome.
+  // One exception: an unclassifiable result `api_error_status` never clears a
+  // terminal cause (#7784, the result-frame branch below).
+  const recordFailure = (error: unknown, status: unknown, attempt: unknown, terminal: boolean) => {
+    const httpStatus = typeof status === 'number' ? status : null;
+    const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
+    if (!cause) { obs.providerFailure = null; return; }
+    const retries = typeof attempt === 'number' ? attempt : (obs.providerFailure?.retries ?? 0);
+    obs.providerFailure = { cause, status: httpStatus, retries, terminal };
+  };
+  if (m.type === 'assistant') {
+    // A synthetic API-error assistant message carries `error`: a failure, not
+    // output. Anything else with a content block is output.
+    if (typeof m.error === 'string') { recordFailure(m.error, null, undefined, true); return; }
+    const content = Array.isArray(m.message?.content) ? (m.message!.content as Array<{ type?: unknown }>) : [];
+    if (content.some((b) => typeof b?.type === 'string' && OUTPUT_BLOCKS.has(b.type))) obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'stream_event') {
+    if (m.event?.type === 'content_block_start') obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'result') {
+    // #7784: the result's `api_error_status` restates the failure the CLI's
+    // terminal api-error message already classified, with less detail: a
+    // low-credit reply is `billing_error` there but a bare 400 here. A
+    // classified status may replace that cause (529 says more than
+    // `server_error`); an unclassifiable one never clears it. A cause left by
+    // an `api_retry` (retried, so not final) is replaced or cleared, as above.
+    if (typeof m.api_error_status !== 'number') return;
+    if (obs.providerFailure?.terminal && !classifySdkAssistantError(null, m.api_error_status)) return;
+    recordFailure(null, m.api_error_status, undefined, true);
+    return;
+  }
   if (m.type !== 'system') return;
+  if (m.subtype === 'api_retry') { recordFailure(m.error, m.error_status, m.attempt, false); return; }
   const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : null;
   if (m.subtype === 'model_refusal_fallback') {
     // 'local' = a subagent / side question fell back; the main loop did not.
@@ -114,6 +181,8 @@ export interface SdkResultLike {
   } | null;
   modelUsage?: Record<string, SdkModelUsageLike> | null;
   startup_failure_reason?: unknown;
+  /** W05: the served-speed signal (sdk.d.ts, verified on VERIFIED_AGENT_SDK_VERSION). */
+  fast_mode_state?: 'off' | 'cooldown' | 'on' | null;
 }
 
 /**
@@ -243,6 +312,19 @@ function servedModelOf(
     const appeared = grown.filter(([k]) => newKeys.has(k) && k !== binding.wireModel);
     if (appeared.length === 1) return appeared[0]![0];
   }
+  // #7766: the CLI swapped to a refusal fallback this turn but named no model,
+  // and there is no snapshot to say which key is new (a query's first turn).
+  // The bound model is the one that REFUSED, so it is never "what served":
+  // prefer the bound refusal fallback's key, else the one grown key that is
+  // neither the bound model nor a model this session switched away from.
+  if (obs.refusalFallback) {
+    if (binding.refusalFallback && grown.some(([k]) => k === binding.refusalFallback!.wireModel)) {
+      return binding.refusalFallback.wireModel;
+    }
+    const carried = new Set((binding.carriedRates ?? []).map((c) => c.wireModel));
+    const others = grown.filter(([k]) => k !== binding.wireModel && !carried.has(k));
+    if (others.length === 1) return others[0]![0];
+  }
   if (grown.length === 1) return grown[0]![0];
   if (grown.some(([k]) => k === binding.wireModel)) return binding.wireModel;
   if (obs.refusalFallback && binding.refusalFallback && grown.some(([k]) => k === binding.refusalFallback!.wireModel)) {
@@ -253,10 +335,21 @@ function servedModelOf(
   return best ? best[0] : binding.wireModel;
 }
 
-function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkResultLike | null, servedModel: string): TurnOutcome {
+function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkResultLike | null, observedServed: string): TurnOutcome {
   const sdkStop = result?.stop_reason ?? null;
   const refused = obs.refusalNoFallback !== null || sdkStop === 'refusal';
   const errored = !result || result.subtype !== 'success' || result.is_error === true;
+  // #7786: a turn that failed before the main loop produced anything was
+  // served by no other model. The CLI's own background call (a small model,
+  // run once per query, which succeeds even when the main model fails) is
+  // then the only modelUsage key that grew, so the usage-based guess would
+  // name it. Keep the bound model, report no turn-level fallback, and never
+  // claim fast for a turn nothing answered. Labels only: usage rows, their
+  // pricing and billed speed come from servedModelOf / priceUsage and are
+  // unchanged (the background call's own delta row is still an unbound-model
+  // row in the ledger).
+  const nothingServed = errored && !obs.sawOutput && obs.refusalFallback === null;
+  const servedModel = nothingServed ? binding.wireModel : observedServed;
   const stopReason = refused ? 'refusal' : errored ? 'error' : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;
@@ -269,7 +362,26 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
     servedModel,
     providerModel: null,
     sdkReportedCostUsd: typeof cost === 'number' && Number.isFinite(cost) ? cost : null,
+    fastDowngraded: sdkFastRequested(binding) && (nothingServed || !sdkFastServed(binding, obs, result, servedModel)),
   };
+}
+
+function sdkFastRequested(b: TurnBinding): boolean {
+  return b.options.speed === 'fast';
+}
+
+/**
+ * Fast was served for the WHOLE turn: requested, reported 'on' at the end,
+ * never cooldown/off during it, and the main loop ended on the bound model
+ * (a fallback model never runs fast — Codex review finding 15).
+ */
+function sdkFastServed(b: TurnBinding, obs: SdkTurnObservation, result: SdkResultLike | null, servedModel: string): boolean {
+  return sdkFastRequested(b) && servedModel === b.wireModel && result?.fast_mode_state === 'on' && !obs.fastNotOnSeen;
+}
+
+/** Only the bound wire model can run fast; a fallback / helper model never bills the fast rate. */
+function withServedSpeed(rows: BilledUsage[], b: TurnBinding, fastServed: boolean): BilledUsage[] {
+  return fastServed ? rows.map((r) => (r.model === b.wireModel ? { ...r, speedServed: 'fast' as const } : r)) : rows;
 }
 
 function billed(model: string, e: Entry): BilledUsage {
@@ -337,7 +449,7 @@ export function sdkTurnUsage(input: {
       const rebaselined: SdkUsageSnapshot = { version: 1, models: { ...prev.models, ...current.models } };
       const turn = thisTurnUsage(binding, obs, result, entries);
       return {
-        usage: turn.usage,
+        usage: withServedSpeed(turn.usage, binding, sdkFastServed(binding, obs, result, turn.servedModel)),
         outcome: sdkOutcome(binding, obs, result, turn.servedModel),
         nextSnapshot: rebaselined,
         usageConfirmed: false,
@@ -346,8 +458,9 @@ export function sdkTurnUsage(input: {
     }
     const newKeys = new Set(entries.map(([k]) => k).filter((k) => !Object.hasOwn(prev.models, k)));
     const servedModel = servedModelOf(binding, obs, deltas, newKeys);
+    const fastServed = sdkFastServed(binding, obs, result, servedModel);
     return {
-      usage: deltas.map(([k, d]) => billed(k, d)),
+      usage: withServedSpeed(deltas.map(([k, d]) => billed(k, d)), binding, fastServed),
       outcome: sdkOutcome(binding, obs, result, servedModel),
       nextSnapshot: highWater(prev, current),
       usageConfirmed: !errored,
@@ -359,8 +472,9 @@ export function sdkTurnUsage(input: {
   // snapshots). modelUsage may carry earlier turns from the transcript, so it
   // is only a ceiling; result.usage is this turn's main loop.
   const turn = thisTurnUsage(binding, obs, result, entries);
+  const fastServed = sdkFastServed(binding, obs, result, turn.servedModel);
   return {
-    usage: turn.usage,
+    usage: withServedSpeed(turn.usage, binding, fastServed),
     outcome: sdkOutcome(binding, obs, result, turn.servedModel),
     nextSnapshot: current,
     usageConfirmed: turn.turnValid && !errored && turn.nonZeroKeys <= 1,
@@ -397,6 +511,18 @@ function thisTurnUsage(
     : null;
   const turnValid = turnRaw !== null && turnRaw.every((v) => v !== 'invalid');
   let usage: BilledUsage[] = [];
+  if (turnValid && obs.refusalFallback && nonZero.length > 1) {
+    // #7766: a refusal swap on a query's first turn. When the per-key
+    // modelUsage adds up EXACTLY to this turn's usage, it carries nothing from
+    // earlier turns, so each model is billed on its own row at its own rate
+    // (the refused attempt under the bound model, the answer under the
+    // fallback). Otherwise the per-key split is only a ceiling and the capped
+    // turn usage goes to the served model below.
+    const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
+    const exact = input === sum.tokens.input && output === sum.tokens.output && cacheRead === sum.tokens.cacheRead
+      && cacheWrite === sum.tokens.cacheWrite && web === sum.webSearchRequests;
+    if (exact) return { usage: nonZero.map(([k, e]) => billed(k, e)), servedModel, turnValid, nonZeroKeys: nonZero.length };
+  }
   if (turnValid) {
     const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
     const capped: Entry = {
@@ -513,6 +639,8 @@ function singleCallUsage(
       servedModel,
       providerModel: typeof last.message.model === 'string' && last.message.model ? last.message.model : null,
       sdkReportedCostUsd: null,
+      // W05: requested fast, but no attempt of this call was confirmed fast by the provider.
+      fastDowngraded: binding.options.speed === 'fast' && !attempts.some((a) => a.message.usage?.speed === 'fast'),
     },
   };
 }
@@ -560,14 +688,16 @@ function callsUsage(
   const usage: BilledUsage[] = [];
   let outcome!: TurnOutcome;
   let anyFallback = false;
+  let anyFastDowngraded = false;
   ordered.forEach(([call, group], i) => {
     const one = singleCallUsage(binding, group);
     const callOutcome = withError(one.outcome, i === ordered.length - 1);
     anyFallback ||= callOutcome.fallbackUsed;
+    anyFastDowngraded ||= callOutcome.fastDowngraded;
     usage.push(...one.usage.map((u) => ({ ...u, call, callOutcome })));
     outcome = callOutcome;
   });
-  return { usage, outcome: { ...outcome, fallbackUsed: anyFallback } };
+  return { usage, outcome: { ...outcome, fallbackUsed: anyFallback, fastDowngraded: anyFastDowngraded } };
 }
 
 /**

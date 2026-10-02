@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { apiKeys } from '../db/schema';
+import { apiKeys, users } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { createHash, randomBytes } from 'crypto';
 import { createAuditLogAsync } from '../services/auditService';
@@ -408,14 +408,42 @@ apiKeyRoutes.post(
     // This route only ever mints human-delegated keys (principalType
     // defaults to 'human'; service-principal keys are minted through
     // routes/partnerServicePrincipals.ts and never carry a creator epoch).
-    // Snapshot the creator's LIVE credential-state epochs from the request's
-    // own access token — authMiddleware already validated aep/mep against
-    // users.auth_epoch/mfa_epoch for this exact request, so they are
-    // current as of mint time. A password change/reset (which bumps
-    // auth_epoch) or an MFA factor change (which bumps mfa_epoch) after this
-    // moment must invalidate this key — enforced in apiKeyAuthMiddleware.
-    const creatorAuthEpoch = typeof auth.token?.aep === 'number' ? auth.token.aep : null;
-    const creatorMfaEpoch = typeof auth.token?.mep === 'number' ? auth.token.mep : null;
+    // Snapshot the creator's credential-state epochs so a password
+    // change/reset (credential_epoch) or an MFA factor change (mfa_epoch)
+    // after this moment invalidates the key — enforced in
+    // apiKeyAuthMiddleware. The key binds to credential_epoch, NOT auth_epoch:
+    // auth_epoch also advances on ordinary logout, which must not kill a
+    // user's API keys (#7489).
+    //
+    // authMiddleware already validated the token's aep/mep against the live
+    // row; credential_epoch is not a token claim, so read it here, guarded on
+    // those same session epochs. A credential change always advances
+    // auth_epoch too, so the guard can never hand back a credential epoch
+    // newer than this session: a change that commits before this read fails
+    // the guard, and one that commits after it leaves the key stamped with
+    // the old value, which apiKeyAuthMiddleware then rejects.
+    const creatorAuthEpoch = auth.token?.aep;
+    const creatorMfaEpoch = auth.token?.mep;
+    if (typeof creatorAuthEpoch !== 'number' || typeof creatorMfaEpoch !== 'number') {
+      // Unreachable through authMiddleware, which rejects any access token
+      // without numeric aep/mep. Reaching it means an auth path skipped that
+      // gate — refuse rather than mint a key no epoch check would ever bind.
+      console.warn('[api-keys] refused mint: request token carries no epoch claims', { userId: auth.user.id });
+      return c.json({ error: 'Session is no longer valid. Sign in again.' }, 401);
+    }
+    const [liveCreator] = await db
+      .select({ credentialEpoch: users.credentialEpoch })
+      .from(users)
+      .where(and(
+        eq(users.id, auth.user.id),
+        eq(users.status, 'active'),
+        eq(users.authEpoch, creatorAuthEpoch),
+        eq(users.mfaEpoch, creatorMfaEpoch),
+      ))
+      .limit(1);
+    if (!liveCreator) {
+      return c.json({ error: 'Session is no longer valid. Sign in again.' }, 401);
+    }
 
     // Create the API key record
     const [apiKey] = await db
@@ -432,6 +460,7 @@ apiKeyRoutes.post(
         status: 'active',
         creatorAuthEpoch,
         creatorMfaEpoch,
+        creatorCredentialEpoch: liveCreator.credentialEpoch,
       })
       .returning();
 

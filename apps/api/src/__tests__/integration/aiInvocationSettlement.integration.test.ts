@@ -60,7 +60,7 @@ afterAll(() => {
 const T = { input: 120_000, output: 40_000, cacheRead: 500_000, cacheWrite: 2_000 };
 const OK = (model: string, sdk: number | null): TurnOutcome => ({
   stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-  servedModel: model, providerModel: null, sdkReportedCostUsd: sdk,
+  servedModel: model, providerModel: null, sdkReportedCostUsd: sdk, fastDowngraded: false,
 });
 
 async function sys<R>(fn: () => Promise<R>): Promise<R> {
@@ -201,11 +201,15 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     expect(out.costCents).toBeCloseTo(expected, 6);
     expect(out.invocationIds).toHaveLength(1);
 
-    const [ledger] = await q<{ cost_cents: string; sdk_reported_cost_usd: string; ledger_mode: string }>(sql`
-      SELECT cost_cents, sdk_reported_cost_usd, ledger_mode FROM ai_invocations WHERE id = ${out.invocationIds[0]}::uuid`);
+    const [ledger] = await q<{ cost_cents: string; sdk_reported_cost_usd: string; ledger_mode: string; prompt_profile: string | null; prompt_variant: string | null; occurred_at: unknown }>(sql`
+      SELECT cost_cents, sdk_reported_cost_usd, ledger_mode, prompt_profile, prompt_variant, occurred_at FROM ai_invocations WHERE id = ${out.invocationIds[0]}::uuid`);
     expect(Number(ledger!.cost_cents)).toBeCloseTo(expected, 6);
     expect(Number(ledger!.sdk_reported_cost_usd)).toBe(99.99);
     expect(ledger!.ledger_mode).toBe('authoritative');
+    // W11: a settlement with no live-query provenance records the binding's profile, no variant, and its turn time.
+    expect(binding.promptProfile).toBeDefined();
+    expect(ledger).toMatchObject({ prompt_profile: binding.promptProfile, prompt_variant: null });
+    expect(ledger!.occurred_at).not.toBeNull();
 
     const [session] = await q<{ c: string; i: number; o: number }>(sql`
       SELECT total_cost_cents AS c, total_input_tokens AS i, total_output_tokens AS o FROM ai_sessions WHERE id = ${s.chatSessionId}::uuid`);
@@ -328,6 +332,36 @@ describe.skipIf(!RUN)('ai_invocations is the source of truth for every rollup', 
     expect(await reservationState(t1)).toMatchObject({ status: 'settled', pending_settlement: null });
     expect(await readSdkUsageSnapshot({ orgId: s.orgId, sessionId: s.chatSessionId })).toEqual(snap(40, 20));
     expect(await q(sql`SELECT 1 FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`)).toHaveLength(3);
+  }, 30_000);
+
+  it('W11: a deferred settlement replays its prompt provenance and its turn time, not the replay time', async () => {
+    const small: TurnBinding = { ...binding, promptProfile: 'claude-small' };
+    const id = await reserve(s, small);
+    const at = new Date('2026-09-15T12:00:00.000Z');
+    const blocker = await holdOrganizationLock(s.orgId);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const out = await settleInvocation(settleInput(s, small, id, {
+        prompt: { profile: 'claude-small', variant: 'chat/claude-small@1' }, occurredAt: at,
+      }));
+      expect(out).toMatchObject({ deferred: true });
+      expect(out.unrecorded).toBeFalsy();
+    } finally {
+      await blocker.release();
+      error.mockRestore();
+    }
+    expect(await q(sql`SELECT 1 FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`)).toHaveLength(0);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const replayed = await replayPendingAiSettlements();
+    warn.mockRestore();
+    expect(replayed.filter((r) => r.reservationId === id)).toMatchObject([{ kind: 'settled' }]);
+    const rows = await q<{ prompt_profile: string | null; prompt_variant: string | null; occurred_at: string | Date; created_at: string | Date }>(sql`
+      SELECT prompt_profile, prompt_variant, occurred_at, created_at FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ prompt_profile: 'claude-small', prompt_variant: 'chat/claude-small@1' });
+    expect(new Date(rows[0]!.occurred_at).toISOString()).toBe(at.toISOString());
+    expect(new Date(rows[0]!.created_at).getTime()).toBeGreaterThan(at.getTime());
   }, 30_000);
 
   it('two deferred re-baselines on one session: the NEWEST wins on replay, so the next turn bills only its own delta (re-review)', async () => {

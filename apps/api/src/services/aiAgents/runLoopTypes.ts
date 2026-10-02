@@ -378,6 +378,16 @@ export interface RunRow {
    */
   fundingSource?: 'platform' | 'partner_key' | null;
   admittedOfferingId?: string | null;
+  /**
+   * AI model registry W09 (#7607) — the failover hop the run last recorded
+   * (`ai_agent_runs.served_*`, all four set together or all null). A re-driven
+   * run resumes on this hop's offering and reservation key. `servedFundingSource`
+   * is the TOKEN funding only; compute stays on `fundingSource` (D7).
+   */
+  servedOfferingId?: string | null;
+  servedFundingSource?: 'platform' | 'partner_key' | null;
+  servedFailoverHop?: number | null;
+  servedFailoverCause?: string | null;
 }
 
 export interface AgentRow {

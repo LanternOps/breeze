@@ -3,13 +3,6 @@ import { Hono } from 'hono';
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
-// Which platform AI provider the server is configured for (default: Anthropic).
-const providerRef = vi.hoisted(() => ({ provider: 'anthropic' as string }));
-vi.mock('../config/validate', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../config/validate')>(),
-  getConfig: () => ({ MCP_LLM_PROVIDER: providerRef.provider }),
-}));
-
 vi.mock('../db', () => ({
   db: {
     insert: vi.fn(),

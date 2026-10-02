@@ -67,6 +67,7 @@ vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 import { exportReport } from './reportExport';
 import type { ReportBranding } from '@breeze/shared/reportPdf';
 import {
+  emptyAiUsageByClientSummary,
   emptyTicketSlaSummary,
   emptyTechnicianTimeSummary,
   emptyArAgingSummary,
@@ -112,5 +113,16 @@ describe('exportReport — business report summaries reach the PDF (staff/browse
       branding: noBranding,
     });
     expect(textCalls).toContain('AR aging');
+  });
+
+  it('reaches the AI usage by client arm, not renderGenericReport', async () => {
+    await exportReport([], {
+      format: 'pdf',
+      reportType: 'ai_usage_by_client',
+      timezone: 'UTC',
+      summary: emptyAiUsageByClientSummary('No AI usage in this period.'),
+      branding: noBranding,
+    });
+    expect(textCalls).toContain('AI usage by client');
   });
 });

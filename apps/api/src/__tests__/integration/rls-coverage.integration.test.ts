@@ -236,6 +236,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['report_series', 'partner_id'],
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
+  // billing_profile_ai_rates (#7608 W10): per-model client AI price list on a card.
+  // Shape 3, same policy as billing_profile_rules (2026-11-26-100000).
+  ['billing_profile_ai_rates', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
   ['legacy_labour_pricing_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
@@ -433,6 +436,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'billing_payment_settings',
   // caller_verification_policies (#6354 W01): org XOR partner via
   // caller_verification_policies_one_owner_chk; SELECT-only partner-wide branch
   // cv_policy_partner_select ships in 2026-10-26-170100. Functional forge
@@ -788,22 +792,8 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // (org_id AND partner_id together via the composite FK
 // deployment_invites_org_partner_fk — a row carries BOTH, not one or the
 // other), and `software_policy_audit` / `software_remediation_requests`
-// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` IS
-// included below even though it has no DB-level CHECK: its own migration
-// (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
-// "mutually exclusive, so no composite FK applies", and it is app-enforced
-// only. As of #3257 W02 it is the LAST such example — the two tables this
-// comment used to group it with are both DB-enforced and were verified
-// against pg_constraint on a live database:
-//   - client_ai_prompt_templates_scope_check CHECK (num_nonnulls(org_id,
-//     partner_id) = 1), shipped 2026-06-12-b, never dropped. (This half of
-//     the comment was wrong before this wave touched it.)
-//   - custom_field_definitions_one_owner_chk, added by
-//     2026-10-10-100300 (#3257 W02).
-// Membership in this set has never depended on having a CHECK — it only
-// drives the partner-wide SELECT-branch assertions below — so nothing else
-// changes. If access_reviews ever gains a CHECK, this note has no examples
-// left and should be deleted rather than patched.
+// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` is
+// org XOR partner by access_reviews_one_owner_chk (2026-11-19-101100).
 //
 // … and `reports` (#3198 W01): org XOR partner by CHECK, but NOT a config
 // table — a partner-owned report is a partner-PRIVATE cross-org aggregate
@@ -812,6 +802,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // read, so reports must never carry one. Its partner branch is proven
 // functionally by reportsPartnerRls.integration.test.ts instead.
 const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
+  'billing_payment_settings',
   'caller_verification_policies',
   // fix_memory_one_owner_chk, 2026-11-03-100000 (AI Suggested Fixes W1); its
   // partner-wide SELECT branch ships in the same migration.
@@ -970,6 +961,13 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // nc.partner_id), deliberately without the partner-wide read branch —
   // functional proof: notificationChannelConfigsRls.integration.test.ts.
   ['notification_channel_configs', ['notification_channels']],
+  // access_review_items: tenancy is the parent access review (org XOR
+  // partner owner). Until 2026-11-19-101100 its policies were Phase 6
+  // user-keyed and never consulted the parent; they now require the parent
+  // review's owner, spelled out on the joined row (not inherited from the
+  // parent's SELECT-only partner-wide branch). Functional proof:
+  // accessReviewItemsParentReviewRls.integration.test.ts.
+  ['access_review_items', ['access_reviews']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
   // reach their tenant only through a parent FK. role_permissions' parent
   // `roles` is dual-axis (org_id/partner_id) — its policy ORs in
@@ -1082,7 +1080,6 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // through tickets is #1016-safe: tickets.org_id is NOT NULL and the
   // tickets policy has no OR branches.
   'ticket_comments',
-  'access_review_items',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',

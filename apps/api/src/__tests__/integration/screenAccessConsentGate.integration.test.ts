@@ -232,6 +232,7 @@ describe('AI screen tools under the remote access consent policy (real DB)', () 
       hostname: 'pc',
       surface: 'device_diagnose',
       actor: makeAuth(userId),
+      isEphemeral: false,
     });
 
     expect(gate).toMatchObject({ ok: false, status: 409, body: { code: 'CONSENT_REQUIRED_SCREEN_ACCESS_UNAVAILABLE' } });

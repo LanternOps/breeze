@@ -62,6 +62,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'portal.password_reset': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
       'quote.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'quote.acceptance_recorded': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
+      'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'default' },
     });

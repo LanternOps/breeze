@@ -8,15 +8,15 @@
  * offering is a fresh USER choice, so it is strict — no fallback, and an
  * ineligible / foreign / not-permitted id is a 400 that stores nothing.
  */
-import type { AiSurface, OfferingOptions } from '@breeze/shared';
+import type { AiModelChoice, AiSurface, OfferingOptions } from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import { isPlatformLlmConfigured, LlmNotConfiguredError } from '../llm/llmAvailability';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
-import { findOfferingIdByModel, readOrgPartnerId, readSessionModelRow } from './candidateLoader';
+import { readOrgPartnerId, readSessionModelRow } from './candidateLoader';
 import { InvalidSessionModelError } from './invalidSessionModelError';
-import { ensurePartnerCutover } from './registryCutover';
-import { resolveModel, unavailableMessage, type ResolvedModel, type ResolveModelResult } from './resolveModel';
-import type { DispatchTransport } from './transport';
+import type { ProviderFailureCause } from './failover';
+import { resolveModel, unavailableMessage, type FailoverOrigin, type ResolvedModel, type ResolveModelResult } from './resolveModel';
+import { defaultTransport, type DispatchTransport } from './transport';
 
 export { InvalidSessionModelError } from './invalidSessionModelError';
 
@@ -26,6 +26,12 @@ export async function resolveSessionTurn(input: {
   userId: string | null;
   maxTokens?: number;
   transport?: DispatchTransport;
+  /** W05: the composer's choice on this message (a fresh USER request). */
+  choice?: AiModelChoice;
+  /** W09 (#7607): a dispatch failover's re-resolution (ticket draft): what was tried, why, and the first hop. */
+  excludeOfferingIds?: readonly string[];
+  failoverCause?: ProviderFailureCause;
+  failoverOrigin?: FailoverOrigin;
 }): Promise<ResolveModelResult> {
   const row = await readSessionModelRow(input.sessionId);
   if (!row) throw new Error(`AI session ${input.sessionId} not found`);
@@ -37,13 +43,22 @@ export async function resolveSessionTurn(input: {
     };
   }
   const options = row.options;
-  const requested = row.offeringId || options
+  // W05: a composer choice is a fresh USER request — strict (no bounded
+  // fallback), subject to allow_user_choice and the permitted set. Without
+  // one, the stored offering + options are a SESSION request (W03).
+  const requested = input.choice
     ? {
-        ...(row.offeringId ? { offeringId: row.offeringId } : {}),
-        ...(options ? { options } : {}),
-        origin: 'session' as const,
+        offeringId: input.choice.offeringId,
+        ...(input.choice.options ? { options: input.choice.options } : {}),
+        origin: 'user' as const,
       }
-    : undefined;
+    : row.offeringId || options
+      ? {
+          ...(row.offeringId ? { offeringId: row.offeringId } : {}),
+          ...(options ? { options } : {}),
+          origin: 'session' as const,
+        }
+      : undefined;
   return resolveModel({
     partnerId,
     orgId: row.orgId,
@@ -52,6 +67,17 @@ export async function resolveSessionTurn(input: {
     ...(requested ? { requested } : {}),
     ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
     ...(input.transport ? { transport: input.transport } : {}),
+    // W09 (D5): a resumed SDK session with history may fail over only within
+    // its connection: a cross-connection resume is W05's continuation, never a
+    // silent failover. A Messages API one-shot (ticket draft) sends its
+    // transcript explicitly, so it may cross. The chat route additionally
+    // runs every failover candidate through W05's planModelTransition.
+    ...((input.transport ?? defaultTransport(input.surface)) === 'agent_sdk' && (row.turnCount > 0 || row.sdkSessionId !== null)
+      ? { sameConnectionOnly: true }
+      : {}),
+    ...(input.excludeOfferingIds ? { excludeOfferingIds: input.excludeOfferingIds } : {}),
+    ...(input.failoverCause ? { failoverCause: input.failoverCause } : {}),
+    ...(input.failoverOrigin ? { failoverOrigin: input.failoverOrigin } : {}),
   });
 }
 
@@ -79,22 +105,8 @@ export async function chooseSessionModel(input: {
   surface: AiSurface;
   offeringId?: string;
   options?: Partial<OfferingOptions>;
-  /** @deprecated W03: the old free-form `model` body field, used only as a lookup key. */
-  legacyModel?: string;
 }): Promise<SessionModelChoice> {
-  let offeringId = input.offeringId;
-  if (!offeringId && input.legacyModel) {
-    // The lookup reads assignments: never against a partner not yet cut over (Task 6A).
-    if (!(await ensurePartnerCutover(input.partnerId))) {
-      throw new LlmUnavailableError(unavailableMessage('registry_unavailable'));
-    }
-    offeringId = (await findOfferingIdByModel({
-      partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, modelId: input.legacyModel,
-    })) ?? undefined;
-    if (!offeringId) {
-      throw new InvalidSessionModelError(`Model "${input.legacyModel}" is not available for AI sessions.`, 'invalid_model');
-    }
-  }
+  const offeringId = input.offeringId;
   const requested = offeringId || input.options
     ? { ...(offeringId ? { offeringId } : {}), ...(input.options ? { options: input.options } : {}), origin: 'user' as const }
     : undefined;

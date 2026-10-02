@@ -3,6 +3,7 @@ package heartbeat
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +22,7 @@ func withSupportSeams(t *testing.T) (cleanupCalls func() int, exitCalls func() [
 		supportExitFn = origExit
 		supportSelfDeleteFn = origDelete
 	})
-	supportSelfDeleteFn = func() {}
+	supportSelfDeleteFn = func(string) {}
 
 	var mu sync.Mutex
 	cleanups := 0
@@ -148,7 +149,7 @@ func TestHandleSupportEndRefusalLeavesFilesystemUntouched(t *testing.T) {
 		supportExitFn = origExit
 		supportSelfDeleteFn = origDelete
 	})
-	supportSelfDeleteFn = func() {}
+	supportSelfDeleteFn = func(string) {}
 	supportExitFn = func(int) { t.Error("os.Exit must not be scheduled when support_end is refused") }
 	// Deliberately the REAL cleanup: if the guard ever regresses, this test
 	// fails by deleting the sentinel rather than by a stubbed counter.
@@ -203,7 +204,7 @@ func stubSelfDelete(t *testing.T) {
 	t.Helper()
 	orig := supportSelfDeleteFn
 	t.Cleanup(func() { supportSelfDeleteFn = orig })
-	supportSelfDeleteFn = func() {}
+	supportSelfDeleteFn = func(string) {}
 }
 
 func TestSupportCleanupRemovesOnlyItsOwnWorkspace(t *testing.T) {
@@ -240,40 +241,148 @@ func TestSupportCleanupWithEmptyWorkDirIsSafe(t *testing.T) {
 }
 
 // The trampoline is passed to CreateProcess verbatim via
-// SysProcAttr.CmdLine (see support_selfdelete_windows.go), so the quoting
-// here is load-bearing: a path containing a space must stay one argument to
-// del, and there must be no backslash-escaped quotes for cmd.exe to choke on.
+// SysProcAttr.CmdLine (see support_selfdelete_windows.go), so the text here
+// is load-bearing:
+//   - the paths are never written into the line: cmd.exe expands %NAME% in
+//     its command line (quoted or not) and there is no escape for it there,
+//     so a profile or file name containing % would make the cleanup act on a
+//     different path. The paths travel in the child's environment and are
+//     read with delayed expansion (!NAME!), which happens after the FOR
+//     variable is substituted, so a %i in a path is not replaced by the loop
+//     counter either;
+//   - every reference stays quoted as one argument (a profile may contain a
+//     space);
+//   - there are no backslash-escaped quotes, which cmd.exe does not
+//     understand;
+//   - the first character after `cmd /C` is not a quote, so cmd.exe strips
+//     no quote characters from the line;
+//   - it polls: the executable cannot be deleted while it is still running,
+//     and files the process still holds keep the folder in place, so it
+//     retries until both are gone or about a minute has passed.
 func TestBuildSupportSelfDeleteCmdLine(t *testing.T) {
+	const exe = `C:\Users\Jo%USERNAME%Smith\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app-%i.exe`
+	const ws = `C:\Users\Jo%USERNAME%Smith\AppData\Local\Temp\breeze-support-%~i4242`
 	cases := []struct {
 		name    string
-		exePath string
+		workDir string
 		want    string
+		wantEnv []string
 	}{
 		{
-			name:    "plain path",
-			exePath: `C:\Users\me\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app.exe`,
-			want:    `cmd /C ping 127.0.0.1 -n 3 >NUL & del /f "C:\Users\me\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app.exe"`,
+			name:    "executable and private folder",
+			workDir: ws,
+			want: `cmd /V:ON /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" 2>NUL & ` +
+				`rmdir /s /q "!BREEZE_SUPPORT_CLEANUP_DIR!" 2>NUL & ` +
+				`if not exist "!BREEZE_SUPPORT_CLEANUP_EXE!" if not exist "!BREEZE_SUPPORT_CLEANUP_DIR!" exit)`,
+			wantEnv: []string{"BREEZE_SUPPORT_CLEANUP_EXE=" + exe, "BREEZE_SUPPORT_CLEANUP_DIR=" + ws},
 		},
 		{
-			name:    "user profile containing a space stays quoted as one argument",
-			exePath: `C:\Users\John Smith\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app.exe`,
-			want:    `cmd /C ping 127.0.0.1 -n 3 >NUL & del /f "C:\Users\John Smith\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app.exe"`,
+			name:    "executable only",
+			want:    `cmd /V:ON /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" 2>NUL & if not exist "!BREEZE_SUPPORT_CLEANUP_EXE!" exit)`,
+			wantEnv: []string{"BREEZE_SUPPORT_CLEANUP_EXE=" + exe},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildSupportSelfDeleteCmdLine(tc.exePath)
+			got, env := buildSupportSelfDeleteCmdLine(exe, tc.workDir)
 			if got != tc.want {
 				t.Fatalf("got  %s\nwant %s", got, tc.want)
+			}
+			if !reflect.DeepEqual(env, tc.wantEnv) {
+				t.Fatalf("env = %q, want %q", env, tc.wantEnv)
+			}
+			if strings.Contains(got, "%BREEZE") {
+				t.Errorf("a path variable is read with %%NAME%%, which is expanded before the FOR variable and lets a %%i in its value be replaced: %s", got)
+			}
+			if strings.Contains(got, "USERNAME") || strings.Contains(got, `C:\Users`) {
+				t.Errorf("command line carries a path, which cmd.exe would expand: %s", got)
 			}
 			if strings.Contains(got, `\"`) {
 				t.Errorf("command line contains a backslash-escaped quote, which cmd.exe does not understand: %s", got)
 			}
-			if strings.Count(got, `"`) != 2 {
-				t.Errorf("cmd /C only strips outer quotes when the line has exactly two quote characters; got %d in %s", strings.Count(got, `"`), got)
+			if strings.HasPrefix(strings.TrimPrefix(got, "cmd /V:ON /C "), `"`) {
+				t.Errorf("the line after cmd /C must not start with a quote, or cmd.exe strips quote characters: %s", got)
 			}
 		})
+	}
+}
+
+// TestSupportCleanupReleasesFilesBeforeRemoving: the session's open files
+// (its log) are released before the folder is removed (an open file keeps a
+// Windows folder in place), and the post-exit cleanup is handed the folder so
+// anything still held until exit goes too.
+func TestSupportCleanupReleasesFilesBeforeRemoving(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "breeze-support-4242")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	orig := supportSelfDeleteFn
+	t.Cleanup(func() { supportSelfDeleteFn = orig })
+	supportSelfDeleteFn = func(dir string) { events = append(events, "schedule:"+dir) }
+
+	h := &Heartbeat{supportMode: true, supportWorkDir: workDir}
+	h.SetSupportFileReleaser(func() {
+		if _, err := os.Stat(workDir); err != nil {
+			t.Errorf("files released after the folder was already removed: %v", err)
+		}
+		events = append(events, "release")
+	})
+	supportCleanup(h)
+
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Errorf("support folder should be gone, stat err = %v", err)
+	}
+	want := []string{"release", "schedule:" + workDir}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Errorf("events = %v, want %v", events, want)
+	}
+}
+
+// TestScheduleSupportSelfCleanupRunsOnce: runSupportSession schedules the
+// post-exit cleanup at the start of teardown (a closed console window allows
+// only a few seconds), and supportCleanup schedules it again for the
+// technician-ended path. Only one is ever started.
+func TestScheduleSupportSelfCleanupRunsOnce(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "breeze-support-4242")
+	calls := 0
+	orig := supportSelfDeleteFn
+	t.Cleanup(func() { supportSelfDeleteFn = orig })
+	supportSelfDeleteFn = func(string) { calls++ }
+
+	(&Heartbeat{supportWorkDir: workDir}).ScheduleSupportSelfCleanup()
+	if calls != 0 {
+		t.Fatalf("ScheduleSupportSelfCleanup ran outside support mode")
+	}
+	h := &Heartbeat{supportMode: true, supportWorkDir: workDir}
+	h.ScheduleSupportSelfCleanup()
+	h.ScheduleSupportSelfCleanup()
+	supportCleanup(h)
+	if calls != 1 {
+		t.Errorf("post-exit cleanup scheduled %d times, want 1", calls)
+	}
+}
+
+// TestSupportCleanupOnlyRemovesASupportFolder: the folder is removed, here and
+// after exit, only when it is named like one runSupportSession creates. A
+// wrong value can never turn into removing some other directory.
+func TestSupportCleanupOnlyRemovesASupportFolder(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "Breeze")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var scheduled []string
+	orig := supportSelfDeleteFn
+	t.Cleanup(func() { supportSelfDeleteFn = orig })
+	supportSelfDeleteFn = func(dir string) { scheduled = append(scheduled, dir) }
+
+	supportCleanup(&Heartbeat{supportMode: true, supportWorkDir: other})
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("a folder not named breeze-support-* was removed: %v", err)
+	}
+	if len(scheduled) != 1 || scheduled[0] != "" {
+		t.Errorf("post-exit cleanup was handed %q, want no folder", scheduled)
 	}
 }
 

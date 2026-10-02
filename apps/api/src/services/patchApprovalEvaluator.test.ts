@@ -20,7 +20,7 @@ vi.mock('../db/schema', () => ({
 
 // patchEligibility.ts (W02) composes the live path from these; the suites
 // below only exercise the config-injected adapter.
-vi.mock('./featureConfigResolver', () => ({ resolvePatchConfigDetailsForDevice: vi.fn() }));
+vi.mock('./featureConfigResolver', () => ({ resolvePatchConfigPolicyForDevice: vi.fn() }));
 vi.mock('./configPolicyPatching', () => ({ loadPolicyLocalPatchConfig: vi.fn() }));
 
 import { db } from '../db';

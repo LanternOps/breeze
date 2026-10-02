@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func configDir() string {
+func platformConfigDir() string {
 	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
 	if err != nil || programData == "" {
 		programData = os.Getenv("ProgramData")

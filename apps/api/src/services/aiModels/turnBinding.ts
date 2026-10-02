@@ -6,12 +6,28 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { AI_SURFACES, offeringOptionsSchema, type AiSurface, type OfferingOptions } from '@breeze/shared';
+import {
+  AI_SURFACES,
+  GATEWAY_CONNECTION_KINDS,
+  PROMPT_PROFILES,
+  offeringOptionsSchema,
+  type AiSurface,
+  type GatewayConnectionKind,
+  type OfferingOptions,
+  type PromptProfile,
+} from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import type { ThinkingMode } from './capabilities';
+import { FAILOVER_CAUSES, MAX_FAILOVER_HOP, type FailoverCause } from './failover';
 import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
 import type { WireParams } from './wireParams';
+
+/** W05: at most this many earlier models' rates ride on one binding. */
+export const MAX_CARRIED_RATES = 8;
+
+/** The rate of a model this session ran on before a same-connection switch (W05). */
+export interface CarriedRate { wireModel: string; rateSnapshot: RateSnapshot }
 
 export interface TurnBinding {
   v: 1;
@@ -20,7 +36,7 @@ export interface TurnBinding {
   partnerId: string | null;
   offeringId: string | null;
   connectionId: string | null;
-  connectionKind: 'platform' | 'anthropic_byok' | 'catalog';
+  connectionKind: 'platform' | 'anthropic_byok' | 'catalog' | GatewayConnectionKind;
   configVersion: number | null;
   catalogRevisionId: string | null;
   funding: AiBillingSource;
@@ -32,7 +48,31 @@ export interface TurnBinding {
   wireFingerprint: string;
   rateSnapshot: RateSnapshot;
   refusalFallback: { offeringId: string; wireModel: string; rateSnapshot: RateSnapshot } | null;
+  /**
+   * W05: rates of the models a same-connection switch moved away from. A
+   * resumed query's cumulative modelUsage can still report late deltas under
+   * their keys (interrupted turns under-count, spike Q6). Absent on bindings
+   * that never switched.
+   */
+  carriedRates?: CarriedRate[];
+  /**
+   * W11 (#7609): the model's prompt profile at resolve time. The ledger
+   * records it on every row of every surface. Optional (`v` stays 1): a
+   * binding persisted before W11 parses without it. Deliberately NOT part of
+   * liveQueryKey: a profile change (the emergency Generic switch) applies to
+   * the next new live query instead of rotating an idle one.
+   */
+  promptProfile?: PromptProfile;
+  /**
+   * W09 (#7607): set when a failover hop serves this turn (ledger provenance;
+   * D6 session stamping). Absent — never `null` — on a binding with no
+   * failover, so it stays byte-identical to a W03/W05 binding for the
+   * stable-key re-bind comparison; absent on bindings stored before W09.
+   */
+  failover?: TurnBindingFailover;
 }
+
+export interface TurnBindingFailover { fromOfferingId: string | null; hop: number; cause: FailoverCause }
 
 /** Key-order-independent JSON, for fingerprints and rate comparisons. */
 export function stableJson(value: unknown): string {
@@ -78,6 +118,10 @@ export function turnBindingFrom(r: ResolvedModel): TurnBinding {
           rateSnapshot: r.refusalFallback.rateSnapshot,
         }
       : null,
+    promptProfile: r.promptProfile,
+    ...(r.failover
+      ? { failover: { fromOfferingId: r.failover.fromOfferingId, hop: r.failover.hop, cause: r.failover.cause } }
+      : {}),
   };
 }
 
@@ -116,7 +160,7 @@ const turnBindingSchema = z.object({
   partnerId: z.string().nullable(),
   offeringId: z.string().nullable(),
   connectionId: z.string().nullable(),
-  connectionKind: z.enum(['platform', 'anthropic_byok', 'catalog']),
+  connectionKind: z.enum(['platform', 'anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
   configVersion: z.number().int().nullable(),
   catalogRevisionId: z.string().nullable(),
   funding: z.enum(['platform', 'partner_key']),
@@ -130,6 +174,17 @@ const turnBindingSchema = z.object({
   refusalFallback: z.object({
     offeringId: z.string(), wireModel: z.string(), rateSnapshot: rateSnapshotSchema,
   }).nullable(),
+  carriedRates: z.array(z.object({ wireModel: z.string().min(1), rateSnapshot: rateSnapshotSchema }))
+    .max(MAX_CARRIED_RATES).optional(),
+  // W11: must round-trip, or aiBudgetReservations' stored-vs-new binding
+  // comparison would see every stable-key retry as a re-bind.
+  promptProfile: z.enum(PROMPT_PROFILES).optional(),
+  // W09: mirrors ai_invocations_failover_chk (hop 1..6 with a known cause).
+  failover: z.object({
+    fromOfferingId: z.string().nullable(),
+    hop: z.number().int().min(1).max(MAX_FAILOVER_HOP),
+    cause: z.enum(FAILOVER_CAUSES),
+  }).optional(),
 });
 
 export function parseTurnBinding(raw: unknown): TurnBinding | null {
@@ -137,9 +192,30 @@ export function parseTurnBinding(raw: unknown): TurnBinding | null {
   return parsed.success ? (parsed.data as TurnBinding) : null;
 }
 
+/**
+ * W05: the binding plus the rates of the models this session switched away
+ * from on the same connection. Never carries the bound model or its refusal
+ * fallback (they have their own snapshots), keeps the LATEST rate per model,
+ * keeps at most MAX_CARRIED_RATES (the most recent), and returns the binding
+ * unchanged rather than emit `carriedRates: []` — so a binding that carries
+ * nothing stays byte-identical to W03's for the stable-key re-bind comparison.
+ */
+export function withCarriedRates(b: TurnBinding, carried: readonly CarriedRate[]): TurnBinding {
+  const byModel = new Map<string, CarriedRate>();
+  for (const c of carried) {
+    if (c.wireModel === b.wireModel || c.wireModel === b.refusalFallback?.wireModel) continue;
+    byModel.delete(c.wireModel);   // re-insert so the latest occurrence is last
+    byModel.set(c.wireModel, c);
+  }
+  const list = [...byModel.values()].slice(-MAX_CARRIED_RATES);
+  return list.length > 0 ? { ...b, carriedRates: list } : b;
+}
+
 export function rateForServedModel(b: TurnBinding, servedWireModel: string): RateSnapshot {
   if (servedWireModel === b.wireModel) return b.rateSnapshot;
   if (b.refusalFallback && servedWireModel === b.refusalFallback.wireModel) return b.refusalFallback.rateSnapshot;
+  const carried = b.carriedRates?.find((c) => c.wireModel === servedWireModel);
+  if (carried) return carried.rateSnapshot;
   // The SDK reported a model we did not bind (an internal helper call). Price
   // it at the primary rate — same connection, same funding, never a guess —
   // and make the mismatch visible.

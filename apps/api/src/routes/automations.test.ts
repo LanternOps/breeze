@@ -112,7 +112,21 @@ vi.mock('../db', () => ({
     transaction: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
+}));
+
+const WEBHOOK_OWNER_CONTEXT = {
+  scope: 'organization',
+  orgId: 'org-123',
+  accessibleOrgIds: ['org-123'],
+  accessiblePartnerIds: [],
+  currentPartnerId: 'partner-123',
+  userId: null,
+  label: 'automations.webhook',
+};
+vi.mock('../services/automationWebhookContext', () => ({
+  resolveAutomationWebhookOwnerContext: vi.fn(async () => WEBHOOK_OWNER_CONTEXT),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -243,7 +257,8 @@ vi.mock('../middleware/auth', () => ({
   }),
 }));
 
-import { db } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
+import { resolveAutomationWebhookOwnerContext } from '../services/automationWebhookContext';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import { getRedis } from '../services/redis';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
@@ -2400,6 +2415,114 @@ describe('automations routes', () => {
         }),
       }),
     );
+  });
+
+  // #7363 — the webhook route has no auth context of its own.
+  const WEBHOOK_ROW = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Webhook Automation',
+    orgId: 'org-123',
+    partnerId: null,
+    enabled: true,
+    trigger: { type: 'webhook', secret: 'secret-123' },
+    actions: [{ type: 'execute_command', command: 'echo ok' }]
+  };
+  const mockAutomationReads = (...rows: unknown[][]) => {
+    const limit = vi.fn();
+    for (const r of rows) limit.mockResolvedValueOnce(r);
+    limit.mockResolvedValue(rows[rows.length - 1]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit }) })
+    } as any);
+  };
+  const signedWebhookRequest = (eventId: string) => {
+    const rawBody = JSON.stringify({ ping: true, eventId });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac('sha256', 'secret-123').update(`${timestamp}.${rawBody}`).digest('hex')}`;
+    return app.request('/automations/webhooks/11111111-1111-4111-8111-111111111111', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-timestamp': timestamp,
+        'x-breeze-signature': signature,
+        'x-breeze-event-id': eventId,
+      },
+      body: rawBody
+    });
+  };
+
+  it('creates the webhook run inside the automation owner context, not system scope (#7363)', async () => {
+    mockAutomationReads([WEBHOOK_ROW]);
+    let activeContext: unknown = null;
+    let createdUnderContext: unknown = 'not-created';
+    vi.mocked(withDbAccessContext).mockImplementationOnce(async (ctx: unknown, fn: () => any) => {
+      activeContext = ctx;
+      try { return await fn(); } finally { activeContext = null; }
+    });
+    const defaultCreate = vi.mocked(createAutomationRunRecord).getMockImplementation();
+    vi.mocked(createAutomationRunRecord).mockImplementationOnce(async (...args: any[]) => {
+      createdUnderContext = activeContext;
+      return (defaultCreate as any)(...args);
+    });
+
+    const res = await signedWebhookRequest('event-owner-ctx-1');
+
+    expect(res.status).toBe(202);
+    // System scope only for the two read-only lookups.
+    expect(vi.mocked(withSystemDbAccessContext).mock.calls.map((call) => call[1])).toEqual([
+      'automations.webhook.lookup',
+      'automations.webhook.owner',
+    ]);
+    expect(createdUnderContext).toMatchObject({
+      scope: 'organization',
+      orgId: 'org-123',
+      accessibleOrgIds: ['org-123'],
+      accessiblePartnerIds: [],
+    });
+    expect(enqueueAutomationRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a verified webhook with 403 and an audit trace when the owning tenant is not active (#7363)', async () => {
+    mockAutomationReads([WEBHOOK_ROW]);
+    vi.mocked(resolveAutomationWebhookOwnerContext).mockResolvedValueOnce(null);
+
+    const res = await signedWebhookRequest('event-owner-inactive-1');
+
+    expect(res.status).toBe(403);
+    expect(createAutomationRunRecord).not.toHaveBeenCalled();
+    expect(enqueueAutomationRun).not.toHaveBeenCalled();
+    expect(writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'automation.trigger.webhook',
+        result: 'denied',
+        details: expect.objectContaining({ reason: 'owner_inactive' }),
+      }),
+    );
+  });
+
+  it('does not resolve the owner for a caller whose signature fails (#7363)', async () => {
+    mockAutomationReads([{ ...WEBHOOK_ROW, trigger: { type: 'webhook', secret: 'other-secret' } }]);
+
+    const res = await signedWebhookRequest('event-owner-unsigned-1');
+
+    expect(res.status).toBe(401);
+    expect(resolveAutomationWebhookOwnerContext).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['deleted', []],
+    ['disabled', [{ ...WEBHOOK_ROW, enabled: false }]],
+    ['re-owned', [{ ...WEBHOOK_ROW, orgId: 'org-other' }]],
+    ['re-keyed', [{ ...WEBHOOK_ROW, trigger: { type: 'webhook', secret: 'rotated' } }]],
+  ])('404s when the automation was %s between the lookup and the owner-context re-read (#7363)', async (_label, reread) => {
+    mockAutomationReads([WEBHOOK_ROW], reread);
+
+    const res = await signedWebhookRequest(`event-reread-${_label}`);
+
+    expect(res.status).toBe(404);
+    expect(createAutomationRunRecord).not.toHaveBeenCalled();
+    expect(enqueueAutomationRun).not.toHaveBeenCalled();
   });
 });
 

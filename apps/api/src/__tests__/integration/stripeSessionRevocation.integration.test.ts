@@ -46,12 +46,13 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 // WHICH credential expired a session — the archive contract is meaningless
 // unless the outgoing key is the one that reaches Stripe.
 // ---------------------------------------------------------------------------
-const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, constructedKeys } = vi.hoisted(() => ({
+const { expireMock, retrieveMock, createMock, accountsRetrieveMock, eventsListMock, autopayProbeMock, constructedKeys } = vi.hoisted(() => ({
   expireMock: vi.fn(),
   retrieveMock: vi.fn(),
   createMock: vi.fn(),
   accountsRetrieveMock: vi.fn(),
   eventsListMock: vi.fn(),
+  autopayProbeMock: vi.fn(),
   constructedKeys: [] as string[],
 }));
 
@@ -60,6 +61,11 @@ vi.mock('stripe', () => ({
     public _key: string;
     accounts = { retrieve: accountsRetrieveMock };
     events = { list: eventsListMock };
+    customers = { update: autopayProbeMock };
+    setupIntents = { update: autopayProbeMock };
+    paymentIntents = { update: autopayProbeMock };
+    paymentMethods = { update: autopayProbeMock };
+    mandates = { retrieve: autopayProbeMock };
     checkout: {
       sessions: {
         expire: (id: string) => unknown;
@@ -200,6 +206,9 @@ beforeEach(() => {
   // survives `clear` and silently drives the next one (a stale
   // complete/paid retrieve turned three retryable cases into charged_repair).
   vi.resetAllMocks();
+  // W01 key validation probes nonexistent objects: permission succeeds without
+  // creating a customer, setup intent, payment intent, or payment method.
+  autopayProbeMock.mockRejectedValue(stripeError('StripeInvalidRequestError', 'resource_missing'));
   constructedKeys.length = 0;
   resetCredentialEraserThrottleForTests();
   delete process.env.STRIPE_SESSION_REVOCATION_MODE;
@@ -418,7 +427,7 @@ describe('SEC-150 producer gate', () => {
     });
     expect((await readMapping(fx.mappingId)).revocationState).toBe('revocation_requested');
 
-    await expect(withSystemDbAccessContext(() => createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never)))
+    await expect(createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never))
       .rejects.toMatchObject({ status: 409, code: 'STRIPE_REVOCATION_PENDING' });
 
     // No second mapping row was created — the window stayed closed.
@@ -721,7 +730,7 @@ describe('SEC-150 concurrency (real Postgres locks)', () => {
 
     const [voidOutcome, linkOutcome] = await Promise.allSettled([
       withSystemDbAccessContext(() => voidInvoice(fx.invoiceId, 'race', { reissue: false }, actorFor(fx.orgId) as never)),
-      withSystemDbAccessContext(() => createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never)),
+      createInvoicePayLink(fx.invoiceId, actorFor(fx.orgId) as never),
     ]);
 
     // Whichever way the race falls, the invariant is the same: every Checkout
@@ -1034,29 +1043,17 @@ describe('SEC-150 regressions', () => {
     await requestInvoiceSessionRevocation({
       invoiceId: fx.invoiceId, reason: 'link_reset', requestedByUserId: null,
     });
-    // Clear the producer gate so the request gets past it and reaches the
-    // post-insert raced branch — the one that used to escape the context and
-    // re-take the invoice row FOR UPDATE on a second pooled connection while the
-    // caller's transaction already held FOR KEY SHARE on it through the mapping
-    // INSERT's FK. That waits on a transaction that cannot commit until it
-    // returns, and Postgres sees no cycle to break: it hangs to statement_timeout.
+    // Bypass the revocation gate to exercise the held-context guard before Stripe.
     process.env.STRIPE_SESSION_REVOCATION_MODE = 'observe';
 
     const requestCtx: DbAccessContext = {
       scope: 'partner', orgId: null, accessibleOrgIds: [fx.orgId],
       accessiblePartnerIds: [fx.partnerId], userId: null,
     };
-    const raced = await withDbAccessContext(requestCtx, async () => {
-      try {
-        await createInvoicePayLink(fx.invoiceId, { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] } as never);
-        return 'minted';
-      } catch (err) {
-        return (err as { code?: string }).code ?? `other: ${(err as Error).message}`;
-      }
-    });
-    // Either outcome is acceptable; HANGING is not. Reaching this line at all is
-    // the regression assertion.
-    expect(['minted', 'STRIPE_REVOCATION_PENDING']).toContain(raced);
+    await expect(withDbAccessContext(requestCtx, () =>
+      createInvoicePayLink(fx.invoiceId, { userId: null, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId] }),
+    )).rejects.toMatchObject({ name: 'HeldDbContextForStripeError' });
+    expect(createMock).not.toHaveBeenCalled();
   }, 20_000);
 
   runDb('saving a working key re-arms blocked revocations but never an operator-abandoned one', async () => {

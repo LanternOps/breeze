@@ -183,6 +183,18 @@ function disputeEventIsNewer(mapping: typeof invoiceStripePayments.$inferSelect,
   return event.disputeFundsWithdrawn === false && mapping.disputeFundsWithdrawn;
 }
 
+export function remainingPrincipalMinor(principalMinor: number, feeMinor: number | null, reversedGrossMinor: number): number {
+  const principal = BigInt(principalMinor);
+  const gross = principal + BigInt(feeMinor ?? 0);
+  if (gross <= 0n) throw new Error('Stripe mapping has a non-positive gross amount');
+  const reversed = BigInt(reversedGrossMinor);
+  const bounded = reversed < 0n ? 0n : reversed > gross ? gross : reversed;
+  // Cumulative half-up allocation; computing from total-to-date eliminates
+  // per-event rounding drift and a full reversal removes the final cent.
+  const allocatedPrincipal = (principal * bounded * 2n + gross) / (2n * gross);
+  return Number(principal - allocatedPrincipal);
+}
+
 export async function applyStripeFinancialEvent(stripeEventId: string): Promise<ApplyResult> {
   const outcome = await withSystemDbAccessContext(async (): Promise<ApplyResult> => {
     const [preEvent] = await db.select().from(stripeFinancialEvents)
@@ -271,7 +283,9 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       return { state: 'blocked' };
     }
 
-    const originalMinor = toMinorUnits(mapping.amount, mapping.currency);
+    const principalMinor = toMinorUnits(mapping.amount, mapping.currency);
+    const feeMinor = toMinorUnits(mapping.feeAmount ?? '0.00', mapping.currency);
+    const originalMinor = principalMinor + feeMinor;
     const eventChargeMinor = event.chargeAmountMinor == null ? null : Number(event.chargeAmountMinor);
     if (eventChargeMinor != null && eventChargeMinor !== originalMinor) {
       await db.update(stripeFinancialEvents).set({
@@ -320,7 +334,8 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       disputeEventId = event.stripeEventId;
     }
 
-    const targetMinor = Math.max(0, originalMinor - refunded - (disputeWithdrawn ? disputeAmount : 0));
+    const reversedGrossMinor = Math.min(originalMinor, refunded + (disputeWithdrawn ? disputeAmount : 0));
+    const targetMinor = remainingPrincipalMinor(principalMinor, feeMinor, reversedGrossMinor);
     const nextStatus = refunded >= originalMinor
       ? 'refunded' as const
       : disputeWithdrawn
@@ -371,7 +386,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
             await db.update(accountingEntityMappings).set({
               syncStatus: 'error',
               lastError: partialRefundDivergenceMessage(
-                fromMinorUnits(originalMinor - targetMinor, mapping.currency),
+                fromMinorUnits(principalMinor - targetMinor, mapping.currency),
                 accountingProviderDisplayName(activeConn.provider),
               ),
               updatedAt: new Date(),
@@ -389,7 +404,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     } else if (targetMinor > 0) {
       const [payment] = await db.insert(invoicePayments).values({
         invoiceId: mapping.invoiceId, orgId: mapping.orgId,
-        amount: fromMinorUnits(targetMinor, mapping.currency), method: 'card',
+        amount: fromMinorUnits(targetMinor, mapping.currency), method: mapping.paymentMethodType === 'us_bank_account' ? 'ach_debit' : 'card',
         reference: mapping.stripePaymentIntentId,
         receivedAt: mapping.paymentReceivedAt ?? mapping.createdAt.toISOString().slice(0, 10),
         recordedBy: null, note: 'Restored after Stripe dispute resolution',

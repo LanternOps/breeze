@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { cascadeDeletePartner } from '../../services/tenantCascade';
+import { getTestDb } from './setup';
+import { createPartner } from './db-utils';
 
 const partnerA = randomUUID();
 const partnerB = randomUUID();
@@ -163,5 +165,85 @@ describe('billing profile tables — partner-axis RLS', () => {
         (SELECT count(*) FROM time_entries WHERE partner_id = ${partnerA}) AS entries
     `))) as unknown as Array<{ profiles: string; rules: string; assignments: string; entries: string }>;
     expect(after[0]).toEqual({ profiles: '0', rules: '0', assignments: '0', entries: '0' });
+  });
+});
+
+describe.runIf(!!process.env.DATABASE_URL)('billing_profile_ai_rates + card AI terms (#7608)', () => {
+  // Superuser seeding client (bypasses RLS), as the plan's fixtureSql.
+  const fixtureSql = (statement: ReturnType<typeof sql>) => getTestDb().execute(statement);
+
+  async function seedCard(partnerId: string, aiCoverage = 'billable'): Promise<string> {
+    const [row] = await fixtureSql(sql`
+      INSERT INTO billing_profiles (partner_id, name, currency_code, base_coverage, ai_coverage)
+      VALUES (${partnerId}, ${'W10 ' + randomUUID()}, 'USD', 'billable', ${aiCoverage}) RETURNING id`);
+    return String(row!.id);
+  }
+  const insertRate = (partnerId: string, cardId: string) => sql`
+    INSERT INTO billing_profile_ai_rates (partner_id, billing_profile_id, model_id,
+      input_price_per_m, output_price_per_m, cache_read_price_per_m, cache_write_price_per_m)
+    VALUES (${partnerId}, ${cardId}, 'w10-test-model', 1, 1, 1, 1)`;
+
+  it('billing_profile_ai_rates ENABLEs and FORCEs RLS', async () => {
+    const rows = await fixtureSql(sql`
+      SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'billing_profile_ai_rates'`);
+    expect(rows).toEqual([{ relrowsecurity: true, relforcerowsecurity: true }]);
+  });
+
+  it("partner B cannot forge a price-list row on partner A's card (42501)", async () => {
+    const a = await createPartner(); const b = await createPartner();
+    const card = await seedCard(a.id);
+    await expect(withDbAccessContext(partnerContext(b.id), () => db.execute(insertRate(a.id, card))))
+      .rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  it('partner B cannot read partner A\'s price list', async () => {
+    const a = await createPartner(); const b = await createPartner();
+    const card = await seedCard(a.id);
+    await withSystemDbAccessContext(() => db.execute(insertRate(a.id, card)));
+    const read = sql`SELECT id FROM billing_profile_ai_rates WHERE billing_profile_id = ${card}`;
+    expect(await withDbAccessContext(partnerContext(a.id), () => db.execute(read))).toHaveLength(1);
+    expect(await withDbAccessContext(partnerContext(b.id), () => db.execute(read))).toHaveLength(0);
+  });
+
+  it('a rate row cannot join a card of another partner (composite FK 23503)', async () => {
+    const a = await createPartner(); const b = await createPartner();
+    const card = await seedCard(a.id);
+    await expect(withSystemDbAccessContext(() => db.execute(insertRate(b.id, card))))
+      .rejects.toMatchObject({ cause: { code: '23503', constraint_name: 'billing_profile_ai_rates_profile_partner_fk' } });
+  });
+
+  it('one model once per card (23505)', async () => {
+    const a = await createPartner(); const card = await seedCard(a.id);
+    await withSystemDbAccessContext(() => db.execute(insertRate(a.id, card)));
+    await expect(withSystemDbAccessContext(() => db.execute(insertRate(a.id, card))))
+      .rejects.toMatchObject({ cause: { code: '23505' } });
+  });
+
+  const badUpdates: Array<[string, (card: string) => ReturnType<typeof sql>]> = [
+    ['markup on a non-billable card', (c) => sql`UPDATE billing_profiles SET ai_coverage = 'non_billable', ai_markup_percent = 10 WHERE id = ${c}`],
+    ['markup over 1000%', (c) => sql`UPDATE billing_profiles SET ai_markup_percent = 1000.01 WHERE id = ${c}`],
+    ['negative markup', (c) => sql`UPDATE billing_profiles SET ai_markup_percent = -1 WHERE id = ${c}`],
+    ['unknown coverage', (c) => sql`UPDATE billing_profiles SET ai_coverage = 'free' WHERE id = ${c}`],
+  ];
+  it.each(badUpdates)('rejects %s (23514)', async (_label, statement) => {
+    const a = await createPartner(); const card = await seedCard(a.id);
+    await expect(withSystemDbAccessContext(() => db.execute(statement(card))))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('a card created without AI terms is non_billable (nobody is billed by default)', async () => {
+    const a = await createPartner();
+    const [row] = await fixtureSql(sql`
+      INSERT INTO billing_profiles (partner_id, name, currency_code, base_coverage)
+      VALUES (${a.id}, ${'W10 default ' + randomUUID()}, 'USD', 'billable') RETURNING ai_coverage, ai_markup_percent`);
+    expect(row).toMatchObject({ ai_coverage: 'non_billable', ai_markup_percent: null });
+  });
+
+  it('deleting a card deletes its price list (ON DELETE CASCADE)', async () => {
+    const a = await createPartner(); const card = await seedCard(a.id);
+    await withSystemDbAccessContext(() => db.execute(insertRate(a.id, card)));
+    await fixtureSql(sql`DELETE FROM billing_profiles WHERE id = ${card}`);
+    const left = await fixtureSql(sql`SELECT 1 FROM billing_profile_ai_rates WHERE billing_profile_id = ${card}`);
+    expect(left.length).toBe(0);
   });
 });

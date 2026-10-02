@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "backup_status": "Stato dei backup"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Rispetto degli SLA dei ticket",
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
+        "ai_usage_by_client": "Utilizzo dell'IA per cliente",
         "backup_status": "Stato dei backup"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "Analisi anzianità crediti (AR aging)",
           "description": "Saldi delle fatture non pagate suddivisi in corrente / 1–30 / 31–60 / 61–90 / oltre 90 giorni di ritardo, un insieme di totali per valuta senza conversione. Le fatture senza data di scadenza ricevono una propria fascia, mai «corrente»."
+        },
+        "ai_usage_by_client": {
+          "name": "Utilizzo dell'IA per cliente",
+          "description": "Utilizzo dell'IA della piattaforma per cliente nel periodo: richieste, token, costo Breeze, importo da addebitare in base al profilo di fatturazione del cliente e quanto è già stato fatturato. L'utilizzo incluso e i modelli senza prezzo sono mostrati separatamente, mai sommati."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Ogni valuta ha i propri totali. Gli importi non vengono convertiti tra valute.",
       "includePaidInPeriod": "Elenca le fatture pagate dall’inizio del mese",
       "includePaidInPeriodHelp": "Aggiunge una nota con le fatture pagate interamente dal primo giorno del mese di riferimento fino alla data di riferimento. Non modifica mai le fasce di anzianità.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Raggruppa per",
+      "groupByAutomatic": "Automatico: per organizzazione con tutte le organizzazioni, per modello con una sola organizzazione",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "model": "Modello"
+      },
+      "periodNote": "Gli addebiti sono fatturati per mese di calendario UTC. Un periodo impostato in un altro fuso orario può differire dalla fattura per l'utilizzo vicino ai confini del mese.",
+      "unpricedNote": "L'utilizzo di un modello senza tariffa nel profilo di fatturazione del cliente viene conteggiato come senza prezzo. Non è mai considerato gratuito.",
       "cancel": "Annulla",
       "createReport": "Crea report"
     },

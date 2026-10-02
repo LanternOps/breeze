@@ -6,7 +6,7 @@ import (
 	"runtime"
 )
 
-func configDir() string {
+func platformConfigDir() string {
 	if runtime.GOOS == "darwin" {
 		return "/Library/Application Support/Breeze"
 	}

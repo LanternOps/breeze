@@ -196,6 +196,13 @@ export const SENTRY_EVENT_CODES = [
   /** W03 (#7601): a keyed credit debit stayed unconfirmed (5xx / transport) through every retry. */
   'ai_credit_debit_retries_exhausted',
   /**
+   * AI model registry W11 (#7609): a settlement's prompt variant did not match
+   * its row's surface / prompt profile, so it was recorded as the base prompt
+   * (the settlement itself never fails on provenance). Any occurrence skews the
+   * prompt-variant comparison; post-deploy gate G3 expects zero.
+   */
+  'ai_prompt_variant_mismatch',
+  /**
    * W03 (#7601, PR #7700 finding 5): a deferred (pending) AI settlement failed
    * every replay attempt and was stamped pending_settlement_dead_at. Its spend
    * is unrecorded until an operator acts (listDeadPendingSettlements).
@@ -230,6 +237,18 @@ export const SENTRY_EVENT_CODES = [
    * the caller; a sustained stream means real capacity exhaustion.
    */
   'ai_session_cap_all_in_flight',
+  /**
+   * AI chargeback (#7608): one or more orgs' monthly close threw during the
+   * daily sweep. Each failure is also a captureException tagged org_id +
+   * ai_charge_period_start; the next daily sweep retries the month.
+   */
+  'ai_chargeback_close_failed',
+  /**
+   * AI chargeback (#7608): an org's close found chargeable usage that aged
+   * past the 92-day lookback without ever being closed. It will never be
+   * billed; tags carry org_id + ai_charge_period_start.
+   */
+  'ai_chargeback_usage_expired',
   /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
   'ai_budget_alert_no_recipients',
   /** An AI budget alert event never became visible before its retries ran out. */

@@ -18,7 +18,10 @@ const m = vi.hoisted(() => ({
   markIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
   settleOrder: [] as string[],
   listRefusalAlternatives: vi.fn(),
+  noteProviderFailureForBinding: vi.fn(async (..._a: unknown[]) => undefined),
 }));
+// W09 (#7607): the chat cooldown write (Redis; fails open).
+vi.mock('./aiModels/offeringHealth', () => ({ noteProviderFailureForBinding: m.noteProviderFailureForBinding }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => {
@@ -52,6 +55,15 @@ vi.mock('./aiModels/settleInvocation', async (orig) => ({
 vi.mock('./aiModels/refusals', async (orig) => ({
   ...(await orig<typeof import('./aiModels/refusals')>()),
   listRefusalAlternatives: m.listRefusalAlternatives,
+}));
+// W11: a registry with an active variant for chat/claude-small. The fixture's
+// default profile (claude-standard) has none, so every existing test still
+// sends the base prompt.
+vi.mock('./aiModels/promptVariants', async (orig) => ({
+  ...(await orig<typeof import('./aiModels/promptVariants')>()),
+  PROMPT_VARIANTS: [
+    { id: 'chat/claude-small@1', surface: 'chat', profile: 'claude-small', version: 1, state: 'active', canaryPercent: 0, guidance: 'Small guidance.', hypothesis: 'h' },
+  ],
 }));
 vi.mock('./aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
@@ -475,5 +487,90 @@ describe('refused turn', () => {
     await session.processorPromise;
     const events = session.eventBus.getReplayEvents() as unknown as Array<Record<string, unknown>>;
     expect(events.some((e) => e.type === 'model_refusal')).toBe(false);
+  });
+});
+
+describe('W11 prompt variants', () => {
+  const oneResult = () => sdkResult({ usage: { input_tokens: 10, output_tokens: 5 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 5 } } });
+
+  it('a claude-small chat session sends the active variant and records it at settlement', async () => {
+    const resolved = makeResolvedModel('platform', { promptProfile: 'claude-small' });
+    const session = await runOneTurn('s-w11', resolved, [oneResult()]);
+    expect(String(m.queryArgs[0]!.options.systemPrompt)).toMatch(/\n\n## Model Guidance\nSmall guidance\.$/);
+    expect(session.promptProvenance).toEqual({ profile: 'claude-small', variant: 'chat/claude-small@1' });
+    expect(settleCalls().at(-1)!.prompt).toEqual({ profile: 'claude-small', variant: 'chat/claude-small@1' });
+  });
+
+  it('the default profile sends the base prompt unchanged and records no variant', async () => {
+    await runOneTurn('s-w11b', makeResolvedModel('platform'), [oneResult()]);
+    expect(String(m.queryArgs[0]!.options.systemPrompt)).not.toContain('## Model Guidance');
+    expect(settleCalls().at(-1)!.prompt).toEqual({ profile: 'claude-standard', variant: null });
+  });
+
+  it('the live query provenance is what settlement records, even after the binding profile changes', async () => {
+    m.queryImpl = (args) => turnScriptedQuery(args.prompt, [[oneResult()]]);
+    const first = await mgr.getOrCreate('s-w11c', baseDbSession, baseAuth, undefined, 'sys', 1, makeResolvedModel('platform', { promptProfile: 'claude-small' }));
+    first.state = 'idle';
+    // Same live-query key (profile is not part of it): the query is reused
+    // and keeps the prompt it was built with.
+    const generic = makeResolvedModel('platform', { promptProfile: 'generic' });
+    const reused = await mgr.getOrCreate('s-w11c', baseDbSession, baseAuth, undefined, 'sys', 1, generic);
+    expect(reused).toBe(first);
+    expect(m.queryArgs).toHaveLength(1);
+    expect(reused.promptProvenance).toEqual({ profile: 'claude-small', variant: 'chat/claude-small@1' });
+    // The turn is claimed with the NEW binding (profile generic), but the
+    // system prompt the query actually sent carried the claude-small variant.
+    expect(mgr.tryTransitionToProcessing(reused, undefined, { turnBinding: turnBindingFrom(generic) })).toBe(true);
+    reused.inputController.pushMessage('hi');
+    await reused.processorPromise;
+    const settled = settleCalls().at(-1)!;
+    expect(settled.binding.promptProfile).toBe('generic');
+    expect(settled.prompt).toEqual({ profile: 'claude-small', variant: 'chat/claude-small@1' });
+  });
+});
+
+describe('W09 (#7607, D5): chat never replays a turn; a pre-output provider failure cools the bound offering', () => {
+  const failed = () => ({ ...sdkResult({ subtype: 'error_during_execution', usage: {}, modelUsage: {} }), is_error: true });
+
+  it('a turn that failed on a 529 before any output cools the bound offering', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 3, max_retries: 3, retry_delay_ms: 0, error_status: 529, error: 'overloaded' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledWith(expect.objectContaining({ offeringId: 'off-1' }), 'overloaded');
+  });
+
+  it('a turn that streamed text before failing does not cool anything', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it' }] } },
+      { type: 'system', subtype: 'api_retry', attempt: 3, error_status: 529, error: 'overloaded' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
+  });
+
+  it('a retried-then-successful turn does not cool anything', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded' },
+      sdkResult({ usage: { input_tokens: 10, output_tokens: 5 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 5 } } }),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
+  });
+
+  it('#7784: low credit (billing_error, then the result\'s bare 400: the W09 lab frames) cools the offering as quota_exhausted', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'assistant', error: 'billing_error', message: { model: '<synthetic>', content: [{ type: 'text', text: 'Credit balance is too low' }] } },
+      { ...failed(), subtype: 'success', api_error_status: 400, modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 900, outputTokens: 15 } } },
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledTimes(1);
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledWith(expect.objectContaining({ offeringId: 'off-1' }), 'quota_exhausted');
+  });
+
+  it('a non-failover error (invalid request) cools nothing', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
   });
 });

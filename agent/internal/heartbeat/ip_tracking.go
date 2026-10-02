@@ -405,9 +405,24 @@ func (h *Heartbeat) collectIPHistory() (*IPHistoryUpdate, error) {
 	}, nil
 }
 
+// perUserStateDir is the per-user ~/.breeze dir the small state stores below
+// prefer, or "" to fall through to the data dir: when the home dir is
+// unknown, and in a support session, which keeps every file in its private
+// folder (the data dir resolves there) and leaves nothing in the profile.
+func perUserStateDir() string {
+	if config.UserWorkspaceActive() {
+		return ""
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		return ""
+	}
+	return filepath.Join(homeDir, ".breeze")
+}
+
 func (h *Heartbeat) ipStatePath() string {
-	if homeDir, err := os.UserHomeDir(); err == nil && strings.TrimSpace(homeDir) != "" {
-		return filepath.Join(homeDir, ".breeze", ipStateFileName)
+	if homeDir := perUserStateDir(); homeDir != "" {
+		return filepath.Join(homeDir, ipStateFileName)
 	}
 
 	dataDir := strings.TrimSpace(config.GetDataDir())

@@ -73,8 +73,27 @@ type Shipper struct {
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
 	stopOnce     sync.Once
-	minLevel     slog.Level
-	mu           sync.RWMutex // protects minLevel
+	minLevel     slog.Level   // configured base level; see SetMinLevel
+	mu           sync.RWMutex // protects minLevel, override*
+	// overrideLevel/overrideExpiresAt hold a temporary set_log_level override
+	// (#7416). It wins over minLevel until overrideExpiresAt, after which
+	// ShouldShip falls back to minLevel with no timer involved. A zero
+	// overrideExpiresAt means no override.
+	overrideLevel     slog.Level
+	overrideExpiresAt time.Time
+	// overrideSetAt is when the command that produced the override ran. A
+	// persisted override replaces the in-memory one only if it is at least
+	// as new, so a stale file cannot displace a newer override whose write
+	// failed.
+	overrideSetAt time.Time
+	// overridePath is the persisted override file (LevelOverrideFileName);
+	// empty disables persistence and polling.
+	overridePath string
+	// overrideReadErrLogged rate-limits the "cannot read override file"
+	// warning to once per shipper.
+	overrideReadErrLogged atomic.Bool
+	// now is the clock; nil means time.Now (tests inject a fixed clock).
+	now          func() time.Time
 	droppedCount atomic.Int64
 	// urlErrCount rate-limits the unresolvable-server-URL report. That state
 	// never self-heals, so an unguarded stderr write would emit a line on every
@@ -104,6 +123,12 @@ type ShipperConfig struct {
 	HTTPClient   *http.Client
 	MinLevel     string // "debug", "info", "warn", "error"
 	AuthMonitor  AuthSkipper
+	// LevelOverridePath is the persisted set_log_level override file
+	// (filepath.Join(config.ConfigDir(), LevelOverrideFileName)). When set,
+	// the shipper applies an active override at Start and re-reads the file
+	// every levelOverridePollInterval, so an override outlives a restart and
+	// reaches helper processes (#7416). Empty disables both.
+	LevelOverridePath string
 }
 
 // NewShipper creates a new log shipper.
@@ -122,6 +147,7 @@ func NewShipper(cfg ShipperConfig) *Shipper {
 		stopChan:     make(chan struct{}),
 		minLevel:     parseLevel(cfg.MinLevel),
 		authMon:      cfg.AuthMonitor,
+		overridePath: cfg.LevelOverridePath,
 	}
 }
 
@@ -146,6 +172,13 @@ func (s *Shipper) resolveServerURL() (string, error) {
 
 // Start begins the background shipping loop.
 func (s *Shipper) Start() {
+	if s.overridePath != "" {
+		// Synchronously, so a restarted process ships at the override level
+		// from its first log line rather than one poll interval later.
+		s.refreshLevelOverride()
+		s.wg.Add(1)
+		go s.overrideLoop()
+	}
 	s.wg.Add(1)
 	go s.shipLoop()
 }
@@ -255,11 +288,114 @@ func (s *Shipper) SetMinLevel(level string) {
 	s.minLevel = parseLevel(level)
 }
 
-// ShouldShip returns true if the given level meets the minimum threshold.
+// ShouldShip returns true if the given level meets the effective threshold:
+// an active override when there is one, otherwise the base level.
 func (s *Shipper) ShouldShip(level slog.Level) bool {
 	s.mu.RLock()
+	floor := s.minLevel
+	if !s.overrideExpiresAt.IsZero() && s.clock().Before(s.overrideExpiresAt) {
+		floor = s.overrideLevel
+	}
+	s.mu.RUnlock()
+	return level >= floor
+}
+
+func (s *Shipper) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// setLevelOverride installs an override that expires at expiresAt, set by a
+// command that ran at setAt.
+func (s *Shipper) setLevelOverride(level slog.Level, expiresAt, setAt time.Time) {
+	s.mu.Lock()
+	s.overrideLevel = level
+	s.overrideExpiresAt = expiresAt
+	s.overrideSetAt = setAt
+	s.mu.Unlock()
+}
+
+func (s *Shipper) baseLevelName() string {
+	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return level >= s.minLevel
+	return levelName(s.minLevel)
+}
+
+// refreshLevelOverride applies the persisted override when it is active, at
+// least as new as the one in memory, and different from it. An absent or
+// expired file changes nothing (see leveloverride.go); an untrustworthy one
+// is reported once per bad spell and ignored.
+//
+// Never call this while holding shipperMu: it logs, and the log record goes
+// through shippingHandler.Handle, which read-locks shipperMu.
+func (s *Shipper) refreshLevelOverride() {
+	o, ok, err := ReadLevelOverride(s.overridePath, s.clock())
+	if err != nil {
+		if s.overrideReadErrLogged.CompareAndSwap(false, true) {
+			slog.Warn("ignoring log shipping level override file",
+				"path", s.overridePath, "error", err.Error())
+		}
+		return
+	}
+	// A good read (including "no file" and "expired") re-arms the warning,
+	// so a later bad file is reported again.
+	s.overrideReadErrLogged.Store(false)
+	if !ok {
+		return
+	}
+	level := parseLevel(o.Level)
+	s.mu.Lock()
+	changed := !o.SetAt.Before(s.overrideSetAt) &&
+		(s.overrideLevel != level || !s.overrideExpiresAt.Equal(o.ExpiresAt))
+	if changed {
+		s.overrideLevel = level
+		s.overrideExpiresAt = o.ExpiresAt
+		s.overrideSetAt = o.SetAt
+	}
+	base := s.minLevel
+	s.mu.Unlock()
+	if changed {
+		// Logged outside s.mu: the record re-enters ShouldShip.
+		slog.Info("log shipping level override applied",
+			"level", o.Level, "baseLevel", levelName(base),
+			"expiresAt", o.ExpiresAt.Format(time.RFC3339))
+	}
+}
+
+// overrideLoop re-reads the override file until Stop, and announces the
+// moment an active override lapses back to the base level.
+func (s *Shipper) overrideLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(levelOverridePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopChan:
+			return
+		case <-ticker.C:
+			s.expireLevelOverride()
+			s.refreshLevelOverride()
+		}
+	}
+}
+
+// expireLevelOverride clears an override whose expiry has passed so the
+// reversion is logged exactly once.
+func (s *Shipper) expireLevelOverride() {
+	s.mu.Lock()
+	expired := !s.overrideExpiresAt.IsZero() && !s.clock().Before(s.overrideExpiresAt)
+	var level, base slog.Level
+	if expired {
+		level, base = s.overrideLevel, s.minLevel
+		s.overrideExpiresAt = time.Time{}
+	}
+	s.mu.Unlock()
+	if expired {
+		slog.Info("log shipping level override expired; reverted to base level",
+			"overrideLevel", levelName(level), "baseLevel", levelName(base))
+	}
 }
 
 func (s *Shipper) shipLoop() {

@@ -20,8 +20,9 @@ export const BREEZE_FALLBACK_MODEL = 'claude-sonnet-5-5';
 // from the model's registry row. The registry cutover bootstraps a platform row
 // for an env model it does not know at the legacy conservative rate (Opus-tier
 // $5/$25 per MTok), i.e. an OVER-estimate for a cheap local model, not $0. For
-// accurate accounting set its price on /admin/ai-models, or use the
-// openai-compatible path's MCP_LLM_PRICE_* overrides.
+// accurate accounting set its price on /admin/ai-models (or, for an env
+// OpenAI-compatible endpoint, MCP_LLM_PRICE_*, which price its env-managed
+// registry offering).
 export function resolveDefaultModel(env: NodeJS.ProcessEnv = process.env): string {
   return env.ANTHROPIC_MODEL?.trim() || BREEZE_FALLBACK_MODEL;
 }

@@ -267,7 +267,31 @@
       "geoProviderDefault": "Sağlayıcı varsayılanı",
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
-      "refreshFailed": "Model yenileme sıraya alınamadı."
+      "refreshFailed": "Model yenileme sıraya alınamadı.",
+      "alreadyConnected": "Zaten bağlı",
+      "addKind": {
+        "anthropic_byok": "Anthropic API anahtarı",
+        "openai_compatible": "OpenAI uyumlu uç nokta"
+      },
+      "openai": {
+        "name": "Ad",
+        "baseUrl": "Temel URL",
+        "baseUrlHelp": "/chat/completions öncesinde biten URL, örn. https://llm.example.com/v1. Barındırılan Breeze yalnızca herkese açık https uç noktalarına bağlanır.",
+        "apiKey": "API anahtarı (isteğe bağlı)",
+        "apiKeyHelp": "Şifreli saklanır ve bir daha gösterilmez. Ollama veya vLLM gibi yerel sunucular genellikle anahtar gerektirmez.",
+        "optional": "İsteğe bağlı",
+        "keepKey": "Mevcut anahtarı korumak için boş bırakın",
+        "removeKey": "Kayıtlı anahtarı kaldır",
+        "keyTooShort": "Anahtar en az {{min}} karakter olmalıdır.",
+        "keyRequiredForNewUrl": "Yeni URL için anahtarı girin veya anahtarı kaldırın. Kayıtlı anahtar hiçbir zaman yeni bir URL'ye gönderilmez.",
+        "envManaged": "Bu bağlantı örneğin ortamı (MCP_LLM_* ayarları) tarafından yönetiliyor. Orada değiştirin; burada düzenlenemez.",
+        "envReleased": "Bu bağlantı örneğin ortamı (MCP_LLM_* ayarları) üzerinden kuruldu ve artık o ortam tarafından yönetilmiyor. Burada düzenlenemez; bağlantıyı kesebilirsiniz.",
+        "envManagedBadge": "Ortam tarafından yönetiliyor",
+        "noKey": "Anahtar yok",
+        "discovered_one": "{{count}} model bulundu · {{when}}",
+        "discovered_other": "{{count}} model bulundu · {{when}}",
+        "partialSaved": "Uç nokta veya anahtar kaydedildi, ancak ad kaydedilmedi. Yeniden adlandırmak için bağlantıyı tekrar açın."
+      }
     },
     "drawer": {
       "titleCreate": "Bağlantı ekle",
@@ -337,7 +361,16 @@
       "registry_unavailable": "Yapay zeka yapılandırması yükseltiliyor. Birazdan tekrar deneyin.",
       "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir.",
       "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin.",
-      "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin."
+      "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin.",
+      "crossesFunding": "Bu yedek model farklı bir kaynaktan ödeniyor. Önce Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin verin.",
+      "egress_blocked": "Bu adrese izin verilmiyor.",
+      "invalid_url": "Bu URL geçerli değil.",
+      "managed_by_env": "Bu bağlantı örneğin ortamı tarafından yönetiliyor ve burada değiştirilemez.",
+      "connection_in_use": "Bir özellik hâlâ bu bağlantıdaki bir modeli kullanıyor. Önce başka bir varsayılan seçin.",
+      "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",
+      "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez.",
+      "key_required_for_new_endpoint": "Yeni URL için anahtarı girin (veya anahtarı kaldırın).",
+      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -364,7 +397,13 @@
         "org": "Kuruluş geçersiz kılması",
         "partner": "İş ortağı varsayılanı",
         "none": "Varsayılan yok"
-      }
+      },
+      "noCrossFunding": "Breeze kredileri ile iş ortağının kendi anahtarı arasında yedeğe geçme",
+      "crossFundingLocked": "İş ortağı tarafından izin verilmiyor",
+      "fallbackInherit_one": "Devral — {{count}} yedek model (iş ortağı)",
+      "fallbackInherit_other": "Devral — {{count}} yedek model (iş ortağı)",
+      "fallbackOnlyThese": "Yalnızca bu yedek modeller",
+      "noBackups": "Yedek model yok"
     },
     "models": {
       "title": "Modeller",
@@ -392,7 +431,27 @@
       "disableTitle": "{{name}} devre dışı bırakılsın mı?",
       "disableMessage": "Bu özellikler bu modeli varsayılan olarak kullanıyor. Başka bir model seçene kadar modelsiz kalacaklar:",
       "disableAnyway": "Yine de devre dışı bırak",
-      "orgOverrides": "Etkilenen kuruluş geçersiz kılmaları: {{count}}"
+      "orgOverrides": "Etkilenen kuruluş geçersiz kılmaları: {{count}}",
+      "verification": {
+        "verified": "Doğrulandı",
+        "unverified": "Doğrulanmadı",
+        "failed": "Doğrulama başarısız",
+        "failedWithSummary": "Doğrulama başarısız: {{summary}}",
+        "stale": "Yeniden doğrulayın: uç nokta değişti"
+      },
+      "setPriceToEnable": "Etkinleştirmek için bir fiyat belirleyin",
+      "manual": {
+        "add": "Model ekle",
+        "empty": "Henüz model yok. Elle bir tane ekleyin veya modelleri bulmak için bağlantıyı yenileyin.",
+        "title": "Model ekle",
+        "modelId": "Model kimliği",
+        "modelIdHelp": "Uç noktanın beklediği şekilde tam olarak, örn. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Yalnızca harf, rakam ve . _ : / @ + - kullanın, boşluk olmasın.",
+        "displayName": "Görünen ad (isteğe bağlı)",
+        "pricesHint": "İsteğe bağlı. 1 milyon token başına cent. Dördünü de doldurun ya da hepsini boş bırakıp etkinleştirmeden önce bir fiyat belirleyin.",
+        "added": "Model eklendi",
+        "failed": "Model eklenemedi."
+      }
     },
     "offering": {
       "displayName": "Görünen ad",
@@ -446,7 +505,8 @@
       "saveFailed": "Model kaydedilemedi. Tekrar deneyin.",
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
-      "verifyFailed": "Model denetimi sıraya alınamadı."
+      "verifyFailed": "Model denetimi sıraya alınamadı.",
+      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır)."
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",
@@ -489,7 +549,18 @@
         "fast": "Hızlı"
       },
       "unavailableModel": "{{model}} (kullanılamıyor)",
-      "unavailableUnknown": "Kullanılamayan model"
+      "unavailableUnknown": "Kullanılamayan model",
+      "roleInherit": "Yapay zekâ ajanları varsayılanıyla aynı",
+      "fallbacks": "Yedek modeller, sırayla",
+      "addFallback": "Yedek model ekle…",
+      "moveUp": "Yukarı taşı",
+      "moveDown": "Aşağı taşı",
+      "removeFallback": "Kaldır",
+      "fallbackUnavailable": "Artık kullanılamayan bir model",
+      "crossFunding": "Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin ver",
+      "crossFundingHelp": "Açıkken, diğer kaynaktan ödenen bir yedek model isteği karşılayabilir. İstek, onu fiilen karşılayan kaynağa faturalandırılır.",
+      "fundingPlatform": "Breeze kredileri",
+      "fundingOwnKey": "API anahtarınız"
     },
     "usage": {
       "title": "Modele göre yapay zeka kullanımı",
@@ -517,7 +588,14 @@
       "error": "Kullanım dökümü yüklenemedi.",
       "disconnected": "Bağlantı kesildi",
       "disconnectedHint": "Bu çağrıları karşılayan bağlantı o zamandan beri kesildi.",
-      "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır."
+      "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır.",
+      "view": {
+        "label": "Göster",
+        "spend": "Harcama",
+        "quality": "Kalite"
+      },
+      "failovers": "Yedeğe geçişler",
+      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar"
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -525,6 +603,64 @@
       "noDefault": "varsayılan ayarlanmamış",
       "partner": "İş ortağı varsayılanları",
       "org": "Bu kuruluşun geçersiz kılması"
+    },
+    "quality": {
+      "title": "Model kalitesi",
+      "subtitleAll": "Tüm kuruluşlarda her modelde konuşmaların nasıl geçtiği: retler, işaretlemeler, başka bir modele geçişler ve çözüme kadar geçen turlar.",
+      "subtitleOrg": "Seçili kuruluş için her modelde konuşmaların nasıl geçtiği.",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Özellik",
+        "prompt_profile": "Model ailesi"
+      },
+      "columns": {
+        "conversations": "Konuşmalar",
+        "costPerConversation": "Maliyet / konuşma",
+        "refusalRate": "Ret oranı",
+        "failoverRate": "Yedeğe geçiş oranı",
+        "flagRate": "İşaretleme oranı",
+        "leftRate": "Başka modele geçti",
+        "turnsToResolution": "Çözüme kadar tur",
+        "agentCompletion": "Tamamlanan ajan çalıştırmaları"
+      },
+      "help": {
+        "conversations": "Bu dönemdeki son model çağrısı bu satırda olan sohbet oturumları ve ajan çalıştırmaları.",
+        "costPerConversation": "Bu satırı kullanan her konuşma için bu satırdaki ortalama harcama.",
+        "refusalRate": "Modelin reddettiği model çağrıları, çağrı başına.",
+        "failoverRate": "Bu model başarısız olduğu veya kullanılamadığı için yedek modele geçen çağrılar.",
+        "flagRate": "Bir kişinin işaretlediği oturumlar. Araç hatasından sonraki otomatik işaretlemeler ayrı sayılır.",
+        "leftRate": "Başka bir modele geçen veya başka bir modelle yeni bir oturumda devam eden konuşmalar.",
+        "turnsToResolution": "Bir kişi işaretlemeden ve yeni bir oturuma geçmeden biten oturumlarda bir teknisyenin gönderdiği mesajların ortancası. Devam edilen oturumu da içerir.",
+        "agentCompletion": "Biten çalıştırmalar içinde tamamlanan ajan çalıştırmaları."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Small",
+        "generic": "Diğer modeller"
+      },
+      "unrecorded": "Kaydedilmedi",
+      "unattributed": "Bir modele atfedilmedi",
+      "removedModel": "Kaldırılan model",
+      "platformConnection": "Breeze platformu",
+      "notRecorded": "Bu sunucuda henüz kaydedilmiyor",
+      "switchesOnly": "Yalnızca geçişler",
+      "few": "Az sayıda konuşma",
+      "autoFlagged_one": "{{count}} otomatik işaretlendi",
+      "autoFlagged_other": "{{count}} otomatik işaretlendi",
+      "leftBreakdown": "{{switched}} geçti, {{continued}} devam etti",
+      "resolvedCount_one": "{{count}} çözüldü",
+      "resolvedCount_other": "{{count}} çözüldü",
+      "loading": "Kalite yükleniyor…",
+      "empty": "Bu dönemde model çağrısı yok.",
+      "error": "Kalite görünümü yüklenemedi.",
+      "timeout": "Bu aralık hızlıca özetlenemeyecek kadar geniş. Daha kısa bir aralık seçin.",
+      "footnote": "Bir konuşma son kullandığı modele, bir geçiş ise ayrıldığı modele sayılır. Yedek modelin karşıladığı çağrılar seçilen modele sayılır. Sayımlar kalite takibinin başladığı andan itibaren başlar. Küçük sayıları dikkatle yorumlayın."
+    },
+    "roles": {
+      "triage": "Triyaj (ilk bakış)",
+      "analysis": "Analiz (araştırma ve planlama)",
+      "remediation": "Düzeltme (cihazlar üzerinde işlem yapma)"
     }
   },
   "partnerDefaults": {
@@ -2345,6 +2481,14 @@
       "recipientRolesEmpty": "Kullanılabilir rol yok.",
       "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
       "charactersLeft": "{{count}} karakter kaldı",
+      "model": "Kullanılacak model",
+      "modelDefault": "Varsayılanı kullan ({{model}})",
+      "modelDefaultUnknown": "yapay zeka aracıları varsayılanı",
+      "modelRequiresRole": "{{roles}} gerekir",
+      "modelRequiresPermission": "premium yapay zeka modelleri iznini gerektirir",
+      "modelUnavailable": "Kayıtlı model artık kullanılamıyor. Başka bir model seçin.",
+      "modelLoadFailed": "Modeller yüklenemedi. Aracı mevcut modelini korur.",
+      "modelHint": "Varsayılanı ve izin verilen modelleri Yapay Zeka Sağlayıcıları ve Modelleri altında ayarlayın.",
       "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor.",
       "supervisedActionKeysHint": "Eşleşen bir politika varsa ve kuruluşun maruziyet sınırında yer varsa, bu aracının bir insan onaylamadan gerçekleştirebileceği işlemler. Her biri yürütme anında yine de canlı korumalardan, kapatma anahtarından ve kuruluş başına sınırlardan geçer.",
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",

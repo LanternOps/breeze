@@ -1,8 +1,9 @@
 // apps/api/src/jobs/aiModelDiscoveryWorker.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, syncConnectionMock, dbState, capturedProcessor } = vi.hoisted(() => ({
+const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, syncConnectionMock, verifyMock, dbState, capturedProcessor } = vi.hoisted(() => ({
   syncConnectionMock: vi.fn(),
+  verifyMock: vi.fn(),
   dbState: { activeConnectionIds: [] as string[], whereArg: null as unknown },
   addMock: vi.fn(),
   getJobMock: vi.fn(),
@@ -40,6 +41,9 @@ vi.mock('../services/aiModels/discovery', () => ({
   syncPlatformModels: (...args: unknown[]) => syncMock(...args),
   syncConnectionModels: (...args: unknown[]) => syncConnectionMock(...args),
 }));
+vi.mock('../services/aiModels/offeringVerification', () => ({
+  verifyConnectionOffering: (...args: unknown[]) => verifyMock(...args),
+}));
 vi.mock('../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: async (fn: () => unknown) => fn(),
@@ -55,17 +59,23 @@ vi.mock('../db', () => ({
   },
 }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
 import {
   AI_MODEL_DISCOVERY_QUEUE,
   SYNC_PLATFORM_JOB,
+  VERIFY_OFFERING_JOB,
   __testOnly,
   aiModelConnectionSyncJobId,
   enqueueConnectionSync,
+  enqueueOfferingVerification,
   enqueuePlatformModelSync,
   initializeAiModelDiscoveryWorker,
   processAiModelDiscoveryJob,
   scheduleAiModelDiscoveryJobs,
   shutdownAiModelDiscoveryWorker,
+  verifyOfferingJobId,
 } from './aiModelDiscoveryWorker';
 
 beforeEach(() => {
@@ -139,6 +149,18 @@ describe('ai-model-discovery queue', () => {
     expect(dbState.whereArg).toBeTruthy();
   });
 
+  it('the daily fan-out covers gateway kinds (openai_compatible) as well as BYOK/catalog, active rows only', async () => {
+    await processAiModelDiscoveryJob({ data: { type: 'sync-all-connections' } });
+    const { sql: text, params } = new PgDialect().sqlToQuery(dbState.whereArg as SQL);
+    expect(text).toContain('"kind" in');
+    expect(params).toEqual(expect.arrayContaining(['anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS, 'active']));
+  });
+
+  it('a sync-connection job payload carries only the connection id (never key material)', async () => {
+    await enqueueConnectionSync('c9');
+    expect(addMock.mock.calls.at(-1)![1]).toEqual({ type: 'sync-connection', connectionId: 'c9' });
+  });
+
   it('a manual refresh enqueues sync-platform under the manual job id and reuses a waiting one', async () => {
     expect(await enqueuePlatformModelSync('manual')).toEqual({ id: __testOnly.MANUAL_JOB_ID });
     expect(addMock).toHaveBeenLastCalledWith('sync-platform', { type: 'sync-platform', trigger: 'manual' }, expect.objectContaining({ jobId: __testOnly.MANUAL_JOB_ID }));
@@ -165,5 +187,87 @@ describe('ai-model-discovery queue', () => {
 
   it('rejects an unknown job type', async () => {
     await expect(processAiModelDiscoveryJob({ data: { type: 'sync-everything' } as never })).rejects.toThrow(/Unknown/);
+  });
+
+  describe('verify-offering (W06 #7604)', () => {
+    it('job name and per-offering, colon-free job id', () => {
+      expect(VERIFY_OFFERING_JOB).toBe('verify-offering');
+      expect(verifyOfferingJobId('o1')).toBe('verify-offering-o1');
+      expect(verifyOfferingJobId('o1')).not.toContain(':');
+    });
+
+    it('routes verify-offering to verifyConnectionOffering with exactly the payload ids', async () => {
+      verifyMock.mockResolvedValueOnce({ offeringId: 'o1', state: 'verified', record: { summary: null } });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'verified' });
+      expect(verifyMock).toHaveBeenCalledWith({ offeringId: 'o1', partnerId: 'p1' });
+      expect(syncConnectionMock).not.toHaveBeenCalled();
+    });
+
+    it('a failed verification is a stored result, not a job failure; the return value carries no record detail', async () => {
+      verifyMock.mockResolvedValueOnce({ offeringId: 'o1', state: 'failed', record: { summary: 'direct_tool_use: x' } });
+      const out = await processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } });
+      expect(out).toEqual({ offeringId: 'o1', state: 'failed' });
+    });
+
+    it('a refusal (missing / foreign / disconnected offering) fails the job', async () => {
+      verifyMock.mockRejectedValueOnce(Object.assign(new Error('Model not found.'), { status: 404 }));
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .rejects.toThrow(/not found/);
+    });
+
+    it('enqueueOfferingVerification: job verify-offering, jobId verify-offering-<id>, ids-only payload, attempts 1', async () => {
+      await enqueueOfferingVerification({ offeringId: 'o1', partnerId: 'p1' });
+      const [name, payload, opts] = addMock.mock.calls.at(-1)!;
+      expect(name).toBe('verify-offering');
+      // Only ids: never key material, a base URL, or anything else.
+      expect(payload).toEqual({ type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' });
+      expect(Object.keys(payload as object).sort()).toEqual(['offeringId', 'partnerId', 'type']);
+      // A failed verification is a result, not a retryable error (and a retry would re-spend partner tokens).
+      expect(opts).toMatchObject({ jobId: 'verify-offering-o1', attempts: 1 });
+    });
+
+    it('a run superseded because the connection changed (a click merged into an in-flight run) re-runs once against the current connection', async () => {
+      verifyMock
+        .mockResolvedValueOnce({ offeringId: 'o1', state: 'superseded', connectionChanged: true, record: {} })
+        .mockResolvedValueOnce({ offeringId: 'o1', state: 'verified', connectionChanged: false, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'verified' });
+      expect(verifyMock).toHaveBeenCalledTimes(2);
+      expect(verifyMock).toHaveBeenNthCalledWith(2, { offeringId: 'o1', partnerId: 'p1' });
+    });
+
+    it('re-runs at most once, and never for a run superseded by a newer verdict', async () => {
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'superseded', connectionChanged: true, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'superseded' });
+      expect(verifyMock).toHaveBeenCalledTimes(2);
+      verifyMock.mockReset().mockResolvedValue({ offeringId: 'o1', state: 'superseded', connectionChanged: false, record: {} });
+      await processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } });
+      expect(verifyMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('env path (retryFailed): a failed verdict fails the attempt so BullMQ retries it later; the record is already stored', async () => {
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'failed', connectionChanged: false, record: { summary: 'x' } });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true } }))
+        .rejects.toThrow(/retry/i);
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'verified', connectionChanged: false, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'verified' });
+    });
+
+    it('enqueueOfferingVerification(retryFailed): 3 attempts with a delayed exponential backoff, payload ids plus the flag only', async () => {
+      await enqueueOfferingVerification({ offeringId: 'o1', partnerId: 'p1' }, { retryFailed: true });
+      const [name, payload, opts] = addMock.mock.calls.at(-1)!;
+      expect(name).toBe('verify-offering');
+      expect(payload).toEqual({ type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true });
+      expect(opts).toMatchObject({ jobId: 'verify-offering-o1', attempts: 3, backoff: { type: 'exponential', delay: 60_000 } });
+    });
+
+    it('collapses onto a waiting verification of the same offering', async () => {
+      getJobMock.mockResolvedValue({ id: 'verify-offering-o1', getState: async () => 'waiting' });
+      await enqueueOfferingVerification({ offeringId: 'o1', partnerId: 'p1' });
+      expect(addMock).not.toHaveBeenCalled();
+    });
   });
 });

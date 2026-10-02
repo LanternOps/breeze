@@ -32,7 +32,11 @@ const NO_INVOICES_PERMISSIONS = [
   { resource: 'reports', action: '*' },
   { resource: 'tickets', action: 'read' },
   { resource: 'time_entries', action: 'read' },
+  { resource: 'ai_sessions', action: 'read_all' },
 ];
+/** The types NO_INVOICES_PERMISSIONS cannot see: every type that needs
+ *  invoices:read. ai_usage_by_client (#7608) needs it too. */
+const INVOICE_GATED_TYPES = ['ar_aging', 'ai_usage_by_client'];
 
 const state = vi.hoisted(() => ({
   auth: null as unknown,
@@ -554,31 +558,31 @@ describe('ruling P8b: a caller lacking a business type\'s read permission never 
     state.permissions = { permissions: NO_INVOICES_PERMISSIONS };
   });
 
-  it('GET /reports/:id → 404; the metadata read excludes ar_aging only', async () => {
+  it('GET /reports/:id → 404; the metadata read excludes the invoices:read types only', async () => {
     state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging'), null];
     const res = await app().request(`/reports/${REPORT_ID}`);
-    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
     expect(res.status).toBe(404);
   });
 
   it('GET /reports/:id/recipients → 404', async () => {
     state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
     const res = await app().request(`/reports/${REPORT_ID}/recipients`);
-    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
     expect(res.status).toBe(404);
   });
 
   it.each(['', '/download'])('GET /reports/runs/:id%s → 404', async (suffix) => {
     state.rows = [orgRun('ar_aging'), orgRun('ar_aging')];
     const res = await app().request(`/reports/runs/${RUN_ID}${suffix}`);
-    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
     expect(res.status).toBe(404);
   });
 
   it('DELETE /reports/:id → 404, nothing deleted', async () => {
     state.rows = [orgDefinition('ar_aging'), orgDefinition('ar_aging')];
     const res = await app().request(`/reports/${REPORT_ID}`, { method: 'DELETE' });
-    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
     expect(res.status).toBe(404);
     expect(state.deletes).toHaveLength(0);
   });
@@ -600,11 +604,11 @@ describe('ruling P8b: a caller lacking a business type\'s read permission never 
     expect(generateReport).not.toHaveBeenCalled();
   });
 
-  it.each(['/reports', '/reports/templates', '/reports/runs'])('GET %s excludes ar_aging only', async (path) => {
+  it.each(['/reports', '/reports/templates', '/reports/runs'])('GET %s excludes the invoices:read types only', async (path) => {
     state.rows = [{ count: 0 }, null];
     const res = await app().request(path);
     expect(res.status).toBe(200);
-    expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+    expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
   });
 
   it('partner (all) and system callers are filtered too', async () => {
@@ -613,11 +617,11 @@ describe('ruling P8b: a caller lacking a business type\'s read permission never 
       state.wheres = [];
       state.rows = [{ count: 0 }, null];
       await app().request('/reports');
-      expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+      expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
       state.wheres = [];
       state.rows = [{ count: 0 }, null];
       await app().request('/reports/runs');
-      expect(notInTypes(state.wheres[0])).toEqual(['ar_aging']);
+      expect(notInTypes(state.wheres[0])).toEqual(INVOICE_GATED_TYPES);
     }
   });
 

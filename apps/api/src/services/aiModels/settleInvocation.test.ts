@@ -29,14 +29,17 @@ import type { BilledUsage, SdkUsageSnapshot, TurnOutcome } from './invocationUsa
 import { priceInvocation } from './pricing';
 import {
   WEB_SEARCH_COST_CENTS,
+  consistentPromptVariant,
   costEstimator,
   debitSettledCredits,
   priceUsage,
   settleInvocation,
+  toNewInvocations,
   __resetSettleInvocationReportsForTests,
   type SettleInvocationInput,
 } from './settleInvocation';
-import type { TurnBinding } from './turnBinding';
+import { turnBindingFrom, withCarriedRates, type TurnBinding } from './turnBinding';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 
 const STD = { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 };
 const FAST = { inputCentsPerM: 1200, outputCentsPerM: 6000, cacheReadCentsPerM: 120, cacheWriteCentsPerM: 1500 };
@@ -53,7 +56,7 @@ const B: TurnBinding = {
 const T = { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0 };
 const OK: TurnOutcome = {
   stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99,
+  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99, fastDowngraded: false,
 };
 const use = (model: string, over: Partial<BilledUsage> = {}): BilledUsage => ({
   model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null, ...over,
@@ -175,9 +178,13 @@ describe('settleInvocation', () => {
     expect(call.invocations).toEqual([expect.objectContaining({
       costCents: 300, sdkReportedCostUsd: 9.99, fundingSource: 'platform', offeringId: 'off-1',
       requestedModel: 'claude-sonnet-5-5', servedModel: 'claude-sonnet-5-5', userId: 'u1',
-      tokens: T, chargeable: false, fallbackUsed: false,
+      tokens: T, fallbackUsed: false,
       rateSnapshot: { source: 'platform', standard: STD }, ledgerMode: 'authoritative',
     })]);
+    // W10 (#7608): the rows reach the settlement UNSTAMPED; the settlement
+    // transaction stamps them (the snapshot moment is the ledger write).
+    expect(call.invocations[0]).not.toHaveProperty('charge');
+    expect(call.invocations[0]).not.toHaveProperty('chargeable');
     expect(call).not.toHaveProperty('actualCostCents');
     expect(m.debit).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-settlement:r1' });
     expect(m.markDebited).toHaveBeenCalledWith('r1');
@@ -305,6 +312,9 @@ describe('credits are debited exactly once per reservation (finding 1)', () => {
     error.mockRestore();
     expect(out).toMatchObject({ deferred: true, unrecorded: true, invocationIds: [] });
     expect(m.debit).not.toHaveBeenCalled();
+    // W10 (#7608): never falls back to the no-reservation ledger write, which
+    // would stamp (and so charge back) a turn whose spend is recorded nowhere.
+    expect(m.recordWithRollups).not.toHaveBeenCalled();
     expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       eventCode: 'ai_settlement_unrecorded',
       tags: expect.objectContaining({ org_id: 'o1', ai_reservation_id: 'r1' }),
@@ -432,5 +442,122 @@ describe('SDK usage snapshot (W05 spike)', () => {
     expect(m.captureMessage).not.toHaveBeenCalled();
     expect(warn.mock.calls.flat().join(' ')).toContain('ai_usage_unconfirmed');
     warn.mockRestore();
+  });
+});
+
+describe('priceUsage: carried rates across a switch (W05 spike constraint 4)', () => {
+  const HAIKU_RATE = { source: 'linked_platform' as const, standard: { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 } };
+  it('a BYOK delta under the previous model\'s key is billed at the previous model\'s rate, not the bound one', () => {
+    const binding = withCarriedRates(turnBindingFrom(makeResolvedModel('anthropic_byok')), [
+      { wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE },
+    ]);
+    const [row] = priceUsage(binding, [{
+      model: 'claude-haiku-4-5', tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+      webSearchRequests: 0, speedServed: 'standard', providerModel: null,
+    }]);
+    expect(row!.rate).toBe(HAIKU_RATE);
+    expect(row!.costCents).toBe(100);
+    expect(row!.unboundModel).toBe(false);   // a carried model is not a fallback
+  });
+});
+
+describe('W11 prompt provenance', () => {
+  const input = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
+    binding: { ...B, promptProfile: 'claude-standard' }, orgId: 'org-1', userId: null, sessionId: 's1', agentRunId: null,
+    sourceRef: null, usage: [use('claude-sonnet-5-5')], outcome: OK, ...over,
+  });
+  const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
+
+  it('a one-shot surface records the binding profile and no variant', () => {
+    expect(rowsOf(input())[0]).toMatchObject({ promptProfile: 'claude-standard', promptVariant: null });
+  });
+  it('the live query provenance wins over the binding (a reused query keeps its prompt)', () => {
+    const rows = rowsOf(input({ binding: { ...B, promptProfile: 'claude-standard' }, prompt: { profile: 'claude-frontier', variant: 'chat/claude-frontier@1' } }));
+    expect(rows[0]).toMatchObject({ promptProfile: 'claude-frontier', promptVariant: 'chat/claude-frontier@1' });
+  });
+  it('every leg of a refusal-fallback turn carries the same provenance', () => {
+    const rows = rowsOf(input({
+      usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')],
+      outcome: { ...OK, fallbackUsed: true, refused: true, stopReason: 'end_turn', refusalCategory: 'cyber' },
+      prompt: { profile: 'claude-standard', variant: null },
+    }));
+    expect(rows.map((r) => [r.promptProfile, r.promptVariant])).toEqual([['claude-standard', null], ['claude-standard', null]]);
+  });
+  it('drops a variant that does not match the bound surface (never hands the CHECK a row it rejects)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rows = rowsOf(input({ binding: { ...B, surface: 'helper' }, prompt: { profile: 'claude-frontier', variant: 'chat/claude-frontier@1' } }));
+    expect(rows[0]).toMatchObject({ promptProfile: 'claude-frontier', promptVariant: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('prompt variant does not match'), expect.anything());
+    // Gate G3 reads Sentry: the drop must be reported there, not only logged.
+    expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_prompt_variant_mismatch' }));
+    warn.mockRestore();
+  });
+  it('a matching variant reports nothing to Sentry', () => {
+    rowsOf(input({ prompt: { profile: 'claude-standard', variant: 'chat/claude-standard@1' } }));
+    expect(m.captureMessage).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['another profile', 'chat/claude-small@1', 'chat', 'claude-frontier'],
+    ['generic', 'chat/claude-small@1', 'chat', 'generic'],
+    ['no profile', 'chat/claude-small@1', 'chat', null],
+    ['a malformed id', 'claude-small', 'chat', 'claude-small'],
+  ] as const)('consistentPromptVariant drops %s', (_n, variant, surface, profile) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(consistentPromptVariant(variant, surface, profile)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+  it('consistentPromptVariant keeps a variant that matches its surface and profile', () => {
+    expect(consistentPromptVariant('chat/claude-small@1', 'chat', 'claude-small')).toBe('chat/claude-small@1');
+    expect(consistentPromptVariant(null, 'chat', 'claude-small')).toBeNull();
+  });
+  it('stamps one occurredAt on every leg of a settlement (the turn time a deferred replay keeps)', () => {
+    const at = new Date('2026-09-15T12:00:00Z');
+    const rows = rowsOf(input({ usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')], occurredAt: at }));
+    expect(rows.map((r) => r.occurredAt)).toEqual([at, at]);
+    const stamped = rowsOf(input({ usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')] }));
+    expect(stamped[0]!.occurredAt).toBeInstanceOf(Date);
+    expect(stamped[1]!.occurredAt).toBe(stamped[0]!.occurredAt);
+  });
+  it('a binding persisted before W11 (no promptProfile) records NULL', () => {
+    const { promptProfile: _p, ...legacy } = { ...B, promptProfile: undefined };
+    expect(rowsOf(input({ binding: legacy as typeof B }))[0]).toMatchObject({ promptProfile: null, promptVariant: null });
+  });
+  it('settleInvocation hands the reservation settlement rows carrying the provenance', async () => {
+    await settleInvocation(base({ binding: { ...B, promptProfile: 'claude-small' }, prompt: { profile: 'claude-small', variant: 'chat/claude-small@1' } }));
+    expect(m.settleDurably.mock.calls[0]![0].invocations).toEqual([expect.objectContaining({
+      promptProfile: 'claude-small', promptVariant: 'chat/claude-small@1', occurredAt: expect.any(Date),
+    })]);
+  });
+});
+
+describe('W09 ledger provenance', () => {
+  const noUsageOutcome = (servedModel: string): TurnOutcome => ({
+    stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
+    servedModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
+  });
+
+  it('toNewInvocations writes the SERVED hop\'s offering, connection and funding, plus where it failed over from', () => {
+    const binding = turnBindingFrom(makeResolvedModel('anthropic_byok', {
+      offering: { id: 'off-k', displayName: 'K' },
+      failover: { fromOfferingId: 'off-p', hop: 1, cause: 'rate_limited' },
+    }));
+    const [row] = toNewInvocations({
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    }, priceUsage(binding, []));
+    expect(row).toMatchObject({
+      offeringId: 'off-k', connectionId: 'conn-1', fundingSource: 'partner_key',
+      failoverFromOfferingId: 'off-p', failoverHop: 1, failoverCause: 'rate_limited',
+    });
+  });
+
+  it('a turn with no failover writes hop 0 and no cause', () => {
+    const binding = turnBindingFrom(makeResolvedModel('platform'));
+    const [row] = toNewInvocations({
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    }, priceUsage(binding, []));
+    expect(row).toMatchObject({ failoverFromOfferingId: null, failoverHop: 0, failoverCause: null });
   });
 });

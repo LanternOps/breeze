@@ -6,17 +6,21 @@
  * `offering_id`: an edited `model` that were not bound here would be silently
  * ignored at run time.
  *
+ * W05 (#7603): the string path is a lookup in front of the picker's offering
+ * binding (agentOfferingBinding.ts) — one rule set, and the WRITER's
+ * `required_permission` is checked on both paths (D11).
+ *
  * The run-time resolver still re-checks the bound offering against the
  * `ai_agents` permitted set at admission and dispatch, because that set can
  * narrow after the write.
  */
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { getEffectiveAssignment, isPermitted } from '../aiModels/assignments';
 import { findOfferingIdByModel, readOrgPartnerId } from '../aiModels/candidateLoader';
 import { ensurePartnerCutover } from '../aiModels/registryCutover';
+import { bindAgentOffering, type AgentPolicyWriter } from './agentOfferingBinding';
 import { AgentModelNotAllowedError } from './agentModelErrors';
 
 export { AgentModelNotAllowedError } from './agentModelErrors';
+export type { AgentPolicyWriter } from './agentOfferingBinding';
 
 /** The owner of an agent row (`ai_agents` is org XOR partner owned). */
 export interface AgentModelOwner {
@@ -34,14 +38,18 @@ export interface AgentModelBinding {
  * `model: null` clears both columns, so the agent follows the `ai_agents`
  * assignment. Otherwise the string must name an enabled offering on the
  * `ai_agents` DEFAULT connection (never another connection: that would move
- * destination and funding) that the owner's effective permitted set admits —
- * a partner-wide agent is checked against the partner assignment, an org
- * agent against the merged one. Throws AgentModelNotAllowedError (nothing
- * written). Reads only registry tables, on its own pooled connection; never
- * call it under an `ai_agents` row lock (the cutover it may run rebinds
- * `ai_agents` rows).
+ * destination and funding); bindAgentOffering then checks the owner's
+ * effective permitted set — a partner-wide agent against the partner
+ * assignment, an org agent against the merged one — and every eligibility
+ * rule for `writer`, strictly. Throws AgentModelNotAllowedError (nothing
+ * written). Never call it under an `ai_agents` row lock (the cutover it may
+ * run rebinds `ai_agents` rows).
  */
-export async function bindAgentModel(owner: AgentModelOwner, model: string | null): Promise<AgentModelBinding> {
+export async function bindAgentModel(
+  owner: AgentModelOwner,
+  model: string | null,
+  writer: AgentPolicyWriter,
+): Promise<AgentModelBinding> {
   if (model === null) return { model: null, offeringId: null, offeringPartnerId: null };
   const notAvailable = () => new AgentModelNotAllowedError(`Model "${model}" is not available for AI agents.`, 'invalid_model');
   const partnerId = owner.partnerId ?? (owner.orgId ? await readOrgPartnerId(owner.orgId) : null);
@@ -51,12 +59,8 @@ export async function bindAgentModel(owner: AgentModelOwner, model: string | nul
   }
   const offeringId = await findOfferingIdByModel({ partnerId, orgId: owner.orgId, surface: 'ai_agents', modelId: model });
   if (!offeringId) throw notAvailable();
-  // System context: an org-scoped request cannot see the partner-level rows
-  // the merge starts from (same as resolveModel).
-  const assignment = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    getEffectiveAssignment({ partnerId, orgId: owner.orgId, surface: 'ai_agents' })));
-  if (!isPermitted(assignment.permitted, offeringId)) {
-    throw new AgentModelNotAllowedError('This AI model is not permitted for AI agents here. Choose another model.', 'not_permitted');
-  }
-  return { model, offeringId, offeringPartnerId: partnerId };
+  const bound = await bindAgentOffering(owner, offeringId, writer);
+  // Provenance stays the string the writer named (W03). It is the offering's
+  // model id by construction: findOfferingIdByModel matched on it.
+  return { ...bound, model };
 }

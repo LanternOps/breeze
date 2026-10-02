@@ -6,12 +6,15 @@ import { captureException, captureMessage } from './sentry';
 import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
+import { TRANSIENT_FAILOVER_CAUSES } from './aiModels/failover';
 import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
+import { stampChargeback } from './aiChargeback/stampChargeback';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
 import { getPlatformModelByModelId } from './aiModels/platformModels';
 import { platformRateSnapshot } from './aiModels/pricing';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { parseTurnBinding, stableJson, type TurnBinding } from './aiModels/turnBinding';
+import { CHAT_TURN_KEY_PREFIX } from './aiModels/modelTransition';
 
 
 /** Local copy of aiCostTracker.isBillingServiceConfigured (importing it would create a module cycle). */
@@ -134,6 +137,11 @@ export interface ReserveAiBudgetInput {
    * at all. Settlement then bills only a rate bound here.
    */
   binding?: TurnBinding;
+  /**
+   * W05 (#7603): the chat messages route only. Enforced inside the claim
+   * transaction, before the session stamp (see {@link SessionSwitchGuard}).
+   */
+  sessionSwitchGuard?: SessionSwitchGuard;
   now?: Date;
 }
 
@@ -148,6 +156,26 @@ export class AiBudgetBindingConflictError extends Error {
     super('AI budget reservation is already bound to a turn whose outcome is recorded');
     this.name = 'AiBudgetBindingConflictError';
   }
+}
+
+/**
+ * W05 (#7603), spike constraint 3: a chat session's model and options change
+ * only BETWEEN turns, and a switch is claimed only against the turn it was
+ * planned (and fit-checked) on. Refused claims roll back whole, the
+ * reservation insert included.
+ */
+export class AiBudgetSessionBusyError extends Error {
+  readonly code = 'turn_in_progress' as const;
+  constructor(message = 'A reply is still running in this chat, or one just finished. Send again to continue.') {
+    super(message);
+    this.name = 'AiBudgetSessionBusyError';
+  }
+}
+
+/** Passed by the chat messages route only. One-shots (ticket draft, continuation) are never guarded. */
+export interface SessionSwitchGuard {
+  /** readPreviousTurn().reservationId the turn was planned against, or null when there was none. */
+  expectedPreviousChatReservationId: string | null;
 }
 
 /**
@@ -215,7 +243,7 @@ export interface SettleAiBudgetReservationInput {
    * totals below are derived from them (and must then be omitted), each row is
    * inserted in this transaction, and every row must carry a rate the
    * reservation's turn binding fixed. Without them, the legacy numeric totals
-   * are required.
+   * are required — see settlementTotals for why that form is still accepted.
    */
   invocations?: NewInvocation[];
   actualCostCents?: number;
@@ -515,6 +543,18 @@ function existingResult(row: ReservationRow): ReserveAiBudgetResult {
  */
 async function stampSessionBinding(sessionId: string, orgId: string, binding: TurnBinding): Promise<void> {
   if (!binding.offeringId) return;
+  // W09 (#7607, D6): a hop that served because the session's own choice was
+  // TRANSIENTLY failing (cooldown, 429/529/5xx, key/quota) does not replace
+  // that choice; the next turn retries it (the Agent SDK's own fallbackModel
+  // semantics). A failover because the choice is gone ('ineligible') stamps,
+  // like W03's bounded fallback. The existence check the UPDATE gave is kept.
+  if (binding.failover && TRANSIENT_FAILOVER_CAUSES.has(binding.failover.cause)) {
+    const exists = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
+      SELECT id FROM ai_sessions WHERE id = ${sessionId}::uuid AND org_id = ${orgId}::uuid
+    `))[0];
+    if (!exists) throw new Error('AI session not found in reservation organization');
+    return;
+  }
   const stamped = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
     UPDATE ai_sessions
     SET offering_id = ${binding.offeringId}::uuid,
@@ -527,6 +567,68 @@ async function stampSessionBinding(sessionId: string, orgId: string, binding: Tu
     RETURNING id
   `))[0];
   if (!stamped) throw new Error('AI session not found in reservation organization');
+}
+
+/**
+ * W05 (#7603) between-turns guard. Runs inside the reservation transaction,
+ * under the org admission lock, BEFORE the session stamp — so a refusal
+ * (AiBudgetSessionBusyError) rolls back the claim whole: no reservation row,
+ * no stamp.
+ */
+async function assertSessionSwitchAllowed(
+  sessionId: string,
+  orgId: string,
+  binding: TurnBinding,
+  claimingReservationId: string,
+  guard: SessionSwitchGuard,
+): Promise<void> {
+  // Lock the session row inside the claim transaction (claims are already
+  // serialized per org by the admission lock; the row lock makes this exact).
+  const current = rows<{ offering_id: string | null; options: unknown; billing_source: string }>(await db.execute(sql`
+    SELECT offering_id, options, billing_source FROM ai_sessions
+    WHERE id = ${sessionId}::uuid AND org_id = ${orgId}::uuid
+    FOR UPDATE
+  `))[0];
+  if (!current) throw new Error('AI session not found in reservation organization');
+
+  // (a) Generation (Codex review finding 4): the newest OTHER chat-turn claim
+  // must be the one the plan read. If another turn was claimed meanwhile, the
+  // transcript the fit check counted (and the carried rates) are stale. Same
+  // row AND the same answer as readPreviousTurn (modelTransition.ts): a newest
+  // row whose binding does not parse reads as "no previous turn" there, so it
+  // must here too — otherwise every later claim on the session is refused.
+  const newestRow = rows<{ id: string; model_binding: unknown }>(await db.execute<{ id: string; model_binding: unknown }>(sql`
+    SELECT id, model_binding FROM ai_budget_reservations
+    WHERE org_id = ${orgId}::uuid AND session_id = ${sessionId}::uuid
+      AND starts_with(idempotency_key, ${CHAT_TURN_KEY_PREFIX})
+      AND model_binding IS NOT NULL AND status <> 'released'
+      AND id <> ${claimingReservationId}::uuid
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `))[0];
+  const newestId = newestRow && parseTurnBinding(newestRow.model_binding) ? newestRow.id : null;
+  if (newestId !== guard.expectedPreviousChatReservationId) throw new AiBudgetSessionBusyError();
+
+  // (b) Between turns (Codex review finding 9: options and funding count,
+  // not only the offering): a claim that changes what the session is stamped
+  // with is refused while another chat turn's reservation is still active.
+  const changes = current.offering_id !== binding.offeringId
+    || stableJson(current.options ?? null) !== stableJson(binding.options)
+    || current.billing_source !== binding.funding;
+  if (!changes) return;
+  // A deferred settlement (pending_settlement set, status still 'active' until
+  // the sweep replays it) belongs to a FINISHED turn: not in flight. Same
+  // predicate as hasActiveChatTurn (modelTransition.ts).
+  const inFlight = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
+    SELECT id FROM ai_budget_reservations
+    WHERE org_id = ${orgId}::uuid AND session_id = ${sessionId}::uuid
+      AND starts_with(idempotency_key, ${CHAT_TURN_KEY_PREFIX})
+      AND status = 'active' AND expires_at > now()
+      AND pending_settlement IS NULL
+      AND id <> ${claimingReservationId}::uuid
+    LIMIT 1
+  `))[0];
+  if (inFlight) throw new AiBudgetSessionBusyError();
 }
 
 /**
@@ -593,7 +695,12 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
           WHERE id = ${existing.id}::uuid
           RETURNING id
         `);
-        if (sessionId) await stampSessionBinding(sessionId, input.orgId, input.binding);
+        if (sessionId) {
+          if (input.sessionSwitchGuard) {
+            await assertSessionSwitchAllowed(sessionId, input.orgId, input.binding, existing.id, input.sessionSwitchGuard);
+          }
+          await stampSessionBinding(sessionId, input.orgId, input.binding);
+        }
       }
       return existingResult(existing);
     }
@@ -760,7 +867,14 @@ export async function reserveAiBudget(input: ReserveAiBudgetInput): Promise<Rese
     // Spec §9.2 bullet 1: the turn claim binds offering + options + rate +
     // reservation atomically. A failure here (e.g. the composite
     // (offering_id, offering_partner_id) FK) rolls the reservation back too.
-    if (input.binding && sessionId) await stampSessionBinding(sessionId, input.orgId, input.binding);
+    if (input.binding && sessionId) {
+      // W05: the between-turns guard runs before the stamp; a refusal rolls
+      // this insert back with it (same transaction).
+      if (input.sessionSwitchGuard) {
+        await assertSessionSwitchAllowed(sessionId, input.orgId, input.binding, inserted.id, input.sessionSwitchGuard);
+      }
+      await stampSessionBinding(sessionId, input.orgId, input.binding);
+    }
     return existingResult(inserted);
   });
 }
@@ -804,6 +918,14 @@ function settlementTotals(input: SettleAiBudgetReservationInput): SettlementTota
     }
     return ledgerTotals(input.invocations);
   }
+  // Explicit numeric totals: no live caller writes this form any more (every
+  // settlement goes through settleInvocation with priced invocations; W06
+  // deleted the env-only OpenAI-compatible chat runtime, the last one). It is
+  // KEPT because that runtime could defer a settlement into
+  // `pending_settlement` with explicit totals, and replayPendingAiSettlements
+  // replays such rows through here; refusing them would strand the spend.
+  // Follow-up: once no live (non-dead) pending_settlement row lacks
+  // `invocations` in any deployment, delete this branch.
   if (input.actualCostCents === undefined || input.inputTokens === undefined || input.outputTokens === undefined) {
     throw new Error('settleAiBudgetReservation needs invocations or explicit totals');
   }
@@ -822,7 +944,8 @@ function sameJson(a: unknown, b: unknown): boolean {
 
 /**
  * A settlement may only bill a rate the turn claim bound (spec §9.2, §8): the
- * primary or the refusal-fallback snapshot. One exception, from the W05 spike:
+ * primary or the refusal-fallback snapshot, or (W05) a carried snapshot for its
+ * own model key. One exception, from the W05 spike:
  * the CLI can switch a platform turn to a model the binding never named (its
  * own refusal fallback). That row is accepted only when flagged fallbackUsed,
  * platform-funded, and priced at exactly that model's CURRENT platform rate,
@@ -837,6 +960,11 @@ async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: 
     const rate = stripFees(row.rateSnapshot);
     if (sameJson(rate, binding.rateSnapshot)) continue;
     if (binding.refusalFallback && sameJson(rate, binding.refusalFallback.rateSnapshot)) continue;
+    // W05: a model this session switched away from on the SAME connection —
+    // its late delta (spike Q6) bills at the rate it was bound with. Keyed on
+    // requestedModel: toNewInvocations stores the usage key there.
+    const carried = binding.carriedRates?.find((c) => c.wireModel === row.requestedModel);
+    if (carried && sameJson(rate, carried.rateSnapshot)) continue;
     if (row.fallbackUsed && binding.funding === 'platform' && !boundModels.has(row.requestedModel)
         && (rate as { source?: unknown } | null)?.source === 'platform') {
       const platform = await getPlatformModelByModelId(row.requestedModel);
@@ -1042,6 +1170,11 @@ export async function settleAiBudgetReservation(
   const fingerprint = settlementFingerprint(input, totals, cost);
 
   return inReservationTransaction('aiBudgetReservations.settle', async () => {
+    // W10 (#7608): stamp the chargeback snapshot in THIS transaction (the ledger
+    // write), before the org lock so the card read never extends its hold.
+    // `input` itself stays unstamped: it is what settlementFingerprint hashed and
+    // what persistPendingSettlement stores, so a replay is stamped at replay.
+    const stamped = input.invocations ? await stampChargeback(input.orgId, input.invocations) : undefined;
     await lockOrganizationRow(input.orgId, 'settlement', AI_BUDGET_SETTLEMENT_LOCK_TIMEOUT_MS);
 
     const reservation = rows<ReservationRow>(await db.execute<ReservationRow>(sql`
@@ -1105,7 +1238,7 @@ export async function settleAiBudgetReservation(
       }
       const binding = parseTurnBinding(reservation.model_binding);
       if (binding) await assertInvocationsMatchBinding(binding, input.invocations);
-      for (const row of input.invocations) {
+      for (const row of stamped!) {
         // Ambient db = this transaction (P10): the ledger row commits or rolls
         // back with the rollups derived from it below.
         invocationIds.push(await recordInvocation(row));
@@ -1187,8 +1320,9 @@ export async function recordInvocationsWithRollups(input: {
   const totals = ledgerTotals(input.invocations);
   const cost = moneyString(totals.actualCostCents, 'actualCostCents');
   return inReservationTransaction('aiBudgetReservations.recordInvocations', async () => {
+    const stamped = await stampChargeback(input.orgId, input.invocations); // W10 (#7608): the ledger write
     const ids: string[] = [];
-    for (const row of input.invocations) ids.push(await recordInvocation(row));
+    for (const row of stamped) ids.push(await recordInvocation(row));
     await applyUsageRollups({
       orgId: input.orgId,
       sessionId: input.sessionId ?? null,

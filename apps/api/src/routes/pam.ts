@@ -24,9 +24,8 @@ import { SQL, and, desc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'driz
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runAfterDbContextExit } from '../db';
 import {
-  approvalRequests,
   authenticatorDevices,
   devices,
   elevationAudit,
@@ -48,6 +47,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { publishEvent, type EventType } from '../services/eventBus';
 import { mirrorElevationDecisionToExecution } from '../services/pamToolActionGovernance';
+import { expireSupersededMobileApprovals } from '../services/pamMobileApprovals';
 import { pamAuditExportRoutes } from './pamAuditExport';
 import { evaluatePamRules, type PamRuleCandidate } from '../services/pamRuleEngine';
 import {
@@ -779,26 +779,24 @@ pamRoutes.post(
     // they vanish from approvers' phones. MUST run in system scope:
     // approval_requests is Shape-6 (user-id-scoped), so those rows belong to the
     // fanned-out approvers and are invisible to THIS user's request context — a
-    // bare context-scoped UPDATE would silently match zero rows. Best-effort,
-    // post-commit; only uac_intercept fans out.
+    // bare context-scoped UPDATE would silently match zero rows. Best-effort;
+    // only uac_intercept fans out.
+    //
+    // #7526: after the request transaction commits, not here. The decision
+    // above is a savepoint inside the request transaction, so the elevation
+    // stays locked until the request ends. Run here, the expiry waited on any
+    // approval row an approvals-inbox decide held while that decide waited on
+    // the elevation this request held: a cycle across two connections that
+    // Postgres cannot detect. One order for both tables: elevation first,
+    // then approval rows (decideApprovalRequest takes the same order).
+    // runAfterDbContextExit also runs the work when the request rolls back;
+    // expireSupersededMobileApprovals only touches rows whose elevation is no
+    // longer pending, so that is a no-op.
     if (result.row.flowType === 'uac_intercept') {
-      try {
-        await runOutsideDbContext(() =>
-          withSystemDbAccessContext(async () => {
-            await db
-              .update(approvalRequests)
-              .set({ status: 'expired' })
-              .where(
-                and(
-                  eq(approvalRequests.elevationRequestId, result.row.id),
-                  eq(approvalRequests.status, 'pending'),
-                ),
-              );
-          }),
-        );
-      } catch (err) {
-        console.error('[pam] Failed to expire sibling mobile approvals:', err);
-      }
+      const elevationId = result.row.id;
+      runAfterDbContextExit(`pam: expire sibling mobile approvals (elevation ${elevationId})`, () =>
+        expireSupersededMobileApprovals(elevationId),
+      );
     }
 
     await safePublish(

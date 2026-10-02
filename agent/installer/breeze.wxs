@@ -328,7 +328,7 @@
     <CustomAction
       Id="RollbackServiceRecovery"
       Property="BREEZE_SVC_CMD"
-      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RollbackServiceRecovery: BreezeAgent not running after install rollback > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
+      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failureflag BreezeAgent 1 >nul 2>&amp;1 &amp; sc failureflag BreezeWatchdog 1 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RollbackServiceRecovery: BreezeAgent not running after install rollback > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
       Execute="rollback"
       Impersonate="no"
       Return="ignore" />
@@ -361,7 +361,7 @@
     <CustomAction
       Id="RecoverBreezeAfterUpgrade"
       Property="BREEZE_SVC_CMD"
-      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RecoverBreezeAfterUpgrade: BreezeAgent not running after post-upgrade recovery > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
+      ExeCommand="/c sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 >nul 2>&amp;1 &amp; sc failureflag BreezeAgent 1 >nul 2>&amp;1 &amp; sc failureflag BreezeWatchdog 1 >nul 2>&amp;1 &amp; sc start BreezeAgent >nul 2>&amp;1 &amp; sc start BreezeWatchdog >nul 2>&amp;1 &amp; ((sc query BreezeAgent | findstr &quot;RUNNING PENDING&quot; >nul 2>&amp;1) || echo %DATE% %TIME% RecoverBreezeAfterUpgrade: BreezeAgent not running after post-upgrade recovery > &quot;[ProgramDataBreezeLogsDir]upgrade-recovery-last-error.txt&quot;) &amp; exit /b 0"
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />
@@ -417,7 +417,8 @@
          agent/internal/winsvcinstall/scm_windows.go, which is what both
          `breeze-agent.exe service install` and `breeze-watchdog.exe service
          install` now apply (5s/10s/30s restart escalation with 24-hour counter
-         reset).
+         reset), plus `sc failureflag <service> 1` so the actions also apply
+         when a service stops with an error exit code, not only on a crash.
 
          Without this, MSI-installed services have no SCM-driven auto-restart;
          only `breeze-agent.exe service install` (the manual subcommand)
@@ -435,7 +436,7 @@
     <CustomAction
       Id="ConfigureBreezeFailureActions"
       Property="BREEZE_SC_FAILURE_CMD"
-      ExeCommand="/c &quot;sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000&quot;"
+      ExeCommand="/c &quot;sc failure BreezeAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 &amp; sc failure BreezeWatchdog reset= 86400 actions= restart/5000/restart/10000/restart/30000 &amp; sc failureflag BreezeAgent 1 &amp; sc failureflag BreezeWatchdog 1&quot;"
       Execute="deferred"
       Impersonate="no"
       Return="ignore" />

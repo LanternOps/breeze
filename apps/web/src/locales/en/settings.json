@@ -267,7 +267,31 @@
       "geoProviderDefault": "Provider default",
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
-      "refreshFailed": "Couldn't queue a model refresh."
+      "refreshFailed": "Couldn't queue a model refresh.",
+      "alreadyConnected": "Already connected",
+      "addKind": {
+        "anthropic_byok": "Anthropic API key",
+        "openai_compatible": "OpenAI-compatible endpoint"
+      },
+      "openai": {
+        "name": "Name",
+        "baseUrl": "Base URL",
+        "baseUrlHelp": "The URL that ends before /chat/completions, e.g. https://llm.example.com/v1. Hosted Breeze connects to public https endpoints only.",
+        "apiKey": "API key (optional)",
+        "apiKeyHelp": "Stored encrypted and never shown again. Local servers such as Ollama or vLLM usually need none.",
+        "optional": "Optional",
+        "keepKey": "Leave blank to keep the current key",
+        "removeKey": "Remove the stored key",
+        "keyTooShort": "A key must be at least {{min}} characters.",
+        "keyRequiredForNewUrl": "Enter the key for the new URL, or remove the key. The stored key is never sent to a new URL.",
+        "envManaged": "This connection is managed by the instance environment (MCP_LLM_* settings). Change it there; it cannot be edited here.",
+        "envReleased": "This connection was set up from the instance environment (MCP_LLM_* settings), which no longer manages it. It cannot be edited here; you can disconnect it.",
+        "envManagedBadge": "Managed by environment",
+        "noKey": "No key",
+        "discovered_one": "Found {{count}} model · {{when}}",
+        "discovered_other": "Found {{count}} models · {{when}}",
+        "partialSaved": "The endpoint or key was saved, but the name was not. Reopen the connection to rename it."
+      }
     },
     "drawer": {
       "titleCreate": "Add connection",
@@ -337,7 +361,16 @@
       "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
       "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
       "queue_unavailable": "The request queue is unavailable. Try again in a moment.",
-      "registry_busy": "Another AI configuration change is in progress. Try again in a moment."
+      "registry_busy": "Another AI configuration change is in progress. Try again in a moment.",
+      "crossesFunding": "That backup model is paid from a different source. Allow failover between Breeze credits and your own API key first.",
+      "egress_blocked": "That address is not allowed.",
+      "invalid_url": "That URL is not valid.",
+      "managed_by_env": "This connection is managed by the instance environment and cannot be changed here.",
+      "connection_in_use": "A feature still uses a model on this connection. Choose another default first.",
+      "duplicate_model": "That model id is already on this connection.",
+      "geo_not_supported": "This kind of connection cannot set an inference region.",
+      "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
+      "too_many_models": "This connection already has the maximum number of hand-entered models."
     },
     "org": {
       "title": "Model defaults",
@@ -364,7 +397,13 @@
         "org": "Organization override",
         "partner": "Partner default",
         "none": "No default"
-      }
+      },
+      "noCrossFunding": "Don’t fail over between Breeze credits and the partner’s own key",
+      "crossFundingLocked": "Not allowed by the partner",
+      "fallbackInherit_one": "Inherit — {{count}} backup model (partner)",
+      "fallbackInherit_other": "Inherit — {{count}} backup models (partner)",
+      "fallbackOnlyThese": "Only these backup models",
+      "noBackups": "No backup models"
     },
     "models": {
       "title": "Models",
@@ -392,7 +431,27 @@
       "disableTitle": "Disable {{name}}?",
       "disableMessage": "These features use this model as their default. They will have no model until you choose another:",
       "disableAnyway": "Disable anyway",
-      "orgOverrides": "Organization overrides affected: {{count}}"
+      "orgOverrides": "Organization overrides affected: {{count}}",
+      "verification": {
+        "verified": "Verified",
+        "unverified": "Not verified",
+        "failed": "Verification failed",
+        "failedWithSummary": "Verification failed: {{summary}}",
+        "stale": "Re-verify: endpoint changed"
+      },
+      "setPriceToEnable": "Set a price to enable",
+      "manual": {
+        "add": "Add model",
+        "empty": "No models yet. Add one by hand or refresh the connection to discover them.",
+        "title": "Add a model",
+        "modelId": "Model id",
+        "modelIdHelp": "Exactly as the endpoint expects it, e.g. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Use letters, digits and . _ : / @ + - only, with no spaces.",
+        "displayName": "Display name (optional)",
+        "pricesHint": "Optional. Cents per 1M tokens. Fill in all four, or leave all blank and set a price before enabling.",
+        "added": "Model added",
+        "failed": "Couldn't add the model."
+      }
     },
     "offering": {
       "displayName": "Display name",
@@ -446,7 +505,8 @@
       "saveFailed": "Couldn’t save the model. Try again.",
       "verify": "Verify",
       "verifyQueued": "Model check queued",
-      "verifyFailed": "Couldn't queue the model check."
+      "verifyFailed": "Couldn't queue the model check.",
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -489,7 +549,18 @@
         "fast": "Fast"
       },
       "unavailableModel": "{{model}} (unavailable)",
-      "unavailableUnknown": "Unavailable model"
+      "unavailableUnknown": "Unavailable model",
+      "roleInherit": "Same as AI agents default",
+      "fallbacks": "Backup models, in order",
+      "addFallback": "Add a backup model…",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeFallback": "Remove",
+      "fallbackUnavailable": "A model that is no longer available",
+      "crossFunding": "Allow failover between Breeze credits and your own API key",
+      "crossFundingHelp": "When on, a backup paid from the other source may serve a request. It is billed to whichever source actually served it.",
+      "fundingPlatform": "Breeze credits",
+      "fundingOwnKey": "Your API key"
     },
     "usage": {
       "title": "AI usage by model",
@@ -517,7 +588,14 @@
       "error": "Couldn't load the usage breakdown.",
       "disconnected": "Disconnected",
       "disconnectedHint": "The connection that served these calls has since been disconnected.",
-      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above."
+      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above.",
+      "view": {
+        "label": "Show",
+        "spend": "Spend",
+        "quality": "Quality"
+      },
+      "failovers": "Failovers",
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -525,6 +603,64 @@
       "noDefault": "no default set",
       "partner": "Partner defaults",
       "org": "This organization's override"
+    },
+    "quality": {
+      "title": "Model quality",
+      "subtitleAll": "How conversations go on each model across all organizations: refusals, flags, moves to another model and turns to resolve.",
+      "subtitleOrg": "How conversations go on each model for the selected organization.",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Feature",
+        "prompt_profile": "Model family"
+      },
+      "columns": {
+        "conversations": "Conversations",
+        "costPerConversation": "Cost / conversation",
+        "refusalRate": "Refusal rate",
+        "failoverRate": "Failover rate",
+        "flagRate": "Flag rate",
+        "leftRate": "Left for another model",
+        "turnsToResolution": "Turns to resolve",
+        "agentCompletion": "Agent runs completed"
+      },
+      "help": {
+        "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
+        "costPerConversation": "Average spend on this row for each conversation that used it.",
+        "refusalRate": "Model calls the model declined, per call.",
+        "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
+        "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
+        "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
+        "turnsToResolution": "Median messages a technician sent in sessions that finished without a person's flag or a move to a new session. Includes the session it continued from.",
+        "agentCompletion": "Agent runs that completed, out of runs that finished."
+      },
+      "profiles": {
+        "claude-frontier": "Frontier Claude",
+        "claude-standard": "Standard Claude",
+        "claude-small": "Small Claude",
+        "generic": "Other models"
+      },
+      "unrecorded": "Not recorded",
+      "unattributed": "Not attributed to a model",
+      "removedModel": "Removed model",
+      "platformConnection": "Breeze platform",
+      "notRecorded": "Not recorded on this server yet",
+      "switchesOnly": "Switches only",
+      "few": "Few conversations",
+      "autoFlagged_one": "{{count}} flagged automatically",
+      "autoFlagged_other": "{{count}} flagged automatically",
+      "leftBreakdown": "{{switched}} switched, {{continued}} continued",
+      "resolvedCount_one": "{{count}} resolved",
+      "resolvedCount_other": "{{count}} resolved",
+      "loading": "Loading quality…",
+      "empty": "No model calls in this period.",
+      "error": "Couldn't load the quality view.",
+      "timeout": "This range is too large to summarize quickly. Choose a shorter range.",
+      "footnote": "A conversation counts toward the model it last used, and a switch toward the model it left. Calls served by a fallback or a backup model count toward the model that was chosen. Counts start when quality tracking went live. Read small numbers with care."
+    },
+    "roles": {
+      "triage": "Triage (first look)",
+      "analysis": "Analysis (investigate and plan)",
+      "remediation": "Remediation (act on devices)"
     }
   },
   "partnerDefaults": {
@@ -2345,6 +2481,14 @@
       "recipientRolesEmpty": "No roles available.",
       "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
       "charactersLeft": "{{count}} characters left",
+      "model": "Model",
+      "modelDefault": "Use the default ({{model}})",
+      "modelDefaultUnknown": "the AI agents default",
+      "modelRequiresRole": "requires {{roles}}",
+      "modelRequiresPermission": "requires the premium AI models permission",
+      "modelUnavailable": "The saved model is unavailable. Choose another.",
+      "modelLoadFailed": "Couldn't load the models. The agent keeps its current model.",
+      "modelHint": "Set the default and the allowed models under AI Providers & Models.",
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",

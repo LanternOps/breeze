@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -206,6 +207,14 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   fundingSource: text('funding_source').$type<'platform' | 'partner_key'>(),
   /** W03 (review finding 6): the offering admission resolved; the run dispatches this one or is blocked. No FK (provenance id). */
   admittedOfferingId: uuid('admitted_offering_id'),
+  /** W09 (#7607): the offering that served the run's model tokens when it was a failover hop. */
+  servedOfferingId: uuid('served_offering_id'),
+  /** W09: that hop's funding. Sandbox compute stays on `fundingSource` (D7). */
+  servedFundingSource: text('served_funding_source').$type<'platform' | 'partner_key'>(),
+  /** W09: the hop index; a re-driven run resumes on this hop's reservation key. */
+  servedFailoverHop: smallint('served_failover_hop'),
+  /** W09: why it failed over; restores the ledger provenance on a re-driven run. */
+  servedFailoverCause: text('served_failover_cause'),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.

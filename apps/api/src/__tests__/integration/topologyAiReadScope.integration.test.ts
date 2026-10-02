@@ -4,11 +4,7 @@ import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vites
 import { and, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-// Provider governance is mocked (tests never reach a model); the rest is real.
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
+// Tests never reach a model; the rest is real.
 // Topology AI readiness requires a usable model provider (no key = not
 // configured). These suites exercise the gate itself, so give the platform
 // path a key for their duration.

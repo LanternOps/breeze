@@ -1,3 +1,5 @@
+import { InvoiceServiceError } from '../invoiceTypes';
+import { assertCollectionAmountAvailable } from '../autopay/reservation';
 /**
  * The QuickBooks -> Breeze payment applier (Phase D, Task 3 —
  * .superpowers/sdd/2026-09-02-quickbooks-phase-d-payment-pullback/task-3-brief.md).
@@ -61,12 +63,9 @@
  *     than a throw, because there is no caller to show a 409 to and a throw
  *     would pin the CDC cursor forever on a document that will never accept the
  *     payment.
- *  1. OVER-PAYMENT IS ALLOWED (plan decision 2). `recordPayment` rejects a
- *     payment that exceeds the balance because a human typed it; here
- *     QuickBooks is reporting money that already moved, and refusing it would
- *     leave Breeze permanently disagreeing with the ledger. That is why this
- *     module writes `invoice_payments` directly and never through
- *     `recordPayment`.
+ *  1. External-origin inserts/increases obey the locked unreserved balance. A
+ *     conflict throws and rolls this application back; the caller retains its
+ *     CDC cursor and retries instead of dropping or truncating provider money.
  *  2. A CURRENCY MISMATCH IS RECORDED ON THE **INVOICE** MAPPING ROW, not on a
  *     payment mapping row. `accounting_entity_mappings` carries an ownership
  *     trigger (`validate_accounting_mapping_entity_partner`,
@@ -567,6 +566,7 @@ async function applyInsideTransaction(
     // hands back a live row rather than a snapshot.
     const replacedSyncToken = existing.remoteSyncToken;
 
+    await assertImportedAmountAvailable(inv.id, normalized.amount, existing.breezeEntityId);
     const updatedPayments = await db
       .update(invoicePayments)
       .set({ amount: normalized.amount, method, reference, receivedAt: normalized.txnDate })
@@ -630,6 +630,7 @@ async function applyInsideTransaction(
   }
 
   // (f) First delivery for this (payment, invoice) pair.
+  await assertImportedAmountAvailable(inv.id, normalized.amount);
   const insertedPayments = await db
     .insert(invoicePayments)
     .values({
@@ -1509,4 +1510,13 @@ export async function markInvoiceDeletedRemotely(
     await markInvoiceMappingError(conn, mapping.id, invoiceRemoteDeletedMarker(conn.provider));
     return 'marked';
   });
+}
+
+/** External money already moved: preserve historical overpayment import, while
+ * reservations remain a transient refusal so reconciliation retries safely. */
+async function assertImportedAmountAvailable(invoiceId: string, amount: string, replacingPaymentId?: string): Promise<void> {
+  try { await assertCollectionAmountAvailable(db, invoiceId, amount, replacingPaymentId); }
+  catch (error) {
+    if (!(error instanceof InvoiceServiceError) || error.code !== 'OVERPAYMENT') throw error;
+  }
 }

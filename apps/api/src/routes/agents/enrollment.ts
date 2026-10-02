@@ -43,6 +43,7 @@ import {
   type DeviceIdentityCollisionAlertInput,
 } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { getEnrollmentRateLimit } from '../../config/enrollmentRateLimit';
 import { evaluateCapability, trustDenyBody, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import { enqueueIpClassify } from '../../services/ipClassify';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
@@ -53,8 +54,6 @@ import {
 import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
 
 export const enrollmentRoutes = new Hono();
-const ENROLLMENT_RATE_LIMIT = 10;
-const ENROLLMENT_RATE_WINDOW_SECONDS = 60;
 
 function getProvidedEnrollmentSecret(c: any, data: { enrollmentSecret?: string }): string {
   return (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
@@ -98,11 +97,15 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   const clientIp = getTrustedClientIp(c, 'unknown');
   // 'unknown' is the rate-limiter fallback, not a real address — store NULL.
   const enrollmentIp = clientIp === 'unknown' ? null : clientIp;
+  // Per-source-IP, operator-tunable (AGENT_ENROLL_RATE_LIMIT, #7472). This runs
+  // before any credential check, so rejected attempts deliberately still count
+  // (no refundOnReject): a client hammering through 429s stays throttled.
+  const { limit: enrollLimit, windowSeconds: enrollWindowSeconds } = getEnrollmentRateLimit();
   const rateCheck = await rateLimiter(
     getRedis(),
     `agent-enroll:${rateLimitIpKey(clientIp)}`,
-    ENROLLMENT_RATE_LIMIT,
-    ENROLLMENT_RATE_WINDOW_SECONDS
+    enrollLimit,
+    enrollWindowSeconds
   );
   if (!rateCheck.allowed) {
     recordAgentEnrollment('denied');

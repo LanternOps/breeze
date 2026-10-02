@@ -78,9 +78,8 @@ import {
 import { TEMP_PASSWORD_ENC_KEY } from './actionIntents/resultSecrets';
 import { captureException } from './sentry';
 import { recordActionIntentMetric } from './actionIntents/metrics';
-import { resolveLlmConfigForOrg } from './llm/llmConfigResolver';
-import { isOpenAICompatibleProvider, isPlatformLlmConfigured } from './llm/llmAvailability';
-import type { AiSurface } from '@breeze/shared';
+import { isPlatformLlmConfigured } from './llm/llmAvailability';
+import type { AiModelChoice, AiSurface } from '@breeze/shared';
 import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
@@ -377,11 +376,11 @@ export type PreFlightResult = {
   maxBudgetUsd: number | undefined;
   /**
    * The turn's model from the registry (W03 Task 7): dispatch, admission and
-   * settlement all take it unchanged. Null only on the deployment-wide env
-   * OpenAI-compatible chat path (W06 absorbs it), which is platform-funded.
+   * settlement all take it unchanged. Always resolved — W06 removed the env
+   * OpenAI-compatible chat runtime; an env deployment's chat resolves to its
+   * env-managed offering like any other.
    */
-  model: ResolvedModel | null;
-  openaiCompatible: boolean;
+  model: ResolvedModel;
 } | {
   ok: false;
   error: string;
@@ -416,6 +415,8 @@ export async function runPreFlightChecks(
   auth: AuthContext,
   pageContext?: AiPageContext,
   requestContext?: RequestLike,
+  /** W05: the composer's model choice on this message (chat only; strict user resolution). */
+  choice?: AiModelChoice,
 ): Promise<PreFlightResult> {
   const session = await getSession(sessionId, auth);
   if (!session) {
@@ -425,35 +426,18 @@ export async function runPreFlightChecks(
 
   // Spec §9: every turn re-resolves the session's stored offering + options
   // (bounded fallback, recoverable refusal) — funding included, decided here,
-  // before any admission check. The script builder always runs the Agent SDK;
-  // chat can instead run on the deployment-wide env OpenAI-compatible provider,
-  // which keeps its legacy resolution until W06 absorbs it.
+  // before any admission check. One runtime (W06): chat and the script builder
+  // both run the Agent SDK on the resolved model.
   const surface: AiSurface = session.type === 'script_builder' ? 'script_builder' : 'chat';
-  const openaiCompatible = surface === 'chat' && isOpenAICompatibleProvider();
-  let model: ResolvedModel | null = null;
-  if (openaiCompatible) {
-    let legacy;
-    try {
-      legacy = await resolveLlmConfigForOrg(orgId);
-    } catch (error) {
-      captureException(error, undefined, { service: 'aiAgentSdk', orgId });
-      return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
-    }
-    // The platform path is always configured here (the env provider is the
-    // credential). A partner config — usable or not — is refused exactly as
-    // the route used to refuse it.
-    if (legacy.source !== 'platform') return { ok: false, error: 'ai_unavailable', status: 503 };
-  } else {
-    let turn;
-    try {
-      turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id });
-    } catch (error) {
-      captureException(error, undefined, { service: 'aiAgentSdk', orgId });
-      return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
-    }
-    if (!turn.ok) return unresolvedTurn(turn);
-    model = turn;
+  let turn;
+  try {
+    turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id, ...(choice ? { choice } : {}) });
+  } catch (error) {
+    captureException(error, undefined, { service: 'aiAgentSdk', orgId });
+    return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
   }
+  if (!turn.ok) return unresolvedTurn(turn);
+  const model: ResolvedModel = turn;
 
   // Rate limits
   try {
@@ -466,9 +450,8 @@ export async function runPreFlightChecks(
 
   // Budget
   try {
-    // Funding from the RESOLVED offering (quorum #4); the env
-    // OpenAI-compatible path is platform-funded by construction.
-    const budgetError = await checkBudget(orgId, model?.funding ?? 'platform');
+    // Funding from the RESOLVED offering (quorum #4).
+    const budgetError = await checkBudget(orgId, model.funding);
     if (budgetError) return { ok: false, error: budgetError };
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
@@ -477,10 +460,11 @@ export async function runPreFlightChecks(
 
   if (session.status !== 'active') {
     // 'expired' must read as expired to the caller: routes map on the word to
-    // return 410, and a session retired eagerly by openaiSessionManager's
-    // eviction reaches this branch BEFORE the age checks below would have
-    // produced that wording lazily. Without this, the same terminal state
-    // surfaced as 410 or 400 depending purely on which path got there first.
+    // return 410, and a session retired eagerly (streamingSessionManager's
+    // eviction stamps 'expired') reaches this branch BEFORE the age checks
+    // below would have produced that wording lazily. Without this, the same
+    // terminal state surfaced as 410 or 400 depending purely on which path
+    // got there first.
     return {
       ok: false,
       error:
@@ -564,7 +548,7 @@ export async function runPreFlightChecks(
   // A durable reservation is acquired immediately before provider dispatch by
   // the route. Returning an advisory remaining-budget snapshot here would
   // recreate the check-then-spend race this preflight must not authorize.
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, model, openaiCompatible };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd: undefined, model };
 }
 
 /**
