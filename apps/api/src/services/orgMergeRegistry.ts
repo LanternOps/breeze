@@ -130,6 +130,15 @@ function buildFollowsParentEntries(): Record<string, OrgMergePolicy> {
 }
 
 const SPECIAL: Record<string, OrgMergePolicy> = {
+  billing_payment_settings: { kind: 'keep-survivor' },
+  org_autopay_enrollments: { kind: 'custom', note: 'Cancel with org_merged and retain authority on the loser.' },
+  org_autopay_consents: { kind: 'leave-for-erasure', note: 'Append-only authorization evidence belongs to the loser.' },
+  org_payment_methods: { kind: 'custom', note: 'Remove and retain on loser; detach from original Stripe account after commit.' },
+  invoice_autopay_schedules: { kind: 'custom', note: 'Cancel non-terminal schedules, detach enrollment authority, then repoint invoice history.' },
+  invoice_collection_attempts: { kind: 'blocks-merge', note: 'Block reserved/created/confirming/processing; otherwise repoint history after detaching method authority.' },
+  billing_notice_outbox: { kind: 'custom', note: 'Cancel unsent notices; repoint invoice rows and retain enrollment-only rows.' },
+  billing_link_tokens: { kind: 'custom', note: 'Revoke all tokens; repoint invoice rows and retain enrollment-only rows.' },
+
   organizations: { kind: 'loser-shell' },
 
   // Caller verification (#6354 W01). Bindings are canonical per org: the

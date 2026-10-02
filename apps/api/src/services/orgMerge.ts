@@ -1,3 +1,4 @@
+import { autopayMergeBlockerCount, drainAutopayMethodDetaches } from './autopay/merge';
 /**
  * Org merge engine (org-lifecycle Wave 2, Task 3).
  *
@@ -144,6 +145,16 @@ export interface MergeBlocker {
 
 /** Operator-facing refusal text; also embedded in previews and audits. Precondition: `blockers` is non-empty — every caller only invokes this once a blocks-merge table has loser rows. */
 export function buildMergeBlockedMessage(blockers: MergeBlocker[]): string {
+  const paymentBlockers = blockers.filter((b) => b.table === 'invoice_collection_attempts');
+  if (paymentBlockers.length > 0) {
+    const count = paymentBlockers.reduce((n, b) => n + b.loserRows, 0);
+    const paymentMessage = `merge blocked: ${count} payment collection attempt(s) are still in flight. Wait for settlement or cancellation before merging; changing organizations cannot cancel an in-flight bank debit.`;
+    const otherBlockers = blockers.filter((b) => b.table !== 'invoice_collection_attempts');
+    return otherBlockers.length > 0
+      ? `${paymentMessage} ${buildMergeBlockedMessage(otherBlockers)}`
+      : paymentMessage;
+  }
+
   const counts = blockers.map((b) => `${b.loserRows} ${b.table} row(s)`).join(', ');
   return (
     `merge blocked: the merged-away organization holds durable PAM lifecycle evidence (${counts}). `
@@ -171,13 +182,17 @@ export class OrgMergeBlockedError extends Error {
  * devices_pam_history_move_guard would RAISE a raw 23514 before the walk ever
  * reached pam_actuations — the typed refusal has to come first.
  */
+function mergeBlockerCount(table: string, loserOrgId: string): SQL {
+  return table === 'invoice_collection_attempts'
+    ? autopayMergeBlockerCount(loserOrgId)
+    : sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id=${uuid(loserOrgId)}`;
+}
+
 export async function collectMergeBlockers(loserOrgId: string): Promise<MergeBlocker[]> {
   const blockers: MergeBlocker[] = [];
   for (const [table, policy] of getOrgMergePolicies()) {
     if (policy.kind !== 'blocks-merge') continue;
-    const loserRows = await scalarCount(
-      sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-    );
+    const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
     if (loserRows > 0) blockers.push({ table, loserRows });
   }
   return blockers.sort((a, b) => a.table.localeCompare(b.table));
@@ -723,6 +738,12 @@ export async function runPolicy(
         : noOpOutcome();
 
     case 'keep-survivor': {
+      if (table === 'billing_payment_settings') {
+        return phase === 'resolve'
+          ? { moved: 0, dropped: await exec(sql`DELETE FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`), notes: [] }
+          : noOpOutcome();
+      }
+
       const [del, repoint] = buildKeepSurvivor(table, loserOrgId, survivorOrgId) as [SQL, SQL];
       return phase === 'resolve'
         ? { moved: 0, dropped: await exec(del), notes: [] }
@@ -763,14 +784,10 @@ export async function runPolicy(
     }
 
     case 'blocks-merge': {
-      // Defense in depth only — executeOrgMerge refuses via
-      // collectMergeBlockers before the fence and again before the walk, so
-      // reaching this case with loser rows means that ordering broke.
-      if (phase === 'resolve') {
-        const rows = await scalarCount(
-          sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-        );
-        if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }]);
+      const rows = await scalarCount(mergeBlockerCount(table, loserOrgId));
+      if (rows > 0) throw new OrgMergeBlockedError([{ table, loserRows: rows }]);
+      if (table === 'invoice_collection_attempts' && phase === 'move') {
+        return CUSTOM_EXECUTORS.invoice_collection_attempts!(loserOrgId, survivorOrgId);
       }
       return noOpOutcome();
     }
@@ -1186,6 +1203,12 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   // Phase B is committed and irreversible from here — never unfence past this
   // point, whatever the stamp does.
   await self.stampTerminalShell(input, loser);
+  try {
+    await drainAutopayMethodDetaches();
+  } catch (error) {
+    console.error('[orgMerge] autopay method detach queue will retry', error);
+  }
+
   return result;
 }
 
@@ -1360,9 +1383,15 @@ export async function previewOrgMerge(
         if (!policy) continue;
 
         if (policy.kind === 'blocks-merge') {
-          const loserRows = await scalarCount(
-            sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loserOrgId)}`,
-          );
+          const loserRows = await scalarCount(mergeBlockerCount(table, loserOrgId));
+          if (table === 'invoice_collection_attempts' && loserRows === 0) {
+            const historyRows = await scalarCount(sql`SELECT count(*)::int AS n FROM invoice_collection_attempts WHERE org_id=${uuid(loserOrgId)}`);
+            if (historyRows > 0) {
+              tables.push({ table, policy: policy.kind, loserRows: historyRows, wouldDrop: 0 });
+              totalMovableRows += historyRows;
+            }
+            continue;
+          }
           if (loserRows === 0) continue;
           tables.push({ table, policy: policy.kind, loserRows, wouldDrop: 0 });
           mergeBlockers.push({ table, loserRows });
@@ -1458,6 +1487,9 @@ async function countWouldDrop(
   loserOrgId: string,
   survivorOrgId: string,
 ): Promise<number> {
+  if (table === 'billing_payment_settings') {
+    return scalarCount(sql`SELECT count(*)::int AS n FROM billing_payment_settings WHERE org_id=${uuid(loserOrgId)}`);
+  }
   switch (policy.kind) {
     case 'keep-survivor':
       return scalarCount(buildKeepSurvivorDropCount(table, loserOrgId, survivorOrgId));
