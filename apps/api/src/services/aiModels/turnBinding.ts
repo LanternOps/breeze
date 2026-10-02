@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { AI_SURFACES, PROMPT_PROFILES, offeringOptionsSchema, type AiSurface, type OfferingOptions, type PromptProfile } from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import type { ThinkingMode } from './capabilities';
+import { FAILOVER_CAUSES, MAX_FAILOVER_HOP, type FailoverCause } from './failover';
 import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
 import type { WireParams } from './wireParams';
@@ -53,7 +54,16 @@ export interface TurnBinding {
    * the next new live query instead of rotating an idle one.
    */
   promptProfile?: PromptProfile;
+  /**
+   * W09 (#7607): set when a failover hop serves this turn (ledger provenance;
+   * D6 session stamping). Absent — never `null` — on a binding with no
+   * failover, so it stays byte-identical to a W03/W05 binding for the
+   * stable-key re-bind comparison; absent on bindings stored before W09.
+   */
+  failover?: TurnBindingFailover;
 }
+
+export interface TurnBindingFailover { fromOfferingId: string | null; hop: number; cause: FailoverCause }
 
 /** Key-order-independent JSON, for fingerprints and rate comparisons. */
 export function stableJson(value: unknown): string {
@@ -100,6 +110,9 @@ export function turnBindingFrom(r: ResolvedModel): TurnBinding {
         }
       : null,
     promptProfile: r.promptProfile,
+    ...(r.failover
+      ? { failover: { fromOfferingId: r.failover.fromOfferingId, hop: r.failover.hop, cause: r.failover.cause } }
+      : {}),
   };
 }
 
@@ -157,6 +170,12 @@ const turnBindingSchema = z.object({
   // W11: must round-trip, or aiBudgetReservations' stored-vs-new binding
   // comparison would see every stable-key retry as a re-bind.
   promptProfile: z.enum(PROMPT_PROFILES).optional(),
+  // W09: mirrors ai_invocations_failover_chk (hop 1..6 with a known cause).
+  failover: z.object({
+    fromOfferingId: z.string().nullable(),
+    hop: z.number().int().min(1).max(MAX_FAILOVER_HOP),
+    cause: z.enum(FAILOVER_CAUSES),
+  }).optional(),
 });
 
 export function parseTurnBinding(raw: unknown): TurnBinding | null {

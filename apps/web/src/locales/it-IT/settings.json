@@ -337,7 +337,8 @@
       "registry_unavailable": "La configurazione IA è in fase di aggiornamento. Riprova tra un momento.",
       "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide.",
       "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento.",
-      "registry_busy": "È in corso un'altra modifica alla configurazione IA. Riprova tra un momento."
+      "registry_busy": "È in corso un'altra modifica alla configurazione IA. Riprova tra un momento.",
+      "crossesFunding": "Quel modello di riserva è pagato da un’altra fonte. Consenti prima il passaggio tra crediti Breeze e la tua chiave API."
     },
     "org": {
       "title": "Modelli predefiniti",
@@ -364,7 +365,13 @@
         "org": "Sostituzione dell'organizzazione",
         "partner": "Predefinito del partner",
         "none": "Nessun predefinito"
-      }
+      },
+      "noCrossFunding": "Non passare tra crediti Breeze e la chiave propria del partner",
+      "crossFundingLocked": "Non consentito dal partner",
+      "fallbackInherit_one": "Eredita — {{count}} modello di riserva (partner)",
+      "fallbackInherit_other": "Eredita — {{count}} modelli di riserva (partner)",
+      "fallbackOnlyThese": "Solo questi modelli di riserva",
+      "noBackups": "Nessun modello di riserva"
     },
     "models": {
       "title": "Modelli",
@@ -489,7 +496,18 @@
         "fast": "Veloce"
       },
       "unavailableModel": "{{model}} (non disponibile)",
-      "unavailableUnknown": "Modello non disponibile"
+      "unavailableUnknown": "Modello non disponibile",
+      "roleInherit": "Come il predefinito degli agenti IA",
+      "fallbacks": "Modelli di riserva, in ordine",
+      "addFallback": "Aggiungi un modello di riserva…",
+      "moveUp": "Sposta su",
+      "moveDown": "Sposta giù",
+      "removeFallback": "Rimuovi",
+      "fallbackUnavailable": "Un modello non più disponibile",
+      "crossFunding": "Consenti il passaggio tra crediti Breeze e la tua chiave API",
+      "crossFundingHelp": "Se attivo, un modello di riserva pagato dall’altra fonte può gestire una richiesta. Viene addebitata alla fonte che l’ha effettivamente gestita.",
+      "fundingPlatform": "Crediti Breeze",
+      "fundingOwnKey": "La tua chiave API"
     },
     "usage": {
       "title": "Utilizzo IA per modello",
@@ -522,7 +540,9 @@
         "label": "Mostra",
         "spend": "Spesa",
         "quality": "Qualità"
-      }
+      },
+      "failovers": "Failover",
+      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile"
     },
     "link": {
       "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
@@ -583,6 +603,11 @@
       "error": "Impossibile caricare la vista Qualità.",
       "timeout": "Questo intervallo è troppo ampio per essere riassunto rapidamente. Scegli un intervallo più breve.",
       "footnote": "Una conversazione conta per l'ultimo modello usato e un passaggio per il modello lasciato. Le chiamate servite da un modello di riserva contano per il modello scelto. I conteggi partono dall'attivazione del monitoraggio della qualità. Leggi con cautela i numeri piccoli."
+    },
+    "roles": {
+      "triage": "Triage (primo esame)",
+      "analysis": "Analisi (indagare e pianificare)",
+      "remediation": "Correzione (agire sui dispositivi)"
     }
   },
   "partnerDefaults": {

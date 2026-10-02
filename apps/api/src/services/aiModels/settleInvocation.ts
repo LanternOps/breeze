@@ -254,6 +254,11 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       stopReason: refusedLeg ? 'refusal' : outcome.stopReason,
       refusalCategory: refusedLeg || servedByFallback || outcome.refused ? outcome.refusalCategory : null,
       fallbackUsed: servedByFallback,
+      // W09 (F5): this row is the SERVED hop's (offering/connection/funding
+      // above come from its own binding); these record where it failed over from.
+      failoverFromOfferingId: b.failover?.fromOfferingId ?? null,
+      failoverHop: b.failover?.hop ?? 0,
+      failoverCause: b.failover?.cause ?? null,
       catalogRevisionId: b.catalogRevisionId,
       connectionConfigVersion: b.configVersion,
       tokens: p.tokens,

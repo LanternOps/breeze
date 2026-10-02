@@ -21,6 +21,14 @@ import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/o
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 import { LlmUnavailableError } from '../../services/llm/llmUnavailableError';
 import { anthropicClientFor, type MessageAttempt } from '../../services/aiModels/connectionFactory';
+import {
+  FailoverExhaustedError,
+  isPreOutputMessagesFailure,
+  reserveFailoverHop,
+  runWithFailover,
+  settleZeroUsageHop,
+  type FailoverHop,
+} from '../../services/aiModels/failoverDispatch';
 import { messagesUsage, messagesUsageAfterDispatchError } from '../../services/aiModels/invocationUsage';
 import { oneShotUnavailableAnswer } from '../../services/aiModels/oneShotUnavailable';
 import { resolveModel } from '../../services/aiModels/resolveModel';
@@ -267,6 +275,14 @@ class DraftTimeoutError extends Error {
   }
 }
 
+/** A failover hop reached after the response already timed out: never dispatched. */
+class DraftAbandonedError extends Error {
+  constructor() {
+    super('ai email draft abandoned after the response timed out');
+    this.name = 'DraftAbandonedError';
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new DraftTimeoutError(ms)), ms);
@@ -429,11 +445,13 @@ officeAddinTicketRoutes.post(
     // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
     // in services/aiAgents/runLoop.ts. Give this one a stable key only when
     // the request schema starts carrying a client-generated id.
+    // Hop 0's key; a failover hop n reserves `<key>:hop:<n>` (W09).
+    const reservationKey = `office-email-draft:${crypto.randomUUID()}`;
     let reservation;
     try {
       reservation = await reserveAiBudget({
         orgId: input.orgId,
-        idempotencyKey: `office-email-draft:${crypto.randomUUID()}`,
+        idempotencyKey: reservationKey,
         billingSource: resolved.funding,
         binding,
       });
@@ -444,31 +462,77 @@ officeAddinTicketRoutes.post(
     if (reservation.kind === 'denied') {
       return c.json({ error: 'ai_budget_exceeded' }, 429);
     }
-    const reservationId = reservation.reservationId;
 
-    const draftPromise = draftTicketFromEmail({
-      subject: input.subject,
-      bodyText: dlpResult.text ?? input.bodyText,
-      resolved,
-      client,
-      ...(reservation.kind === 'reserved' ? { budgetCents: reservation.reservedCostCents } : {}),
+    // W09 (#7607): a pre-output provider failure fails over along the
+    // office_ticket assignment's fallback list; each hop is admitted, reserved
+    // and settled on its own (failoverDispatch.ts). With no list the original
+    // error comes straight back and the W03 handling below is unchanged.
+    // `current` is the hop in flight: failure handling settles THAT hop.
+    let current: FailoverHop = {
+      index: 0, resolved, binding, reservationId: reservation.reservationId, idempotencyKey: reservationKey,
+      reservedCostCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : null,
+    };
+    // Once the pane has had its 503 nobody is waiting for a draft: a hop that
+    // fails after that never buys a further one.
+    let abandoned = false;
+    const settleOn = (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false) => settleDraftUsage({
+      binding: hop.binding, orgId: input.orgId, userId: auth.userId, reservationId: hop.reservationId, attempts, dispatchFailed,
     });
-    const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleDraftUsage({
-      binding, orgId: input.orgId, userId: auth.userId, reservationId, attempts, dispatchFailed,
+    const draftPromise = runWithFailover({
+      first: current,
+      reResolve: async ({ excludeOfferingIds, cause, origin }) => abandoned
+        ? { ok: false, reason: 'model_unavailable', recoverable: true, offeringId: null, message: 'The draft request was abandoned.' }
+        : resolveModel({
+          partnerId: auth.partnerId, orgId: input.orgId, userId: auth.userId, surface: 'office_ticket', maxTokens: 1024,
+          excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
+        }),
+      reserveHop: reserveFailoverHop({ orgId: input.orgId }),
+      attempt: (hop) => {
+        current = hop;
+        if (abandoned) return Promise.reject(new DraftAbandonedError());
+        let hopClient = client;
+        if (hop.index > 0) {
+          try {
+            hopClient = anthropicClientFor(hop.resolved, { surface: 'one_shot_email_draft', orgId: input.orgId });
+          } catch (clientError) {
+            // Nothing was sent on this hop: its reservation is handed back below.
+            return Promise.reject(new EmailDraftFailedError('Backup model client unavailable', [], false, { cause: clientError }));
+          }
+        }
+        return draftTicketFromEmail({
+          subject: input.subject,
+          bodyText: dlpResult.text ?? input.bodyText,
+          resolved: hop.resolved,
+          client: hopClient,
+          // This hop's OWN allowance (Codex review 6), never hop 0's.
+          ...(hop.reservedCostCents !== null ? { budgetCents: hop.reservedCostCents } : {}),
+        });
+      },
+      settleFailedHop: settleZeroUsageHop({
+        orgId: input.orgId, userId: auth.userId, sessionId: null, agentRunId: null, sourceRef: 'office_email_draft',
+      }),
+      // A draft error carrying a completed attempt (attempt 1 answered, attempt 2
+      // failed) never fails over: those tokens bill on this hop.
+      isPreOutput: isPreOutputMessagesFailure,
     });
     try {
-      const draft = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
+      const { value: draft, hop: served } = await withTimeout(draftPromise, DRAFT_TIMEOUT_MS);
       // Usage accounting (spec §6). This one-shot draft has no `ai_sessions`
       // row; every attempt (a failed-then-recovered attempt 1 included) is
-      // billed in the one settlement.
-      await settle(draft.attempts);
+      // billed in the one settlement, on the hop that served it.
+      await settleOn(served, draft.attempts);
       const { attempts: _attempts, ...prefill } = draft;
       return c.json({ draft: prefill }, 200);
     } catch (err) {
       // Blanket 503 for the pane's deterministic fallback, but never silent —
       // a model/timeout/parse failure here is otherwise invisible in prod.
       console.error('[office-addin] draft failed', safeErrorMessage(err));
-      if (err instanceof DraftTimeoutError) {
+      const reservationId = current.reservationId;
+      const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleOn(current, attempts, dispatchFailed);
+      if (err instanceof FailoverExhaustedError) {
+        // Every hop runWithFailover tried is already settled on its own reservation.
+      } else if (err instanceof DraftTimeoutError) {
+        abandoned = true;
         // Outcome unknown NOW, so the reservation goes indeterminate and keeps
         // consuming capacity — it is never released on a timeout. The provider
         // promise can still outlive the response timeout, so observe it and
@@ -476,12 +540,21 @@ officeAddinTicketRoutes.post(
         // fallback (settlement accepts an indeterminate reservation). The
         // callback must not inherit the request's transaction: it runs after
         // that transaction has closed, so accounting opens a fresh context.
+        // W09: the reservation held is the hop IN FLIGHT; the late result
+        // settles on the hop that actually served (or failed) it.
         await markDraftReservationIndeterminate(input.orgId, reservationId);
         void runOutsideDbContext(() => draftPromise.then(
-          (lateDraft) => settle(lateDraft.attempts),
-          (lateErr) => lateErr instanceof EmailDraftFailedError && lateErr.attempts.length > 0
-            ? settle(lateErr.attempts, lateErr.providerOutcomeUnknown)
-            : undefined,
+          ({ value: lateDraft, hop: lateServed }) => settleOn(lateServed, lateDraft.attempts),
+          (lateErr) => {
+            if (lateErr instanceof EmailDraftFailedError && lateErr.attempts.length > 0) {
+              return settle(lateErr.attempts, lateErr.providerOutcomeUnknown);
+            }
+            if (lateErr instanceof DraftAbandonedError) {
+              // Reserved for a backup the abandoned request never dispatched.
+              return releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId: current.reservationId }).then(() => undefined);
+            }
+            return undefined;
+          },
         )).catch((meterErr) => {
           const message = safeErrorMessage(meterErr);
           console.error('[office-addin] late draft usage accounting failed', { reservationId, error: message });

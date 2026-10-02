@@ -500,11 +500,29 @@ export async function readOrgPartnerId(orgId: string): Promise<string | null> {
 /** The stored model choice of a session (W02 columns, P11); the only ai_sessions read the resolver makes. */
 export async function readSessionModelRow(
   sessionId: string,
-): Promise<{ orgId: string; offeringId: string | null; options: Partial<OfferingOptions> | null } | null> {
+): Promise<{
+  orgId: string;
+  offeringId: string | null;
+  options: Partial<OfferingOptions> | null;
+  /** W09 (D5): history the SDK would resume (turns run, or a persisted SDK transcript). */
+  turnCount: number;
+  sdkSessionId: string | null;
+} | null> {
   const [row] = await systemRead(() => db
-    .select({ orgId: aiSessions.orgId, offeringId: aiSessions.offeringId, options: aiSessions.options })
+    .select({
+      orgId: aiSessions.orgId, offeringId: aiSessions.offeringId, options: aiSessions.options,
+      turnCount: aiSessions.turnCount, sdkSessionId: aiSessions.sdkSessionId,
+    })
     .from(aiSessions)
     .where(eq(aiSessions.id, sessionId))
     .limit(1));
-  return row ? { orgId: row.orgId, offeringId: row.offeringId ?? null, options: (row.options ?? null) as Partial<OfferingOptions> | null } : null;
+  return row
+    ? {
+        orgId: row.orgId,
+        offeringId: row.offeringId ?? null,
+        options: (row.options ?? null) as Partial<OfferingOptions> | null,
+        turnCount: Number(row.turnCount ?? 0),
+        sdkSessionId: row.sdkSessionId ?? null,
+      }
+    : null;
 }

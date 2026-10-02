@@ -337,7 +337,8 @@
       "registry_unavailable": "Die KI-Konfiguration wird gerade aktualisiert. Versuchen Sie es gleich noch einmal.",
       "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich.",
       "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal.",
-      "registry_busy": "Eine andere Änderung der KI-Konfiguration wird gerade ausgeführt. Versuchen Sie es gleich noch einmal."
+      "registry_busy": "Eine andere Änderung der KI-Konfiguration wird gerade ausgeführt. Versuchen Sie es gleich noch einmal.",
+      "crossesFunding": "Dieses Ausweichmodell wird über eine andere Quelle bezahlt. Erlauben Sie zuerst das Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel."
     },
     "org": {
       "title": "Modellstandards",
@@ -364,7 +365,13 @@
         "org": "Überschreibung der Organisation",
         "partner": "Partner-Standard",
         "none": "Kein Standard"
-      }
+      },
+      "noCrossFunding": "Nicht zwischen Breeze-Guthaben und dem eigenen Schlüssel des Partners ausweichen",
+      "crossFundingLocked": "Vom Partner nicht erlaubt",
+      "fallbackInherit_one": "Erben — {{count}} Ausweichmodell (Partner)",
+      "fallbackInherit_other": "Erben — {{count}} Ausweichmodelle (Partner)",
+      "fallbackOnlyThese": "Nur diese Ausweichmodelle",
+      "noBackups": "Keine Ausweichmodelle"
     },
     "models": {
       "title": "Modelle",
@@ -489,7 +496,18 @@
         "fast": "Schnell"
       },
       "unavailableModel": "{{model}} (nicht verfügbar)",
-      "unavailableUnknown": "Nicht verfügbares Modell"
+      "unavailableUnknown": "Nicht verfügbares Modell",
+      "roleInherit": "Wie Standard der KI-Agenten",
+      "fallbacks": "Ausweichmodelle, in Reihenfolge",
+      "addFallback": "Ausweichmodell hinzufügen …",
+      "moveUp": "Nach oben",
+      "moveDown": "Nach unten",
+      "removeFallback": "Entfernen",
+      "fallbackUnavailable": "Ein nicht mehr verfügbares Modell",
+      "crossFunding": "Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel erlauben",
+      "crossFundingHelp": "Wenn aktiviert, darf ein über die andere Quelle bezahltes Ausweichmodell eine Anfrage bedienen. Die Abrechnung erfolgt über die Quelle, die sie tatsächlich bedient hat.",
+      "fundingPlatform": "Breeze-Guthaben",
+      "fundingOwnKey": "Ihr API-Schlüssel"
     },
     "usage": {
       "title": "KI-Nutzung nach Modell",
@@ -522,7 +540,9 @@
         "label": "Anzeigen",
         "spend": "Kosten",
         "quality": "Qualität"
-      }
+      },
+      "failovers": "Failover",
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -583,6 +603,11 @@
       "error": "Die Qualitätsansicht konnte nicht geladen werden.",
       "timeout": "Dieser Zeitraum ist zu groß, um schnell zusammengefasst zu werden. Wählen Sie einen kürzeren Zeitraum.",
       "footnote": "Eine Unterhaltung zählt für das Modell, das sie zuletzt genutzt hat, ein Wechsel für das verlassene Modell. Aufrufe, die ein Ersatzmodell bedient hat, zählen für das gewählte Modell. Die Zählung beginnt mit dem Start der Qualitätserfassung. Kleine Zahlen mit Vorsicht lesen."
+    },
+    "roles": {
+      "triage": "Triage (erste Sichtung)",
+      "analysis": "Analyse (untersuchen und planen)",
+      "remediation": "Behebung (auf Geräten handeln)"
     }
   },
   "partnerDefaults": {

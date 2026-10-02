@@ -18,7 +18,10 @@ const m = vi.hoisted(() => ({
   markIndeterminate: vi.fn(async () => ({ kind: 'indeterminate' })),
   settleOrder: [] as string[],
   listRefusalAlternatives: vi.fn(),
+  noteProviderFailureForBinding: vi.fn(async (..._a: unknown[]) => undefined),
 }));
+// W09 (#7607): the chat cooldown write (Redis; fails open).
+vi.mock('./aiModels/offeringHealth', () => ({ noteProviderFailureForBinding: m.noteProviderFailureForBinding }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => {
@@ -523,5 +526,42 @@ describe('W11 prompt variants', () => {
     const settled = settleCalls().at(-1)!;
     expect(settled.binding.promptProfile).toBe('generic');
     expect(settled.prompt).toEqual({ profile: 'claude-small', variant: 'chat/claude-small@1' });
+  });
+});
+
+describe('W09 (#7607, D5): chat never replays a turn; a pre-output provider failure cools the bound offering', () => {
+  const failed = () => ({ ...sdkResult({ subtype: 'error_during_execution', usage: {}, modelUsage: {} }), is_error: true });
+
+  it('a turn that failed on a 529 before any output cools the bound offering', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 3, max_retries: 3, retry_delay_ms: 0, error_status: 529, error: 'overloaded' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).toHaveBeenCalledWith(expect.objectContaining({ offeringId: 'off-1' }), 'overloaded');
+  });
+
+  it('a turn that streamed text before failing does not cool anything', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it' }] } },
+      { type: 'system', subtype: 'api_retry', attempt: 3, error_status: 529, error: 'overloaded' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
+  });
+
+  it('a retried-then-successful turn does not cool anything', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded' },
+      sdkResult({ usage: { input_tokens: 10, output_tokens: 5 }, modelUsage: { [SONNET]: { inputTokens: 10, outputTokens: 5 } } }),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
+  });
+
+  it('a non-failover error (invalid request) cools nothing', async () => {
+    await runOneTurn('s1', makeResolvedModel(), [
+      { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' },
+      failed(),
+    ], { reservationId: 'r1' });
+    expect(m.noteProviderFailureForBinding).not.toHaveBeenCalled();
   });
 });

@@ -832,3 +832,79 @@ describe.skipIf(!RUN)('a W03 soft-disconnected connection (#7602 W04 × #7601)',
     expect(r.totals).not.toHaveProperty('connectionDisconnected');
   });
 });
+
+describe.skipIf(!RUN)('W09 (#7607): role rows, fallback lists and cross-funding through the real routes', () => {
+  const role = (o: Record<string, unknown>) => ({
+    surface: 'ai_agents', role: 'default', permittedOfferingIds: null, allowUserChoice: true, options: null, expectedUpdatedAt: null, ...o,
+  });
+
+  it('a partner writes a triage row with a fallback list; clearing it restores inheritance', async () => {
+    const w = await seedWorld();
+    const req = await partnerAdmin(w.pA);
+    const put = await req('PUT', '/api/v1/ai/models/assignments', { assignments: [
+      role({ role: 'triage', defaultOfferingId: w.offA2, fallbackOfferingIds: [w.offA], fallbackMayCrossFunding: false }),
+    ] });
+    expect({ status: put.status, body: put.status === 200 ? null : await put.text() }).toEqual({ status: 200, body: null });
+    const row = firstRow<{ fallback_offering_ids: string[]; fallback_may_cross_funding: boolean; updated_at: Date }>(await fixtureSql`
+      SELECT fallback_offering_ids, fallback_may_cross_funding, updated_at FROM ai_model_assignments
+      WHERE partner_id = ${w.pA} AND surface = 'ai_agents' AND role = 'triage'`);
+    expect([row.fallback_offering_ids, row.fallback_may_cross_funding]).toEqual([[w.offA], false]);
+
+    // The snapshot lists the role row with its list.
+    const snap = await (await req('GET', '/api/v1/ai/models')).json() as { defaults: Array<{ surface: string; role: string; partner: { fallbackOfferingIds: string[] | null } | null }> };
+    expect(snap.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'triage')!.partner!.fallbackOfferingIds).toEqual([w.offA]);
+
+    const cleared = await req('PUT', '/api/v1/ai/models/assignments', { assignments: [
+      role({ role: 'triage', defaultOfferingId: null, expectedUpdatedAt: row.updated_at.toISOString() }),
+    ] });
+    expect(cleared.status).toBe(200);
+    expect(await fixtureSql`SELECT 1 FROM ai_model_assignments WHERE partner_id = ${w.pA} AND role = 'triage'`).toHaveLength(0);
+  });
+
+  it('another partner’s offering in a fallback list is refused and nothing is written', async () => {
+    const w = await seedWorld();
+    const req = await partnerAdmin(w.pA);
+    const put = await req('PUT', '/api/v1/ai/models/assignments', { assignments: [
+      role({ surface: 'chat', defaultOfferingId: w.offA, fallbackOfferingIds: [w.offB] }),
+    ] });
+    expect(put.status).toBe(422);
+    expect(await put.json()).toMatchObject({ code: 'not_eligible', details: { surface: 'chat', role: 'default', field: 'fallbackOfferingIds', offeringId: w.offB } });
+    expect(await assignmentCount({ partnerId: w.pA })).toBe(0);
+  });
+
+  it('a BYOK fallback for a platform default is 422 crosses_funding until crossing is allowed', async () => {
+    const w = await seedWorld();
+    const modelId = `w09-byok-${randomUUID()}`;
+    const pm = await seedPricedPlatformModel(modelId);
+    const conn = await seedByokConnection(w.pA);
+    const offByok = await seedOffering({ partnerId: w.pA, connectionId: conn, platformModelId: pm, modelId, source: 'discovered', enabled: true });
+    const req = await partnerAdmin(w.pA);
+    const refused = await req('PUT', '/api/v1/ai/models/assignments', { assignments: [
+      role({ surface: 'catalog_enrichment', defaultOfferingId: w.offA, fallbackOfferingIds: [offByok], fallbackMayCrossFunding: false }),
+    ] });
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({ code: 'crosses_funding', details: { field: 'fallbackOfferingIds', offeringId: offByok } });
+    expect(await assignmentCount({ partnerId: w.pA })).toBe(0);
+    const allowed = await req('PUT', '/api/v1/ai/models/assignments', { assignments: [
+      role({ surface: 'catalog_enrichment', defaultOfferingId: w.offA, fallbackOfferingIds: [offByok], fallbackMayCrossFunding: true }),
+    ] });
+    expect({ status: allowed.status, body: allowed.status === 200 ? null : await allowed.text() }).toEqual({ status: 200, body: null });
+  });
+
+  it('an org’s emptied list is stored as [] (no backups), never NULL, and the org view shows no backups', async () => {
+    const w = await seedWorld();
+    await fixtureSql`
+      INSERT INTO ai_model_assignments (partner_id, offering_partner_id, surface, role, default_offering_id, allow_user_choice, fallback_offering_ids, fallback_may_cross_funding)
+      VALUES (${w.pA}, ${w.pA}, 'extension_content', 'default', ${w.offA}, true, ${[w.offA2]}, false)`;
+    const req = await partnerAdmin(w.pA);
+    const put = await req('PUT', `/api/v1/ai/models/orgs/${w.orgA}/assignments`, {
+      assignments: [{ ...orgRow('extension_content'), fallbackOfferingIds: [] }],
+    });
+    expect({ status: put.status, body: put.status === 200 ? null : await put.text() }).toEqual({ status: 200, body: null });
+    const [stored] = await fixtureSql`SELECT fallback_offering_ids FROM ai_model_assignments WHERE org_id = ${w.orgA}`;
+    expect(stored).toEqual({ fallback_offering_ids: [] });
+    const view = await (await req('GET', `/api/v1/ai/models/orgs/${w.orgA}/assignments`)).json() as { surfaces: Array<{ surface: string; role: string; inherited: { fallbackOfferingIds: string[] }; effective: { fallbackOfferingIds: string[] } }> };
+    const ext = view.surfaces.find((s) => s.surface === 'extension_content' && s.role === 'default')!;
+    expect([ext.inherited.fallbackOfferingIds, ext.effective.fallbackOfferingIds]).toEqual([[w.offA2], []]);
+  });
+});

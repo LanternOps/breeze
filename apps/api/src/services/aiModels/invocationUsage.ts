@@ -23,6 +23,7 @@
  *   the next turn's delta picks up whatever the CLI persisted.
  */
 import { z } from 'zod';
+import { classifySdkAssistantError, type ProviderFailureCause } from './failover';
 import type { TokenComponents } from './pricing';
 import type { TurnBinding } from './turnBinding';
 
@@ -73,23 +74,60 @@ export interface SdkTurnObservation {
   refusalNoFallback: { category: string | null } | null;
   /** W05: some frame of the turn reported fast mode not serving (cooldown / off). */
   fastNotOnSeen: boolean;
+  /** W09 (#7607): the last failover-eligible provider failure the CLI reported this turn. */
+  providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number } | null;
+  /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
+  sawOutput: boolean;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false };
+  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false };
 }
 
-/** Feed EVERY SDK message of the turn through this (system messages are the only ones it reads). */
+const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
+
+/** Feed EVERY SDK message of the turn through this. */
 export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): void {
   if (!message || typeof message !== 'object') return;
   const m = message as {
     type?: unknown; subtype?: unknown; scope?: unknown; fallback_model?: unknown; api_refusal_category?: unknown;
+    error?: unknown; error_status?: unknown; attempt?: unknown; api_error_status?: unknown;
+    message?: { content?: unknown }; event?: { type?: unknown };
   };
   // W05: any frame that reports fast mode not serving (rate-limit cooldown,
   // or off) during the turn means at least part of it ran at standard.
   const fastState = (message as { fast_mode_state?: unknown }).fast_mode_state;
   if (fastState === 'cooldown' || fastState === 'off') obs.fastNotOnSeen = true;
+
+  // W09: a classified provider status failure (D8). An error the classifier
+  // does not recognise (a timeout or reset after send, an invalid request, an
+  // unknown model, …) CLEARS any earlier cause: the latest failure decides,
+  // and a turn must never fail over on a stale 529 after an unknown outcome.
+  const recordFailure = (error: unknown, status: unknown, attempt: unknown) => {
+    const httpStatus = typeof status === 'number' ? status : null;
+    const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
+    if (!cause) { obs.providerFailure = null; return; }
+    const retries = typeof attempt === 'number' ? attempt : (obs.providerFailure?.retries ?? 0);
+    obs.providerFailure = { cause, status: httpStatus, retries };
+  };
+  if (m.type === 'assistant') {
+    // A synthetic API-error assistant message carries `error`: a failure, not
+    // output. Anything else with a content block is output.
+    if (typeof m.error === 'string') { recordFailure(m.error, null, undefined); return; }
+    const content = Array.isArray(m.message?.content) ? (m.message!.content as Array<{ type?: unknown }>) : [];
+    if (content.some((b) => typeof b?.type === 'string' && OUTPUT_BLOCKS.has(b.type))) obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'stream_event') {
+    if (m.event?.type === 'content_block_start') obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'result') {
+    if (typeof m.api_error_status === 'number') recordFailure(null, m.api_error_status, undefined);
+    return;
+  }
   if (m.type !== 'system') return;
+  if (m.subtype === 'api_retry') { recordFailure(m.error, m.error_status, m.attempt); return; }
   const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : null;
   if (m.subtype === 'model_refusal_fallback') {
     // 'local' = a subagent / side question fell back; the main loop did not.
@@ -257,6 +295,19 @@ function servedModelOf(
   if (newKeys) {
     const appeared = grown.filter(([k]) => newKeys.has(k) && k !== binding.wireModel);
     if (appeared.length === 1) return appeared[0]![0];
+  }
+  // #7766: the CLI swapped to a refusal fallback this turn but named no model,
+  // and there is no snapshot to say which key is new (a query's first turn).
+  // The bound model is the one that REFUSED, so it is never "what served":
+  // prefer the bound refusal fallback's key, else the one grown key that is
+  // neither the bound model nor a model this session switched away from.
+  if (obs.refusalFallback) {
+    if (binding.refusalFallback && grown.some(([k]) => k === binding.refusalFallback!.wireModel)) {
+      return binding.refusalFallback.wireModel;
+    }
+    const carried = new Set((binding.carriedRates ?? []).map((c) => c.wireModel));
+    const others = grown.filter(([k]) => k !== binding.wireModel && !carried.has(k));
+    if (others.length === 1) return others[0]![0];
   }
   if (grown.length === 1) return grown[0]![0];
   if (grown.some(([k]) => k === binding.wireModel)) return binding.wireModel;
@@ -433,6 +484,18 @@ function thisTurnUsage(
     : null;
   const turnValid = turnRaw !== null && turnRaw.every((v) => v !== 'invalid');
   let usage: BilledUsage[] = [];
+  if (turnValid && obs.refusalFallback && nonZero.length > 1) {
+    // #7766: a refusal swap on a query's first turn. When the per-key
+    // modelUsage adds up EXACTLY to this turn's usage, it carries nothing from
+    // earlier turns, so each model is billed on its own row at its own rate
+    // (the refused attempt under the bound model, the answer under the
+    // fallback). Otherwise the per-key split is only a ceiling and the capped
+    // turn usage goes to the served model below.
+    const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
+    const exact = input === sum.tokens.input && output === sum.tokens.output && cacheRead === sum.tokens.cacheRead
+      && cacheWrite === sum.tokens.cacheWrite && web === sum.webSearchRequests;
+    if (exact) return { usage: nonZero.map(([k, e]) => billed(k, e)), servedModel, turnValid, nonZeroKeys: nonZero.length };
+  }
   if (turnValid) {
     const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
     const capped: Entry = {

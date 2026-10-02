@@ -5,12 +5,11 @@
  * Extension points, deliberately narrow in W04:
  *  - connectionCreateSchema is a discriminated union on `kind`; W06 adds
  *    `openai_compatible`, W07 adds `bedrock` | `vertex` | `foundry`.
- *  - assignment `role` is `'default'` only; W09 widens it to AI_SURFACE_ROLES.
- *  - assignment writes never carry fallback fields; W09 adds them.
+ *  - assignment role/fallback fields: widened by W09 (#7607).
  *  - aiUsageQuerySchema.groupBy; W10/W11 add groupings (W11: a sibling aiQualityQuerySchema over the same base and range rules).
  */
 import { z } from 'zod';
-import { AI_SURFACES, type AiSurface } from '../constants/aiSurfaces';
+import { AI_AGENT_ESCALATION_ROLES, AI_SURFACE_ROLES, AI_SURFACES, MAX_FALLBACK_OFFERINGS, type AiSurface } from '../constants/aiSurfaces';
 import { INFERENCE_GEO_PATTERN, modelRatesSchema, offeringOptionsSchema } from './aiModelOptions';
 
 export const CONFIGURABLE_AI_SURFACES = AI_SURFACES.filter(
@@ -80,24 +79,56 @@ export const offeringDetailsPatchSchema = z.object({
 export type OfferingDetailsPatch = z.infer<typeof offeringDetailsPatchSchema>;
 
 const configurableSurface = z.enum(CONFIGURABLE_AI_SURFACES as unknown as [AiSurface, ...AiSurface[]]);
-/** The assignment roles a write may target. W09 (#7607) widens this one list to AI_SURFACE_ROLES. */
-export const AI_ASSIGNMENT_WRITE_ROLES = ['default'] as const;
+/** W09 (#7607): `default` on every surface; ai_agents also has the escalation stages (checked per surface below). */
+export const AI_ASSIGNMENT_WRITE_ROLES = ['default', ...AI_AGENT_ESCALATION_ROLES] as const;
 export type AiAssignmentWriteRole = (typeof AI_ASSIGNMENT_WRITE_ROLES)[number];
 const assignmentRole = z.enum(AI_ASSIGNMENT_WRITE_ROLES);
 const permittedIds = z.array(uuid).min(1).max(200)
   .refine((ids) => new Set(ids).size === ids.length, { message: 'Duplicate model in the permitted list.' });
 
-export const partnerAssignmentInputSchema = z.object({
+/** Every configurable (surface, role) pair, in surface order then role order. */
+export const CONFIGURABLE_AI_SURFACE_ROLES: ReadonlyArray<{ surface: AiSurface; role: string }> =
+  CONFIGURABLE_AI_SURFACES.flatMap((surface) => AI_SURFACE_ROLES[surface].map((role) => ({ surface, role })));
+
+const fallbackIds = z.array(uuid).max(MAX_FALLBACK_OFFERINGS)
+  .refine((ids) => new Set(ids).size === ids.length, { message: 'Duplicate model in the fallback list.' });
+
+function roleBelongsToSurface(row: { surface: AiSurface; role: string }, ctx: z.RefinementCtx): void {
+  if (!(AI_SURFACE_ROLES[row.surface] as readonly string[]).includes(row.role)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['role'], message: 'That feature has no such role.' });
+  }
+}
+
+/** The inner object, exported for `.shape`/`.extend` callers (the refined schema below is a ZodEffects). */
+export const partnerAssignmentObjectSchema = z.object({
   surface: configurableSurface,
   role: assignmentRole,
-  defaultOfferingId: uuid,
+  /** null only on a role row (role other than 'default'): clears it, so the role inherits the feature default. */
+  defaultOfferingId: uuid.nullable(),
   /** null = every enabled model. */
   permittedOfferingIds: permittedIds.nullable(),
   allowUserChoice: z.boolean(),
   options: offeringOptionsSchema.nullable(),
+  /** W09: ordered failover list. Omitted = keep the stored list; null or [] = no failover. */
+  fallbackOfferingIds: fallbackIds.nullable().optional(),
+  /** W09: may failover move between Breeze credits and the partner's own key. Omitted = keep the stored value. */
+  fallbackMayCrossFunding: z.boolean().optional(),
   /** The row's updatedAt as read; null when no partner row existed. */
   expectedUpdatedAt: z.string().datetime().nullable(),
-}); // non-strict on purpose: stray fields (e.g. W09's fallbacks) are stripped, not written
+});
+export const partnerAssignmentInputSchema = partnerAssignmentObjectSchema.superRefine((row, ctx) => {
+  roleBelongsToSurface(row, ctx);
+  if (row.defaultOfferingId === null) {
+    if (row.role === 'default') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['defaultOfferingId'], message: 'Choose a default model.' });
+    } else if (row.permittedOfferingIds !== null || row.options !== null || (row.fallbackOfferingIds ?? null) !== null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['defaultOfferingId'], message: 'Clear the whole role row to inherit the feature default.' });
+    }
+  }
+  if (row.defaultOfferingId && row.fallbackOfferingIds?.includes(row.defaultOfferingId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fallbackOfferingIds'], message: 'A model cannot be its own fallback.' });
+  }
+});
 export type PartnerAssignmentInput = z.infer<typeof partnerAssignmentInputSchema>;
 
 function uniqueSurfaceRole(rows: Array<{ surface: string; role: string }>): boolean {
@@ -105,11 +136,11 @@ function uniqueSurfaceRole(rows: Array<{ surface: string; role: string }>): bool
 }
 
 export const partnerAssignmentsPutSchema = z.object({
-  assignments: z.array(partnerAssignmentInputSchema).min(1).max(CONFIGURABLE_AI_SURFACES.length)
-    .refine(uniqueSurfaceRole, { message: 'Each feature may appear once.' }),
+  assignments: z.array(partnerAssignmentInputSchema).min(1).max(CONFIGURABLE_AI_SURFACE_ROLES.length)
+    .refine(uniqueSurfaceRole, { message: 'Each feature role may appear once.' }),
 }).strict();
 
-export const orgAssignmentInputSchema = z.object({
+export const orgAssignmentObjectSchema = z.object({
   surface: configurableSurface,
   role: assignmentRole,
   /** null = inherit the partner default. */
@@ -120,13 +151,18 @@ export const orgAssignmentInputSchema = z.object({
   allowUserChoice: z.literal(false).nullable(),
   /** null = inherit; per-key values may only narrow (checked server-side). */
   options: offeringOptionsSchema.nullable(),
+  /** W09: null/omitted = inherit the partner list; a list narrows it (each id must be partner-permitted). */
+  fallbackOfferingIds: fallbackIds.nullable().optional(),
+  /** W09: an org can only switch cross-funding failover OFF (false) or inherit (null). */
+  fallbackMayCrossFunding: z.literal(false).nullable().optional(),
   expectedUpdatedAt: z.string().datetime().nullable(),
 });
+export const orgAssignmentInputSchema = orgAssignmentObjectSchema.superRefine((row, ctx) => roleBelongsToSurface(row, ctx));
 export type OrgAssignmentInput = z.infer<typeof orgAssignmentInputSchema>;
 
 export const orgAssignmentsPutSchema = z.object({
-  assignments: z.array(orgAssignmentInputSchema).min(1).max(CONFIGURABLE_AI_SURFACES.length)
-    .refine(uniqueSurfaceRole, { message: 'Each feature may appear once.' }),
+  assignments: z.array(orgAssignmentInputSchema).min(1).max(CONFIGURABLE_AI_SURFACE_ROLES.length)
+    .refine(uniqueSurfaceRole, { message: 'Each feature role may appear once.' }),
 }).strict();
 
 export const residencyPutSchema = z.object({

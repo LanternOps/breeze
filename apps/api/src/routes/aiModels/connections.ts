@@ -10,6 +10,7 @@ import { zValidator } from '../../lib/validation';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getCompatConnection } from '../../services/aiModels/connections';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
+import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
 import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
 import { deletePartnerLlmConfig, savePartnerLlmKey, updatePartnerLlmEndpoint } from '../../services/partnerLlmConfig';
@@ -69,6 +70,14 @@ aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', id
   return registryWrite(c, partnerId, async () => {
     const id = await ownConnectionId(partnerId, c.req.valid('param').id);
     const result = await savePartnerLlmKey({ partnerId, apiKey: c.req.valid('json').apiKey, userId });
+    // W09 (#7607): a new key may fix auth_failed / quota_exhausted at once, so
+    // forget this connection's failover cooldowns. Cooldowns fail open: a
+    // failed clear only means the old cooldown runs out (15 min) on its own.
+    try {
+      await clearConnectionCooldowns(partnerId, id);
+    } catch (error) {
+      console.warn('[aiModels] cooldown clear after key rotation failed', { connectionId: id, error: error instanceof Error ? error.message : String(error) });
+    }
     audit(c, partnerId, 'key_rotated', { connectionId: id, last4: result.last4, configVersion: result.configVersion });
     return c.json({ id, keyLast4: result.last4, configVersion: result.configVersion });
   });

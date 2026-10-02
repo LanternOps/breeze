@@ -832,7 +832,7 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       seedAdmissionReads();
       resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents' }));
       expect(await createAndEnqueueAgentRun(input())).toMatchObject({ created: true });
-      expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents' });
+      expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis' });
       expect(checkBudget).toHaveBeenCalledWith(ORG_ID, 'partner_key');
       expect(dbMockState.insertValues[0]).toMatchObject({ fundingSource: 'partner_key', admittedOfferingId: 'off-1' });
     });
@@ -844,6 +844,12 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({
         surface: 'ai_agents', requested: { offeringId: 'off-77', origin: 'policy' },
       }));
+    });
+
+    it('admission resolves the run\'s escalation role (verdict -> triage)', async () => {
+      seedAdmissionReads();
+      await createAndEnqueueAgentRun(input({ profile: 'verdict', triggerKind: 'alert' }));
+      expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ surface: 'ai_agents', role: 'triage' }));
     });
 
     it('resolves OUTSIDE the admission transaction (no second pooled connection under the advisory lock)', async () => {

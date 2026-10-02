@@ -209,11 +209,11 @@ describe('buildPartnerModelsSnapshot', () => {
     ]);
   });
 
-  it('returns one defaults row per configurable surface, never patch_test', async () => {
+  it('returns one defaults row per configurable (surface, role), never patch_test', async () => {
     h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true })];
-    h.allRows = [{ surface: 'chat', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', orgId: 'o2', defaultOfferingId: null }];
+    h.allRows = [{ surface: 'chat', role: 'default', orgId: 'o1', defaultOfferingId: null }, { surface: 'chat', role: 'default', orgId: 'o2', defaultOfferingId: null }];
     const s = await buildPartnerModelsSnapshot(P);
-    expect(s.defaults).toHaveLength(9);
+    expect(s.defaults).toHaveLength(12); // 9 surfaces + ai_agents' three escalation roles
     expect(s.defaults.map((d) => d.surface)).not.toContain('patch_test');
     const chat = s.defaults.find((d) => d.surface === 'chat')!;
     expect(chat.requiresTools).toBe(true);
@@ -259,6 +259,52 @@ describe('buildPartnerModelsSnapshot', () => {
     const s = await buildPartnerModelsSnapshot(P);
     expect(s.catalogEnabled).toBe(true);
     expect(s.catalog).toEqual([{ entryId: 'e1', slug: 's', name: 'Prov', dataNote: null, models: ['m1'] }]);
+  });
+});
+
+describe('W09 role rows and fallback lists in the views', () => {
+  it('lists one defaults entry per (surface, role), ai_agents with its three stages', async () => {
+    const snap = await buildPartnerModelsSnapshot(P);
+    expect(snap.defaults.filter((d) => d.surface === 'ai_agents').map((d) => d.role)).toEqual(['default', 'triage', 'analysis', 'remediation']);
+    expect(snap.defaults.find((d) => d.surface === 'chat')).toMatchObject({ role: 'default' });
+  });
+
+  it('a role entry carries its own row (with the fallback list) and counts only that role\'s org overrides', async () => {
+    h.partnerRows = [
+      assignment({ surface: 'ai_agents', orgId: null, defaultOfferingId: A, allowUserChoice: true }),
+      assignment({ surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, allowUserChoice: true, fallbackOfferingIds: [A], fallbackMayCrossFunding: false }),
+    ];
+    h.allRows = [{ surface: 'ai_agents', role: 'triage', orgId: 'o1', defaultOfferingId: null }, { surface: 'ai_agents', role: 'default', orgId: 'o2', defaultOfferingId: null }];
+    const s = await buildPartnerModelsSnapshot(P);
+    const triage = s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'triage')!;
+    expect(triage.partner).toMatchObject({ role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.orgOverrideCount).toBe(1);
+    expect(s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'analysis')!.partner).toBeNull();
+    expect(s.defaults.find((d) => d.surface === 'ai_agents' && d.role === 'default')!.partner).toMatchObject({ fallbackOfferingIds: null, fallbackMayCrossFunding: null });
+  });
+
+  it('the org view merges a role exactly as the resolver does (D2)', async () => {
+    h.partnerRows = [
+      { surface: 'ai_agents', role: 'default', orgId: null, defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: new Date() },
+      { surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, permittedOfferingIds: null, allowUserChoice: true, options: null, fallbackOfferingIds: [A], fallbackMayCrossFunding: false, updatedAt: new Date() },
+    ];
+    h.orgRows = [{ surface: 'ai_agents', role: 'default', orgId: ORG, defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: null, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: new Date() }];
+    const view = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
+    const triage = view.surfaces.find((s) => s.surface === 'ai_agents' && s.role === 'triage')!;
+    expect(triage.effective).toMatchObject({ defaultOfferingId: B, defaultSource: 'partner', fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.inherited).toMatchObject({ defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+    expect(triage.org).toBeNull();     // no org row for (ai_agents, triage) itself
+    expect(view.surfaces.filter((s) => s.surface === 'ai_agents').map((s) => s.role)).toEqual(['default', 'triage', 'analysis', 'remediation']);
+  });
+
+  it('an org\'s empty fallback list shows as "no backups", not the partner list (Codex 8)', async () => {
+    h.partnerRows = [assignment({ surface: 'chat', orgId: null, defaultOfferingId: A, allowUserChoice: true, fallbackOfferingIds: [B], fallbackMayCrossFunding: true })];
+    h.orgRows = [assignment({ surface: 'chat', orgId: ORG, fallbackOfferingIds: [], fallbackMayCrossFunding: false })];
+    const view = await buildOrgModelDefaults({ partnerId: P, orgId: ORG, canEdit: true, canEditReviewer: true });
+    const chat = view.surfaces.find((s) => s.surface === 'chat')!;
+    expect(chat.inherited).toMatchObject({ fallbackOfferingIds: [B], fallbackMayCrossFunding: true });
+    expect(chat.org).toMatchObject({ fallbackOfferingIds: [], fallbackMayCrossFunding: false });
+    expect(chat.effective).toMatchObject({ fallbackOfferingIds: [], fallbackMayCrossFunding: false });
   });
 });
 

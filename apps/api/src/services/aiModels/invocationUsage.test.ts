@@ -382,11 +382,115 @@ describe('sdkTurnUsage — served model is read from the usage, never assumed', 
     expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
   });
 
+  it('#7766: a first-turn CLI refusal swap with no fallback_model labels the fallback as served and bills each key on its own row', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: 'cyber' });
+    const refused = tok(100, 5);
+    const answered = tok(120, 60);
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: obs, previousSnapshot: null,
+      result: success({ usage: ru(add(refused, answered)), modelUsage: { [OPUS]: mu(refused), [OPUS48]: mu(answered) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
+    expect(out.usage).toEqual([std(OPUS, refused), std(OPUS48, answered)]);
+  });
+
+  it('#7766: the bound refusal fallback\'s key is the served model when it grew', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: null });
+    const out = sdkTurnUsage({ binding: B, observation: obs, previousSnapshot: null,
+      result: success({ usage: ru(add(T, T)), modelUsage: { [SONNET]: mu(T), [HAIKU]: mu(T) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: HAIKU, fallbackUsed: true });
+  });
+
+  it('#7766: when modelUsage also carries earlier turns, the capped turn usage is attributed to the fallback, not the bound model', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: null });
+    const turn = tok(50, 20);
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: obs, previousSnapshot: null,
+      // a resumed transcript: OPUS carries earlier turns, so the per-key split is only a ceiling
+      result: success({ usage: ru(turn), modelUsage: { [OPUS]: mu(tok(900, 400)), [OPUS48]: mu(tok(30, 15)) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS48 });
+    expect(out.usage).toEqual([std(OPUS48, turn)]);
+  });
+
+  it('without a refusal swap, two grown keys on a first result still bill as the bound model (unchanged)', () => {
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: newSdkTurnObservation(), previousSnapshot: null,
+      result: success({ usage: ru(tok(10, 5)), modelUsage: { [OPUS]: mu(tok(900, 400)), [OPUS48]: mu(tok(30, 15)) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS });
+  });
+
   it('a single key on the first result is the served model even when it is not the bound one', () => {
     const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
       result: success({ usage: ru(T), modelUsage: { [OPUS48]: mu(T) } }) });
     expect(out.usage).toEqual([std(OPUS48, T)]);
     expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
+  });
+});
+
+describe('W09: provider-failure observation', () => {
+  it('an api_retry records the classified cause, its status and the CLI\'s attempt count', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 500, error_status: 529, error: 'overloaded' });
+    expect(obs.providerFailure).toEqual({ cause: 'overloaded', status: 529, retries: 2 });
+    expect(obs.sawOutput).toBe(false);
+  });
+
+  it('a synthetic API-error assistant message is a failure, not output', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'assistant', error: 'rate_limit', message: { content: [{ type: 'text', text: 'API Error: 429' }] } });
+    expect(obs.providerFailure).toMatchObject({ cause: 'rate_limited' });
+    expect(obs.sawOutput).toBe(false);
+  });
+
+  it('real assistant content (text, thinking, tool_use) is output', () => {
+    for (const block of [{ type: 'text', text: 'hi' }, { type: 'thinking', thinking: '' }, { type: 'tool_use', id: 't', name: 'x', input: {} }]) {
+      const obs = newSdkTurnObservation();
+      observeSdkMessage(obs, { type: 'assistant', message: { content: [block] } });
+      expect(obs.sawOutput).toBe(true);
+    }
+  });
+
+  it('a streamed content block start is output (the user may already be reading it)', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } });
+    expect(obs.sawOutput).toBe(true);
+  });
+
+  it('a result with api_error_status records the failure', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'result', subtype: 'success', is_error: true, api_error_status: 401 });
+    expect(obs.providerFailure).toMatchObject({ cause: 'auth_failed', status: 401 });
+  });
+
+  it('a later unclassified error clears an earlier cause (never fail over on a stale cause, D8)', () => {
+    for (const later of [
+      { type: 'system', subtype: 'api_retry', attempt: 2, error_status: null, error: 'unknown' },     // a timeout / reset after send
+      { type: 'system', subtype: 'api_retry', attempt: 2, error_status: 400, error: 'invalid_request' },
+      { type: 'assistant', error: 'invalid_request', message: { content: [] } },
+      { type: 'result', subtype: 'success', is_error: true, api_error_status: 400 },
+    ]) {
+      const obs = newSdkTurnObservation();
+      observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded' });
+      observeSdkMessage(obs, later);
+      expect(obs.providerFailure).toBeNull();
+    }
+  });
+
+  it('a non-failover error (invalid_request) records nothing', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' });
+    expect(obs.providerFailure).toBeNull();
+  });
+
+  it('the refusal and fast-mode observations are unchanged alongside it', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded', fast_mode_state: 'cooldown' });
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', fallback_model: 'm2', api_refusal_category: 'cyber' });
+    expect(obs.fastNotOnSeen).toBe(true);
+    expect(obs.refusalFallback).toEqual({ fallbackModel: 'm2', category: 'cyber' });
+    expect(obs.providerFailure).toMatchObject({ cause: 'overloaded' });
   });
 });
 

@@ -530,3 +530,34 @@ describe('W11 prompt provenance', () => {
     })]);
   });
 });
+
+describe('W09 ledger provenance', () => {
+  const noUsageOutcome = (servedModel: string): TurnOutcome => ({
+    stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
+    servedModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false,
+  });
+
+  it('toNewInvocations writes the SERVED hop\'s offering, connection and funding, plus where it failed over from', () => {
+    const binding = turnBindingFrom(makeResolvedModel('anthropic_byok', {
+      offering: { id: 'off-k', displayName: 'K' },
+      failover: { fromOfferingId: 'off-p', hop: 1, cause: 'rate_limited' },
+    }));
+    const [row] = toNewInvocations({
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    }, priceUsage(binding, []));
+    expect(row).toMatchObject({
+      offeringId: 'off-k', connectionId: 'conn-1', fundingSource: 'partner_key',
+      failoverFromOfferingId: 'off-p', failoverHop: 1, failoverCause: 'rate_limited',
+    });
+  });
+
+  it('a turn with no failover writes hop 0 and no cause', () => {
+    const binding = turnBindingFrom(makeResolvedModel('platform'));
+    const [row] = toNewInvocations({
+      binding, orgId: 'org-1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
+      usage: [], outcome: noUsageOutcome(binding.wireModel),
+    }, priceUsage(binding, []));
+    expect(row).toMatchObject({ failoverFromOfferingId: null, failoverHop: 0, failoverCause: null });
+  });
+});

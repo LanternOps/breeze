@@ -160,7 +160,7 @@ describe('putPartnerAssignments', () => {
   it('rejects a default without tool support on a tool surface (spec §7)', async () => {
     h.candidates.set(A, cand({ supportsTools: false }));
     const err = await putPartnerAssignments({ partnerId: P, rows: [row()] }).catch((e) => e);
-    expect([err.status, err.code, err.details]).toEqual([422, 'tools_unsupported', { surface: 'chat', field: 'defaultOfferingId', offeringId: A }]);
+    expect([err.status, err.code, err.details]).toEqual([422, 'tools_unsupported', { surface: 'chat', role: 'default', field: 'defaultOfferingId', offeringId: A }]);
   });
 
   it('accepts a tool-less model on a non-tool surface', async () => {
@@ -198,13 +198,13 @@ describe('putPartnerAssignments', () => {
   it('rejects an effort the default model does not support', async () => {
     h.candidates.set(A, cand({}, { optionSupport: { effort: ['low'], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] } }));
     const err = await putPartnerAssignments({ partnerId: P, rows: [row({ options: { effort: 'max' } })] }).catch((e) => e);
-    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', field: 'options', key: 'effort' }]);
+    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', role: 'default', field: 'options', key: 'effort' }]);
   });
 
   it('rejects an option the default offering supports but does not allow', async () => {
     h.candidates.set(A, cand({}, { allowedOptions: { effort: ['low', 'medium'] } }));
     const err = await putPartnerAssignments({ partnerId: P, rows: [row({ options: { effort: 'high' } })] }).catch((e) => e);
-    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', field: 'options', key: 'effort' }]);
+    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', role: 'default', field: 'options', key: 'effort' }]);
   });
 
   it('409s when expectedUpdatedAt does not match the stored row', async () => {
@@ -362,7 +362,7 @@ describe('putOrgAssignments — the org write rejects every widening', () => {
   it('checks set options against the inherited partner default', async () => {
     h.candidates.set(A, cand({}, { optionSupport: { effort: ['medium'], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] } }));
     const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { effort: 'low' } })] }).catch((e) => e);
-    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', field: 'options', key: 'effort' }]);
+    expect([err.code, err.details]).toEqual(['invalid', { surface: 'chat', role: 'default', field: 'options', key: 'effort' }]);
   });
 
   it('an all-blank row deletes the override (blank = inherit)', async () => {
@@ -405,5 +405,189 @@ describe('putOrgAssignments — the org write rejects every widening', () => {
   it('touchesSurface detects the reviewer surface', () => {
     expect(touchesSurface([{ surface: 'chat' }, { surface: 'script_reviewer' }], 'script_reviewer')).toBe(true);
     expect(touchesSurface([{ surface: 'chat' }], 'script_reviewer')).toBe(false);
+  });
+});
+
+describe('W09 partner role rows and fallbacks', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    surface: 'ai_agents' as const, role: 'default' as const, defaultOfferingId: A, permittedOfferingIds: null as string[] | null,
+    allowUserChoice: true, options: null, expectedUpdatedAt: null as string | null, ...over,
+  }) as never;
+  const V = '2026-10-01T10:00:00.000Z';
+  beforeEach(() => {
+    h.candidates.set(A, cand());                                          // platform
+    h.candidates.set(B, cand());                                          // platform
+    h.candidates.set(C, cand({ connection: { kind: 'anthropic_byok', status: 'active', keyUsable: true }, platform: null },
+      { connectionId: 'conn-1', funding: 'partner_key' }));              // BYOK
+  });
+
+  it('writes a triage row with an ordered fallback list', async () => {
+    await putPartnerAssignments({ partnerId: P, rows: [row({ role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false })] });
+    expect(h.upserts[0]!.values).toMatchObject({ role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false });
+  });
+
+  it('omitted fallback fields are not written (the stored list is kept)', async () => {
+    await putPartnerAssignments({ partnerId: P, rows: [row()] });
+    expect(h.upserts[0]!.values).not.toHaveProperty('fallbackOfferingIds');
+    expect(h.upserts[0]!.values).not.toHaveProperty('fallbackMayCrossFunding');
+  });
+
+  it('an empty list is stored as NULL (no failover)', async () => {
+    await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [] })] });
+    expect(h.upserts[0]!.values).toMatchObject({ fallbackOfferingIds: null });
+  });
+
+  it('422 crosses_funding: a BYOK fallback for a platform default with crossing off', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [C], fallbackMayCrossFunding: false })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([422, 'crosses_funding',
+      { surface: 'ai_agents', role: 'default', field: 'fallbackOfferingIds', offeringId: C }]);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('…and accepts it once crossing is allowed', async () => {
+    await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [C], fallbackMayCrossFunding: true })] });
+    expect(h.upserts[0]!.values).toMatchObject({ fallbackOfferingIds: [C], fallbackMayCrossFunding: true });
+  });
+
+  it('a stored crossing flag counts when the payload omits it', async () => {
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackMayCrossFunding: true, updatedAt: new Date(V) }];
+    await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [C], expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.kind).toBe('update');
+  });
+
+  it('422 invalid: a fallback outside the row\'s permitted list', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A], fallbackOfferingIds: [B] })] }).catch((e) => e);
+    expect([err.code, err.details.field, err.details.offeringId]).toEqual(['invalid', 'fallbackOfferingIds', B]);
+  });
+
+  it('422 tools_unsupported: a tool-less fallback on a tool surface (fallbacks are validated like permitted ids)', async () => {
+    h.candidates.set(B, cand({ supportsTools: false }));
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ role: 'triage', fallbackOfferingIds: [B] })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([422, 'tools_unsupported',
+      { surface: 'ai_agents', role: 'triage', field: 'fallbackOfferingIds', offeringId: B }]);
+  });
+
+  it('422 not_eligible: another partner\'s offering (does not load) in a fallback list', async () => {
+    const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [D] })] }).catch((e) => e);
+    expect([err.code, err.details.field, err.details.offeringId, err.details.reason]).toEqual(['not_eligible', 'fallbackOfferingIds', D, 'not_found']);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('a stored fallback that has since been disabled stays saveable; a newly added disabled one is refused', async () => {
+    h.candidates.set(B, cand({ enabled: false }));
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackOfferingIds: [B], updatedAt: new Date(V) }];
+    await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [B], expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.values).toMatchObject({ fallbackOfferingIds: [B] });
+    h.upserts = [];
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackOfferingIds: null, updatedAt: new Date(V) }];
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [B], expectedUpdatedAt: V })] }).catch((e) => e);
+    expect([err.code, err.details.offeringId, err.details.reason]).toEqual(['not_eligible', B, 'disabled']);
+  });
+
+  it('an omitted list is still checked against the row it is kept on (narrowed permitted set, crossing switched off)', async () => {
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackOfferingIds: [B, C], fallbackMayCrossFunding: true, updatedAt: new Date(V) }];
+    let err = await putPartnerAssignments({ partnerId: P, rows: [row({ permittedOfferingIds: [A, C], expectedUpdatedAt: V })] }).catch((e) => e);
+    expect([err.code, err.details.field, err.details.offeringId]).toEqual(['invalid', 'fallbackOfferingIds', B]);
+    err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackMayCrossFunding: false, expectedUpdatedAt: V })] }).catch((e) => e);
+    expect([err.code, err.details.offeringId]).toEqual(['crosses_funding', C]);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('422: adding the row\'s own default as a fallback is refused', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [B, A] })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([422, 'invalid', { surface: 'ai_agents', role: 'default', field: 'fallbackOfferingIds', offeringId: A }]);
+  });
+
+  it('a self-entry a legacy /ai/provider remap left in the STORED list does not make the row unsaveable (W03 authority)', async () => {
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackOfferingIds: [A, B], updatedAt: new Date(V) }];
+    await putPartnerAssignments({ partnerId: P, rows: [row({ options: { effort: 'high' }, expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.kind).toBe('update');
+  });
+
+  it('clearing a role row deletes it (the role inherits the feature default)', async () => {
+    h.partnerRows = [{ id: 'r2', surface: 'ai_agents', role: 'triage', orgId: null, updatedAt: new Date(V) }];
+    await putPartnerAssignments({ partnerId: P, rows: [row({ role: 'triage', defaultOfferingId: null, expectedUpdatedAt: V })] });
+    expect(h.deletes).toHaveLength(1);
+    expect(h.upserts).toHaveLength(0);
+  });
+
+  it('clearing a role row that does not exist is a no-op', async () => {
+    await expect(putPartnerAssignments({ partnerId: P, rows: [row({ role: 'triage', defaultOfferingId: null })] })).resolves.toEqual([]);
+    expect([h.deletes.length, h.upserts.length]).toEqual([0, 0]);
+  });
+
+  it('a default row can never be cleared (service guard behind zod)', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ defaultOfferingId: null })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([422, 'invalid', { surface: 'ai_agents', role: 'default', field: 'defaultOfferingId' }]);
+  });
+
+  it('a stale role row 409s with its role in details', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ role: 'remediation', expectedUpdatedAt: V })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([409, 'stale_write', { surface: 'ai_agents', role: 'remediation' }]);
+  });
+});
+
+describe('W09 org role rows and fallback narrowing', () => {
+  const ORG = '55555555-5555-4555-8555-555555555555';
+  const orgRow = (over: Record<string, unknown> = {}) => ({
+    surface: 'ai_agents' as const, role: 'default' as const, defaultOfferingId: null as string | null,
+    permittedOfferingIds: null as string[] | null, allowUserChoice: null as false | null,
+    options: null as Record<string, unknown> | null, expectedUpdatedAt: null as string | null, ...over,
+  }) as never;
+  beforeEach(() => {
+    for (const id of [A, B]) h.candidates.set(id, cand());
+    h.candidates.set(C, cand({ connection: { kind: 'anthropic_byok', status: 'active', keyUsable: true }, platform: null }, { connectionId: 'conn-1', funding: 'partner_key' }));
+    h.partnerRows = [{ surface: 'ai_agents', role: 'default', orgId: null, defaultOfferingId: A, permittedOfferingIds: [A, B, C],
+      fallbackOfferingIds: [B, C], fallbackMayCrossFunding: true, allowUserChoice: true, options: null, updatedAt: new Date() }];
+  });
+
+  it('an org may narrow the fallback list and switch cross-funding off', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackOfferingIds: [B], fallbackMayCrossFunding: false })] });
+    expect(h.upserts[0]!.values).toMatchObject({ fallbackOfferingIds: [B], fallbackMayCrossFunding: false });
+  });
+
+  it('an org\'s EMPTY list is stored as [] (no backups), never NULL (which would inherit) — Codex 8', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackOfferingIds: [] })] });
+    expect(h.upserts[0]!.values.fallbackOfferingIds).toEqual([]);
+  });
+
+  it('an org override of a role the partner left on the default is accepted (reference = the default row)', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ role: 'triage', defaultOfferingId: B })] });
+    expect(h.upserts[0]!.values).toMatchObject({ role: 'triage', defaultOfferingId: B });
+  });
+
+  it('the reference for a role the partner configured is the partner ROLE row', async () => {
+    h.partnerRows.push({ surface: 'ai_agents', role: 'triage', orgId: null, defaultOfferingId: B, permittedOfferingIds: [B],
+      fallbackOfferingIds: null, fallbackMayCrossFunding: null, allowUserChoice: true, options: null, updatedAt: new Date() });
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ role: 'triage', defaultOfferingId: A })] }).catch((e) => e);
+    expect([err.code, err.details]).toEqual(['widens_partner', { surface: 'ai_agents', role: 'triage', field: 'defaultOfferingId' }]);
+  });
+
+  it('422 widens_partner: a fallback outside the partner set, or crossing funding with the org\'s crossing off', async () => {
+    (h.partnerRows[0] as Record<string, unknown>).permittedOfferingIds = [A, B];
+    let err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackOfferingIds: [C] })] }).catch((e) => e);
+    expect([err.code, err.details.field]).toEqual(['widens_partner', 'fallbackOfferingIds']);
+    (h.partnerRows[0] as Record<string, unknown>).permittedOfferingIds = [A, B, C];
+    err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackOfferingIds: [C], fallbackMayCrossFunding: false })] }).catch((e) => e);
+    expect([err.code, err.details.key]).toEqual(['widens_partner', 'crossFunding']);
+  });
+
+  it('422 widens_partner crossFunding: crossing funding the partner did not allow', async () => {
+    (h.partnerRows[0] as Record<string, unknown>).fallbackMayCrossFunding = false;
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackOfferingIds: [C] })] }).catch((e) => e);
+    expect([err.code, err.details]).toEqual(['widens_partner',
+      { surface: 'ai_agents', role: 'default', field: 'fallbackOfferingIds', offeringId: C, key: 'crossFunding' }]);
+  });
+
+  it('422 widens_partner: a fallback outside the org row\'s own permitted set', async () => {
+    const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ permittedOfferingIds: [A], fallbackOfferingIds: [B] })] }).catch((e) => e);
+    expect([err.code, err.details.field, err.details.offeringId]).toEqual(['widens_partner', 'fallbackOfferingIds', B]);
+  });
+
+  it('a row carrying only the crossing switch is an override, not blank', async () => {
+    await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ fallbackMayCrossFunding: false })] });
+    expect(h.upserts[0]!.values).toMatchObject({ fallbackMayCrossFunding: false });
+    expect(h.upserts[0]!.values).not.toHaveProperty('fallbackOfferingIds');
   });
 });

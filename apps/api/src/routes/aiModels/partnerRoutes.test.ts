@@ -57,6 +57,7 @@ vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.
 vi.mock('../../services/aiModels/offerings', () => ({ getOffering: vi.fn() }));
 vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn() }));
 vi.mock('../../services/aiModels/connectionSettings', () => ({ updateConnectionSettings: vi.fn() }));
+vi.mock('../../services/aiModels/offeringHealth', () => ({ clearConnectionCooldowns: vi.fn() }));
 vi.mock('../../services/aiModels/offeringWrites', () => ({
   ensurePlatformOffering: vi.fn(),
   setOfferingEnabled: vi.fn(),
@@ -96,6 +97,7 @@ import { getCompatConnection, getConnection } from '../../services/aiModels/conn
 import { getOffering } from '../../services/aiModels/offerings';
 import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
+import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth';
 import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { putPartnerAssignments } from '../../services/aiModels/assignmentWrites';
 import { previewResidencyImpact, setResidencyRequired } from '../../services/aiModels/residency';
@@ -329,6 +331,18 @@ describe('/ai/models partner routes — behaviour', () => {
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Anthropic rejected this key.' });
+    expect(clearConnectionCooldowns).not.toHaveBeenCalled();
+  });
+  it('W09: a successful key rotation clears that connection\'s failover cooldowns', async () => {
+    const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
+    expect(res.status).toBe(200);
+    expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, C);
+  });
+  it('W09: a cooldown clear failure never fails the rotation (cooldowns fail open)', async () => {
+    vi.mocked(clearConnectionCooldowns).mockRejectedValue(new Error('db down'));
+    const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: C, keyLast4: 'xxxx' });
   });
   it('passes the disable force flag and returns the affected surfaces', async () => {
     const inUse = [{ surface: 'chat' as const, level: 'partner' as const, orgId: null }];

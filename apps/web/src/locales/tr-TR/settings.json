@@ -337,7 +337,8 @@
       "registry_unavailable": "Yapay zeka yapılandırması yükseltiliyor. Birazdan tekrar deneyin.",
       "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir.",
       "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin.",
-      "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin."
+      "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin.",
+      "crossesFunding": "Bu yedek model farklı bir kaynaktan ödeniyor. Önce Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin verin."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -364,7 +365,13 @@
         "org": "Kuruluş geçersiz kılması",
         "partner": "İş ortağı varsayılanı",
         "none": "Varsayılan yok"
-      }
+      },
+      "noCrossFunding": "Breeze kredileri ile iş ortağının kendi anahtarı arasında yedeğe geçme",
+      "crossFundingLocked": "İş ortağı tarafından izin verilmiyor",
+      "fallbackInherit_one": "Devral — {{count}} yedek model (iş ortağı)",
+      "fallbackInherit_other": "Devral — {{count}} yedek model (iş ortağı)",
+      "fallbackOnlyThese": "Yalnızca bu yedek modeller",
+      "noBackups": "Yedek model yok"
     },
     "models": {
       "title": "Modeller",
@@ -489,7 +496,18 @@
         "fast": "Hızlı"
       },
       "unavailableModel": "{{model}} (kullanılamıyor)",
-      "unavailableUnknown": "Kullanılamayan model"
+      "unavailableUnknown": "Kullanılamayan model",
+      "roleInherit": "Yapay zekâ ajanları varsayılanıyla aynı",
+      "fallbacks": "Yedek modeller, sırayla",
+      "addFallback": "Yedek model ekle…",
+      "moveUp": "Yukarı taşı",
+      "moveDown": "Aşağı taşı",
+      "removeFallback": "Kaldır",
+      "fallbackUnavailable": "Artık kullanılamayan bir model",
+      "crossFunding": "Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin ver",
+      "crossFundingHelp": "Açıkken, diğer kaynaktan ödenen bir yedek model isteği karşılayabilir. İstek, onu fiilen karşılayan kaynağa faturalandırılır.",
+      "fundingPlatform": "Breeze kredileri",
+      "fundingOwnKey": "API anahtarınız"
     },
     "usage": {
       "title": "Modele göre yapay zeka kullanımı",
@@ -522,7 +540,9 @@
         "label": "Göster",
         "spend": "Harcama",
         "quality": "Kalite"
-      }
+      },
+      "failovers": "Yedeğe geçişler",
+      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar"
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -583,6 +603,11 @@
       "error": "Kalite görünümü yüklenemedi.",
       "timeout": "Bu aralık hızlıca özetlenemeyecek kadar geniş. Daha kısa bir aralık seçin.",
       "footnote": "Bir konuşma son kullandığı modele, bir geçiş ise ayrıldığı modele sayılır. Yedek modelin karşıladığı çağrılar seçilen modele sayılır. Sayımlar kalite takibinin başladığı andan itibaren başlar. Küçük sayıları dikkatle yorumlayın."
+    },
+    "roles": {
+      "triage": "Triyaj (ilk bakış)",
+      "analysis": "Analiz (araştırma ve planlama)",
+      "remediation": "Düzeltme (cihazlar üzerinde işlem yapma)"
     }
   },
   "partnerDefaults": {

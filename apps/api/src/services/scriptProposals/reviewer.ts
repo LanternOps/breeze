@@ -16,6 +16,14 @@ import { releaseUnusedAiBudgetReservation, reserveAiBudget } from '../aiBudgetRe
 import { checkBudgetDetailed } from '../aiCostTracker';
 import { readOrgPartnerId } from '../aiModels/candidateLoader';
 import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageAttempt } from '../aiModels/connectionFactory';
+import {
+  FailoverExhaustedError,
+  isPreOutputMessagesFailure,
+  reserveFailoverHop,
+  runWithFailover,
+  settleZeroUsageHop,
+  type FailoverHop,
+} from '../aiModels/failoverDispatch';
 import { messagesUsage, messagesUsageAfterDispatchError } from '../aiModels/invocationUsage';
 import { refusalHeadline } from '../aiModels/refusals';
 import { resolveModel } from '../aiModels/resolveModel';
@@ -364,21 +372,27 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     });
   }
   const reservationId = reservation.reservationId;
+  const sourceRef = `script-review:${job.proposalId}`;
 
-  // The ONE billing path: the registry rate bound above, written to the ledger
-  // and rolled into the session/org totals by settleInvocation. With no
-  // attempts (nothing came back) the reservation settles at zero.
-  const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleInvocation({
-    binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null,
-    sourceRef: `script-review:${job.proposalId}`,
+  // The ONE billing path: a hop's own registry rate (bound when it was
+  // resolved), written to the ledger and rolled into the org totals by
+  // settleInvocation — always on THAT hop's binding and reservation (W09 F4/F5).
+  // With no attempts (nothing came back) the reservation settles at zero.
+  const settleOn = (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false) => settleInvocation({
+    binding: hop.binding, orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef,
     ...(attempts.length > 0
-      ? (dispatchFailed ? messagesUsageAfterDispatchError(binding, attempts) : messagesUsage(binding, attempts))
+      ? (dispatchFailed ? messagesUsageAfterDispatchError(hop.binding, attempts) : messagesUsage(hop.binding, attempts))
       : {
           usage: [],
-          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: binding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false },
+          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: hop.binding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false },
         }),
-    reservationId,
+    reservationId: hop.reservationId,
   });
+  // Hop 0 keeps W03's stable key; a failover hop n reserves `<key>:hop:<n>`.
+  const firstHop: FailoverHop = {
+    index: 0, resolved, binding, reservationId, idempotencyKey: `script-review:${job.proposalId}:${job.attempt}`,
+    reservedCostCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : null,
+  };
   // Dispatch was proven not to have happened: hand the capacity back.
   const releaseUndispatched = () => releaseUnusedAiBudgetReservation({ orgId: job.orgId, reservationId });
 
@@ -398,9 +412,9 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     return failReview(job, `Review inputs unavailable: ${errorMessage(error)}`, 'failed', { reservationId, model });
   }
 
-  let client: ReturnType<typeof anthropicClientFor>;
+  let client0: ReturnType<typeof anthropicClientFor>;
   try {
-    client = anthropicClientFor(resolved, { surface: 'script_review_verdict', orgId: job.orgId });
+    client0 = anthropicClientFor(resolved, { surface: 'script_review_verdict', orgId: job.orgId });
   } catch (error) {
     await releaseUndispatched();
     const name = error instanceof Error ? error.name : 'Error';
@@ -408,40 +422,77 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
   }
 
   let outcome: Awaited<ReturnType<typeof createMessage>>;
+  let served: FailoverHop;
+  // The hop in flight (failure handling settles THIS hop, never another's).
+  let current = firstHop;
+  // One hard wall clock for the whole review, failover hops included.
+  const deadline = AbortSignal.timeout(SCRIPT_REVIEW_TIMEOUT_MS);
   try {
-    // No tools, one user turn, hard output cap, hard wall clock. `maxRetries: 0`
-    // because the SDK's own retry would silently double the wall clock and
-    // the spend for a call whose result is discarded on timeout anyway.
-    // Thinking/effort/betas come from the resolved wire params.
-    outcome = await createMessage(
-      client,
-      resolved,
-      { max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS, system, messages: [{ role: 'user', content: user }] },
-      { signal: AbortSignal.timeout(SCRIPT_REVIEW_TIMEOUT_MS), maxRetries: 0 },
-    );
+    // W09 (#7607): a pre-output 429/529/5xx/key/quota failure fails over along
+    // the script_reviewer assignment's fallback list; each hop is admitted,
+    // reserved and settled on its own (failoverDispatch.ts). With no list the
+    // original error comes straight back (W03 behaviour).
+    ({ value: outcome, hop: served } = await runWithFailover({
+      first: firstHop,
+      reResolve: ({ excludeOfferingIds, cause, origin }) => resolveModel({
+        partnerId: partnerId!, orgId: job.orgId, surface: 'script_reviewer', maxTokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS,
+        excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
+      }),
+      reserveHop: reserveFailoverHop({ orgId: job.orgId }),
+      attempt: (hop) => {
+        current = hop;
+        const client = hop.index === 0 ? client0 : anthropicClientFor(hop.resolved, { surface: 'script_review_verdict', orgId: job.orgId });
+        // No tools, one user turn, hard output cap, hard wall clock. `maxRetries: 0`
+        // because the SDK's own retry would silently double the wall clock and
+        // the spend for a call whose result is discarded on timeout anyway.
+        // Thinking/effort/betas come from the resolved wire params.
+        return createMessage(
+          client,
+          hop.resolved,
+          { max_tokens: SCRIPT_REVIEW_MAX_OUTPUT_TOKENS, system, messages: [{ role: 'user', content: user }] },
+          { signal: deadline, maxRetries: 0 },
+        );
+      },
+      settleFailedHop: settleZeroUsageHop({ orgId: job.orgId, userId: null, sessionId: null, agentRunId: null, sourceRef }),
+      isPreOutput: isPreOutputMessagesFailure,
+    }));
   } catch (error) {
+    if (error instanceof FailoverExhaustedError) {
+      // Every hop runWithFailover tried is already settled on its own reservation.
+      return failReview(
+        job,
+        error.stop === 'admission_denied' && error.admissionMessage
+          ? `Reviewer model call failed and its backup model was not admitted: ${error.admissionMessage}`
+          : `Reviewer model call failed on every configured model: ${errorMessage(dispatchCause(error.lastError))}`,
+        'failed',
+        { reservationId: error.lastHop.reservationId, model: error.lastHop.binding.wireModel },
+      );
+    }
     const cause = dispatchCause(error);
     const timedOut = isTimeoutError(cause);
     // A refused attempt that completed before its fallback threw was billed by
     // the provider: settle it. Nothing completed → settles at zero.
-    await settle(attemptsOf(error), true);
+    await settleOn(current, attemptsOf(error), true);
     return failReview(
       job,
       `Reviewer model call ${timedOut ? 'timed out' : 'failed'}: ${errorMessage(cause)}`,
       timedOut ? 'timeout' : 'failed',
-      { reservationId, model },
+      { reservationId: current.reservationId, model: current.binding.wireModel },
     );
   }
 
+  const servedReservationId = served.reservationId;
+  const servedModel = served.binding.wireModel;
+  const settle = (attempts: MessageAttempt[]) => settleOn(served, attempts);
   const resp = outcome.message;
-  const billed = messagesUsage(binding, outcome.attempts);
+  const billed = messagesUsage(served.binding, outcome.attempts);
   const inputTokens = billed.usage.reduce((n, u) => n + u.tokens.input, 0);
   const outputTokens = billed.usage.reduce((n, u) => n + u.tokens.output, 0);
   if (resp.stop_reason === 'refusal') {
     // Tokens were spent: settle them, then fail the review with the category
     // so the proposal shows why (§9.1a) instead of "no parseable verdict".
     await settle(outcome.attempts);
-    return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId, model, inputTokens, outputTokens });
+    return failReview(job, refusalHeadline(billed.outcome.refusalCategory), 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens });
   }
 
   const textBlock = resp.content.find((b) => b.type === 'text');
@@ -455,7 +506,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     const reason = !parsed
       ? 'Reviewer returned no parseable JSON verdict'
       : `Malformed reviewer verdict: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`;
-    return failReview(job, reason, 'failed', { reservationId, model, inputTokens, outputTokens, rawText });
+    return failReview(job, reason, 'failed', { reservationId: servedReservationId, model: servedModel, inputTokens, outputTokens, rawText });
   }
 
   const floored = applyReviewFloors(parsed.data, scan);
@@ -475,7 +526,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
           orgId: job.orgId,
           proposalId: job.proposalId,
           reviewerKind: 'model',
-          model,
+          model: servedModel,
           reviewerPromptVersion: REVIEWER_PROMPT_VERSION,
           status: 'completed',
           summary: floored.summary,
@@ -490,7 +541,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
           // Priced by settleInvocation against the reservation; the row keeps the
           // token counts, the reservation keeps the cents.
           costCents: null,
-          budgetReservationId: reservationId,
+          budgetReservationId: servedReservationId,
         })
         .returning();
       if (!row) throw new Error(`script-review: failed to insert model review row for proposal ${job.proposalId}`);
@@ -520,7 +571,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     await settle(outcome.attempts);
   } catch (error) {
     console.error('[scriptReview] budget settlement failed after the review committed', {
-      proposalId: job.proposalId, orgId: job.orgId, reservationId, inputTokens, outputTokens,
+      proposalId: job.proposalId, orgId: job.orgId, reservationId: servedReservationId, inputTokens, outputTokens,
     });
     captureException(new Error(safeErrorMessage(error)), undefined, {
       service: 'scriptReview', orgId: job.orgId,
@@ -536,7 +587,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
     resourceId: job.proposalId,
     details: {
       reviewId: reviewRow.id, riskTier: floored.riskTier, recommendedAction: floored.recommendedAction,
-      goalMatch: floored.goalMatch, model, inputTokens, outputTokens,
+      goalMatch: floored.goalMatch, model: servedModel, inputTokens, outputTokens,
     },
     result: 'success',
   });

@@ -116,6 +116,10 @@ export async function remapPartnerOfferings(
   const skip = opts.skipSurfaces?.length ? sql` AND surface NOT IN (${list(opts.skipSurfaces)})` : sql``;
   let assignments = 0, agents = 0, sessions = 0, offerings = 0;
   for (const [from, to] of mapping) {
+    // W09 (#7607): the fallback list is preserved verbatim (the W03 authority
+    // contract), even when the remap lands the default on an offering already
+    // in it: ai_model_assignments_fallback_shape_chk caps the list but allows
+    // that inert self-entry (the resolver's walk skips the primary).
     assignments += (await rows(sql`UPDATE ai_model_assignments SET
         default_offering_id = CASE WHEN default_offering_id = ${from}::uuid THEN ${to}::uuid ELSE default_offering_id END,
         permitted_offering_ids = array_replace(permitted_offering_ids, ${from}::uuid, ${to}::uuid),
@@ -244,6 +248,7 @@ async function repointPartnerDefault(partnerId: string, target: Target, oldModel
   const previous = await findOffering(partnerId, target, oldModel);
   if (!previous) return;
   const next = await ensureOffering(partnerId, target, newModel);
+  // W09: the fallback list is left as is (see remapPartnerOfferings).
   await db.execute(sql`UPDATE ai_model_assignments SET default_offering_id = ${next}::uuid, updated_at = now()
     WHERE partner_id = ${partnerId}::uuid AND org_id IS NULL AND role = 'default'
       AND surface IN (${list(DEFAULT_FOLLOWING_SURFACES)}) AND default_offering_id = ${previous}::uuid`);
