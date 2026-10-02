@@ -67,9 +67,11 @@ const codeToKey: Record<string, string> = {
  *                   the name must stay the physical key.
  *
  * Only ASCII letters are affected. Digits, punctuation, AltGr symbols and
- * non-Latin letters keep the physical key in both modes: their names map to
- * US-layout keys on the agent, and a produced char like "/" (Shift+7 on
- * QWERTZ) or "@" (AltGr+Q) has no single-key equivalent to send.
+ * non-Latin letters keep the physical key name in both modes, as before: a
+ * produced char like "/" (Shift+7 on QWERTZ) or "@" (AltGr+Q) has no
+ * single-key equivalent to send. (Punctuation names are still read through the
+ * remote layout on Windows/Linux, so e.g. German ö is not fixed here — that
+ * needs agent-side scancode injection.)
  */
 export type KeyNameMode = 'layout' | 'positional';
 

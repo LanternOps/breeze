@@ -143,7 +143,8 @@ describe('layout-aware letters (issue #7809)', () => {
   });
 
   it('ignores non-ASCII letters and keeps the physical key (e.g. Cyrillic)', () => {
-    // A Russian layout's "я" sits on KeyZ; the remote's own layout turns z back into я.
+    // A Russian layout's "я" sits on KeyZ. Unchanged from before: the name is
+    // the physical key, and what it produces is up to the remote layout.
     expect(mapKey(evt('KeyZ', 'я'), 'layout')).toBe('z');
   });
 
@@ -181,5 +182,12 @@ describe('resolveKeyUpName (issue #7809)', () => {
 
   it('maps normally when the key was not recorded as held', () => {
     expect(resolveKeyUpName(up('KeyY', 'z'), new Map(), 'layout')).toBe('z');
+    expect(resolveKeyUpName(up('KeyY', 'z'), new Map(), 'positional')).toBe('y');
+  });
+
+  it('falls through to mapping when the event has no code', () => {
+    const held = new Map([['KeyY', 'z']]);
+    expect(resolveKeyUpName(up('', 'q'), held, 'layout')).toBe('q');
+    expect(held.size).toBe(1);
   });
 });

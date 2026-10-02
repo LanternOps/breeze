@@ -17,15 +17,19 @@ describe('DesktopViewer layout-aware keys (issue #7809)', () => {
   });
 
   it('records the name sent on key_down per physical key', () => {
-    expect(source).toContain('heldKeyNameByCodeRef.current.set(ne.code, key);');
+    expect(source).toMatch(/heldKeyNameByCodeRef\.current\.set\(\s*ne\.code,\s*key\s*\)/);
   });
 
   it('releases the recorded name on key_up instead of re-mapping', () => {
     // Re-mapping on keyup can name a different key than the one pressed
     // (AltGr engaged while held), stranding the original down on the remote.
-    expect(source).toContain(
-      'let key = resolveKeyUpName(ne, heldKeyNameByCodeRef.current, keyNameMode);'
+    expect(source).toMatch(
+      /let key = resolveKeyUpName\(\s*ne,\s*heldKeyNameByCodeRef\.current,\s*keyNameMode\s*\)/
     );
+  });
+
+  it('keeps the Ctrl+V paste key positional (the branch is gated on physical KeyV)', () => {
+    expect(source).toContain("const pasteKey = mapKey(ne, 'positional');");
   });
 
   it('forgets recorded names when all keys are force-released', () => {
