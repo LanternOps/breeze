@@ -19,9 +19,8 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import {
   isRecord,
   isRedactedSecretMarker,
-  isSecretField,
-  MASKED_SECRET,
   preserveSecretFields,
+  redactProviderConfig,
   s3EndpointOriginChanged,
 } from '../../services/backupProviderConfigSecrets';
 import {
@@ -39,31 +38,6 @@ import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const configsRoutes = new Hono();
 
 const configIdParamSchema = z.object({ id: z.string().guid() });
-
-type JsonRecord = Record<string, unknown>;
-
-function redactProviderConfig(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redactProviderConfig);
-  }
-  if (!isRecord(value)) {
-    return value;
-  }
-
-  const redacted: JsonRecord = {};
-  for (const [key, nestedValue] of Object.entries(value)) {
-    if (isSecretField(key)) {
-      redacted[key] = {
-        redacted: true,
-        hasSecret: nestedValue !== null && nestedValue !== undefined && nestedValue !== '',
-        masked: MASKED_SECRET,
-      };
-    } else {
-      redacted[key] = redactProviderConfig(nestedValue);
-    }
-  }
-  return redacted;
-}
 
 function buildCapabilityState(
   checkedAt: string | null,

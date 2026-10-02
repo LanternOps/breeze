@@ -954,6 +954,65 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
   });
 });
 
+describe('manage_backup_configs refuses destination values in the stored encrypted format', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each(['create', 'update'] as const)('%s', async (action) => {
+    const { encryptSecret } = await import('./secretCrypto');
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action,
+        configId: BACKUP_CONFIG_ID,
+        name: 'S3 backup',
+        type: 'file',
+        provider: 's3',
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: encryptSecret('sealed-elsewhere'),
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/internal encrypted format/);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_backup_configs get masks every destination credential', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows whether each credential is set, never its value', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'AKIA-PLAIN',
+        secretKey: 'plain-secret',
+        sessionToken: 'plain-session',
+        secretAccessKey: 'plain-legacy-secret',
+      },
+    });
+    const output = await getBackupConfigsTool().handler({ action: 'get', configId: BACKUP_CONFIG_ID }, makeOrgAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.config.providerConfig.bucket).toBe('backups');
+    expect(parsed.config.providerConfig.sessionToken).toEqual({ redacted: true, hasSecret: true, masked: '********' });
+    expect(output).not.toMatch(/AKIA-PLAIN|plain-secret|plain-session|plain-legacy-secret/);
+  });
+});
+
 describe('manage_backup_configs storage key history', () => {
   const S3 = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
 

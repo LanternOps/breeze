@@ -469,6 +469,59 @@ describe('backup config routes', () => {
     });
   });
 
+  it('refuses a destination setting already in the stored encrypted format', async () => {
+    const { encryptSecret } = await import('../../services/secretCrypto');
+    const foreign = encryptSecret('sealed-elsewhere', { aad: 'psa_connections.credentials' });
+    const res = await app.request('/backup/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        name: 'S3 backups',
+        provider: 's3',
+        details: { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: foreign },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an update that puts an encrypted-format value into the destination', async () => {
+    const { encryptSecret } = await import('../../services/secretCrypto');
+    const foreign = encryptSecret('sealed-elsewhere');
+    const res = await app.request(`/backup/configs/${CONFIG_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ details: { secretKey: foreign } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('masks a destination read back through the sealed column exactly as before', async () => {
+    const { backupConfigs: realBackupConfigs } = await vi.importActual<typeof import('../../db/schema')>('../../db/schema');
+    const plain = {
+      bucket: 'backups',
+      region: 'us-east-1',
+      accessKey: 'AKIA-PLAINTEXT',
+      secretKey: 'secret-plaintext',
+      credentials: { token: 'nested-token-plaintext' },
+    };
+    const stored = realBackupConfigs.providerConfig.mapToDriverValue(plain);
+    expect(String(stored)).not.toContain('secret-plaintext');
+    const readBack = realBackupConfigs.providerConfig.mapFromDriverValue(stored as never);
+
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: plain })]));
+    const before = await (await app.request(`/backup/configs/${CONFIG_ID}`, { headers: { Authorization: 'Bearer token' } })).json();
+    selectMock.mockReturnValueOnce(chainMock([makeConfig({ providerConfig: readBack })]));
+    const after = await (await app.request(`/backup/configs/${CONFIG_ID}`, { headers: { Authorization: 'Bearer token' } })).json();
+
+    expect(after).toEqual(before);
+    expect(after.details.secretKey).toEqual({ redacted: true, hasSecret: true, masked: '********' });
+    expect(JSON.stringify(after)).not.toContain('plaintext');
+  });
+
   describe('storage key history', () => {
     it('records the key of a new S3 destination', async () => {
       insertMock.mockReturnValueOnce(chainMock([makeConfig()]));

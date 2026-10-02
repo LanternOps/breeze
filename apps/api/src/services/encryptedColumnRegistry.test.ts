@@ -207,6 +207,41 @@ describe('encryptedColumnRegistry', () => {
     expect(executor.execute).toHaveBeenCalledTimes(3);
   });
 
+  it('never overwrites a value that changed after it was read (compare-and-set), counting it as contended', async () => {
+    setEncryptionEnv({ APP_ENCRYPTION_KEY: 'current-key-material', APP_ENCRYPTION_KEY_ID: 'current' });
+    const rowId = '44444444-4444-4444-8444-444444444444';
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const dialect = new PgDialect();
+    const updates: Array<{ sql: string; params: unknown[] }> = [];
+    const executor = {
+      execute: vi.fn(async (query: any) => {
+        const call = executor.execute.mock.calls.length;
+        if (call === 1) return [{ present: true }];
+        if (call === 2) return [{ id: rowId, value: { bucket: 'b', password: 'plaintext-secret' } }];
+        if (call === 3) {
+          updates.push(dialect.sqlToQuery(query));
+          return []; // a concurrent save changed the row: the compare matched nothing
+        }
+        return [];
+      }),
+    };
+
+    const stats = await reencryptRegisteredSecrets({
+      dryRun: false,
+      executor,
+      registry: [{ table: 'backup_configs', column: 'provider_config', kind: 'json', description: 'test' }],
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.sql).toMatch(/"provider_config" = \$\d+::jsonb/);
+    expect(updates[0]!.params).toContain(JSON.stringify({ bucket: 'b', password: 'plaintext-secret' }));
+    expect(stats.changed).toBe(1);
+    expect(stats.updated).toBe(0);
+    expect(stats.contended).toBe(1);
+    expect(stats.errors).toEqual([]);
+  });
+
   describe('moved column keeps its AAD tag (#6379)', () => {
     it('notification channel config is registered on notification_channel_configs under the old notification_channels.config tag', () => {
       const spec = encryptedColumnRegistry.find((s) => s.table === 'notification_channel_configs' && s.column === 'config');
@@ -274,6 +309,7 @@ describe('encryptedColumnRegistry', () => {
           const call = executor.execute.mock.calls.length;
           if (call === 1) return [{ present: true }];
           if (call === 2) return [{ id: rowId, value: sealedOld }];
+          if (call === 3) return [{ updated: 1 }];
           return [];
         }),
       };
@@ -369,7 +405,7 @@ describe('encryptedColumnRegistry', () => {
           if (call === 2) return [{ id: rowId, value: sealedUnderOldKey }];
           if (call === 3) {
             updates.push(query);
-            return [];
+            return [{ updated: 1 }];
           }
           return [];
         }),
