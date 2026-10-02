@@ -54,7 +54,9 @@ the graph read's transaction after its `FOR SHARE` on `topology_site_state`:
   ≤8,192 asked-about addresses, ≤20,000 inventory pairs. Rows are filtered in SQL to the addresses
   that could matter (unplaced endpoints' inventory IPs and reported next hops). Any truncation —
   including the agent's own `omittedRowCount` — marks coverage `limited`; a missing row is never
-  absence.
+  absence. **Limited coverage decides nothing** (review fix, 2026-10-02): no `neighbor_seen` upgrade
+  and no gateway-MAC split, site-wide, because a dropped source or row could be the other candidate's
+  observer or the conflicting mapping. Corroborated gateway MACs are still displayed.
 
 **Placement policy (#7816):** an endpoint that would otherwise be unplaced keeps the unique-range
 rule; inside that one range it is placed `neighbor_seen` (method `neighbor_cache`, inferred/low) in

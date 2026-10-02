@@ -428,10 +428,33 @@ describe('neighbour-cache corroboration (#7816, #7817)', () => {
     expect(networks(twoLans.nodes).every((node) => !node.group!.conflict)).toBe(true);
   });
 
+  it('never resolves an ambiguity from truncated evidence: no upgrade and no gateway-MAC split while coverage is limited', () => {
+    // Candidate B's observer (n=3) fell past the read's source cap; only A's observer is visible.
+    const split: Observer[] = [{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' },
+      { n: 3, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }];
+    const capped = build(corroborated(split, { ...phone, caches: [cache(1, [{}])], limited: true }), { now: NOW });
+    expect(memberOf(capped.nodes, E(40))!.m).toMatchObject({ placement: 'address_match' });
+    expect(memberOf(capped.nodes, E(40))!.m.neighbor).toBeUndefined();
+    // A different source's own row truncation limits coverage just the same.
+    const truncated = build(corroborated(split, { ...phone, caches: [cache(1, [{}]), cache(2, [], { rowsTruncated: true })] }), { now: NOW });
+    expect(memberOf(truncated.nodes, E(40))!.m.placement).toBe('address_match');
+
+    // #7817: conflicting gateway MACs do not split a card while a conflicting (or bridging) row may be missing.
+    const observers: Observer[] = [1, 2].map((n) => ({ n, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }));
+    const macs = [cache(1, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01' }]), cache(2, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:02' }])];
+    expect(networks(build(corroborated(observers, { caches: macs }), { now: NOW }).nodes)).toHaveLength(2);
+    const limitedSplit = build(corroborated(observers, { caches: macs, limited: true }), { now: NOW });
+    expect(networks(limitedSplit.nodes)).toHaveLength(1);
+    expect(networks(limitedSplit.nodes)[0]!.group).toMatchObject({ conflict: false, neighborCoverage: 'limited' });
+    // The corroborated MACs are still shown on the gateway: display, not a decision.
+    expect(gateways(limitedSplit.nodes)[0]!.group!.gatewayMacs!.map((g) => g.mac)).toEqual(['00:00:5e:00:01:01', '00:00:5e:00:01:02']);
+  });
+
   it('reports limited neighbour coverage and keeps the #7762 output unchanged without neighbour input', () => {
     const limited = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { ...phone, caches: [cache(1, [{}], { omittedRowCount: 9, outcome: 'partial' })] }), { now: NOW });
     expect(networks(limited.nodes)[0]!.group!.neighborCoverage).toBe('limited');
-    expect(memberOf(limited.nodes, E(40))!.m.placement).toBe('neighbor_seen');
+    // Truncated evidence may be hiding a conflicting row or observer: never an upgrade.
+    expect(memberOf(limited.nodes, E(40))!.m.placement).toBe('address_match');
     const plain = build(lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { unplaced: phone.unplaced }));
     expect(networks(plain.nodes)[0]!.group!.neighborCoverage).toBeUndefined();
     expect(gateways(plain.nodes)[0]!.group!.gatewayMacs).toBeUndefined();

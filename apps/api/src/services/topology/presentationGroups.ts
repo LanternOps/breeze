@@ -124,6 +124,10 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   }
   const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, options.now ?? new Date()) : null;
   const neighborCoverage = evidence ? (evidence.coverage === 'limited' || input.inventoryPairsTruncated ? 'limited' as const : 'complete' as const) : undefined;
+  // Only complete evidence may DECIDE anything (an upgrade or a split): a truncated read can be
+  // missing exactly the conflicting row or the other candidate's observer. Site-wide, because a
+  // source past the read's cap could belong to any range. Limited evidence is still displayed.
+  const decisive = neighborCoverage === 'complete' ? evidence : null;
   const lanCount = new Map<string, number>();
   for (const m of memberships) if (m.networkClass === 'lan') lanCount.set(`${m.endpointId}|${m.family}`, (lanCount.get(`${m.endpointId}|${m.family}`) ?? 0) + 1);
 
@@ -150,7 +154,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   //     and nothing here merges or splits canonical gateway identities.
   function gatewayMacSuffixes(rows: Membership[], preliminary: Map<string, [string, string[]]>): Map<string, string> {
     const suffixes = new Map<string, string>();
-    if (!evidence) return suffixes;
+    if (!decisive) return suffixes;
     const byKey = new Map<string, Membership[]>();
     for (const m of rows) byKey.set(preliminary.get(m.id)![0], [...(byKey.get(preliminary.get(m.id)![0]) ?? []), m]);
     for (const group of byKey.values()) {
@@ -161,7 +165,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
         const ambiguous = new Set<string>();
         for (const route of matched.get(m.id) ?? []) {
           if (!route.fresh || linkLocalAddress(route.address)) continue;
-          const mac = gatewayMac(evidence, route)?.mac;
+          const mac = gatewayMac(decisive, route)?.mac;
           if (!mac) continue;
           if (own.has(route.address) && own.get(route.address) !== mac) ambiguous.add(route.address);
           own.set(route.address, mac);
@@ -267,13 +271,13 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     observerMemberships.set(key, [...(observerMemberships.get(key) ?? []), m]);
   }
   function corroboratingCandidate(endpointId: string, inRange: Candidate[]): { candidate: Candidate; tuple: NeighborTuple } | null {
-    if (!evidence) return null;
+    if (!decisive) return null;
     const { prefix, family } = inRange[0]!;
     const allowed = new Set(inRange.map((candidate) => candidate.key));
     const matches = new Map<string, NeighborTuple[]>();
     for (const pair of pairsByEndpoint.get(endpointId) ?? []) {
       if (!cidrContains(prefix, pair.address) || pairOwners.get(`${pair.key}|${pair.mac}`)!.size !== 1) continue;
-      for (const tuple of evidence.byAddress.get(pair.key) ?? []) {
+      for (const tuple of decisive.byAddress.get(pair.key) ?? []) {
         if (tuple.linkLocal || tuple.networkClass !== 'lan' || tuple.family !== family || tuple.prefix !== prefix) continue;
         // The same address mapped to another MAC by any in-range cache: ambiguous, never corroborated.
         if (tuple.mac !== pair.mac) return null;
