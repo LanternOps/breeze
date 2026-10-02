@@ -7,7 +7,7 @@ import (
 )
 
 func TestStripControlAlsoRemovesBidiOverrideAndIsolateCharacters(t *testing.T) {
-	in := "a‪b‫c‬d‭e‮f⁦g⁧h⁨i⁩j\x00k\x7fl\nm"
+	in := "a\u202ab\u202bc\u202cd\u202de\u202ef\u2066g\u2067h\u2068i\u2069j\x00k\x7fl\nm"
 	if got := stripControl(in); got != "abcdefghijklm" {
 		t.Fatalf("stripControl = %q", got)
 	}
@@ -21,8 +21,8 @@ func TestTrimNotifyFieldNeverSplitsACharacter(t *testing.T) {
 }
 
 func TestDisplayNameWithinShortensRuneSafeAndSanitises(t *testing.T) {
-	got := DisplayNameWithin("‮Ä"+strings.Repeat("Ä", 100), 11)
-	if !utf8.ValidString(got) || len(got) > 11 || strings.ContainsRune(got, '‮') {
+	got := DisplayNameWithin("\u202eÄ"+strings.Repeat("Ä", 100), 11)
+	if !utf8.ValidString(got) || len(got) > 11 || strings.ContainsRune(got, '\u202e') {
 		t.Fatalf("DisplayNameWithin = %q (%d bytes)", got, len(got))
 	}
 	if got := DisplayNameWithin("  Billy  ", 50); got != "Billy" {

@@ -289,7 +289,7 @@ func TestSupportIndicatorShortensALongViewerNameNotTheSentence(t *testing.T) {
 // server-supplied name are removed from both the pill and the console line,
 // so the name cannot reorder or hide the rest of the text.
 func TestSupportIndicatorStripsControlAndBidiCharactersFromTheViewerName(t *testing.T) {
-	f := &fakeIndicatorUI{active: true, viewer: "Bil‮ly\x1b[31m⁦ from⁩ Olive\r\nTech"}
+	f := &fakeIndicatorUI{active: true, viewer: "Bil\u202ely\x1b[31m\u2066 from\u2069 Olive\r\nTech"}
 	ind := newTestIndicator(f)
 	ind.reconcile()
 	shows, _, console := f.snapshot()
