@@ -129,6 +129,16 @@ describe('generateAiUsageByClientReport', () => {
     expect(s.notes.join(' ')).toMatch(/Breeze cost.*not the amount charged/i);
   });
 
+  it('says unbilled also holds amounts that will never be invoiced (rounded to zero, older than the lookback)', async () => {
+    respond();
+    const s = summaryOf(await generateAiUsageByClientReport(orgScope, AUGUST, orgAuthority));
+    const billed = s.notes.find((n) => n.startsWith('Billed means'));
+    expect(billed).toMatch(/Unbilled covers charges not yet invoiced and usage not yet aggregated into a charge/);
+    expect(billed).toMatch(/rounded to zero/);
+    expect(billed).toMatch(/older than the 92-day billing lookback/);
+    expect(billed).toMatch(/will not be invoiced/);
+  });
+
   it('an unusable owner timezone resolves in UTC and says so (logged, noted)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     ctx.timeZone = 'Mars/Olympus';

@@ -10,6 +10,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
+import { CHARGEBACK_LOOKBACK_DAYS } from '../aiChargeback/chargePeriods';
 import { aiUsageByClientConfigSchema, type AiUsageByClientConfig } from '../reportConfigSchemas';
 import type { ReportResult } from '../reportGenerationService';
 import { reportTypeDef } from '../reportRegistry';
@@ -41,7 +42,9 @@ import { resolveReportOwnerTimezone, resolveReportPeriod, type ResolvedReportPer
  *  - Billed vs unbilled: the claim (`ai_usage_charge_claims.invocation_id ->
  *    charge_id`) joins to `ai_usage_charges.billing_status`. Billed =
  *    'billed'; everything else, including usage not yet aggregated into a
- *    charge, is unbilled.
+ *    charge, is unbilled — which also holds amounts that will never be
+ *    invoiced (a 'no_charge' charge that rounded to zero, usage older than the
+ *    billing lookback). BILLED_NOTE says so on the report.
  *
  * Tenancy: every statement runs inside ONE `runInReportScope` and carries the
  * predicate built by `invocationScopePredicate` (explicit org allowlist /
@@ -62,7 +65,8 @@ const PER_CURRENCY_NOTE =
 const ROUNDING_NOTE =
   'Each chargeable amount is summed exactly and rounded once to its currency\'s minor unit, so a row can differ from the sum of its parts by one minor unit.';
 const BILLED_NOTE =
-  'Billed means the usage sits in a monthly charge on an issued invoice. Unbilled covers charges not yet invoiced and usage not yet aggregated into a charge.';
+  'Billed means the usage sits in a monthly charge on an issued invoice. Unbilled covers charges not yet invoiced and usage not yet aggregated into a charge. '
+  + `It also includes charges that rounded to zero and usage older than the ${CHARGEBACK_LOOKBACK_DAYS}-day billing lookback, which will not be invoiced.`;
 
 const utcMonthNote = (timeZone: string) =>
   `Charges bill by UTC calendar month of the ledger write; this report's period is in ${timeZone} so month-edge rows can differ from the invoice.`;
