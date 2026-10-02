@@ -21,12 +21,12 @@ describe('W1 public foundation contract', () => {
   });
   it('has all six ordered migration slots and no migration-level transaction wrapper', () => {
     const names = [
-      '2026-12-02-100000-autopay-enums.sql',
-      '2026-12-02-100100-billing-payment-settings.sql',
-      '2026-12-02-100200-org-autopay-enrollments-methods-consents.sql',
-      '2026-12-02-100300-invoice-autopay-schedules-attempts.sql',
-      '2026-12-02-100400-billing-notice-outbox-link-tokens.sql',
-      '2026-12-02-100500-autopay-column-additions.sql',
+      '2026-12-03-110000-autopay-enums.sql',
+      '2026-12-03-110100-billing-payment-settings.sql',
+      '2026-12-03-110200-org-autopay-enrollments-methods-consents.sql',
+      '2026-12-03-110300-invoice-autopay-schedules-attempts.sql',
+      '2026-12-03-110400-billing-notice-outbox-link-tokens.sql',
+      '2026-12-03-110500-autopay-column-additions.sql',
     ];
     for (const name of names) {
       const file = new URL(`../../../migrations/${name}`, import.meta.url);

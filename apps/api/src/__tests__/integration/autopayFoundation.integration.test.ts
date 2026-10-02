@@ -39,7 +39,7 @@ async function state(work: () => Promise<unknown>) {
 }
 describe('autopay foundation PostgreSQL contracts', () => {
   run('replays the five creating migrations without changing their schema', async()=>{
-    for (const name of ['2026-12-02-100000-autopay-enums.sql','2026-12-02-100100-billing-payment-settings.sql','2026-12-02-100200-org-autopay-enrollments-methods-consents.sql','2026-12-02-100300-invoice-autopay-schedules-attempts.sql','2026-12-02-100400-billing-notice-outbox-link-tokens.sql']) {
+    for (const name of ['2026-12-03-110000-autopay-enums.sql','2026-12-03-110100-billing-payment-settings.sql','2026-12-03-110200-org-autopay-enrollments-methods-consents.sql','2026-12-03-110300-invoice-autopay-schedules-attempts.sql','2026-12-03-110400-billing-notice-outbox-link-tokens.sql']) {
       const body=readFileSync(join(__dirname,'../../../migrations',name),'utf8');
       for(let n=0;n<2;n++) await admin.begin(async tx=>{ await tx.unsafe(body); });
     }
