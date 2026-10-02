@@ -433,6 +433,46 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     );
   });
 
+  it('subscribes to the session events BEFORE the turn is pushed: a transport that answers at once still reaches the client', async () => {
+    // The real SessionEventBus has no replay: an event published while nobody
+    // is subscribed is gone. Model a transport fast enough to publish the
+    // whole turn synchronously when the message is pushed.
+    const subscribers = new Map<string, Array<{ type: string; message?: string }>>();
+    const waiters = new Map<string, () => void>();
+    const bus = {
+      subscribe: vi.fn((id: string) => {
+        subscribers.set(id, []);
+        return (async function* () {
+          for (;;) {
+            const queue = subscribers.get(id)!;
+            while (queue.length) {
+              const event = queue.shift()!;
+              yield event;
+              if (event.type === 'done') return;
+            }
+            await new Promise<void>((resolve) => { waiters.set(id, resolve); });
+          }
+        })();
+      }),
+      unsubscribe: vi.fn((id: string) => { subscribers.delete(id); }),
+      publish: vi.fn((event: { type: string; message?: string }) => {
+        for (const [id, queue] of subscribers) { queue.push(event); waiters.get(id)?.(); }
+      }),
+    };
+    const active = makeActiveSession();
+    active.eventBus = bus;
+    active.inputController.pushMessage = vi.fn(() => {
+      bus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      bus.publish({ type: 'done' });
+    });
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
+    const res = await postWithModel(app);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('The topology explanation could not be completed.');
+    expect(bus.unsubscribe).toHaveBeenCalled();
+  });
+
   it('GET /sessions/:id returns the persisted lastTurnModel (W05)', async () => {
     const lastTurnModel = { requestedModel: 'claude-opus-5-5', requestedDisplayName: 'Opus 5.5', servedModel: 'claude-opus-4-8', servedDisplayName: 'Claude Opus 4.8', fallbackUsed: true, appliedOptions: {}, fastDowngraded: false };
     vi.mocked(getSessionMessages).mockResolvedValueOnce({ session: { ...DB_SESSION, lastTurnModel }, messages: [] } as never);

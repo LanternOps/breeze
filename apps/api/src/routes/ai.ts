@@ -996,8 +996,10 @@ aiRoutes.post(
     const budgetDispatch = budgetDispatchFrom(reservation)!;
 
     type ActiveChatSession = Awaited<ReturnType<typeof streamingSessionManager.getOrCreate>>;
+    const subscriptionId = crypto.randomUUID();
+    let subscribedSession: ActiveChatSession | null = null;
     const dispatch = await inRequestDb(async (): Promise<
-      | { kind: 'dispatched'; activeSession: ActiveChatSession }
+      | { kind: 'dispatched'; activeSession: ActiveChatSession; events: ReturnType<ActiveChatSession['eventBus']['subscribe']> }
       | { kind: 'refused'; response: Response }
       | { kind: 'failed'; error: unknown }
     > => {
@@ -1091,11 +1093,21 @@ aiRoutes.post(
       const turnContent = topology
         ? topology.prompt
         : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
+      // Subscribe BEFORE the turn is pushed: the session event bus has no
+      // replay, and a fast transport can publish the turn's events (even its
+      // error and done) before the SSE callback below would run.
+      const events = activeSession.eventBus.subscribe(subscriptionId);
+      subscribedSession = activeSession;
       activeSession.inputController.pushMessage(
         pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
       );
       streamingSessionManager.startTurnTimeout(activeSession);
-      return { kind: 'dispatched', activeSession };
+      return { kind: 'dispatched', activeSession, events };
+    }).catch((err: unknown) => {
+      // The dispatch context failed after subscribing (e.g. its commit): drop
+      // the subscription so the bus doesn't keep a dead queue.
+      subscribedSession?.eventBus.unsubscribe(subscriptionId);
+      throw err;
     });
     if (dispatch.kind !== 'dispatched') {
       // Released only after the dispatch context has closed, so the release's
@@ -1105,12 +1117,9 @@ aiRoutes.post(
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }
-    const { activeSession } = dispatch;
-
-    const subscriptionId = crypto.randomUUID();
+    const { activeSession, events } = dispatch;
 
     return streamSSE(c, async (stream) => {
-      const events = activeSession.eventBus.subscribe(subscriptionId);
 
       try {
         for await (const event of events) {
