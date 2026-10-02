@@ -149,6 +149,13 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     }
 
     await page.waitForURL('/', { timeout: 30_000 });
+    // The '/' page bootstraps with its own POST /auth/refresh (MPA), which
+    // rotates the login's refresh token. Snapshotting or closing the context
+    // while that call is in flight leaves the saved cookie already-rotated
+    // with the new one lost (aborted response): every later replay gets
+    // 401 refresh_raced and, past the 15 s grace, trips family revocation.
+    // Let the page go idle so the snapshot holds the post-rotation cookie.
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined);
     await ctx.storageState({ path: statePath });
   } finally {
     await ctx.close();
