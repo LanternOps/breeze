@@ -60,7 +60,7 @@ describe('byoEndpointPolicy', () => {
 
   it('the rejection message never echoes resolved IPs (no internal topology in errors)', async () => {
     resolveTo('10.1.2.3');
-    const err = await validateByoBaseUrl('https://x.example.com').catch((e) => e as Error);
+    const err = (await validateByoBaseUrl('https://x.example.com').catch((e: unknown) => e)) as Error;
     expect(String(err.message)).not.toContain('10.1.2.3');
   });
 

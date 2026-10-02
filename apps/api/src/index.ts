@@ -297,6 +297,7 @@ import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/auditService';
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
+import { closeModelGateway } from './services/aiModels/gateway/server';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
@@ -1387,6 +1388,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         // subscribers. A leaked one keeps the process alive past SIGTERM, which
         // is how a rolling deploy turns into a stuck pod.
         shutdownChatRunBridge,
+        // W06: the loopback model gateway — revokes every grant (aborting in-flight
+        // upstream calls) once the workers that hold them have settled.
+        closeModelGateway,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,

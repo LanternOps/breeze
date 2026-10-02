@@ -96,7 +96,7 @@ describe('llm_egress_events schema contracts', () => {
     for (const surface of [
       'one_shot_token_count',
       'one_shot_continuation_summary',
-    ] as LlmEgressSurface[]) {
+    ] as unknown as LlmEgressSurface[]) {
       await withSystemDbAccessContext(() =>
         db.insert(llmEgressEvents).values({
           orgId: org.id,
