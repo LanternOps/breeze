@@ -147,6 +147,11 @@ export interface Draft {
    *  merge semantics as `anomalyEnabled` (never itself surfaced on this
    *  form). See `AiAgentTriggers.ticketAutonomousWrites`'s docstring. */
   ticketAutonomousWrites: boolean;
+  /** W05: the policy model, by registry offering. null = follow the
+   *  `ai_agents` default. */
+  offeringId: string | null;
+  /** Update sends offeringId only when the user changed it. */
+  offeringIdTouched: boolean;
 }
 
 export function draftFrom(
@@ -191,6 +196,8 @@ export function draftFrom(
     supervisedActionKeys: agent?.actAssets?.supervisedActionKeys ?? [],
     scriptIds: agent?.actAssets?.scriptIds ?? [],
     ticketAutonomousWrites: agent?.triggers?.ticketAutonomousWrites ?? false,
+    offeringId: agent?.offeringId ?? null,
+    offeringIdTouched: false,
   };
 }
 
@@ -319,6 +326,15 @@ export function buildAgentSaveBody(
       scriptIds: draft.scriptIds,
     },
   };
+
+  // W05: the policy model, by offering. Create: only a real choice (null =
+  // follow the ai_agents default, the server's default). Update: only when
+  // the user changed it - an unrelated edit must never re-bind (and
+  // re-permission-check) the model.
+  const modelPart = opts.isCreate
+    ? (draft.offeringId ? { offeringId: draft.offeringId } : {})
+    : (draft.offeringIdTouched ? { offeringId: draft.offeringId } : {});
+  Object.assign(policy, modelPart);
 
   if (!opts.isCreate) return policy;
 

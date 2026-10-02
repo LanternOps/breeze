@@ -34,6 +34,12 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (sel?: (s: typeof orgState.current) => unknown) => (sel ? sel(orgState.current) : orgState.current),
 }));
 
+vi.mock('./aiAgents/AgentModelSelect', () => ({
+  default: ({ onChange }: { onChange: (id: string | null) => void }) => (
+    <button type="button" data-testid="ai-agent-model" onClick={() => onChange('opus')}>stub</button>
+  ),
+}));
+
 import { type AgentToolCatalogDto } from '@breeze/shared';
 import AiAgentForm, { type AiAgentDto } from './AiAgentForm';
 import { fetchWithAuth } from '../../stores/auth';
@@ -707,5 +713,24 @@ describe('AiAgentForm — disable confirmation', () => {
     expect(dialog).not.toBeNull();
     expect((dialog as HTMLElement).innerHTML).toContain('bg-warning/10');
     expect((dialog as HTMLElement).innerHTML).not.toContain('bg-destructive/10');
+  });
+});
+
+describe('AiAgentForm — model select (W05)', () => {
+  const patched = () => fetchMock.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH');
+  it('an untouched save never sends offeringId', async () => {
+    mockEndpoints();
+    renderForm();
+    fireEvent.click(await screen.findByTestId('ai-agent-save'));
+    await waitFor(() => expect(patched()).toBe(true));
+    expect(writeBody()).not.toHaveProperty('offeringId');
+  });
+  it('renders the model select; a change is sent as offeringId', async () => {
+    mockEndpoints();
+    renderForm();
+    fireEvent.click(await screen.findByTestId('ai-agent-model'));
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() => expect(patched()).toBe(true));
+    expect(writeBody()).toMatchObject({ offeringId: 'opus' });
   });
 });

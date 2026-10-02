@@ -1,6 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AiAgentDto } from '@breeze/shared';
+vi.mock('../AgentModelSelect', () => ({
+  default: ({ onChange }: { onChange: (id: string | null) => void }) => (
+    <button type="button" data-testid="ai-agent-model" onClick={() => onChange('opus')}>stub</button>
+  ),
+}));
+
 import PurposeStep from './PurposeStep';
 import { draftFrom, type Draft } from '../agentDraft';
 
@@ -67,5 +73,13 @@ describe('PurposeStep — Fleet Designer (W01)', () => {
     const { patch } = setup({ kind: 'triage', mode: 'shadow', ownerScope: 'partner' });
     fireEvent.click(screen.getByTestId('ai-agent-kind-card-patch'));
     expect(patch).toHaveBeenCalledWith({ kind: 'patch' });
+  });
+});
+
+describe('PurposeStep — model select (W05)', () => {
+  it('renders the model select and a change marks offeringId touched', () => {
+    const { patch } = setup();
+    fireEvent.click(screen.getByTestId('ai-agent-model'));
+    expect(patch).toHaveBeenCalledWith({ offeringId: 'opus', offeringIdTouched: true });
   });
 });
