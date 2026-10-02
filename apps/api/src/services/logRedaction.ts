@@ -37,7 +37,7 @@ const SECRET_MATERIAL_KEY_PATTERN =
  * value, e.g. `clientIdEncrypted`; a bare `encrypted` flag is not one). Anchored at the end of the
  * key so a reference TO a key (`encryptionKeyId`, `encryptionKeyVersion`)
  * survives. Tool output only — see `toolOutputFieldPolicy`. The encrypted-column
- * registry contract in aiToolOutput.redaction.test.ts keeps this in step with
+ * registry contract in aiToolOutput.encryptedColumns.test.ts keeps this in step with
  * services/encryptedColumnRegistry.ts.
  */
 const KEY_MATERIAL_KEY_PATTERN =
