@@ -560,6 +560,14 @@ describe('organization routes', () => {
               groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 1 }])
             })
           })
+        } as any)
+        // Per-site removed (decommissioned) device-count query (#7471).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([])
+            })
+          })
         } as any);
 
       const res = await app.request(`/orgs/sites?orgId=${orgId}&page=1&limit=50`, {
@@ -694,7 +702,9 @@ describe('organization routes', () => {
         return next();
       });
 
-      vi.mocked(db.select).mockReturnValue({
+      // Default: `.from().where().limit()` chain (site lookup + holding-org probe);
+      // the in-transaction device guard (no `.limit()`) is queued last below.
+      const limitChain = {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
@@ -702,7 +712,16 @@ describe('organization routes', () => {
             ])
           })
         })
-      } as any);
+      } as any;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(limitChain)
+        .mockReturnValueOnce(limitChain)
+        // In-transaction device guard (#7471): no devices (active or removed) on the site.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ removed: 0, other: 0 }])
+          })
+        } as any);
 
       siteDelete.calls.length = 0;
       siteDelete.lockSiteForDelete.mockImplementation(async () => { siteDelete.calls.push('lock'); return true; });
