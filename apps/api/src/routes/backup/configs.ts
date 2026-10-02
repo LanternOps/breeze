@@ -10,6 +10,7 @@ import { createGuardedS3Client } from '../../services/guardedS3Client';
 import { assertSafeUrl, SsrfBlockedError } from '../../services/urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { db, withDbTransaction } from '../../db';
+import { isPgForeignKeyViolation } from '../../utils/pgErrors';
 import { backupConfigs, backupSnapshots } from '../../db/schema';
 import { normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
@@ -36,6 +37,18 @@ import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, valid
 import { isHoldingOrg } from '../../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../../services/unassignedPool/orgType';
 export const configsRoutes = new Hono();
+
+const CONFIG_DELETE_BLOCKERS: Array<[constraint: string, what: string]> = [
+  ['backup_jobs_config_id_backup_configs_id_fk', 'backup job history'],
+  ['backup_snapshots_config_id_backup_configs_id_fk', 'snapshots'],
+  ['backup_policies_config_id_backup_configs_id_fk', 'backup policies'],
+];
+
+function describeConfigDeleteBlocker(err: unknown): string {
+  const hit = CONFIG_DELETE_BLOCKERS.find(([constraint]) => isPgForeignKeyViolation(err, constraint));
+  const what = hit ? hit[1] : 'other records (such as backup history, snapshots or policies)';
+  return `This destination can't be deleted because it still has ${what}. Disable it instead, or remove the dependent records first.`;
+}
 
 const configIdParamSchema = z.object({ id: z.string().guid() });
 
@@ -552,20 +565,31 @@ configsRoutes.delete(
   if (!existing) {
     return c.json({ error: 'Config not found' }, 404);
   }
-  const [deleted] = await withDbTransaction(async () => {
-    // The destination's key stays listed (with its settings sealed, so it can
-    // still be checked) until there is evidence it was disabled.
-    await recordCredentialChange({
-      orgId,
-      configId: existing.id,
-      previous: { provider: existing.provider, providerConfig: existing.providerConfig },
-      next: null,
+  let deleted: typeof existing | undefined;
+  try {
+    [deleted] = await withDbTransaction(async () => {
+      // The destination's key stays listed (with its settings sealed, so it can
+      // still be checked) until there is evidence it was disabled.
+      await recordCredentialChange({
+        orgId,
+        configId: existing.id,
+        previous: { provider: existing.provider, providerConfig: existing.providerConfig },
+        next: null,
+      });
+      return db
+        .delete(backupConfigs)
+        .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
+        .returning();
     });
-    return db
-      .delete(backupConfigs)
-      .where(and(eq(backupConfigs.id, configId), eq(backupConfigs.orgId, orgId)))
-      .returning();
-  });
+  } catch (err) {
+    // Jobs, snapshots and policies keep NO ACTION FKs to the destination:
+    // history (and the objects it tracks in storage) must not be silently
+    // destroyed. The savepoint above has rolled back, so nothing was recorded.
+    if (isPgForeignKeyViolation(err)) {
+      return c.json({ error: describeConfigDeleteBlocker(err) }, 409);
+    }
+    throw err;
+  }
 
   if (!deleted) {
     return c.json({ error: 'Config not found' }, 404);
