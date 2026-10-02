@@ -28,19 +28,30 @@ function clientFor(models = ['qwen']) {
   return new Anthropic({ baseURL: g.baseUrl, apiKey: GATEWAY_PLACEHOLDER_KEY, maxRetries: 0 });
 }
 
-const tools = [{ name: 'get_weather', description: 'w', input_schema: { type: 'object' as const, properties: { city: { type: 'string' } } } }];
+const tools = [{ name: 'mcp__breeze__get_weather', description: 'w', input_schema: { type: 'object' as const, properties: { city: { type: 'string' } } } }];
+const toolCall = (name: string) => Response.json({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null,
+  tool_calls: [{ id: 'call_1', type: 'function', function: { name, arguments: '{"city":"Oslo"}' } }] } }],
+  usage: { prompt_tokens: 20, completion_tokens: 5 } });
 
 describe('openai_compatible adapter (real Anthropic client through the gateway)', () => {
-  it('buffered tool round trip', async () => {
-    reply = () => Response.json({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null,
-      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] } }],
-      usage: { prompt_tokens: 20, completion_tokens: 5 } });
+  it('buffered tool round trip: the upstream sees only the alias, the caller gets its own tool name back (#7795)', async () => {
+    reply = (body) => toolCall((body.tools as Array<{ function: { name: string } }>)[0]!.function.name);
     const msg = await clientFor().messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'weather in Oslo?' }] });
     expect(lastUpstream!.url).toBe('https://llm.example.com/v1/chat/completions');
     expect(lastUpstream!.headers.authorization).toBe('Bearer sk-upstream-secret-1');
+    expect(JSON.stringify(lastUpstream!.body)).not.toContain('mcp__');
     expect(msg.stop_reason).toBe('tool_use');
-    expect(msg.content[0]).toMatchObject({ type: 'tool_use', name: 'get_weather', input: { city: 'Oslo' } });
+    expect(msg.content[0]).toMatchObject({ type: 'tool_use', name: 'mcp__breeze__get_weather', input: { city: 'Oslo' } });
     expect(msg.usage.input_tokens).toBe(20);
+  });
+
+  it('a tool call under the caller name (not the alias) or an unknown alias never becomes a tool_use', async () => {
+    for (const name of ['mcp__breeze__get_weather', 'get_weather', 't_1_get_weather', 't_0_other']) {
+      reply = () => toolCall(name);
+      const msg = await clientFor().messages.create({ model: 'qwen', max_tokens: 256, tools, messages: [{ role: 'user', content: 'weather in Oslo?' }] });
+      expect(msg.content.some((b) => b.type === 'tool_use')).toBe(false);
+      expect(msg.stop_reason).toBe('end_turn');
+    }
   });
 
   it('streamed text: final message carries the upstream usage', async () => {

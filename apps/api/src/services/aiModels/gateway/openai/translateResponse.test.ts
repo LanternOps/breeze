@@ -43,6 +43,18 @@ describe('translateChatResponse', () => {
     expect(ids[0]).toBe('call_1');
     expect(ids[1]).toMatch(/^toolu_gw_/);
   });
+  it('a refused batch is logged with its (neutralised) names, never silently swapped for the note (#7795 review)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [
+      { id: 'c', type: 'function', function: { name: 'mcp__breeze__query_devices', arguments: '{}' } },
+      { id: 'd', type: 'function', function: { name: 'get_weather', arguments: 'not json' } },
+    ] } }] }, ctx);
+    const line = warn.mock.calls.map((c) => c.map(String).join(' ')).find((l) => l.includes('refused'));
+    expect(line).toContain('2 tool call(s)');
+    expect(line).toContain('mcp__breeze__query_devices (not offered)');
+    expect(line).toContain('get_weather');
+    warn.mockRestore();
+  });
   it('unknown tool name never becomes tool_use', () => {
     const m = translateChatResponse({ choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: 'ok', tool_calls: [{ id: 'c', type: 'function', function: { name: 'delete_all_devices', arguments: '{}' } }] } }] }, ctx);
     expect(m.stop_reason).toBe('end_turn'); expect(m.content.some((b) => b.type === 'tool_use')).toBe(false);

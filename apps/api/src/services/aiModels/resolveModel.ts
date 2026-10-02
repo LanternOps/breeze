@@ -135,7 +135,8 @@ export function unavailableMessage(reason: ResolveFailureReason, displayName?: s
     case 'unpriced': return 'This AI model has no price set and cannot be used yet.';
     case 'connection_unavailable':
       return 'The AI provider connection for this model is unavailable. Reconnect it under AI Providers & Models.';
-    case 'tools_unsupported': return 'This AI model cannot use tools, which this feature needs.';
+    case 'tools_unsupported':
+      return 'This AI model cannot use tools, which this feature needs. An administrator can choose a model that supports tools under AI Providers & Models.';
     case 'no_eligible_model': return 'No AI model is available for this feature. Ask an administrator to enable one.';
     case 'registry_unavailable': return 'AI configuration is being upgraded. Try again in a moment.';
   }

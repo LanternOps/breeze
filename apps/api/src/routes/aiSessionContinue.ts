@@ -58,6 +58,7 @@ import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { turnBindingFrom } from '../services/aiModels/turnBinding';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { llmUnavailableBody } from '../services/llm/llmUnavailableError';
 
 /** The idempotency-key prefix of a continuation summary's reservation (never `chat:`). */
 export const CONTINUATION_KEY_PREFIX = 'continuation:';
@@ -99,7 +100,7 @@ export async function continueAiSession(
   } catch (err) {
     if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code, recoverable: true }, 409);
     if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
-    if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+    if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
     throw err;
   }
 
@@ -118,7 +119,7 @@ export async function continueAiSession(
   try {
     client = anthropicClientFor(summaryModel, { surface: 'one_shot_continuation_summary', orgId: session.orgId });
   } catch (err) {
-    if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+    if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
     throw err;
   }
   // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
@@ -222,7 +223,7 @@ export async function continueAiSession(
         org_id: session.orgId, ai_reservation_id: reservationId,
       });
     }
-    if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+    if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
     console.error('[AI] Continuation summary failed:', safeErrorMessage(err));
     captureException(err);
     return c.json({ error: 'Could not summarise this conversation. Try again, or start a new chat.' }, 502);

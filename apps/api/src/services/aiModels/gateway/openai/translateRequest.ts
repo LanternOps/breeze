@@ -50,9 +50,35 @@ const requestSchema = z.object({
   tool_choice: z.object({ type: z.enum(['auto', 'any', 'none', 'tool']), name: z.string().optional() }).passthrough().optional(),
 }).passthrough();
 
-const OAI_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-export function oaiToolName(name: string): string {
-  return OAI_NAME.test(name) ? name : `t_${createHash('sha256').update(name).digest('hex').slice(0, 10)}`;
+/** OpenAI's function-name rule. Every name the gateway puts on the wire satisfies it. */
+export const OAI_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const OAI_TOOL_NAME_MAX = 64;
+
+/**
+ * The wire name of the `index`-th offered tool (#7795). Every offered tool is
+ * aliased, legal name or not: Ollama's tool-call parser silently drops a call
+ * whose name starts with `mcp`, which is every Breeze tool
+ * (`mcp__<server>__<tool>`). The alias is `t_<index>_<tool>`: the `mcp__<server>__`
+ * prefix is dropped (the model still sees a meaningful name), anything outside
+ * `[A-Za-z0-9_-]` becomes `_`, and it is cut to OpenAI's 64 characters. The
+ * index makes aliases unique within a request by construction, whatever the
+ * caller names are; the per-request map (ToolNameMap) is the only way back.
+ */
+export function toolAlias(index: number, name: string): string {
+  const head = `t_${index}`;
+  const bare = name.startsWith('mcp__') && name.indexOf('__', 5) > 5 ? name.slice(name.indexOf('__', 5) + 2) : name;
+  const tail = bare.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+  if (tail === '') return head;
+  return `${head}_${tail}`.slice(0, OAI_TOOL_NAME_MAX);
+}
+
+/**
+ * Wire name for a history tool_use whose tool is not offered in THIS request.
+ * Deterministic and outside the alias namespace (`h_…`, never `t_<n>`), so it
+ * is in no fromOai map: a model that calls it back is refused.
+ */
+function historyToolName(name: string): string {
+  return `h_${createHash('sha256').update(name).digest('hex').slice(0, 16)}`;
 }
 
 function toolResultText(block: z.infer<typeof toolResultBlock>): string {
@@ -99,10 +125,11 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
   let tools: OaiTool[] | undefined;
   if (req.tools && req.tools.length > 0) {
     if (req.tools.length > GATEWAY_MAX_TOOLS) throw bad('Too many tools for one request.');
-    tools = req.tools.map((raw) => {
+    tools = req.tools.map((raw, index) => {
       const t = toolSchema.safeParse(raw);
       if (!t.success) throw bad(`Tool "${String(raw.name)}" is not supported on an OpenAI-compatible connection (server tools are not supported).`);
-      const name = oaiToolName(t.data.name);
+      if (toOai.has(t.data.name)) throw bad(`Duplicate tool name "${t.data.name}".`);
+      const name = toolAlias(index, t.data.name);
       toOai.set(t.data.name, name);
       fromOai.set(name, t.data.name);
       schemas.set(t.data.name, t.data.input_schema);
@@ -146,7 +173,7 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
       if (t.success) { text.push(t.data.text); continue; }
       const tu = toolUseBlock.safeParse(raw);
       if (tu.success) {
-        calls.push({ id: tu.data.id, type: 'function', function: { name: toOai.get(tu.data.name) ?? oaiToolName(tu.data.name), arguments: JSON.stringify(tu.data.input ?? {}) } });
+        calls.push({ id: tu.data.id, type: 'function', function: { name: toOai.get(tu.data.name) ?? historyToolName(tu.data.name), arguments: JSON.stringify(tu.data.input ?? {}) } });
         continue;
       }
       throw bad(`Content block type "${String(raw.type)}" is not supported on an OpenAI-compatible connection.`);
@@ -157,8 +184,13 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
   let tool_choice: OaiChatRequest['tool_choice'];
   if (req.tool_choice && tools) {
     const c = req.tool_choice;
-    tool_choice = c.type === 'auto' ? 'auto' : c.type === 'any' ? 'required' : c.type === 'none' ? 'none'
-      : { type: 'function', function: { name: toOai.get(c.name ?? '') ?? oaiToolName(c.name ?? '') } };
+    if (c.type === 'tool') {
+      const forced = toOai.get(c.name ?? '');
+      if (!forced) throw bad('tool_choice names a tool that is not offered in this request.');
+      tool_choice = { type: 'function', function: { name: forced } };
+    } else {
+      tool_choice = c.type === 'auto' ? 'auto' : c.type === 'any' ? 'required' : 'none';
+    }
   }
 
   const stream = req.stream === true;

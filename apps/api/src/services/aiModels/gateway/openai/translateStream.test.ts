@@ -26,6 +26,14 @@ describe('translateChatStream', () => {
     const deltas = ev.filter((e) => e.ev === 'content_block_delta'); expect(deltas).toHaveLength(1); expect(deltas[0]!.data.delta).toEqual({ type: 'input_json_delta', partial_json: '{"city":"Oslo"}' });
     expect(ev.find((e) => e.ev === 'message_delta')!.data.delta.stop_reason).toBe('tool_use');
   });
+  it('a refused batch is logged with the refused names, neutralised (#7795 review)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await run({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'mcp__breeze__x\n[evil] log', arguments: '{}' } }] }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }, '[DONE]');
+    const line = warn.mock.calls.map((c) => c.map(String).join(' ')).find((l) => l.includes('refused'));
+    expect(line).toContain('mcp__breeze__x__evil__log');
+    expect(line).not.toContain('\n');
+    warn.mockRestore();
+  });
   it('unknown tool name never becomes tool_use (stream)', async () => {
     const ev = await run({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'wipe_everything', arguments: '{}' } }] }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }, '[DONE]');
     expect(ev.some((e) => e.data.content_block?.type === 'tool_use')).toBe(false); expect(ev.some((e) => e.data.delta?.text === UNSAFE_TOOL_CALL_NOTE)).toBe(true); expect(ev.find((e) => e.ev === 'message_delta')!.data.delta.stop_reason).toBe('end_turn');

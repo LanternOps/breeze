@@ -1,8 +1,9 @@
 import { recordLlmEgressEvent } from '../../llm/llmEgressRecorder';
 import { ResponseHeadersTimeoutError, ResponseTooLargeError, safeFetch, SsrfBlockedError } from '../../urlSafety';
 import { byoEgressAllowances } from './byoEndpointPolicy';
+import { gatewayHeadersTimeoutMs, headersTimeoutMessage } from './deadlines';
+import { noteGatewayFailure } from './failureNotes';
 import {
-  GATEWAY_CONNECT_TIMEOUT_MS,
   GATEWAY_ERROR_TEXT_MAX,
   GATEWAY_IDLE_TIMEOUT_MS,
   GATEWAY_MAX_RESPONSE_BYTES,
@@ -198,6 +199,7 @@ export async function forwardUpstream(
   Object.assign(headers, upstreamAuthHeaders(grant));
 
   const allow = byoEgressAllowances();
+  const headersTimeoutMs = gatewayHeadersTimeoutMs();
   let resolvedIp: string | null = null;
   let res: Response;
   try {
@@ -213,10 +215,14 @@ export async function forwardUpstream(
       // safeFetch, so an abort-based deadline here would also cut off a slow
       // (but live) generation. The body is then bounded by the inactivity
       // timeout, the byte cap and the server's total timer (`signal`).
-      headersTimeoutMs: GATEWAY_CONNECT_TIMEOUT_MS,
+      // Longer on self-host, where a local server's prefill precedes its
+      // headers (deadlines.ts, #7794).
+      headersTimeoutMs,
       // safeFetch's timeoutMs is a SOCKET-INACTIVITY timeout (urlSafety.ts),
-      // so it is the stream idle limit, not a connect deadline.
-      timeoutMs: GATEWAY_IDLE_TIMEOUT_MS,
+      // so it is the stream idle limit, not a connect deadline. The socket is
+      // also silent while headers are pending, so the limit is never shorter
+      // than the headers deadline: it must not cut that wait short.
+      timeoutMs: Math.max(GATEWAY_IDLE_TIMEOUT_MS, headersTimeoutMs),
       allowPrivateNetwork: allow.allowPrivateNetwork,
       requirePrivateForCleartext: allow.requirePrivateForCleartext,
       maxBytes: req.maxBytes !== undefined && Number.isFinite(req.maxBytes) && req.maxBytes > 0
@@ -228,7 +234,11 @@ export async function forwardUpstream(
   } catch (error) {
     auditGatewayEgress(grant, target.hostname, resolvedIp, true);
     if (error instanceof ResponseHeadersTimeoutError && !signal.aborted) {
-      throw new GatewayError(504, 'api_error', 'upstream_timeout', 'The endpoint did not respond in time.');
+      // Never silent (#7794): the upstream's own logs were the only trace before.
+      const message = headersTimeoutMessage(headersTimeoutMs);
+      console.warn(`[modelGateway] upstream sent no response headers within the ${headersTimeoutMs} ms response-header deadline (${logIds(grant)}, purpose ${grant.purpose}); request aborted.`);
+      noteGatewayFailure(grant.aiSessionId, message);
+      throw new GatewayError(504, 'api_error', 'upstream_timeout', message);
     }
     if (error instanceof SsrfBlockedError) {
       throw new GatewayError(502, 'api_error', 'egress_blocked', 'The endpoint resolves to an address Breeze does not connect to.');

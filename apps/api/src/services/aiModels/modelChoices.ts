@@ -53,7 +53,7 @@ export async function listModelChoices(input: {
   current?: AiModelChoicesDto['current'];
 }): Promise<AiModelChoicesDto> {
   if (!(await ensurePartnerCutover(input.partnerId))) {
-    throw new LlmUnavailableError(unavailableMessage('registry_unavailable'));
+    throw new LlmUnavailableError(unavailableMessage('registry_unavailable'), 'registry_unavailable');
   }
   const assignment = await inSystem(() => getEffectiveAssignment({
     partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, role: 'default',

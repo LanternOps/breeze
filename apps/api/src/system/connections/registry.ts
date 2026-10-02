@@ -190,6 +190,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'ANTHROPIC_BASE_URL', secret: false },
       { name: 'ANTHROPIC_MODEL', secret: false },
       { name: 'AI_PLATFORM_INFERENCE_GEO', secret: false },
+      { name: 'AI_GATEWAY_HEADERS_TIMEOUT_SECONDS', secret: false },
     ],
   }),
   // W06: these no longer drive a separate chat runtime. When MCP_LLM_PROVIDER

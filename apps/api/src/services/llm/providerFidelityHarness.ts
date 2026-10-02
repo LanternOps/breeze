@@ -127,8 +127,14 @@ const DIRECT_REQUEST_TIMEOUT_MS = 60_000;
 const SDK_STAGE_TIMEOUT_MS = 150_000;
 const MAX_DETAIL_CHARS = 600;
 
+/**
+ * The direct stage offers the tool under the SAME name the Agent SDK exposes it
+ * as (`mcp__<server>__<tool>`), which is the shape of every Breeze tool. A
+ * server whose tool-call parser mishandles that shape (Ollama dropped it, #7795)
+ * must fail here instead of verifying on a bare name production never sends.
+ */
 const WEATHER_TOOL_SCHEMA = {
-  name: TOOL_NAME,
+  name: SDK_TOOL_NAME,
   description: TOOL_DESCRIPTION,
   input_schema: {
     type: 'object' as const,
@@ -322,6 +328,11 @@ async function runDirectStage(input: FidelityCheckInput, injected?: Anthropic): 
       model: input.providerModel,
       max_tokens: FIDELITY_HARNESS_MAX_TOKENS,
       tools: [WEATHER_TOOL_SCHEMA],
+      // A forced-tool probe: with exactly one tool offered, `any` requires a
+      // call to it. A capable server cannot answer with prose, so an answer
+      // without a tool_use means the server lost the call (#7795), not that the
+      // model chose not to call. The subprocess stage still covers unforced use.
+      tool_choice: { type: 'any' },
       messages: [userMessage],
     }) as { content?: unknown; stop_reason?: unknown };
   } catch (error) {
@@ -341,7 +352,7 @@ async function runDirectStage(input: FidelityCheckInput, injected?: Anthropic): 
       toolUse: {
         name: FIDELITY_STEP_NAMES.directToolUse,
         ok: false,
-        detail: `no tool_use block in the response (stop_reason=${String(first.stop_reason)})`,
+        detail: `no tool_use block in the response to a forced tool call (stop_reason=${String(first.stop_reason)})`,
       },
       toolResult: {
         name: FIDELITY_STEP_NAMES.directToolResult,
@@ -351,12 +362,12 @@ async function runDirectStage(input: FidelityCheckInput, injected?: Anthropic): 
     };
   }
 
-  if (block.name !== TOOL_NAME) {
+  if (block.name !== SDK_TOOL_NAME) {
     return {
       toolUse: {
         name: FIDELITY_STEP_NAMES.directToolUse,
         ok: false,
-        detail: `tool_use named '${block.name}', expected '${TOOL_NAME}'`,
+        detail: `tool_use named '${block.name}', expected '${SDK_TOOL_NAME}'`,
       },
       toolResult: {
         name: FIDELITY_STEP_NAMES.directToolResult,

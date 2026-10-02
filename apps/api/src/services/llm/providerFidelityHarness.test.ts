@@ -78,7 +78,7 @@ function toolUseReply(input: unknown) {
     stop_reason: 'tool_use',
     content: [
       { type: 'text', text: 'Let me check.' },
-      { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input },
+      { type: 'tool_use', id: 'toolu_1', name: 'mcp__fidelity__get_weather', input },
     ],
   };
 }
@@ -238,6 +238,46 @@ describe('runFidelityCheck', () => {
     expect(stepByName(result, FIDELITY_STEP_NAMES.directToolResult).ok).toBe(false);
     expect(stepByName(result, FIDELITY_STEP_NAMES.sdkSubprocess).ok).toBe(false);
     expect(sdkState.query).not.toHaveBeenCalled();
+  });
+
+  // #7795: the direct stage is a forced-tool probe on the production tool-name
+  // shape (mcp__<server>__<tool>), so a server that drops such calls cannot
+  // be verified by luck.
+  it('the first direct request forces a call to the mcp__-named tool; the follow-up does not force', async () => {
+    stageOkAnthropic();
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(true);
+    const [first, second] = anthropicState.create.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(first!.tools).toEqual([expect.objectContaining({ name: 'mcp__fidelity__get_weather' })]);
+    expect(first!.tool_choice).toEqual({ type: 'any' });
+    expect(second!.tools).toEqual([expect.objectContaining({ name: 'mcp__fidelity__get_weather' })]);
+    expect(second!.tool_choice).toBeUndefined();
+  });
+
+  it('fails when a server returns no tool call for the forced-tool probe (Ollama dropping mcp__ names, #7795)', async () => {
+    // What Ollama 0.35 returned: an empty assistant turn, no tool call.
+    anthropicState.create.mockResolvedValueOnce({ id: 'msg_1', stop_reason: 'end_turn', content: [] });
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(false);
+    expect(stepByName(result, FIDELITY_STEP_NAMES.directToolUse)).toMatchObject({
+      ok: false, detail: expect.stringMatching(/forced tool call/),
+    });
+    expect(sdkState.query).not.toHaveBeenCalled();
+  });
+
+  it('fails when the forced call names some other tool than the one offered', async () => {
+    anthropicState.create.mockResolvedValueOnce({
+      id: 'msg_1', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: { city: 'Berlin' } }],
+    });
+
+    const result = await runFidelityCheck(INPUT);
+
+    expect(result.passed).toBe(false);
+    expect(stepByName(result, FIDELITY_STEP_NAMES.directToolUse).detail).toMatch(/expected 'mcp__fidelity__get_weather'/);
   });
 
   it('fails the tool_use step when the tool input is malformed', async () => {

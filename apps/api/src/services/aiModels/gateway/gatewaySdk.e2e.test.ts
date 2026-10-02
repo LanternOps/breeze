@@ -42,15 +42,18 @@ function sseResponse(chunks: unknown[]): Response {
 beforeAll(async () => {
   await getModelGateway();
   __setUpstreamFetchForTests((async (_url: string, init: { body: string; headers: Record<string, string> }) => {
-    const body = JSON.parse(init.body) as { model: string; messages: Array<{ role: string; content?: unknown }>; tools?: unknown[]; stream: boolean };
+    const body = JSON.parse(init.body) as { model: string; messages: Array<{ role: string; content?: unknown }>; tools?: Array<{ function: { name: string } }>; stream: boolean };
     upstreamCalls.push(body);
     upstreamAuth.push(init.headers.authorization);
     const sawToolResult = body.messages.some((m) => m.role === 'tool');
     // OpenAI reports usage only in the final chunk (stream_options.include_usage).
     const usage = { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 40 } };
-    if (body.tools && !sawToolResult) {
+    // #7795: the upstream only ever sees per-request aliases (t_<n>_<tool>);
+    // a real server answers with the name it was offered.
+    const weatherAlias = body.tools?.map((t) => t.function.name).find((n) => /^t_\d+_get_weather$/.test(n));
+    if (weatherAlias && !sawToolResult) {
       return sseResponse([
-        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_w', type: 'function', function: { name: 'mcp__fidelity__get_weather', arguments: '{"city":"Oslo"}' } }] }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_w', type: 'function', function: { name: weatherAlias, arguments: '{"city":"Oslo"}' } }] }, finish_reason: null }] },
         { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
         { choices: [], usage },
       ]);
@@ -110,6 +113,10 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
     expect(upstreamCalls.length).toBeGreaterThanOrEqual(2);
     expect(new Set(upstreamCalls.map((c) => c.model))).toEqual(new Set([r.wireModel]));
     expect(new Set(upstreamAuth)).toEqual(new Set(['Bearer sk-fixture-upstream']));
+    // #7795: no Breeze/MCP tool name ever reached the upstream as a function name.
+    const wireToolNames = upstreamCalls.flatMap((c) => ((c as { tools?: Array<{ function: { name: string } }> }).tools ?? []).map((t) => t.function.name));
+    expect(wireToolNames.length).toBeGreaterThan(0);
+    for (const n of wireToolNames) expect(n).toMatch(/^t_\d+(_[A-Za-z0-9_-]+)?$/);
     // Billing basis (Review Focus 3): per call input 60 (100 − 40 cached), cache read 40, output 10.
     const modelUsage = result!.modelUsage as Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }>;
     expect(Object.keys(modelUsage)).toEqual([r.wireModel]);

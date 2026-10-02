@@ -1,7 +1,7 @@
 import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
 import { scrubSecrets } from '../scrub';
 import { encodeSse, parseSse } from './sse';
-import { mapFinish, resolveUsage, UNSAFE_TOOL_CALL_NOTE, validateToolCalls } from './translateResponse';
+import { describeRefusedToolCalls, mapFinish, resolveUsage, UNSAFE_TOOL_CALL_NOTE, validateToolCalls } from './translateResponse';
 import type { OaiChatChoice, OaiChatResponse, OaiUsage, ToolNameMap } from './types';
 
 interface PendingCall { id?: string; name?: string; arguments: string; bytes: number }
@@ -164,6 +164,7 @@ export async function* translateChatStream(
   }
   const toolUses = overLimit ? null : validateToolCalls(assembler.calls, ctx.tools);
   if (toolUses === null) {
+    warn('tool-call batch not emitted', overLimit ? 'refused: the stream exceeded its tool-call limits' : describeRefusedToolCalls(assembler.calls, ctx.tools));
     if (!textOpen) {
       yield encodeSse('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
       textOpen = true;

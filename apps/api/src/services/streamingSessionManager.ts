@@ -27,6 +27,7 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
+import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
@@ -1440,13 +1441,21 @@ export class StreamingSessionManager {
           // handlers and closes the SDK query. The next message rebuilds the
           // session from its row.
           session.topologyTurnSealed = true;
+          // A topology turn never shows gateway text; drop the note so a rebuilt session can't surface it later.
+          takeGatewayFailureNote(session.breezeSessionId);
           session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
           session.eventBus.publish({ type: 'done' });
           this.remove(session.breezeSessionId);
           return;
         }
         this.stopThinking(session);
-        session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
+        // #7794: a model-gateway failure behind the timeout (the CLI keeps
+        // retrying it) is the actionable part; say it.
+        const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
+        session.eventBus.publish({
+          type: 'error',
+          message: gatewayNote ? `AI request timed out. ${gatewayNote}` : 'AI request timed out. Please try again.',
+        });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
       }
@@ -1841,6 +1850,10 @@ export class StreamingSessionManager {
             }
 
             const resultMsg = message as SDKResultMessage;
+            // #7794: the model gateway's reason for this turn's failure, if it
+            // had one. Always taken here, so a note from a retry that later
+            // recovered never surfaces on a later turn.
+            const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
             // #3095: use the session's canonical org id (from the aiSessions DB
             // row — always set), NOT `auth.orgId`, which is null for partner-
             // and system-scoped users. The old guard on `auth.orgId` silently
@@ -1866,8 +1879,13 @@ export class StreamingSessionManager {
               } else if (resultMsg.subtype === 'error_max_turns') {
                 session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
               } else {
-                session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
+                session.eventBus.publish({ type: 'error', message: gatewayNote ?? sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
               }
+            } else if (gatewayNote && !topologyTurn && (resultMsg as { is_error?: unknown }).is_error === true) {
+              // The CLI gave up on the upstream after its own retries and
+              // reports that as a "success" flagged is_error: without this the
+              // technician sees an empty turn with no error (#7794).
+              session.eventBus.publish({ type: 'error', message: gatewayNote });
             }
 
             // W03: ONE cost, from the registry rate bound to this turn, over the
@@ -1919,9 +1937,10 @@ export class StreamingSessionManager {
       // this the only topology transport).
       const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
+      const gatewayNote = takeGatewayFailureNote(session.breezeSessionId);
       session.eventBus.publish({
         type: 'error',
-        message: topologyTurn ? 'The topology explanation could not be completed.' : sanitizeErrorForClient(err),
+        message: topologyTurn ? 'The topology explanation could not be completed.' : gatewayNote ?? sanitizeErrorForClient(err),
       });
       session.eventBus.publish({ type: 'done' });
     } finally {
