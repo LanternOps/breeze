@@ -364,7 +364,7 @@ For detailed architecture documentation, see [docs/guides/architecture.md](docs/
 - [x] Health checks & alerting
 - [x] Configuration policies (hierarchical with feature links)
 - [x] Advanced filtering
-- [x] AI chat with tool-equipped agent (BYOK)
+- [x] AI chat with tool-equipped agent (your own provider key)
 - [x] Risk-classified action engine
 - [x] Multi-tenant hierarchy
 - [x] macOS, Windows, and Linux agents
@@ -495,7 +495,7 @@ No. Tickets, time tracking, quotes, invoicing, a priced service catalog, and a c
 Absolutely. The multi-tenant hierarchy works for internal IT too. Use Organizations as departments or offices.
 
 **What AI models are supported?**
-For the in-product AI operator, Breeze uses the Claude Agent SDK (Anthropic). BYOK mode takes an Anthropic API key, and self-hosted deployments can point at any Anthropic-compatible endpoint (such as a LiteLLM gateway). We chose Claude for its tool-use capabilities and reasoning quality. Separately, Breeze runs a built-in MCP server with OAuth 2.1 + PKCE, so you can connect Claude.ai, ChatGPT, Cursor, or any other MCP-compatible AI agent, using whichever model that platform runs. We're open to community contributions for additional in-product model providers.
+For the in-product AI operator, Breeze uses the Claude Agent SDK (Anthropic). You can bring your own Anthropic API key, and self-hosted deployments can point at any Anthropic-compatible endpoint (such as a LiteLLM gateway). We chose Claude for its tool-use capabilities and reasoning quality. Separately, Breeze runs a built-in MCP server with OAuth 2.1 + PKCE, so you can connect Claude.ai, ChatGPT, Cursor, or any other MCP-compatible AI agent, using whichever model that platform runs. We're open to community contributions for additional in-product model providers.
 
 **Is there an agent auto-update?**
 Yes. The Breeze agent has a built-in updater that pulls signed release artifacts and self-installs across macOS, Windows, and Linux. The Watchdog service supervises the agent process and restarts it on failure. Production deployments verify Ed25519-signed release manifests via `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`.

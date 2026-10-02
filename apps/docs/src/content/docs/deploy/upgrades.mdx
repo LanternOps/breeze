@@ -216,6 +216,16 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
+### v0.122.0 — legacy AI model settings removed
+
+The AI model registry (AI Providers & Models) has been the only source of AI model decisions since v0.121.0. This release deletes what it replaced.
+
+- **`/api/v1/ai/provider` is gone.** Use `/api/v1/ai/models`: `GET /ai/models`, `POST /ai/models/connections`, `POST /ai/models/connections/:id/key`, `POST /ai/models/connections/:id/endpoint`, `DELETE /ai/models/connections/:id`, and `PUT /ai/models/assignments` for per-feature defaults. Requests to the old paths return 404.
+- **Retired request fields are rejected with HTTP 400** that names the field and its replacement: `reviewerModel` on both script-policy endpoints, `allowedModels` on the AI for Office organization policy, and `model` on AI agent create/update/preview (send `offeringId`). They were already ignored; a client that kept sending them now gets an error instead of a silent no-op. The GET responses no longer include them.
+- **`BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read.** Remove them from your `.env`. New partners start every feature on the platform default model (`ANTHROPIC_MODEL`, else the default set on Admin → AI models); change any feature under AI Providers & Models.
+- **Skipping releases:** the one-time conversion of legacy AI settings into the registry ran only in v0.121.0. If you upgrade straight from an older release, each partner is set up from the platform default instead; a partner that had its own Anthropic key keeps using that key, but its legacy per-feature choices (script reviewer, AI for Office, AI agent allowlists) are not carried over. Set them again under AI Providers & Models. The next release archives the old values before it drops them (see the next section when it ships).
+- **Database:** no schema change in this release. The legacy table and columns are dropped in the following release, after their values are archived.
+
 ### v0.121.0 — AI model registry, BYO OpenAI-compatible models, encrypted backup credentials
 
 <Aside type="caution" title="Roll forward only">
