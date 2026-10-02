@@ -2313,7 +2313,8 @@
     "defaults": "Varsayılanlar",
     "documents": "Belgeler",
     "connections": "Bağlantılar",
-    "rates": "Ücretler"
+    "rates": "Ücretler",
+    "payments": "Payments"
   },
   "billingConnectionsTab": {
     "accounting": {

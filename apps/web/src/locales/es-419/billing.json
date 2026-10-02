@@ -2313,7 +2313,8 @@
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
     "connections": "Conexiones",
-    "rates": "Tarifas"
+    "rates": "Tarifas",
+    "payments": "Payments"
   },
   "billingConnectionsTab": {
     "accounting": {

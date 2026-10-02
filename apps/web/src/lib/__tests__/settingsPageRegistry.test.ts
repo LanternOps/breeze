@@ -1,3 +1,4 @@
+import { SETTINGS_CATALOG } from '../settingsCatalog';
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, relative } from 'node:path';
@@ -92,4 +93,13 @@ describe('billing Rates has one settings home', () => {
     expect(rates).toContain('<WorkTypesCard');
     expect(categories).not.toContain('<WorkTypesCard');
   });
+});
+
+it('Payments has one hash-addressed settings home', () => {
+  expect(SETTINGS_CATALOG.filter(entry => entry.id === 'billing-payments')).toEqual([
+    expect.objectContaining({ href: '/settings/billing#payments', requiresAutopay: true }),
+  ]);
+  const page = readFileSync(join(WEB_SRC, 'components/billing/PartnerBillingSettingsPage.tsx'), 'utf8');
+  expect(page).toContain("activeTab === 'payments'"); expect(page).toContain('<PaymentsSettingsTab');
+  expect(page).toContain('useHashTab');
 });

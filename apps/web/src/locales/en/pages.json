@@ -172,7 +172,8 @@
     "settingsTicketing": "Ticketing Settings",
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
-    "adminAiModels": "AI Models"
+    "adminAiModels": "AI Models",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

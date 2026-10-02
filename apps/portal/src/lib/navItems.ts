@@ -44,7 +44,8 @@ export function buildPortalNavItems(
     | 'enableService'
     | 'enableDocuments'
     | 'enableNetworkVisibility'
-  >
+  >,
+  autopayEnabled = false
 ): PortalNavItem[] {
   return [
     branding.enableDashboard === true
@@ -52,6 +53,7 @@ export function buildPortalNavItems(
       : null,
     { href: '/quotes', label: 'Proposals' },
     { href: '/invoices', label: 'Invoices' },
+    autopayEnabled ? { href: '/payment-methods', label: 'Payment methods' } : null,
     branding.enableTickets !== false
       ? { href: '/tickets', label: 'Support' }
       : null,

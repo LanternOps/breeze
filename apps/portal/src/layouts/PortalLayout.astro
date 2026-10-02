@@ -1,7 +1,8 @@
 ---
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
-import { loadPortalBranding, loadPortalProfile } from '../lib/server';
+import { apiGet } from '../lib/api';
+import { buildServerApiConfig, loadPortalBranding, loadPortalProfile } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
@@ -36,7 +37,8 @@ const profile = await loadPortalProfile(Astro.request);
 // #2345 — Tickets is hidden when the org's branding has enableTickets: false.
 // Fail-open when the flag is absent (shared-domain portals get no branding row);
 // the API's 403 gate on /portal/tickets/* is the real enforcement.
-const navItems = buildPortalNavItems(branding);
+const paymentMethods = await apiGet('/portal/payment-methods', { ...buildServerApiConfig(Astro.request), timeoutMs: 3000 });
+const navItems = buildPortalNavItems(branding, paymentMethods.statusCode === 200);
 
 const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
 // Org-authored portal styling (#5940) — saved via the branding editor and
@@ -100,7 +102,7 @@ const isActive = (href: string) => {
           {navItems.map((item) => (
             <a
               href={withBase(item.href)}
-              data-testid={`portal-nav-${item.href.slice(1) || 'home'}`}
+              data-testid={item.href === '/payment-methods' ? 'autopay-nav-payment-methods' : `portal-nav-${item.href.slice(1) || 'home'}`}
               aria-current={isActive(item.href) ? 'page' : undefined}
               class:list={[
                 'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',
@@ -159,6 +161,7 @@ const isActive = (href: string) => {
               <nav class="absolute left-0 top-12 z-30 w-56 rounded-lg border border-border bg-card p-2 shadow-lg shadow-foreground/5">
                 {navItems.map((item) => (
                   <a
+                    data-testid={item.href === '/payment-methods' ? 'autopay-nav-payment-methods-mobile' : undefined}
                     href={withBase(item.href)}
                     aria-current={isActive(item.href) ? 'page' : undefined}
                     class:list={[

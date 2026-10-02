@@ -33,6 +33,8 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  'src/components/billing/PaymentsSettingsTab.tsx',
+  'src/components/billing/autopayClient.ts',
   'src/components/monitoring/conversion/ConversionLedger.tsx',
   'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
@@ -890,7 +892,8 @@ describe('no silent mutations in targeted set', () => {
     // W05 #7603 Task 13 adds ai/AiContinuationPrompt.tsx: 212 -> 213.
     // W06 #7604 Task 14 adds aiModels/ManualModelForm.tsx: 213 → 214.
     // (connectionForms/*.tsx hold no fetch calls: ConnectionDrawer performs the connection mutations.)
-    expect(absoluteFiles.length).toBe(214);
+    // W02 autopay adds the settings writer and shared transport.
+    expect(absoluteFiles.length).toBe(216);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

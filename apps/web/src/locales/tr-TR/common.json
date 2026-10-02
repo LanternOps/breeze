@@ -107,7 +107,9 @@
     "system": "Sistem",
     "monitorConversion": "İzleyici Dönüşümü",
     "timeSync": "Saat eşitleme",
-    "aiModels": "Yapay zeka modelleri"
+    "aiModels": "Yapay zeka modelleri",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
