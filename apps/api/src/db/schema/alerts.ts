@@ -119,6 +119,10 @@ export const alertRules = pgTable('alert_rules', {
   convertedToMonitorId: uuid('converted_to_monitor_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
+  // Two partial unique indexes live in SQL only (not modelled here, same as
+  // before): alert_rules_managed_by_monitor_uidx (one compiled rule per
+  // monitor) and alert_rules_builtin_anchor_uidx (#7650 — one live built-in
+  // anchor rule per (org_id, name); see services/builtInAlertRules.ts).
   orgIdIdx: index('alert_rules_org_id_idx').on(table.orgId),
   partnerIdIdx: index('alert_rules_partner_id_idx').on(table.partnerId),
   templateIdIdx: index('alert_rules_template_id_idx').on(table.templateId)
