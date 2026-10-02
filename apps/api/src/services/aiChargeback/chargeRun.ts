@@ -33,6 +33,7 @@ import { sql } from 'drizzle-orm';
 import { roundToCurrency } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
+import type { AiUsageChargeStatus } from '../../db/schema/aiUsageCharges';
 import { isPeriodClosed, lookbackStartIso, monthPeriod, utcStartIso, type ChargePeriod } from './chargePeriods';
 
 export class ChargeRunConflictError extends Error {
@@ -140,7 +141,7 @@ export async function runOrgChargePeriod(input: { orgId: string; periodStart: st
     // roundToCurrency returns exactly '0.00' for zero in EVERY currency (its
     // formatMinor short-circuits 0n, JPY included), so this string compare is
     // the whole "rounds to nothing" test — never a $0 line (RR4).
-    const status = !g.priced ? 'unpriced' : amount === '0.00' ? 'no_charge' : 'not_billed';
+    const status: AiUsageChargeStatus = !g.priced ? 'unpriced' : amount === '0.00' ? 'no_charge' : 'not_billed';
     await db.execute(sql`
       INSERT INTO ai_usage_charges (org_id, partner_id, run_id, period_start, period_end, usage_period_start,
         currency_code, served_model, model_label, priced, invocation_count, input_tokens, output_tokens,

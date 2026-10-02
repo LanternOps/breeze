@@ -10,12 +10,14 @@
  * model (decided 2026-10-02, #7598).
  */
 import { AI_CHARGEBACK_ELIGIBLE_SURFACES, type AiCoverage, type AiSurface } from '@breeze/shared';
+import type { AI_CHARGE_BASES, AI_CHARGE_COVERAGES } from '../../db/schema/aiInvocations';
 import type { TokenComponents } from '../aiModels/pricing';
 import { markupAmount, priceListAmount } from './chargeMath';
 
 export const AI_COST_CURRENCY = 'USD';
-export type ChargeCoverage = AiCoverage | 'not_eligible';
-export type ChargeBasis = 'price_list' | 'markup' | 'unpriced';
+/** One source: the schema's const tuples (the charge_coverage / charge_basis columns). */
+export type ChargeCoverage = (typeof AI_CHARGE_COVERAGES)[number];
+export type ChargeBasis = (typeof AI_CHARGE_BASES)[number];
 
 export interface AiRatePrices {
   inputPricePerM: string;
@@ -33,18 +35,40 @@ export interface AiChargeCard {
   aiRates: ReadonlyMap<string, AiRatePrices>;
 }
 
-/** What is stamped on the ai_invocations row (the charge_* columns + chargeable). */
-export interface InvocationCharge {
-  chargeable: boolean;
+/** Not billable to the client: no card (all null), a surface that is never
+ *  chargeable ('not_eligible'), or a non-billable / included card. */
+export interface NotCharged {
+  chargeable: false;
   billingProfileId: string | null;
-  coverage: ChargeCoverage | null;
-  basis: ChargeBasis | null;
-  currency: string | null;
-  /** card-currency major units, exactly 6 dp; null unless chargeable AND priced */
-  amount: string | null;
+  coverage: Exclude<ChargeCoverage, 'billable'> | null;
+  basis: null;
+  currency: null;
+  amount: null;
 }
+/** Billable at a client price. */
+export interface ChargedPriced {
+  chargeable: true;
+  billingProfileId: string;
+  coverage: 'billable';
+  basis: Exclude<ChargeBasis, 'unpriced'>;
+  currency: string;
+  /** card-currency major units, exactly 6 dp */
+  amount: string;
+}
+/** Billable, but the card has no price for this model: counted, never billed at zero. */
+export interface ChargedUnpriced {
+  chargeable: true;
+  billingProfileId: string;
+  coverage: 'billable';
+  basis: 'unpriced';
+  currency: string;
+  amount: null;
+}
+/** What is stamped on the ai_invocations row (the charge_* columns + chargeable).
+ *  Every variant carries all six keys: recordInvocation writes each column. */
+export type InvocationCharge = NotCharged | ChargedPriced | ChargedUnpriced;
 
-export const NO_CARD_CHARGE: Readonly<InvocationCharge> = Object.freeze({
+export const NO_CARD_CHARGE: Readonly<NotCharged> = Object.freeze({
   chargeable: false, billingProfileId: null, coverage: null, basis: null, currency: null, amount: null,
 });
 
@@ -59,18 +83,18 @@ export function computeInvocationCharge(input: {
 }): InvocationCharge {
   const { card } = input;
   if (!card) return { ...NO_CARD_CHARGE };
-  const notCharged = (coverage: ChargeCoverage): InvocationCharge => ({
+  const notCharged = (coverage: Exclude<ChargeCoverage, 'billable'>): NotCharged => ({
     chargeable: false, billingProfileId: card.id, coverage, basis: null, currency: null, amount: null,
   });
   if (!ELIGIBLE.has(input.surface)) return notCharged('not_eligible');
   if (card.aiCoverage !== 'billable') return notCharged(card.aiCoverage);
-  const charged = (basis: ChargeBasis, amount: string | null): InvocationCharge => ({
+  const priced = (basis: ChargedPriced['basis'], amount: string): ChargedPriced => ({
     chargeable: true, billingProfileId: card.id, coverage: 'billable', basis, currency: card.currencyCode, amount,
   });
   const listed = card.aiRates.get(input.servedModel);
-  if (listed) return charged('price_list', priceListAmount(input.tokens, listed));
+  if (listed) return priced('price_list', priceListAmount(input.tokens, listed));
   if (card.aiMarkupPercent !== null && card.currencyCode === AI_COST_CURRENCY && input.costCents !== null) {
-    return charged('markup', markupAmount(input.costCents, card.aiMarkupPercent));
+    return priced('markup', markupAmount(input.costCents, card.aiMarkupPercent));
   }
-  return charged('unpriced', null);
+  return { chargeable: true, billingProfileId: card.id, coverage: 'billable', basis: 'unpriced', currency: card.currencyCode, amount: null };
 }

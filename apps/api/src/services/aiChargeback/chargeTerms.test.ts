@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { computeInvocationCharge, NO_CARD_CHARGE, type AiChargeCard } from './chargeTerms';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { AI_CHARGE_BASES, AI_CHARGE_COVERAGES } from '../../db/schema/aiInvocations';
+import {
+  computeInvocationCharge, NO_CARD_CHARGE, type AiChargeCard, type ChargeBasis, type ChargeCoverage, type InvocationCharge,
+} from './chargeTerms';
 
 const tokens = { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 };
 const listed = { inputPricePerM: '3.60', outputPricePerM: '18', cacheReadPricePerM: '0.36', cacheWritePricePerM: '4.5' };
@@ -48,5 +51,33 @@ describe('computeInvocationCharge (#7608)', () => {
   it('the price list keys on the SERVED model (a refusal fallback bills what served)', () => {
     expect(charge(card(), { servedModel: 'w10-test-listed' }).basis).toBe('price_list');
     expect(charge(card(), { servedModel: 'w10-test-requested-but-refused' }).basis).toBe('markup');
+  });
+});
+
+// Type-level contract (checked by tsc --build tsconfig.tests.json, which
+// covers test files; vitest itself does not typecheck).
+describe('InvocationCharge type (#7608)', () => {
+  it('coverage and basis come from the schema\'s const tuples (one source)', () => {
+    expectTypeOf<ChargeCoverage>().toEqualTypeOf<(typeof AI_CHARGE_COVERAGES)[number]>();
+    expectTypeOf<ChargeBasis>().toEqualTypeOf<(typeof AI_CHARGE_BASES)[number]>();
+  });
+  it('only the three real shapes are representable', () => {
+    const shapes: InvocationCharge[] = [
+      NO_CARD_CHARGE,
+      { chargeable: false, billingProfileId: 'c', coverage: 'not_eligible', basis: null, currency: null, amount: null },
+      { chargeable: true, billingProfileId: 'c', coverage: 'billable', basis: 'markup', currency: 'USD', amount: '1.000000' },
+      { chargeable: true, billingProfileId: 'c', coverage: 'billable', basis: 'unpriced', currency: 'EUR', amount: null },
+      // @ts-expect-error a chargeable row always has a basis
+      { chargeable: true, billingProfileId: 'c', coverage: 'billable', basis: null, currency: 'USD', amount: null },
+      // @ts-expect-error a priced basis always has an amount
+      { chargeable: true, billingProfileId: 'c', coverage: 'billable', basis: 'price_list', currency: 'USD', amount: null },
+      // @ts-expect-error an unpriced charge never has an amount
+      { chargeable: true, billingProfileId: 'c', coverage: 'billable', basis: 'unpriced', currency: 'USD', amount: '1.000000' },
+      // @ts-expect-error a not-charged row never has an amount
+      { chargeable: false, billingProfileId: 'c', coverage: 'included', basis: null, currency: null, amount: '1.000000' },
+      // @ts-expect-error billable coverage is always chargeable
+      { chargeable: false, billingProfileId: 'c', coverage: 'billable', basis: null, currency: null, amount: null },
+    ];
+    expect(shapes).toHaveLength(9);
   });
 });
