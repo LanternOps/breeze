@@ -209,7 +209,7 @@ describe('#7345 Add Device parent key reuse — real PostgreSQL/Redis', () => {
     expect(theirs.body.id).not.toBe(hq.body.id);
   });
 
-  runDb('a key that only looks similar (manual key, link row, other name) is never reused', async () => {
+  runDb('a hand-made Settings key for the same site is never reused', async () => {
     const env = await setupTestEnvironment({
       scope: 'organization',
       rolePermissions: [{ resource: 'organizations', action: 'write' }],
@@ -294,5 +294,145 @@ describe('#7345 Add Device parent key reuse — real PostgreSQL/Redis', () => {
       .from(installerBootstrapTokens)
       .where(eq(installerBootstrapTokens.id, earlier!.id));
     expect(token1).toBeDefined();
+  });
+
+  runDb('a fresh parent whose build fails after issuing its token is still discarded, token and all (#7217)', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const token = await mfaToken(env);
+    const parent = await addDeviceParent(token, env.site.id);
+    expect(parent.body.reused).toBe(false);
+
+    // https server → the Windows route issues the bootstrap token, then the
+    // MSI read fails (local source, empty dir) → 503 inside the same request.
+    const saved = {
+      url: process.env.PUBLIC_API_URL,
+      src: process.env.BINARY_SOURCE,
+      dir: process.env.AGENT_BINARY_DIR,
+    };
+    process.env.PUBLIC_API_URL = 'https://breeze.example.com';
+    process.env.BINARY_SOURCE = 'local';
+    process.env.AGENT_BINARY_DIR = `/nonexistent-${randomUUID()}`;
+    try {
+      const failed = await app().request(
+        `/enrollment-keys/${parent.body.id}/installer/windows?discardKeyOnFailure=1`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      expect(failed.status).toBe(503);
+    } finally {
+      process.env.PUBLIC_API_URL = saved.url;
+      if (saved.src === undefined) delete process.env.BINARY_SOURCE;
+      else process.env.BINARY_SOURCE = saved.src;
+      if (saved.dir === undefined) delete process.env.AGENT_BINARY_DIR;
+      else process.env.AGENT_BINARY_DIR = saved.dir;
+    }
+
+    expect(await keysForOrg(env.organization.id)).toEqual([]);
+    const tokens = await getTestDb()
+      .select({ id: installerBootstrapTokens.id })
+      .from(installerBootstrapTokens)
+      .where(eq(installerBootstrapTokens.orgId, env.organization.id));
+    expect(tokens).toEqual([]);
+  });
+
+  runDb('concurrent first clicks mint exactly one parent', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const token = await mfaToken(env);
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => addDeviceParent(token, env.site.id)),
+    );
+    expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+    expect(results.filter((r) => r.status === 200)).toHaveLength(3);
+    expect(new Set(results.map((r) => r.body.id)).size).toBe(1);
+    expect(await keysForOrg(env.organization.id)).toHaveLength(1);
+  });
+
+  runDb('a partner caller reuses its parent per org; an org caller cannot name another org', async () => {
+    const partnerEnv = await setupTestEnvironment({ scope: 'partner' });
+    const partnerToken = await mfaToken({ ...partnerEnv, scope: 'partner' });
+    const first = await addDeviceParent(partnerToken, partnerEnv.site.id, partnerEnv.organization.id);
+    expect(first.status).toBe(201);
+    const again = await addDeviceParent(partnerToken, partnerEnv.site.id, partnerEnv.organization.id);
+    expect(again.status).toBe(200);
+    expect(again.body.id).toBe(first.body.id);
+
+    const orgEnv = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const orgToken = await mfaToken(orgEnv);
+    const crossOrg = await addDeviceParent(orgToken, partnerEnv.site.id, partnerEnv.organization.id);
+    expect(crossOrg.status).toBe(403);
+    expect(await keysForOrg(orgEnv.organization.id)).toHaveLength(0);
+  });
+
+  runDb('a hand-made key that happens to carry the Add Device name but more uses is not adopted', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const token = await mfaToken(env);
+    const manual = await app().request('/enrollment-keys', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Add device', siteId: env.site.id, maxUsage: 5 }),
+    });
+    expect(manual.status).toBe(201);
+    const manualId = ((await manual.json()) as { id: string }).id;
+
+    const parent = await addDeviceParent(token, env.site.id);
+    expect(parent.status).toBe(201);
+    expect(parent.body.id).not.toBe(manualId);
+  });
+
+  runDb('a failed, flagged attempt keeps a parent another request reused after it started', async () => {
+    const env = await setupTestEnvironment({
+      scope: 'organization',
+      rolePermissions: [{ resource: 'organizations', action: 'write' }],
+    });
+    const token = await mfaToken(env);
+    const parent = await addDeviceParent(token, env.site.id);
+    expect(parent.body.reused).toBe(false);
+
+    // A concurrent tab reused this fresh parent and issued its token AFTER the
+    // failing request's transaction began (created_at later than its now()).
+    const [concurrent] = await getTestDb()
+      .insert(installerBootstrapTokens)
+      .values({
+        token: generateBootstrapToken(),
+        orgId: env.organization.id,
+        parentEnrollmentKeyId: parent.body.id,
+        siteId: env.site.id,
+        maxUsage: 1,
+        usageKind: 'capacity',
+        createdBy: env.user.id,
+        createdAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        installerPlatform: 'windows',
+      })
+      .returning({ id: installerBootstrapTokens.id });
+
+    const failed = await app().request(
+      `/enrollment-keys/${parent.body.id}/installer/windows?discardKeyOnFailure=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(failed.status).toBe(400);
+
+    const [kept] = await getTestDb()
+      .select({ id: enrollmentKeys.id })
+      .from(enrollmentKeys)
+      .where(eq(enrollmentKeys.id, parent.body.id));
+    expect(kept).toBeDefined();
+    const [stillThere] = await getTestDb()
+      .select({ id: installerBootstrapTokens.id })
+      .from(installerBootstrapTokens)
+      .where(eq(installerBootstrapTokens.id, concurrent!.id));
+    expect(stillThere).toBeDefined();
   });
 });

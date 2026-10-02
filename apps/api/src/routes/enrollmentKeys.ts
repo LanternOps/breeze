@@ -351,15 +351,19 @@ async function discardUnusedKeyAfterFailure(
       eq(enrollmentKeys.id, keyId!),
       eq(enrollmentKeys.createdBy, auth.user.id),
       eq(enrollmentKeys.usageCount, 0),
-      // A parent reused across attempts (#7345, POST /add-device-parent)
-      // already backs installers delivered by earlier requests; deleting it
+      // A parent reused across attempts (#7345, POST /add-device-parent) may
+      // back installers delivered by other requests — earlier ones, or a
+      // concurrent tab that reused it after this request began; deleting it
       // would cascade their bootstrap tokens away. Only tokens issued inside
       // THIS request may go: they share its transaction, so their created_at
-      // equals now() (transaction start), and anything older is in service.
+      // is exactly now() (transaction start). Any other timestamp is another
+      // request's token. (A token whose issuing transaction has not committed
+      // by the time this statement runs is invisible to it — that narrow
+      // window remains.)
       sql`NOT EXISTS (
         SELECT 1 FROM ${installerBootstrapTokens}
         WHERE ${installerBootstrapTokens.parentEnrollmentKeyId} = ${enrollmentKeys.id}
-          AND ${installerBootstrapTokens.createdAt} < now()
+          AND ${installerBootstrapTokens.createdAt} <> now()
       )`,
     ];
     const orgScope = auth.orgCondition(enrollmentKeys.orgId);
@@ -1485,6 +1489,9 @@ enrollmentKeyRoutes.post(
           eq(enrollmentKeys.siteId, siteId),
           eq(enrollmentKeys.createdBy, auth.user.id),
           eq(enrollmentKeys.name, ADD_DEVICE_PARENT_KEY_NAME),
+          // The name is not reserved (POST / accepts any), so also require
+          // the exact shape this route mints: one use, never spent.
+          eq(enrollmentKeys.maxUsage, 1),
           eq(enrollmentKeys.usageCount, 0),
           isNull(enrollmentKeys.shortCode),
           isNull(enrollmentKeys.installerPlatform),
