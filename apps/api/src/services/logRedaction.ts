@@ -31,6 +31,23 @@ const SECRET_MATERIAL_KEY_PATTERN =
   /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
 /**
+ * Stored key material named by what it is rather than by the words above:
+ * `encryptionKey` / `encryption_key` / `encryptedKey`, `recoveryKey`,
+ * `keyHash`, `snmpCommunities`, and any `<name>Encrypted` column (a sealed
+ * value, e.g. `clientIdEncrypted`; a bare `encrypted` flag is not one). Anchored at the end of the
+ * key so a reference TO a key (`encryptionKeyId`, `encryptionKeyVersion`)
+ * survives. Tool output only — see `toolOutputFieldPolicy`. The encrypted-column
+ * registry contract in aiToolOutput.redaction.test.ts keeps this in step with
+ * services/encryptedColumnRegistry.ts.
+ */
+const KEY_MATERIAL_KEY_PATTERN =
+  /(?:encrypt(?:ed|ion)_?keys?|recovery_?keys?|key_?hash(?:es)?|communities|[a-z0-9]_?encrypted)$/i;
+
+function isToolOutputSecretMaterialKey(key: string): boolean {
+  return SECRET_MATERIAL_KEY_PATTERN.test(key) || KEY_MATERIAL_KEY_PATTERN.test(key);
+}
+
+/**
  * A key that names a session IDENTIFIER rather than a session's attributes
  * (#6140): `session`, `sessionId`, `session_key`, `rdpSession`. A string under
  * one of these is bearer-ish and stays redacted. `sessionType`, `sessionState`,
@@ -188,11 +205,11 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 // ---------------------------------------------------------------------------
 const toolOutputFieldPolicy: FieldPolicy = (key, value) => {
   if (Array.isArray(value) || isRecord(value)) {
-    return SECRET_MATERIAL_KEY_PATTERN.test(key) ? 'redact' : 'recurse';
+    return isToolOutputSecretMaterialKey(key) ? 'redact' : 'recurse';
   }
   if (typeof value === 'string') {
     const secretNamed =
-      SECRET_MATERIAL_KEY_PATTERN.test(key) || SESSION_IDENTIFIER_KEY_PATTERN.test(key);
+      isToolOutputSecretMaterialKey(key) || SESSION_IDENTIFIER_KEY_PATTERN.test(key);
     if (!secretNamed) return 'recurse';
     return ISO_TIMESTAMP.test(value) ? 'keep' : 'redact';
   }

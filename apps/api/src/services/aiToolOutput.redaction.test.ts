@@ -316,3 +316,38 @@ describe('compactToolResultForChat — secret material is still redacted (#6140)
     expect(out.apiKeyExpiresAt).toBe(REDACTED);
   });
 });
+
+describe('compactToolResultForChat — stored key material is redacted by name', () => {
+  it('a backup encryption key string is masked while its on/off flag survives', () => {
+    const out = parse('manage_backup_configs', {
+      config: { id: 'cfg_1', encryption: true, encryptionKey: 'plain-backup-key', encryption_key: 'plain-backup-key' },
+    });
+    expect(out.config.encryptionKey).toBe(REDACTED);
+    expect(out.config.encryption_key).toBe(REDACTED);
+    expect(out.config.encryption).toBe(true);
+    expect(out.config.id).toBe('cfg_1');
+  });
+
+  it('key-material names are masked; ids and references to a key are not', () => {
+    const out = parse('some_tool', {
+      encryptedKey: 'sealed',
+      recoveryKey: '123456-123456',
+      snmpCommunities: ['public', 'private'],
+      clientIdEncrypted: 'enc:v1:abc',
+      keyHash: 'abc123',
+      encryptionKeyId: 'key_42',
+      encryptionKeyVersion: 'v3',
+      hasEncryptionKey: true,
+      encrypted: 'BitLocker',
+    });
+    expect(out.encryptedKey).toBe(REDACTED);
+    expect(out.recoveryKey).toBe(REDACTED);
+    expect(out.snmpCommunities).toBe(REDACTED);
+    expect(out.clientIdEncrypted).toBe(REDACTED);
+    expect(out.keyHash).toBe(REDACTED);
+    expect(out.encryptionKeyId).toBe('key_42');
+    expect(out.encryptionKeyVersion).toBe('v3');
+    expect(out.hasEncryptionKey).toBe(true);
+    expect(out.encrypted).toBe('BitLocker');
+  });
+});
