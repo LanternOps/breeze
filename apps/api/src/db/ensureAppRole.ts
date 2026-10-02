@@ -107,6 +107,9 @@ export async function ensureAppRole(): Promise<boolean> {
     await client.unsafe(`
       DO $$
       BEGIN
+        IF to_regclass('public.org_autopay_consents') IS NOT NULL THEN
+          REVOKE UPDATE,DELETE,TRUNCATE ON org_autopay_consents FROM breeze_app;
+        END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='audit_logs') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_logs FROM breeze_app;
           -- The append-only trigger fires per-row on UPDATE/DELETE only;
