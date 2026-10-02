@@ -20,7 +20,7 @@ import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
 import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
-import { HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
+import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
@@ -282,6 +282,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // across this ~hundreds-of-ms round trip.
   const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
 
+  assertNoHeldDbContextForStripe('portal.invoicePay');
   let session;
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({

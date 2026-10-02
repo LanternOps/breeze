@@ -11,6 +11,7 @@ import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
 import { requireOrgAccess, requireSiteAccess } from './invoiceService';
 import { assertNoPendingRevocation, markSessionRevocationRequestedInTx } from './stripeSessionRevocation';
 import { portalBase } from './portalUrl';
+import { assertNoHeldDbContextForStripe } from './stripeSettle';
 
 /**
  * Provider-side expiry for a new Checkout session (SEC-150, defence in depth).
@@ -150,6 +151,8 @@ export async function createInvoicePayLink(
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
+  // Check before escaping ALS: runOutsideDbContext cannot release a caller's transaction.
+  assertNoHeldDbContextForStripe('createInvoicePayLink');
   let session;
   try {
     session = await runOutsideDbContext(() => stripe.checkout.sessions.create({
@@ -257,11 +260,9 @@ export async function createInvoicePayLink(
       providerExpiresAt: session.expires_at ? new Date(session.expires_at * 1000) : new Date(expiresAt * 1000),
     });
     if (raced) {
-      // Stamp intent on THIS transaction handle. Never `requestInvoiceSessionRevocation`
-      // here: it escapes the context and re-takes the invoice row FOR UPDATE, which
-      // self-deadlocks against the FOR KEY SHARE the INSERT above already holds
-      // whenever this runs inside a caller's request transaction (create_pay_link via
-      // the AI tools, the public invoice-link route). The sweep expires it within 60s.
+      // Stamp intent on THIS transaction handle. Escaping to a second transaction
+      // to re-take the invoice lock would deadlock against our publication lock.
+      // The sweep expires the session within 60s.
       await markSessionRevocationRequestedInTx(session.id, 'raced_revocation', actor.userId, db);
     }
   });

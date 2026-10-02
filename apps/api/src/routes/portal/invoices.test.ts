@@ -107,6 +107,7 @@ const { settleCheckoutSessionMock, HeldCtxError } = vi.hoisted(() => ({
 }));
 vi.mock('../../services/stripeSettle', () => ({
   settleCheckoutSession: settleCheckoutSessionMock,
+  assertNoHeldDbContextForStripe: vi.fn(),
   HeldDbContextForStripeError: HeldCtxError,
 }));
 

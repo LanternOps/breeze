@@ -1,6 +1,7 @@
 const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
 vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { isSelfManagedDbContextRoute } from '../middleware/selfManagedDbContextRoutes';
 
 // DB mock: select().from().where().limit() resolves to the next queued row set;
 // insert().values() is a thenable so the mapping-row write awaits cleanly.
@@ -42,6 +43,7 @@ vi.mock('../db', () => {
   };
   return {
     db: makeChain(),
+    hasDbAccessContext: () => false,
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
     withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
@@ -384,5 +386,17 @@ it('refuses a reserved invoice before calling Stripe', async () => {
     sessionsCreateMock.mockRejectedValue(cardErr);
 
     await expect(createInvoicePayLink(INV_ID, actor)).rejects.toBe(cardErr);
+  });
+});
+
+ describe('Checkout request transaction ownership', () => {
+  it.each([
+    '/api/v1/invoices/invoice-id/pay-link',
+    '/api/v1/invoices/public/token/pay',
+    '/api/v1/portal/invoices/invoice-id/pay',
+    '/api/v1/portal/quotes/quote-id/pay',
+  ])('POST %s owns its short DB contexts', path => {
+    expect(isSelfManagedDbContextRoute('POST', path)).toBe(true);
+    expect(isSelfManagedDbContextRoute('GET', path)).toBe(false);
   });
 });

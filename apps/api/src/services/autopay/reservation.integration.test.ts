@@ -37,6 +37,36 @@ async function fixture() {
 
 beforeEach(() => { vi.clearAllMocks(); });
 describe('reservation with real PostgreSQL', () => {
+  it('rejects a caller holding a DB context before contacting Stripe', async () => {
+    const f = await fixture();
+    mocks.create.mockResolvedValue({ id: `cs_${f.invoice.id}`, url: 'https://checkout.stripe.com/c/pay/synthetic', payment_intent: null });
+    await expect(withSystemDbAccessContext(() => createInvoicePayLink(f.invoice.id, f.actor)))
+      .rejects.toMatchObject({ name: 'HeldDbContextForStripeError' });
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it('releases the preflight invoice lock before the paused Stripe call', async () => {
+    const f = await fixture();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    mocks.create.mockImplementation(async () => {
+      entered();
+      await gate;
+      return { id: `cs_${f.invoice.id}`, url: 'https://checkout.stripe.com/c/pay/synthetic', payment_intent: null };
+    });
+    const checkout = createInvoicePayLink(f.invoice.id, f.actor);
+    try {
+      await Promise.race([started, checkout.then(() => { throw new Error('Stripe barrier was not reached'); })]);
+      // Independent connection: NOWAIT fails immediately if preflight still owns the row.
+      await withSystemDbAccessContext(async () => {
+        const rows = await db.execute(sql`select id from invoices where id = ${f.invoice.id} for update nowait`);
+        expect(rows).toHaveLength(1);
+      });
+    } finally { release(); await checkout; }
+    const [mapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, f.invoice.id)));
+    expect(mapping).toMatchObject({ status: 'pending' });
+  });
   it('serializes a concurrent manual payment behind the reservation and refuses its excess', async () => {
     const f = await fixture();
     let acquired!: () => void;

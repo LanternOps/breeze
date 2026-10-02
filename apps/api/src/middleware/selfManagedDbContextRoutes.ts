@@ -76,6 +76,8 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/monitor-definitions\/convert-from-rule\/[^/]+\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
+  // Public bearer-link payment delegates to the same short-transaction producer.
+  { method: 'POST', pattern: /^\/api\/v1\/invoices\/public\/[^/]+\/pay\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
   // Customer-portal logout. The handler's only database work is the durable
