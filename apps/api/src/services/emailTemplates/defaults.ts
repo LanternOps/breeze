@@ -18,6 +18,8 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   autopay_paused: 'Automatic payments will wait until your service provider resumes them.',
   autopay_resumed: 'Automatic payments apply to future eligible invoices.',
   card_expiring: 'Update your saved payment method.',
+  payment_reminder: 'A payment is coming due.',
+  payment_overdue: 'An invoice payment is overdue.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -33,6 +35,8 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   autopay_paused: undefined,
   autopay_resumed: undefined,
   card_expiring: undefined,
+  payment_reminder: undefined,
+  payment_overdue: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {

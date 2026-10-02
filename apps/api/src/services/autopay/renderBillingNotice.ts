@@ -1,3 +1,7 @@
+import { z } from 'zod';
+import { formatMoney } from '@breeze/shared';
+import { htmlToText } from '../inboundEmail/htmlToText';
+import { partnerEmailCustomFromSettings } from '../emailTemplates/renderPartnerEmail';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { escapeHtml } from '../emailLayout';
 import { renderPartnerEmail, type RenderPartnerEmailArgs } from '../emailTemplates/renderPartnerEmail';
@@ -74,3 +78,31 @@ export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingN
   const email = renderPartnerEmail({ ...rendered.email, bodyBeforeCta: undefined, bodyAfterCta: html.join('') });
   return { ...email, text: [rendered.text, ...text].filter(Boolean).join('\n\n'), frozen: { ...ctx.frozen } };
 }
+
+const reminderRenderData = z.object({
+  invoiceNumber: z.string(), balance: z.string(), currency: z.string(), dueDate: z.string(),
+  daysOverdue: z.number().int().nonnegative(), payLink: z.string(),
+  partnerName: z.string(), orgName: z.string(), partnerSettings: z.unknown(),
+});
+async function renderReminder(
+  kind: 'payment_reminder' | 'payment_overdue', ctx: Parameters<BillingNoticeRenderer>[0],
+): ReturnType<BillingNoticeRenderer> {
+  const r = reminderRenderData.parse(ctx.data);
+  let url: URL;
+  try { url = new URL(r.payLink); } catch { throw new Error('Invalid reminder pay URL'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('Invalid reminder pay URL');
+  }
+  const email: RenderPartnerEmailArgs = {
+    id: kind, custom: partnerEmailCustomFromSettings(r.partnerSettings, kind),
+    brandName: r.partnerName, ctaUrl: r.payLink,
+    vars: {
+      org_name: r.orgName, partner_name: r.partnerName, invoice_number: r.invoiceNumber,
+      amount_due: formatMoney(r.balance, r.currency, 'en-US'), due_date: r.dueDate,
+      days_overdue: String(r.daysOverdue), pay_link: r.payLink,
+    },
+  };
+  return { email, text: `${htmlToText(renderPartnerEmail(email).html)}\n\n${r.payLink}` };
+}
+registerBillingNoticeRenderer('payment_reminder', ctx => renderReminder('payment_reminder', ctx));
+registerBillingNoticeRenderer('payment_overdue', ctx => renderReminder('payment_overdue', ctx));
