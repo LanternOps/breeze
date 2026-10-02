@@ -63,7 +63,7 @@
   "layout_fallback": "A organização automática atingiu seu limite. Os nós restantes usam uma grade local; as posições salvas são mantidas.",
   "pinned_overlap": "Dispositivos fixados estão sobrepostos. Desafixe-os e reorganize para separar seus rótulos.",
   "empty": "Ainda não há topologia disponível. Adicione um agente, um perfil de descoberta ou uma rede manual para este site.",
-  "legend": "Sólida: física · Tracejada: lógica · Pontilhada: inferida ou esquemática. Integridade desconhecida não é uma verificação bem-sucedida.",
+  "legend": "Os cartões agrupam dispositivos que reportam a mesma rede · Sólida: física · Tracejada: lógica · Pontilhada: inferida, não verificada ou esquemática. Integridade desconhecida não é uma verificação bem-sucedida.",
   "diagnostics": "Diagnósticos",
   "diagnosticScope": "Escolha uma origem do mesmo site e uma família de endereços. Somente \"Executar diagnóstico\" envia um comando; cada família tem sua própria execução limitada.",
   "recipe": "Verificação",
@@ -617,5 +617,57 @@
       "cancelled": "Cancelada",
       "expired": "Expirada"
     }
+  },
+  "grouped": {
+    "useLayout": "Usar layout agrupado",
+    "showAllNetworks_one": "Mostrar {{count}} rede de link local, VPN ou de host único",
+    "showAllNetworks_other": "Mostrar {{count}} redes de link local, VPN ou de host único",
+    "evidenceSection": "Evidências e atualidade",
+    "type": "Tipo",
+    "addresses": "Endereços",
+    "mac": "MAC",
+    "vendor": "Fabricante",
+    "os": "SO",
+    "gateway": "Gateway",
+    "networks": "Rede",
+    "lastSeen": "visto pela última vez {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Agente online",
+        "offline": "Agente offline",
+        "unknown": "Status do agente desconhecido"
+      },
+      "scan": {
+        "online": "Respondeu à última varredura de descoberta",
+        "offline": "Não respondeu à última varredura de descoberta",
+        "unknown": "Sem varredura"
+      }
+    },
+    "addressMatchNote": "Colocado aqui porque o endereço dele está nesta faixa. Participação não verificada.",
+    "staleMembership": "Não visto na coleta mais recente.",
+    "gatewayExplanation_one": "{{count}} dispositivo reporta {{address}} como gateway padrão. Cada dispositivo mantém a própria rota; escolha um para inspecionar ou diagnosticar a partir dele.",
+    "gatewayExplanation_other": "{{count}} dispositivos reportam {{address}} como gateway padrão. Cada dispositivo mantém a própria rota; escolha um para inspecionar ou diagnosticar a partir dele.",
+    "reportedBy": "Reportado por",
+    "diagnoseHint": "Os diagnósticos são executados a partir do dispositivo escolhido, pela rota dele.",
+    "stale": "desatualizado",
+    "unverified": "não verificado",
+    "networkExplanation_one": "{{count}} dispositivo reporta uma interface em {{prefix}}. O agrupamento por faixa de endereços é inferido: ele não prova que os dispositivos compartilham um switch.",
+    "networkExplanation_other": "{{count}} dispositivos reportam uma interface em {{prefix}}. O agrupamento por faixa de endereços é inferido: ele não prova que os dispositivos compartilham um switch.",
+    "unidentifiedExplanation": "Estes dispositivos não reportam participação em nenhuma rede, e o endereço deles não está dentro de exatamente uma rede conhecida deste site.",
+    "class": {
+      "link_local": "Faixa de link local: todo dispositivo tem uma; ela não identifica uma rede compartilhada.",
+      "host": "Uma rota de host único, geralmente um endereço de VPN ou de túnel.",
+      "overlay": "Uma faixa de overlay ou VPN (por exemplo, Tailscale), não a rede local.",
+      "other": "Uma faixa incomumente ampla."
+    },
+    "via": "Gateway padrão: {{gateways}}",
+    "conflict": "Os dispositivos desta faixa reportam gateways diferentes, então ela é dividida em cartões separados.",
+    "addressMatchCount_one": "{{count}} dispositivo é mostrado aqui apenas porque o endereço dele está nesta faixa. Participação não verificada.",
+    "addressMatchCount_other": "{{count}} dispositivos são mostrados aqui apenas porque o endereço deles está nesta faixa. Participação não verificada.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivos",
+    "moreOutside_one": "mais {{count}} fora desta visualização",
+    "moreOutside_other": "mais {{count}} fora desta visualização",
+    "gatewayAddressMatch": "Um dispositivo descoberto usa este endereço (apenas correspondência de endereço, não verificada):"
   }
 }
