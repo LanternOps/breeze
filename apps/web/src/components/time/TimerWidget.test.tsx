@@ -3,7 +3,14 @@ import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 
 let canManageBilling = true;
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => canManageBilling }) }));
-beforeEach(() => { canManageBilling = true; });
+beforeEach(() => { canManageBilling = true; jwtScope = 'partner'; });
+let jwtScope: 'partner' | 'organization' | null = 'partner';
+vi.mock('../../lib/authScope', () => ({
+  useJwtClaims: () =>
+    jwtScope === null
+      ? { status: 'unresolved' }
+      : { status: 'resolved', claims: { scope: jwtScope, orgId: null, partnerId: null } },
+}));
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -23,6 +30,20 @@ const jsonRes = (data: unknown, status = 200) =>
 beforeEach(() => fetchWithAuth.mockReset());
 
 describe('TimerWidget', () => {
+  it('does not call the partner-only /time-entries/running for org-scoped users (#7498)', async () => {
+    jwtScope = 'organization';
+    render(<TimerWidget />);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('waits for the token (unresolved scope) before fetching the running timer (#7498)', async () => {
+    jwtScope = null;
+    render(<TimerWidget />);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
   it('renders nothing when no timer is running', async () => {
     fetchWithAuth.mockResolvedValue(jsonRes(null));
     const { container } = render(<TimerWidget />);

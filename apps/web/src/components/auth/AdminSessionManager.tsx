@@ -7,6 +7,7 @@ import {
   useAuthStore
 } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { getJwtClaims } from '../../lib/authScope';
 import IdleWarningDialog from './IdleWarningDialog';
 
 const DEFAULT_IDLE_TIMEOUT_MINUTES = 60;
@@ -220,14 +221,20 @@ export default function AdminSessionManager() {
 
     const loadSessionTimeout = async () => {
       try {
-        if (currentOrgId) {
+        // #7498: /orgs/partners/me is partner-only. An org-scoped user with no
+        // org selected yet (orgs still loading) must use its own org's effective
+        // settings rather than take a 403 on every page.
+        const claims = getJwtClaims();
+        const settingsOrgId =
+          currentOrgId ?? (claims.scope === 'organization' ? claims.orgId : null);
+        if (settingsOrgId) {
           // Org selected: use that org's effective settings so a partner-level
           // `security.sessionTimeout` default is honored by the idle-logout
           // runtime, matching what the settings UI shows as effective/locked.
           // Reading the raw org record missed partner defaults the org hadn't
           // overridden locally (#2147).
           const response = await fetchWithAuth(
-            `/orgs/organizations/${currentOrgId}/effective-settings`
+            `/orgs/organizations/${settingsOrgId}/effective-settings`
           );
           if (!response.ok) {
             // Surface the failure: this is the path that enforces a possibly

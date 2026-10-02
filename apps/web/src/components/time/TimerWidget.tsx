@@ -1,4 +1,5 @@
 import { usePermissions } from '../../lib/permissions';
+import { useJwtClaims } from '../../lib/authScope';
 import BillingOutcome from './BillingOutcome';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Clock, Square } from 'lucide-react';
@@ -14,6 +15,12 @@ export default function TimerWidget() {
   const { t } = useTranslation('common');
   const { can } = usePermissions();
   const canManageBilling = can('time_entries', 'manage_billing');
+  // /time-entries/* is partner/system-scope only (#7498): an org-scoped user
+  // (e.g. Org Viewer) would 403 on every page, so don't issue the request.
+  // 'unresolved' (token not restored yet) also waits rather than guessing.
+  const jwt = useJwtClaims();
+  const timersAvailable =
+    jwt.status === 'resolved' && (jwt.claims.scope === 'partner' || jwt.claims.scope === 'system');
   const [timer, setTimer] = useState<RunningTimer | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -29,11 +36,12 @@ export default function TimerWidget() {
   }, []);
 
   useEffect(() => {
+    if (!timersAvailable) return;
     refresh();
     const poll = setInterval(refresh, POLL_MS);
     const unsubscribe = onTimerChanged(refresh);
     return () => { clearInterval(poll); unsubscribe(); };
-  }, [refresh]);
+  }, [refresh, timersAvailable]);
 
   useEffect(() => {
     if (!timer) return;
