@@ -1921,6 +1921,10 @@
       "noReason": "Aucune raison signalée par l'agent",
       "failedAt": "Dernière tentative d'installation échouée : {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installé, redémarrage nécessaire",
+      "installedAt": "Installé le {{when}}. Reste listé comme en attente jusqu’au redémarrage de l’appareil."
+    },
     "approval": {
       "approved": "Approuvé",
       "approvedTitle": "Approuvé manuellement.",

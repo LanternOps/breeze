@@ -1921,6 +1921,10 @@
       "noReason": "Nessun motivo segnalato dall'agente",
       "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installato, riavvio richiesto",
+      "installedAt": "Installato il {{when}}. Resta elencato come in sospeso finché il dispositivo non viene riavviato."
+    },
     "approval": {
       "approved": "Approvato",
       "approvedTitle": "Approvato manualmente.",

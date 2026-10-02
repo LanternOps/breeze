@@ -967,6 +967,49 @@ describe('DevicePatchStatusTab', () => {
     expect(screen.getByText('(1 pending approval)')).toBeInTheDocument();
     expect(screen.queryByText('(2 pending approval)')).not.toBeInTheDocument();
   });
+
+  // #7680: Windows keeps an update that installed but needs a restart at
+  // IsInstalled=0 until the device restarts, so it stays in the pending list.
+  // The row must say it is installed and waiting for a reboot, not read as an
+  // untouched pending (or pending-approval) patch.
+  it('shows "Installed, reboot required" for a pending patch whose latest install needs a restart (#7680)', async () => {
+    const installedAt = '2026-10-01T09:30:00.000Z';
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 50,
+          pending: [
+            {
+              id: 'restart-approved', title: '2026-09 .NET Framework Security Update (KB5126052)', source: 'microsoft',
+              category: 'security', status: 'pending', approvalStatus: 'approved', installFailure: null,
+              awaitingRestart: { installedAt }
+            },
+            {
+              id: 'restart-unapproved', title: '2026-09 Cumulative Update (KB5126000)', source: 'microsoft',
+              category: 'security', status: 'pending', approvalStatus: 'pending', installFailure: null,
+              awaitingRestart: { installedAt }
+            },
+            {
+              id: 'clean-native-2', title: '2026-09 Servicing Stack Update (KB5126001)', source: 'microsoft',
+              category: 'security', status: 'pending', approvalStatus: 'pending', installFailure: null, awaitingRestart: null
+            }
+          ],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" timezone="UTC" />);
+
+    const badge = await screen.findByTestId('device-patch-restart-approved-awaiting-restart');
+    expect(badge.textContent).toContain('Installed, reboot required');
+    expect(badge.getAttribute('title')).toContain('It stays listed as pending until the device restarts.');
+    expect(screen.getByTestId('device-patch-restart-unapproved-awaiting-restart')).toBeInTheDocument();
+    expect(screen.queryByTestId('device-patch-clean-native-2-awaiting-restart')).toBeNull();
+    // An installed-awaiting-restart patch is not waiting on an approval.
+    expect(screen.getAllByText('Pending Approval')).toHaveLength(1);
+    expect(screen.getByText('(1 pending approval)')).toBeInTheDocument();
+  });
   // #7625: a patch the linked update ring auto-approves used to read
   // "Pending Approval" because the badge only knew about manual approvals.
   it('shows the ring-aware approval state instead of "Pending Approval" for ring-managed patches (#7625)', async () => {
