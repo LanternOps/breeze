@@ -2447,6 +2447,41 @@
       "ach_preferred": "Compte bancaire privilégié ; cartes acceptées",
       "ach_only": "Compte bancaire uniquement"
     },
-    "achRisk": "Les paiements bancaires sont disponibles pour les comptes américains éligibles en USD. Votre entreprise est responsable des rejets ACH et des frais de rejet Stripe ; les rejets de comptes individuels peuvent survenir jusqu’à 60 jours plus tard."
+    "achRisk": "Les paiements bancaires sont disponibles pour les comptes américains éligibles en USD. Votre entreprise est responsable des rejets ACH et des frais de rejet Stripe ; les rejets de comptes individuels peuvent survenir jusqu’à 60 jours plus tard.",
+    "stripeNotReady": "Les paiements automatiques ne sont pas disponibles. Vérifiez les autorisations Stripe : {{permissions}}.",
+    "stripeDisconnected": "Connectez d’abord Stripe",
+    "card": "Carte",
+    "bank": "Compte bancaire",
+    "done": "Demande terminée.",
+    "status": {
+      "not_requested": "Non demandé",
+      "requested": "Demandé",
+      "active": "Actif",
+      "paused": "En pause",
+      "cancelled": "Désactivé",
+      "needs_attention": "Intervention requise"
+    },
+    "pending": "La vérification bancaire est en attente. Aucun paiement automatique ne peut encore être effectué.",
+    "effective": "S’applique aux factures émises après le {{date}}",
+    "recipient": "Autre destinataire de la demande (facultatif)",
+    "request": "Envoyer la demande",
+    "resend": "Renvoyer la demande",
+    "pause": "Mettre en pause",
+    "resume": "Reprendre",
+    "turnOff": "Désactiver",
+    "cancel": "Annuler",
+    "processingWarning": "Les futurs paiements automatiques seront arrêtés. Un paiement bancaire déjà en cours de traitement ne peut pas être rappelé.",
+    "unasked_one": "{{count}} client pas encore sollicité",
+    "unasked_other": "{{count}} clients pas encore sollicités",
+    "sendNow": "Envoyer maintenant",
+    "dismiss": "Masquer",
+    "select": "Sélectionner",
+    "client": "Client facturé",
+    "statusLabel": "État",
+    "method": "Moyen de paiement",
+    "selectClient": "Sélectionner {{name}}",
+    "empty": "Aucun client trouvé.",
+    "requestedCount_one": "Demande envoyée à {{count}} client.",
+    "requestedCount_other": "Demandes envoyées à {{count}} clients."
   }
 }

@@ -2447,6 +2447,41 @@
       "ach_preferred": "Conto bancario preferito; carte accettate",
       "ach_only": "Solo conto bancario"
     },
-    "achRisk": "I pagamenti bancari sono disponibili per i conti statunitensi idonei in USD. La tua azienda è responsabile degli storni ACH e delle commissioni di storno Stripe; gli storni dei singoli conti possono arrivare fino a 60 giorni dopo."
+    "achRisk": "I pagamenti bancari sono disponibili per i conti statunitensi idonei in USD. La tua azienda è responsabile degli storni ACH e delle commissioni di storno Stripe; gli storni dei singoli conti possono arrivare fino a 60 giorni dopo.",
+    "stripeNotReady": "I pagamenti automatici non sono disponibili. Controlla le autorizzazioni Stripe: {{permissions}}.",
+    "stripeDisconnected": "Collega prima Stripe",
+    "card": "Carta",
+    "bank": "Conto bancario",
+    "done": "Richiesta completata.",
+    "status": {
+      "not_requested": "Non richiesto",
+      "requested": "Richiesto",
+      "active": "Attivo",
+      "paused": "In pausa",
+      "cancelled": "Disattivato",
+      "needs_attention": "Richiede attenzione"
+    },
+    "pending": "La verifica bancaria è in sospeso. Non è ancora possibile effettuare pagamenti automatici.",
+    "effective": "Si applica alle fatture emesse dopo {{date}}",
+    "recipient": "Destinatario alternativo della richiesta (facoltativo)",
+    "request": "Invia richiesta",
+    "resend": "Invia di nuovo la richiesta",
+    "pause": "Metti in pausa",
+    "resume": "Riprendi",
+    "turnOff": "Disattiva",
+    "cancel": "Annulla",
+    "processingWarning": "I pagamenti automatici futuri verranno interrotti. Un pagamento bancario già in elaborazione non può essere richiamato.",
+    "unasked_one": "{{count}} cliente non ancora contattato",
+    "unasked_other": "{{count}} clienti non ancora contattati",
+    "sendNow": "Invia ora",
+    "dismiss": "Nascondi",
+    "select": "Seleziona",
+    "client": "Cliente",
+    "statusLabel": "Stato",
+    "method": "Metodo di pagamento",
+    "selectClient": "Seleziona {{name}}",
+    "empty": "Nessun cliente trovato.",
+    "requestedCount_one": "Richiesta inviata a {{count}} cliente.",
+    "requestedCount_other": "Richieste inviate a {{count}} clienti."
   }
 }

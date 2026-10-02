@@ -2447,6 +2447,41 @@
       "ach_preferred": "Banka hesabı tercih edilir; kartlar kabul edilir",
       "ach_only": "Yalnızca banka hesabı"
     },
-    "achRisk": "Banka ödemeleri, uygun ABD hesapları için USD cinsinden kullanılabilir. İşletmeniz ACH iadelerinden ve Stripe iade ücretlerinden sorumludur; bireysel hesap iadeleri 60 gün sonrasına kadar gelebilir."
+    "achRisk": "Banka ödemeleri, uygun ABD hesapları için USD cinsinden kullanılabilir. İşletmeniz ACH iadelerinden ve Stripe iade ücretlerinden sorumludur; bireysel hesap iadeleri 60 gün sonrasına kadar gelebilir.",
+    "stripeNotReady": "Otomatik ödemeler kullanılamıyor. Stripe izinlerini kontrol edin: {{permissions}}.",
+    "stripeDisconnected": "Önce Stripe bağlantısını kurun",
+    "card": "Kart",
+    "bank": "Banka hesabı",
+    "done": "İstek tamamlandı.",
+    "status": {
+      "not_requested": "İstenmedi",
+      "requested": "İstendi",
+      "active": "Etkin",
+      "paused": "Duraklatıldı",
+      "cancelled": "Kapalı",
+      "needs_attention": "İlgilenilmesi gerekiyor"
+    },
+    "pending": "Banka doğrulaması bekleniyor. Henüz otomatik ödeme yapılamaz.",
+    "effective": "{{date}} tarihinden sonra düzenlenen faturalar için geçerlidir",
+    "recipient": "İstek için alternatif alıcı (isteğe bağlı)",
+    "request": "İstek gönder",
+    "resend": "İsteği yeniden gönder",
+    "pause": "Duraklat",
+    "resume": "Sürdür",
+    "turnOff": "Kapat",
+    "cancel": "İptal",
+    "processingWarning": "Gelecekteki otomatik ödemeler durdurulacaktır. İşlenmekte olan bir banka ödemesi geri çağrılamaz.",
+    "unasked_one": "Henüz istek gönderilmemiş {{count}} müşteri",
+    "unasked_other": "Henüz istek gönderilmemiş {{count}} müşteri",
+    "sendNow": "Şimdi gönder",
+    "dismiss": "Gizle",
+    "select": "Seç",
+    "client": "Müşteri",
+    "statusLabel": "Durum",
+    "method": "Ödeme yöntemi",
+    "selectClient": "{{name}} seç",
+    "empty": "Müşteri bulunamadı.",
+    "requestedCount_one": "{{count}} müşteriye istek gönderildi.",
+    "requestedCount_other": "{{count}} müşteriye istek gönderildi."
   }
 }

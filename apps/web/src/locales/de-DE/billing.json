@@ -2447,6 +2447,41 @@
       "ach_preferred": "Bankkonto bevorzugt; Karten akzeptiert",
       "ach_only": "Nur Bankkonto"
     },
-    "achRisk": "Bankzahlungen sind für berechtigte US-Konten in USD verfügbar. Ihr Unternehmen trägt die Verantwortung für ACH-Rückbuchungen und Stripe-Rückbuchungsgebühren; Rückbuchungen einzelner Konten können bis zu 60 Tage später eintreffen."
+    "achRisk": "Bankzahlungen sind für berechtigte US-Konten in USD verfügbar. Ihr Unternehmen trägt die Verantwortung für ACH-Rückbuchungen und Stripe-Rückbuchungsgebühren; Rückbuchungen einzelner Konten können bis zu 60 Tage später eintreffen.",
+    "stripeNotReady": "Automatische Zahlungen sind nicht verfügbar. Prüfen Sie die Stripe-Berechtigungen: {{permissions}}.",
+    "stripeDisconnected": "Verbinden Sie zuerst Stripe",
+    "card": "Karte",
+    "bank": "Bankkonto",
+    "done": "Anfrage abgeschlossen.",
+    "status": {
+      "not_requested": "Nicht angefragt",
+      "requested": "Angefragt",
+      "active": "Aktiv",
+      "paused": "Pausiert",
+      "cancelled": "Aus",
+      "needs_attention": "Handlungsbedarf"
+    },
+    "pending": "Die Bankverifizierung steht aus. Automatische Zahlungen sind noch nicht möglich.",
+    "effective": "Gilt für Rechnungen, die nach {{date}} ausgestellt werden",
+    "recipient": "Abweichender Anfrageempfänger (optional)",
+    "request": "Anfrage senden",
+    "resend": "Anfrage erneut senden",
+    "pause": "Pausieren",
+    "resume": "Fortsetzen",
+    "turnOff": "Ausschalten",
+    "cancel": "Abbrechen",
+    "processingWarning": "Künftige automatische Zahlungen werden gestoppt. Eine bereits verarbeitete Bankzahlung kann nicht zurückgerufen werden.",
+    "unasked_one": "{{count}} Kunde noch nicht angefragt",
+    "unasked_other": "{{count}} Kunden noch nicht angefragt",
+    "sendNow": "Jetzt senden",
+    "dismiss": "Ausblenden",
+    "select": "Auswählen",
+    "client": "Kunde",
+    "statusLabel": "Zustand",
+    "method": "Zahlungsmethode",
+    "selectClient": "{{name}} auswählen",
+    "empty": "Keine Kunden gefunden.",
+    "requestedCount_one": "Anfrage an {{count}} Kunden gesendet.",
+    "requestedCount_other": "Anfragen an {{count}} Kunden gesendet."
   }
 }

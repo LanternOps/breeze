@@ -2447,6 +2447,41 @@
       "ach_preferred": "Bank account preferred; cards accepted",
       "ach_only": "Bank account only"
     },
-    "achRisk": "Bank payments are available for eligible US accounts in USD. Your business is responsible for ACH returns and Stripe return fees; individual account returns can arrive up to 60 days later."
+    "achRisk": "Bank payments are available for eligible US accounts in USD. Your business is responsible for ACH returns and Stripe return fees; individual account returns can arrive up to 60 days later.",
+    "stripeNotReady": "Automatic payments are unavailable. Check Stripe permissions: {{permissions}}.",
+    "stripeDisconnected": "Connect Stripe first",
+    "card": "Card",
+    "bank": "Bank account",
+    "done": "Request completed.",
+    "status": {
+      "not_requested": "Not requested",
+      "requested": "Requested",
+      "active": "Active",
+      "paused": "Paused",
+      "cancelled": "Off",
+      "needs_attention": "Needs attention"
+    },
+    "pending": "Bank verification is pending. No automatic payments can be made yet.",
+    "effective": "Applies to invoices issued after {{date}}",
+    "recipient": "Request recipient override (optional)",
+    "request": "Send request",
+    "resend": "Resend request",
+    "pause": "Pause",
+    "resume": "Resume",
+    "turnOff": "Turn off",
+    "cancel": "Cancel",
+    "processingWarning": "Future automatic payments will stop. A bank payment already processing cannot be recalled.",
+    "unasked_one": "{{count}} client not yet asked",
+    "unasked_other": "{{count}} clients not yet asked",
+    "sendNow": "Send now",
+    "dismiss": "Dismiss",
+    "select": "Select",
+    "client": "Client",
+    "statusLabel": "Status",
+    "method": "Payment method",
+    "selectClient": "Select {{name}}",
+    "empty": "No clients found.",
+    "requestedCount_one": "Request sent to {{count}} client.",
+    "requestedCount_other": "Requests sent to {{count}} clients."
   }
 }
