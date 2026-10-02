@@ -3,14 +3,20 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import BillingRatesTab from './BillingRatesTab';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+let canManagePartnerWide: boolean | undefined = true;
+let hasWriteGrant = true;
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  useAuthStore: (sel: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) => sel({ user: { canManagePartnerWide } }),
+}));
+vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => hasWriteGrant }) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const profile = { id: 'p1', name: 'Standard', currencyCode: 'USD', isDefault: true, isActive: true, baseCoverage: 'billable', baseHourlyRate: '150', baseMinimumMinutes: null, roundingIncrementMinutes: null, notes: null, rules: [{ workTypeId: 'remote', coverage: 'included', hourlyRate: null, minimumMinutes: null }] };
 const response = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
 let status = 200;
 beforeEach(() => {
-  vi.clearAllMocks(); status = 200;
+  vi.clearAllMocks(); status = 200; canManagePartnerWide = true; hasWriteGrant = true;
   vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
     if (init?.method) return response({ profile, ...(status >= 400 ? { error: 'Save failed' } : {}) }, status);
     return response(String(url).includes('work-types') ? { workTypes: [{ id: 'remote', name: 'Remote', isActive: true }, { id: 'onsite', name: 'Onsite', isActive: true }] } : { profiles: [profile] });
@@ -316,4 +322,35 @@ it('keeps price rows editable across a failed save and retries the identical bod
   fireEvent.click(screen.getByTestId('billing-profile-save'));
   await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   expect(screen.getByTestId('billing-ai-rate-input-0')).toHaveValue('4.00');
+});
+
+it.each([
+  ['lacks partner-wide access', { partnerWide: false, grant: true }],
+  ['lacks billing_profiles:write', { partnerWide: true, grant: false }],
+])('is read-only when the user %s (#7597)', async (_label, { partnerWide, grant }) => {
+  canManagePartnerWide = partnerWide; hasWriteGrant = grant;
+  render(<BillingRatesTab />);
+  await screen.findByTestId('billing-profile-row-p1');
+  await screen.findByTestId('work-type-row-remote');
+  expect(screen.getByTestId('billing-rates-readonly')).toBeInTheDocument();
+  expect(screen.getByTestId('billing-profile-create')).toBeDisabled();
+  expect(screen.queryByTestId('billing-profile-clone-p1')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('billing-profile-default-p1')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('billing-profile-archive-p1')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('billing-work-type-rename-remote')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('billing-work-type-archive-remote')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('work-type-new-name')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('work-type-rename-remote')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('work-type-archive-remote')).not.toBeInTheDocument();
+  // Opening a profile shows its rates but offers no Save.
+  fireEvent.click(screen.getByTestId('billing-profile-edit-p1'));
+  expect(screen.getByTestId('billing-profile-name')).toBeDisabled();
+  expect(screen.queryByTestId('billing-profile-save')).not.toBeInTheDocument();
+});
+it('stays editable when canManagePartnerWide is absent (stale session)', async () => {
+  canManagePartnerWide = undefined;
+  render(<BillingRatesTab />);
+  await screen.findByTestId('billing-profile-row-p1');
+  expect(screen.queryByTestId('billing-rates-readonly')).not.toBeInTheDocument();
+  expect(screen.getByTestId('billing-profile-create')).toBeEnabled();
 });
