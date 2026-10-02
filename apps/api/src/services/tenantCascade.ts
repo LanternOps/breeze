@@ -392,6 +392,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'automation_resource_bindings',
   'automation_run_device_results',
   'automations',
+  'autopay_setup_attempts',
   'backup_chains',
   'backup_configs',
   'backup_jobs',

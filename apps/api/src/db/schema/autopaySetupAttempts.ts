@@ -1,0 +1,25 @@
+import { pgTable,uuid,text,integer,bigserial,jsonb,timestamp,uniqueIndex,index,foreignKey } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { organizations,partners } from './orgs';
+import { orgAutopayEnrollments } from './autopay';
+export const autopaySetupAttempts=pgTable('autopay_setup_attempts',{
+ id:uuid('id').primaryKey().defaultRandom(),ordinal:bigserial('ordinal',{mode:'number'}).notNull().unique(),
+ orgId:uuid('org_id').notNull().references(()=>organizations.id,{onDelete:'cascade'}),
+ partnerId:uuid('partner_id').notNull().references(()=>partners.id,{onDelete:'cascade'}),
+ enrollmentId:uuid('enrollment_id').notNull(),generation:integer('generation').notNull(),
+ tokenId:uuid('token_id'),source:text('source').notNull(),methodType:text('method_type').notNull(),
+ stripeConnectionId:uuid('stripe_connection_id').notNull(),stripeAccountId:text('stripe_account_id').notNull(),
+ stripeCustomerId:text('stripe_customer_id'),checkoutSessionId:text('checkout_session_id'),
+ setupIntentId:text('setup_intent_id'),paymentIntentId:text('payment_intent_id'),
+ consentSnapshot:jsonb('consent_snapshot').notNull(),
+ createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
+ completedAt:timestamp('completed_at',{withTimezone:true}),outcome:text('outcome')
+},t=>[
+ uniqueIndex('autopay_setup_attempts_checkout_uq').on(t.stripeAccountId,t.checkoutSessionId),
+ uniqueIndex('autopay_setup_attempts_setup_intent_uq').on(t.stripeAccountId,t.setupIntentId),
+ index('autopay_setup_attempts_unfinished_idx').on(t.createdAt).where(sql`${t.completedAt} IS NULL`),
+ foreignKey({name:'autopay_setup_attempts_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],
+   foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}).onDelete('cascade'),
+ foreignKey({name:'autopay_setup_attempts_org_partner_fk',columns:[t.orgId,t.partnerId],
+   foreignColumns:[organizations.id,organizations.partnerId]}).onDelete('cascade')
+]);
