@@ -116,10 +116,16 @@ export async function remapPartnerOfferings(
   const skip = opts.skipSurfaces?.length ? sql` AND surface NOT IN (${list(opts.skipSurfaces)})` : sql``;
   let assignments = 0, agents = 0, sessions = 0, offerings = 0;
   for (const [from, to] of mapping) {
+    // W09 (#7607): a row's default never sits in its own fallback list
+    // (ai_model_assignments_fallback_shape_chk). When the remap lands the
+    // default on an offering already in the list, it leaves the list. NULL
+    // stays NULL; an org's explicit [] stays [].
     assignments += (await rows(sql`UPDATE ai_model_assignments SET
         default_offering_id = CASE WHEN default_offering_id = ${from}::uuid THEN ${to}::uuid ELSE default_offering_id END,
         permitted_offering_ids = array_replace(permitted_offering_ids, ${from}::uuid, ${to}::uuid),
-        fallback_offering_ids = array_replace(fallback_offering_ids, ${from}::uuid, ${to}::uuid),
+        fallback_offering_ids = array_remove(
+          array_replace(fallback_offering_ids, ${from}::uuid, ${to}::uuid),
+          CASE WHEN default_offering_id = ${from}::uuid THEN ${to}::uuid ELSE default_offering_id END),
         updated_at = now()
       WHERE offering_partner_id = ${partnerId}::uuid${skip}
         AND (default_offering_id = ${from}::uuid OR ${from}::uuid = ANY(permitted_offering_ids) OR ${from}::uuid = ANY(fallback_offering_ids))
@@ -244,7 +250,9 @@ async function repointPartnerDefault(partnerId: string, target: Target, oldModel
   const previous = await findOffering(partnerId, target, oldModel);
   if (!previous) return;
   const next = await ensureOffering(partnerId, target, newModel);
-  await db.execute(sql`UPDATE ai_model_assignments SET default_offering_id = ${next}::uuid, updated_at = now()
+  // W09: the new default leaves the row's fallback list (fallback_shape_chk).
+  await db.execute(sql`UPDATE ai_model_assignments SET default_offering_id = ${next}::uuid,
+      fallback_offering_ids = array_remove(fallback_offering_ids, ${next}::uuid), updated_at = now()
     WHERE partner_id = ${partnerId}::uuid AND org_id IS NULL AND role = 'default'
       AND surface IN (${list(DEFAULT_FOLLOWING_SURFACES)}) AND default_offering_id = ${previous}::uuid`);
   await disableUnreferencedOfferings(partnerId, [previous]);
