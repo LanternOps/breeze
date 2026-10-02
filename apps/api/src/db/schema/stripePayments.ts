@@ -1,7 +1,7 @@
 // apps/api/src/db/schema/stripePayments.ts
 import {
   pgTable, uuid, text, varchar, boolean, numeric, jsonb, timestamp, char, pgEnum,
-  index, uniqueIndex, integer, date, bigint, foreignKey
+  index, uniqueIndex, integer, date, bigint, foreignKey, check
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { partners, organizations } from './orgs';
@@ -70,6 +70,8 @@ export const stripeConnectAccounts = pgTable('stripe_connect_accounts', {
   financialEventScanUpperCreated: bigint('financial_event_scan_upper_created', { mode: 'number' }),
   financialEventLastPolledAt: timestamp('financial_event_last_polled_at', { withTimezone: true }),
   financialEventLastError: text('financial_event_last_error'),
+  autopayCapabilitiesCheckedAt: timestamp('autopay_capabilities_checked_at', { withTimezone: true }),
+  autopayMissingPermissions: text('autopay_missing_permissions').array().notNull().default(sql`'{}'::text[]`),
   status: stripeConnectStatusEnum('status').notNull().default('connected'),
   // Legacy Connect-OAuth scope (unused by the API-key path; retained until a later drop migration).
   scope: varchar('scope', { length: 50 }),
@@ -138,6 +140,9 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   stripeObjectId: text('stripe_object_id').notNull(),
   stripePaymentIntentId: text('stripe_payment_intent_id'),
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  feeAmount: numeric('fee_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  paymentMethodType: text('payment_method_type').$type<'card' | 'us_bank_account'>(),
+  source: text('source').$type<'checkout' | 'autopay'>().notNull().default('checkout'),
   currency: char('currency', { length: 3 }).notNull(),
   status: stripePaymentStatusEnum('status').notNull().default('pending'),
   refundedAmountMinor: numeric('refunded_amount_minor', { precision: 20, scale: 0 }).notNull().default('0'),
@@ -166,6 +171,10 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
+  uniqueIndex('invoice_stripe_payments_id_org_uq').on(t.id, t.orgId),
+  check('invoice_stripe_payments_fee_amount_chk', sql`${t.feeAmount} >= 0`),
+  check('invoice_stripe_payments_method_type_chk', sql`${t.paymentMethodType} IN ('card','us_bank_account')`),
+  check('invoice_stripe_payments_source_chk', sql`${t.source} IN ('checkout','autopay')`),
   uniqueIndex('invoice_stripe_payments_object_uq').on(t.stripeObjectId),
   index('invoice_stripe_payments_revocation_due_idx')
     .on(t.revocationNextAttemptAt, t.id)

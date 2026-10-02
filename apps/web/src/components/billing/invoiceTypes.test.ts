@@ -48,3 +48,13 @@ describe('computeInvoiceProfit counts a contract overage sibling (#3205 W04)', (
     expect(withOverage.linesMissingCost).toBe(0);
   });
 });
+
+import { PAYMENT_METHODS } from '@breeze/shared';
+import { PAYMENT_METHOD_LABELS } from './invoiceTypes';
+
+describe('invoice payment method labels', () => {
+  it('labels every shared rail, including ACH debit', () => {
+    expect(Object.keys(PAYMENT_METHOD_LABELS).sort()).toEqual([...PAYMENT_METHODS].sort());
+    expect(PAYMENT_METHOD_LABELS.ach_debit).toBe('ACH debit');
+  });
+});

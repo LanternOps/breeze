@@ -71,6 +71,7 @@ export const invoices = pgTable('invoices', {
   taxTotal: numeric('tax_total', { precision: 12, scale: 2 }).notNull().default('0'),
   total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
   amountPaid: numeric('amount_paid', { precision: 12, scale: 2 }).notNull().default('0'),
+  autopayExcluded: boolean('autopay_excluded').notNull().default(false),
   balance: numeric('balance', { precision: 12, scale: 2 }).notNull().default('0'),
   // Deposit due at acceptance, snapshotted from the quote. NULL = ordinary invoice.
   depositDue: numeric('deposit_due', { precision: 12, scale: 2 }),

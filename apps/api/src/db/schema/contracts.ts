@@ -35,6 +35,7 @@ export const contracts = pgTable('contracts', {
   nextBillingAt: date('next_billing_at'),
   autoIssue: boolean('auto_issue').notNull().default(false),
   autoRenew: boolean('auto_renew').notNull().default(false),
+  autopayExcluded: boolean('autopay_excluded').notNull().default(false),
   renewalTermMonths: integer('renewal_term_months'),
   renewalNoticeDays: integer('renewal_notice_days'),
   // Multi-currency (spec §5): stamped from the org (or copied from the source
