@@ -54,7 +54,7 @@ const B: TurnBinding = {
 const T = { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0 };
 const OK: TurnOutcome = {
   stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99,
+  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99, fastDowngraded: false,
 };
 const use = (model: string, over: Partial<BilledUsage> = {}): BilledUsage => ({
   model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null, ...over,
