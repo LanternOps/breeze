@@ -2365,6 +2365,8 @@
     "setDefault": "Definir como padrão",
     "archive": "Arquivar",
     "usageUnavailable": "O uso por organizações não está disponível.",
+    "readOnlyNotice": "Você tem acesso somente leitura às tarifas de faturamento. Peça a um administrador para alterá-las.",
+    "readOnlyNoPartnerWideNotice": "As tarifas de faturamento valem para todas as organizações, então alterá-las exige acesso total às organizações do parceiro. Você tem acesso somente leitura.",
     "edit": "Editar perfil de faturamento",
     "name": "Nome",
     "currency": "Moeda",

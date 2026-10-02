@@ -1,7 +1,8 @@
 import type { SaveProfileInput } from '@breeze/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { usePermissions } from '../../lib/permissions';
 import { ActionError, runAction } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
@@ -30,6 +31,14 @@ const metadata = (p: Profile) => ({ name: p.name.trim(), notes: p.notes, currenc
 /** The profile drawer saves its metadata, base pricing and rules atomically. */
 export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode?: string }) {
   const { t, i18n } = useTranslation('billing');
+  // Every write route needs billing_profiles:write AND partner-wide access
+  // (partnerWideWrite -> canManagePartnerWidePolicies). Read the API's answer from
+  // /users/me rather than re-deriving it; absent (stale session) is treated as
+  // capable - the server still enforces and the 403 toast is the backstop (#7597).
+  const { can } = usePermissions();
+  const hasWriteGrant = can('billing_profiles', 'write');
+  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
+  const canWrite = hasWriteGrant && canManagePartnerWide;
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [workTypes, setWorkTypes] = useState<WorkTypeOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,7 +100,7 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
     if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('rates.saveError') });
   };
   async function save() {
-    if (!draft || busy || !aiValid) return;
+    if (!canWrite || !draft || busy || !aiValid) return;
     setBusy(true);
     try {
       if (cloneId) {
@@ -106,7 +115,7 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
     } finally { setBusy(false); }
   }
   async function rowAction(p: Profile, archive: boolean) {
-    if (busy) return;
+    if (!canWrite || busy) return;
     setBusy(true);
     try {
       await request(`/billing-profiles/${p.id}`, archive ? 'DELETE' : 'PATCH', archive ? undefined : { isDefault: true });
@@ -155,34 +164,35 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
   }
   return <section className="rounded-lg border bg-card p-6" data-testid="billing-rates-tab">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{t('rates.title')}</h2><p className="mt-1 max-w-prose text-sm text-muted-foreground">{t('rates.description')}</p></div>
-      <button className={buttonClass} data-testid="billing-profile-create" disabled={busy} onClick={create}>{t('rates.create')}</button></div>
+      <button className={buttonClass} data-testid="billing-profile-create" disabled={busy || !canWrite} onClick={create}>{t('rates.create')}</button></div>
+    {!canWrite && <p className="mt-4 rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" data-testid="billing-rates-readonly">{hasWriteGrant ? t('rates.readOnlyNoPartnerWideNotice') : t('rates.readOnlyNotice')}</p>}
     {loading ? <p role="status" className="mt-4 text-sm">{t('common:states.loading')}</p> : failed ? <div role="alert" className="mt-4"><p>{t('rates.loadError')}</p><button className={buttonClass} data-testid="billing-rates-retry" onClick={() => void load()}>{t('common:actions.retry')}</button></div> : profiles.filter(p => p.isActive).length === 0 ? <p className="mt-4 text-sm text-muted-foreground">{t('rates.empty')}</p> : <div className="mt-5 overflow-x-auto">
       <table className="w-full text-left text-sm"><thead className="border-b text-muted-foreground"><tr>
         <th scope="col" className="p-3">{t('rates.profile')}</th><th scope="col" className="p-3">{t('rates.allOtherWork')}</th>
-        {activeTypes.map(type => <th key={type.id} scope="col" className="p-3"><details><summary className="cursor-pointer rounded py-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`billing-work-type-menu-${type.id}`}>{type.name}</summary><div className="flex flex-col gap-2 py-2">
+        {activeTypes.map(type => <th key={type.id} scope="col" className="p-3">{!canWrite ? type.name : <details><summary className="cursor-pointer rounded py-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`billing-work-type-menu-${type.id}`}>{type.name}</summary><div className="flex flex-col gap-2 py-2">
           <button type="button" className={buttonClass} data-testid={`billing-work-type-rename-${type.id}`} onClick={() => workTypeManager.current?.rename(type.id)}>{t('settings:workTypes.rename')}</button>
           <button type="button" className={buttonClass} data-testid={`billing-work-type-archive-${type.id}`} onClick={() => workTypeManager.current?.archive(type.id)}>{t('settings:workTypes.archive')}</button>
           <button type="button" className={buttonClass} data-testid={`billing-work-type-add-${type.id}`} onClick={() => workTypeManager.current?.add()}>{t('settings:workTypes.create')}</button>
-        </div></details></th>)}
+        </div></details>}</th>)}
         <th scope="col" className="p-3" data-testid="billing-ai-column-header">{t('rates.ai.column')}</th>
-        <th scope="col" className="p-3">{t('rates.actions')}</th>
+        {canWrite && <th scope="col" className="p-3">{t('rates.actions')}</th>}
       </tr></thead><tbody className="divide-y">{profiles.filter(p => p.isActive).map(p => <tr key={p.id} data-testid={`billing-profile-row-${p.id}`}>
         <th scope="row" className="p-3"><button className="text-left font-medium hover:underline" data-testid={`billing-profile-edit-${p.id}`} disabled={busy} onClick={() => edit(p)}>{p.name}</button>{p.isDefault && <span className="ml-2 rounded bg-muted px-2 py-1 text-xs font-normal">{t('rates.default')}</span>}<p className="mt-1 text-xs font-normal text-muted-foreground">{p.currencyCode}{p.roundingIncrementMinutes ? ` · ${t('rates.roundingSummary', { minutes: p.roundingIncrementMinutes })}` : ''}</p></th>
         <td className="p-3"><button className={buttonClass} data-testid={`billing-cell-${p.id}-base`} disabled={busy} onClick={() => edit(p)}>{outcome(p.baseCoverage, p.baseHourlyRate, p.baseMinimumMinutes, p.currencyCode)}</button></td>
         {activeTypes.map(type => { const rule = p.rules.find(row => row.workTypeId === type.id); return <td key={type.id} className="p-3"><button className={buttonClass} data-testid={`billing-cell-${p.id}-${type.id}`} disabled={busy} onClick={() => edit(p)}>{rule ? outcome(rule.coverage, rule.hourlyRate, rule.minimumMinutes, p.currencyCode) : <>{outcome(p.baseCoverage, p.baseHourlyRate, p.baseMinimumMinutes, p.currencyCode)}<span className="mt-1 block text-xs font-normal text-muted-foreground">{t('rates.inherits')}</span></>}</button></td>; })}
         <td className="p-3"><button className={buttonClass} data-testid={`billing-ai-cell-${p.id}`} disabled={busy} onClick={() => edit(p)}>{aiSummary(p)}</button></td>
-        <td className="p-3"><details><summary className="cursor-pointer rounded px-2 py-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`billing-profile-menu-${p.id}`}>{t('rates.actions')}</summary><div className="flex min-w-40 flex-col gap-2 py-2">
+        {canWrite && <td className="p-3"><details><summary className="cursor-pointer rounded px-2 py-2 focus-visible:ring-2 focus-visible:ring-ring" data-testid={`billing-profile-menu-${p.id}`}>{t('rates.actions')}</summary><div className="flex min-w-40 flex-col gap-2 py-2">
           <button className={buttonClass} data-testid={`billing-profile-clone-${p.id}`} disabled={busy} onClick={() => edit(p, true)}>{t('rates.clone')}</button>
           <button className={buttonClass} data-testid={`billing-profile-default-${p.id}`} disabled={busy || p.isDefault} onClick={() => void rowAction(p, false)}>{t('rates.setDefault')}</button>
           <button className={buttonClass} data-testid={`billing-profile-archive-${p.id}`} disabled={busy || p.isDefault} onClick={() => void rowAction(p, true)}>{t('rates.archive')}</button>
           <p className="text-xs text-muted-foreground">{t('rates.usageUnavailable')}</p>
-        </div></details></td>
+        </div></details></td>}
       </tr>)}</tbody></table>
     </div>}
-    <WorkTypesCard ref={workTypeManager} onLoad={acceptWorkTypes} />
+    <WorkTypesCard ref={workTypeManager} onLoad={acceptWorkTypes} readOnly={!canWrite} />
     <Drawer open={draft !== null} onClose={() => setDraft(null)} title={cloneId ? t('rates.clone') : draft?.id ? t('rates.edit') : t('rates.create')} closeDisabled={busy} dataTestId="billing-profile-drawer" width="max-w-xl">
       {draft && <form className="space-y-4" onSubmit={event => { event.preventDefault(); void save(); }}>
-        <fieldset disabled={busy} className="space-y-4">
+        <fieldset disabled={busy || !canWrite} className="space-y-4">
           <label className="block text-sm">{t('rates.name')}<input required maxLength={120} data-testid="billing-profile-name" className={inputClass} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
           {!cloneId && <><div className="grid grid-cols-2 gap-3">
             <label className="text-sm">{t('rates.currency')}<select className={inputClass} data-testid="billing-profile-currency" disabled={!!original && !!draft.id && (original.isDefault || original.baseHourlyRate !== null || original.rules.some(row => row.hourlyRate !== null))} value={draft.currencyCode} onChange={event => setDraft({ ...draft, currencyCode: event.target.value })}>{currencyOptions(draft.currencyCode).map(code => <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>)}</select></label>
@@ -190,10 +200,10 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
           </div><p className="text-xs text-muted-foreground">{t('rates.currencyHelp')}</p>
           <label className="block text-sm">{t('rates.notes')}<textarea className={inputClass} data-testid="billing-profile-notes" maxLength={4000} value={draft.notes ?? ''} onChange={event => setDraft({ ...draft, notes: event.target.value || null })} /></label>
           {ruleEditor('base', t('rates.allOtherWork'))}{activeTypes.map(type => ruleEditor(type.id, type.name))}
-          <AiUsagePricingFields value={draft} currencyCode={draft.currencyCode} choices={choices} choicesUnavailable={choicesFailed} disabled={busy}
+          <AiUsagePricingFields value={draft} currencyCode={draft.currencyCode} choices={choices} choicesUnavailable={choicesFailed} disabled={busy || !canWrite}
             onChange={ai => setDraft({ ...draft, ...ai })} /></>}
         </fieldset>
-        <div className="flex justify-end gap-2 border-t pt-4"><button type="button" className={buttonClass} data-testid="billing-profile-cancel" disabled={busy} onClick={() => setDraft(null)}>{t('common:actions.cancel')}</button><button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="billing-profile-save" disabled={busy || !draft.name.trim() || !aiValid}>{busy ? t('common:states.saving') : t('common:actions.save')}</button></div>
+        <div className="flex justify-end gap-2 border-t pt-4"><button type="button" className={buttonClass} data-testid="billing-profile-cancel" disabled={busy} onClick={() => setDraft(null)}>{t('common:actions.cancel')}</button>{canWrite && <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="billing-profile-save" disabled={busy || !draft.name.trim() || !aiValid}>{busy ? t('common:states.saving') : t('common:actions.save')}</button>}</div>
       </form>}
     </Drawer>
   </section>;

@@ -2365,6 +2365,8 @@
     "setDefault": "Als Standard festlegen",
     "archive": "Archivieren",
     "usageUnavailable": "Die Nutzung durch Organisationen ist nicht verfügbar.",
+    "readOnlyNotice": "Sie haben nur Lesezugriff auf die Abrechnungssätze. Bitten Sie eine Administratorin oder einen Administrator, sie zu ändern.",
+    "readOnlyNoPartnerWideNotice": "Die Abrechnungssätze gelten für alle Organisationen; zum Ändern ist voller Zugriff auf die Partnerorganisationen nötig. Sie haben nur Lesezugriff.",
     "edit": "Abrechnungsprofil bearbeiten",
     "name": "Profilname",
     "currency": "Währung",

@@ -2365,6 +2365,8 @@
     "setDefault": "Imposta come predefinito",
     "archive": "Archivia",
     "usageUnavailable": "L’utilizzo da parte delle organizzazioni non è disponibile.",
+    "readOnlyNotice": "Hai accesso in sola lettura alle tariffe di fatturazione. Chiedi a un amministratore di modificarle.",
+    "readOnlyNoPartnerWideNotice": "Le tariffe di fatturazione si applicano a tutte le organizzazioni, quindi modificarle richiede l'accesso completo alle organizzazioni del partner. Hai accesso in sola lettura.",
     "edit": "Modifica profilo di fatturazione",
     "name": "Nome",
     "currency": "Valuta",

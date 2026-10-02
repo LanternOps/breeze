@@ -2365,6 +2365,8 @@
     "setDefault": "Définir par défaut",
     "archive": "Archiver",
     "usageUnavailable": "L’utilisation par les organisations n’est pas disponible.",
+    "readOnlyNotice": "Vous disposez d'un accès en lecture seule aux tarifs de facturation. Demandez à un administrateur de les modifier.",
+    "readOnlyNoPartnerWideNotice": "Les tarifs de facturation s'appliquent à toutes les organisations ; les modifier exige un accès complet aux organisations du partenaire. Vous disposez d'un accès en lecture seule.",
     "edit": "Modifier le profil de facturation",
     "name": "Nom",
     "currency": "Devise",

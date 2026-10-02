@@ -2365,6 +2365,8 @@
     "setDefault": "Set as default",
     "archive": "Archive",
     "usageUnavailable": "Organization usage is unavailable.",
+    "readOnlyNotice": "You have view-only access to billing rates. Ask an administrator to change them.",
+    "readOnlyNoPartnerWideNotice": "Billing rates apply to all organizations, so changing them requires full partner org access. You have view-only access.",
     "edit": "Edit billing profile",
     "name": "Name",
     "currency": "Currency",

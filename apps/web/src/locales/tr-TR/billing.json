@@ -2365,6 +2365,8 @@
     "setDefault": "Varsayılan olarak ayarla",
     "archive": "Arşivle",
     "usageUnavailable": "Kuruluşların kullanım bilgisi mevcut değil.",
+    "readOnlyNotice": "Faturalandırma ücretlerine yalnızca görüntüleme erişiminiz var. Değiştirmek için bir yöneticiden yardım isteyin.",
+    "readOnlyNoPartnerWideNotice": "Faturalandırma ücretleri tüm kuruluşlar için geçerlidir; değiştirmek için iş ortağı kuruluşlarına tam erişim gerekir. Yalnızca görüntüleme erişiminiz var.",
     "edit": "Faturalandırma profilini düzenle",
     "name": "Ad",
     "currency": "Para birimi",
