@@ -18,17 +18,18 @@
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
+import type { OfferingOptions } from '@breeze/shared';
 import { legacyThinksWhenOmitted } from '../aiModel';
 import type { AiBillingSource } from '../aiCostTracker';
 import { buildGuardedLlmFetch, type GuardedLlmFetchAttempt } from '../llm/guardedLlmFetch';
 import {
   getGatewayAdapter,
-  getModelGateway,
   type GatewayConnectionConfig,
   type GatewayGrant,
   type GatewayGrantPurpose,
 } from './gateway';
 import { GATEWAY_TOTAL_TIMEOUT_MS, GRANT_SESSION_TTL_MS } from './gateway/limits';
+import { acquireModelGateway } from './gatewayConnectionState';
 import { GATEWAY_PLACEHOLDER_KEY } from './gateway/openai/adapter';
 import {
   buildClaudeSdkChildEnv,
@@ -45,6 +46,7 @@ import { LlmUnavailableError } from '../llm/llmUnavailableError';
 import { PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from '../llm/platformKeyAlert';
 // Type-only for the same reason: candidateLoader value-imports llmConfigResolver.
 import type { GatewayResolvedConnection, ResolvedConnection } from './candidateLoader';
+import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
 import { toAgentSdkOptions, toMessagesApiParams, type WireParams } from './wireParams';
 
@@ -248,7 +250,13 @@ export function clientForConnection(config: UsableLlmConfig, caller: LlmClientCa
   });
 }
 
-function isGatewayConnection(c: ResolvedConnection): c is GatewayResolvedConnection {
+/**
+ * The one gateway-kind guard for a resolved connection. Defined here, not in
+ * candidateLoader (which owns the type): a value import of candidateLoader
+ * from this file would close the llmConfigResolver module-init cycle noted at
+ * the imports above.
+ */
+export function isGatewayResolvedConnection(c: ResolvedConnection): c is GatewayResolvedConnection {
   return c.config.source === 'gateway';
 }
 
@@ -260,29 +268,34 @@ function isGatewayConnection(c: ResolvedConnection): c is GatewayResolvedConnect
  */
 export async function openGatewayGrant(
   resolved: ResolvedModel,
-  input: { orgId: string | null; aiSessionId: string | null; purpose: GatewayGrantPurpose; ttlMs?: number },
+  input: { aiSessionId: string | null; ttlMs?: number } & (
+    // A dispatch grant is always an org's (its egress audit row is org-keyed).
+    | { purpose: 'dispatch'; orgId: string }
+    | { purpose: Exclude<GatewayGrantPurpose, 'dispatch'>; orgId: string | null }
+  ),
 ): Promise<GatewayGrant> {
   const conn = resolved.connection;
-  if (!isGatewayConnection(conn)) throw new Error('openGatewayGrant on a non-gateway connection');
+  if (!isGatewayResolvedConnection(conn)) throw new Error('openGatewayGrant on a non-gateway connection');
   const wireModels = [...new Set([
     resolved.wireModel,
     ...(resolved.refusalFallback ? [resolved.refusalFallback.wireModel] : []),
   ])];
-  const gateway = await getModelGateway();
-  return gateway.grant({
+  const gateway = await acquireModelGateway();
+  const base = {
     config: conn.config,
     credential: conn.credential,
     wireModels,
-    orgId: input.orgId,
     aiSessionId: input.aiSessionId,
-    purpose: input.purpose,
     ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
-  });
+  };
+  return gateway.grant(input.purpose === 'dispatch'
+    ? { ...base, purpose: 'dispatch', orgId: input.orgId }
+    : { ...base, purpose: input.purpose, orgId: input.orgId });
 }
 
 export function anthropicClientFor(resolved: ResolvedModel, caller: LlmClientCallerContext | null): Anthropic {
   const conn = resolved.connection;
-  if (isGatewayConnection(conn)) {
+  if (isGatewayResolvedConnection(conn)) {
     // A dispatch grant is always an org's (its egress audit row is org-keyed):
     // refuse up front, before the caller reserves budget, rather than at send.
     const orgId = caller?.orgId ?? resolved.orgId;
@@ -505,8 +518,61 @@ export async function grantCatalogSdkEgress(
   return { proxyUrl, revoke: () => proxy.revoke(input.key) };
 }
 
+/**
+ * The CLI's accepted range for a `modelPricing.overrides` rate (USD per
+ * million tokens); a row outside it is skipped and the model falls back to a
+ * guessed price.
+ */
+const SDK_MAX_RATE_USD_PER_M = 10_000;
+
+type SdkPricingRow = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+function sdkPricingRow(rate: RateSnapshot, options: OfferingOptions): SdkPricingRow | null {
+  const rates = options.speed === 'fast' && rate.option?.key === 'speed:fast' ? rate.option.rates : rate.standard;
+  const row = {
+    input: rates.inputCentsPerM / 100,
+    output: rates.outputCentsPerM / 100,
+    cacheRead: rates.cacheReadCentsPerM / 100,
+    cacheWrite: rates.cacheWriteCentsPerM / 100,
+  };
+  return Object.values(row).every((v) => Number.isFinite(v) && v >= 0 && v <= SDK_MAX_RATE_USD_PER_M) ? row : null;
+}
+
+/**
+ * Gateway kinds only: query options that make the SDK's own spend figure (and
+ * so `maxBudgetUsd`) use the registry price. The bundled CLI prices a model id
+ * it does not know at a guessed Claude rate (costBasis 'unknown'), so a $0
+ * local model would hit the budget cap after ~100k input tokens. A
+ * host-supplied `managedSettings.modelPricing` row per bound wire model fixes
+ * that (honoured because the gateway child env sets
+ * CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST). A rate the CLI cannot express drops
+ * the SDK cap instead; the registry-priced guards (the run loop's
+ * cost > budget check, the chat reservation settle) still apply.
+ */
+export function gatewaySdkPricingOptions(resolved: ResolvedModel): Partial<Options> {
+  const bound: Array<[string, RateSnapshot, OfferingOptions]> = [
+    [resolved.wireModel, resolved.rateSnapshot, resolved.options],
+    ...(resolved.refusalFallback
+      ? [[resolved.refusalFallback.wireModel, resolved.refusalFallback.rateSnapshot, resolved.refusalFallback.options] as [string, RateSnapshot, OfferingOptions]]
+      : []),
+  ];
+  const overrides: Record<string, SdkPricingRow> = {};
+  for (const [wireModel, rate, options] of bound) {
+    const row = sdkPricingRow(rate, options);
+    if (!row) return { maxBudgetUsd: undefined };
+    overrides[wireModel] ??= row;
+  }
+  return { managedSettings: { modelPricing: { overrides } } };
+}
+
 export interface SdkChildDispatch {
   env: Record<string, string>;
+  /**
+   * Gateway kinds only: extra Agent SDK `query()` options, spread AFTER the
+   * spawn site's own `maxBudgetUsd` (gatewaySdkPricingOptions). Absent for
+   * every other kind (spawn unchanged).
+   */
+  queryOptions?: Partial<Options>;
   /**
    * Gateway kinds only: an empty, private working directory the child must be
    * spawned in (the Agent SDK `cwd` option), so the environment context the
@@ -534,7 +600,7 @@ export async function prepareSdkChild(
   input: { key: string; orgId: string; aiSessionId: string | null; source?: NodeJS.ProcessEnv },
 ): Promise<SdkChildDispatch> {
   const conn = resolved.connection;
-  if (isGatewayConnection(conn)) {
+  if (isGatewayResolvedConnection(conn)) {
     const proxy = await getLlmEgressProxy();
     // A per-dispatch proxy key: a late revoke from a torn-down child can never
     // cancel the deny-all grant of a child that replaced it under input.key.
@@ -572,7 +638,7 @@ export async function prepareSdkChild(
         ...provenance, surface: 'sdk_session_create',
         host: new URL(gatewayUpstreamUrl(conn.config)).hostname, resolvedIp: null, blocked: false,
       });
-      return { env, cwd: isolatedCwd.cwd, revoke };
+      return { env, cwd: isolatedCwd.cwd, queryOptions: gatewaySdkPricingOptions(resolved), revoke };
     } catch (error) {
       revoke();
       throw error;

@@ -90,6 +90,13 @@ describe('gatewayCandidate', () => {
     expect(m.decryptConnectionKey).not.toHaveBeenCalled();
   });
 
+  it.each([null, '', '   '])('an offering with no wire model id (%j) is unusable: never dispatched with an empty model', async (modelId) => {
+    const c = await gatewayCandidate({ offering: offering({ modelId }), conn: conn() });
+    expect(c.connection).toBeNull();
+    expect(c.facts.connection.keyUsable).toBe(false);
+    expect(checkEligibility(c.facts, CTX)).toBe('connection_unavailable');
+  });
+
   it('a DISCONNECTED connection (NULL key by constraint) is never read as keyless-and-usable', async () => {
     m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
     const c = await gatewayCandidate({ offering: offering(), conn: conn({ status: 'disconnected' }) });

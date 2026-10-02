@@ -68,10 +68,6 @@ export type ResolvedConnection =
 
 export type GatewayResolvedConnection = Extract<ResolvedConnection, { kind: GatewayConnectionKind }>;
 
-export function isGatewayResolvedConnection(c: ResolvedConnection): c is GatewayResolvedConnection {
-  return c.config.source === 'gateway';
-}
-
 export interface AllowedOptions {
   effort?: EffortLevel[];
   thinkingDisplay?: OptionSupport['thinkingDisplay'];
@@ -234,9 +230,10 @@ async function platformCandidate(
   offering: Offering | null,
 ): Promise<LoadedCandidate> {
   const platformGeo = await systemRead(() => getPlatformInferenceGeo());
-  // Anthropic credentials only ('agent_sdk' transport): the deployment-wide
-  // env OpenAI-compatible chat path is NOT a platform offering (W06 absorbs it)
-  // and must never make a platform Claude model look dispatchable.
+  // Anthropic credentials only ('agent_sdk' transport): an MCP_LLM_*
+  // OpenAI-compatible endpoint is an env-managed gateway connection with its
+  // own offerings (envOpenAiBootstrap.ts), never a platform offering, and must
+  // never make a platform Claude model look dispatchable.
   const configured = isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk');
   const standard = platformRate(row);
   const config: UsableLlmConfig = { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: row.modelId };

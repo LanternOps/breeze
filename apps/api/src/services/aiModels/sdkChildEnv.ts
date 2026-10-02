@@ -1,6 +1,6 @@
 /**
  * Agent SDK child-process environments (moved verbatim from
- * streamingSessionManager.ts, W06 Task 9, so the connection factory's
+ * streamingSessionManager.ts in W06, so the connection factory's
  * `prepareSdkChild` seam can build them without importing the session
  * manager). `buildClaudeSdkChildEnv` serves the Anthropic-dialect kinds
  * (platform, anthropic_byok, catalog); `buildGatewaySdkChildEnv` serves the
@@ -169,6 +169,17 @@ function gatewayNoProxyEntry(gatewayBaseUrl: string | undefined): string {
   return `127.0.0.1:${url.port}`;
 }
 
+/**
+ * Set on every gateway child (written for the child only; the API never reads
+ * it). The bundled CLI honours a host-supplied `managedSettings.modelPricing`
+ * (prepareSdkChild's per-model registry prices) only when the host declares
+ * it manages the model provider. Without it the CLI prices a non-Claude model
+ * id at a guessed Claude rate, and `maxBudgetUsd` trips on that guess.
+ */
+const GATEWAY_CHILD_PROVIDER_FLAGS: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
+};
+
 /** An empty, private working directory for one Agent SDK child. */
 export interface IsolatedSdkCwd {
   cwd: string;
@@ -234,6 +245,7 @@ export function buildGatewaySdkChildEnv(input: {
   // reachable directly. The bundled CLI matches port-qualified entries
   // (gatewaySdk.e2e.test.ts proves both directions).
   env.NO_PROXY = gatewayNoProxyEntry(input.adapterEnv.ANTHROPIC_BASE_URL);
+  Object.assign(env, GATEWAY_CHILD_PROVIDER_FLAGS);
   // Host-context guards last: an adapter can never re-enable auto-memory / CLAUDE.md.
   Object.assign(env, SDK_CHILD_HOST_CONTEXT_GUARDS);
   return env;

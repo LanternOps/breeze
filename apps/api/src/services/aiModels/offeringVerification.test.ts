@@ -15,7 +15,8 @@ const h = vi.hoisted(() => ({
   harnessImpl: null as null | ((input: FidelityCheckInput, transport: FidelityTransport) => Promise<FidelityCheckResult>),
   harnessArgs: null as null | [FidelityCheckInput, FidelityTransport],
   writes: [] as Array<Record<string, unknown>>,
-  writeOutcome: 'written' as 'written' | 'superseded',
+  writeOutcome: 'written' as 'written' | 'superseded' | 'connection_changed',
+  captured: [] as unknown[],
   offering: null as Record<string, unknown> | null,
   conn: null as Record<string, unknown> | null,
   credential: { secret: 'sk-upstream-777777777777' } as { secret: string | null } | null,
@@ -56,6 +57,7 @@ vi.mock('./platformModels', async (orig) => ({
   ...(await orig<typeof import('./platformModels')>()),
   getPlatformModelById: async () => ({ capabilities: h.platformCaps }),
 }));
+vi.mock('../sentry', () => ({ captureException: (e: unknown) => { h.captured.push(e); } }));
 vi.mock('./offeringVerificationStore', () => ({
   writeOfferingVerification: async (input: Record<string, unknown>) => {
     h.writes.push(input);
@@ -88,6 +90,7 @@ beforeEach(async () => {
   h.harnessArgs = null;
   h.writes = [];
   h.writeOutcome = 'written';
+  h.captured = [];
   h.offering = { id: 'o1', partnerId: 'p1', connectionId: 'c1', modelId: 'qwen', source: 'discovered', platformModelId: null, enabled: false };
   h.conn = { id: 'c1', partnerId: 'p1', kind: 'openai_compatible', baseUrl: BASE_URL, providerConfig: null, configVersion: 2, status: 'active' };
   h.credential = { secret: UPSTREAM_KEY };
@@ -177,10 +180,54 @@ describe('verifyConnectionOffering', () => {
 
   it('revokes the grants even when the harness throws', async () => {
     h.harnessImpl = async () => { throw new Error('programmer error'); };
-    await expect(verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).rejects.toThrow(/could not run/);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
     const [input] = h.harnessArgs!;
     expect((await fetch(`${input.baseUrl}/v1/models`)).status).toBe(401);
-    expect(h.writes).toHaveLength(0);
+  });
+
+  it('a harness that throws: captured once, and a failed record with a fixed summary is stored (tools off)', async () => {
+    h.harnessImpl = async (input) => { throw new Error(`exploded near ${input.baseUrl} with ${UPSTREAM_KEY}`); };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    expect(r.state).toBe('failed');
+    expect(h.writes).toHaveLength(1);
+    const read = verifiedGatewayCapabilities(writtenCaps(), FINGERPRINT);
+    expect(read.state).toBe('failed');
+    expect(read.record).toMatchObject({ passed: false, toolUse: false, adaptiveEffort: false, summary: 'Verification could not run; try again.' });
+    expect(h.captured).toHaveLength(1);
+    // Neither the stored record nor the captured error carries the key or a grant token.
+    const [input] = h.harnessArgs!;
+    const token = input.baseUrl.split('/g/')[1]!;
+    const everything = JSON.stringify([h.writes, (h.captured[0] as Error).message]);
+    expect(everything).not.toContain(UPSTREAM_KEY);
+    expect(everything).not.toContain(token);
+  });
+
+  it('gateway / proxy setup that throws: captured, failed record stored, nothing dispatched', async () => {
+    vi.spyOn(await getLlmEgressProxy(), 'grant').mockImplementation(() => { throw new Error('proxy could not start'); });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    expect(r.state).toBe('failed');
+    expect(h.harnessArgs).toBeNull();
+    expect(h.captured).toHaveLength(1);
+    expect(verifiedGatewayCapabilities(writtenCaps(), FINGERPRINT).record?.summary).toBe('Verification could not run; try again.');
+  });
+
+  it('a could-not-run record still respects the superseded checks (the store decides)', async () => {
+    h.harnessImpl = async () => { throw new Error('boom'); };
+    h.writeOutcome = 'superseded';
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).state).toBe('superseded');
+  });
+
+  it('connectionChanged is set only when the store reports the connection changed under the run', async () => {
+    h.writeOutcome = 'connection_changed';
+    expect(await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).toMatchObject({ state: 'superseded', connectionChanged: true });
+    h.writeOutcome = 'superseded';
+    expect(await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).toMatchObject({ state: 'superseded', connectionChanged: false });
+    h.writeOutcome = 'written';
+    expect(await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).toMatchObject({ state: 'verified', connectionChanged: false });
   });
 
   it('fails → state failed, tools off, scrubbed ≤200-char summary; the resolver reads it as failed (no tools)', async () => {
@@ -231,13 +278,15 @@ describe('verifyConnectionOffering', () => {
     }
     expect((r.record.summary ?? '').length).toBeLessThanOrEqual(200);
 
-    // Error text: a harness that throws with the key in its message.
+    // Error text: a harness that throws with the key in its message (captured, not thrown).
     h.harnessImpl = async () => { throw new Error(`boom ${UPSTREAM_KEY}`); };
-    const error = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' }).catch((e: unknown) => e);
+    const after = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    expect(after.state).toBe('failed');
+    const error = h.captured.at(-1);
     expect(error).toBeInstanceOf(Error);
     expect(String((error as Error).message)).not.toContain(UPSTREAM_KEY);
     expect(String((error as Error).stack)).not.toContain(UPSTREAM_KEY);
-    expect(JSON.stringify(logged)).not.toContain(UPSTREAM_KEY);
+    expect(JSON.stringify([logged, h.writes, after])).not.toContain(UPSTREAM_KEY);
   });
 
   it('superseded (the connection changed while verifying) → nothing claimed, state superseded', async () => {

@@ -1,5 +1,5 @@
 /**
- * Gateway-kind connection writes and manual model entry (W06 #7604, Task 10).
+ * Gateway-kind connection writes and manual model entry (W06 #7604).
  *
  * Never goes through the /ai/provider compat facade (Anthropic-only, bound to
  * partner_ai_connections_compat_uq, whose predicate excludes gateway kinds).
@@ -12,10 +12,10 @@
  * (urlSafety's #1105 tripwire): an unbounded lookup must never pin a pooled
  * connection. The registry write itself does no network I/O.
  *
- * Rules (plan Task 10, adapted to W03's soft-disconnect):
+ * Rules (adapted to W03's soft-disconnect):
  * - A disconnected connection is provenance only: never edited, re-activated,
  *   given a model or disconnected again — all 404, as if absent.
- * - An env-managed connection (provider_config.managedBy = 'env', Task 15) is
+ * - An env-managed connection (provider_config.managedBy = 'env', envOpenAiBootstrap.ts) is
  *   read-only here: 409 managed_by_env. That includes hand-entered models on
  *   it. A RELEASED one (variables unset, envReleasedAt set) still holds the
  *   operator's endpoint and key: it stays read-only, and the partner may only
@@ -32,8 +32,8 @@
  *   disabled, base_url kept (shape_chk). Never a hard delete: a reserved turn
  *   on one of its offerings must still settle (ai_invocations provenance
  *   guard). Refused while an offering is an assignment default.
- * - No write here ever sets partner_ai_models.capabilities: only the Task 12
- *   verifier writes a verification record.
+ * - No write here ever sets partner_ai_models.capabilities: only the
+ *   verifier (offeringVerification.ts) writes a verification record.
  */
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { BYO_MODEL_ID_PATTERN, isGatewayConnectionKind, type AiSurface, type ModelRates } from '@breeze/shared';
@@ -46,6 +46,7 @@ import {
   type PartnerAiConnection,
 } from './connections';
 import { validateByoBaseUrl } from './gateway/byoEndpointPolicy';
+import { revokeGatewayConnectionGrants } from './gatewayConnectionState';
 import { inPartnerRegistryWrite, type OfferingInUse } from './offeringWrites';
 import type { Offering } from './offerings';
 import { RegistryWriteError } from './registryWriteErrors';
@@ -57,7 +58,7 @@ export interface CreateGatewayConnectionInput {
   /** Absent = keyless (a local endpoint). */
   apiKey?: string;
   connectedBy: string | null;
-  /** Task 15 env bootstrap only. */
+  /** The env bootstrap (envOpenAiBootstrap.ts) only. */
   managedBy?: 'env';
 }
 
@@ -68,14 +69,14 @@ export interface UpdateGatewayConnectionInput {
   /** A string rotates the key; `null` clears it (keyless); absent leaves it. */
   apiKey?: string | null;
   expectedConfigVersion: number;
-  /** Task 15 env bootstrap only: lets it rewrite its own env-managed row. */
+  /** The env bootstrap (envOpenAiBootstrap.ts) only: lets it rewrite its own env-managed row. */
   allowManaged?: boolean;
 }
 
 export interface DeleteGatewayConnectionInput {
   partnerId: string;
   connectionId: string;
-  /** Task 15 env bootstrap only. */
+  /** The env bootstrap (envOpenAiBootstrap.ts) only. */
   allowManaged?: boolean;
 }
 
@@ -85,7 +86,7 @@ export interface CreateManualOfferingInput {
   modelId: string;
   displayName?: string;
   prices?: ModelRates | null;
-  /** Task 15 env bootstrap only: adds the env model to its own env-managed connection. */
+  /** The env bootstrap (envOpenAiBootstrap.ts) only: adds the env model to its own env-managed connection. */
   allowManaged?: boolean;
 }
 
@@ -217,12 +218,15 @@ export async function updateGatewayConnection(input: UpdateGatewayConnectionInpu
     throw new RegistryWriteError('Change the URL or the key.', 'invalid', 422);
   }
   const baseUrl = input.baseUrl !== undefined ? await validateOutsideDb(input.baseUrl) : undefined;
-  return inPartnerRegistryWrite(input.partnerId, 'aiModels.updateGatewayConnection', 'Could not save the AI connection.', () =>
+  const updated = await inPartnerRegistryWrite(input.partnerId, 'aiModels.updateGatewayConnection', 'Could not save the AI connection.', () =>
     updateGatewayConnectionLocked({ ...input, baseUrl }));
+  // Committed: live grants still carry the old URL or key.
+  await revokeGatewayConnectionGrants(input.connectionId);
+  return updated;
 }
 
 /**
- * Inside a held registry write only (Task 15 calls it under its own lock).
+ * Inside a held registry write only (the env bootstrap calls it under its own lock).
  * `baseUrl`, when present, must already have passed validateByoBaseUrl.
  */
 export async function updateGatewayConnectionLocked(input: UpdateGatewayConnectionInput): Promise<PartnerAiConnection> {
@@ -278,8 +282,10 @@ async function connectionDefaultUses(partnerId: string, connectionId: string): P
 }
 
 export async function deleteGatewayConnection(input: DeleteGatewayConnectionInput): Promise<void> {
-  return inPartnerRegistryWrite(input.partnerId, 'aiModels.deleteGatewayConnection', 'Could not remove the connection.', () =>
+  await inPartnerRegistryWrite(input.partnerId, 'aiModels.deleteGatewayConnection', 'Could not remove the connection.', () =>
     deleteGatewayConnectionLocked(input));
+  // Committed: a disconnected connection's live grants must stop dialling.
+  await revokeGatewayConnectionGrants(input.connectionId);
 }
 
 /** Inside a held registry write only. Assignment writes take the same lock, so the in-use check cannot race one. */
@@ -332,7 +338,7 @@ export async function createManualOffering(input: CreateManualOfferingInput): Pr
 }
 
 /**
- * Inside a held registry write only (Task 15 adds the env model through it).
+ * Inside a held registry write only (the env bootstrap adds the env model through it).
  * Lands disabled, unverified (capabilities NULL — never caller-supplied), and
  * unpriced unless prices are given (0 is a valid price for a local model).
  */

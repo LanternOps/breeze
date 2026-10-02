@@ -33,7 +33,10 @@ export interface AiConnectionDto {
   funding: 'platform' | 'partner_key';
   /** openai_compatible only (W06). Never contains credentials. */
   baseUrl: string | null;
-  /** 'env' = bootstrapped from MCP_LLM_* (W06 Task 15); read-only in the UI. */
+  /**
+   * 'env' = bootstrapped from MCP_LLM_* (envOpenAiBootstrap.ts). Read-only:
+   * the API refuses partner edits with 409 managed_by_env.
+   */
   managedBy: 'env' | null;
   /**
    * An env connection whose MCP_LLM_* variables are no longer set. Still

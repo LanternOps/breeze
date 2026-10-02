@@ -46,7 +46,20 @@ export type AiModelDiscoveryJobData =
   | { type: 'sync-platform'; trigger: 'schedule' | 'manual' | 'boot' }
   | { type: 'sync-connection'; connectionId: string }
   | { type: 'sync-all-connections' }
-  | { type: 'verify-offering'; offeringId: string; partnerId: string };
+  /** `retryFailed`: the env bootstrap's run — a failed verdict is retried with a delay (see enqueueOfferingVerification). */
+  | { type: 'verify-offering'; offeringId: string; partnerId: string; retryFailed?: true };
+
+/**
+ * Thrown by an env-path verification whose verdict was 'failed', so BullMQ
+ * retries it with a delay. The failed record is already stored; this is not
+ * an incident (logged, not captured).
+ */
+export class OfferingVerificationRetry extends Error {
+  constructor(offeringId: string) {
+    super(`Offering ${offeringId} failed verification; the queue will retry it`);
+    this.name = 'OfferingVerificationRetry';
+  }
+}
 
 let queue: Queue<AiModelDiscoveryJobData> | null = null;
 let worker: Worker<AiModelDiscoveryJobData> | null = null;
@@ -89,17 +102,30 @@ export function verifyOfferingJobId(offeringId: string): string {
 
 /**
  * Queue a harness verification of one gateway-kind offering. The payload is
- * ids only. One attempt: a failed verification is a stored RESULT (tools off),
- * not a transient error, and a retry would spend the partner's tokens again.
- * Call it OUTSIDE any held DB context.
+ * ids only (plus the retry flag). By default one attempt: an admin's click
+ * stores a failed verification as a RESULT (tools off), and a retry would
+ * spend the partner's tokens again. `retryFailed` (the MCP_LLM_* env bootstrap,
+ * whose endpoint is often still loading at boot) retries a failed verdict
+ * twice more with an exponential delay. Call it OUTSIDE any held DB context.
  */
-export async function enqueueOfferingVerification(input: { offeringId: string; partnerId: string }): Promise<void> {
+export async function enqueueOfferingVerification(
+  input: { offeringId: string; partnerId: string },
+  opts: { retryFailed?: boolean } = {},
+): Promise<void> {
+  const payload: AiModelDiscoveryJobData = {
+    type: 'verify-offering', offeringId: input.offeringId, partnerId: input.partnerId,
+    ...(opts.retryFailed ? { retryFailed: true as const } : {}),
+  };
   await enqueueOrReplaceStale(
     getAiModelDiscoveryQueue() as unknown as Queue,
     VERIFY_OFFERING_JOB,
     verifyOfferingJobId(input.offeringId),
-    { type: 'verify-offering', offeringId: input.offeringId, partnerId: input.partnerId } satisfies AiModelDiscoveryJobData,
-    { attempts: 1, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } },
+    payload,
+    {
+      ...(opts.retryFailed ? { attempts: 3, backoff: { type: 'exponential', delay: 60_000 } } : { attempts: 1 }),
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 100 },
+    },
     '[aiModelDiscovery]',
   );
 }
@@ -144,7 +170,16 @@ export async function processAiModelDiscoveryJob(
       // Refusals (missing / foreign / non-gateway / disconnected) throw and fail
       // the job; a failed run is stored on the offering and returned. The return
       // value (kept in Redis) is the verdict only, never the record's detail.
-      const result = await verifyConnectionOffering({ offeringId: job.data.offeringId, partnerId: job.data.partnerId });
+      const input = { offeringId: job.data.offeringId, partnerId: job.data.partnerId };
+      let result = await verifyConnectionOffering(input);
+      // A request for this offering collapses onto the in-flight job, which
+      // may have started before the connection's URL or key changed: its
+      // verdict is then discarded as superseded. Run once more against the
+      // current connection so that request is not silently dropped.
+      if (result.state === 'superseded' && result.connectionChanged) {
+        result = await verifyConnectionOffering(input);
+      }
+      if (result.state === 'failed' && job.data.retryFailed) throw new OfferingVerificationRetry(result.offeringId);
       return { offeringId: result.offeringId, state: result.state };
     }
     default:
@@ -201,6 +236,11 @@ export async function initializeAiModelDiscoveryWorker(): Promise<void> {
     captureException(error);
   });
   worker.on('failed', (job, error) => {
+    if (error instanceof OfferingVerificationRetry) {
+      // A stored verdict, retried by design: not an incident.
+      console.warn(`[aiModelDiscovery] job ${job?.id ?? '?'}: ${error.message}`);
+      return;
+    }
     console.error(`[aiModelDiscovery] job ${job?.id ?? '?'} failed:`, error);
     captureException(error);
   });

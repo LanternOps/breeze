@@ -6,15 +6,13 @@
 -- * surface 'gateway_forward': one row per request the gateway forwards (or
 --   refuses) to a gateway-kind connection's upstream.
 --
--- W05 (#7603) re-issues this CHECK in 2026-11-29-100000-llm-egress-events-w05-surfaces.sql with
--- 'one_shot_token_count' and 'one_shot_continuation_summary'. This re-issue
--- unions those surfaces with the newest existing re-issue and gateway_forward,
--- so whichever wave merges first, neither drops the other's surfaces.
---
--- The CHECK preserves every surface from the newest existing re-issue
--- (2026-10-16-120000-llm-egress-events-script-review-surface.sql), plus W05's
--- additions and 'gateway_forward'. The TypeScript union includes gateway_forward;
--- W05 adds its own TypeScript surfaces separately.
+-- This file sorts after W05's re-issue of the surface CHECK
+-- (2026-11-29-100000-llm-egress-events-w05-surfaces.sql) and supersedes it.
+-- Its CHECK is the eight surfaces on main (through
+-- 2026-10-16-120000-llm-egress-events-script-review-surface.sql), W05's
+-- 'one_shot_token_count' and 'one_shot_continuation_summary', and
+-- 'gateway_forward'. LLM_EGRESS_SURFACES (src/db/schema/llmEgressEvents.ts)
+-- carries all of them; the two must be edited together.
 --
 -- No DML in this file, so the breeze.scope=system election rule does not apply.
 -- Idempotent: ADD COLUMN IF NOT EXISTS; constraint dropped and re-added.

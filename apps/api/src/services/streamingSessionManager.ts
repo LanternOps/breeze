@@ -1276,6 +1276,9 @@ export class StreamingSessionManager {
             // Gateway connections only: an empty temp working directory, so
             // the environment context sent upstream names no host path.
             ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+            // Gateway connections only, after maxBudgetUsd: the registry price
+            // of the bound models, so the SDK's budget cap is not a guess.
+            ...(child.queryOptions ?? {}),
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
@@ -1299,7 +1302,11 @@ export class StreamingSessionManager {
       // `this.sessions`, so `remove()` will never run for it and the grant
       // would leak until the process restarted. The grant is taken immediately
       // above this block precisely so there is no un-covered window.
-      try { revokeEgressGrant(); } catch { /* teardown must not mask err */ }
+      // Reported, never rethrown: the teardown must not mask `err`.
+      try { revokeEgressGrant(); } catch (revokeErr) {
+        captureException(revokeErr);
+        console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', breezeSessionId, revokeErr);
+      }
       throw err;
     }
 

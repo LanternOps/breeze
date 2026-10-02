@@ -139,7 +139,7 @@ async function readCredential(conn: PartnerAiConnection): Promise<CredentialRead
 /**
  * The credential for exactly `conn`'s routing snapshot, or null when the
  * connection is unusable OR changed since `conn` was read (the caller's URL
- * and config_version would no longer match the key). Also the Task 12
+ * and config_version would no longer match the key). Also the
  * verifier's credential read (offeringVerification.ts).
  */
 export async function loadGatewayCredential(conn: PartnerAiConnection): Promise<GatewayCredential | null> {
@@ -178,8 +178,10 @@ export async function gatewayCandidate(input: { offering: Offering; conn: Partne
     : { ...verified, thinkingMode: 'none', effortLevels: [] };
 
   const rate = offeringRate(offering);
-  const config = gatewayConfigFor(conn);
-  const wireModel = offering.modelId ?? '';
+  // A gateway offering is dispatched by its own model id; without one there
+  // is nothing the gateway could bind or send, so it is unusable.
+  const wireModel = offering.modelId?.trim() ? offering.modelId : '';
+  const config = wireModel ? gatewayConfigFor(conn) : null;
   return {
     facts: {
       ownerPartnerId: offering.partnerId,

@@ -32,6 +32,11 @@ vi.mock('./gateway/byoEndpointPolicy', async (orig) => ({
   },
 }));
 
+vi.mock('./gatewayConnectionState', () => ({
+  // Records whether it ran inside the registry write's transaction (it must not).
+  revokeGatewayConnectionGrants: vi.fn(async (id: string) => { h.calls.push(`revoke:${id}:${h.systemDepth > 0 ? 'IN_TX' : 'after'}`); }),
+}));
+
 vi.mock('./registryWriteLock', () => ({
   tryLockPartnerRegistryWrite: async (partnerId: string) => {
     h.calls.push(`lock:${partnerId}`);
@@ -398,6 +403,35 @@ describe('updateGatewayConnection', () => {
     const err = await caught(updateGatewayConnection({ partnerId: P, connectionId: C, expectedConfigVersion: 5 }));
     expect([err.code, err.status]).toEqual(['invalid', 422]);
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe('connection writes revoke live gateway grants after commit', () => {
+  it('an endpoint change revokes the connection\'s grants, after the transaction', async () => {
+    h.selectRows = [[conn()]];
+    await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', apiKey: 'sk-new-key-123', expectedConfigVersion: 5 });
+    expect(h.calls.filter((c) => c.startsWith('revoke:'))).toEqual([`revoke:${C}:after`]);
+    expect(h.calls.indexOf(`revoke:${C}:after`)).toBeGreaterThan(h.calls.lastIndexOf('update'));
+  });
+
+  it('a key rotation revokes the connection\'s grants', async () => {
+    h.selectRows = [[conn()]];
+    await updateGatewayConnection({ partnerId: P, connectionId: C, apiKey: 'sk-rotated-key-9876', expectedConfigVersion: 5 });
+    expect(h.calls).toContain(`revoke:${C}:after`);
+  });
+
+  it('a disconnect revokes the connection\'s grants, after the transaction', async () => {
+    h.selectRows = [[conn()], [{ id: OFF }], []];
+    await deleteGatewayConnection({ partnerId: P, connectionId: C });
+    expect(h.calls.filter((c) => c.startsWith('revoke:'))).toEqual([`revoke:${C}:after`]);
+  });
+
+  it('a refused write revokes nothing', async () => {
+    h.selectRows = [[conn()]];
+    await caught(updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com', expectedConfigVersion: 4 }));
+    h.selectRows = [[conn({ providerConfig: { managedBy: 'env' } })]];
+    await caught(deleteGatewayConnection({ partnerId: P, connectionId: C }));
+    expect(h.calls.some((c) => c.startsWith('revoke:'))).toBe(false);
   });
 });
 

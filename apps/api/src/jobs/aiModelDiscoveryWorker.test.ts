@@ -227,6 +227,43 @@ describe('ai-model-discovery queue', () => {
       expect(opts).toMatchObject({ jobId: 'verify-offering-o1', attempts: 1 });
     });
 
+    it('a run superseded because the connection changed (a click merged into an in-flight run) re-runs once against the current connection', async () => {
+      verifyMock
+        .mockResolvedValueOnce({ offeringId: 'o1', state: 'superseded', connectionChanged: true, record: {} })
+        .mockResolvedValueOnce({ offeringId: 'o1', state: 'verified', connectionChanged: false, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'verified' });
+      expect(verifyMock).toHaveBeenCalledTimes(2);
+      expect(verifyMock).toHaveBeenNthCalledWith(2, { offeringId: 'o1', partnerId: 'p1' });
+    });
+
+    it('re-runs at most once, and never for a run superseded by a newer verdict', async () => {
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'superseded', connectionChanged: true, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'superseded' });
+      expect(verifyMock).toHaveBeenCalledTimes(2);
+      verifyMock.mockReset().mockResolvedValue({ offeringId: 'o1', state: 'superseded', connectionChanged: false, record: {} });
+      await processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1' } });
+      expect(verifyMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('env path (retryFailed): a failed verdict fails the attempt so BullMQ retries it later; the record is already stored', async () => {
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'failed', connectionChanged: false, record: { summary: 'x' } });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true } }))
+        .rejects.toThrow(/retry/i);
+      verifyMock.mockResolvedValue({ offeringId: 'o1', state: 'verified', connectionChanged: false, record: {} });
+      await expect(processAiModelDiscoveryJob({ data: { type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true } }))
+        .resolves.toEqual({ offeringId: 'o1', state: 'verified' });
+    });
+
+    it('enqueueOfferingVerification(retryFailed): 3 attempts with a delayed exponential backoff, payload ids plus the flag only', async () => {
+      await enqueueOfferingVerification({ offeringId: 'o1', partnerId: 'p1' }, { retryFailed: true });
+      const [name, payload, opts] = addMock.mock.calls.at(-1)!;
+      expect(name).toBe('verify-offering');
+      expect(payload).toEqual({ type: 'verify-offering', offeringId: 'o1', partnerId: 'p1', retryFailed: true });
+      expect(opts).toMatchObject({ jobId: 'verify-offering-o1', attempts: 3, backoff: { type: 'exponential', delay: 60_000 } });
+    });
+
     it('collapses onto a waiting verification of the same offering', async () => {
       getJobMock.mockResolvedValue({ id: 'verify-offering-o1', getState: async () => 'waiting' });
       await enqueueOfferingVerification({ offeringId: 'o1', partnerId: 'p1' });

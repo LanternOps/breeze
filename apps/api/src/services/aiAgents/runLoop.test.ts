@@ -380,10 +380,10 @@ vi.mock('../aiModels/promptVariants', async (orig) => ({
     { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'active', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
   ],
 }));
-// W06 Task 9: the run loop's SDK child env + grants come from the one seam,
+// W06: the run loop's SDK child env + grants come from the one seam,
 // connectionFactory.prepareSdkChild (its own behaviour: prepareSdkChild.test.ts).
 const prepareSdkChild = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; cwd?: string; revoke: () => void }>>());
+  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; cwd?: string; queryOptions?: Record<string, unknown>; revoke: () => void }>>());
 vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/connectionFactory')>()),
   prepareSdkChild,
@@ -878,6 +878,29 @@ describe('executeAgentRun', () => {
     expect(lastQueryOptions!.cwd).toBe('/tmp/breeze-sdk-run');
     expect(JSON.stringify(lastQueryOptions!.env)).not.toContain('sk-fixture-upstream');
     expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('W06: a gateway child\'s query options (registry pricing for the SDK budget cap) reach query()', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    const managedSettings = { modelPricing: { overrides: { 'qwen2.5-coder:7b': { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } } };
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, cwd: '/tmp/breeze-sdk-run', queryOptions: { managedSettings }, revoke: vi.fn() });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.managedSettings).toEqual(managedSettings);
+    // The SDK cap stays on: it now prices the run at the offering's rates.
+    expect(typeof lastQueryOptions!.maxBudgetUsd).toBe('number');
+  });
+
+  it('W06: a gateway child that cannot express its price to the SDK spawns without the SDK budget cap', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, queryOptions: { maxBudgetUsd: undefined }, revoke: vi.fn() });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.maxBudgetUsd).toBeUndefined();
   });
 
   it('the child grants are revoked when the SDK query throws', async () => {

@@ -94,12 +94,50 @@ describe('prepareSdkChild', () => {
     expect(after).toEqual([]);
   });
 
-  it('non-gateway kinds get no working directory (spawn unchanged)', async () => {
+  it('non-gateway kinds get no working directory and no query-option overrides (spawn unchanged)', async () => {
     for (const kind of ['platform', 'anthropic_byok', 'catalog'] as const) {
       const child = await prepareSdkChild(makeResolvedModel(kind), { key: `k-${kind}`, orgId: 'org-1', aiSessionId: null, source: PARENT });
       expect(child.cwd).toBeUndefined();
+      expect(child).not.toHaveProperty('queryOptions');
+      expect(child.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
       child.revoke();
     }
+  });
+
+  it('gateway: the SDK prices the bound wire models at the offering rates, so its budget cap uses the registry price', async () => {
+    // Without this the CLI prices an unknown model id at a guessed Claude rate
+    // (costBasis "unknown") and maxBudgetUsd trips on a $0 local model.
+    const r = makeResolvedModel('openai_compatible', {
+      refusalFallback: {
+        offeringId: 'o2', displayName: 'b', wireModel: 'qwen-b', wireParams: { betas: [], applied: {} }, options: {},
+        rateSnapshot: { source: 'offering', standard: { inputCentsPerM: 0, outputCentsPerM: 0, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } },
+      } as never,
+    });
+    const child = await prepareSdkChild(r, { key: 'sess-price', orgId: 'org-1', aiSessionId: null, source: PARENT });
+    // The CLI honours a host-supplied modelPricing only with this flag set.
+    expect(child.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe('1');
+    // USD per million tokens (FIXTURE_STD_RATES is cents per million).
+    expect(child.queryOptions).toEqual({
+      managedSettings: {
+        modelPricing: {
+          overrides: {
+            'qwen2.5-coder:7b': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+            'qwen-b': { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        },
+      },
+    });
+    child.revoke();
+  });
+
+  it('gateway: a rate the SDK cannot express drops the SDK budget cap (the registry-priced guards remain)', async () => {
+    const r = makeResolvedModel('openai_compatible', {
+      rateSnapshot: { source: 'offering', standard: { inputCentsPerM: 2_000_000, outputCentsPerM: 1, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } },
+    });
+    const child = await prepareSdkChild(r, { key: 'sess-price-x', orgId: 'org-1', aiSessionId: null, source: PARENT });
+    expect(child.queryOptions).toHaveProperty('maxBudgetUsd', undefined);
+    expect(child.queryOptions).not.toHaveProperty('managedSettings');
+    child.revoke();
   });
 
   it('child env carries no credential: not the upstream key, not the platform key, not parent cloud creds', async () => {
@@ -115,7 +153,7 @@ describe('prepareSdkChild', () => {
   it('pins every alias env to the bound wire model', async () => {
     const r = makeResolvedModel('openai_compatible');
     const { env, revoke } = await prepareSdkChild(r, { key: 'sess-3', orgId: 'org-1', aiSessionId: null, source: PARENT });
-    for (const k of ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL']) {
+    for (const k of ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL']) {
       expect(env[k]).toBe(r.wireModel);
     }
     // The gateway refuses any other model for this grant (Review Focus 2).

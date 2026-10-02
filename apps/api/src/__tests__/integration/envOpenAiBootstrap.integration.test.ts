@@ -25,7 +25,11 @@ import { __resetRegistryCutoverMemoForTests, cutoverPartner } from '../../servic
 import { createManualOffering, deleteGatewayConnection, updateGatewayConnection } from '../../services/aiModels/gatewayConnections';
 import { updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { getOffering } from '../../services/aiModels/offerings';
-import { withSystemDbAccessContext } from '../../db';
+import { sql } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
+import { FIDELITY_HARNESS_VERSION } from '../../services/llm/providerFidelityHarness';
+import { endpointFingerprint, verifiedCapabilitiesTree } from '../../services/aiModels/gatewayCapabilities';
+import { partnerRegistryReconcileLockKey } from '../../services/aiModels/legacyReconcile';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 import { createPartner } from './db-utils';
@@ -266,6 +270,61 @@ describe.skipIf(!RUN)('MCP_LLM_* env bootstrap (real DB)', () => {
     expect(conns[0]).toMatchObject({ id: released!.id, status: 'active', base_url: 'https://llm3.example.com/v1', key_last4: '0003' });
     expect(conns[0]!.provider_config).toEqual({ managedBy: 'env', envModel: 'qwen' });
     expect((await partnerChat(p.partnerId))!.default_offering_id).toBe(p.offeringId);
+  });
+
+  it('a later boot re-queues verification unless the offering has a PASSING record for the current endpoint', async () => {
+    const p = await seedRegistryPartner('platform');
+    await run([p.partnerId]);
+    const [conn] = await envConnections(p.partnerId);
+    const [off] = await offerings(conn!.id);
+    const record = (over: { passed: boolean; baseUrl: string }) => verifiedCapabilitiesTree({
+      harnessVersion: FIDELITY_HARNESS_VERSION,
+      endpointFingerprint: endpointFingerprint({ kind: 'openai_compatible', baseUrl: over.baseUrl, providerConfig: null }),
+      at: new Date().toISOString(), passed: over.passed, toolUse: over.passed, adaptiveEffort: false,
+      summary: over.passed ? null : 'direct_tool_use: endpoint still loading',
+    }, null);
+    const setCaps = (caps: unknown) => fixtureSql`
+      UPDATE partner_ai_models SET capabilities = ${JSON.stringify(caps)}::jsonb WHERE id = ${off!.id}`;
+    const enqueuedOn = async () => {
+      const enqueue = vi.fn(async () => {});
+      await run([p.partnerId], SETTINGS, enqueue);
+      return enqueue.mock.calls.length;
+    };
+
+    await setCaps(record({ passed: false, baseUrl: SETTINGS.baseUrl }));           // failed
+    expect(await enqueuedOn()).toBe(1);
+    await setCaps(record({ passed: true, baseUrl: 'https://old-llm.example.com/v1' }));   // stale
+    expect(await enqueuedOn()).toBe(1);
+    await setCaps(record({ passed: true, baseUrl: SETTINGS.baseUrl }));            // verified
+    expect(await enqueuedOn()).toBe(0);
+  });
+
+  it('release takes the partner registry lock for each row: it waits for a held lock instead of writing past it', async () => {
+    const p = await seedRegistryPartner('platform');
+    await run([p.partnerId]);
+    let release!: () => void;
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = fixtureSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${partnerRegistryReconcileLockKey(p.partnerId)}, 0))`;
+      locked();
+      await new Promise<void>((resolve) => { release = resolve; });
+    });
+    await lockTaken;
+    let settled = false;
+    const releasing = run([p.partnerId], null).finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(settled).toBe(false);
+    // Read through the app pool: the fixture pool's connection is the lock holder.
+    const [waiting] = await withSystemDbAccessContext(() => db.execute<{ released: string | null }>(sql`
+      SELECT provider_config->>'envReleasedAt' AS released FROM partner_ai_connections
+       WHERE partner_id = ${p.partnerId}::uuid AND kind = 'openai_compatible'`));
+    expect(waiting!.released).toBeNull();
+    release();
+    await holder;
+    const r = await releasing;
+    expect(r.released).toBeGreaterThanOrEqual(1);
+    expect((await envConnections(p.partnerId))[0]!.provider_config).toMatchObject({ envReleasedAt: expect.any(String) });
   });
 
   it('a partner-scoped id that does not exist fails alone (reported), others still bootstrapped', async () => {

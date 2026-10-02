@@ -26,6 +26,9 @@ const h = vi.hoisted(() => ({
   failInsert: new Set<string>(),
   inLock: false,
   released: 0,
+  revoked: [] as string[],
+  enqueueOpts: [] as unknown[],
+  captured: [] as Array<{ error: unknown; tags: unknown }>,
 }));
 
 const fp = (key: string) => `fp(${key.length})`;   // never contains the key
@@ -33,10 +36,15 @@ const fp = (key: string) => `fp(${key.length})`;   // never contains the key
 vi.mock('../../config/env', async (orig) => ({ ...(await orig<typeof import('../../config/env')>()), isHosted: () => h.hosted }));
 vi.mock('../secretCrypto', () => ({ hmacFingerprint: (k: string) => fp(k) }));
 vi.mock('../../db', () => ({ runOutsideDbContext: <T>(fn: () => T) => fn() }));
+vi.mock('./gatewayConnectionState', () => ({
+  revokeGatewayConnectionGrants: async (id: string) => { h.calls.push(`revoke:${id}:${h.inLock ? 'IN_TX' : 'after'}`); h.revoked.push(id); },
+}));
+vi.mock('../sentry', () => ({ captureException: (error: unknown, _c: unknown, tags: unknown) => { h.captured.push({ error, tags }); } }));
 vi.mock('./registryCutover', () => ({ ensurePartnerCutover: (id: string) => { h.calls.push(`cutover:${id}`); return h.cutover(id); } }));
 vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({
-  enqueueOfferingVerification: (input: { offeringId: string; partnerId: string }) => {
+  enqueueOfferingVerification: (input: { offeringId: string; partnerId: string }, opts?: unknown) => {
     h.calls.push(`enqueue:${input.offeringId}:${h.inLock ? 'IN_TX' : 'after'}`);
+    h.enqueueOpts.push(opts);
     return h.enqueue(input);
   },
 }));
@@ -131,19 +139,25 @@ vi.mock('./envOpenAiBootstrapStore', () => {
     },
     // Release keeps the row (and its key) but marks it released: read-only for the partner.
     releaseEnvManagedConnections: async () => {
-      let n = 0;
-      for (const p of h.partners.values()) if (p.conn && !p.conn.released) { p.conn.released = true; n += 1; }
-      h.released = n;
-      return n;
+      const released: Array<{ id: string; partnerId: string }> = [];
+      for (const [partnerId, p] of h.partners) if (p.conn && !p.conn.released) { p.conn.released = true; released.push({ id: p.conn.id, partnerId }); }
+      h.released = released.length;
+      return released;
     },
+    listPartnerIdsWithoutEnvConnection: async () => [...h.partners].filter(([, p]) => p.conn === null).map(([id]) => id),
   };
 });
 
 const {
+  ENV_BOOTSTRAP_INCOMPLETE_MESSAGE,
   ENV_CONNECTION_NAME,
+  ENV_NEW_PARTNER_SYNC_INTERVAL_MS,
   bootstrapEnvOpenAiConnections,
   readEnvOpenAiSettings,
+  runEnvOpenAiBootstrapAtBoot,
   runEnvOpenAiBootstrapWithRetry,
+  startEnvOpenAiNewPartnerSync,
+  syncEnvOpenAiNewPartners,
 } = await import('./envOpenAiBootstrap');
 const { updateGatewayConnectionLocked } = await import('./gatewayConnections');
 const { ByoEndpointRejected } = await import('./gateway/byoEndpointPolicy');
@@ -171,6 +185,10 @@ beforeEach(() => {
   h.inLock = false;
   h.cutover.mockReset().mockResolvedValue(true);
   h.enqueue.mockReset().mockResolvedValue(undefined);
+  h.enqueueOpts.length = 0;
+  h.released = 0;
+  h.revoked.length = 0;
+  h.captured.length = 0;
   h.policy.mockReset().mockImplementation(async (u: string) => u.trim().replace(/\/+$/, ''));
   vi.mocked(updateGatewayConnectionLocked).mockClear();
 });
@@ -444,6 +462,33 @@ describe('bootstrapEnvOpenAiConnections', () => {
     expect(h.calls).toEqual([]);
   });
 
+  it('the env path enqueues verification with a delayed retry (a failed run is often a still-loading endpoint)', async () => {
+    partner('p1');
+    await bootstrapEnvOpenAiConnections({ settings: SETTINGS });
+    expect(h.enqueue).toHaveBeenCalledWith({ offeringId: 'off-qwen', partnerId: 'p1' });
+    expect(h.enqueueOpts).toEqual([{ retryFailed: true }]);
+  });
+
+  it('a URL or key re-sync revokes the connection\'s live gateway grants, after the partner transaction', async () => {
+    partner('p1', { conn: envConn({ partnerId: 'p1', baseUrl: 'http://10.0.0.9:8000/v1' }), offerings: [offering('qwen')] });
+    partner('p2', { conn: envConn({ partnerId: 'p2', keyFingerprint: fp('old-key') }), offerings: [offering('qwen')] });
+    await bootstrapEnvOpenAiConnections({ settings: SETTINGS });
+    expect(h.calls.filter((c) => c.startsWith('revoke:'))).toEqual(['revoke:conn-p1:after', 'revoke:conn-p2:after']);
+  });
+
+  it('a steady-state, re-priced or model-only boot revokes nothing', async () => {
+    partner('p1', { conn: envConn({ partnerId: 'p1' }), offerings: [offering('qwen')] });
+    partner('p2', { conn: envConn({ partnerId: 'p2', envModel: 'old' }), offerings: [offering('old')] });
+    await bootstrapEnvOpenAiConnections({ settings: { ...SETTINGS, inputCentsPerM: 99 } });
+    expect(h.revoked).toEqual([]);
+  });
+
+  it('release changes no routing field, so it revokes nothing (chat keeps working)', async () => {
+    partner('p1', { conn: envConn({ partnerId: 'p1' }), offerings: [offering('qwen')] });
+    expect(await bootstrapEnvOpenAiConnections({ settings: null })).toMatchObject({ released: 1 });
+    expect(h.revoked).toEqual([]);
+  });
+
   it('partnerIds scopes the run (test seam)', async () => {
     partner('p1');
     partner('p2');
@@ -487,6 +532,97 @@ describe('runEnvOpenAiBootstrapWithRetry', () => {
   });
 });
 
+describe('syncEnvOpenAiNewPartners (partners created after boot)', () => {
+  it('bootstraps only partners without a live env connection', async () => {
+    partner('old', { conn: envConn({ partnerId: 'old' }), offerings: [offering('qwen')] });
+    partner('new', { chat: { kind: 'platform' } });
+    const r = await syncEnvOpenAiNewPartners({ settings: SETTINGS });
+    expect(r).toMatchObject({ partners: 1, created: 1, chatRepointed: 1 });
+    expect(h.calls.filter((c) => c.startsWith('lock:'))).toEqual(['lock:new']);
+    expect(h.partners.get('new')!.conn).not.toBeNull();
+  });
+
+  it('does nothing when every partner has its connection, when the variables are unset, or on hosted', async () => {
+    partner('old', { conn: envConn({ partnerId: 'old' }), offerings: [offering('qwen')] });
+    expect(await syncEnvOpenAiNewPartners({ settings: SETTINGS })).toBeNull();
+    partner('new');
+    expect(await syncEnvOpenAiNewPartners({ settings: null })).toBeNull();
+    h.hosted = true;
+    expect(await syncEnvOpenAiNewPartners({ settings: SETTINGS })).toBeNull();
+    expect(h.calls).toEqual([]);
+    expect(h.released).toBe(0);
+  });
+
+  it('runs on an interval (every 10 minutes), never overlapping itself', async () => {
+    vi.useFakeTimers();
+    try {
+      expect(ENV_NEW_PARTNER_SYNC_INTERVAL_MS).toBe(10 * 60_000);
+      let finish!: () => void;
+      const run = vi.fn(() => new Promise<null>((resolve) => { finish = () => resolve(null); }));
+      const stop = startEnvOpenAiNewPartnerSync({ run, intervalMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(3_000);   // still running: skipped
+      expect(run).toHaveBeenCalledTimes(1);
+      finish();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(run).toHaveBeenCalledTimes(2);
+      stop();
+      finish();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a throwing run is logged and the interval keeps going', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const run = vi.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(null);
+      const stop = startEnvOpenAiNewPartnerSync({ run, intervalMs: 1_000 });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(run).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('runEnvOpenAiBootstrapAtBoot', () => {
+  const ok = { partners: 1, created: 0, resynced: 0, chatRepointed: 0, released: 0, failed: [], failures: [], error: null, verificationEnqueueFailed: 0 };
+
+  it.each([
+    ['a run-wide error', { ...ok, error: 'MCP_LLM_BASE_URL refused: x' }],
+    ['failed partners', { ...ok, failed: ['p1'], failures: [{ partnerId: 'p1', reason: 'sk-env-key-0001 broke' }] }],
+    ['a lost verification enqueue', { ...ok, verificationEnqueueFailed: 1 }],
+    ['every attempt throwing', null],
+  ])('captures ONE fixed-message exception when the retried bootstrap ends incomplete (%s)', async (_label, report) => {
+    await runEnvOpenAiBootstrapAtBoot({ runWithRetry: async () => report as never, startNewPartnerSync: () => () => {}, settings: SETTINGS });
+    expect(h.captured).toHaveLength(1);
+    expect((h.captured[0]!.error as Error).message).toBe(ENV_BOOTSTRAP_INCOMPLETE_MESSAGE);
+    expect(h.captured[0]!.tags).toEqual({ area: 'ai_env_openai_bootstrap' });
+    expect(JSON.stringify(h.captured)).not.toContain(SETTINGS.apiKey);
+  });
+
+  it('a clean run captures nothing and starts the new-partner sync', async () => {
+    const start = vi.fn(() => () => {});
+    await runEnvOpenAiBootstrapAtBoot({ runWithRetry: async () => ok, startNewPartnerSync: start, settings: SETTINGS });
+    expect(h.captured).toEqual([]);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it('no new-partner sync when the variables are unset or on hosted', async () => {
+    const start = vi.fn(() => () => {});
+    await runEnvOpenAiBootstrapAtBoot({ runWithRetry: async () => ok, startNewPartnerSync: start, settings: null });
+    h.hosted = true;
+    await runEnvOpenAiBootstrapAtBoot({ runWithRetry: async () => ok, startNewPartnerSync: start, settings: SETTINGS });
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
 describe('boot wiring', () => {
   const code = (rel: string) => readFileSync(join(__dirname, '../..', rel), 'utf8')
     .split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
@@ -494,9 +630,14 @@ describe('boot wiring', () => {
   it('index.ts starts the env bootstrap detached, after the registry cutover sweep is scheduled', () => {
     const text = code('index.ts');
     const sweepAt = text.search(/void runRegistryCutoverSweepWithRetry\(\)/);
-    const bootAt = text.search(/void runEnvOpenAiBootstrapWithRetry\(\)/);
+    const bootAt = text.search(/void runEnvOpenAiBootstrapAtBoot\(\)/);
     expect(sweepAt).toBeGreaterThan(-1);
     expect(bootAt).toBeGreaterThan(sweepAt);
-    expect(text).not.toMatch(/await (runEnvOpenAiBootstrapWithRetry|bootstrapEnvOpenAiConnections)\(/);
+    expect(text).not.toMatch(/await (runEnvOpenAiBootstrapAtBoot|runEnvOpenAiBootstrapWithRetry|bootstrapEnvOpenAiConnections)\(/);
+  });
+
+  it('API and worker boot register the gateway connection check', () => {
+    expect(code('index.ts')).toMatch(/registerGatewayConnectionCheck\(\)/);
+    expect(code('worker.ts')).toMatch(/registerGatewayConnectionCheck\(\)/);
   });
 });

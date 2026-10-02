@@ -1,5 +1,5 @@
 /**
- * Database side of the MCP_LLM_* env bootstrap (W06 #7604, Task 15 / D6).
+ * Database side of the MCP_LLM_* env bootstrap (W06 #7604, D6).
  *
  * Every write runs inside `inPartnerEnvLock`: ONE system transaction holding
  * the per-partner registry lock — the same key W03's cutover/compatRemap and
@@ -17,6 +17,7 @@ import type { ModelRates } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiModelAssignments, partnerAiConnections, partnerAiModels, partners } from '../../db/schema';
 import { createGatewayConnectionRow } from './connections';
+import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
 import { createManualOfferingLocked, envManagementState } from './gatewayConnections';
 import { lockPartnerRegistryReconcile } from './legacyReconcile';
 
@@ -38,7 +39,10 @@ export interface EnvOfferingResult {
   id: string;
   created: boolean;
   repriced: boolean;
-  /** Has a verification record (passed or failed). */
+  /**
+   * Has a PASSING verification record for the current endpoint. A failed
+   * record, or one bound to another URL or harness version, is not verified.
+   */
   verified: boolean;
 }
 
@@ -148,7 +152,8 @@ const same = (a: number | null, b: number) => a !== null && Math.abs(a - b) < 5e
  * capabilities: only the verifier does.
  */
 export async function upsertEnvOffering(input: {
-  partnerId: string; connectionId: string; model: string; prices: ModelRates; enable: boolean;
+  /** The connection's (policy-normalised) base URL after this boot's re-sync: what a verification must be bound to. */
+  partnerId: string; connectionId: string; baseUrl: string; model: string; prices: ModelRates; enable: boolean;
 }): Promise<EnvOfferingResult> {
   const p = input.prices;
   const [existing] = await db
@@ -194,7 +199,9 @@ export async function upsertEnvOffering(input: {
       })
       .where(and(eq(partnerAiModels.id, existing.id), eq(partnerAiModels.partnerId, input.partnerId)));
   }
-  return { id: existing.id, created: false, repriced, verified: existing.capabilities !== null };
+  const fingerprint = endpointFingerprint({ kind: 'openai_compatible', baseUrl: input.baseUrl, providerConfig: null });
+  const verified = verifiedGatewayCapabilities(existing.capabilities, fingerprint).state === 'verified';
+  return { id: existing.id, created: false, repriced, verified };
 }
 
 /**
@@ -262,6 +269,29 @@ export async function disableOfferingIfUnused(partnerId: string, offeringId: str
   return true;
 }
 
+/** Live (not disconnected) env-managed connections, released or not. */
+const liveEnvManaged = () => and(
+  eq(partnerAiConnections.kind, 'openai_compatible'),
+  ne(partnerAiConnections.status, 'disconnected'),
+  sql`${partnerAiConnections.providerConfig}->>'managedBy' = 'env'`,
+);
+
+/**
+ * Partners with no live env-managed connection (findEnvConnection would
+ * return null): those the new-partner sync bootstraps. A partner whose env
+ * connection was disconnected is included, exactly as at boot.
+ */
+export async function listPartnerIdsWithoutEnvConnection(): Promise<string[]> {
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => db.select({ id: partners.id })
+      .from(partners)
+      .where(sql`NOT EXISTS (SELECT 1 FROM ${partnerAiConnections} WHERE ${partnerAiConnections.partnerId} = ${partners.id} AND ${liveEnvManaged()})`)
+      .orderBy(asc(partners.id)),
+    'aiModels.envBootstrap.listPartnersWithoutConnection',
+  ));
+  return rows.map((r) => r.id);
+}
+
 /**
  * MCP_LLM_PROVIDER no longer openai-compatible: every live env-managed
  * connection is marked released (envReleasedAt). It is NOT handed to the
@@ -270,23 +300,38 @@ export async function disableOfferingIfUnused(partnerId: string, offeringId: str
  * disconnect. Nothing is deleted or disabled, so chat keeps working until an
  * admin changes it. No routing field changes (provider_config is not part of
  * an openai_compatible endpoint fingerprint), so config_version is left
- * alone. Returns the number newly released.
+ * alone.
+ *
+ * Each row is released in its own partner transaction under the partner
+ * registry lock (inPartnerEnvLock), like every other bootstrap write, so a
+ * release never interleaves with a concurrent /ai/models write or another
+ * replica's bootstrap for that partner; the row is re-checked under the lock.
+ * Returns the connections newly released.
  */
-export async function releaseEnvManagedConnections(now: Date = new Date()): Promise<number> {
-  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
-    () => db.update(partnerAiConnections)
+export async function releaseEnvManagedConnections(now: Date = new Date()): Promise<Array<{ id: string; partnerId: string }>> {
+  const unreleased = sql`(${partnerAiConnections.providerConfig}->>'envReleasedAt') IS NULL`;
+  const candidates = await runOutsideDbContext(() => withSystemDbAccessContext(
+    () => db.select({ id: partnerAiConnections.id, partnerId: partnerAiConnections.partnerId })
+      .from(partnerAiConnections)
+      .where(and(liveEnvManaged(), unreleased))
+      .orderBy(asc(partnerAiConnections.partnerId), asc(partnerAiConnections.id)),
+    'aiModels.envBootstrap.listUnreleased',
+  ));
+  const released: Array<{ id: string; partnerId: string }> = [];
+  for (const row of candidates) {
+    const rows = await inPartnerEnvLock(row.partnerId, () => db.update(partnerAiConnections)
       .set({
         providerConfig: sql`${partnerAiConnections.providerConfig} || jsonb_build_object('envReleasedAt', ${now.toISOString()}::text)`,
         updatedAt: now,
       })
       .where(and(
-        eq(partnerAiConnections.kind, 'openai_compatible'),
-        ne(partnerAiConnections.status, 'disconnected'),
-        sql`${partnerAiConnections.providerConfig}->>'managedBy' = 'env'`,
-        sql`(${partnerAiConnections.providerConfig}->>'envReleasedAt') IS NULL`,
+        eq(partnerAiConnections.id, row.id),
+        eq(partnerAiConnections.partnerId, row.partnerId),
+        liveEnvManaged(),
+        unreleased,
       ))
-      .returning({ id: partnerAiConnections.id }),
-    'aiModels.envBootstrap.release',
-  ));
-  return rows.length;
+      .returning({ id: partnerAiConnections.id }));
+    if (rows.length > 0) released.push(row);
+  }
+  return released;
 }

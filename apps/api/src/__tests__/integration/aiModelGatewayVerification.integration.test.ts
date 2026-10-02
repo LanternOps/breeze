@@ -142,6 +142,7 @@ describe('verifyConnectionOffering (real DB)', () => {
       return PASS;
     }));
     expect(r.state).toBe('superseded');
+    expect(r.connectionChanged).toBe(true);
     expect((await offeringRow(offeringId)).capabilities).toBeNull();
     expect((await loadOfferingCandidate(offeringId, partnerId))!.facts.supportsTools).toBe(false);
   });
@@ -168,6 +169,7 @@ describe('verifyConnectionOffering (real DB)', () => {
       return FAIL;
     }));
     expect(outer.state).toBe('superseded');
+    expect(outer.connectionChanged).toBe(false);
     expect(readVerification((await offeringRow(offeringId)).capabilities)).toMatchObject({ passed: true });
   });
 
@@ -186,6 +188,7 @@ describe('verifyConnectionOffering (real DB)', () => {
       return PASS;
     }));
     expect(r.state).toBe('superseded');
+    expect(r.connectionChanged).toBe(false);
     expect((await offeringRow(live.offeringId)).capabilities).toBeNull();
   });
 

@@ -1,5 +1,5 @@
 /**
- * W06 Task 12 (#7604): the one write of a gateway verification record onto
+ * W06 (#7604): the one write of a gateway verification record onto
  * `partner_ai_models.capabilities` (Decision D4). Nothing else may write that
  * column for a gateway kind — it is what grants tool calling.
  *
@@ -42,7 +42,13 @@ export interface OfferingVerificationWrite {
   capabilities: Record<string, unknown>;
 }
 
-export type OfferingVerificationWriteOutcome = 'written' | 'superseded';
+/**
+ * `connection_changed`: nothing written because the connection, still active,
+ * now has a different config_version or endpoint fingerprint (a fresh run
+ * would verify it). `superseded`: nothing written for any other reason (gone,
+ * disconnected, offering moved, or a newer verdict already landed).
+ */
+export type OfferingVerificationWriteOutcome = 'written' | 'superseded' | 'connection_changed';
 
 const BUSY_RETRIES = 5;
 const BUSY_BACKOFF_MS = 500;
@@ -59,14 +65,12 @@ async function writeLocked(input: OfferingVerificationWrite): Promise<OfferingVe
     .from(partnerAiConnections)
     .where(and(eq(partnerAiConnections.id, input.connectionId), eq(partnerAiConnections.partnerId, input.partnerId)))
     .for('update');
+  if (!conn || conn.status !== 'active' || !isGatewayConnectionKind(conn.kind)) return 'superseded';
   if (
-    !conn
-    || conn.status !== 'active'
-    || !isGatewayConnectionKind(conn.kind)
-    || conn.configVersion !== input.configVersion
+    conn.configVersion !== input.configVersion
     || endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }) !== input.endpointFingerprint
   ) {
-    return 'superseded';
+    return 'connection_changed';
   }
 
   const [offering] = await db

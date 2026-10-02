@@ -180,7 +180,8 @@ import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
-import { runEnvOpenAiBootstrapWithRetry } from './services/aiModels/envOpenAiBootstrap';
+import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
+import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
@@ -1824,6 +1825,11 @@ async function bootstrap(): Promise<void> {
   // controller site). Default-deny when absent, so install before serving.
   registerTopologyPhysicalAuthorities();
 
+  // Model gateway: before every upstream dial, refuse a grant whose connection
+  // was disconnected or re-keyed/re-pointed (on any replica) since it was
+  // issued. Installed before serving, so no request can dial without it.
+  registerGatewayConnectionCheck();
+
   server = serve({
     fetch: app.fetch,
     port
@@ -1919,8 +1925,10 @@ async function bootstrap(): Promise<void> {
   // after the cutover sweep: each partner is cut over FIRST inside the
   // bootstrap, so the cutover can never undo it. Detached and retried on a
   // bounded schedule; idempotent across restarts and replicas (per-partner
-  // registry lock). Never logs the key.
-  void runEnvOpenAiBootstrapWithRetry()
+  // registry lock). One Sentry event if it still ends incomplete; then, every
+  // 10 minutes, partners created since boot get their connection. Never logs
+  // the key.
+  void runEnvOpenAiBootstrapAtBoot()
     .catch((err) => {
       console.error('[startup] MCP_LLM_* env bootstrap failed:', safeErrorMessage(err));
       captureException(reportableCutoverError(err), undefined, { area: 'ai_env_openai_bootstrap' });
