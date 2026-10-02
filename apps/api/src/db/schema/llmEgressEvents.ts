@@ -19,7 +19,7 @@ export const LLM_EGRESS_SURFACES = [
   'script_review_verdict',
   // W05 (#7603): the transcript-fit token count before a model switch, and
   // the continuation summary. CHECK re-issued in
-  // 2026-11-22-100000-llm-egress-events-w05-surfaces.sql.
+  // 2026-11-29-100000-llm-egress-events-w05-surfaces.sql.
   'one_shot_token_count',
   'one_shot_continuation_summary',
 ] as const;
