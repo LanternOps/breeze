@@ -93,7 +93,7 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
         const delay = Math.min(60 * 2 ** Math.min(row.attempts - 1, 6), 3600) * 1000;
         await scope(() => db.update(billingNoticeOutbox).set({
           status: !row.sentAt && row.attempts >= 8 ? 'failed' : 'pending',
-          nextAttemptAt: new Date(now.getTime() + delay),
+          nextAttemptAt: new Date(Math.max(now.getTime(), Date.now()) + delay),
           lastError: error instanceof Error ? error.name : 'BillingNoticeError',
         }).where(owns(row)));
         // Do not persist raw transport exceptions: they may contain bearer URLs.

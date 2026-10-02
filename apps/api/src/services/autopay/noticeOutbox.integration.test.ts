@@ -20,6 +20,7 @@ async function fixture(kind: 'autopay_request' | 'invoice_autopay' = 'autopay_re
   });
 }
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (ids.length) await withSystemDbAccessContext(() => db.delete(billingNoticeOutbox).where(inArray(billingNoticeOutbox.id, ids.splice(0))));
   send.mockReset().mockResolvedValue(undefined);
 });
@@ -53,6 +54,7 @@ describe('billing outbox on real PostgreSQL', () => {
   it('backs off ordinary failure and never sends cancelled rows', async () => {
     const f = await fixture();
     const now = new Date();
+    vi.spyOn(Date, 'now').mockReturnValue(now.getTime() - 1000);
     send.mockRejectedValueOnce(new Error('temporary'));
     expect(await dispatchPendingBillingNotices(now)).toEqual({ sent: 0, failed: 1 });
     const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id, f.id)));
@@ -61,6 +63,24 @@ describe('billing outbox on real PostgreSQL', () => {
     await withSystemDbAccessContext(() => db.update(billingNoticeOutbox).set({ status: 'cancelled' }).where(eq(billingNoticeOutbox.id, f.id)));
     await dispatchPendingBillingNotices(new Date(now.getTime() + 60001));
     expect(send).toHaveBeenCalledTimes(1);
+  });
+  it('preserves the full retry interval after a slow failed send', async () => {
+    const f = await fixture();
+    const now = new Date();
+    const failedAt = now.getTime() + 120000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now.getTime());
+    send.mockImplementationOnce(async () => {
+      clock.mockReturnValue(failedAt);
+      throw new Error('slow transport failure');
+    });
+    expect(await dispatchPendingBillingNotices(now)).toEqual({ sent: 0, failed: 1 });
+    const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id, f.id)));
+    expect(row).toMatchObject({ status: 'pending', attempts: 1, sentAt: null });
+    expect(row!.nextAttemptAt!.getTime()).toBe(failedAt + 60000);
+    expect(await dispatchPendingBillingNotices(new Date(failedAt + 59999))).toEqual({ sent: 0, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await dispatchPendingBillingNotices(new Date(failedAt + 60000))).toEqual({ sent: 1, failed: 0 });
+    expect(send).toHaveBeenCalledTimes(2);
   });
   it('handler failure after durable send acknowledgement retries without re-sending', async () => {
     const f = await fixture('invoice_autopay');
@@ -73,7 +93,7 @@ describe('billing outbox on real PostgreSQL', () => {
     const [ack] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id, f.id)));
     expect(ack!.sentAt).not.toBeNull();
     expect(ack!.status).toBe('pending');
-    expect(await dispatchPendingBillingNotices(new Date(now.getTime() + 60001))).toEqual({ sent: 1, failed: 0 });
+    expect(await dispatchPendingBillingNotices(ack!.nextAttemptAt!)).toEqual({ sent: 1, failed: 0 });
     expect(send).toHaveBeenCalledTimes(1);
     expect(calls).toBe(2);
   });
