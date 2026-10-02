@@ -104,10 +104,10 @@ import { refusalHeadline } from '../aiModels/refusals';
 import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
 import { resolveModel, type FailoverOrigin, type ResolvedModel } from '../aiModels/resolveModel';
 import {
-  classifySdkAssistantError,
   FAILOVER_CAUSES,
   hopIdempotencyKey,
   MAX_FAILOVER_HOP,
+  nextTerminalProviderCause,
   shouldFailOverNow,
   type FailoverCause,
   type ProviderFailureCause,
@@ -257,22 +257,6 @@ export class AgentRunError extends Error {
     this.name = 'AgentRunError';
     this.errorCode = errorCode;
   }
-}
-
-/**
- * W09 / PR #7775 review (D8): the classified provider status a hop ENDS on.
- * The CLI's own final api-error assistant message, or a result's
- * `api_error_status`, sets it (null when unclassified); an `api_retry` clears
- * it, since an error the CLI then retried was not final. Everything else
- * leaves it as it was.
- */
-function nextTerminalProviderCause(current: ProviderFailureCause | null, message: unknown): ProviderFailureCause | null {
-  if (!message || typeof message !== 'object') return current;
-  const m = message as { type?: unknown; subtype?: unknown; error?: unknown; api_error_status?: unknown };
-  if (m.type === 'assistant' && typeof m.error === 'string') return classifySdkAssistantError(m.error, null);
-  if (m.type === 'system' && m.subtype === 'api_retry') return null;
-  if (m.type === 'result' && typeof m.api_error_status === 'number') return classifySdkAssistantError(null, m.api_error_status);
-  return current;
 }
 
 /**

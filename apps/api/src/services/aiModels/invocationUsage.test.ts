@@ -433,7 +433,7 @@ describe('W09: provider-failure observation', () => {
   it('an api_retry records the classified cause, its status and the CLI\'s attempt count', () => {
     const obs = newSdkTurnObservation();
     observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 500, error_status: 529, error: 'overloaded' });
-    expect(obs.providerFailure).toEqual({ cause: 'overloaded', status: 529, retries: 2 });
+    expect(obs.providerFailure).toEqual({ cause: 'overloaded', status: 529, retries: 2, terminal: false });
     expect(obs.sawOutput).toBe(false);
   });
 
@@ -491,6 +491,98 @@ describe('W09: provider-failure observation', () => {
     expect(obs.fastNotOnSeen).toBe(true);
     expect(obs.refusalFallback).toEqual({ fallbackModel: 'm2', category: 'cyber' });
     expect(obs.providerFailure).toMatchObject({ cause: 'overloaded' });
+  });
+});
+
+/**
+ * The frames the W09 lab (L1, docs/testing/lab/2026-10-02-ai-model-registry-w09-l1-l3.md)
+ * recorded from the real CLI (agent-sdk 0.3.286), scrubbed. `BG` is the CLI's
+ * own background call: it succeeds in every query, even when the main model fails.
+ */
+const BG = 'claude-haiku-4-5-20251001';
+const LOW_CREDIT_TEXT = 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.';
+const syntheticError = (error: string) =>
+  ({ type: 'assistant', error, message: { model: '<synthetic>', content: [{ type: 'text', text: `API Error: ${error}` }] } });
+const failedResult = (status: number, text = 'API Error') => ({
+  type: 'result', subtype: 'success', is_error: true, api_error_status: status, stop_reason: 'stop_sequence',
+  result: text, total_cost_usd: 0.001, usage: ru(tok(0, 0)), modelUsage: { [BG]: mu(tok(900, 15)) },
+});
+const retries = (error: string, status: number, n = 3) =>
+  Array.from({ length: n }, (_, i) => ({ type: 'system', subtype: 'api_retry', attempt: i + 1, max_retries: 3, retry_delay_ms: 0, error_status: status, error }));
+const LAB_FAILED_TURNS = {
+  lowCredit: { frames: [syntheticError('billing_error'), failedResult(400, LOW_CREDIT_TEXT)], cause: 'quota_exhausted' },
+  overloaded: { frames: [...retries('overloaded', 529), syntheticError('server_error'), failedResult(529)], cause: 'overloaded' },
+  rateLimited: { frames: [...retries('rate_limit', 429), syntheticError('rate_limit'), failedResult(429)], cause: 'rate_limited' },
+  authFailed: { frames: [...retries('authentication_failed', 401), syntheticError('authentication_failed'), failedResult(401)], cause: 'auth_failed' },
+} as const;
+function observed(frames: readonly unknown[]) {
+  const obs = newSdkTurnObservation();
+  for (const f of frames) observeSdkMessage(obs, f);
+  return obs;
+}
+
+describe('#7784: a later, less specific frame never clears the terminal cause', () => {
+  it('low credit: the result\'s bare 400 keeps the billing_error frame\'s quota_exhausted (the lab sequence)', () => {
+    const obs = observed(LAB_FAILED_TURNS.lowCredit.frames);
+    expect(obs.providerFailure).toMatchObject({ cause: 'quota_exhausted', retries: 0 });
+    expect(obs.sawOutput).toBe(false);
+  });
+
+  it.each(Object.entries(LAB_FAILED_TURNS))('%s: the lab sequence ends on its classified cause', (_name, turn) => {
+    expect(observed(turn.frames).providerFailure).toMatchObject({ cause: turn.cause });
+  });
+
+  it('a terminal unclassified error (invalid_request) followed by the result\'s 400 stays cleared', () => {
+    const obs = observed([...retries('overloaded', 529, 1), syntheticError('invalid_request'), failedResult(400)]);
+    expect(obs.providerFailure).toBeNull();
+  });
+
+  it('a result with a classified status still replaces a terminal cause (529 is more specific than server_error)', () => {
+    const obs = observed([syntheticError('server_error'), failedResult(529)]);
+    expect(obs.providerFailure).toMatchObject({ cause: 'overloaded', status: 529 });
+  });
+
+  it('an api_retry after a terminal cause is a new request: it still decides (classified or cleared)', () => {
+    const cleared = observed([syntheticError('billing_error'), { type: 'system', subtype: 'api_retry', attempt: 1, error_status: null, error: 'unknown' }, failedResult(400)]);
+    expect(cleared.providerFailure).toBeNull();
+    const replaced = observed([syntheticError('billing_error'), ...retries('rate_limit', 429, 1)]);
+    expect(replaced.providerFailure).toMatchObject({ cause: 'rate_limited' });
+  });
+});
+
+describe('#7786: the CLI\'s background call never labels a failed turn', () => {
+  it.each(Object.entries(LAB_FAILED_TURNS))('%s on a query\'s first turn: served = bound, no fallback, nothing billed', (_name, turn) => {
+    const obs = observed(turn.frames);
+    const out = sdkTurnUsage({ binding: B, observation: obs, previousSnapshot: null, result: turn.frames.at(-1) as SdkResultLike });
+    expect(out.outcome).toMatchObject({ servedModel: SONNET, fallbackUsed: false, stopReason: 'error', refused: false });
+    // Billing unchanged: result.usage (main loop) is zero, so nothing is billed.
+    expect(out.usage).toEqual([]);
+    expect(out.usageNote).toBe('first_result');
+    expect(out.usageConfirmed).toBe(false);
+  });
+
+  it('a failed later turn (snapshot present): the background delta is billed exactly as before, but never named as the served model', () => {
+    const prev = snap({ [SONNET]: T, [BG]: tok(900, 15) });
+    const frames = [...retries('rate_limit', 429), syntheticError('rate_limit'),
+      { ...failedResult(429), modelUsage: { [SONNET]: mu(T), [BG]: mu(tok(1800, 30)) } }];
+    const out = sdkTurnUsage({ binding: B, observation: observed(frames), previousSnapshot: prev, result: frames.at(-1) as SdkResultLike });
+    expect(out.outcome).toMatchObject({ servedModel: SONNET, fallbackUsed: false, stopReason: 'error' });
+    expect(out.usage).toEqual([std(BG, tok(900, 15))]);
+    expect(out.usageNote).toBe('delta');
+    expect(out.nextSnapshot).toEqual(snap({ [SONNET]: T, [BG]: tok(1800, 30) }));
+  });
+
+  it('a turn that produced output before failing keeps the observed served model', () => {
+    const frames = [{ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }, failedResult(529)];
+    const out = sdkTurnUsage({ binding: B, observation: observed(frames), previousSnapshot: null,
+      result: { ...(frames.at(-1) as SdkResultLike), usage: ru(tok(5, 5)), modelUsage: { [OPUS48]: mu(tok(5, 5)) } } });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
+  });
+
+  it('a refusal fallback observed on a failed turn still names the fallback', () => {
+    const frames = [{ type: 'system', subtype: 'model_refusal_fallback', fallback_model: HAIKU, api_refusal_category: 'cyber' }, failedResult(529)];
+    const out = sdkTurnUsage({ binding: B, observation: observed(frames), previousSnapshot: null, result: frames.at(-1) as SdkResultLike });
+    expect(out.outcome).toMatchObject({ servedModel: HAIKU, fallbackUsed: true });
   });
 });
 

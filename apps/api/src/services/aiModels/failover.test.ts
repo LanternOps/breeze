@@ -4,6 +4,7 @@ import {
   classifyProviderStatus,
   classifySdkAssistantError,
   hopIdempotencyKey,
+  nextTerminalProviderCause,
   shouldFailOverNow,
   TRANSIENT_FAILOVER_CAUSES,
 } from './failover';
@@ -111,5 +112,29 @@ describe('shouldFailOverNow (agent runs)', () => {
     ['out of quota fails over at once', pf('quota_exhausted', 0), false, ['k'], 'quota_exhausted'],
   ] as const)('%s', (_l, providerFailure, sawOutput, remaining, expected) => {
     expect(shouldFailOverNow({ providerFailure, sawOutput }, remaining)).toBe(expected);
+  });
+});
+
+describe('nextTerminalProviderCause (agent runs: the cause a hop ENDS on)', () => {
+  const walk = (frames: readonly unknown[]) =>
+    frames.reduce<ReturnType<typeof nextTerminalProviderCause>>((c, f) => nextTerminalProviderCause(c, f), null);
+  const synthetic = (error: string) => ({ type: 'assistant', error, message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error' }] } });
+  const result = (status: number) => ({ type: 'result', subtype: 'success', is_error: true, api_error_status: status });
+  const retry = (error: string, status: number | null) => ({ type: 'system', subtype: 'api_retry', attempt: 1, error_status: status, error });
+
+  it('#7784: low credit (billing_error, then the result\'s bare 400) ends on quota_exhausted', () => {
+    expect(walk([synthetic('billing_error'), result(400)])).toBe('quota_exhausted');
+  });
+
+  it.each([
+    ['529', [retry('overloaded', 529), synthetic('server_error'), result(529)], 'overloaded'],
+    ['429', [retry('rate_limit', 429), synthetic('rate_limit'), result(429)], 'rate_limited'],
+    ['401', [retry('authentication_failed', 401), synthetic('authentication_failed'), result(401)], 'auth_failed'],
+    ['a 401 result alone', [result(401)], 'auth_failed'],
+    ['a terminal invalid_request, then 400', [synthetic('invalid_request'), result(400)], null],
+    ['a retried 529, then a bare 400 result (the retried error was not final)', [retry('overloaded', 529), result(400)], null],
+    ['an api_retry after a terminal cause', [synthetic('billing_error'), retry('unknown', null)], null],
+  ] as const)('%s', (_l, frames, expected) => {
+    expect(walk(frames)).toBe(expected);
   });
 });

@@ -220,6 +220,22 @@ describe('turn_model (W05 spike constraint 5)', () => {
     expect(sets).toContainEqual({ lastTurnModel: turnModel });
   });
 
+  it('#7786: a turn that failed before any output names the bound model, never the CLI\'s background call', async () => {
+    // The W09 lab frames for a forced 429: only the CLI's own background
+    // Haiku call grew in modelUsage, since the main model never answered.
+    const BG = 'claude-haiku-4-5-20251001';
+    const events = await published([
+      { type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 1, retry_delay_ms: 0, error_status: 429, error: 'rate_limit' },
+      { type: 'assistant', error: 'rate_limit', message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 429' }] } },
+      { ...sdkResult({ usage: {}, modelUsage: { [BG]: { inputTokens: 900, outputTokens: 15 } } }), is_error: true, api_error_status: 429 },
+    ]);
+    const turnModel = events.find((e) => e.type === 'turn_model')!.turnModel;
+    expect(turnModel).toMatchObject({ requestedModel: 'claude-sonnet-5-5', servedModel: 'claude-sonnet-5-5', servedDisplayName: 'Sonnet 5.5', fallbackUsed: false });
+    const sets = vi.mocked(db.update).mock.results.flatMap((r) =>
+      (r.value as { set: ReturnType<typeof vi.fn> }).set.mock.calls.map((c) => c[0] as Record<string, unknown>));
+    expect(sets).toContainEqual({ lastTurnModel: turnModel });
+  });
+
   it('a failed persist never fails the turn: it is reported, and turn_model and done still publish', async () => {
     vi.mocked(db.update).mockImplementation(() => { throw new Error('db down'); });
     const events = await published([...thinkingTurn, sdkResult({})]);
