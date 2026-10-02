@@ -1,6 +1,6 @@
 /**
  * Live-Postgres proof for
- * 2026-11-12-110000-device-mtls-history-reconcile-issued-certs.sql (#7431 /
+ * 2026-12-03-120100-device-mtls-history-reconcile-issued-certs.sql (#7431 /
  * #7432): devices whose current certificate (the legacy devices.mtls_cert_*
  * columns) never reached device_mtls_certificates get it imported as the
  * active row, a stale active row is demoted for revocation, and everything
@@ -20,7 +20,7 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION = '2026-11-12-110000-device-mtls-history-reconcile-issued-certs.sql';
+const MIGRATION = '2026-12-03-120100-device-mtls-history-reconcile-issued-certs.sql';
 const migrationSql = readFileSync(new URL(`../../../migrations/${MIGRATION}`, import.meta.url), 'utf8');
 
 async function replayMigration() {
