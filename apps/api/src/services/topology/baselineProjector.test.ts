@@ -70,6 +70,13 @@ describe('half-default route pairs',()=>{
    route('vpn-high','128.0.0.0/1','tun0',null,{nextHops:[...hops,{address:'10.8.0.9',zone:null,interfaceKey:'tun0',weight:1}]})]);
   expect(delta.relationships.map(r=>gatewayAddress(r.targetNodeId)).sort()).toEqual(['10.8.0.1','10.8.0.254']);
  });
+ it('matches the next hop on its effective interface (hop interface, else the row interface)',()=>{
+  const viaRow=(rowKey:string,prefix:string,hopInterface:string|null)=>route(rowKey,prefix,'tun0',null,{nextHops:[{address:'10.8.0.1',zone:null,interfaceKey:hopInterface,weight:null}]});
+  const paired=project([viaRow('a','0.0.0.0/1',null),viaRow('b','128.0.0.0/1','tun0')]);
+  expect(paired.delta.relationships).toHaveLength(1);
+  expect(paired.delta.relationships[0]!.sourceInterfaceId).toBe(paired.ifaceId('tun0'));
+  expect(project([viaRow('a','0.0.0.0/1',null),viaRow('b','128.0.0.0/1','tun1')]).delta.relationships).toEqual([]);
+ });
  it('maps the same pair to the same relationship regardless of row order',()=>{
   const rows=[route('vpn-low','0.0.0.0/1','tun0','10.8.0.1'),route('vpn-high','128.0.0.0/1','tun0','10.8.0.1')];
   expect(project(rows).delta.relationships[0]!.id).toBe(project([...rows].reverse()).delta.relationships[0]!.id);
