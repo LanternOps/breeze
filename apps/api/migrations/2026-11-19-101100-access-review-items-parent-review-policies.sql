@@ -114,7 +114,7 @@ BEGIN
   END IF;
 
   -- Read-only count. Elect system scope so FORCE RLS on access_reviews does
-  -- not hide rows from the count on a connection that does not bypass RLS.
+  -- not hide rows from the count on a connection subject to RLS.
   PERFORM set_config('breeze.scope', 'system', true);
   SELECT count(*) INTO n
     FROM public.access_reviews
