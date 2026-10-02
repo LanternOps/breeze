@@ -63,7 +63,7 @@
   "layout_fallback": "La organización automática alcanzó su límite. Los nodos restantes usan una cuadrícula local; las posiciones guardadas se conservan.",
   "pinned_overlap": "Los dispositivos fijados se superponen. Déjelos de fijar y reorganice para separar sus etiquetas.",
   "empty": "Aún no hay topología disponible. Agregue un agente, un perfil de detección o una red manual para este sitio.",
-  "legend": "Sólida: física · Discontinua: lógica · Punteada: inferida o esquemática. Un estado de salud desconocido no es una verificación exitosa.",
+  "legend": "Las tarjetas agrupan los dispositivos que informan la misma red · Sólida: física · Discontinua: lógica · Punteada: inferida, no verificada o esquemática. Un estado de salud desconocido no es una verificación exitosa.",
   "diagnostics": "Diagnósticos",
   "diagnosticScope": "Elija un origen del mismo sitio y una familia de direcciones. Solo \"Ejecutar diagnóstico\" envía un comando; cada familia tiene su propia ejecución acotada.",
   "recipe": "Verificación",
@@ -617,5 +617,57 @@
       "cancelled": "Cancelada",
       "expired": "Vencida"
     }
+  },
+  "grouped": {
+    "useLayout": "Usar diseño agrupado",
+    "showAllNetworks_one": "Mostrar {{count}} red de vínculo local, VPN o de un solo host",
+    "showAllNetworks_other": "Mostrar {{count}} redes de vínculo local, VPN o de un solo host",
+    "evidenceSection": "Evidencia y vigencia",
+    "type": "Tipo",
+    "addresses": "Direcciones",
+    "mac": "MAC",
+    "vendor": "Fabricante",
+    "os": "SO",
+    "gateway": "Puerta de enlace",
+    "networks": "Red",
+    "lastSeen": "visto por última vez {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Agente en línea",
+        "offline": "Agente sin conexión",
+        "unknown": "Estado del agente desconocido"
+      },
+      "scan": {
+        "online": "Respondió al último análisis de detección",
+        "offline": "No respondió al último análisis de detección",
+        "unknown": "Sin analizar"
+      }
+    },
+    "addressMatchNote": "Se ubicó aquí porque su dirección está en este rango. Pertenencia no verificada.",
+    "staleMembership": "No se vio en la última recolección.",
+    "gatewayExplanation_one": "{{count}} dispositivo informa {{address}} como su puerta de enlace predeterminada. Cada dispositivo conserva su propia ruta; elija uno para inspeccionarlo o diagnosticar desde ese dispositivo.",
+    "gatewayExplanation_other": "{{count}} dispositivos informan {{address}} como su puerta de enlace predeterminada. Cada dispositivo conserva su propia ruta; elija uno para inspeccionarlo o diagnosticar desde ese dispositivo.",
+    "reportedBy": "Informado por",
+    "diagnoseHint": "Los diagnósticos se ejecutan desde el dispositivo que elija, por su propia ruta.",
+    "stale": "desactualizado",
+    "unverified": "no verificado",
+    "networkExplanation_one": "{{count}} dispositivo informa una interfaz en {{prefix}}. La agrupación por rango de direcciones es inferida: no prueba que los dispositivos compartan un conmutador.",
+    "networkExplanation_other": "{{count}} dispositivos informan una interfaz en {{prefix}}. La agrupación por rango de direcciones es inferida: no prueba que los dispositivos compartan un conmutador.",
+    "unidentifiedExplanation": "Estos dispositivos no informan pertenencia a ninguna red, y su dirección no está dentro de exactamente una red conocida de este sitio.",
+    "class": {
+      "link_local": "Rango de vínculo local: todos los dispositivos tienen uno; no identifica una red compartida.",
+      "host": "Una ruta de un solo host, generalmente una dirección de VPN o de túnel.",
+      "overlay": "Un rango de superposición o VPN (por ejemplo, Tailscale), no la red local.",
+      "other": "Un rango inusualmente amplio."
+    },
+    "via": "Puerta de enlace predeterminada: {{gateways}}",
+    "conflict": "Los dispositivos de este rango informan puertas de enlace distintas, por lo que se divide en tarjetas separadas.",
+    "addressMatchCount_one": "{{count}} dispositivo se muestra aquí solo porque su dirección está en este rango. Pertenencia no verificada.",
+    "addressMatchCount_other": "{{count}} dispositivos se muestran aquí solo porque su dirección está en este rango. Pertenencia no verificada.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivos",
+    "moreOutside_one": "{{count}} más fuera de esta vista",
+    "moreOutside_other": "{{count}} más fuera de esta vista",
+    "gatewayAddressMatch": "Un dispositivo detectado usa esta dirección (solo coincidencia de dirección, no verificada):"
   }
 }

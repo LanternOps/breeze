@@ -63,7 +63,7 @@
   "layout_fallback": "Otomatik düzenleme sınırına ulaştı. Kalan düğümler yerel bir ızgara kullanır; kaydedilen konumlar korunur.",
   "pinned_overlap": "Sabitlenmiş cihazlar çakışıyor. Etiketlerini ayırmak için sabitlemeyi kaldırın ve yeniden düzenleyin.",
   "empty": "Henüz kullanılabilir bir topoloji yok. Bu site için bir aracı, keşif profili veya manuel ağ ekleyin.",
-  "legend": "Düz çizgi: fiziksel · Kesikli çizgi: mantıksal · Noktalı çizgi: çıkarsanmış veya şematik. Bilinmeyen sağlık durumu başarılı bir kontrol değildir.",
+  "legend": "Kartlar aynı ağı bildiren cihazları gruplar · Düz çizgi: fiziksel · Kesikli çizgi: mantıksal · Noktalı çizgi: çıkarsanmış, doğrulanmamış veya şematik. Bilinmeyen sağlık durumu başarılı bir kontrol değildir.",
   "diagnostics": "Tanılama",
   "diagnosticScope": "Aynı siteden bir köken ve bir adres ailesi seçin. Yalnızca \"Tanılama çalıştır\" bir komut gönderir; her ailenin kendi sınırlı çalıştırması vardır.",
   "recipe": "Kontrol",
@@ -617,5 +617,57 @@
       "cancelled": "İptal edildi",
       "expired": "Süresi doldu"
     }
+  },
+  "grouped": {
+    "useLayout": "Gruplanmış düzeni kullan",
+    "showAllNetworks_one": "link-local, VPN veya tek ana bilgisayarlı {{count}} ağı göster",
+    "showAllNetworks_other": "link-local, VPN veya tek ana bilgisayarlı {{count}} ağı göster",
+    "evidenceSection": "Kanıt ve güncellik",
+    "type": "Tür",
+    "addresses": "Adresler",
+    "mac": "MAC",
+    "vendor": "Üretici",
+    "os": "İşletim sistemi",
+    "gateway": "Ağ geçidi",
+    "networks": "Ağ",
+    "lastSeen": "son görülme: {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Aracı çevrimiçi",
+        "offline": "Aracı çevrimdışı",
+        "unknown": "Aracı durumu bilinmiyor"
+      },
+      "scan": {
+        "online": "Son keşif taramasına yanıt verdi",
+        "offline": "Son keşif taramasına yanıt vermedi",
+        "unknown": "Taranmadı"
+      }
+    },
+    "addressMatchNote": "Adresi bu aralıkta olduğu için buraya yerleştirildi. Üyelik doğrulanmadı.",
+    "staleMembership": "Son toplamada görülmedi.",
+    "gatewayExplanation_one": "{{count}} cihaz, varsayılan ağ geçidi olarak {{address}} adresini bildiriyor. Her cihaz kendi rotasını korur; incelemek veya o cihazdan tanılama yapmak için birini seçin.",
+    "gatewayExplanation_other": "{{count}} cihaz, varsayılan ağ geçidi olarak {{address}} adresini bildiriyor. Her cihaz kendi rotasını korur; incelemek veya o cihazdan tanılama yapmak için birini seçin.",
+    "reportedBy": "Bildiren",
+    "diagnoseHint": "Tanılamalar, seçtiğiniz cihazdan, o cihazın kendi rotası üzerinden çalışır.",
+    "stale": "eski",
+    "unverified": "doğrulanmadı",
+    "networkExplanation_one": "{{count}} cihaz, {{prefix}} içinde bir arayüz bildiriyor. Adres aralığına göre gruplama çıkarsanmıştır: cihazların aynı anahtarı paylaştığını kanıtlamaz.",
+    "networkExplanation_other": "{{count}} cihaz, {{prefix}} içinde bir arayüz bildiriyor. Adres aralığına göre gruplama çıkarsanmıştır: cihazların aynı anahtarı paylaştığını kanıtlamaz.",
+    "unidentifiedExplanation": "Bu cihazlar herhangi bir ağ üyeliği bildirmiyor ve adresleri bu sitedeki bilinen ağlardan tam olarak birinin içinde değil.",
+    "class": {
+      "link_local": "Link-local aralığı: her cihazın bir tane vardır; ortak bir ağı tanımlamaz.",
+      "host": "Tek ana bilgisayarlı bir rota; genellikle bir VPN veya tünel adresidir.",
+      "overlay": "Bir bindirme (overlay) veya VPN aralığı (örneğin Tailscale); yerel ağ değildir.",
+      "other": "Alışılmadık ölçüde geniş bir aralık."
+    },
+    "via": "Varsayılan ağ geçidi: {{gateways}}",
+    "conflict": "Bu aralıktaki cihazlar farklı ağ geçitleri bildirdiği için ayrı kartlara bölündü.",
+    "addressMatchCount_one": "{{count}} cihaz burada yalnızca adresi bu aralıkta olduğu için gösteriliyor. Üyelik doğrulanmadı.",
+    "addressMatchCount_other": "{{count}} cihaz burada yalnızca adresleri bu aralıkta olduğu için gösteriliyor. Üyelik doğrulanmadı.",
+    "devices_one": "{{count}} cihaz",
+    "devices_other": "{{count}} cihaz",
+    "moreOutside_one": "Bu görünümün dışında {{count}} tane daha",
+    "moreOutside_other": "Bu görünümün dışında {{count}} tane daha",
+    "gatewayAddressMatch": "Keşfedilen bir cihaz bu adresi kullanıyor (yalnızca adres eşleşmesi, doğrulanmadı):"
   }
 }

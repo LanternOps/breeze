@@ -63,7 +63,7 @@
   "layout_fallback": "L'organisation automatique a atteint sa limite. Les nœuds restants utilisent une grille locale ; les positions enregistrées sont conservées.",
   "pinned_overlap": "Des appareils épinglés se chevauchent. Désépinglez-les et réorganisez pour séparer leurs étiquettes.",
   "empty": "Aucune topologie n'est encore disponible. Ajoutez un agent, un profil de détection ou un réseau manuel pour ce site.",
-  "legend": "Plein : physique · Tirets : logique · Pointillés : déduit ou schématique. Un état de santé inconnu n'est pas une vérification réussie.",
+  "legend": "Les cartes regroupent les appareils qui signalent le même réseau · Plein : physique · Tirets : logique · Pointillés : déduit, non vérifié ou schématique. Un état de santé inconnu n'est pas une vérification réussie.",
   "diagnostics": "Diagnostics",
   "diagnosticScope": "Choisissez une origine du même site et une famille d'adresses. Seul « Exécuter le diagnostic » envoie une commande ; chaque famille a sa propre exécution limitée.",
   "recipe": "Vérification",
@@ -617,5 +617,57 @@
       "cancelled": "Annulée",
       "expired": "Expirée"
     }
+  },
+  "grouped": {
+    "useLayout": "Utiliser la disposition groupée",
+    "showAllNetworks_one": "Afficher {{count}} réseau à liaison locale, VPN ou à hôte unique",
+    "showAllNetworks_other": "Afficher {{count}} réseaux à liaison locale, VPN ou à hôte unique",
+    "evidenceSection": "Preuves et fraîcheur",
+    "type": "Type",
+    "addresses": "Adresses",
+    "mac": "MAC",
+    "vendor": "Fabricant",
+    "os": "Système d'exploitation",
+    "gateway": "Passerelle",
+    "networks": "Réseau",
+    "lastSeen": "vu pour la dernière fois {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Agent en ligne",
+        "offline": "Agent hors ligne",
+        "unknown": "État de l'agent inconnu"
+      },
+      "scan": {
+        "online": "A répondu à la dernière analyse de détection",
+        "offline": "N'a pas répondu à la dernière analyse de détection",
+        "unknown": "Non analysé"
+      }
+    },
+    "addressMatchNote": "Placé ici car son adresse se trouve dans cette plage. Appartenance non vérifiée.",
+    "staleMembership": "Non vu lors de la dernière collecte.",
+    "gatewayExplanation_one": "{{count}} appareil signale {{address}} comme passerelle par défaut. Chaque appareil conserve sa propre route ; choisissez-en un pour l'inspecter ou diagnostiquer depuis cet appareil.",
+    "gatewayExplanation_other": "{{count}} appareils signalent {{address}} comme passerelle par défaut. Chaque appareil conserve sa propre route ; choisissez-en un pour l'inspecter ou diagnostiquer depuis cet appareil.",
+    "reportedBy": "Signalé par",
+    "diagnoseHint": "Les diagnostics s'exécutent depuis l'appareil choisi, via sa propre route.",
+    "stale": "périmé",
+    "unverified": "non vérifié",
+    "networkExplanation_one": "{{count}} appareil signale une interface dans {{prefix}}. Le regroupement par plage d'adresses est déduit : il ne prouve pas que les appareils partagent un commutateur.",
+    "networkExplanation_other": "{{count}} appareils signalent une interface dans {{prefix}}. Le regroupement par plage d'adresses est déduit : il ne prouve pas que les appareils partagent un commutateur.",
+    "unidentifiedExplanation": "Ces appareils ne signalent aucune appartenance à un réseau, et leur adresse ne se trouve pas dans exactement un réseau connu de ce site.",
+    "class": {
+      "link_local": "Plage à liaison locale : chaque appareil en a une ; elle n'identifie pas un réseau partagé.",
+      "host": "Une route à hôte unique, généralement une adresse VPN ou de tunnel.",
+      "overlay": "Une plage de superposition ou VPN (par exemple Tailscale), et non le réseau local.",
+      "other": "Une plage inhabituellement large."
+    },
+    "via": "Passerelle par défaut : {{gateways}}",
+    "conflict": "Les appareils de cette plage signalent des passerelles différentes ; elle est donc scindée en cartes distinctes.",
+    "addressMatchCount_one": "{{count}} appareil n'est affiché ici que parce que son adresse se trouve dans cette plage. Appartenance non vérifiée.",
+    "addressMatchCount_other": "{{count}} appareils ne sont affichés ici que parce que leur adresse se trouve dans cette plage. Appartenance non vérifiée.",
+    "devices_one": "{{count}} appareil",
+    "devices_other": "{{count}} appareils",
+    "moreOutside_one": "{{count}} autre en dehors de cette vue",
+    "moreOutside_other": "{{count}} autres en dehors de cette vue",
+    "gatewayAddressMatch": "Un appareil découvert utilise cette adresse (correspondance d'adresse seulement, non vérifiée) :"
   }
 }
