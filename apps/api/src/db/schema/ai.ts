@@ -307,7 +307,7 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   // Partial indexes created via SQL migration
   // (ai_budget_reservations_expiry_sweep_idx, WHERE status IN ('active','indeterminate');
   // W03: _pending_settlement_idx, _credits_undebited_idx, _credits_debit_failed_idx,
-  // _pending_replay_idx, _pending_dead_idx; CHECK
+  // _pending_replay_idx, _pending_dead_idx; W05: _session_turn_idx, WHERE session_id IS NOT NULL; CHECK
   // ai_budget_reservations_credits_debit_attempts_chk, _pending_settlement_attempts_chk).
   // Composite (session_id, org_id) FK is SQL-only because Drizzle cannot
   // express PostgreSQL's column-specific ON DELETE SET NULL (session_id).
