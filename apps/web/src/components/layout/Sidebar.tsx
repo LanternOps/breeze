@@ -596,8 +596,22 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const currentPath = useCurrentPath(initialPath);
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
-  const permissions = useAuthStore((s) => s.user?.permissions);
-  const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  const storedPermissions = useAuthStore((s) => s.user?.permissions);
+  const storedCanManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide);
+  // Reactive trigger only: access tokens are never persisted, so the scope is
+  // unknown on a cold load and becomes known when the refresh lands.
+  const accessToken = useAuthStore((s) => s.tokens?.accessToken ?? null);
+  // #7498: the server render has no localStorage and no token, but the client's
+  // persisted auth store (`user.permissions`) is available synchronously during
+  // hydration. Reading it on the first client render makes the nav differ from
+  // the server HTML (hydration error). Until mounted, use the same inputs the
+  // server had; real values apply on the next commit.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => { setHydrated(true); }, []);
+  const permissions = hydrated ? storedPermissions : undefined;
+  const canManagePartnerWide = hydrated ? storedCanManagePartnerWide : undefined;
+  // accessToken is the cache key for the decode (getJwtClaims reads the store, not React state).
+  const jwtScope = useMemo(() => (hydrated ? getJwtClaims().scope : null), [hydrated, accessToken]);
 
   // Runtime-extension navigation (see the comment above `navSections`).
   // `useExtensionNavigation` never throws — an empty list here (registry
@@ -660,8 +674,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // a non-partner scope; falls through to the server (which will 403) when the scope
   // cannot be decoded.
   useEffect(() => {
-    const { scope } = getJwtClaims();
-    if (scope !== null && scope !== 'partner') return;
+    // Partner-only endpoint. Wait until the scope is actually known (#7498): an
+    // org-scoped user would otherwise fire it before the token lands and take a
+    // 403 on every page. Gate the request, don't swallow the 403.
+    if (jwtScope !== 'partner') return;
 
     let cancelled = false;
     fetchWithAuth('/orgs/partners/me')
@@ -699,7 +715,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         console.warn('[Sidebar] Failed to fetch partner branding:', err);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [jwtScope]);
 
   useEffect(() => {
     const mqTablet = window.matchMedia('(max-width: 1023px)');
@@ -833,7 +849,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     isNavGateVisible(item, {
       isPlatformAdmin,
       permissions,
-      getScope: () => getJwtClaims().scope,
+      getScope: () => jwtScope,
       toolSourcesEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
