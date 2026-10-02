@@ -161,7 +161,7 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — test_webhook: `userId` lives only in the in-memory `event.metadata`
   // object handed to the webhook worker's queueDelivery; the actual
   // `webhookDeliveries` DB insert a few lines above never includes it.
-  ['services/aiToolsIntegrations.ts:338', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
+  ['services/aiToolsIntegrations.ts:360', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
   ['services/aiToolsScripts.ts:715', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],

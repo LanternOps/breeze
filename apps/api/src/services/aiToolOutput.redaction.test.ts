@@ -351,3 +351,58 @@ describe('compactToolResultForChat — stored key material is redacted by name',
     expect(out.encrypted).toBe('BitLocker');
   });
 });
+
+describe('compactToolResultForChat — header maps keep their names, not their values', () => {
+  it('manage_monitors get: http check headers show names with every value masked', () => {
+    const out = parse('manage_monitors', {
+      monitor: {
+        id: 'mon_1',
+        monitorType: 'http_check',
+        target: 'https://status.example.com/health',
+        config: {
+          method: 'GET',
+          expectStatus: 200,
+          headers: {
+            Authorization: 'Bearer hdr-value-1',
+            'X-Custom-Auth': 'hdr-value-2',
+            'X-Tenant': 'hdr-value-3',
+            Accept: 'application/json',
+          },
+        },
+      },
+      recentResults: [],
+      alertRules: [],
+    });
+    expect(Object.keys(out.monitor.config.headers)).toEqual([
+      'Authorization', 'X-Custom-Auth', 'X-Tenant', 'Accept',
+    ]);
+    for (const value of Object.values(out.monitor.config.headers)) expect(value).toBe(REDACTED);
+    expect(JSON.stringify(out)).not.toMatch(/hdr-value-|application\/json/);
+    expect(out.monitor.config.method).toBe('GET');
+    expect(out.monitor.config.expectStatus).toBe(200);
+  });
+
+  it('monitor definition conditions and other *Headers maps are masked the same way', () => {
+    const out = parse('list_monitors', {
+      monitors: [{ id: 'm1', condition: { checkType: 'http_check', headers: { 'X-Api': 'hdr-value-4' } } }],
+      customHeaders: { 'X-Signature': 'hdr-value-5' },
+      request_headers: { Cookie: 'hdr-value-6' },
+    });
+    expect(out.monitors[0].condition.headers).toEqual({ 'X-Api': REDACTED });
+    expect(out.customHeaders).toEqual({ 'X-Signature': REDACTED });
+    expect(out.request_headers).toEqual({ Cookie: REDACTED });
+  });
+
+  it('a headers entry that is not a name→value map is masked whole', () => {
+    const out = parse('some_tool', {
+      headers: 'Authorization: Bearer hdr-value-7',
+      responseHeaders: [{ name: 'X-Key', value: 'hdr-value-8' }],
+    });
+    expect(JSON.stringify(out)).not.toContain('hdr-value-');
+  });
+
+  it('header counts and flags are not header maps', () => {
+    const out = parse('some_tool', { headerCount: 3, hasHeaders: true, headersConfigured: 2 });
+    expect(out).toEqual({ headerCount: 3, hasHeaders: true, headersConfigured: 2 });
+  });
+});
