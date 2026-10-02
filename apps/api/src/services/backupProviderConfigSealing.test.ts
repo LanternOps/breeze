@@ -87,7 +87,7 @@ describe('backup provider config sealing', () => {
   it('seals every string inside a credentials object (GCS service-account key)', () => {
     const config = {
       bucket: 'g',
-      credentials: { type: 'service_account', private_key: 'plain-pk', client_email: 'svc@example.iam' },
+      credentials: { type: 'service_account', private_key: 'plain-pk', client_email: 'svc@example.com' },
     };
     const stored = sealBackupProviderConfig(config) as { credentials: Record<string, unknown> };
     expectSealed(stored.credentials.private_key);
