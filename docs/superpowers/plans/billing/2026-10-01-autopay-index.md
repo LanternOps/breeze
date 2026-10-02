@@ -62,6 +62,11 @@ the wave's files to sort after it, keeping their relative order.
 All billing settings columns, including the fee and reminder columns, are created in W1, so later
 waves add UI and logic without schema churn.
 
+**Slot update (2026-10-02):** `origin/main` moved past these slots before W01 shipped, so W01's six
+migrations ship as `2026-12-02-100000-…` … `2026-12-02-100500-…` (same order and slugs). Every later
+wave renames its reserved files to sort after the newest committed migration at implementation
+time. Keep the relative order (W2 < W3 < W4 < W5), and never sort before W01's `2026-12-02-1005NN`.
+
 ### C2. Drizzle schema — `apps/api/src/db/schema/autopay.ts` (W1), exported from `schema/index.ts`
 
 Table exports and SQL names:
