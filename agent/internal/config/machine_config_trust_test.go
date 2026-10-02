@@ -143,6 +143,7 @@ func TestCheckConfigObjectTrust(t *testing.T) {
 		{name: "a link", sec: programDataPathSecurity{Exists: true, Reparse: true, NameSurrogate: true}, wantErr: "link"},
 		{name: "another reparse point", sec: with(func(s *programDataPathSecurity) { s.Reparse = true }), wantErr: "reparse point"},
 		{name: "owner that cannot be checked", sec: with(func(s *programDataPathSecurity) { s.OwnerSID = "S-1-5-21-9-9-9-1234" }), wantUnverified: true},
+		{name: "security the agent cannot read", sec: programDataPathSecurity{Exists: true, Unreadable: true}, wantErr: "cannot be inspected"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkConfigObjectTrust(`C:\ProgramData\Breeze\agent.yaml`, tc.sec)
@@ -206,6 +207,11 @@ func TestReplaceEvidenceOnlyCountsTheAgentsOwnEntries(t *testing.T) {
 		{name: "another file whose owner cannot be checked is left alone", root: trusted,
 			entries: map[string]programDataPathSecurity{"helper_status.yaml": unchecked}},
 		{name: "folder owner cannot be checked", root: unchecked, wantUnverified: true},
+		{name: "folder the agent cannot inspect", root: programDataPathSecurity{Exists: true, Unreadable: true}, wantEvidence: "cannot be inspected"},
+		{name: "agent.yaml the agent cannot inspect", root: trusted,
+			entries: map[string]programDataPathSecurity{"agent.yaml": {Exists: true, Unreadable: true}}, wantEvidence: "agent.yaml cannot be inspected"},
+		{name: "another entry the agent cannot inspect", root: trusted,
+			entries: map[string]programDataPathSecurity{"notes": {Exists: true, Unreadable: true}}, wantForeign: []string{"notes"}},
 		{name: "agent.yaml owner cannot be checked", root: trusted, entries: map[string]programDataPathSecurity{"agent.yaml": unchecked}, wantUnverified: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

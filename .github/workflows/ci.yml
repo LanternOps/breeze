@@ -2054,7 +2054,7 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the reclaim tests SKIPPED - the runner token is not elevated" }
-          if ($passes -ne 17) { throw "expected exactly 17 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
+          if ($passes -ne 19) { throw "expected exactly 19 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
 
       # The helper-scoped token must never sit in a file a standard Windows user
       # can read: it reaches the console-session Breeze Assist over IPC only,

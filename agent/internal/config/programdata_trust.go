@@ -68,7 +68,11 @@ type programDataPathSecurity struct {
 	NameSurrogate bool
 	OwnerSID      string
 	DACLPresent   bool
-	ACEs          []programDataACE
+	// Unreadable: the entry exists but this process may not read its owner
+	// and DACL (its DACL denies it). The agent's own entries never deny
+	// SYSTEM or Administrators, so such an entry is another account's.
+	Unreadable bool
+	ACEs       []programDataACE
 }
 
 var readProgramDataPathSecurityFn = readProgramDataPathSecurity

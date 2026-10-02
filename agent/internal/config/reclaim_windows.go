@@ -159,6 +159,10 @@ func openConfigObject(path string, dir bool) (windows.Handle, error) {
 		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
 			return windows.InvalidHandle, fmt.Errorf("%s: %w", path, os.ErrNotExist)
 		}
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			// The agent's own config never denies SYSTEM or Administrators.
+			return windows.InvalidHandle, fmt.Errorf("%w: %s cannot be opened by the agent (its permissions deny it): %w", ErrConfigDirUntrusted, path, err)
+		}
 		return windows.InvalidHandle, fmt.Errorf("open %s: %w", path, err)
 	}
 	return h, nil
@@ -291,7 +295,7 @@ func reclaimConfigDir(root string, forEnroll bool) error {
 	} else if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 	}
-	rootSec, err := readProgramDataPathSecurity(root)
+	rootSec, err := readEntrySecurity(root)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
 	}
@@ -299,13 +303,25 @@ func reclaimConfigDir(root string, forEnroll bool) error {
 		return fmt.Errorf("%w: %s is a link or reparse point; remove it and install the agent again", ErrConfigDirUntrusted, root)
 	}
 
-	entries, err := readReclaimEntries(root)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
-	}
-	evidence, foreign, err := replaceEvidence(rootSec, entries)
+	// The folder alone may already decide it (another owner, or a DACL that
+	// keeps the agent from inspecting it); its contents need not, and may
+	// not, be listable then.
+	evidence, foreign, err := replaceEvidence(rootSec, nil)
 	if err != nil {
 		return err
+	}
+	if evidence == "" {
+		entries, err := readReclaimEntries(root)
+		switch {
+		case errors.Is(err, windows.ERROR_ACCESS_DENIED):
+			evidence = "the folder's contents cannot be listed by the agent"
+		case err != nil:
+			return fmt.Errorf("%w: %v", ErrConfigDirUntrusted, err)
+		default:
+			if evidence, foreign, err = replaceEvidence(rootSec, entries); err != nil {
+				return err
+			}
+		}
 	}
 	if evidence != "" {
 		log.Warn("The agent config folder was created or changed by another account; replacing it", "dir", root, "evidence", evidence)
@@ -366,7 +382,7 @@ func reclaimConfigDir(root string, forEnroll bool) error {
 			}
 			asideReady = true
 		}
-		return os.Rename(filepath.Join(root, name), filepath.Join(aside, name))
+		return renameEntry(filepath.Join(root, name), filepath.Join(aside, name))
 	}
 	for _, d := range decisions {
 		p := filepath.Join(root, d.name)
@@ -404,7 +420,7 @@ func readReclaimEntries(root string) (map[string]programDataPathSecurity, error)
 	}
 	entries := make(map[string]programDataPathSecurity, len(list))
 	for _, e := range list {
-		sec, err := readProgramDataPathSecurity(filepath.Join(root, e.Name()))
+		sec, err := readEntrySecurity(filepath.Join(root, e.Name()))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -451,7 +467,7 @@ func replaceConfigRoot(root string, forEnroll bool) error {
 	// The first move fails while a process holds the old folder, or anything
 	// in it, open without delete sharing: the agent then does not start,
 	// rather than run in a folder that process can still change.
-	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, os.Rename, func(p string) bool {
+	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, renameEntry, func(p string) bool {
 		_, err := os.Lstat(p)
 		return err == nil
 	})
@@ -502,4 +518,84 @@ func carryConfigFile(src, dst, sddl string) (bool, string, error) {
 		return false, "", fmt.Errorf("secure %s: %w", dst, err)
 	}
 	return true, "", nil
+}
+
+// readEntrySecurity is readProgramDataPathSecurity for an entry the agent is
+// deciding about: one whose DACL keeps this process (SYSTEM, or an elevated
+// administrator) from reading its owner and DACL is reported Unreadable, not
+// as an error. The agent's own entries never deny SYSTEM or Administrators,
+// so such an entry is another account's and is set aside or replaced.
+func readEntrySecurity(path string) (programDataPathSecurity, error) {
+	sec, err := readProgramDataPathSecurity(path)
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return programDataPathSecurity{Exists: true, Unreadable: true}, nil
+	}
+	return sec, err
+}
+
+// renameEntry moves from to to. If the entry's DACL denies the move (another
+// account set it to deny SYSTEM and Administrators, and the parent does not
+// grant delete-child), the agent takes the entry over first (takeOverEntry)
+// and moves it again.
+func renameEntry(from, to string) error {
+	err := os.Rename(from, to)
+	if err == nil || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return err
+	}
+	if terr := takeOverEntry(from); terr != nil {
+		return fmt.Errorf("%w (taking it over: %v)", err, terr)
+	}
+	log.Warn("Took over an entry another account had locked so it could be moved aside", "path", from)
+	return os.Rename(from, to)
+}
+
+// takeOverAdminsFullControlSDDL is what takeOverEntry leaves on an entry:
+// owned by Administrators, full control for SYSTEM and Administrators only.
+const takeOverAdminsFullControlSDDL = `O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
+
+// takeOverEntry makes path (not its contents) owned by Administrators with
+// a DACL granting only SYSTEM and Administrators, whatever its DACL said:
+// the owner is written with SeTakeOwnershipPrivilege (which grants
+// WRITE_OWNER regardless of the DACL), then the DACL as that owner. Both go
+// through handles opened without following links, and nothing is
+// propagated to children.
+func takeOverEntry(path string) error {
+	sd, err := windows.SecurityDescriptorFromString(takeOverAdminsFullControlSDDL)
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	release, err := enableTokenPrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege")
+	if err != nil {
+		return err
+	}
+	defer release()
+	set := func(access uint32, info windows.SECURITY_INFORMATION, o *windows.SID, d *windows.ACL) error {
+		p16, err := windows.UTF16PtrFromString(path)
+		if err != nil {
+			return err
+		}
+		h, err := windows.CreateFile(p16, access,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+			windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", path, err)
+		}
+		defer func() { _ = windows.CloseHandle(h) }()
+		return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, o, nil, d, nil)
+	}
+	if err := set(windows.WRITE_OWNER, windows.OWNER_SECURITY_INFORMATION, owner, nil); err != nil {
+		return fmt.Errorf("take ownership of %s: %w", path, err)
+	}
+	if err := set(windows.WRITE_DAC, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, dacl); err != nil {
+		return fmt.Errorf("reset permissions on %s: %w", path, err)
+	}
+	return nil
 }
