@@ -1661,7 +1661,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   // already taken by the unrelated network-monitor CRUD tool below
   // (query_monitors / manage_monitors, aiToolsMonitoring.ts).
   manage_monitor_definitions: z.object({
-    action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    action: z.enum(['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    kind: monitorKindSchema.optional(),
     monitorId: uuid.optional(),
     definition: z.record(z.string(), z.unknown()).optional(),
     configPolicyId: uuid.optional(),

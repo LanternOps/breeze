@@ -55,8 +55,45 @@ import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
   MONITOR_KINDS,
+  monitorConditionSchemas,
   type MonitorKind,
 } from '@breeze/shared';
+import { z } from 'zod';
+
+function isMonitorKind(value: unknown): value is MonitorKind {
+  return typeof value === 'string' && (MONITOR_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * #7826 — the condition shape for a kind, derived from the SAME zod registry
+ * `createMonitorDefinitionSchema` validates with (no hand-written copy to
+ * drift). `io: 'input'` so defaulted fields read as optional.
+ */
+function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
+  const { $schema: _dropped, ...condition } = z.toJSONSchema(monitorConditionSchemas[kind], {
+    io: 'input',
+    unrepresentable: 'any',
+  }) as Record<string, unknown>;
+  return { kind, condition };
+}
+
+const KIND_LIST_HINT = `Valid kinds: ${MONITOR_KINDS.join(', ')}.`;
+
+/**
+ * Validation error for create/update that tells the model how to recover: an
+ * unknown kind lists the valid kinds; a known kind with a bad condition points
+ * at `describe` for that kind's shape.
+ */
+function definitionErrorMessage(definition: unknown, issue: string | null | undefined, isCreate: boolean): string {
+  const base = issue ?? 'Invalid monitor definition';
+  const kind = (definition as { kind?: unknown } | null | undefined)?.kind;
+  if (kind !== undefined && !isMonitorKind(kind)) {
+    return `${base}. ${KIND_LIST_HINT} Use action "describe" (with kind) for each condition shape.`;
+  }
+  if (isMonitorKind(kind)) return `${base}. Use action "describe" with kind "${kind}" for its condition shape.`;
+  // Partial updates normally carry no kind; the kind list would be noise there.
+  return isCreate ? `${base}. ${KIND_LIST_HINT} Use action "describe" for condition shapes.` : base;
+}
 
 type Handler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -349,14 +386,19 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'manage_monitor_definitions',
       description:
-        'Manage definitions, not compiled rows. Default: org scope; partner scope covers all partner orgs and requires full access. Actions: create, update, delete, enable, disable, attach, detach. Kind network_check creates a managed probe; condition.assetId binds a discovered asset.',
+        'Manage definitions, not compiled rows. Call describe (optional kind) FIRST for valid kinds and condition shapes. Default: org scope; partner scope needs full access. Actions: describe, create, update, delete, enable, disable, attach, detach. network_check = managed probe.',
       input_schema: {
         type: 'object' as const,
         properties: {
           action: {
             type: 'string',
-            enum: ['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach'],
+            enum: ['describe', 'create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach'],
             description: 'The action to perform',
+          },
+          kind: {
+            type: 'string',
+            enum: [...MONITOR_KINDS],
+            description: 'Monitor kind (for describe: returns that kind\'s condition schema; omit to list kinds)',
           },
           monitorId: {
             type: 'string',
@@ -378,6 +420,18 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
     handler: safeHandler('manage_monitor_definitions', async (input, auth) => {
       const action = input.action as string;
 
+      // Read-only discovery (#7826): no write capability needed, so it sits
+      // ahead of the site-ceiling gate that guards every mutating action.
+      if (action === 'describe') {
+        if (input.kind === undefined || input.kind === null) {
+          return JSON.stringify({ kinds: [...MONITOR_KINDS], hint: 'Call describe with kind for that kind\'s condition schema.' });
+        }
+        if (!isMonitorKind(input.kind)) {
+          return JSON.stringify({ error: `Unknown monitor kind. ${KIND_LIST_HINT}` });
+        }
+        return JSON.stringify(describeMonitorKind(input.kind));
+      }
+
       // Site-ceiling gate up front, before any branch: a monitor's responses
       // compile verbatim into a managed automation that runs as SYSTEM on
       // every device an attaching org-wide policy reaches, so every action
@@ -392,7 +446,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         const parsed = createMonitorDefinitionSchema.safeParse(input.definition ?? {});
         if (!parsed.success) {
           return JSON.stringify({
-            error: describeFirstZodIssue(parsed.error) ?? 'Invalid monitor definition',
+            error: definitionErrorMessage(input.definition, describeFirstZodIssue(parsed.error), true),
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
@@ -410,7 +464,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
         const parsed = updateMonitorDefinitionSchema.safeParse(patch);
         if (!parsed.success) {
           return JSON.stringify({
-            error: describeFirstZodIssue(parsed.error) ?? 'Invalid monitor definition',
+            error: definitionErrorMessage(patch, describeFirstZodIssue(parsed.error), false),
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
