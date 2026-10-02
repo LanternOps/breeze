@@ -121,6 +121,43 @@ it('falls back to the overview when a polled expansion is refused (revision chan
   expect(result.current.error).toBeNull();
 });
 
+it('keeps a polled expansion and reports the error when the failure is not a stale token', async () => {
+  const base = topologyGraphFixture();
+  const expanded = { ...base, nodes: [...base.nodes, { ...base.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Group member' }] };
+  let failure: [object, number] | null = null;
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => String(url).includes('/health') ? jsonResponse({ siteId: SITE, graphRevision: base.revisions.graph, healthRevision: '1', nodes: [], relationships: [] })
+    : !String(url).includes('/expansions/') ? jsonResponse(base) : failure ? jsonResponse(...failure) : jsonResponse(expanded));
+  const { result } = renderHook(() => useTopologyGraph({ siteId: SITE }, { view: 'overview' }));
+  await waitFor(() => expect(result.current.graph).not.toBeNull());
+  await act(async () => { await result.current.expand('group-token'); });
+  // A 400 that is not a cursor refusal is a real fault, not staleness.
+  failure = [{ error: 'Invalid topology query', code: 'invalid_topology_query' }, 400];
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  await waitFor(() => expect(result.current.error).toBe('Invalid topology query'));
+  expect(result.current.expanded).toBe(true);
+  expect(result.current.graph!.nodes.map((n) => n.label)).toContain('Group member');
+  // An expired/foreign cursor is a stale token: drop back to the base read.
+  failure = [{ error: 'Invalid or expired topology cursor', code: 'invalid_topology_cursor' }, 400];
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  await waitFor(() => expect(result.current.expanded).toBe(false));
+});
+
+it('ignores an expansion that resolves after the user collapsed', async () => {
+  const base = topologyGraphFixture();
+  const expanded = { ...base, nodes: [...base.nodes, { ...base.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Group member' }] };
+  let release: (value: Response) => void = () => {};
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => !String(url).includes('/expansions/') ? jsonResponse(base)
+    : new Promise<Response>((resolve) => { release = resolve; }));
+  const { result } = renderHook(() => useTopologyGraph({ siteId: SITE }, { view: 'overview' }));
+  await waitFor(() => expect(result.current.graph).not.toBeNull());
+  let pending: Promise<void> = Promise.resolve();
+  act(() => { pending = result.current.expand('group-token'); });
+  act(() => { result.current.collapse(); });
+  await act(async () => { release(jsonResponse(expanded)); await pending; });
+  expect(result.current.expanded).toBe(false);
+  expect(result.current.graph!.nodes.map((n) => n.label)).not.toContain('Group member');
+});
+
 it('never replays an expansion token into a new view', async () => {
   const base = topologyGraphFixture();
   vi.mocked(fetchWithAuth).mockImplementation(async () => jsonResponse(base));

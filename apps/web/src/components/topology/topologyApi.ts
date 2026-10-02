@@ -16,7 +16,7 @@ export const topologySettingsSchema = z.object({
 });
 export type TopologySettings = z.infer<typeof topologySettingsSchema>;
 export class TopologyReadError extends Error {
-  constructor(message: string, public status: number) { super(message); }
+  constructor(message: string, public status: number, public code?: string) { super(message); }
 }
 export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal): Promise<T> {
   const response = await fetchWithAuth(path, { signal });
@@ -25,7 +25,7 @@ export async function topologyRead<T>(path: string, schema: z.ZodType<T>, signal
     const message = response.status === 403 ? 'Access to this topology is denied'
       : typeof body?.code === 'string' && body.code === 'target_not_configured' ? 'Target not configured'
       : typeof body?.error === 'string' ? body.error : 'Unable to load topology';
-    throw new TopologyReadError(message, response.status);
+    throw new TopologyReadError(message, response.status, typeof body?.code === 'string' ? body.code : undefined);
   }
   return schema.parse(await response.json());
 }

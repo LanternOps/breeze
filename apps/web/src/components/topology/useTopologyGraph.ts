@@ -3,6 +3,8 @@ import { graphResponseSchema } from '@breeze/shared/validators/topology';
 import type { GraphResponse, TopologyView } from '@breeze/shared';
 import { topologyApi, topologyHealthSchema, topologyRead, TopologyReadError } from './topologyApi';
 
+/** Server codes for an expansion token that is no longer usable (graphCursor.ts, graph.ts). */
+const STALE_EXPANSION: ReadonlySet<string> = new Set(['invalid_topology_cursor', 'graph_revision_changed', 'presentation_group_changed']);
 /**
  * Passive reads only. Health updates preserve structure and never trigger layout.
  * An expansion (a group card or frontier, #7818) stays on screen: the structural poll
@@ -20,7 +22,9 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
   const expansionRef = useRef(expansion); expansionRef.current = expansion;
   const scopeKey = `${scope.siteId}/${query.view}/${query.focusNodeId ?? ''}`;
   const refreshGraph = useCallback(() => setRefresh((n) => n + 1), []);
-  const leave = useCallback(() => { expansionRef.current = null; setExpansion(null); setRefresh((n) => n + 1); }, []);
+  /** Bumped by every expand/collapse, so a late expansion response never re-enters a view the user left. */
+  const intent = useRef(0);
+  const leave = useCallback(() => { intent.current += 1; expansionRef.current = null; setExpansion(null); setRefresh((n) => n + 1); }, []);
   useEffect(() => {
     // The ref is cleared here too: the structural effect below runs in this same commit,
     // and must not replay the previous scope's expansion token against the new one.
@@ -45,8 +49,11 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
           : await topologyApi.graph(scope.siteId, new URLSearchParams({ view: query.view, includeHealth: 'true', ...(query.focusNodeId ? { focusNodeId: query.focusNodeId, hops: '1' } : {}) }), controller.signal);
         if (valid() && token === expansionRef.current) { setGraph(next); setError(null); }
       } catch (cause) {
-        // A refused expansion is stale, not an error: drop back to the base read.
-        if (token && valid() && token === expansionRef.current && cause instanceof TopologyReadError && [400, 409].includes(cause.status)) leave();
+        // A response for a view the user already left is moot, success or failure.
+        if (token !== expansionRef.current) return;
+        // A refused expansion (expired/foreign cursor, revision or group changed) is stale,
+        // not an error: drop back to the base read. Anything else is a real fault.
+        if (token && valid() && cause instanceof TopologyReadError && STALE_EXPANSION.has(cause.code ?? '')) leave();
         else fail(cause);
       }
       finally { graphBusy = false; if (valid()) setLoading(false); }
@@ -73,11 +80,12 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
     return () => { controller.abort(); clearInterval(structuralTimer); clearInterval(healthTimer); document.removeEventListener('visibilitychange', visibility); };
   }, [scopeKey, enabled, refresh]);
   const expand = async (token: string) => {
-    const key = activeScope.current;
+    const key = activeScope.current; const request = ++intent.current;
+    const current = () => key === activeScope.current && request === intent.current;
     try {
       const next = await topologyRead(`/topology/sites/${scope.siteId}/expansions/${encodeURIComponent(token)}`, graphResponseSchema);
-      if (key === activeScope.current) { expansionRef.current = token; setExpansion(token); setGraph(next); }
-    } catch (cause) { if (key === activeScope.current) setError(cause instanceof Error ? cause.message : 'Unable to expand topology'); }
+      if (current()) { expansionRef.current = token; setExpansion(token); setGraph(next); }
+    } catch (cause) { if (current()) setError(cause instanceof Error ? cause.message : 'Unable to expand topology'); }
   };
   return { graph, loading, error, refreshGraph, expand, expanded: expansion !== null,
     /** Leave the expansion and reload the base (overview or focused) read. */

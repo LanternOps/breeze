@@ -477,6 +477,10 @@ describe('grouped overview presentation (2026-10-02)', () => {
       expect(nodeRead.params).toContain(2);
       expect(membersParam(nodeRead)!.split(/[{},]/).filter(Boolean).sort()).toEqual([NODE, PEER, NET].sort());
       expect(membersParam(calls.find((q) => /count\(\*\) FILTER/.test(q.sql))!)).toBeDefined();
+      // Relationship count, induced edges and boundary edges: both endpoints bounded by the group.
+      const relationshipReads = calls.filter((q) => /FROM topology_relationships r\s+WHERE/.test(q.sql) && !/AS unplaced/.test(q.sql));
+      expect(relationshipReads).toHaveLength(3);
+      for (const read of relationshipReads) expect(read.params.filter((p) => p === membersParam(read))).toHaveLength(2);
       expect(expanded.presentation.nodes.find((entry) => entry.role === 'network_group')!.group!.members.map((m) => m.nodeId)).toEqual([NODE, PEER]);
       const more = expanded.frontier.find((item) => item.label === 'More devices')!;
       expect(more.memberCount).toBe(1);
@@ -490,6 +494,20 @@ describe('grouped overview presentation (2026-10-02)', () => {
       expect(next.presentation.nodes.find((entry) => entry.role === 'network_group')!.group!.canonicalNodeIds).toEqual([NET]);
       expect(membersParam(mocks.execute.mock.calls.map(sqlText).find((q) => q.sql.includes('as "bindings"'))!)).toBeDefined();
       expect(next.frontier.some((item) => item.label === 'More devices')).toBe(false);
+    });
+
+    it('carries the group claim on edge and boundary continuations too', async () => {
+      const token = await cardToken();
+      const edge = (n: number) => ({ id: `40000000-0000-4000-8000-00000000010${n}`, kind: 'network_member', sourceNodeId: NODE, targetNodeId: PEER,
+        directness: 'direct', confidence: 'high', evidenceClass: 'observed', lifecycle: 'active', lastSupportedAt: null, supportCount: '1', legacy: false, remaining: '5' });
+      // limit 2 → edge budget 4: five induced edges overflow it and leave no room for boundary edges.
+      mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([]).mockResolvedValueOnce(siteGroup)
+        .mockResolvedValueOnce([{ count: '3', remaining: '3' }]).mockResolvedValueOnce([{ count: '6' }])
+        .mockResolvedValueOnce([node, peer]).mockResolvedValueOnce([1, 2, 3, 4, 5].map(edge))
+        .mockResolvedValueOnce([{ id: '40000000-0000-4000-8000-000000000201', sourceNodeId: PEER, targetNodeId: NET, remaining: '1' }]);
+      const expanded = await expandTopologyGraph(ctx, token);
+      const labels = ['More connections in this projection', 'More boundary connections'];
+      for (const label of labels) expect(claimsOf(expanded.frontier.find((item) => item.label === label)!.token).group).toEqual(claimsOf(token).group);
     });
 
     it('refuses a card whose group no longer resolves at this revision instead of expanding something else', async () => {

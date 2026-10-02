@@ -363,6 +363,19 @@ describe('neighbour-cache corroboration (#7816, #7817)', () => {
   const memberOf = (nodes: PresentationNode[], endpointId: string) => networks(nodes).flatMap((node) => node.group!.members.map((m) => ({ node, m })))
     .find(({ m }) => m.nodeId === endpointId);
 
+  it('expands every card to exactly what it lists, neighbour-seen members included (#7818)', () => {
+    const input = corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }],
+      { ...phone, unplaced: [...phone.unplaced, { endpointId: E(41), addresses: ['10.1.2.51'] }, { endpointId: E(42), addresses: [] }], caches: [cache(1, [{}])] });
+    const { nodes } = build(input, { now: NOW });
+    expect(memberOf(nodes, E(40))!.m.placement).toBe('neighbor_seen');
+    expect(memberOf(nodes, E(41))!.m.placement).toBe('address_match');
+    expect(nodes.map((node) => node.group!.kind).sort()).toEqual(['gateway', 'network', 'unidentified']);
+    for (const card of nodes) {
+      const listed = new Set([...card.group!.members.map((m) => m.nodeId), ...card.group!.canonicalNodeIds]);
+      expect(new Set(presentationGroupMembers(input, refOf(card.frontierToken), NOW)), card.role).toEqual(listed);
+    }
+  });
+
   it('upgrades an unplaced endpoint to neighbor_seen from an exact same-row IP+MAC pair in an in-range observer cache', () => {
     const { nodes } = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { ...phone, caches: [cache(1, [{}])] }), { now: NOW });
     const found = memberOf(nodes, E(40))!;

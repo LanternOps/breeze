@@ -377,7 +377,7 @@ export function presentationGroupMembers(input: PresentationGroupInput, ref: Pre
 export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
   const { view, scopeHash, visibleNodeIds, tokenFor } = options;
   const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = analysePresentationGroups(input, options.now);
-  const visible =(ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
+  const visible = (ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
   const canonicalNetworks = (candidate: Candidate) => sorted(new Set(candidate.memberships.map((m) => m.networkId)));
   const nodeIds = new Map<string, string>();
 
