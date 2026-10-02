@@ -27,6 +27,10 @@ d="$state/groups/$name"
 case "$op" in
 -read)
   if [ -n "$FAKE_DSCL_FAIL_READ" ]; then echo "<dscl_cmd> DS Error: -14987 (eServerNotRunning)" >&2; exit 70; fi
+  # Misreads of a record that does exist: a spurious not-found, or exit 0 with
+  # nothing on stdout.
+  if [ -n "$FAKE_DSCL_READ_NOTFOUND" ]; then echo "<dscl_cmd> DS Error: -14136 (eDSRecordNotFound)" >&2; exit 56; fi
+  if [ -n "$FAKE_DSCL_READ_EMPTY" ]; then exit 0; fi
   if [ ! -d "$d" ]; then echo "<dscl_cmd> DS Error: -14136 (eDSRecordNotFound)" >&2; exit 56; fi
   if [ -z "$attr" ]; then
     for f in "$d"/*; do [ -f "$f" ] && echo "$(basename "$f"): $(cat "$f")"; done
@@ -41,6 +45,7 @@ case "$op" in
   fi
   exit 0;;
 -list)
+  if [ -n "$FAKE_DSCL_FAIL_LIST" ]; then echo "<dscl_cmd> DS Error: -14987 (eServerNotRunning)" >&2; exit 70; fi
   for g in "$state"/groups/*; do
     [ -d "$g" ] || continue
     n=$(basename "$g")
@@ -50,7 +55,8 @@ case "$op" in
 -create)
   if [ -n "$FAKE_DSCL_FAIL_CREATE" ]; then echo "fake dscl: create refused" >&2; exit 1; fi
   mkdir -p "$d"
-  if [ -n "$attr" ]; then printf '%s' "$val" > "$d/$attr"; fi
+  # FAKE_DSCL_DROP_WRITE: report success but store nothing for the attribute.
+  if [ -n "$attr" ] && [ -z "$FAKE_DSCL_DROP_WRITE" ]; then printf '%s' "$val" > "$d/$attr"; fi
   exit 0;;
 esac
 echo "fake dscl: unsupported op $op" >&2
@@ -309,12 +315,79 @@ func TestEnsureIPCGroupScript(t *testing.T) {
 				}
 			})
 
-			t.Run("a write that does not take is reported as a failure", func(t *testing.T) {
+			// The listing is a second, independent read of the record. If it
+			// shows breeze holding a numeric GID, a -read that came back
+			// "absent" or "no GID" was a misread, and writing would move a
+			// valid group to a new GID and orphan everything owned by the old one.
+			t.Run("a valid GID the read missed is never overwritten", func(t *testing.T) {
+				for _, misread := range []string{"FAKE_DSCL_READ_EMPTY=1", "FAKE_DSCL_READ_NOTFOUND=1"} {
+					f := newFakeDirectory(t)
+					f.group("breeze", map[string]string{"PrimaryGroupID": "401", "GroupMembership": "admin"})
+					out, code := f.runEnsure(t, sh.run(t), misread)
+					if code == 0 {
+						t.Fatalf("%s: want a non-zero exit on an inconsistent read; output %q", misread, out)
+					}
+					if w := f.writes(); len(w) != 0 {
+						t.Fatalf("%s: a group the listing shows with a GID must not be written; got %q", misread, w)
+					}
+					if !strings.Contains(out, "inconsistent") {
+						t.Fatalf("%s: error should name the inconsistency; output %q", misread, out)
+					}
+				}
+			})
+
+			t.Run("a refused GID write is reported as a failure", func(t *testing.T) {
 				f := newFakeDirectory(t)
 				f.group("breeze", map[string]string{"GroupMembership": "admin"})
 				out, code := f.runEnsure(t, sh.run(t), "FAKE_DSCL_FAIL_CREATE=1")
 				if code == 0 {
 					t.Fatalf("want a non-zero exit when dscl -create fails; output %q", out)
+				}
+				if !strings.Contains(out, "could not set PrimaryGroupID") {
+					t.Fatalf("error should name the cause; output %q", out)
+				}
+			})
+
+			t.Run("a refused record create is reported as a failure", func(t *testing.T) {
+				f := newFakeDirectory(t)
+				out, code := f.runEnsure(t, sh.run(t), "FAKE_DSCL_FAIL_CREATE=1")
+				if code == 0 {
+					t.Fatalf("want a non-zero exit when the record cannot be created; output %q", out)
+				}
+				if !strings.Contains(out, "could not create the breeze group") {
+					t.Fatalf("error should name the cause; output %q", out)
+				}
+			})
+
+			// dscl exiting 0 is not proof the GID was stored; the re-read is.
+			t.Run("a GID write that does not take is reported as a failure", func(t *testing.T) {
+				f := newFakeDirectory(t)
+				f.group("breeze", map[string]string{"GroupMembership": "admin"})
+				out, code := f.runEnsure(t, sh.run(t), "FAKE_DSCL_DROP_WRITE=1")
+				if code == 0 {
+					t.Fatalf("want a non-zero exit when the GID did not take; output %q", out)
+				}
+				if !strings.Contains(out, "did not take") {
+					t.Fatalf("error should say the write did not take; output %q", out)
+				}
+			})
+
+			// Without the list of assigned GIDs every candidate looks free, so
+			// the group would take 350 even if another group already holds it —
+			// and that group's members could then reach agent.sock.
+			t.Run("a failed GID listing writes nothing", func(t *testing.T) {
+				f := newFakeDirectory(t)
+				f.takeGIDs(350, 350)
+				f.group("breeze", map[string]string{"GroupMembership": "admin"})
+				out, code := f.runEnsure(t, sh.run(t), "FAKE_DSCL_FAIL_LIST=1")
+				if code == 0 {
+					t.Fatalf("want a non-zero exit when GIDs cannot be listed; output %q", out)
+				}
+				if w := f.writes(); len(w) != 0 {
+					t.Fatalf("no GID may be assigned blind; got writes %q", w)
+				}
+				if !strings.Contains(out, "could not list") {
+					t.Fatalf("error should name the cause; output %q", out)
 				}
 			})
 		})

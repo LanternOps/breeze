@@ -121,9 +121,15 @@ add_console_users_to_breeze_group() {
 }
 
 # Create the breeze group for IPC socket access, or give a GID-less one left by
-# an earlier failed install its GID (#7829). Fails the install (set -e) if it
-# cannot: a group without a GID leaves every user-session helper locked out.
-ensure_breeze_group
+# an earlier failed install its GID (#7829). Deliberately not fatal: this
+# script is also the unattended self-update path, the agent daemon is not
+# bootstrapped yet, and aborting here would leave the whole agent down over a
+# group that only user-session helpers need. The daemon retries the same rule
+# on every start (sessionbroker.EnsureIPCGroup) and logs an error if the socket
+# still cannot get its group.
+if ! ensure_breeze_group; then
+    echo "Warning: could not ensure the breeze group; desktop helpers will be denied the agent socket until the agent repairs it on a later start" >&2
+fi
 add_console_users_to_breeze_group
 
 # Group-own the config directory so anything created inside it inherits the

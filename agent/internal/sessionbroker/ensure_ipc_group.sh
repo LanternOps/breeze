@@ -75,6 +75,16 @@ ensure_breeze_group() {
         echo "Error: could not list local group IDs; cannot ensure the breeze group" >&2
         return 1
     fi
+    # The listing is a second, independent read of the record. If it shows
+    # breeze holding a numeric GID, the -read above misread it (a spurious
+    # not-found, or empty output); writing now would move a valid group to a
+    # new GID and orphan everything owned by the old one.
+    case "$(printf '%s\n' "$_bg_list" | awk '$1 == "breeze" && $2 ~ /^[0-9]+$/ { print "has-gid"; exit }')" in
+        has-gid)
+            echo "Error: inconsistent directory read: the group listing shows breeze with a GID but reading it returned '$_bg_state'; leaving it untouched" >&2
+            return 1
+            ;;
+    esac
     # One space-delimited line of every assigned GID; a candidate is free when
     # it does not appear there as a whole word.
     _bg_used=" $(printf '%s\n' "$_bg_list" | awk '{ printf "%s ", $2 }')"
@@ -97,8 +107,10 @@ ensure_breeze_group() {
             echo "Error: could not set PrimaryGroupID $_bg_gid on the breeze group" >&2
             return 1
         }
-        # Re-read rather than trust dscl's exit status.
-        if [ "$(breeze_group_read 2>/dev/null)" != "$_bg_gid" ]; then
+        # Re-read rather than trust dscl's exit status. A failing re-read
+        # prints dscl's own error, so the cause is not hidden behind the
+        # message below.
+        if [ "$(breeze_group_read)" != "$_bg_gid" ]; then
             echo "Error: breeze group PrimaryGroupID did not take (wanted $_bg_gid)" >&2
             return 1
         fi

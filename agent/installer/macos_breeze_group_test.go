@@ -37,9 +37,15 @@ func TestMacInstallPathsUseSharedBreezeGroupLib(t *testing.T) {
 	cases := []struct {
 		path   string
 		source string
+		// call is the line that runs the rule. The .pkg postinstall must not
+		// abort on a group failure: it is also the unattended self-update
+		// path, the agent daemon is not bootstrapped yet at that point, and
+		// the daemon retries the group on every start. The dev installer is
+		// run by hand, so it fails loudly instead.
+		call string
 	}{
-		{"macos/postinstall", `. "$(dirname "$0")/ensure_ipc_group.sh"`},
-		{"../scripts/install/install-darwin.sh", `. "$(dirname "$0")/../../internal/sessionbroker/ensure_ipc_group.sh"`},
+		{"macos/postinstall", `. "$(dirname "$0")/ensure_ipc_group.sh"`, `(?m)^if ! ensure_breeze_group; then$`},
+		{"../scripts/install/install-darwin.sh", `. "$(dirname "$0")/../../internal/sessionbroker/ensure_ipc_group.sh"`, `(?m)^ensure_breeze_group\s*$`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -51,9 +57,9 @@ func TestMacInstallPathsUseSharedBreezeGroupLib(t *testing.T) {
 			if src < 0 {
 				t.Fatalf("%s does not source the shared library (%s)", tc.path, tc.source)
 			}
-			call := regexp.MustCompile(`(?m)^ensure_breeze_group\s*$`).FindStringIndex(s)
+			call := regexp.MustCompile(tc.call).FindStringIndex(s)
 			if call == nil {
-				t.Fatalf("%s never calls ensure_breeze_group", tc.path)
+				t.Fatalf("%s never calls ensure_breeze_group as %s", tc.path, tc.call)
 			}
 			if call[0] < src {
 				t.Fatalf("%s calls ensure_breeze_group before sourcing it", tc.path)
