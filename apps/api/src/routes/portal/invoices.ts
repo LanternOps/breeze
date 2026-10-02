@@ -275,9 +275,22 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
   const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
-  const capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
-    ...parsed.data, contactEmail: auth.user.email, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
-  }, `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`);
+  let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
+  try {
+    capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
+      ...parsed.data, contactEmail: auth.user.email, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
+    }, `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`);
+  } catch (err) {
+    if (err instanceof InvoiceServiceError) {
+      // Local compatibility translation until the shared autopay error mapper lands.
+      if (parsed.data.saveForAutopay && err.status === 404 && err.code === 'INVALID_STATE'
+        && err.message === 'Automatic payments unavailable') {
+        return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
+      }
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
+    throw err;
+  }
 
   // stripe_connect_accounts is a partner-axis table (reused by the #1610 API-key
   // model). This handler runs with NO ambient DB context (#1448 opt-out), and even

@@ -264,6 +264,11 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
+      // Local compatibility translation until the shared autopay error mapper lands.
+      if (parsed.data.saveForAutopay && err.status === 404 && err.code === 'INVALID_STATE'
+        && err.message === 'Automatic payments unavailable') {
+        return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
+      }
       if (err.code === 'COLLECTION_IN_PROGRESS') {
         return c.json({ error: 'A payment is already processing', code: err.code }, 409);
       }
