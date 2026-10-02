@@ -63,7 +63,7 @@
   "layout_fallback": "La disposizione automatica ha raggiunto il proprio limite. I nodi restanti usano una griglia locale; le posizioni salvate vengono mantenute.",
   "pinned_overlap": "I dispositivi bloccati si sovrappongono. Sbloccali e riorganizza per separare le loro etichette.",
   "empty": "Non è ancora disponibile alcuna topologia. Aggiungi un agente, un profilo di rilevamento o una rete manuale per questo sito.",
-  "legend": "Continua: fisica · Tratteggiata: logica · Punteggiata: dedotta o schematica. Uno stato sconosciuto non è un controllo riuscito.",
+  "legend": "Le schede raggruppano i dispositivi che segnalano la stessa rete · Continua: fisica · Tratteggiata: logica · Punteggiata: dedotta, non verificata o schematica. Uno stato sconosciuto non è un controllo riuscito.",
   "diagnostics": "Diagnostica",
   "diagnosticScope": "Scegli un'origine dello stesso sito e una famiglia di indirizzi. Solo \"Esegui diagnostica\" invia un comando; ogni famiglia ha la propria esecuzione limitata.",
   "recipe": "Controllo",
@@ -617,5 +617,57 @@
       "cancelled": "Annullato",
       "expired": "Scaduto"
     }
+  },
+  "grouped": {
+    "useLayout": "Usa il layout raggruppato",
+    "showAllNetworks_one": "Mostra {{count}} rete link-local, VPN o a host singolo",
+    "showAllNetworks_other": "Mostra {{count}} reti link-local, VPN o a host singolo",
+    "evidenceSection": "Evidenze e aggiornamento",
+    "type": "Tipo",
+    "addresses": "Indirizzi",
+    "mac": "MAC",
+    "vendor": "Produttore",
+    "os": "SO",
+    "gateway": "Gateway",
+    "networks": "Rete",
+    "lastSeen": "visto l'ultima volta {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Agente online",
+        "offline": "Agente offline",
+        "unknown": "Stato dell'agente sconosciuto"
+      },
+      "scan": {
+        "online": "Ha risposto all'ultima scansione di rilevamento",
+        "offline": "Non ha risposto all'ultima scansione di rilevamento",
+        "unknown": "Non sottoposto a scansione"
+      }
+    },
+    "addressMatchNote": "Collocato qui perché il suo indirizzo rientra in questo intervallo. Appartenenza non verificata.",
+    "staleMembership": "Non visto nell'ultima raccolta.",
+    "gatewayExplanation_one": "{{count}} dispositivo segnala {{address}} come gateway predefinito. Ogni dispositivo mantiene la propria route; scegline uno per ispezionarlo o per eseguire la diagnostica da quel dispositivo.",
+    "gatewayExplanation_other": "{{count}} dispositivi segnalano {{address}} come gateway predefinito. Ogni dispositivo mantiene la propria route; scegline uno per ispezionarlo o per eseguire la diagnostica da quel dispositivo.",
+    "reportedBy": "Segnalato da",
+    "diagnoseHint": "La diagnostica viene eseguita dal dispositivo che scegli, lungo la sua route.",
+    "stale": "obsoleto",
+    "unverified": "non verificato",
+    "networkExplanation_one": "{{count}} dispositivo segnala un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",
+    "networkExplanation_other": "{{count}} dispositivi segnalano un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",
+    "unidentifiedExplanation": "Questi dispositivi non segnalano alcuna appartenenza a una rete e il loro indirizzo non rientra in una sola rete nota di questo sito.",
+    "class": {
+      "link_local": "Intervallo link-local: ogni dispositivo ne ha uno; non identifica una rete condivisa.",
+      "host": "Una route a host singolo, in genere un indirizzo VPN o di tunnel.",
+      "overlay": "Un intervallo overlay o VPN (ad esempio Tailscale), non la rete locale.",
+      "other": "Un intervallo insolitamente ampio."
+    },
+    "via": "Gateway predefinito: {{gateways}}",
+    "conflict": "I dispositivi in questo intervallo segnalano gateway diversi, quindi è suddiviso in schede separate.",
+    "addressMatchCount_one": "{{count}} dispositivo è mostrato qui solo perché il suo indirizzo rientra in questo intervallo. Appartenenza non verificata.",
+    "addressMatchCount_other": "{{count}} dispositivi sono mostrati qui solo perché il loro indirizzo rientra in questo intervallo. Appartenenza non verificata.",
+    "devices_one": "{{count}} dispositivo",
+    "devices_other": "{{count}} dispositivi",
+    "moreOutside_one": "{{count}} altro fuori da questa vista",
+    "moreOutside_other": "{{count}} altri fuori da questa vista",
+    "gatewayAddressMatch": "Un dispositivo rilevato usa questo indirizzo (solo corrispondenza di indirizzo, non verificata):"
   }
 }

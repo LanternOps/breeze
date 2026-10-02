@@ -67,3 +67,16 @@ GHSA-qrv3-253h-g69c
 # Added 2026-08-07 (Trivy DB refresh during v0.104.0 release QA).
 CVE-2025-71329
 CVE-2025-71330
+
+# node-forge — CVE-2026-85393 is the Trivy-DB id for the same advisory the
+# npm audit gate already excepts as GHSA-86w9-cpqp-85rv (aliases
+# CVE-2026-33894, GHSA-ppp5-5v6c-4jwp: RSA PKCS#1 v1.5 signature forgery via
+# nested DigestAlgorithm). No fixed release (<=1.4.0 affected; 1.4.0 is the
+# latest). Reachable only from build tooling: breeze-mobile → expo →
+# @expo/cli / @expo/code-signing-certificates, and mkcert ←
+# office-addin-dev-certs. Not shipped in any production image or mobile bundle.
+# Ruling and re-check procedure live in scripts/security/npm-audit-exceptions.json.
+# Remove together with that exception: tracking #7703.
+#
+# Added 2026-10-02 (Trivy DB refresh).
+CVE-2026-85393
