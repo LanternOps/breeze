@@ -28,7 +28,7 @@ beforeEach(() => {
 describe('aiModelPickerStore', () => {
   it('loads the session\'s choices', async () => {
     await useAiModelPickerStore.getState().load({ sessionId: 's1' });
-    expect(fetchWithAuth).toHaveBeenCalledWith('/ai/models/choices/chat?sessionId=s1');
+    expect(fetchWithAuth).toHaveBeenCalledWith('/ai/models/choices/chat?sessionId=s1', { skipOrgIdInjection: true });
     expect(useAiModelPickerStore.getState().choices).toEqual(CHOICES);
   });
   it('nothing pending until the user changes something', async () => {
@@ -68,7 +68,7 @@ describe('aiModelPickerStore', () => {
     await useAiModelPickerStore.getState().load({ orgId: 'o1' });
     expect(fetchWithAuth).toHaveBeenCalledWith('/ai/models/choices/chat?orgId=o1');
     await useAiModelPickerStore.getState().load({ sessionId: 's1', orgId: 'o1' });
-    expect(fetchWithAuth).toHaveBeenLastCalledWith('/ai/models/choices/chat?sessionId=s1');
+    expect(fetchWithAuth).toHaveBeenLastCalledWith('/ai/models/choices/chat?sessionId=s1', { skipOrgIdInjection: true });
   });
   it("noSessionOrgId prefers the page device's org, then the selected org", () => {
     expect(noSessionOrgId({ type: 'device', id: 'd', hostname: 'h', orgId: 'od' }, 'sel')).toBe('od');
