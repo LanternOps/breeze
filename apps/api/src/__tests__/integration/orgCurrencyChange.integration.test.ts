@@ -105,7 +105,7 @@ async function seedEurOrg(): Promise<Seeded> {
 
   const ticket = await withSystemDbAccessContext(() => createTicket(
     { orgId: fixture.orgId, subject: 'W6 org-currency ticket', source: 'manual' },
-    { userId: fixture.userId, name: 'W6 Technician' },
+    { kind: 'user' as const, userId: fixture.userId, name: 'W6 Technician' },
   ));
   const entry = await withSystemDbAccessContext(() => createTimeEntry(
     { ticketId: ticket.id as string, startedAt: T0, endedAt: T90 }, timeActor(fixture),

@@ -224,7 +224,7 @@ describe.runIf(RUN)('org currency change vs default-derived creation (#3778 barr
   it('(2a) createTimeEntry waits on the org lock and stamps the NEW currency', async () => {
     const f = await seedGateOrg('EUR');
     const ticket = await withSystemDbAccessContext(() => createTicket(
-      { orgId: f.orgId, subject: 'barrier', source: 'manual' }, { userId: f.userId, name: 'Barrier Tech' }));
+      { orgId: f.orgId, subject: 'barrier', source: 'manual' }, { kind: 'user' as const, userId: f.userId, name: 'Barrier Tech' }));
 
     const entry = await raceAgainstOrgCurrencyChange(f.orgId, 'GBP', 'createTimeEntry', () =>
       withDbAccessContext(ctx(f), () => createTimeEntry(
@@ -239,7 +239,7 @@ describe.runIf(RUN)('org currency change vs default-derived creation (#3778 barr
   it('(2b) addTicketPart waits on the org lock and stamps the NEW currency', async () => {
     const f = await seedGateOrg('EUR');
     const ticket = await withSystemDbAccessContext(() => createTicket(
-      { orgId: f.orgId, subject: 'barrier part', source: 'manual' }, { userId: f.userId, name: 'Barrier Tech' }));
+      { orgId: f.orgId, subject: 'barrier part', source: 'manual' }, { kind: 'user' as const, userId: f.userId, name: 'Barrier Tech' }));
 
     const part = await raceAgainstOrgCurrencyChange(f.orgId, 'GBP', 'addTicketPart', () =>
       withDbAccessContext(ctx(f), () => addTicketPart(
@@ -258,7 +258,7 @@ describe.runIf(RUN)('org currency change vs default-derived creation (#3778 barr
     const f = await seedGateOrg('EUR');
     const target = await createOrganization({ partnerId: f.partnerId, currencyCode: 'EUR' });
     const ticket = await withSystemDbAccessContext(() => createTicket(
-      { orgId: f.orgId, subject: 'barrier move', source: 'manual' }, { userId: f.userId, name: 'Barrier Tech' }));
+      { orgId: f.orgId, subject: 'barrier move', source: 'manual' }, { kind: 'user' as const, userId: f.userId, name: 'Barrier Tech' }));
     // One unbilled EUR billable, so a CROSS-currency move is refused outright.
     await withDbAccessContext(ctx(f), () => createTimeEntry(
       { ticketId: ticket.id, startedAt: T0, endedAt: T60, isBillable: true, hourlyRate: 90 }, timeActor(f)));
@@ -268,7 +268,7 @@ describe.runIf(RUN)('org currency change vs default-derived creation (#3778 barr
     // compares the stale EUR/EUR pair and silently "succeeds" as a same-currency
     // move, stranding a EUR billable under a GBP org.
     const outcome = await raceAgainstOrgCurrencyChange(target.id, 'GBP', 'moveTicketOrg', () =>
-      withSystemDbAccessContext(() => moveTicketOrg(ticket.id, target.id, { userId: f.userId, name: 'Barrier Tech' }))
+      withSystemDbAccessContext(() => moveTicketOrg(ticket.id, target.id, { kind: 'user' as const, userId: f.userId, name: 'Barrier Tech' }))
         .then(() => 'moved' as const, (err: unknown) => err));
 
     expect(await orgCurrency(target.id)).toBe('GBP');

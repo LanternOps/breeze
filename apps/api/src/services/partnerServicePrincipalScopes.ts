@@ -21,6 +21,13 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
   // the Weavestream default. Does not grant lifecycle (activate/pause/cancel)
   // or the human JWT `/api/v1/contracts` surface.
   'contracts:write',
+  // Partner API tickets surface: create / update / status / assign / comment.
+  // Opt-in; never part of the Weavestream default. No delete, restore,
+  // move-org, bulk, attachments, time entries or mailbox — those stay human,
+  // MFA-gated actions on the main API. A principal acts as ITSELF here (no
+  // human owner is credited — see 2026-12-04-101100-ticket-comments-
+  // service-principal-origin.sql); it is not site-restricted.
+  'tickets:write',
 ] as const);
 
 // Opt-in read scopes: grantable, but deliberately NOT in any default scope set.
@@ -28,6 +35,9 @@ export const PARTNER_SERVICE_PRINCIPAL_WRITE_SCOPES = Object.freeze([
 // principal can reach, so it must be requested explicitly.
 export const PARTNER_SERVICE_PRINCIPAL_OPT_IN_READ_SCOPES = Object.freeze([
   'alerts:read',
+  // tickets:read exposes ticket subjects, descriptions and comments —
+  // customer-authored data — across every org the principal can reach.
+  'tickets:read',
 ] as const);
 
 export const PARTNER_SERVICE_PRINCIPAL_SCOPES = Object.freeze([

@@ -1152,7 +1152,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         const topology = await finalizeTopologyOrgMerge(loser.id, survivor.id, topologyMerge.siteIds);
 
         for (const ticket of assignedTickets) {
-          await revalidateTicketAssignee(ticket.id, { userId: input.performedBy });
+          await revalidateTicketAssignee(ticket.id, { kind: 'user' as const, userId: input.performedBy });
         }
 
         const warnings = self.buildMergeWarnings({

@@ -90,6 +90,32 @@ describe('resolveActorName', () => {
     ).toBe('API Key deadbeef');
   });
 
+  it('renders a partner service principal by name, never as "API Key <slice of a principal id>"', () => {
+    // Partner API domain rows: actor_id is the PRINCIPAL id, the key id is in details.
+    expect(
+      resolveActorName(row({ actorType: 'api_key' }), {
+        rawActorId: '66666666-6666-4666-8666-666666666666',
+        partnerServicePrincipalId: '66666666-6666-4666-8666-666666666666',
+        partnerServicePrincipalName: 'PSA Bridge',
+        keyId: '77777777-7777-4777-8777-777777777777',
+      })
+    ).toBe('Service principal PSA Bridge');
+    // No name recorded: still identified as a principal, by the principal id.
+    expect(
+      resolveActorName(row({ actorType: 'api_key' }), {
+        rawActorId: '77777777-7777-4777-8777-777777777777',
+        partnerServicePrincipalId: '66666666-6666-4666-8666-666666666666',
+      })
+    ).toBe('Service principal 66666666');
+    // A blank name does not render an empty label.
+    expect(
+      resolveActorName(row({ actorType: 'api_key' }), {
+        partnerServicePrincipalId: '66666666-6666-4666-8666-666666666666',
+        partnerServicePrincipalName: '   ',
+      })
+    ).toBe('Service principal 66666666');
+  });
+
   it('returns "AI Agent <slice>" for an ai_agent action with details.agentId', () => {
     expect(
       resolveActorName(row({ actorType: 'ai_agent' }), {

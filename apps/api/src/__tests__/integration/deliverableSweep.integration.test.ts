@@ -76,7 +76,7 @@ const system = <T>(fn: () => Promise<T>, label = 'deliverableSweep.integration')
 
 interface Tenant {
   partnerId: string; orgId: string; otherOrgId: string;
-  techId: string; tech: { userId: string; name: string };
+  techId: string; tech: { kind: 'user'; userId: string; name: string };
 }
 
 async function seedTenant(): Promise<Tenant> {
@@ -90,7 +90,7 @@ async function seedTenant(): Promise<Tenant> {
   ]);
   const tech = (await createUser({ partnerId: partner.id, orgId: null, email: `tech-${randomUUID()}@example.com`, name: 'Tess Tech' }))!;
   await assignUserToPartner(tech.id, partner.id, role.id, 'all');
-  return { partnerId: partner.id, orgId: org.id, otherOrgId: other.id, techId: tech.id, tech: { userId: tech.id, name: 'Tess Tech' } };
+  return { partnerId: partner.id, orgId: org.id, otherOrgId: other.id, techId: tech.id, tech: { kind: 'user' as const, userId: tech.id, name: 'Tess Tech' } };
 }
 
 async function seedDeliverable(t: Tenant, over: Partial<typeof serviceDeliverables.$inferInsert> = {}): Promise<string> {

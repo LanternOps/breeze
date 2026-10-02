@@ -136,7 +136,7 @@ describe.runIf(RUN)(gateLabel('G5', 'void / reissue'), () => {
     await assignGateBillingProfile(fixture, 85.5);
     const ticket = await withSystemDbAccessContext(() => createTicket(
       { orgId: fixture.orgId, subject: 'W6 G5 EUR void/reissue', source: 'manual' },
-      { userId: fixture.userId, name: 'Gate Technician' },
+      { kind: 'user' as const, userId: fixture.userId, name: 'Gate Technician' },
     ));
     const ticketId = ticket.id as string;
 

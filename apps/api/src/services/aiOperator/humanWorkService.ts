@@ -39,7 +39,7 @@ import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiOperatorTaskSteps, aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { ticketChecklistItems } from '../../db/schema/ticketChecklists';
 import { ticketComments } from '../../db/schema/portal';
-import { createTicket } from '../ticketService';
+import { createTicket, type TicketActor } from '../ticketService';
 import { createNotification } from '../userNotifications';
 import { createTaskTarget } from './targetService';
 import { appendTaskEvent } from './eventService';
@@ -64,10 +64,11 @@ const HUMAN_WORK_REMINDER_SCAN_LIMIT = 50;
  * nullability is the documented system-provenance marker there;
  * `source = 'operator_task'` is what says where the row came from.
  */
-export const OPERATOR_TASK_ACTOR = {
-  userId: '00000000-0000-0000-0000-000000000000',
+export const OPERATOR_TASK_ACTOR: TicketActor = {
+  kind: 'system',
+  source: 'ai_operator',
   name: 'AI Operator',
-} as const;
+};
 
 /**
  * The `transitionSeq` for a `user_answer` wake.

@@ -694,8 +694,8 @@ describe('stampTerminalShell', () => {
     try {
       await orgMergeModule.executeOrgMerge(input);
       expect(mockState.revalidateTicketAssignee).toHaveBeenCalledTimes(2);
-      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-with-device', { userId: input.performedBy });
-      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-without-device', { userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-with-device', { kind: 'user', userId: input.performedBy });
+      expect(mockState.revalidateTicketAssignee).toHaveBeenCalledWith('ticket-without-device', { kind: 'user', userId: input.performedBy });
       expect(mockState.revalidateTicketAssignee.mock.invocationCallOrder[0]).toBeGreaterThan(fixups.mock.invocationCallOrder[0]!);
       const index = mockState.executedSql.findIndex(s => /SELECT id FROM tickets WHERE org_id/.test(s));
       expect(mockState.executedParams[index]).toContain(LOSER);

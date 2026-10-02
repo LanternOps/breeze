@@ -8,7 +8,16 @@ export const ticketSourceSchema = z.enum(['portal', 'email', 'alert', 'manual', 
 export type TicketStatus = z.infer<typeof ticketStatusSchema>;
 export type TicketPriority = z.infer<typeof ticketPrioritySchema>;
 
-export const createTicketSchema = z
+// Partner API correlation key (Partner API tickets surface): the ticket's
+// id/url in the external PSA/ITSM, namespaced by the service principal that
+// owns the integration (ticket_external_refs). Exported for the Partner API
+// write schemas; the staff create/update schemas do NOT accept them.
+export const externalTicketIdSchema = z.string().trim().min(1).max(255);
+export const externalTicketUrlSchema = z.string().url().max(2048).regex(/^https?:\/\//i, 'externalTicketUrl must be an http(s) URL');
+
+// The bare object, exported so machine surfaces can derive a narrower schema
+// (`.omit(...)`) — a `.superRefine`d schema cannot be omitted from.
+export const createTicketBaseSchema = z
   .object({
     orgId: z.string().guid(),
     // Optional when an intake form composes it server-side (formId present).
@@ -41,7 +50,9 @@ export const createTicketSchema = z
     // Declared on the schema because a zod object STRIPS unknown keys: without
     // this line the route silently drops the field on its way to createTicket.
     requesterContactId: z.string().guid().optional()
-  })
+  });
+
+export const createTicketSchema = createTicketBaseSchema
   .superRefine((v, ctx) => {
     if (!v.formId && (!v.subject || v.subject.trim().length === 0)) {
       ctx.addIssue({ code: 'custom', path: ['subject'], message: 'subject is required unless a formId is provided' });
@@ -92,19 +103,14 @@ export const updateTicketSchema = z.object({
   requesterContactId: z.string().guid().nullable().optional()
 });
 
-export const changeTicketStatusSchema = z.object({
-  status: ticketStatusSchema.optional(),
-  statusId: z.string().guid().optional(),
-  resolutionNote: z.string().min(1).max(10_000).optional(),
-  pendingReason: z.string().max(500).optional(),
-  // P2-4 (#4191), Task A10: an active `resolution_note`-kind ticket_drafts row
-  // to apply as the resolution note (the web resolve modal's AI-draft
-  // prefill, PR B) — the service reads its content and consumes it in the
-  // same transaction as the status change. Only meaningful alongside a
-  // resolve; the service rejects it otherwise. Supplying this relaxes the
-  // resolutionNote-required rule below since the draft supplies the text.
-  aiDraftId: z.string().guid().optional()
-}).superRefine((v, ctx) => {
+/**
+ * The status/statusId/resolutionNote coherence rules, shared by the staff
+ * schema below and the Partner API status schema (which omits `aiDraftId`).
+ */
+export function refineChangeTicketStatus(
+  v: { status?: string; statusId?: string; resolutionNote?: string; aiDraftId?: string },
+  ctx: z.RefinementCtx
+): void {
   const hasStatus = v.status !== undefined;
   const hasStatusId = v.statusId !== undefined;
   if (hasStatus && hasStatusId) {
@@ -116,7 +122,25 @@ export const changeTicketStatusSchema = z.object({
   if (hasStatus && v.status === 'resolved' && !v.aiDraftId && (!v.resolutionNote || v.resolutionNote.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });
   }
+}
+
+// The bare object, exported so machine surfaces can `.omit({ aiDraftId })`
+// and re-apply `refineChangeTicketStatus`.
+export const changeTicketStatusBaseSchema = z.object({
+  status: ticketStatusSchema.optional(),
+  statusId: z.string().guid().optional(),
+  resolutionNote: z.string().min(1).max(10_000).optional(),
+  pendingReason: z.string().max(500).optional(),
+  // P2-4 (#4191), Task A10: an active `resolution_note`-kind ticket_drafts row
+  // to apply as the resolution note (the web resolve modal's AI-draft
+  // prefill, PR B) — the service reads its content and consumes it in the
+  // same transaction as the status change. Only meaningful alongside a
+  // resolve; the service rejects it otherwise. Supplying this relaxes the
+  // resolutionNote-required rule below since the draft supplies the text.
+  aiDraftId: z.string().guid().optional()
 });
+
+export const changeTicketStatusSchema = changeTicketStatusBaseSchema.superRefine(refineChangeTicketStatus);
 
 export const assignTicketSchema = z.object({
   assigneeId: z.string().guid().nullable()

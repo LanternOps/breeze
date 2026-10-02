@@ -639,6 +639,15 @@ describe('POST /devices/:id/move-org', () => {
         ...ALERT_CHILD_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
+      // Partner API tickets: a ticket_external_refs row is pinned to ONE
+      // partner by its composite FKs, so refs of another partner's principal
+      // are deleted BEFORE the re-stamp — on a cross-partner move (system
+      // scope) the re-stamp would otherwise 23503 and abort the whole move.
+      const refDelete = statements.findIndex((s) => /DELETE FROM ticket_external_refs\b/.test(s));
+      const refRestamp = statements.findIndex((s) => /UPDATE\s+"?ticket_external_refs"?\s+SET org_id/.test(s));
+      expect(refDelete).toBeGreaterThan(-1);
+      expect(refRestamp).toBeGreaterThan(refDelete);
+      expect(statements[refDelete]).toMatch(/partner_id IS DISTINCT FROM \(SELECT partner_id FROM organizations/);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
       // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
       // events (#4806 fixup): restamped by the SECURITY DEFINER breeze_
@@ -1388,7 +1397,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1474,7 +1483,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

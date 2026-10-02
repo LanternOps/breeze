@@ -16,6 +16,12 @@ interface TicketEventEnvelope {
   partnerId: string | null;
   actorUserId?: string | null;
   /**
+   * The partner service principal behind the write, when the actor is one
+   * (`kind: 'service_principal'`); null/absent for every other actor. Lets a
+   * consumer attribute machine writes without a users row.
+   */
+  actorPrincipalId?: string | null;
+  /**
    * W07 (#3901): unique per emitted event; the notify worker uses it in the
    * user_notifications dedupe key so a BullMQ retry never re-pushes while a
    * genuine A->B->A reassignment does. Stamped by emitTicketEvent — emitters
