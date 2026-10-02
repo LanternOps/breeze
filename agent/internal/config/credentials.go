@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -130,7 +131,12 @@ func readPersistedCredentialsFrom(path string) (*PersistedCredentials, error) {
 	sv := viper.New()
 	sv.SetConfigFile(path)
 	sv.SetConfigType("yaml")
-	if err := sv.ReadInConfig(); err != nil {
+	// The machine-wide secrets.yaml is read only through the trust check.
+	data, err := readConfigFileBytes(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading secrets file: %w", err)
+	}
+	if err := sv.ReadConfig(bytes.NewReader(data)); err != nil {
 		return nil, fmt.Errorf("reading secrets file: %w", err)
 	}
 

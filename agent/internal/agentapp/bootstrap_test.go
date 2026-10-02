@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/spf13/viper"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -389,4 +391,94 @@ func TestRunBootstrap_CancelsSlotOn4xxEnrollRejection(t *testing.T) {
 	}()
 
 	runBootstrap()
+}
+
+// plantMachineConfig points the machine config folder at a temp dir holding
+// an agent.yaml with an agent_id, as a config another account put there
+// before the install would.
+func plantMachineConfig(t *testing.T) string {
+	t.Helper()
+	// config.Load keeps viper's previous values when no file is found;
+	// start from a clean slate so an earlier test's agent_id cannot leak in.
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	dir := t.TempDir()
+	t.Cleanup(config.SetConfigDirForTest(dir))
+	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte(
+		"agent_id: 0f0e0d0c-0b0a-4908-8706-050403020100\nlog_file: "+filepath.ToSlash(filepath.Join(dir, "agent.log"))+"\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func countingBootstrapServer(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	origCfg, origData, origQuiet := cfgFile, bootstrapInstallData, quietEnroll
+	t.Cleanup(func() { cfgFile, bootstrapInstallData, quietEnroll = origCfg, origData, origQuiet })
+	cfgFile, quietEnroll = "", true
+	bootstrapInstallData = `C:\dl\breeze-agent.msi|TESTTOKEN1|` + srv.URL
+	return &hits
+}
+
+// TestRunBootstrapDoesNotTreatASetAsideConfigAsEnrolled: the bootstrap step
+// takes the config folder back first, so an agent_id in a config another
+// account planted (which the take-back sets aside) does not make it skip
+// enrollment and report success for an unenrolled device.
+func TestRunBootstrapDoesNotTreatASetAsideConfigAsEnrolled(t *testing.T) {
+	dir := plantMachineConfig(t)
+	hits := countingBootstrapServer(t)
+	origReclaim := reclaimConfigDirFn
+	t.Cleanup(func() { reclaimConfigDirFn = origReclaim })
+	reclaimConfigDirFn = func(forEnroll bool) error {
+		if !forEnroll {
+			t.Error("reclaim called for a start, want for an enrollment")
+		}
+		return os.Remove(filepath.Join(dir, "agent.yaml"))
+	}
+	origExit := osExit
+	t.Cleanup(func() { osExit = origExit })
+	osExit = func(int) {} // the test server refuses the token
+
+	runBootstrap()
+
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("bootstrap endpoint contacted %d times, want 1: the planted agent_id was taken as an enrollment", n)
+	}
+}
+
+// TestRunBootstrapFailsWhenTheConfigFolderCannotBeTrusted: a config folder
+// the bootstrap step cannot take back fails the install step, rather than
+// report success on top of it.
+func TestRunBootstrapFailsWhenTheConfigFolderCannotBeTrusted(t *testing.T) {
+	plantMachineConfig(t)
+	hits := countingBootstrapServer(t)
+	origReclaim := reclaimConfigDirFn
+	t.Cleanup(func() { reclaimConfigDirFn = origReclaim })
+	reclaimConfigDirFn = func(bool) error {
+		return fmt.Errorf("%w: a file in it is held open", config.ErrConfigDirUntrusted)
+	}
+	origExit := osExit
+	t.Cleanup(func() { osExit = origExit })
+	exitCode := -1
+	osExit = func(code int) {
+		if exitCode == -1 {
+			exitCode = code
+		}
+	}
+
+	runBootstrap()
+
+	if exitCode != 1 {
+		t.Errorf("exit code = %d, want 1", exitCode)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("bootstrap endpoint contacted %d times", n)
+	}
 }

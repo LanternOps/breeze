@@ -213,36 +213,62 @@ func TestReclaimConfigDirTakesBackAFolderAnotherAccountCreated(t *testing.T) {
 }
 
 // TestReclaimConfigDirCarriesTheAgentsOwnConfig: in a folder another account
-// controlled, a config file an administrator wrote (Administrators owner) is
+// controlled, a config file an administrator wrote with the agent's DACL is
 // carried into the new folder with its contents and the agent's DACL (Users
-// read on agent.yaml only); the other account's secrets.yaml is not.
+// read on agent.yaml only); the other account's secrets.yaml is not. An
+// administrator's file that kept the permissions it inherited from that
+// folder (which let the other account write it) is not carried either: the
+// decision is made on the owner and the DACL, read from the handle the
+// contents are read from.
 func TestReclaimConfigDirCarriesTheAgentsOwnConfig(t *testing.T) {
 	requireElevatedRunner(t)
-	root := filepath.Join(t.TempDir(), "Breeze")
-	plantFolderAsStandardUser(t, root)
-	cfgPath := filepath.Join(root, "agent.yaml")
-	if err := os.Remove(cfgPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, []byte("agent_id: admin-written\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if untrusted, err := ownerUntrusted(cfgPath); err != nil || untrusted {
-		t.Fatalf("admin-written agent.yaml owner untrusted=%v err=%v", untrusted, err)
-	}
+	for name, tc := range map[string]struct {
+		agentDACL bool
+		carried   bool
+	}{
+		"written with the agent's DACL":               {agentDACL: true, carried: true},
+		"inheriting the other account's write access": {agentDACL: false, carried: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "Breeze")
+			plantFolderAsStandardUser(t, root)
+			cfgPath := filepath.Join(root, "agent.yaml")
+			if err := os.Remove(cfgPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfgPath, []byte("agent_id: admin-written\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.agentDACL {
+				if err := applyWindowsDACL(cfgPath, windowsConfigFileSDDL); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if untrusted, err := ownerUntrusted(cfgPath); err != nil || untrusted {
+				t.Fatalf("admin-written agent.yaml owner untrusted=%v err=%v", untrusted, err)
+			}
 
-	if err := reclaimConfigDir(root, false); err != nil {
-		t.Fatalf("reclaimConfigDir: %v", err)
-	}
-	if b, err := os.ReadFile(cfgPath); err != nil || string(b) != "agent_id: admin-written\n" {
-		t.Fatalf("agent.yaml not carried over: %q, %v", b, err)
-	}
-	assertTrustedObject(t, cfgPath)
-	if sddl := reclaimSDDL(t, cfgPath); !strings.Contains(sddl, "(A;;FR;;;BU)") {
-		t.Errorf("agent.yaml lacks the Users read the Helper needs: %s", sddl)
-	}
-	if exists(filepath.Join(root, "secrets.yaml")) {
-		t.Error("the other account's secrets.yaml was carried over")
+			if err := reclaimConfigDir(root, false); err != nil {
+				t.Fatalf("reclaimConfigDir: %v", err)
+			}
+			b, err := os.ReadFile(cfgPath)
+			if !tc.carried {
+				if err == nil {
+					t.Fatalf("agent.yaml another account could write was carried over: %q", b)
+				}
+				return
+			}
+			if err != nil || string(b) != "agent_id: admin-written\n" {
+				t.Fatalf("agent.yaml not carried over: %q, %v", b, err)
+			}
+			assertTrustedObject(t, cfgPath)
+			if sddl := reclaimSDDL(t, cfgPath); !strings.Contains(sddl, "(A;;FR;;;BU)") {
+				t.Errorf("agent.yaml lacks the Users read the Helper needs: %s", sddl)
+			}
+			if exists(filepath.Join(root, "secrets.yaml")) {
+				t.Error("the other account's secrets.yaml was carried over")
+			}
+		})
 	}
 }
 
@@ -424,44 +450,235 @@ func TestReclaimConfigDirLeavesAHeldFolderHandleBehind(t *testing.T) {
 func stubAdminGroupMember(t *testing.T, fn func(sid string) (bool, error)) {
 	t.Helper()
 	orig := adminGroupMemberFn
-	t.Cleanup(func() { adminGroupMemberFn = orig })
+	t.Cleanup(func() {
+		adminGroupMemberFn = orig
+		resetConfigOwnerVerdictCache()
+	})
 	adminGroupMemberFn = fn
+	resetConfigOwnerVerdictCache()
 }
 
 // TestReclaimConfigDirAdoptsAnAdministratorsConfig: an agent.yaml owned by an
 // account that is a member of the local Administrators group (as an
 // elevated enroll writes it under the "object creator" owner policy) is
-// carried over, not dropped, so such installs stay enrolled. If the
-// membership lookup fails, it is not adopted (fail closed).
+// kept, not dropped, so such installs stay enrolled, and is given the
+// agent's own owner so later starts need no account lookup.
 func TestReclaimConfigDirAdoptsAnAdministratorsConfig(t *testing.T) {
 	requireElevatedRunner(t)
-	for name, tc := range map[string]struct {
-		member  func(string) (bool, error)
-		carried bool
-	}{
-		"owner is an Administrators member": {func(string) (bool, error) { return true, nil }, true},
-		"membership lookup fails":           {func(string) (bool, error) { return false, errors.New("lookup failed") }, false},
-	} {
+	root := filepath.Join(t.TempDir(), "Breeze")
+	plantFolderAsStandardUser(t, root)
+	ownerSID := currentReclaimUserSID(t)
+	stubAdminGroupMember(t, func(sid string) (bool, error) { return sid == ownerSID, nil })
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir: %v", err)
+	}
+	if !exists(filepath.Join(root, "agent.yaml")) {
+		t.Fatal("an administrator's agent.yaml was not kept")
+	}
+	assertTrustedObject(t, filepath.Join(root, "agent.yaml"))
+}
+
+// TestReclaimConfigDirChangesNothingWhenAnOwnerCannotBeChecked: if whether
+// the owner is an administrator cannot be looked up (a domain account while
+// the domain is unreachable), the folder is neither replaced nor changed:
+// the agent does not start on it this time and decides on its next start,
+// so an install that is the administrator's is not unenrolled.
+func TestReclaimConfigDirChangesNothingWhenAnOwnerCannotBeChecked(t *testing.T) {
+	requireElevatedRunner(t)
+	root := filepath.Join(t.TempDir(), "Breeze")
+	plantFolderAsStandardUser(t, root)
+	ownerSID := currentReclaimUserSID(t)
+	stubAdminGroupMember(t, func(sid string) (bool, error) {
+		if sid == ownerSID {
+			return false, errors.New("the domain is unreachable")
+		}
+		return false, nil
+	})
+	before := reclaimSDDL(t, root)
+	err := reclaimConfigDir(root, false)
+	if !errors.Is(err, ErrConfigDirUntrusted) || !errors.Is(err, errConfigOwnerUnverified) {
+		t.Fatalf("err = %v, want an undecided owner", err)
+	}
+	for _, name := range []string{"agent.yaml", "secrets.yaml", "agent.state", "data"} {
+		if !exists(filepath.Join(root, name)) {
+			t.Errorf("%s was moved although nothing was decided", name)
+		}
+	}
+	if matches, _ := filepath.Glob(root + ".*"); len(matches) != 0 {
+		t.Errorf("set-aside or staging folders created: %v", matches)
+	}
+	if after := reclaimSDDL(t, root); after != before {
+		t.Errorf("the folder was changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// agentConfigFolder creates root as the agent does, with agent.yaml and
+// secrets.yaml carrying the agent's descriptors and a data folder with a
+// file in it.
+func agentConfigFolder(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "Breeze")
+	if err := createMainAgentDirectory(root, windowsConfigDirCreateSDDL); err != nil {
+		t.Fatal(err)
+	}
+	for name, sddl := range reclaimConfigFiles {
+		p := filepath.Join(root, name)
+		body := "agent_id: 0123456789abcdef0123456789abcdef\nserver_url: https://agent.example.com\n"
+		if name == "secrets.yaml" {
+			body = "auth_token: brz_agent_token\n"
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := applyWindowsDACL(p, reclaimOwnerSDDL+sddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "audit.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// moveInAsStandardUsersFile creates name, owned by the simulated standard
+// user, in a folder that user can write, then moves it (keeping its owner
+// and permissions) into dir, as a file that user put there earlier would be.
+func moveInAsStandardUsersFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	stubAdminGroupMember(t, func(string) (bool, error) { return false, nil })
+	src := filepath.Join(t.TempDir(), name)
+	reclaimAsStandardUser(t, func() {
+		if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s as a standard user: %v", name, err)
+		}
+	})
+	if err := os.Rename(src, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	if untrusted, err := ownerUntrusted(filepath.Join(dir, name)); err != nil || !untrusted {
+		t.Fatalf("%s owner untrusted=%v err=%v: the test plants nothing", name, untrusted, err)
+	}
+}
+
+// TestReclaimConfigDirSetsAsideAConfigFileOthersCanWrite: a config file the
+// agent owns whose DACL lets another account write it is set aside, unread,
+// not re-secured and kept: its contents may have been changed.
+func TestReclaimConfigDirSetsAsideAConfigFileOthersCanWrite(t *testing.T) {
+	requireElevatedRunner(t)
+	for _, name := range reclaimConfigFileNames {
 		t.Run(name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "Breeze")
-			plantFolderAsStandardUser(t, root)
-			ownerSID := currentReclaimUserSID(t)
-			var asked []string
-			stubAdminGroupMember(t, func(sid string) (bool, error) {
-				asked = append(asked, sid)
-				if sid != ownerSID {
-					return false, nil
-				}
-				return tc.member(sid)
-			})
+			root := agentConfigFolder(t)
+			p := filepath.Join(root, name)
+			if err := applyWindowsDACL(p, "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)"); err != nil {
+				t.Fatal(err)
+			}
 			if err := reclaimConfigDir(root, false); err != nil {
 				t.Fatalf("reclaimConfigDir: %v", err)
 			}
-			if got := exists(filepath.Join(root, "agent.yaml")); got != tc.carried {
-				t.Errorf("agent.yaml carried = %v, want %v (membership asked for %v)", got, tc.carried, asked)
+			if exists(p) {
+				t.Errorf("%s that Users could write is still in the agent's folder", name)
 			}
-			if tc.carried {
-				assertTrustedObject(t, filepath.Join(root, "agent.yaml"))
+			aside := setAsideDir(t, root)
+			if !exists(filepath.Join(aside, name)) {
+				t.Errorf("%s was not kept in %s", name, aside)
+			}
+			assertTrustedObject(t, aside)
+			if !exists(filepath.Join(root, "data", "audit.jsonl")) {
+				t.Error("the agent's data was moved")
+			}
+		})
+	}
+}
+
+// TestReclaimConfigDirSetsAsideOnlyAnotherAccountsOtherFile: a file another
+// account owns that is not one of the agent's own (an older Helper's status
+// file, say) is set aside on its own; the folder, the agent's config and its
+// data stay where they are.
+func TestReclaimConfigDirSetsAsideOnlyAnotherAccountsOtherFile(t *testing.T) {
+	requireElevatedRunner(t)
+	root := agentConfigFolder(t)
+	cfgBefore, err := os.Stat(filepath.Join(root, "agent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	moveInAsStandardUsersFile(t, root, "helper_status.yaml", "status: ok\n")
+
+	if err := reclaimConfigDir(root, false); err != nil {
+		t.Fatalf("reclaimConfigDir: %v", err)
+	}
+	if cfgAfter, err := os.Stat(filepath.Join(root, "agent.yaml")); err != nil || !os.SameFile(cfgBefore, cfgAfter) {
+		t.Errorf("agent.yaml was replaced or moved (err %v)", err)
+	}
+	if !exists(filepath.Join(root, "data", "audit.jsonl")) {
+		t.Error("the agent's data was moved")
+	}
+	if exists(filepath.Join(root, "helper_status.yaml")) {
+		t.Error("the other account's file is still in the agent's folder")
+	}
+	aside := setAsideDir(t, root)
+	if !exists(filepath.Join(aside, "helper_status.yaml")) {
+		t.Errorf("the other account's file was not kept in %s", aside)
+	}
+}
+
+// TestMachineConfigTrustLoadReadsTheAgentsOwnConfig: Load reads a machine
+// config folder and files the agent wrote.
+func TestMachineConfigTrustLoadReadsTheAgentsOwnConfig(t *testing.T) {
+	requireElevatedRunner(t)
+	root := agentConfigFolder(t)
+	t.Cleanup(SetConfigDirForTest(root))
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AgentID != "0123456789abcdef0123456789abcdef" || cfg.AuthToken != "brz_agent_token" {
+		t.Errorf("Load: agent_id %q auth_token %q", cfg.AgentID, cfg.AuthToken)
+	}
+}
+
+// TestMachineConfigTrustLoadRefusesWhatAnotherAccountCouldHaveWritten: Load
+// refuses the machine config, rather than run on it, when another account
+// owns agent.yaml or secrets.yaml, when their DACL or the folder's lets
+// another account write, or when a file has another hard link.
+func TestMachineConfigTrustLoadRefusesWhatAnotherAccountCouldHaveWritten(t *testing.T) {
+	requireElevatedRunner(t)
+	for name, plant := range map[string]func(t *testing.T, root string){
+		"agent.yaml owned by a standard user": func(t *testing.T, root string) {
+			_ = os.Remove(filepath.Join(root, "agent.yaml"))
+			moveInAsStandardUsersFile(t, root, "agent.yaml", "agent_id: 0123456789abcdef0123456789abcdef\nserver_url: https://elsewhere.example.com\n")
+		},
+		"secrets.yaml owned by a standard user": func(t *testing.T, root string) {
+			_ = os.Remove(filepath.Join(root, "secrets.yaml"))
+			moveInAsStandardUsersFile(t, root, "secrets.yaml", "auth_token: brz_other\n")
+		},
+		"agent.yaml Users can write": func(t *testing.T, root string) {
+			if err := applyWindowsDACL(filepath.Join(root, "agent.yaml"), "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;BU)"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"folder Users can add files to": func(t *testing.T, root string) {
+			if err := applyWindowsDACL(root, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x100116;;;BU)"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"agent.yaml has another hard link": func(t *testing.T, root string) {
+			if err := os.Link(filepath.Join(root, "agent.yaml"), filepath.Join(t.TempDir(), "link.yaml")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := agentConfigFolder(t)
+			plant(t, root)
+			t.Cleanup(SetConfigDirForTest(root))
+			if cfg, err := Load(""); !errors.Is(err, ErrConfigDirUntrusted) {
+				t.Errorf("Load = %+v, %v; want ErrConfigDirUntrusted", cfg, err)
+			}
+			if _, err := ReadPersistedCredentials(); strings.Contains(name, "secrets") && !errors.Is(err, ErrConfigDirUntrusted) {
+				t.Errorf("ReadPersistedCredentials: err = %v, want ErrConfigDirUntrusted", err)
 			}
 		})
 	}
@@ -478,6 +695,18 @@ func TestAdminGroupMemberResolvesRealAccounts(t *testing.T) {
 	}
 	if member, err := adminGroupMember("S-1-5-21-1-2-3-424242"); err == nil && member {
 		t.Error("a SID naming no account was reported as an Administrators member")
+	}
+	// A local account that does not exist (deleted, say) is a definite
+	// answer, not an undecided lookup.
+	domain := localAccountDomainSID()
+	if domain == "" {
+		t.Fatal("could not read this machine's account domain SID")
+	}
+	if _, err := adminGroupMember(domain + "-424242"); !errors.Is(err, errAccountNotFound) {
+		t.Errorf("missing local account: err = %v, want errAccountNotFound", err)
+	}
+	if !strings.HasPrefix(currentReclaimUserSID(t), domain+"-") {
+		t.Logf("runner account %s is not a local account of %s", currentReclaimUserSID(t), domain)
 	}
 }
 

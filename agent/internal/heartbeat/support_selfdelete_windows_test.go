@@ -41,10 +41,13 @@ func TestSupportSelfCleanupRemovesExecutableAndFolderAfterExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exe := filepath.Join(dir, "breeze-support-TEST1234-example.exe")
+	// Both names contain %OS% (always set on Windows): cmd.exe would expand it
+	// if a path were written into its command line, and the cleanup would
+	// then look for a different file and folder and leave these behind.
+	exe := filepath.Join(dir, "breeze-support-TEST1234-%OS%.exe")
 	copyTestFile(t, self, exe)
 
-	ws := filepath.Join(dir, "breeze-support-99999")
+	ws := filepath.Join(dir, "breeze-support-%OS%-99999")
 	if err := os.MkdirAll(filepath.Join(ws, "data"), 0o700); err != nil {
 		t.Fatal(err)
 	}

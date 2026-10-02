@@ -246,6 +246,18 @@ func reportBootstrapUnenrolled(line string) {
 // present but unusable (errBootstrapInputUnusable), is a real error and exits
 // non-zero so the MSI rolls back cleanly and the deploy tool sees the failure.
 func runBootstrap() {
+	// Before reading the existing config: take the machine config folder
+	// back if another account created it, setting aside an agent.yaml /
+	// secrets.yaml it could have written, so a planted agent_id is not taken
+	// as "already enrolled" below. A folder that cannot be taken back fails
+	// the install step rather than report success on top of it.
+	if configFileInMachineDir(cfgFile) {
+		if err := reclaimConfigDirFn(true); err != nil {
+			reportBootstrapFailure(fmt.Sprintf("Bootstrap failed: the agent config folder %s cannot be used: %v", config.MachineConfigDir(), err))
+			osExit(1)
+			return
+		}
+	}
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		cfg = config.Default()

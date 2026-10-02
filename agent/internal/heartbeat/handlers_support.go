@@ -201,23 +201,40 @@ func (h *Heartbeat) RunSupportCleanup() {
 	supportCleanupFn(h)
 }
 
-// buildSupportSelfDeleteCmdLine renders the Windows trampoline command line.
-// Extracted (like buildWindowsUninstallScript) so the exact text is
-// unit-testable on any host without spawning cmd.exe.
+// Environment variables that carry the cleanup's paths to cmd.exe.
+const (
+	supportCleanupExeEnv = "BREEZE_SUPPORT_CLEANUP_EXE"
+	supportCleanupDirEnv = "BREEZE_SUPPORT_CLEANUP_DIR"
+)
+
+// buildSupportSelfDeleteCmdLine renders the Windows trampoline command line
+// and the environment entries it reads its paths from. Extracted (like
+// buildWindowsUninstallScript) so the exact text is unit-testable on any host
+// without spawning cmd.exe.
+//
+// The paths are passed in the environment, never written into the line:
+// cmd.exe expands %NAME% anywhere in its command line, quoted or not, with no
+// escape, so a user or file name containing % would otherwise make it delete
+// a different path. cmd.exe expands each variable once and does not re-read
+// the value it substitutes.
 //
 // It polls about once a second for up to a minute: the executable cannot be
 // deleted while this process is still running, and a file it still holds
 // keeps the folder in place, so the first attempt that can succeed is the one
 // after exit. It stops as soon as both are gone. workDir "" deletes only the
 // executable.
-func buildSupportSelfDeleteCmdLine(exePath, workDir string) string {
-	steps := fmt.Sprintf(`ping 127.0.0.1 -n 2 >NUL & del /f /q "%s" 2>NUL`, exePath)
-	done := fmt.Sprintf(`if not exist "%s"`, exePath)
+func buildSupportSelfDeleteCmdLine(exePath, workDir string) (string, []string) {
+	exeRef := `"%` + supportCleanupExeEnv + `%"`
+	env := []string{supportCleanupExeEnv + "=" + exePath}
+	steps := `ping 127.0.0.1 -n 2 >NUL & del /f /q ` + exeRef + ` 2>NUL`
+	done := `if not exist ` + exeRef
 	if workDir != "" {
-		steps += fmt.Sprintf(` & rmdir /s /q "%s" 2>NUL`, workDir)
-		done += fmt.Sprintf(` if not exist "%s"`, workDir)
+		dirRef := `"%` + supportCleanupDirEnv + `%"`
+		env = append(env, supportCleanupDirEnv+"="+workDir)
+		steps += ` & rmdir /s /q ` + dirRef + ` 2>NUL`
+		done += ` if not exist ` + dirRef
 	}
-	return fmt.Sprintf(`cmd /C for /L %%i in (1,1,60) do (%s & %s exit)`, steps, done)
+	return fmt.Sprintf(`cmd /C for /L %%i in (1,1,60) do (%s & %s exit)`, steps, done), env
 }
 
 // scheduleSupportSelfDelete deletes this executable, and removes workDir

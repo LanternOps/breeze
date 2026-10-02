@@ -69,7 +69,11 @@ func TestDoUpdateWatchdogFollowsFailoverBaseURLPromotion(t *testing.T) {
 	fc := watchdog.NewFailoverClient(deadPrimary.URL, "agent-1", "tok", nil)
 	fc.SetBaseURL(promotedBackup.URL)
 
-	updateErr := doUpdateWatchdog("2.1.0", fc.BaseURL, cfg, tokens, journal)
+	origTrust := updateTrustConfigFn
+	t.Cleanup(func() { updateTrustConfigFn = origTrust })
+	updateTrustConfigFn = func() (*config.Config, error) { return cfg, nil }
+
+	updateErr := doUpdateWatchdog("2.1.0", fc.BaseURL, tokens, journal)
 	if updateErr == nil {
 		t.Fatal("expected doUpdateWatchdog to fail: both test servers are loopback, which the shared network policy always rejects regardless of which origin was targeted")
 	}
