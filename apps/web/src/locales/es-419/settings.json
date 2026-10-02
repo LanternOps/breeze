@@ -3758,6 +3758,8 @@
     "lastUsed": "último usado",
     "actions": "Acciones",
     "requestFailed": "Solicitud fallida ({{status}})",
+    "notEnabledTitle": "Las apps conectadas no están habilitadas en este servidor",
+    "notEnabledBody": "MCP OAuth está deshabilitado en este servidor. Configure MCP_OAUTH_ENABLED=true y reinicie la API para permitir apps conectadas.",
     "revokeConfirm": "¿Revocar el acceso a {{name}}? Su token de acceso dejará de funcionar en 10 minutos.",
     "revokeFailed": "Falló la revocación ({{status}})",
     "networkError": "error de red",

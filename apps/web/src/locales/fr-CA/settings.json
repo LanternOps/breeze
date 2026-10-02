@@ -3753,6 +3753,8 @@
     "lastUsed": "Dernière utilisation",
     "actions": "Actions",
     "requestFailed": "Demande échouée ({{status}})",
+    "notEnabledTitle": "Les applications connectées ne sont pas activées sur ce serveur",
+    "notEnabledBody": "MCP OAuth est désactivé sur ce serveur. Définissez MCP_OAUTH_ENABLED=true et redémarrez l'API pour autoriser les applications connectées.",
     "revokeConfirm": "Révoquer l’accès pour {{name}} ? Leur jeton d’accès cessera de fonctionner dans les 10 minutes.",
     "revokeFailed": "Échec de la révocation ({{status}})",
     "networkError": "Erreur réseau",

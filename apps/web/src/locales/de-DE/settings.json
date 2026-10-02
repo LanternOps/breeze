@@ -3758,6 +3758,8 @@
     "lastUsed": "Zuletzt verwendet",
     "actions": "Aktionen",
     "requestFailed": "Anfrage fehlgeschlagen ({{status}})",
+    "notEnabledTitle": "Verbundene Apps sind auf diesem Server nicht aktiviert",
+    "notEnabledBody": "MCP OAuth ist auf diesem Server deaktiviert. Setzen Sie MCP_OAUTH_ENABLED=true und starten Sie die API neu, um verbundene Apps zuzulassen.",
     "revokeConfirm": "Zugriff für {{name}} entziehen? Ihr Zugriffstoken wird innerhalb von 10 Minuten nicht mehr funktionieren.",
     "revokeFailed": "Widerruf fehlgeschlagen ({{status}})",
     "networkError": "Netzwerkfehler",
