@@ -147,7 +147,7 @@ function requestedOptions(
   fromAssignment: Partial<OfferingOptions> | undefined,
 ): OfferingOptions {
   const out: Record<string, unknown> = {};
-  for (const key of ['effort', 'thinkingDisplay', 'speed'] as const) {
+  for (const key of ['effort', 'thinkingDisplay', 'speed', 'budgetThinking'] as const) {
     const value = fromRequest?.[key] ?? fromAssignment?.[key] ?? c.defaultOptions?.[key];
     if (value !== undefined) out[key] = value;
   }
@@ -166,10 +166,13 @@ function wireFor(
   maxTokens: number | undefined,
   carriage: TransportCarriage,
 ): WireParams {
+  // W05: an option is never applied — or reported as applied — unless the
+  // dispatch transport will actually send it.
+  const carried: OfferingOptions = carriage.budgetThinking ? requested : { ...requested, budgetThinking: undefined };
   return buildWireParams({
     thinkingMode: c.capabilities.thinkingMode,
     optionSupport: clampSupport(c, carriage),
-    requested,
+    requested: carried,
     inferenceGeo: c.facts.inferenceGeo,
     maxTokens: maxTokens ?? c.limits.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
   });
@@ -322,6 +325,22 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   };
 
   const origin: RequestOrigin = input.requested?.origin ?? 'user';
+  // W05 (spec §11): a locked surface hides the menu AND the option controls.
+  // Hiding is not the gate — a user-origin request may not carry options,
+  // and options stored on the session by an earlier (unlocked) turn no
+  // longer apply. Agent policies (origin 'policy') are configuration, not a
+  // per-turn choice, and are unaffected. A user-origin request for a
+  // NON-default offering on a locked surface is refused below (W03 rule).
+  const requestedOpts = input.requested?.options;
+  const carriesOptions = requestedOpts !== undefined
+    && Object.values(requestedOpts).some((v) => v !== undefined);
+  if (!assignment.allowUserChoice && carriesOptions && origin === 'user') {
+    return unavailable('not_permitted', input.requested?.offeringId ?? null);
+  }
+  // Every later use of the request's options goes through `effective`.
+  const effective: ResolveModelInput = !assignment.allowUserChoice && carriesOptions && origin === 'session'
+    ? { ...input, requested: { ...input.requested, options: undefined } }
+    : input;
   const requestedId = input.requested?.offeringId;
   const defaultId = assignment.defaultOfferingId;
   const permitted = (id: string) => isPermitted(assignment.permitted, id);
@@ -340,7 +359,7 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
     if (!fallback || !sameRoute || checkEligibility(fallback.facts, ctx) !== null) {
       return unavailable(storedReason, requestedId ?? null, storedName);
     }
-    return finalize(fallback, input, role, assignment.options, ctx, true, transport);
+    return finalize(fallback, effective, role, assignment.options, ctx, true, transport);
   };
 
   if (requestedId && requestedId !== defaultId) {
@@ -355,7 +374,7 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   if (!primaryId) return unavailable('no_eligible_model', null);
   const primary = await loadOfferingCandidate(primaryId, partnerId);
   const reason: ResolveFailureReason | null = primary ? checkEligibility(primary.facts, ctx) : 'not_permitted';
-  if (primary && reason === null) return finalize(primary, input, role, assignment.options, ctx, false, transport);
+  if (primary && reason === null) return finalize(primary, effective, role, assignment.options, ctx, false, transport);
   if (!requestedId || origin === 'user' || requestedId === defaultId) {
     return unavailable(reason!, primaryId, primary?.displayName);
   }

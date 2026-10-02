@@ -8,7 +8,7 @@ const m = vi.hoisted(() => ({
   loadPartnerFacts: vi.fn(),
   loadUserPermissionPredicate: vi.fn(),
   isHosted: vi.fn(() => true),
-  transportCarries: vi.fn(() => ({ speed: true, inferenceGeo: true, thinkingDisplayUpdates: true })),
+  transportCarries: vi.fn(() => ({ speed: true, inferenceGeo: true, thinkingDisplayUpdates: true, budgetThinking: true })),
   ensurePartnerCutover: vi.fn(async (_partnerId: string) => true),
 }));
 // Task 6A: the resolver gates on the partner's registry cutover.
@@ -118,7 +118,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   candidates = { def: cand('def'), alt: cand('alt') };
   m.getEffectiveAssignment.mockResolvedValue(ASSIGNMENT);
-  m.transportCarries.mockReturnValue({ speed: true, inferenceGeo: true, thinkingDisplayUpdates: true });
+  m.transportCarries.mockReturnValue({ speed: true, inferenceGeo: true, thinkingDisplayUpdates: true, budgetThinking: true });
   m.loadOfferingCandidate.mockImplementation(async (id: string) => candidates[id] ?? null);
   m.loadPartnerFacts.mockResolvedValue({ plan: 'pro', residencyRequired: false });
   m.loadUserPermissionPredicate.mockResolvedValue(() => false);
@@ -291,7 +291,7 @@ describe('resolveModel — §7 options', () => {
 
 describe('resolveModel — transport carriage (W01 adapters refuse what they cannot send)', () => {
   it('fast and geo are never applied — or priced — on a transport that cannot carry them', async () => {
-    m.transportCarries.mockReturnValue({ speed: false, inferenceGeo: false, thinkingDisplayUpdates: false });
+    m.transportCarries.mockReturnValue({ speed: false, inferenceGeo: false, thinkingDisplayUpdates: false, budgetThinking: false });
     candidates.def = cand('def', {}, { inferenceGeo: 'eu' });
     const r = await resolveModel({ ...BASE, requested: { options: { speed: 'fast', thinkingDisplay: 'updates' } } });
     expect(r).toMatchObject({ ok: true, inferenceGeo: null, transport: 'agent_sdk' });
@@ -300,7 +300,7 @@ describe('resolveModel — transport carriage (W01 adapters refuse what they can
   });
 
   it('residency required on a transport that cannot carry a geography fails closed', async () => {
-    m.transportCarries.mockReturnValue({ speed: true, inferenceGeo: false, thinkingDisplayUpdates: true });
+    m.transportCarries.mockReturnValue({ speed: true, inferenceGeo: false, thinkingDisplayUpdates: true, budgetThinking: true });
     m.loadPartnerFacts.mockResolvedValue({ plan: 'pro', residencyRequired: true });
     candidates.def = cand('def', {}, { inferenceGeo: 'eu' });
     expect(await resolveModel(BASE)).toMatchObject({ ok: false, reason: 'residency_unavailable' });

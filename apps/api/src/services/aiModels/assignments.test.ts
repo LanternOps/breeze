@@ -151,3 +151,18 @@ describe('tighten-only property: no org row can widen any partner choice', () =>
     if (eff.defaultSource === 'org') expect(isPermitted(eff.permitted, eff.defaultOfferingId!)).toBe(true);
   });
 });
+
+describe('clampOrgOptions: budgetThinking (W05)', () => {
+  it.each([
+    [{}, { budgetThinking: 'off' }, 'off', []],
+    [{ budgetThinking: 'on' }, { budgetThinking: 'off' }, 'off', []],
+    [{ budgetThinking: 'on' }, { budgetThinking: 'on' }, 'on', []],
+    [{}, { budgetThinking: 'on' }, undefined, ['org_budget_thinking_clamped']],
+    [{ budgetThinking: 'off' }, { budgetThinking: 'on' }, 'off', ['org_budget_thinking_clamped']],
+    [{ budgetThinking: 'on' }, null, 'on', []],
+  ] as const)('partner %j + org %j → %s', (partner, org, expected, warnings) => {
+    const r = clampOrgOptions(partner, org);
+    expect(r.options.budgetThinking).toBe(expected);
+    expect(r.warnings).toEqual(warnings);
+  });
+});

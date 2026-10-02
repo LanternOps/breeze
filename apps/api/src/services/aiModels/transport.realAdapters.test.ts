@@ -7,7 +7,8 @@ import { transportCarries } from './transport';
 describe('transportCarries against the real W01 adapters', () => {
   it('neither transport carries speed, inferenceGeo or thinkingDisplay updates yet', () => {
     const none = { speed: false, inferenceGeo: false, thinkingDisplayUpdates: false };
-    expect(transportCarries('agent_sdk')).toEqual(none);
-    expect(transportCarries('messages_api')).toEqual(none);
+    // W05: budget thinking is carried by query() only (toMessagesApiParams only REDUCES thinking).
+    expect(transportCarries('agent_sdk')).toEqual({ ...none, budgetThinking: true });
+    expect(transportCarries('messages_api')).toEqual({ ...none, budgetThinking: false });
   });
 });

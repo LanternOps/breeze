@@ -8,7 +8,7 @@ import { TOOL_REQUIRING_SURFACES, type AiSurface } from '@breeze/shared';
 import { UnsupportedWireOptionError, toAgentSdkOptions, toMessagesApiParams, type WireParams } from './wireParams';
 
 export type DispatchTransport = 'agent_sdk' | 'messages_api';
-export interface TransportCarriage { speed: boolean; inferenceGeo: boolean; thinkingDisplayUpdates: boolean }
+export interface TransportCarriage { speed: boolean; inferenceGeo: boolean; thinkingDisplayUpdates: boolean; budgetThinking: boolean }
 
 export function defaultTransport(surface: AiSurface): DispatchTransport {
   return (TOOL_REQUIRING_SURFACES as readonly string[]).includes(surface) ? 'agent_sdk' : 'messages_api';
@@ -34,6 +34,10 @@ export function transportCarries(transport: DispatchTransport): TransportCarriag
     speed: accepts({ speed: 'fast' }),
     inferenceGeo: accepts({ inferenceGeo: 'probe' }),
     thinkingDisplayUpdates: accepts({ thinking: { type: 'adaptive', display: 'updates' } }),
+    // W05: toMessagesApiParams only ever REDUCES thinking on a one-shot
+    // (#7587) — it accepts an enabled budget and silently sends nothing — so
+    // probing cannot see this; a manual budget reaches the wire only through query().
+    budgetThinking: transport === 'agent_sdk',
   };
   carriageCache.set(transport, carriage);
   return carriage;
