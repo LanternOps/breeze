@@ -1234,11 +1234,29 @@ func runAgent() {
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
 	cacheMainProcessStartup(startup)
+
+	// On Windows, if launched by the SCM, run under the service framework
+	// so we report Running/Stopped status back to the SCM correctly. The
+	// service registers first and then takes the config folder back and the
+	// instance guard itself (prepareServiceStart), retrying while it cannot
+	// rather than exiting: a service that exits before registering counts as
+	// a failed start, which the service manager does not retry. The service
+	// wrapper owns its own config loading, enrollment check, and
+	// cancellation via the SCM request channel.
+	if serviceMode {
+		if err := runAsService(cfgFile, startup); err != nil {
+			log.Error("service failed", "error", err.Error())
+			mainAgentExitFn(1)
+		}
+		return
+	}
+
 	// Before anything reads the config, and before the instance guard
 	// (which hardens the folder and so would hide that another account had
 	// it): the agent re-secures its config folder if another account created
 	// it (e.g. through an older Quick Support client run by a standard user),
-	// and refuses one that is a link. Covers the service and console paths.
+	// and refuses one that is a link. The console path stops here; the
+	// service path retries (prepareServiceStart).
 	if err := reclaimConfigDirFn(false); err != nil {
 		// The instance-guard marker (the Windows Event Log; stderr), so a
 		// service that stops here is not just an SCM start error.
@@ -1270,18 +1288,6 @@ func runAgent() {
 	// Self-heal the installed service unit from older installs (launchd plists on
 	// macOS; systemd unit on Linux) after a binary-only auto-update.
 	reconcileServiceUnitIfNeededFn()
-
-	// On Windows, if launched by the SCM, run under the service framework
-	// so we report Running/Stopped status back to the SCM correctly. The
-	// service wrapper owns its own config loading, enrollment check, and
-	// cancellation via the SCM request channel.
-	if serviceMode {
-		if err := runAsService(cfgFile); err != nil {
-			log.Error("service failed", "error", err.Error())
-			mainAgentExitFn(1)
-		}
-		return
-	}
 
 	// Console / Unix service-manager mode. Load config, prepare bootstrap
 	// logging, and wait for enrollment if needed. signal.NotifyContext
