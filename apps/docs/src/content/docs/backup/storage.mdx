@@ -79,12 +79,12 @@ File backups are written to the target as one object per file, under a `snapshot
 
 | Provider | Object name | Stored bytes |
 |----------|-------------|--------------|
-| **S3 and S3-compatible** (MinIO, Wasabi, Backblaze B2), Azure Blob, Google Cloud Storage | ends in `.gz` | **Not compressed.** The object is the original file, byte for byte. |
+| **Amazon S3 and S3-compatible** (MinIO, Wasabi, Backblaze B2) | ends in `.gz` | **Not compressed.** The object is the original file, byte for byte. |
 | **Local / NAS** | ends in `.gz` | gzip-compressed, decompressed again on restore |
 
-On cloud storage the `.gz` suffix is only part of the object name. Expect a cloud target to use roughly as much space as the files you protect, and size buckets and quotas on that basis. If you download a file object directly from the bucket, it is the original file. Rename it to drop the `.gz` instead of running `gunzip` on it, which fails with `not in gzip format`.
+On S3 storage the `.gz` suffix is only part of the object name. Expect an S3 target to use roughly as much space as the files you protect, and size buckets and quotas on that basis. If you download a file object directly from the bucket, it is the original file. Rename it to drop the `.gz` instead of running `gunzip` on it, which fails with `not in gzip format`.
 
-Breeze relies on this layout: restores, bare-metal recovery media, integrity verification and older agents all read cloud objects as raw bytes. Don't rename, compress or recompress objects in the bucket.
+Breeze relies on this layout: restores, bare-metal recovery media, integrity verification and older agents all read S3 objects as raw bytes. Don't rename, compress or recompress objects in the bucket.
 
 ---
 
