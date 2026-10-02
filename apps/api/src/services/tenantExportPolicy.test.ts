@@ -540,3 +540,68 @@ describe('AI origin columns are classified (#5022 W01)', () => {
     }
   });
 });
+
+describe('retiring columns (#7606)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockState.columns = [];
+  });
+
+  const registry = (): TenantExportPolicyRegistry => ({
+    ai_script_policies: tablePolicy('org_id', {
+      included: ['id', 'org_id'], reviewedIncluded: [], excludedSensitive: [], excludedOpen: [], retiring: ['reviewer_model'],
+    }),
+  });
+  const live = (...names: string[]) => names.map((name, i) => column('ai_script_policies', name, 'text', i + 1));
+
+  it('a retiring column may be absent from the live schema (after the drop)', async () => {
+    mockState.columns = live('id', 'org_id');
+    const [plan] = await buildTenantExportPlan(['ai_script_policies'], registry());
+    expect(plan!.includedColumns).toEqual(['id', 'org_id']);
+  });
+
+  it('a retiring column that is still present is never exported (before the drop)', async () => {
+    mockState.columns = live('id', 'org_id', 'reviewer_model');
+    const [plan] = await buildTenantExportPlan(['ai_script_policies'], registry());
+    expect(plan!.includedColumns).toEqual(['id', 'org_id']);
+  });
+
+  it('a retiring jsonb column needs no separate open-container review', async () => {
+    mockState.columns = [...live('id', 'org_id'), column('ai_script_policies', 'reviewer_model', 'jsonb', 3)];
+    await expect(buildTenantExportPlan(['ai_script_policies'], registry())).resolves.toHaveLength(1);
+  });
+
+  it('an ordinary policy column missing from the live schema still throws', async () => {
+    mockState.columns = live('id');
+    await expect(buildTenantExportPlan(['ai_script_policies'], registry())).rejects.toThrow(/org_id/);
+  });
+
+  it('a mayBeAbsent decision that would INCLUDE the column is refused (retiring is exclude-only)', async () => {
+    mockState.columns = live('id', 'org_id');
+    const bad: TenantExportPolicyRegistry = {
+      ai_script_policies: policy('org_id', {
+        id: { decision: 'include', rationale: 'Row id.' },
+        org_id: { decision: 'include', rationale: 'Tenant id.' },
+        reviewer_model: { decision: 'include', rationale: 'Bad.', mayBeAbsent: true },
+      }),
+    };
+    await expect(buildTenantExportPlan(['ai_script_policies'], bad)).rejects.toThrow(/reviewer_model/);
+  });
+
+  it('the policy checker (tenant-export-policy integration contract) accepts a retiring column both before and after the drop', () => {
+    const tables = ['ai_script_policies'];
+    const cols = (...names: string[]) => names.map((columnName) => ({ tableName: 'ai_script_policies', columnName }));
+    expect(findTenantExportPolicyIssues(tables, cols('id', 'org_id', 'reviewer_model'), registry())).toEqual([]);
+    expect(findTenantExportPolicyIssues(tables, cols('id', 'org_id'), registry())).toEqual([]);
+    expect(findTenantExportPolicyIssues(tables, cols('id'), registry())).toEqual(['ai_script_policies.org_id: classification has no live column']);
+  });
+
+  it('the core registry carries every W08 retired column as retiring (#7606)', () => {
+    for (const [table, col] of [
+      ['ai_script_policies', 'reviewer_model'],
+      ['client_ai_org_policies', 'allowed_models'],
+    ] as const) {
+      expect(CORE_TENANT_EXPORT_POLICY[table]!.columns[col], `${table}.${col}`).toMatchObject({ decision: 'exclude', mayBeAbsent: true });
+    }
+  });
+});

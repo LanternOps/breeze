@@ -45,6 +45,37 @@
       "removedIn": "0.122.0",
       "removalBehaviour": "Every /api/v1/ai/provider request returns HTTP 404. Nothing is read or changed.",
       "references": ["#7598", "#7602", "#7606"]
+    },
+    {
+      "id": "ai-script-policy-reviewer-model",
+      "title": "reviewerModel on the script policy retired",
+      "kind": "api-request-field",
+      "surfaces": [
+        { "endpoint": "PUT /api/v1/ai/script-policy", "fields": ["reviewerModel"] },
+        { "endpoint": "PUT /api/v1/partner/ai/script-policy", "fields": ["reviewerModel"] }
+      ],
+      "replacement": "The script reviewer's model is the script_reviewer feature default: Settings -> AI Providers & Models -> Defaults by feature, or PUT /api/v1/ai/models/assignments (approvals:decide required). The GET responses of both endpoints no longer include reviewerModel.",
+      "deprecatedIn": "0.121.0",
+      "deprecationBehaviour": "Accepted and ignored: the value was not stored and had no effect on which model reviewed scripts.",
+      "earliestRemovalDate": "2026-10-02",
+      "removedIn": "0.122.0",
+      "removalBehaviour": "A request that includes reviewerModel is rejected with HTTP 400 naming the field and its replacement. Nothing else in the request is applied.",
+      "references": ["#7598", "#7601", "#7602", "#7606"]
+    },
+    {
+      "id": "client-ai-policy-allowed-models",
+      "title": "allowedModels on the AI for Office organization policy retired",
+      "kind": "api-request-field",
+      "surfaces": [
+        { "endpoint": "PUT /api/v1/client-ai/admin/orgs/:orgId/policy", "fields": ["allowedModels"] }
+      ],
+      "replacement": "The models AI for Office may use are the office_chat feature's permitted models: Settings -> AI Providers & Models -> Defaults by feature, or narrow them for one organization with PUT /api/v1/ai/models/orgs/:orgId/assignments. The GET response no longer includes allowedModels.",
+      "deprecatedIn": "0.121.0",
+      "deprecationBehaviour": "Accepted and ignored: the value was not stored and had no effect on which model AI for Office used.",
+      "earliestRemovalDate": "2026-10-02",
+      "removedIn": "0.122.0",
+      "removalBehaviour": "A request that includes allowedModels is rejected with HTTP 400 naming the field and its replacement. Nothing else in the request is applied.",
+      "references": ["#7598", "#7601", "#7602", "#7606"]
     }
   ]
 }

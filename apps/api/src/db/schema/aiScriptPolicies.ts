@@ -35,7 +35,6 @@ export const aiScriptPolicies = pgTable(
       .$type<AiAgentProtectedResources>()
       .notNull()
       .default(sql`'{"services":[],"paths":[],"registryKeys":[],"deviceTags":[]}'::jsonb`),
-    reviewerModel: text('reviewer_model'),
     unattendedEnabledBy: uuid('unattended_enabled_by').references(() => users.id, { onDelete: 'set null' }),
     unattendedEnabledAt: timestamp('unattended_enabled_at', { withTimezone: true }),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),

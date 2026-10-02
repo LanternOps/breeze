@@ -54,6 +54,7 @@ export const RETIRED_IDENTIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
   ['emitLegacyCostRecorded', /\bemitLegacyCostRecorded\b/],
   ['getCompatConnection', /\bgetCompatConnection\b/],
   ['PartnerLlmError', /\bPartnerLlmError\b/],
+  ['_ignoredReviewerModel', /_ignoredReviewerModel/],
 ];
 
 function walk(dir: string, out: string[]): string[] {
@@ -84,7 +85,9 @@ describe('AI model registry legacy removal (W08 ratchet)', () => {
       }
     }
     expect(hits).toEqual([]);
-  });
+    // A synchronous walk of four source trees: under a parallel full-suite run it
+    // can outlast the default 5 s test timeout (seen locally at ~7 s).
+  }, 60_000);
 
   it('the scanner fires (control)', () => {
     const [, pattern] = RETIRED_IDENTIFIERS.find(([n]) => n === 'partner_llm_configs')!;

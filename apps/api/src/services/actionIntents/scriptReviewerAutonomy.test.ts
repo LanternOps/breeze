@@ -72,7 +72,7 @@ const EFFECTIVE = {
   unattendedAllowedClasses: ['services', 'processes', 'temp_files', 'dns_cache', 'printing'],
   maxUnattendedPerHour: 10,
   protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-  reviewerModel: null, source: { partnerRowId: 'p', orgRowId: 'o' },
+  source: { partnerRowId: 'p', orgRowId: 'o' },
 };
 const EMPTY_RESOURCES = { services: [], paths: [], registryKeys: [], deviceTags: [] };
 const ACT_SNAPSHOT = {

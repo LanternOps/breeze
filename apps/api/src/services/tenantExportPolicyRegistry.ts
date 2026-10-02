@@ -6,6 +6,8 @@ type ColumnGroups = Readonly<{
   reviewedIncluded: readonly string[];
   excludedSensitive: readonly string[];
   excludedOpen: readonly string[];
+  /** Soon-dropped columns: excluded, and allowed to be absent from the live schema (D11, #7606). */
+  retiring?: readonly string[];
   specific?: Readonly<Record<string, ExportColumnDecision>>;
 }>;
 
@@ -13,6 +15,13 @@ const INCLUDED: ExportColumnDecision = { decision: 'include', rationale: 'Custom
 const REVIEWED_INCLUDED: ExportColumnDecision = { decision: 'include', rationale: 'Security-adjacent operational identifier, status, timestamp, count, or integrity value reviewed as non-secret.', reviewedSensitiveName: true };
 const EXCLUDED_SENSITIVE: ExportColumnDecision = { decision: 'exclude', rationale: 'Authentication, credential, capability, private-key, or verifier material is prohibited from tenant exports.', reviewedSensitiveName: true, openContainerReviewed: true };
 const EXCLUDED_OPEN: ExportColumnDecision = { decision: 'exclude', rationale: 'Open-ended container content is excluded after review because it may embed credentials or capabilities.', reviewedSensitiveName: true, openContainerReviewed: true };
+const RETIRING: ExportColumnDecision = {
+  decision: 'exclude',
+  rationale: 'Retired column scheduled to be dropped; never exported, and may already be absent from the live schema (AI model registry W08, #7606).',
+  mayBeAbsent: true,
+  reviewedSensitiveName: true,
+  openContainerReviewed: true,
+};
 
 export function tablePolicy(
   organizationKey: 'id' | 'org_id',
@@ -32,6 +41,7 @@ export function tablePolicy(
   for (const column of groups.reviewedIncluded) assign(column, REVIEWED_INCLUDED);
   for (const column of groups.excludedSensitive) assign(column, EXCLUDED_SENSITIVE);
   for (const column of groups.excludedOpen) assign(column, EXCLUDED_OPEN);
+  for (const column of groups.retiring ?? []) assign(column, RETIRING);
   for (const [column, decision] of Object.entries(groups.specific ?? {})) {
     assign(column, decision);
   }
@@ -151,10 +161,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "ai_screenshots": tablePolicy("org_id", {"included":["id","device_id","org_id","session_id","storage_key","width","height","size_bytes","captured_by","reason","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // AI script authoring W04 (#5612). protected_resources is jsonb, so it is
   // excludedOpen per CLAUDE.md — an open container may embed capabilities,
-  // and a protected-resource list IS a capability list. reviewer_model is a
-  // model id, not a credential.
+  // and a protected-resource list IS a capability list. reviewer_model is
+  // retiring (#7606): meaningless since W03, dropped by W08b.
   "ai_script_lane_state": tablePolicy("org_id", {"included":["org_id","consecutive_failed_verifications","state","opened_at","opened_reason","reset_by_user_id","reset_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ai_script_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","proposing_enabled","unattended_allowed","unattended_enabled","max_unattended_risk_tier","unattended_allowed_classes","max_unattended_per_hour","reviewer_model","unattended_enabled_by","unattended_enabled_at","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["protected_resources"]}),
+  "ai_script_policies": tablePolicy("org_id", {"included":["id","org_id","partner_id","proposing_enabled","unattended_allowed","unattended_enabled","max_unattended_risk_tier","unattended_allowed_classes","max_unattended_per_hour","unattended_enabled_by","unattended_enabled_at","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["protected_resources"],"retiring":["reviewer_model"]}),
   // #7600 W02: offering_id / offering_partner_id are registry ids (included);
   // options is the jsonb OfferingOptions -> excludedOpen (CLAUDE.md).
   "ai_sessions": tablePolicy("org_id", {"included":["total_compute_cents","id","org_id","user_id","device_id","status","type","title","model","system_prompt","billing_source","catalog_entry_id","catalog_revision_id","total_cost_cents","turn_count","max_turns","sdk_session_id","last_activity_at","created_at","updated_at","flagged_at","flagged_by","flag_reason","delegant_m365_connection_id","client_user_id","workbook_name","agent_id","topology_site_id","offering_id","offering_partner_id","continued_from_session_id"],"reviewedIncluded":["total_input_tokens","total_output_tokens"],"excludedSensitive":[],"excludedOpen":["context_snapshot","options","sdk_usage_snapshot","last_turn_model"]}),
@@ -260,7 +270,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "cis_baseline_results": tablePolicy("org_id", {"included":["id","org_id","device_id","baseline_id","checked_at","total_checks","passed_checks","failed_checks","score","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["findings","summary"]}),
   "cis_baselines": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","os_type","benchmark_version","level","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["custom_exclusions","scan_schedule"]}),
   "cis_remediation_actions": tablePolicy("org_id", {"included":["id","org_id","device_id","baseline_id","baseline_result_id","check_id","action","status","approval_status","approved_by","approved_at","approval_note","requested_by","command_id","executed_at","rollback_hint","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details","before_state","after_state"]}),
-  "client_ai_org_policies": tablePolicy("org_id", {"included":["id","org_id","enabled","user_access","write_mode","write_approval","daily_budget_cents","monthly_budget_cents","per_user_messages_per_minute","org_messages_per_hour","retention_days","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["selected_user_ids","allowed_providers","allowed_models","dlp_config","branding"]}),
+  "client_ai_org_policies": tablePolicy("org_id", {"included":["id","org_id","enabled","user_access","write_mode","write_approval","daily_budget_cents","monthly_budget_cents","per_user_messages_per_minute","org_messages_per_hour","retention_days","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["selected_user_ids","allowed_providers","dlp_config","branding"],"retiring":["allowed_models"]}),
   "client_ai_prompt_templates": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","prompt_body","category","hosts","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "client_ai_tenant_mappings": tablePolicy("org_id", {"included":["id","org_id","entra_tenant_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "client_ai_usage": tablePolicy("org_id", {"included":["id","org_id","client_user_id","period","period_key","total_cost_cents","session_count","message_count","updated_at"],"reviewedIncluded":["input_tokens","output_tokens"],"excludedSensitive":[],"excludedOpen":[]}),

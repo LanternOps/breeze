@@ -42,7 +42,6 @@ describe('defaultClientAiPolicy', () => {
       userAccess: 'all',
       selectedUserIds: [],
       allowedProviders: ['anthropic'],
-      allowedModels: [],
       writeMode: 'readwrite',
       writeApproval: 'ask',
       dlpConfig: {},
@@ -94,6 +93,12 @@ describe('getOrgPolicy', () => {
     expect(policy.branding).toEqual({ displayName: 'Acme IT' });
   });
 
+  it('no longer surfaces allowedModels (retired W08 #7606; the office_chat assignment is its home)', async () => {
+    expect(defaultClientAiPolicy(ORG_ID)).not.toHaveProperty('allowedModels');
+    mockPolicyRow({ ...defaultClientAiPolicy(ORG_ID), enabled: true, allowedModels: ['claude-legacy'] });
+    expect(await getOrgPolicy(ORG_ID)).not.toHaveProperty('allowedModels');
+  });
+
   it('falls back to safe values when jsonb columns hold non-array garbage', async () => {
     mockPolicyRow({
       orgId: ORG_ID,
@@ -115,7 +120,7 @@ describe('getOrgPolicy', () => {
     const policy = await getOrgPolicy(ORG_ID);
     expect(policy.selectedUserIds).toEqual([]);
     expect(policy.allowedProviders).toEqual(['anthropic']);
-    expect(policy.allowedModels).toEqual([]);
+    expect(policy).not.toHaveProperty('allowedModels');
     expect(policy.dlpConfig).toEqual({});
     expect(policy.branding).toEqual({});
   });

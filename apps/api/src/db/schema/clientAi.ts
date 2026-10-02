@@ -47,7 +47,6 @@ export const clientAiOrgPolicies = pgTable('client_ai_org_policies', {
   userAccess: text('user_access').notNull().default('all'), // 'all' | 'selected' (SQL CHECK)
   selectedUserIds: jsonb('selected_user_ids').notNull().default([]), // portal_users UUIDs
   allowedProviders: jsonb('allowed_providers').notNull().default(['anthropic']),
-  allowedModels: jsonb('allowed_models').notNull().default([]), // [] = provider defaults
   writeMode: text('write_mode').notNull().default('readwrite'), // 'readwrite' | 'readonly' (SQL CHECK)
   writeApproval: text('write_approval').notNull().default('ask'), // 'ask' | 'allow_auto' (SQL CHECK)
   dlpConfig: jsonb('dlp_config').notNull().default({}),
