@@ -1388,7 +1388,7 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 //    sd_evidence_report_run_fk (report_run_id, report_id) -> report_runs(id,
 //    report_id). Re-homing the run and re-pointing the evidence are separate
 //    statements, so the pair is mismatched in between — legal only because
-//    that FK is DEFERRABLE (2026-11-12-110000) and the merge runs under
+//    that FK is DEFERRABLE (2026-12-03-120200) and the merge runs under
 //    SET CONSTRAINTS ALL DEFERRED. Left un-pointed, the evidence would be
 //    CASCADE-deleted with the definition via sd_evidence_report_org_fk.
 //  - `service_deliverables.auto_evidence_report_id`: the managed-evidence
@@ -1515,7 +1515,7 @@ function rehomedChildrenSummary(pass: Awaited<ReturnType<typeof rehomeReportChil
 // are never re-homed. W02 chose this because a run may be deliverable
 // evidence and sd_evidence_report_run_fk (report_run_id, report_id) ->
 // report_runs(id, report_id) was then NOT deferrable, so moving a run aborted
-// the merge with 23503. That FK is DEFERRABLE since 2026-11-12-110000 (#7443)
+// the merge with 23503. That FK is DEFERRABLE since 2026-12-03-120200 (#7443)
 // and the dedupe passes below now re-home evidence-linked runs, but this pass
 // keeps archive-in-place: this pass itself touches no run or evidence row.
 // The archived child then repoints into the survivor org with its history
