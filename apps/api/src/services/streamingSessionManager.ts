@@ -37,6 +37,7 @@ import {
   type SdkTurnUsageResult,
   type TurnOutcome,
 } from './aiModels/invocationUsage';
+import { noteProviderFailureForBinding } from './aiModels/offeringHealth';
 import { promptProvenanceFor, renderSystemPrompt, type PromptProvenance } from './aiModels/promptProfiles';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
@@ -2060,6 +2061,17 @@ export class StreamingSessionManager {
     }
     const turn: SdkTurnUsageResult = sdkTurnUsage({ binding, observation, result: billable, previousSnapshot });
     const tokens = billedTokenTotals(turn.usage);
+
+    // W09 (#7607, D5): a chat turn is never replayed on another model. A turn
+    // that FAILED on a classified provider error before any output cools its
+    // offering, so the next message resolves to a healthy fallback
+    // (resolveModel). Fire-and-forget: the cooldown fails open.
+    const turnFailed = !result || result.subtype !== 'success' || (result as { is_error?: unknown }).is_error === true;
+    if (turnFailed && observation.providerFailure && !observation.sawOutput) {
+      void noteProviderFailureForBinding(binding, observation.providerFailure.cause).catch((err) => {
+        console.warn('[StreamingSessionManager] cooldown write failed:', safeErrorMessage(err));
+      });
+    }
 
     let costCents: number;
     try {
