@@ -48,7 +48,8 @@ describe('useTopologyInvestigation (M4 Task 5)', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession(aiSelection({ graphRevision: '0' }))));
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
     await waitFor(() => expect(result.current.status).toBe('complete'));
-    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`]);
+    // W05 (#7603): loadSession also loads the composer's model choices (a read).
+    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`]);
     expect(result.current.historical).toBe(true);
   });
 
@@ -57,7 +58,8 @@ describe('useTopologyInvestigation (M4 Task 5)', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(storedSession()));
     const { result } = renderHook(() => useTopologyInvestigation(aiSelection(), { initialSessionId: AI.session }));
     await waitFor(() => expect(result.current.status).toBe('complete'));
-    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`]);
+    // W05 (#7603): loadSession also loads the composer's model choices (a read).
+    expect(calls()).toEqual([`GET /ai/sessions/${AI.session}`, `GET /ai/models/choices/chat?sessionId=${AI.session}`]);
   });
 
   it('a reopened answer for the same selection is current, not historical', async () => {
