@@ -272,13 +272,25 @@ export async function assignProfileToOrg(orgId: string, partnerId: string, profi
 export async function clearOrgAssignment(orgId: string, partnerId: string, executor: DbExecutor = db): Promise<void> {
   await executor.delete(orgBillingProfileAssignments).where(and(eq(orgBillingProfileAssignments.orgId, orgId), eq(orgBillingProfileAssignments.partnerId, partnerId)));
 }
-export async function loadCardsForOrg(orgId: string, partnerId: string, orgCurrency: string): Promise<{ assignedCard: Card | null; partnerDefaultCard: Card | null }> {
+/** THE card-candidate predicates, in one place: the org's assigned card if it
+ *  is active, and the partner's active default in the org currency. Profile
+ *  rows only, no rules or AI rates; selectCard (billingRuleResolver) chooses
+ *  between the two. AI chargeback stamping (#7608) uses this directly because
+ *  it re-reads the chosen card's terms and price list in one statement. */
+export async function loadCardHeadsForOrg(orgId: string, partnerId: string, orgCurrency: string): Promise<{ assignedCard: Profile | null; partnerDefaultCard: Profile | null }> {
   const assignment = await getOrgAssignment(orgId, partnerId);
   const [assigned] = assignment ? await db.select().from(billingProfiles).where(and(
     eq(billingProfiles.id, assignment.billingProfileId), eq(billingProfiles.partnerId, partnerId), eq(billingProfiles.isActive, true))).limit(1) : [];
   const [fallback] = await db.select().from(billingProfiles).where(and(eq(billingProfiles.partnerId, partnerId),
     eq(billingProfiles.currencyCode, orgCurrency), eq(billingProfiles.isDefault, true), eq(billingProfiles.isActive, true))).limit(1);
-  return { assignedCard: assigned ? await withRules(db, assigned) : null, partnerDefaultCard: fallback ? await withRules(db, fallback) : null };
+  return { assignedCard: assigned ?? null, partnerDefaultCard: fallback ?? null };
+}
+export async function loadCardsForOrg(orgId: string, partnerId: string, orgCurrency: string): Promise<{ assignedCard: Card | null; partnerDefaultCard: Card | null }> {
+  const { assignedCard, partnerDefaultCard } = await loadCardHeadsForOrg(orgId, partnerId, orgCurrency);
+  return {
+    assignedCard: assignedCard ? await withRules(db, assignedCard) : null,
+    partnerDefaultCard: partnerDefaultCard ? await withRules(db, partnerDefaultCard) : null,
+  };
 }
 /** Internal creation primitive, using the caller's transaction and RLS scope.
  * ON CONFLICT keeps concurrent creation from poisoning the request transaction.

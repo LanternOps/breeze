@@ -47,7 +47,7 @@ vi.mock('../db', () => {
 import { db } from '../db';
 import {
   createProfile, updateProfile, saveProfile, replaceProfileRows, cloneProfile, setDefaultProfile,
-  assignProfileToOrg, loadCardsForOrg, ensureDefaultProfile, getOrgAssignment, clearOrgAssignment,
+  assignProfileToOrg, loadCardsForOrg, loadCardHeadsForOrg, ensureDefaultProfile, getOrgAssignment, clearOrgAssignment,
 } from './billingProfileService';
 const partner = '11111111-1111-4111-8111-111111111111';
 const id = '22222222-2222-4222-8222-222222222222';
@@ -294,6 +294,21 @@ describe('assignments and loader', () => {
     const queries = state.writes.filter(w => w.kind === 'select').map(w => sqlText(w.where));
     expect(queries[1]!.sql).toContain('is_active'); expect(queries[1]!.params).toContain(true);
     expect(queries[2]!.sql).toContain('is_active'); expect(queries[2]!.params).toContain(true);
+  });
+  it('card heads (#7608) use the same candidate predicates and never read rules or AI rates', async () => {
+    const assigned = { ...profile, id: 'assigned-card' };
+    state.reads.push([{ billingProfileId: 'assigned-card' }], [assigned], [profile]);
+    await expect(loadCardHeadsForOrg(orgId, partner, 'USD')).resolves.toEqual({ assignedCard: assigned, partnerDefaultCard: profile });
+    const queries = state.writes.filter(w => w.kind === 'select').map(w => sqlText(w.where));
+    expect(queries).toHaveLength(3); // assignment, assigned card, partner default — no rules / ai rates
+    expect(queries[1]!.params).toEqual(['assigned-card', partner, true]);
+    expect(queries[2]!.params).toEqual([partner, 'USD', true, true]);
+    expect(queries[2]!.sql).toContain('is_default'); expect(queries[2]!.sql).toContain('is_active');
+  });
+  it('loadCardsForOrg is the heads plus rules and AI rates for each candidate', async () => {
+    state.reads.push([], [profile], [row], []);
+    await expect(loadCardsForOrg(orgId, partner, 'USD')).resolves.toMatchObject({ assignedCard: null, partnerDefaultCard: { id, rules: [row], aiRates: [] } });
+    expect(state.writes.filter(w => w.kind === 'select')).toHaveLength(4); // assignment, default, rules, ai rates
   });
 });
 describe('ensureDefaultProfile', () => {
