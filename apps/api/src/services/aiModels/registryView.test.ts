@@ -54,6 +54,8 @@ vi.mock('./assignmentRows', () => ({
 }));
 
 import { buildCatalogSummary, buildOrgModelDefaults, buildPartnerModelsSnapshot } from './registryView';
+import { endpointFingerprint } from './gatewayCapabilities';
+import { FIDELITY_HARNESS_VERSION } from '../llm/providerFidelityHarness';
 
 const P = '22222222-2222-4222-8222-222222222222';
 const ORG = '33333333-3333-4333-8333-333333333333';
@@ -249,6 +251,75 @@ describe('buildPartnerModelsSnapshot', () => {
       const s = await buildPartnerModelsSnapshot(P);
       expect(s.offerings.map((o) => o.id)).toEqual([A, B]);
       expect(s.offerings.flatMap((o) => o.defaultFor)).toEqual([]);
+    });
+  });
+
+  describe('W06 gateway (openai_compatible) connections', () => {
+    const G = '99999999-9999-4999-8999-999999999999';
+    const URL_ = 'https://llm.example.com/v1';
+    const fp = (baseUrl: string) => endpointFingerprint({ kind: 'openai_compatible', baseUrl, providerConfig: null });
+    const record = (o: Record<string, unknown>) => ({
+      breeze_verification: {
+        harnessVersion: FIDELITY_HARNESS_VERSION, endpointFingerprint: fp(URL_), at: '2026-10-01T00:00:00.000Z',
+        passed: true, toolUse: true, adaptiveEffort: false, summary: null, ...o,
+      },
+      tool_use: { supported: true },
+    });
+    const gw = (id: string, capabilities: unknown) =>
+      offering({ id, source: 'discovered', connectionId: G, platformModelId: null, modelId: `m-${id}`, capabilities });
+    const O1 = '10000000-0000-4000-8000-000000000001';
+    const O2 = '10000000-0000-4000-8000-000000000002';
+    const O3 = '10000000-0000-4000-8000-000000000003';
+    const O4 = '10000000-0000-4000-8000-000000000004';
+
+    it('connection DTO: baseUrl + managedBy, never key material, and no inference geography (D7)', async () => {
+      h.platformGeo = 'us';
+      h.connections = [
+        conn({ id: C, kind: 'anthropic_byok' }),
+        conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' }, keyLast4: null }),
+      ];
+      setOfferings([gw(O1, null)]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const g = s.connections.find((c) => c.id === G)!;
+      expect(g).toMatchObject({
+        kind: 'openai_compatible', baseUrl: URL_, managedBy: 'env', funding: 'partner_key',
+        inferenceGeo: null, effectiveInferenceGeo: null, inferenceGeoSource: 'provider_default', supportedInferenceGeos: [],
+      });
+      expect(JSON.stringify(g)).not.toMatch(/cipher|"fp"|keyFingerprint|apiKeyEncrypted|providerConfig/);
+      // Anthropic-dialect and platform connections expose no base URL and are never env-managed here.
+      expect(s.connections.find((c) => c.id === C)).toMatchObject({ baseUrl: null, managedBy: null, effectiveInferenceGeo: 'us' });
+      expect(s.connections[0]).toMatchObject({ kind: 'platform', baseUrl: null, managedBy: null });
+    });
+
+    it('a user-created gateway connection is not managedBy env', async () => {
+      h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.find((c) => c.id === G)!.managedBy).toBeNull();
+    });
+
+    it('offering DTO carries the verification state against the CURRENT endpoint fingerprint; non-gateway offerings carry null', async () => {
+      h.connections = [conn({ id: C, kind: 'anthropic_byok' }), conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
+      h.platformModels = [pm({ id: 'pm-1' })];
+      setOfferings([
+        gw(O1, record({})),
+        gw(O2, record({ endpointFingerprint: fp('https://old.example.com/v1') })),
+        gw(O3, record({ passed: false, toolUse: false, summary: 'tool_call: no tool call returned' })),
+        gw(O4, null),
+        offering({ id: A }),
+        offering({ id: B, source: 'discovered', connectionId: C, platformModelId: null }),
+      ]);
+      const s = await buildPartnerModelsSnapshot(P);
+      const v = (id: string | null) => s.offerings.find((o) => o.id === id)!.verification;
+      expect(v(O1)).toEqual({ state: 'verified', at: '2026-10-01T00:00:00.000Z', harnessVersion: FIDELITY_HARNESS_VERSION, summary: null });
+      expect(v(O2)).toMatchObject({ state: 'stale', at: '2026-10-01T00:00:00.000Z' });
+      expect(v(O3)).toMatchObject({ state: 'failed', summary: 'tool_call: no tool call returned' });
+      expect(v(O4)).toEqual({ state: 'unverified', at: null, harnessVersion: null, summary: null });
+      expect(v(A)).toBeNull();
+      expect(v(B)).toBeNull();
+      expect(v(null)).toBeNull(); // synthesized platform row
+      // The raw tree / record never reaches the DTO.
+      expect(JSON.stringify(s.offerings)).not.toContain('breeze_verification');
+      expect(JSON.stringify(s.offerings)).not.toContain(fp(URL_));
     });
   });
 

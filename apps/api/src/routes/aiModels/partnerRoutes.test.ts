@@ -7,6 +7,9 @@ const P = '22222222-2222-4222-8222-222222222222';
 const C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PM = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+/** A W06 openai_compatible (gateway) connection, and an offering on it. */
+const G = '99999999-9999-4999-8999-999999999999';
+const GO = '88888888-8888-4888-8888-888888888888';
 const T = new Date('2026-10-01T00:00:00.000Z');
 
 const baseAuth = () => ({
@@ -55,7 +58,14 @@ vi.mock('../../services/aiModels/registryCutover', () => ({ ensurePartnerCutover
 vi.mock('../../services/aiModels/registryView', () => ({ buildPartnerModelsSnapshot: vi.fn() }));
 vi.mock('../../services/aiModels/connections', () => ({ getCompatConnection: vi.fn(), getConnection: vi.fn() }));
 vi.mock('../../services/aiModels/offerings', () => ({ getOffering: vi.fn() }));
-vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn() }));
+vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn(), enqueueOfferingVerification: vi.fn() }));
+vi.mock('../../services/aiModels/gatewayConnections', () => ({
+  createGatewayConnection: vi.fn(),
+  updateGatewayConnection: vi.fn(),
+  deleteGatewayConnection: vi.fn(),
+  createManualOffering: vi.fn(),
+  isEnvManaged: (conn: { providerConfig?: { managedBy?: unknown } | null }) => conn.providerConfig?.managedBy === 'env',
+}));
 vi.mock('../../services/aiModels/connectionSettings', () => ({ updateConnectionSettings: vi.fn() }));
 vi.mock('../../services/aiModels/offeringHealth', () => ({ clearConnectionCooldowns: vi.fn() }));
 vi.mock('../../services/aiModels/offeringWrites', () => ({
@@ -95,7 +105,9 @@ import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { getCompatConnection, getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
-import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
+import { enqueueConnectionSync, enqueueOfferingVerification } from '../../jobs/aiModelDiscoveryWorker';
+import { createGatewayConnection, createManualOffering, deleteGatewayConnection, updateGatewayConnection } from '../../services/aiModels/gatewayConnections';
+import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpointPolicy';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
 import { clearConnectionCooldowns } from '../../services/aiModels/offeringHealth';
 import { ensurePlatformOffering, listOfferingDefaultUses, setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
@@ -109,6 +121,12 @@ const chatRow = {
   allowUserChoice: true, options: null, expectedUpdatedAt: null,
 };
 const KEY = 'sk-ant-' + 'x'.repeat(40);
+const BYO_KEY = 'sk-local-123456';
+const BYO_BODY = { kind: 'openai_compatible', name: 'Office vLLM', baseUrl: 'https://llm.example.com/v1', apiKey: BYO_KEY };
+const gatewayConn = (o: Record<string, unknown> = {}) => ({
+  id: G, partnerId: P, kind: 'openai_compatible', status: 'active', baseUrl: 'https://llm.example.com/v1',
+  providerConfig: null, configVersion: 3, ...o,
+});
 
 const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY }],
@@ -123,12 +141,21 @@ const WRITE_ROUTES: Array<[method: string, path: string, body?: unknown]> = [
   ['POST', `/offerings/${A}/verify`],
   ['PUT', '/assignments', { assignments: [chatRow] }],
   ['PUT', '/residency', { required: false }],
+  // W06 (#7604) gateway arms.
+  ['POST', '/connections', BYO_BODY],
+  ['PATCH', `/connections/${G}/gateway`, { apiKey: null, expectedConfigVersion: 3 }],
+  ['PATCH', `/connections/${G}`, { name: 'Renamed' }],
+  ['DELETE', `/connections/${G}`],
+  ['POST', `/connections/${G}/refresh`],
+  ['POST', `/connections/${G}/offerings`, { modelId: 'qwen2.5-coder:7b' }],
+  ['POST', `/offerings/${GO}/verify`],
 ];
 
 const ALL_WRITE_SERVICE_MOCKS = [
   savePartnerLlmKey, updatePartnerLlmEndpoint, deletePartnerLlmConfig, updateConnectionSettings,
   ensurePlatformOffering, setOfferingEnabled, updateOfferingDetails, putPartnerAssignments, setResidencyRequired,
-  enqueueConnectionSync,
+  enqueueConnectionSync, enqueueOfferingVerification,
+  createGatewayConnection, updateGatewayConnection, deleteGatewayConnection, createManualOffering,
 ].map((m) => vi.mocked(m));
 
 function call(method: string, path: string, body?: unknown) {
@@ -160,9 +187,18 @@ beforeEach(() => {
   vi.mocked(setOfferingEnabled).mockResolvedValue({ offering: offeringRow as any, inUse: [] });
   vi.mocked(updateOfferingDetails).mockResolvedValue(offeringRow as any);
   vi.mocked(listOfferingDefaultUses).mockResolvedValue([]);
-  vi.mocked(getOffering).mockResolvedValue({ id: A, partnerId: P, connectionId: C } as any);
-  vi.mocked(getConnection).mockResolvedValue({ id: C, partnerId: P, status: 'active' } as any);
+  vi.mocked(getOffering).mockImplementation(async (id: string) => (id === GO
+    ? { id: GO, partnerId: P, connectionId: G, modelId: 'qwen2.5-coder:7b', source: 'discovered' }
+    : { id: A, partnerId: P, connectionId: C }) as any);
+  vi.mocked(getConnection).mockImplementation(async (id: string) => (id === G
+    ? gatewayConn()
+    : { id: C, partnerId: P, kind: 'anthropic_byok', status: 'active' }) as any);
   vi.mocked(enqueueConnectionSync).mockResolvedValue(undefined);
+  vi.mocked(enqueueOfferingVerification).mockResolvedValue(undefined);
+  vi.mocked(createGatewayConnection).mockResolvedValue(gatewayConn({ configVersion: 1 }) as any);
+  vi.mocked(updateGatewayConnection).mockResolvedValue(gatewayConn({ configVersion: 4 }) as any);
+  vi.mocked(deleteGatewayConnection).mockResolvedValue(undefined);
+  vi.mocked(createManualOffering).mockResolvedValue({ id: GO, partnerId: P, connectionId: G, modelId: 'qwen2.5-coder:7b' } as any);
   vi.mocked(putPartnerAssignments).mockResolvedValue([{ surface: 'chat', role: 'default', updatedAt: T }] as any);
   vi.mocked(previewResidencyImpact).mockResolvedValue({ unavailableSurfaces: [], affectedOrgOverrides: [] });
   vi.mocked(setResidencyRequired).mockResolvedValue({ residencyRequired: false, impact: { unavailableSurfaces: [], affectedOrgOverrides: [] } });
@@ -171,7 +207,7 @@ beforeEach(() => {
 describe('/ai/models partner routes — authz matrix', () => {
   it.each(WRITE_ROUTES)('%s %s succeeds for a full partner admin with MFA (control)', async (method, path, body) => {
     // POST /connections is a 409 when a compat connection already exists.
-    if (path === '/connections') vi.mocked(getCompatConnection).mockResolvedValueOnce(null);
+    if (path === '/connections' && (body as { kind?: string }).kind === 'anthropic_byok') vi.mocked(getCompatConnection).mockResolvedValueOnce(null);
     const res = await call(method, path, body);
     expect(res.status).toBeLessThan(300);
   });
@@ -258,6 +294,12 @@ describe('/ai/models partner routes — behaviour', () => {
       ['PATCH', `/connections/${C}`, { name: 'x' }],
       ['DELETE', `/connections/${C}`],
       ['POST', `/connections/${C}/refresh`],
+      ['PATCH', `/connections/${G}/gateway`, { apiKey: null, expectedConfigVersion: 3 }],
+      ['PATCH', `/connections/${G}`, { name: 'x' }],
+      ['DELETE', `/connections/${G}`],
+      ['POST', `/connections/${G}/refresh`],
+      ['POST', `/connections/${G}/offerings`, { modelId: 'm1' }],
+      ['POST', `/offerings/${GO}/verify`],
     ];
     for (const [method, path, body] of routes) {
       const res = await call(method, path, body);
@@ -265,6 +307,9 @@ describe('/ai/models partner routes — behaviour', () => {
       expect(await res.json()).toMatchObject({ code: 'registry_unavailable' });
     }
     expect(getCompatConnection).not.toHaveBeenCalled();
+    // Any-kind ownership runs inside the cutover gate too.
+    expect(getConnection).not.toHaveBeenCalled();
+    expect(getOffering).not.toHaveBeenCalled();
   });
   it('404s every connection route when the partner has no connection', async () => {
     vi.mocked(getCompatConnection).mockResolvedValue(null);
@@ -554,5 +599,297 @@ describe('/ai/models partner routes — refresh and verify (Task 8b)', () => {
     expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
     expect(captureException).toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe('/ai/models partner routes — openai_compatible connections (W06 #7604)', () => {
+  const audits = () => vi.mocked(writeRouteAudit).mock.calls.map(([, entry]) => entry as Record<string, any>);
+
+  describe('POST /connections (openai_compatible arm)', () => {
+    it('creates with the partner id from auth, enqueues discovery after the write, audits host/hasKey but never the key or URL path', async () => {
+      const res = await call('POST', '/connections', BYO_BODY);
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: G });
+      expect(createGatewayConnection).toHaveBeenCalledWith({
+        partnerId: P, name: 'Office vLLM', baseUrl: 'https://llm.example.com/v1', apiKey: BYO_KEY, connectedBy: baseAuth().user.id,
+      });
+      expect(enqueueConnectionSync).toHaveBeenCalledWith(G);
+      expect(vi.mocked(createGatewayConnection).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(enqueueConnectionSync).mock.invocationCallOrder[0]!);
+      expect(audits()).toEqual([expect.objectContaining({
+        orgId: null, action: 'ai_models.connection.created', resourceType: 'partner', resourceId: P,
+        details: { kind: 'openai_compatible', connectionId: G, host: 'llm.example.com', hasKey: true },
+      })]);
+      const serialized = JSON.stringify(vi.mocked(writeRouteAudit).mock.calls);
+      expect(serialized).not.toContain(BYO_KEY);
+      expect(serialized).not.toContain('/v1');
+      expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    });
+    it('keyless create audits hasKey false and passes no key', async () => {
+      const { apiKey: _k, ...keyless } = BYO_BODY;
+      expect((await call('POST', '/connections', keyless)).status).toBe(201);
+      expect(createGatewayConnection).toHaveBeenCalledWith(expect.objectContaining({ apiKey: undefined }));
+      expect(audits()[0]!.details).toMatchObject({ hasKey: false });
+    });
+    it('is allowed while an Anthropic connection exists (the compat 409 belongs to the anthropic_byok arm only)', async () => {
+      vi.mocked(getCompatConnection).mockResolvedValue({ id: C, partnerId: P } as any);
+      expect((await call('POST', '/connections', BYO_BODY)).status).toBe(201);
+      expect(createGatewayConnection).toHaveBeenCalled();
+    });
+    it('still 201s when discovery cannot be queued (the row committed; the daily sweep picks it up), captured', async () => {
+      vi.mocked(enqueueConnectionSync).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      const res = await call('POST', '/connections', BYO_BODY);
+      expect(res.status).toBe(201);
+      expect(captureException).toHaveBeenCalled();
+      expect(audits().map((a) => a.action)).toEqual(['ai_models.connection.created']);
+    });
+    it.each([
+      ['egress_blocked', 'That host resolves to a private or reserved address, which Breeze does not connect to.'],
+      ['invalid_url', 'Enter a valid http(s) URL.'],
+    ] as const)('an egress-policy rejection (%s) → 400 with the policy message and code; not audited, not captured', async (code, message) => {
+      vi.mocked(createGatewayConnection).mockRejectedValueOnce(new ByoEndpointRejected(message, code));
+      const res = await call('POST', '/connections', BYO_BODY);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: message, code });
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(captureException).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['inferenceGeo (never residency-eligible, D7)', { ...BYO_BODY, inferenceGeo: 'eu' }],
+      ['a capabilities claim', { ...BYO_BODY, capabilities: { tool_use: { supported: true } } }],
+      ['a credential in the URL', { ...BYO_BODY, baseUrl: 'https://u:p@llm.example.com/v1' }],
+    ])('rejects %s with 400 before any write', async (_l, body) => {
+      expect((await call('POST', '/connections', body)).status).toBe(400);
+      expect(createGatewayConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /connections/:id/gateway', () => {
+    it('rotates the key with the expected config version, enqueues discovery after the write, audits without the key', async () => {
+      const res = await call('PATCH', `/connections/${G}/gateway`, { apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3 });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: G, configVersion: 4 });
+      expect(updateGatewayConnection).toHaveBeenCalledWith({
+        partnerId: P, connectionId: G, baseUrl: undefined, apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3,
+      });
+      expect(enqueueConnectionSync).toHaveBeenCalledWith(G);
+      expect(vi.mocked(updateGatewayConnection).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(enqueueConnectionSync).mock.invocationCallOrder[0]!);
+      expect(audits()).toEqual([expect.objectContaining({
+        action: 'ai_models.connection.endpoint_changed', resourceId: P,
+        details: { kind: 'openai_compatible', connectionId: G, host: 'llm.example.com', urlChanged: false, key: 'rotated', configVersion: 4 },
+      })]);
+      expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('sk-new-abcdef12');
+    });
+    it('a URL change audits the new host only; a null key audits key cleared', async () => {
+      vi.mocked(updateGatewayConnection).mockResolvedValueOnce(gatewayConn({ baseUrl: 'https://other.example.org/tenant-42/v1', configVersion: 4 }) as any);
+      await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'https://other.example.org/tenant-42/v1', apiKey: null, expectedConfigVersion: 3 });
+      expect(audits()[0]!.details).toMatchObject({ host: 'other.example.org', urlChanged: true, key: 'cleared' });
+      expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('tenant-42');
+    });
+    it.each([
+      ['another partner’s connection', gatewayConn({ partnerId: 'OTHER' })],
+      ['a missing connection', null],
+      ['a disconnected connection', gatewayConn({ status: 'disconnected' })],
+      ['an Anthropic (compat) connection', { id: G, partnerId: P, kind: 'anthropic_byok', status: 'active' }],
+    ])('404s %s before any write', async (_l, conn) => {
+      vi.mocked(getConnection).mockResolvedValue(conn as any);
+      const res = await call('PATCH', `/connections/${G}/gateway`, { apiKey: null, expectedConfigVersion: 3 });
+      expect([res.status, (await res.json()).code]).toEqual([404, 'not_found']);
+      expect(updateGatewayConnection).not.toHaveBeenCalled();
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['managed_by_env', new RegistryWriteError('This connection is managed by the MCP_LLM_* environment variables.', 'managed_by_env', 409)],
+      ['stale_write', new RegistryWriteError('This connection changed since you opened it.', 'stale_write', 409)],
+      ['egress_blocked', new ByoEndpointRejected('Use https for an endpoint on a public address.', 'egress_blocked')],
+    ])('maps a %s refusal to its status/code; nothing queued or audited', async (code, err) => {
+      vi.mocked(updateGatewayConnection).mockRejectedValueOnce(err);
+      const res = await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'http://example.com', expectedConfigVersion: 3 });
+      expect(res.status).toBe(err.status);
+      expect((await res.json()).code).toBe(code);
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+    it('rejects an empty patch and a missing expectedConfigVersion (400, no write)', async () => {
+      expect((await call('PATCH', `/connections/${G}/gateway`, { expectedConfigVersion: 3 })).status).toBe(400);
+      expect((await call('PATCH', `/connections/${G}/gateway`, { apiKey: null })).status).toBe(400);
+      expect(updateGatewayConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /connections/:id (settings) on a gateway connection', () => {
+    it('renames it', async () => {
+      const res = await call('PATCH', `/connections/${G}`, { name: 'Renamed' });
+      expect(res.status).toBe(200);
+      expect(updateConnectionSettings).toHaveBeenCalledWith({ partnerId: P, connectionId: G, patch: { name: 'Renamed' } });
+      expect(audits()[0]).toMatchObject({ action: 'ai_models.connection.updated' });
+    });
+    it('refuses an inference geography → 422 geo_not_supported, no write', async () => {
+      const res = await call('PATCH', `/connections/${G}`, { inferenceGeo: 'eu' });
+      expect([res.status, (await res.json()).code]).toEqual([422, 'geo_not_supported']);
+      expect(updateConnectionSettings).not.toHaveBeenCalled();
+    });
+    it('refuses editing an env-managed connection → 409 managed_by_env, no write', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ providerConfig: { managedBy: 'env' } }) as any);
+      const res = await call('PATCH', `/connections/${G}`, { name: 'Renamed' });
+      expect([res.status, (await res.json()).code]).toEqual([409, 'managed_by_env']);
+      expect(updateConnectionSettings).not.toHaveBeenCalled();
+    });
+    it('404s another partner’s gateway connection', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ partnerId: 'OTHER' }) as any);
+      expect((await call('PATCH', `/connections/${G}`, { name: 'x' })).status).toBe(404);
+      expect(updateConnectionSettings).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE /connections/:id', () => {
+    it('soft-disconnects a gateway connection through deleteGatewayConnection, never the compat delete', async () => {
+      const res = await call('DELETE', `/connections/${G}`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ deleted: true });
+      expect(deleteGatewayConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: G });
+      expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+      expect(audits()[0]).toMatchObject({ action: 'ai_models.connection.deleted', details: { connectionId: G, kind: 'openai_compatible' } });
+    });
+    it('the Anthropic connection still goes through the compat delete', async () => {
+      expect((await call('DELETE', `/connections/${C}`)).status).toBe(200);
+      expect(deletePartnerLlmConfig).toHaveBeenCalledWith(P);
+      expect(deleteGatewayConnection).not.toHaveBeenCalled();
+    });
+    it('maps connection_in_use with its details', async () => {
+      const details = { surfaces: ['chat'], inUse: [{ surface: 'chat', level: 'partner', orgId: null }] };
+      vi.mocked(deleteGatewayConnection).mockRejectedValueOnce(new RegistryWriteError('In use.', 'connection_in_use', 409, details));
+      const res = await call('DELETE', `/connections/${G}`);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'In use.', code: 'connection_in_use', details });
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+    it('404s another partner’s gateway connection (no write)', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ partnerId: 'OTHER' }) as any);
+      expect((await call('DELETE', `/connections/${G}`)).status).toBe(404);
+      expect(deleteGatewayConnection).not.toHaveBeenCalled();
+      expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /connections/:id/refresh', () => {
+    it('queues discovery for a gateway connection; the route audit names the egress host (partner-level discovery writes no egress row)', async () => {
+      const res = await call('POST', `/connections/${G}/refresh`);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ queued: true, connectionId: G });
+      expect(enqueueConnectionSync).toHaveBeenCalledWith(G);
+      expect(audits()).toEqual([expect.objectContaining({
+        action: 'ai_models.connection.refresh_requested',
+        details: { connectionId: G, kind: 'openai_compatible', host: 'llm.example.com' },
+      })]);
+    });
+    it.each([
+      ['another partner’s', gatewayConn({ partnerId: 'OTHER' })],
+      ['a disconnected', gatewayConn({ status: 'disconnected' })],
+    ])('404s %s gateway connection, nothing queued', async (_l, conn) => {
+      vi.mocked(getConnection).mockResolvedValue(conn as any);
+      expect((await call('POST', `/connections/${G}/refresh`)).status).toBe(404);
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /connections/:id/offerings (manual model)', () => {
+    it('adds a manual model pinned to the partner and connection; audited as ai_models.offering.added', async () => {
+      const body = { modelId: 'qwen2.5-coder:7b', displayName: 'Qwen coder', prices: { inputCentsPerM: 0, outputCentsPerM: 0, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 } };
+      const res = await call('POST', `/connections/${G}/offerings`, body);
+      expect(res.status).toBe(201);
+      expect(await res.json()).toEqual({ id: GO });
+      expect(createManualOffering).toHaveBeenCalledWith({ partnerId: P, connectionId: G, ...body });
+      expect(audits()).toEqual([expect.objectContaining({
+        orgId: null, action: 'ai_models.offering.added', resourceType: 'partner', resourceId: P,
+        details: { offeringId: GO, connectionId: G, source: 'manual', modelId: 'qwen2.5-coder:7b' },
+      })]);
+    });
+    it('refuses a capabilities / verification claim in the body (400, no write)', async () => {
+      const res = await call('POST', `/connections/${G}/offerings`, {
+        modelId: 'm1', capabilities: { tool_use: { supported: true }, breeze_verification: { passed: true } },
+      });
+      expect(res.status).toBe(400);
+      expect(createManualOffering).not.toHaveBeenCalled();
+    });
+    it('409 not_gateway on an Anthropic connection (its models are discovered)', async () => {
+      const res = await call('POST', `/connections/${C}/offerings`, { modelId: 'm1' });
+      expect([res.status, (await res.json()).code]).toEqual([409, 'not_gateway']);
+      expect(createManualOffering).not.toHaveBeenCalled();
+    });
+    it('404s another partner’s connection', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ partnerId: 'OTHER' }) as any);
+      expect((await call('POST', `/connections/${G}/offerings`, { modelId: 'm1' })).status).toBe(404);
+      expect(createManualOffering).not.toHaveBeenCalled();
+    });
+    it('maps duplicate_model → 409', async () => {
+      vi.mocked(createManualOffering).mockRejectedValueOnce(new RegistryWriteError('That model is already listed on this connection.', 'duplicate_model', 409));
+      const res = await call('POST', `/connections/${G}/offerings`, { modelId: 'm1' });
+      expect([res.status, (await res.json()).code]).toEqual([409, 'duplicate_model']);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
+  it('compat-only routes 404 for a gateway connection id', async () => {
+    expect((await call('POST', `/connections/${G}/key`, { apiKey: KEY })).status).toBe(404);
+    expect((await call('POST', `/connections/${G}/endpoint`, { catalogEntryId: null })).status).toBe(404);
+    expect(savePartnerLlmKey).not.toHaveBeenCalled();
+    expect(updatePartnerLlmEndpoint).not.toHaveBeenCalled();
+  });
+
+  describe('POST /offerings/:id/verify on a gateway offering', () => {
+    it('enqueues harness verification (ids only), not a connection sync → 202, audited mode harness', async () => {
+      const res = await call('POST', `/offerings/${GO}/verify`);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ queued: true, connectionId: G, offeringId: GO });
+      expect(enqueueOfferingVerification).toHaveBeenCalledWith({ offeringId: GO, partnerId: P });
+      expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(audits()).toEqual([expect.objectContaining({
+        action: 'ai_models.offering.verify_requested', resourceId: P,
+        details: { offeringId: GO, connectionId: G, mode: 'harness' },
+      })]);
+    });
+    it('verifies an env-managed connection’s offering too (verification is how it earns tools)', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ providerConfig: { managedBy: 'env' } }) as any);
+      expect((await call('POST', `/offerings/${GO}/verify`)).status).toBe(202);
+      expect(enqueueOfferingVerification).toHaveBeenCalled();
+    });
+    it('a gateway connection in error → 409 not_eligible connection_unavailable before enqueueing (same rule as the verifier)', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ status: 'error' }) as any);
+      const res = await call('POST', `/offerings/${GO}/verify`);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'not_eligible', details: { reason: 'connection_unavailable' } });
+      expect(enqueueOfferingVerification).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+    it('a disconnected gateway connection → 409 connection_unavailable, nothing queued', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ status: 'disconnected' }) as any);
+      expect((await call('POST', `/offerings/${GO}/verify`)).status).toBe(409);
+      expect(enqueueOfferingVerification).not.toHaveBeenCalled();
+    });
+    it('another partner’s gateway offering → 404, nothing queued', async () => {
+      vi.mocked(getOffering).mockResolvedValue({ id: GO, partnerId: 'OTHER', connectionId: G, modelId: 'm1' } as any);
+      expect((await call('POST', `/offerings/${GO}/verify`)).status).toBe(404);
+      expect(enqueueOfferingVerification).not.toHaveBeenCalled();
+    });
+    it('a queue failure → 503 queue_unavailable, captured, not audited', async () => {
+      vi.mocked(enqueueOfferingVerification).mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+      const res = await call('POST', `/offerings/${GO}/verify`);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body).toMatchObject({ code: 'queue_unavailable' });
+      expect(JSON.stringify(body)).not.toContain('ECONNREFUSED');
+      expect(captureException).toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+  });
+
+  it('malformed gateway ids → 400, no write', async () => {
+    expect((await call('PATCH', '/connections/not-a-uuid/gateway', { apiKey: null, expectedConfigVersion: 1 })).status).toBe(400);
+    expect((await call('POST', '/connections/not-a-uuid/offerings', { modelId: 'm1' })).status).toBe(400);
+    for (const write of ALL_WRITE_SERVICE_MOCKS) expect(write).not.toHaveBeenCalled();
   });
 });
