@@ -383,10 +383,13 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	}
 	maybeMigrateLegacyInstall()
 
-	cfg, err := config.Load("")
+	cfg, err := loadWatchdogConfig(stopCh)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
+	}
+	if cfg == nil {
+		return // stopped while waiting for a config it can use
 	}
 
 	wdCfg := watchdog.Config{
