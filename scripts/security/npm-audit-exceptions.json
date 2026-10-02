@@ -33,13 +33,13 @@
     {
       "id": "GHSA-vfj7-8cjw-p6xm",
       "package": "braces",
-      "reason": "No fixed release (<=3.0.3 affected; 3.0.3 is latest). Build tooling only: breeze-helper devDependency tailwindcss → chokidar / fast-glob → micromatch → braces, and breeze-mobile → expo → @expo/cli → @expo/metro-file-map / metro-file-map → micromatch → braces (Metro bundler, declared as an expo runtime dependency). `pnpm why braces --prod` is empty for api, web, portal, the m365 executors, the office add-ins, viewer and helper, and no production Docker deps stage installs it. Not shipped: 0 braces/micromatch modules in the Android and iOS Hermes bundle source maps. Tracking: #7862",
+      "reason": "No fixed release as of 2026-10-02 (<=3.0.3 affected; 3.0.3 is latest). Build tooling only: breeze-helper devDependency tailwindcss → chokidar / fast-glob → micromatch → braces, and breeze-mobile → expo → @expo/cli → @expo/metro-file-map / metro-file-map → micromatch → braces (Metro bundler, declared as an expo runtime dependency). `pnpm why braces --prod` is empty for api, web, portal, the m365 executors, the office add-ins, viewer and helper, and no production Docker deps stage installs it. Not shipped: 0 braces/micromatch modules in the Android and iOS Hermes bundle source maps (expo export at main aea852962e). Tracking: #7862",
       "expires": "2026-10-16"
     },
     {
       "id": "GHSA-ch52-4w7c-c8xp",
       "package": "http-cache-semantics",
-      "reason": "No fixed release (<=4.2.0 affected; 4.2.0 is latest). In the web and portal production closure (astro → http-cache-semantics) and on disk in their runtime images, but the vulnerable path never runs. Its only consumer is astro/dist/assets/build/remote.js, the build-time remote-image cache reached only from core/build (astro build). Astro calls only storable()/timeToLive(), never evaluateRequest/satisfiesWithoutRevalidation (the max-stale path). Neither app sets image.domains/remotePatterns or imports astro:assets. The built web and portal servers contain 0 references, and booting them with a resolve hook loads it 0 times (remote /_image returns 403). No shared response cache uses it. Tracking: #7863",
+      "reason": "No fixed release as of 2026-10-02 (<=4.2.0 affected; 4.2.0 is latest). In the web and portal production closure (astro → http-cache-semantics) and on disk in their runtime images, but no code path in the shipped build or runtime reaches the vulnerable functions. As of astro 7.3.5, its only consumer is astro/dist/assets/build/remote.js, the build-time remote-image cache reached only from core/build (astro build). Astro calls only storable()/timeToLive(), never evaluateRequest/satisfiesWithoutRevalidation (the max-stale path). Neither app configures `image` or imports astro:assets. The built web and portal servers contain 0 references, and booting them with a resolve hook loads it 0 times (remote /_image returns 403). No shared response cache uses it. Tracking: #7863",
       "expires": "2026-10-16"
     }
   ]
