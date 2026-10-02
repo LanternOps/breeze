@@ -47,6 +47,7 @@ import { alertSiteScopeByDeviceIds } from './alerts/helpers';
 import { writeAuditEvent } from '../services/auditEvents';
 import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../services/auditPayloadSanitizer';
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
+import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
@@ -2502,7 +2503,16 @@ async function readOrgScopedResource(
   table: any,
   columns: Record<string, any>,
   orgCondition: ReturnType<AuthContext['orgCondition']>,
-  options?: { extraConditions?: SQL[]; limit?: number; orderBy?: any }
+  options?: {
+    extraConditions?: SQL[];
+    limit?: number;
+    orderBy?: any;
+    /**
+     * Apply the tool-result field rules (secret-named keys, header maps) to the
+     * rows. Needed for any resource that returns an open JSON column.
+     */
+    redactFields?: boolean;
+  }
 ): Promise<JsonRpcResponse> {
   const conditions: SQL[] = [...(options?.extraConditions || [])];
   if (orgCondition) conditions.push(orgCondition);
@@ -2514,8 +2524,13 @@ async function readOrgScopedResource(
   )
     .limit(options?.limit ?? 50);
 
+  // Round-trip through JSON first so Date values are strings, as they are for
+  // tool results, before the field walk sees them.
+  const rows = options?.redactFields
+    ? redactToolOutputFields(JSON.parse(JSON.stringify(result)), redactAiToolOutputText)
+    : result;
   return jsonRpcResult(id, {
-    contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(result, null, 2) }]
+    contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(rows, null, 2) }]
   });
 }
 
@@ -2686,7 +2701,7 @@ async function handleResourcesRead(
         // automations have NO catalog read branch — org-scope callers do NOT
         // see partner-wide automations (aligns with routes/automations.ts).
         orgScopeCatalogRead: false,
-      }), { limit: 200 });
+      }), { limit: 200, redactFields: true });
     }
 
     // Handle dynamic resource URIs: breeze://devices/{id}

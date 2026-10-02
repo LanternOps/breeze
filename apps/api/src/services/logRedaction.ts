@@ -68,8 +68,20 @@ function isSecretKey(key: string): boolean {
   return SECRET_KEY_PATTERN.test(key);
 }
 
-/** What to do with one `key: value` pair. */
-type FieldAction = 'redact' | 'keep' | 'recurse';
+/**
+ * A key holding a map of HTTP header names to values: `headers`,
+ * `customHeaders`, `request_headers`. Any header value can be a credential
+ * (`Authorization`, `X-Api-Key`, a vendor-specific auth header), and the header
+ * name says nothing reliable about which, so tool output keeps the names and
+ * masks every value. Tool output only — see `toolOutputFieldPolicy`.
+ */
+const HEADER_MAP_KEY_PATTERN = /headers$/i;
+
+/**
+ * What to do with one `key: value` pair. `maskValues` keeps a record's keys
+ * and replaces each value; anything other than a record is replaced whole.
+ */
+type FieldAction = 'redact' | 'keep' | 'recurse' | 'maskValues';
 
 type FieldPolicy = (key: string, value: unknown) => FieldAction;
 
@@ -97,6 +109,13 @@ function applyPolicy(
   const action = policy(key, entry);
   if (action === 'redact') return REDACTED;
   if (action === 'keep') return entry;
+  if (action === 'maskValues') {
+    // Object.fromEntries defines own properties, so a `__proto__` header name
+    // stays an ordinary key (see the note in redactFieldsWith).
+    return isRecord(entry)
+      ? Object.fromEntries(Object.keys(entry).map((name) => [name, REDACTED]))
+      : REDACTED;
+  }
   return redactFieldsWith(entry, redactString, depth + 1, policy, key);
 }
 
@@ -198,12 +217,21 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
 //     `rdpSession`). A string under a key that merely DESCRIBES a session
 //     (`sessionType`, `sessionState`, `sessionName`) is an enum or a label, not
 //     a credential, and falls through to the inline-assignment string pass.
+//   * header map (`headers`, `customHeaders`) -> names kept, every value
+//     masked (HEADER_MAP_KEY_PATTERN). A list or raw string under such a key
+//     is masked whole.
 //
 // Scope: tool output only. Log, audit-payload and tool-INPUT callers keep
 // `redactLogFields` — for a persisted `tool_input`, a `password` argument is the
 // secret and there is no structure worth preserving.
 // ---------------------------------------------------------------------------
 const toolOutputFieldPolicy: FieldPolicy = (key, value) => {
+  if (
+    HEADER_MAP_KEY_PATTERN.test(key) &&
+    (isRecord(value) || Array.isArray(value) || typeof value === 'string')
+  ) {
+    return 'maskValues';
+  }
   if (Array.isArray(value) || isRecord(value)) {
     return isToolOutputSecretMaterialKey(key) ? 'redact' : 'recurse';
   }
