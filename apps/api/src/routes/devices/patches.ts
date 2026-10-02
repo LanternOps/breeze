@@ -10,7 +10,7 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { queueCommandForExecution } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
-import { loadPatchInstallFailures } from '../../services/patchInstallFailures';
+import { loadDevicePatchInstallState, type PatchInstallAttempt } from '../../services/patchInstallFailures';
 import { EFFECTIVE_PATCH_CATEGORY_SQL, EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
 import { loadDevicePatchApprovalView, type DevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
@@ -61,6 +61,32 @@ function commandTypesForPatchHistory(type: string, osType?: string | null): stri
     commandTypes.push(LINUX_SOFTWARE_UPDATE_COMMAND_TYPE);
   }
   return commandTypes;
+}
+
+/**
+ * #7680: a Windows update that installed but needs a restart to finish stays
+ * `IsInstalled=0` to Windows Update until the device restarts, so every scan in
+ * between re-reports it as pending. When the latest install attempt said
+ * "installed, restart required" and the device has not restarted since, the
+ * row is installed-pending-restart, not an untouched pending patch.
+ *
+ * "Not restarted since" = the OS still reports a pending reboot (which
+ * self-clears on the first post-reboot heartbeat) AND the last known boot,
+ * when the agent reported uptime, is not after the install. After a restart a
+ * patch the scan still offers did not finish installing, and reads as plain
+ * pending again.
+ */
+function awaitingRestart(
+  attempt: PatchInstallAttempt | undefined,
+  device: { pendingReboot: boolean; lastSeenAt: Date | null; uptimeSeconds: number | null }
+): { installedAt: string } | null {
+  if (!attempt || attempt.outcome !== 'installed' || !attempt.rebootRequired) return null;
+  if (!device.pendingReboot) return null;
+  if (device.lastSeenAt && typeof device.uptimeSeconds === 'number') {
+    const bootedAt = device.lastSeenAt.getTime() - device.uptimeSeconds * 1000;
+    if (bootedAt > attempt.at.getTime()) return null;
+  }
+  return { installedAt: attempt.at.toISOString() };
 }
 
 function safeParsePatchResult(result: unknown): unknown {
@@ -448,10 +474,15 @@ patchesRoutes.get(
     // #4223: surface the latest failed install attempt (and its reason, e.g.
     // the agent's battery preflight) on each outstanding patch, so the tab no
     // longer reads "Pending approval" for a patch whose install actually failed.
-    const installFailures = await loadPatchInstallFailures(
-      devicePatchList.filter((p) => p.status === 'pending').map((p) => p.patchId),
-      { deviceId }
+    // #7680: per-device installs (this route's own Install button) count as
+    // attempts too, and a patch whose latest install succeeded but needs a
+    // restart reads as awaiting restart rather than plain pending.
+    const { failures: installFailures, latestByPatch } = await loadDevicePatchInstallState(
+      deviceId,
+      devicePatchList.filter((p) => p.status === 'pending').map((p) => p.patchId)
     );
+    const awaitingRestartFor = (patchId: string) =>
+      awaitingRestart(latestByPatch.get(patchId), device);
 
     // Separate actionable pending updates from stale missing records.
     const pending = devicePatchList
@@ -472,7 +503,8 @@ patchesRoutes.get(
         scope: p.scope,
         approvalStatus: approvedPatchIds.has(p.patchId) ? 'approved' : 'pending',
         effectiveApproval: effectiveApprovalFor(p.patchId),
-        installFailure: installFailures.get(p.patchId) ?? null
+        installFailure: installFailures.get(p.patchId) ?? null,
+        awaitingRestart: awaitingRestartFor(p.patchId)
       }));
 
     const missing = devicePatchList

@@ -1921,6 +1921,10 @@
       "noReason": "Kein Grund vom Agent gemeldet",
       "failedAt": "Letzter Installationsversuch fehlgeschlagen: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installiert, Neustart erforderlich",
+      "installedAt": "Installiert am {{when}}. Bleibt bis zum Neustart des Geräts als ausstehend aufgeführt."
+    },
     "approval": {
       "approved": "Genehmigt",
       "approvedTitle": "Manuell genehmigt.",

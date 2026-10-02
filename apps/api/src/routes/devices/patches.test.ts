@@ -103,7 +103,7 @@ vi.mock('../patches/helpers', () => ({
 // #4223 deployment overlay — real SQL is covered by
 // __tests__/integration/patchInstallFailureStatus.integration.test.ts.
 vi.mock('../../services/patchInstallFailures', () => ({
-  loadPatchInstallFailures: vi.fn(async () => new Map())
+  loadDevicePatchInstallState: vi.fn(async () => ({ failures: new Map(), latestByPatch: new Map() }))
 }));
 
 vi.mock('../../services/commandQueue', () => ({

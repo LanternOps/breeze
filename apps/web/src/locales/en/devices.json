@@ -1921,6 +1921,10 @@
       "noReason": "No reason reported by the agent",
       "failedAt": "Last install attempt failed: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Installed, reboot required",
+      "installedAt": "Installed {{when}}. It stays listed as pending until the device restarts."
+    },
     "approval": {
       "approved": "Approved",
       "approvedTitle": "Manually approved.",

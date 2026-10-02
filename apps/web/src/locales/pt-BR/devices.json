@@ -1921,6 +1921,10 @@
       "noReason": "Nenhum motivo informado pelo agente",
       "failedAt": "Última tentativa de instalação falhou: {{when}}"
     },
+    "awaitingRestart": {
+      "badge": "Instalado, reinicialização necessária",
+      "installedAt": "Instalado em {{when}}. Continua listado como pendente até o dispositivo ser reiniciado."
+    },
     "approval": {
       "approved": "Aprovado",
       "approvedTitle": "Aprovado manualmente.",
