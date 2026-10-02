@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Included",
       "summaryNotBilled": "Not billed"
     }
+  },
+  "autopay": {
+    "title": "Automatic payments",
+    "loading": "Loading automatic payments…",
+    "error": "Could not complete this action. Please try again.",
+    "saved": "Payment settings saved.",
+    "save": "Save",
+    "invalid": "Enter 0–60 whole days and a positive cap amount with a three-letter currency.",
+    "offset-days": "Days after issue",
+    "offset-rule": "Compared with the due date",
+    "cap-enabled": "Automatic payment limit",
+    "cap-amount": "Maximum amount",
+    "cap-currency": "Currency",
+    "ach-mode": "Payment methods",
+    "inherit": "{{value}} — inherited from {{source}}",
+    "source": {
+      "org": "Organization",
+      "partner": "Partner default",
+      "default": "Breeze default"
+    },
+    "option": {
+      "earlier": "Whichever is earlier",
+      "later": "Whichever is later",
+      "false": "Unlimited",
+      "true": "Limit enabled",
+      "ach_preferred": "Bank account preferred; cards accepted",
+      "ach_only": "Bank account only"
+    },
+    "achRisk": "Bank payments are available for eligible US accounts in USD. Your business is responsible for ACH returns and Stripe return fees; individual account returns can arrive up to 60 days later."
   }
 }

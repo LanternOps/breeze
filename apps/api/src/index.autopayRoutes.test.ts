@@ -40,7 +40,8 @@ vi.mock('./db', async importOriginal => {
     },
   };
 });
-vi.mock('./services/autopay/billingPaymentSettings', () => ({
+vi.mock('./services/autopay/billingPaymentSettings', async importOriginal => ({
+  ...await importOriginal<typeof import('./services/autopay/billingPaymentSettings')>(),
   resolveBillingPaymentSettings: (...args: unknown[]) => m.read(...args),
   updatePartnerPaymentSettings: (...args: unknown[]) => m.partnerWrite(...args),
   updateOrgPaymentSettings: (...args: unknown[]) => m.orgWrite(...args),
@@ -82,8 +83,14 @@ describe('autopay routes through exported API application', () => {
   it('mounts both GET routes and returns the partner rollout flag', async () => {
     const partner = await request(partnerPath);
     expect(partner.status).toBe(200); expect(await partner.json()).toMatchObject({ autopayEnabled: false });
-    expect((await request(orgPath)).status).toBe(200);
-    expect(m.read).toHaveBeenLastCalledWith(expect.anything(), { partnerId, orgId });
+    const org = await request(orgPath);
+    expect(org.status).toBe(200);
+    const body = await org.json();
+    expect(body.data).toEqual(body.effective);
+    expect(body).toMatchObject({ autopayEnabled: false, values: { autopayCapEnabled: null },
+      inherited: { remindersEnabled: { value: false, source: 'default' } } });
+    expect(m.read).toHaveBeenNthCalledWith(2, expect.anything(), { partnerId, orgId });
+    expect(m.read).toHaveBeenNthCalledWith(3, expect.anything(), { partnerId });
   });
   it('keeps reminders writable with rollout off for partner administrators', async () => {
     expect((await request(partnerPath, 'PUT', { remindersEnabled: true })).status).toBe(200);

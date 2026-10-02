@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Incluído",
       "summaryNotBilled": "Não faturado"
     }
+  },
+  "autopay": {
+    "title": "Pagamentos automáticos",
+    "loading": "Carregando pagamentos automáticos…",
+    "error": "Não foi possível concluir esta ação. Tente novamente.",
+    "saved": "Configurações de pagamento salvas.",
+    "save": "Salvar",
+    "invalid": "Informe de 0 a 60 dias inteiros e um limite positivo com um código de moeda de três letras.",
+    "offset-days": "Dias após a emissão",
+    "offset-rule": "Comparação com a data de vencimento",
+    "cap-enabled": "Limite de pagamento automático",
+    "cap-amount": "Valor máximo",
+    "cap-currency": "Moeda",
+    "ach-mode": "Métodos de pagamento",
+    "inherit": "{{value}} — herdado de {{source}}",
+    "source": {
+      "org": "Organização",
+      "partner": "Padrão do parceiro",
+      "default": "Padrão do Breeze"
+    },
+    "option": {
+      "earlier": "A data mais próxima",
+      "later": "A data mais distante",
+      "false": "Sem limite",
+      "true": "Limite ativado",
+      "ach_preferred": "Conta bancária preferencial; cartões aceitos",
+      "ach_only": "Somente conta bancária"
+    },
+    "achRisk": "Pagamentos bancários estão disponíveis para contas elegíveis dos EUA em USD. Sua empresa é responsável pelas devoluções ACH e pelas tarifas de devolução da Stripe; devoluções de contas individuais podem chegar até 60 dias depois."
   }
 }

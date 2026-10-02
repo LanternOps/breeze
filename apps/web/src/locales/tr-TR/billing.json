@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Dahil",
       "summaryNotBilled": "Faturalandırılmaz"
     }
+  },
+  "autopay": {
+    "title": "Otomatik ödemeler",
+    "loading": "Otomatik ödemeler yükleniyor…",
+    "error": "Bu işlem tamamlanamadı. Lütfen tekrar deneyin.",
+    "saved": "Ödeme ayarları kaydedildi.",
+    "save": "Kaydet",
+    "invalid": "0–60 arasında tam gün sayısı ve üç harfli para birimi koduyla pozitif bir üst tutar girin.",
+    "offset-days": "Düzenlemeden sonraki gün sayısı",
+    "offset-rule": "Son ödeme tarihiyle karşılaştırma",
+    "cap-enabled": "Otomatik ödeme sınırı",
+    "cap-amount": "En yüksek tutar",
+    "cap-currency": "Para birimi",
+    "ach-mode": "Ödeme yöntemleri",
+    "inherit": "{{value}} — {{source}} kaynağından devralındı",
+    "source": {
+      "org": "Kuruluş",
+      "partner": "İş ortağı varsayılanı",
+      "default": "Breeze varsayılanı"
+    },
+    "option": {
+      "earlier": "Daha erken olan tarih",
+      "later": "Daha geç olan tarih",
+      "false": "Sınırsız",
+      "true": "Sınır etkin",
+      "ach_preferred": "Banka hesabı tercih edilir; kartlar kabul edilir",
+      "ach_only": "Yalnızca banka hesabı"
+    },
+    "achRisk": "Banka ödemeleri, uygun ABD hesapları için USD cinsinden kullanılabilir. İşletmeniz ACH iadelerinden ve Stripe iade ücretlerinden sorumludur; bireysel hesap iadeleri 60 gün sonrasına kadar gelebilir."
   }
 }

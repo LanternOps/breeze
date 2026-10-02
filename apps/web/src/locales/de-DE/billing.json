@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Inklusive",
       "summaryNotBilled": "Nicht abgerechnet"
     }
+  },
+  "autopay": {
+    "title": "Automatische Zahlungen",
+    "loading": "Automatische Zahlungen werden geladen…",
+    "error": "Diese Aktion konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
+    "saved": "Zahlungseinstellungen gespeichert.",
+    "save": "Speichern",
+    "invalid": "Geben Sie 0–60 ganze Tage und einen positiven Höchstbetrag mit einem dreistelligen Währungscode ein.",
+    "offset-days": "Tage nach Ausstellung",
+    "offset-rule": "Vergleich mit dem Fälligkeitsdatum",
+    "cap-enabled": "Limit für automatische Zahlungen",
+    "cap-amount": "Höchstbetrag",
+    "cap-currency": "Währung",
+    "ach-mode": "Zahlungsmethoden",
+    "inherit": "{{value}} — übernommen von {{source}}",
+    "source": {
+      "org": "Organisation",
+      "partner": "Partnerstandard",
+      "default": "Breeze-Standard"
+    },
+    "option": {
+      "earlier": "Das frühere Datum",
+      "later": "Das spätere Datum",
+      "false": "Unbegrenzt",
+      "true": "Limit aktiviert",
+      "ach_preferred": "Bankkonto bevorzugt; Karten akzeptiert",
+      "ach_only": "Nur Bankkonto"
+    },
+    "achRisk": "Bankzahlungen sind für berechtigte US-Konten in USD verfügbar. Ihr Unternehmen trägt die Verantwortung für ACH-Rückbuchungen und Stripe-Rückbuchungsgebühren; Rückbuchungen einzelner Konten können bis zu 60 Tage später eintreffen."
   }
 }

@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Incluido",
       "summaryNotBilled": "No facturado"
     }
+  },
+  "autopay": {
+    "title": "Pagos automáticos",
+    "loading": "Cargando pagos automáticos…",
+    "error": "No se pudo completar esta acción. Inténtalo de nuevo.",
+    "saved": "Se guardó la configuración de pagos.",
+    "save": "Guardar",
+    "invalid": "Ingresa entre 0 y 60 días enteros y un importe máximo positivo con un código de moneda de tres letras.",
+    "offset-days": "Días después de la emisión",
+    "offset-rule": "Comparación con la fecha de vencimiento",
+    "cap-enabled": "Límite de pago automático",
+    "cap-amount": "Importe máximo",
+    "cap-currency": "Moneda",
+    "ach-mode": "Métodos de pago",
+    "inherit": "{{value}} — heredado de {{source}}",
+    "source": {
+      "org": "Organización",
+      "partner": "Valor predeterminado del socio",
+      "default": "Valor predeterminado de Breeze"
+    },
+    "option": {
+      "earlier": "La fecha más temprana",
+      "later": "La fecha más tardía",
+      "false": "Sin límite",
+      "true": "Límite activado",
+      "ach_preferred": "Se prefiere cuenta bancaria; se aceptan tarjetas",
+      "ach_only": "Solo cuenta bancaria"
+    },
+    "achRisk": "Los pagos bancarios están disponibles para cuentas elegibles de EE. UU. en USD. Tu empresa es responsable de las devoluciones ACH y de las comisiones de devolución de Stripe; las devoluciones de cuentas individuales pueden llegar hasta 60 días después."
   }
 }

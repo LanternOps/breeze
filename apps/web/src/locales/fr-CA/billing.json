@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Inclus",
       "summaryNotBilled": "Non facturé"
     }
+  },
+  "autopay": {
+    "title": "Paiements automatiques",
+    "loading": "Chargement des paiements automatiques…",
+    "error": "Impossible de terminer cette action. Veuillez réessayer.",
+    "saved": "Paramètres de paiement enregistrés.",
+    "save": "Enregistrer",
+    "invalid": "Saisissez un nombre entier de jours entre 0 et 60 et un plafond positif avec un code de devise à trois lettres.",
+    "offset-days": "Jours après émission",
+    "offset-rule": "Comparaison avec la date d’échéance",
+    "cap-enabled": "Plafond de paiement automatique",
+    "cap-amount": "Montant maximal",
+    "cap-currency": "Devise",
+    "ach-mode": "Modes de paiement",
+    "inherit": "{{value}} — hérité de {{source}}",
+    "source": {
+      "org": "Organisation cliente",
+      "partner": "Valeur par défaut du partenaire",
+      "default": "Valeur par défaut de Breeze"
+    },
+    "option": {
+      "earlier": "La date la plus proche",
+      "later": "La date la plus tardive",
+      "false": "Sans limite",
+      "true": "Plafond activé",
+      "ach_preferred": "Compte bancaire privilégié ; cartes acceptées",
+      "ach_only": "Compte bancaire uniquement"
+    },
+    "achRisk": "Les paiements bancaires sont disponibles pour les comptes américains admissibles en USD. Votre entreprise est responsable des rejets ACH et des frais de rejet Stripe ; les rejets de comptes individuels peuvent survenir jusqu’à 60 jours plus tard."
   }
 }

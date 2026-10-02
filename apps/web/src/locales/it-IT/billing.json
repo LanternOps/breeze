@@ -2419,5 +2419,34 @@
       "summaryIncluded": "Incluso",
       "summaryNotBilled": "Non fatturato"
     }
+  },
+  "autopay": {
+    "title": "Pagamenti automatici",
+    "loading": "Caricamento dei pagamenti automatici…",
+    "error": "Impossibile completare questa azione. Riprova.",
+    "saved": "Impostazioni di pagamento salvate.",
+    "save": "Salva",
+    "invalid": "Inserisci da 0 a 60 giorni interi e un importo massimo positivo con un codice valuta di tre lettere.",
+    "offset-days": "Giorni dall’emissione",
+    "offset-rule": "Confronto con la data di scadenza",
+    "cap-enabled": "Limite di pagamento automatico",
+    "cap-amount": "Importo massimo",
+    "cap-currency": "Valuta",
+    "ach-mode": "Metodi di pagamento",
+    "inherit": "{{value}} — ereditato da {{source}}",
+    "source": {
+      "org": "Organizzazione",
+      "partner": "Valore predefinito del partner",
+      "default": "Valore predefinito di Breeze"
+    },
+    "option": {
+      "earlier": "La data precedente",
+      "later": "La data successiva",
+      "false": "Illimitato",
+      "true": "Limite attivato",
+      "ach_preferred": "Conto bancario preferito; carte accettate",
+      "ach_only": "Solo conto bancario"
+    },
+    "achRisk": "I pagamenti bancari sono disponibili per i conti statunitensi idonei in USD. La tua azienda è responsabile degli storni ACH e delle commissioni di storno Stripe; gli storni dei singoli conti possono arrivare fino a 60 giorni dopo."
   }
 }
