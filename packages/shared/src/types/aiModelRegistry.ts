@@ -31,6 +31,10 @@ export interface AiConnectionDto {
   lastDiscoveredAt: string | null;
   discoveryError: string | null;
   funding: 'platform' | 'partner_key';
+  /** openai_compatible only (W06). Never contains credentials. */
+  baseUrl: string | null;
+  /** 'env' = bootstrapped from MCP_LLM_* (W06 Task 15); read-only in the UI. */
+  managedBy: 'env' | null;
 }
 
 /** Why the enable switch is disabled (the subset of ResolveFailureReason the enable gate can return). */
@@ -74,6 +78,17 @@ export interface AiOfferingDto {
   /** Surfaces (partner or org rows) that use this offering as their default. */
   defaultFor: Array<{ surface: AiSurface; level: 'partner' | 'org'; orgId: string | null }>;
   updatedAt: string | null;
+  /** Gateway-connection offerings only; null for platform / anthropic_byok / catalog. */
+  verification: AiOfferingVerificationDto | null;
+}
+
+export type OfferingVerificationState = 'unverified' | 'verified' | 'failed' | 'stale';
+export interface AiOfferingVerificationDto {
+  state: OfferingVerificationState;
+  at: string | null;
+  harnessVersion: string | null;
+  /** Short, scrubbed reason for 'failed' (≤ 200 chars). */
+  summary: string | null;
 }
 
 export interface AiAssignmentRowDto {
