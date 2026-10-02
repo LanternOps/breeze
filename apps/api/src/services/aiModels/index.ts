@@ -43,3 +43,4 @@ export { queryAiQuality, queryAiQualityBreakdown, QualityQueryTimeoutError, type
 export { detectQualitySources, type QualitySources } from './qualitySources';
 export * from './failover';
 export * from './offeringHealth';
+export * from './failoverDispatch';

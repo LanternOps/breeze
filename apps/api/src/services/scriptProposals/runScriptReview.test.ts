@@ -114,6 +114,8 @@ vi.mock('../aiModels/connectionFactory', async (importActual) => ({
   anthropicClientFor: shared.anthropicClientForMock,
 }));
 vi.mock('../aiModels/settleInvocation', () => ({ settleInvocation: shared.settleInvocationMock }));
+// W09: the cooldown write a provider failure makes (Redis; fails open).
+vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: shared.createAuditLogAsyncMock }));
 vi.mock('../sentry', () => ({ captureException: shared.captureExceptionMock }));
 vi.mock('./proposals', () => ({ transitionProposal: shared.transitionProposalMock }));
@@ -753,5 +755,130 @@ describe('runScriptReview — registry resolution (W03 Task 11)', () => {
     queueHappy();
     await runScriptReview(JOB);
     expect(shared.settleInvocationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runScriptReview — W09 failover (#7607)', () => {
+  const JOB = { proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 };
+  const HOP1_RESERVATION = '00000000-0000-4000-8000-0000000000d1';
+  const overloaded = () => Object.assign(new Error('Overloaded'), {
+    status: 529, error: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+  });
+  const primary = () => makeResolvedModel('platform', {
+    surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID, offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+  });
+  const backup = () => makeResolvedModel('anthropic_byok', {
+    surface: 'script_reviewer', partnerId: PARTNER_ID, orgId: ORG_ID, offering: { id: 'k', displayName: 'K' },
+    wireModel: 'claude-backup-wire', failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+  });
+  const settles = () => shared.settleInvocationMock.mock.calls.map((c) => (c as unknown as [{
+    binding: { offeringId: string }; usage: unknown[]; reservationId: string;
+  }])[0]);
+
+  beforeEach(() => {
+    resetDbState();
+    vi.clearAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    primeResolver();
+    shared.transitionProposalMock.mockResolvedValue(true);
+    // mockClear keeps queued *Once values: reset so one case's script never leaks into the next.
+    shared.messagesCreateMock.mockReset();
+    shared.checkBudgetDetailedMock.mockReset();
+    shared.checkBudgetDetailedMock.mockResolvedValue(null);
+    shared.reserveAiBudgetMock.mockReset();
+    shared.reserveAiBudgetMock
+      .mockResolvedValueOnce(RESERVED)
+      .mockResolvedValueOnce({ ...RESERVED, reservationId: HOP1_RESERVATION, reservedCostCents: 40 });
+  });
+
+  it('a 529 on the reviewer model fails over to the assignment fallback; each hop is admitted, reserved and settled on its own', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock
+      .mockRejectedValueOnce(overloaded())
+      .mockResolvedValueOnce({ usage: { input_tokens: 500, output_tokens: 80 }, content: [{ type: 'text', text: JSON.stringify(VALID_VERDICT) }] });
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: REVIEW_ROW_ID, reviewerKind: 'model', status: 'completed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ id: REVIEW_ROW_ID, status: 'completed' });
+    expect(shared.resolveModelMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      surface: 'script_reviewer', excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+      failoverOrigin: { offeringId: 'p', funding: 'platform', connectionId: null },
+    }));
+    expect(shared.checkBudgetDetailedMock).toHaveBeenLastCalledWith(ORG_ID, 'partner_key');
+    expect(shared.reserveAiBudgetMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      idempotencyKey: `script-review:${PROPOSAL_ID}:1:hop:1`, billingSource: 'partner_key',
+      binding: turnBindingFrom(backup()),
+    }));
+    expect(settles().map((s) => [s.binding.offeringId, s.usage.length, s.reservationId])).toEqual([
+      ['p', 0, RESERVATION_ID],
+      ['k', 1, HOP1_RESERVATION],
+    ]);
+    // The backup's own client, and the review row names what SERVED.
+    expect(shared.anthropicClientForMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ offering: { id: 'k', displayName: 'K' } }), { surface: 'script_review_verdict', orgId: ORG_ID },
+    );
+    expect(shared.messagesCreateMock.mock.calls[1]![0]).toMatchObject({ model: 'claude-backup-wire' });
+    expect(shared.insertValues.at(-1)).toMatchObject({
+      reviewerKind: 'model', status: 'completed', model: 'claude-backup-wire', budgetReservationId: HOP1_RESERVATION,
+    });
+  });
+
+  it('no fallback configured: a 529 keeps W03 behaviour (one reservation, settled at zero, review failed)', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValue({ ...primary(), failoverRemaining: [] });
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.resolveModelMock).toHaveBeenCalledTimes(1);
+    expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => [s.reservationId, s.usage.length])).toEqual([[RESERVATION_ID, 0]]);
+  });
+
+  it('every configured model fails: the review fails, each hop settled exactly once, nothing settled twice', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded()).mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    // hop 1 has no failoverRemaining: the original error comes back unsettled and the reviewer settles it once.
+    expect(settles().map((s) => [s.binding.offeringId, s.reservationId])).toEqual([
+      ['p', RESERVATION_ID],
+      ['k', HOP1_RESERVATION],
+    ]);
+    expect(shared.insertValues.at(-1)).toMatchObject({ status: 'failed', budgetReservationId: HOP1_RESERVATION });
+  });
+
+  it('the backup hop is not admitted (out of credits): the review fails, nothing more is reserved', async () => {
+    shared.resolveModelMock.mockReset();
+    shared.resolveModelMock.mockResolvedValueOnce(primary()).mockResolvedValueOnce(
+      makeResolvedModel('platform', { surface: 'script_reviewer', offering: { id: 'p2', displayName: 'P2' }, failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [] }),
+    );
+    shared.checkBudgetDetailedMock.mockResolvedValueOnce(null).mockResolvedValueOnce({ message: 'You are out of AI credits.', reason: 'credits_exhausted', permanent: false });
+    shared.messagesCreateMock.mockRejectedValueOnce(overloaded());
+    queueReadsThroughModelCall();
+    shared.insertReturningQueue.push([{ id: 'static-scan-row' }]);
+    shared.insertReturningQueue.push([{ id: 'fail-row', reviewerKind: 'model', status: 'failed' }]);
+
+    const result = await runScriptReview(JOB);
+
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(shared.reserveAiBudgetMock).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual([RESERVATION_ID]);
+    expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('out of AI credits') });
   });
 });
