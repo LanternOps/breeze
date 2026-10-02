@@ -133,3 +133,20 @@ describe('messagesUsage: fastDowngraded (W05)', () => {
     expect(t.outcome.fastDowngraded).toBe(true);
   });
 });
+
+describe('#7786: a turn that failed before any output never claims fast', () => {
+  it('fast requested and the result says on, but nothing answered: fastDowngraded, nothing billed', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'assistant', error: 'rate_limit', message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 429' }] } });
+    const t = sdkTurnUsage({
+      binding: binding('fast'), observation: obs, previousSnapshot: null,
+      result: {
+        subtype: 'success', is_error: true, stop_reason: 'stop_sequence', fast_mode_state: 'on',
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 900, outputTokens: 15 } },
+      },
+    });
+    expect(t.outcome).toMatchObject({ servedModel: OPUS, fallbackUsed: false, fastDowngraded: true });
+    expect(t.usage).toEqual([]);
+  });
+});

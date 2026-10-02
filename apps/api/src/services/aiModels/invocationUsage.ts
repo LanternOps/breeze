@@ -76,8 +76,10 @@ export interface SdkTurnObservation {
   fastNotOnSeen: boolean;
   /**
    * W09 (#7607): the last failover-eligible provider failure the CLI reported
-   * this turn. `terminal` = it came from the CLI's own api-error assistant
-   * message (the request's final failure), not from an `api_retry`.
+   * this turn. `terminal` = the CLI reported it as the request's final failure
+   * (its own api-error assistant message, or the result's `api_error_status`),
+   * not an `api_retry` it may still recover from. A less specific result
+   * status never overwrites a terminal cause (#7784).
    */
   providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number; terminal: boolean } | null;
   /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
@@ -107,6 +109,8 @@ export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): vo
   // does not recognise (a timeout or reset after send, an invalid request, an
   // unknown model, …) CLEARS any earlier cause: the latest failure decides,
   // and a turn must never fail over on a stale 529 after an unknown outcome.
+  // One exception: an unclassifiable result `api_error_status` never clears a
+  // terminal cause (#7784, the result-frame branch below).
   const recordFailure = (error: unknown, status: unknown, attempt: unknown, terminal: boolean) => {
     const httpStatus = typeof status === 'number' ? status : null;
     const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
@@ -132,7 +136,7 @@ export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): vo
     // low-credit reply is `billing_error` there but a bare 400 here. A
     // classified status may replace that cause (529 says more than
     // `server_error`); an unclassifiable one never clears it. A cause left by
-    // an `api_retry` (retried, so not final) is still cleared, as above.
+    // an `api_retry` (retried, so not final) is replaced or cleared, as above.
     if (typeof m.api_error_status !== 'number') return;
     if (obs.providerFailure?.terminal && !classifySdkAssistantError(null, m.api_error_status)) return;
     recordFailure(null, m.api_error_status, undefined, true);
@@ -339,9 +343,13 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
   // served by no other model. The CLI's own background call (a small model,
   // run once per query, which succeeds even when the main model fails) is
   // then the only modelUsage key that grew, so the usage-based guess would
-  // name it. Keep the bound model and report no fallback. Labels only:
-  // billing attributes usage separately and is unchanged.
-  const servedModel = errored && !obs.sawOutput && obs.refusalFallback === null ? binding.wireModel : observedServed;
+  // name it. Keep the bound model, report no turn-level fallback, and never
+  // claim fast for a turn nothing answered. Labels only: usage rows, their
+  // pricing and billed speed come from servedModelOf / priceUsage and are
+  // unchanged (the background call's own delta row is still an unbound-model
+  // row in the ledger).
+  const nothingServed = errored && !obs.sawOutput && obs.refusalFallback === null;
+  const servedModel = nothingServed ? binding.wireModel : observedServed;
   const stopReason = refused ? 'refusal' : errored ? 'error' : sdkStop ?? 'end_turn';
   const category = obs.refusalNoFallback?.category ?? obs.refusalFallback?.category ?? null;
   const fallbackUsed = obs.refusalFallback !== null || servedModel !== binding.wireModel;
@@ -354,7 +362,7 @@ function sdkOutcome(binding: TurnBinding, obs: SdkTurnObservation, result: SdkRe
     servedModel,
     providerModel: null,
     sdkReportedCostUsd: typeof cost === 'number' && Number.isFinite(cost) ? cost : null,
-    fastDowngraded: sdkFastRequested(binding) && !sdkFastServed(binding, obs, result, servedModel),
+    fastDowngraded: sdkFastRequested(binding) && (nothingServed || !sdkFastServed(binding, obs, result, servedModel)),
   };
 }
 

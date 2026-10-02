@@ -107,7 +107,7 @@ export function classifySdkAssistantError(
  * with less detail (#7784: low credit is `billing_error` on the assistant
  * message but a bare 400 on the result), so it replaces the cause only when it
  * classifies, and never clears it. Everything else leaves it as it was.
- * Chat applies the same rule in invocationUsage.observeSdkMessage.
+ * Chat applies the equivalent rule in invocationUsage.observeSdkMessage.
  */
 export function nextTerminalProviderCause(current: ProviderFailureCause | null, message: unknown): ProviderFailureCause | null {
   if (!message || typeof message !== 'object') return current;
