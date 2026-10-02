@@ -108,17 +108,24 @@ function mockSelectOnce(rows: unknown[]) {
   } as any);
 }
 
-type InsertCall = { table: unknown; values: Record<string, unknown> };
+type InsertCall = { table: unknown; values: Record<string, unknown>; onConflictDoNothing: boolean };
 let insertCalls: InsertCall[];
 
-function primeInserts(rowsByTable: Map<unknown, Record<string, unknown>>) {
+/** A row of `null` makes that table's insert conflict (RETURNING yields nothing). */
+function primeInserts(rowsByTable: Map<unknown, Record<string, unknown> | null>) {
   insertCalls = [];
   vi.mocked(db.insert).mockImplementation((table: unknown) => ({
     values: vi.fn((values: Record<string, unknown>) => {
-      insertCalls.push({ table, values });
-      const row = rowsByTable.get(table) ?? {};
+      const call: InsertCall = { table, values, onConflictDoNothing: false };
+      insertCalls.push(call);
+      const row = rowsByTable.get(table);
+      const returning = vi.fn().mockResolvedValue(row === null ? [] : [row ?? {}]);
       return {
-        returning: vi.fn().mockResolvedValue([row]),
+        returning,
+        onConflictDoNothing: vi.fn(() => {
+          call.onConflictDoNothing = true;
+          return { returning };
+        }),
       };
     }),
   }) as any);
@@ -168,7 +175,33 @@ describe.each([ensurePatchJobFailureRule, ensureRebootPendingRule])('patch rule 
     expect(await ensureRule(ORG_ID)).toBe(retired ? 'fresh-rule' : 'existing-rule');
     expect(lookup?.params).toContain(ORG_ID);
     expect(lookup?.params).toContain('retired_at');
-    expect(insertCalls.filter((call) => call.table === alertRules)).toHaveLength(retired ? 1 : 0);
+    const ruleInserts = insertCalls.filter((call) => call.table === alertRules);
+    expect(ruleInserts).toHaveLength(retired ? 1 : 0);
+    // #7650: the insert must defer to the unique index, never race it blind.
+    for (const call of ruleInserts) expect(call.onConflictDoNothing).toBe(true);
+  });
+
+  // #7650: another first fire committed the rule between our lookup and our
+  // insert. The insert does nothing; the winner's row is read back and used.
+  it('returns the concurrent winner when its own insert conflicts', async () => {
+    mockSelectOnce([]); // fast-path lookup: nothing yet
+    mockSelectOnce([{ id: 'template-1' }]); // ensureGlobalTemplate: existing template
+    mockSelectOnce([{ id: 'winner-rule' }]); // re-select after the conflict
+    primeInserts(new Map([[alertRules, null]]));
+
+    expect(await ensureRule(ORG_ID)).toBe('winner-rule');
+    const ruleInserts = insertCalls.filter((call) => call.table === alertRules);
+    expect(ruleInserts).toHaveLength(1);
+    expect(ruleInserts[0]!.onConflictDoNothing).toBe(true);
+  });
+
+  it('throws when the insert conflicts but no live built-in rule can be read back', async () => {
+    mockSelectOnce([]);
+    mockSelectOnce([{ id: 'template-1' }]);
+    mockSelectOnce([]);
+    primeInserts(new Map([[alertRules, null]]));
+
+    await expect(ensureRule(ORG_ID)).rejects.toThrow(/conflicted/);
   });
 
   // #7626: an operator switched the built-in rule off. The lookup must find
