@@ -965,6 +965,7 @@
       "description": "Führen Sie „{{name}}“ auf {{count}} Geräten als {{runAs}} aus. Skripte werden in die Warteschlange gestellt und beginnen sofort mit der Ausführung."
     },
     "selectedCount": "{{count}} Gerät(e) ausgewählt",
+    "executeBlocked": "Ausführen ist nicht verfügbar: Ein ausgewähltes Gerät kann dieses Skript hier nicht ausführen (es gehört möglicherweise zu einer anderen als der angezeigten Organisation oder ist nicht mehr zugänglich).",
     "languages": {
       "powershell": "PowerShell",
       "bash": "Bash",
