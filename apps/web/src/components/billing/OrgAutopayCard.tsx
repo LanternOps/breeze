@@ -1,25 +1,51 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
 import { readAutopay, mutateAutopay, methodLabel, type AutopayRow } from './autopayClient';
 export default function OrgAutopayCard({ orgId }: { orgId: string }) {
+  // A new organization gets fresh state, including confirmations and action results.
+  return <OrgAutopayCardContent key={orgId} orgId={orgId} />;
+}
+function OrgAutopayCardContent({ orgId }: { orgId: string }) {
+  const generation = useRef(0);
   const { t } = useTranslation('billing');
   const [row, setRow] = useState<AutopayRow | null>(null); const [error, setError] = useState(false);
   const [recipient, setRecipient] = useState(''); const [busy, setBusy] = useState(false);
   const [off, setOff] = useState(false); const [result, setResult] = useState('');
-  const load = useCallback(async () => { try { setRow(await readAutopay(`/orgs/${orgId}/autopay`)); setError(false); }
-    catch { setError(true); } }, [orgId]);
-  useEffect(() => { setRow(null); setRecipient(''); void load(); }, [load]);
+  const load = useCallback(async () => {
+    const current = generation.current;
+    try {
+      const next = await readAutopay<AutopayRow>(`/orgs/${orgId}/autopay`);
+      if (current !== generation.current) return;
+      setRow(next); setError(false);
+    } catch {
+      if (current === generation.current) setError(true);
+    }
+  }, [orgId]);
+  useEffect(() => {
+    void load();
+    return () => { generation.current += 1; };
+  }, [load]);
   async function act(action: 'request' | 'pause' | 'resume' | 'turn_off') {
     if (busy) return; setBusy(true);
+    const current = generation.current;
     try {
       if (action === 'request') {
         const response = await mutateAutopay<{ requested: string[]; skipped: { orgId: string; reason: string }[] }>(
           '/billing/autopay/requests', { orgIds: [orgId], ...(recipient.trim() ? { recipientOverride: recipient.trim() } : {}) });
+        if (current !== generation.current) return;
         setResult(response.skipped.map(item => item.reason).join(', ') || t('autopay.done'));
-      } else { await mutateAutopay(`/orgs/${orgId}/autopay`, { action }, 'PATCH'); setResult(t('autopay.done')); }
+      } else {
+        await mutateAutopay(`/orgs/${orgId}/autopay`, { action }, 'PATCH');
+        if (current !== generation.current) return;
+        setResult(t('autopay.done'));
+      }
       setOff(false); await load();
-    } catch (e) { handleActionError(e, t('autopay.error')); } finally { setBusy(false); }
+    } catch (e) {
+      if (current === generation.current) handleActionError(e, t('autopay.error'));
+    } finally {
+      if (current === generation.current) setBusy(false);
+    }
   }
   if (error) return <p data-testid="autopay-org-error" role="alert">{t('autopay.error')}</p>;
   if (!row) return <p>{t('autopay.loading')}</p>;
