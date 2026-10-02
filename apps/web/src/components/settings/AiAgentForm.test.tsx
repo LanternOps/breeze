@@ -75,6 +75,7 @@ function makeAgent(overrides: Partial<AiAgentDto> = {}): AiAgentDto {
     enabled: true,
     mode: 'shadow',
     model: null,
+    offeringId: null,
     orgId: 'org-1',
     partnerId: null,
     ownerScope: 'organization',

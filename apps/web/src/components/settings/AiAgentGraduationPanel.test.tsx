@@ -589,6 +589,7 @@ describe('AiAgentForm — partner ceiling hint', () => {
     enabled: true,
     mode,
     model: null,
+    offeringId: null,
     orgId: ownerScope === 'organization' ? 'org-1' : null,
     partnerId: 'partner-1',
     ownerScope,

@@ -177,6 +177,19 @@ describe('aiAgents validators', () => {
     expect(parsed).toEqual({ name: 'New' });
   });
 
+  it('policy create / update accept an offering id or null (AI model registry W05)', () => {
+    const id = '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a01';
+    expect(updateAiAgentSchema.parse({ offeringId: id }).offeringId).toBe(id);
+    expect(updateAiAgentSchema.parse({ offeringId: null }).offeringId).toBeNull();
+    expect(updateAiAgentSchema.safeParse({ offeringId: 'opus' }).success).toBe(false);
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T', offeringId: id }).offeringId).toBe(id);
+    expect(createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', offeringId: 'opus' }).success).toBe(false);
+    // Absent stays absent on create: no default — an omitted offeringId must
+    // fall through to the legacy model path, never read as "clear".
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T' })).not.toHaveProperty('offeringId');
+    expect(updateAiAgentSchema.parse({})).not.toHaveProperty('offeringId');
+  });
+
   it('a PATCH never invents a value the caller did not send — at any depth', () => {
     // Regression: per-field .default() on the nested schemas meant a PATCH of
     // one guardrail path came back with services/registryKeys reset to [],

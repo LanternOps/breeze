@@ -166,6 +166,8 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     enabled: row.enabled,
     mode: row.mode,
     model: row.model,
+    // AI model registry W05: the offering the policy model is bound to (null = follows the assignment).
+    offeringId: row.offeringId ?? null,
     orgId: row.orgId,
     partnerId: row.partnerId,
     ownerScope: row.partnerId ? 'partner' : 'organization',
@@ -263,8 +265,9 @@ export function mapError(c: Context, err: unknown) {
     return c.json({ error: err.message, code: err.code }, 409);
   }
   // AI model registry W03 (Step 7A): the policy model could not be bound to a
-  // registry offering — 400 invalid_model / not_permitted, or 503
-  // registry_unavailable while the partner's one-time cutover is pending.
+  // registry offering — 400 invalid_model / not_permitted / model_unavailable,
+  // 403 permission_required (W05: the WRITER lacks the offering's permission),
+  // or 503 registry_unavailable while the partner's one-time cutover is pending.
   if (err instanceof AgentModelNotAllowedError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }
