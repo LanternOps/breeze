@@ -1038,8 +1038,18 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 		for i := range reparseSkipped.sample {
 			reparseSkipped.sample[i].path = livePathForVSS(reparseSkipped.sample[i].path, vssSession.ShadowPaths)
 		}
+		// Junctions captured as links (#7325) restore under the live path
+		// they mirror, exactly like files (originalPathsForVSS below).
+		for i := range reparseSkipped.junctions {
+			if live := livePathForVSS(reparseSkipped.junctions[i].SourcePath, vssSession.ShadowPaths); live != reparseSkipped.junctions[i].SourcePath {
+				reparseSkipped.junctions[i].OriginalPath = live
+			}
+		}
 	}
 	reportSkippedReparsePoints(job, reparseSkipped)
+	if n := len(reparseSkipped.junctions); n > 0 {
+		log.Info("backup scan captured junctions as links", "jobId", job.ID, "junctions", n)
+	}
 	log.Info("scan complete",
 		"jobId", job.ID,
 		"files", len(files),
@@ -1298,7 +1308,7 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 	// cleanup entirely (D18 §3.5) — see that block earlier in this
 	// function. D15's snapshotOpts/withSystemState wiring is independent of
 	// that and slots in here unchanged.
-	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir)}
+	snapshotOpts := []createSnapshotOption{withRunIdentity(runIdentity), withUploadStagingDir(m.config.StagingDir), withJunctions(reparseSkipped.junctions)}
 	if m.config.SystemStateEnabled && systemStateStagingDir != "" && job.SystemStateManifest != nil && len(job.SystemStateManifest.Artifacts) > 0 {
 		// Publish system state under this call's own snapshot ID, BEFORE its
 		// ordinary manifest.json — see withSystemState's doc comment. This
@@ -2075,9 +2085,20 @@ func (m *BackupManager) collectBackupFilesWithSkips(ctx context.Context, paths [
 				// not in the backup, so it must not count as a child: a
 				// directory whose only child was skipped is empty and
 				// needs its own entry to be recreated on restore.
+				//
+				// A junction with a drive-path target is captured as a
+				// link instead (#7325, junction.go). It still does not
+				// count as a child: junctions sit in their own manifest
+				// array that older readers ignore, so its parent keeps
+				// the KindDir entry it had before and an older restore
+				// recreates exactly what it did before.
 				childCount[filepath.Dir(path)]--
 				if sp, ok := skippedReparsePointFor(path, info); ok {
-					skips.add(sp)
+					if j, captured := capturedJunction(&sp, info); captured {
+						skips.junctions = append(skips.junctions, j)
+					} else {
+						skips.add(sp)
+					}
 				}
 				return nil
 			}

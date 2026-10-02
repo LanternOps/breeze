@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // makeJunction creates a real NTFS junction (IO_REPARSE_TAG_MOUNT_POINT) with
@@ -59,7 +61,9 @@ func TestPlatformSkippedReparsePoint_ClassifiesRealJunction(t *testing.T) {
 	}
 }
 
-func TestCollectBackupFiles_JunctionRecordedNotTraversed(t *testing.T) {
+// #7325: a real junction is captured as a link (target = its substitute
+// name), never traversed, and never a files entry.
+func TestCollectBackupFiles_JunctionCapturedNotTraversed(t *testing.T) {
 	outside := t.TempDir()
 	createTempFile(t, outside, "secret-elsewhere.txt", "must not be reached through the junction")
 
@@ -73,14 +77,62 @@ func TestCollectBackupFiles_JunctionRecordedNotTraversed(t *testing.T) {
 	}
 	for _, f := range files {
 		if strings.Contains(f.snapshotPath, "Documents Link") {
-			t.Fatalf("junction (or content behind it) leaked into the manifest: %s", f.snapshotPath)
+			t.Fatalf("junction (or content behind it) leaked into the manifest files: %s", f.snapshotPath)
 		}
 	}
-	if skips.total != 1 || skips.sample[0].kind != reparseKindJunction {
-		t.Fatalf("junction not recorded as skipped: %+v", skips)
+	if skips.total != 0 {
+		t.Fatalf("a junction to a drive path is captured, not skipped: %+v", skips)
 	}
-	if !strings.EqualFold(filepath.Clean(skips.sample[0].target), filepath.Clean(outside)) {
-		t.Fatalf("target = %q, want %q", skips.sample[0].target, outside)
+	if len(skips.junctions) != 1 || !strings.EqualFold(filepath.Clean(skips.junctions[0].Target), filepath.Clean(outside)) {
+		t.Fatalf("junctions = %+v, want one to %q", skips.junctions, outside)
+	}
+}
+
+// #7325 end to end on a real NTFS volume: back a tree with a junction up,
+// restore it to another location, and the restored junction points at the
+// equivalent path under the restore location and resolves there.
+func TestJunction_BackupRestoreRoundTripOnWindows(t *testing.T) {
+	root := t.TempDir()
+	music := filepath.Join(root, "Music")
+	if err := os.Mkdir(music, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, music, "song.txt", "la la")
+	makeJunction(t, filepath.Join(root, "My Music"), music)
+
+	provider := providers.NewLocalProvider(t.TempDir())
+	mgr := NewBackupManager(BackupConfig{Provider: provider, Paths: []string{root}, StagingDir: t.TempDir()})
+	job, err := mgr.RunBackupContext(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	if job.Snapshot == nil || len(job.Snapshot.Junctions) != 1 {
+		t.Fatalf("snapshot junctions = %+v", job.Snapshot)
+	}
+
+	restoreRoot := t.TempDir()
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: job.Snapshot.ID, TargetPath: restoreRoot}, nil)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if res.Status != "completed" || res.FilesFailed != 0 {
+		t.Fatalf("restore result = %+v", res)
+	}
+	restoredMusic := filepath.Join(restoreRoot, stripVolumeAndLeadingSeparators(music))
+	link := filepath.Join(restoreRoot, stripVolumeAndLeadingSeparators(root), "My Music")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("restored junction missing: %v", err)
+	}
+	if info.Mode()&os.ModeIrregular == 0 && info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("restored entry is not a reparse point: mode %v", info.Mode())
+	}
+	sp, ok := platformSkippedReparsePoint(link, info)
+	if !ok || sp.kind != reparseKindJunction || !strings.EqualFold(sp.target, restoredMusic) {
+		t.Fatalf("restored junction = %+v, want a junction to %q", sp, restoredMusic)
+	}
+	if data, err := os.ReadFile(filepath.Join(link, "song.txt")); err != nil || string(data) != "la la" {
+		t.Fatalf("restored junction does not resolve into the restore location: %q %v", data, err)
 	}
 }
 
