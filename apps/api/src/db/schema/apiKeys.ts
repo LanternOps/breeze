@@ -24,10 +24,13 @@ export const apiKeys = pgTable('api_keys', {
   // 'human' | 'service' — non-human keys carry principalId (SR2-15).
   principalType: varchar('principal_type', { length: 16 }).notNull().default('human'),
   principalId: uuid('principal_id').references(() => servicePrincipals.id),
-  // Snapshot of the creator's users.auth_epoch / users.mfa_epoch at mint
-  // time. NULL for service-principal keys. A human key is rejected at auth
-  // time once the creator's live epoch no longer matches — see
-  // middleware/apiKeyAuth.ts.
+  // Snapshot of the creator's users.credential_epoch / users.mfa_epoch at
+  // mint time. NULL for service-principal keys. A human key is rejected at
+  // auth time once the creator's live epoch no longer matches — see
+  // middleware/apiKeyAuth.ts. creator_auth_epoch is still stamped, but is
+  // enforced only for a key with no credential snapshot (minted before
+  // #7489): auth_epoch also advances on logout, so it cannot be the binding.
   creatorAuthEpoch: integer('creator_auth_epoch'),
   creatorMfaEpoch: integer('creator_mfa_epoch'),
+  creatorCredentialEpoch: integer('creator_credential_epoch'),
 });

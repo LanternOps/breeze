@@ -124,7 +124,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         principalType: apiKeys.principalType,
         principalId: apiKeys.principalId,
         creatorAuthEpoch: apiKeys.creatorAuthEpoch,
-        creatorMfaEpoch: apiKeys.creatorMfaEpoch
+        creatorMfaEpoch: apiKeys.creatorMfaEpoch,
+        creatorCredentialEpoch: apiKeys.creatorCredentialEpoch
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -177,7 +178,12 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     // in PR 5 — do not build on that behavior.)
     const creator = await withSystemDbAccessContext(async () => {
       const [row] = await db
-        .select({ status: users.status, authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch })
+        .select({
+          status: users.status,
+          authEpoch: users.authEpoch,
+          mfaEpoch: users.mfaEpoch,
+          credentialEpoch: users.credentialEpoch
+        })
         .from(users)
         .where(eq(users.id, apiKey.createdBy))
         .limit(1);
@@ -188,15 +194,25 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     }
 
     // A human-delegated key's authority must not outlive the credential
-    // state its creator held at mint time. A password change/reset bumps
-    // auth_epoch; an MFA factor add/remove/reset bumps mfa_epoch (both via
-    // routes/auth/password.ts and services/mfaAssurance.ts, mirroring the
-    // check authMiddleware already applies to user-session JWTs). A NULL
-    // snapshot means the key predates this binding and is not checked.
-    if (
-      (apiKey.creatorAuthEpoch !== null && apiKey.creatorAuthEpoch !== creator.authEpoch) ||
-      (apiKey.creatorMfaEpoch !== null && apiKey.creatorMfaEpoch !== creator.mfaEpoch)
-    ) {
+    // state its creator held at mint time. A password change/reset (and
+    // invite acceptance / an admin status change) bumps credential_epoch; an
+    // MFA factor add/remove/reset bumps mfa_epoch (services/authLifecycle.ts
+    // lists every writer).
+    //
+    // The binding is deliberately NOT auth_epoch (#7489): auth_epoch is the
+    // session epoch and also advances on ordinary logout, a role change, an
+    // email change, etc. — binding to it silently killed every key a user
+    // minted the next time they signed out. A key with no credential snapshot
+    // was minted before that fix and keeps its original auth_epoch binding
+    // (the migration carried the snapshot over only where the auth_epoch
+    // still matched, so a key already invalidated stays invalid). A NULL
+    // snapshot on both means the key predates epoch binding entirely and is
+    // not checked.
+    const credentialStale = typeof apiKey.creatorCredentialEpoch === 'number'
+      ? apiKey.creatorCredentialEpoch !== creator.credentialEpoch
+      : typeof apiKey.creatorAuthEpoch === 'number' && apiKey.creatorAuthEpoch !== creator.authEpoch;
+    const mfaStale = typeof apiKey.creatorMfaEpoch === 'number' && apiKey.creatorMfaEpoch !== creator.mfaEpoch;
+    if (credentialStale || mfaStale) {
       throw new HTTPException(401, { message: 'API key creator credentials have changed' });
     }
   }
