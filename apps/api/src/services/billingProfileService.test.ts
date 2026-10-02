@@ -56,7 +56,9 @@ const orgId = '44444444-4444-4444-8444-444444444444';
 const caller = { scope: 'partner', partnerOrgAccess: 'all' } as const;
 const profile = { id, partnerId: partner, name: 'Standard', currencyCode: 'USD', isActive: true,
   isDefault: false, notes: null, baseCoverage: 'billable', baseHourlyRate: '150.00',
-  baseMinimumMinutes: 30, roundingIncrementMinutes: 15 };
+  baseMinimumMinutes: 30, roundingIncrementMinutes: 15,
+  // A real billing_profiles row always carries the W10 AI terms (#7608; column defaults).
+  aiCoverage: 'non_billable', aiMarkupPercent: null };
 const row = { workTypeId, coverage: 'billable' as const, hourlyRate: '200.00', minimumMinutes: 60 };
 const sqlText = (where: any) => new PgDialect().sqlToQuery(where);
 beforeEach(() => { vi.clearAllMocks(); state.reads = []; state.writes = []; state.inserted = [];
@@ -120,8 +122,9 @@ describe('profile mutations', () => {
     await expect(updateProfile(caller, id, partner, { baseCoverage: 'included' })).rejects.toMatchObject({ status: 400 });
   });
   it('replaces every row in one transaction', async () => {
-    state.reads.push([profile], [{ id: workTypeId }]);
-    await expect(replaceProfileRows(caller, id, partner, [row])).resolves.toMatchObject({ id, rules: [row] });
+    // The card is re-read after the write (#7608): rules, then the AI price list.
+    state.reads.push([profile], [{ id: workTypeId }], [{ ...row, partnerId: partner, billingProfileId: id }], []);
+    await expect(replaceProfileRows(caller, id, partner, [row])).resolves.toMatchObject({ id, rules: [row], aiRates: [] });
     expect(db.transaction).toHaveBeenCalledTimes(1); expect(db.delete).toHaveBeenCalledTimes(1);
   });
   it('rolls back the delete when the replacement insert throws', async () => {
@@ -146,10 +149,11 @@ describe('profile mutations', () => {
     expect(db.delete).not.toHaveBeenCalled();
   });
   it('saves metadata, base pricing, rounding and all rows in one transaction', async () => {
-    state.reads.push([profile], [{ id: workTypeId }]);
+    // The card is re-read after the write (#7608): rules, then the AI price list.
+    state.reads.push([profile], [{ id: workTypeId }], [{ ...row, partnerId: partner, billingProfileId: id }], []);
     const input = { name: 'Revised', currencyCode: 'USD', notes: 'Service terms', baseCoverage: 'billable' as const,
       baseHourlyRate: '175.00', baseMinimumMinutes: 45, roundingIncrementMinutes: 30, rows: [row] };
-    await expect(saveProfile(caller, id, partner, input)).resolves.toMatchObject({ name: input.name, baseHourlyRate: input.baseHourlyRate, rules: [row] });
+    await expect(saveProfile(caller, id, partner, input)).resolves.toMatchObject({ name: input.name, baseHourlyRate: input.baseHourlyRate, rules: [row], aiRates: [] });
     expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(state.storedProfile).toMatchObject({ name: 'Revised', baseHourlyRate: '175.00', baseMinimumMinutes: 45, roundingIncrementMinutes: 30 });
     expect(state.storedRules).toEqual([expect.objectContaining({ ...row, partnerId: partner, billingProfileId: id })]);

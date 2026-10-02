@@ -12,6 +12,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { createProfileSchema, updateProfileSchema, profileRowsSchema, saveProfileSchema } from '../services/billingProfileValidation';
 import {
   listProfiles, getProfile, createProfile, updateProfile, saveProfile, replaceProfileRows, cloneProfile, BillingProfileServiceError,
+  listAiModelChoices,
 } from '../services/billingProfileService';
 import { authMiddleware, requireMfa, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
@@ -97,6 +98,15 @@ app.delete('/work-types/:id', writePerm, requireMfa(), partnerWideWrite, async (
 
 const profileIdSchema = z.string().uuid();
 const cloneProfileSchema = createProfileSchema.pick({ name: true });
+
+// The price-list model picker (#7608). A read: no MFA, no partner-wide gate.
+app.get('/ai-model-choices', readPerm, async (c) => {
+  const auth = c.get('auth');
+  if (!auth.partnerId) return c.json({ error: 'Partner context required' }, 403);
+  try {
+    return c.json({ choices: await listAiModelChoices(auth.partnerId) });
+  } catch (err) { return fail(c, err); }
+});
 
 app.get('/', readPerm, async (c) => {
   const auth = c.get('auth');
