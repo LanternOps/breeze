@@ -137,6 +137,9 @@ export type RestoreJob = {
 export type BackupVerificationType = 'integrity' | 'test_restore';
 export type BackupVerificationStatus = 'pending' | 'running' | 'passed' | 'failed' | 'partial';
 
+/** In-flight (pending/running) verifications older than this are failed by the timeout job. */
+export const VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
+
 export function normalizeBackupVerificationType(value?: string | null): BackupVerificationType {
   return value === 'integrity' ? 'integrity' : 'test_restore';
 }

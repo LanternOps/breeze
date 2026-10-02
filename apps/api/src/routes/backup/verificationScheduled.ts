@@ -28,7 +28,7 @@ import {
   recordBackupVerificationResult,
   recordBackupVerificationSkip,
 } from '../../services/backupMetrics';
-import { normalizeBackupVerificationType } from './types';
+import { normalizeBackupVerificationType, VERIFICATION_TIMEOUT_MS } from './types';
 import { isCriticalBackupDevice } from './criticality';
 import { backupVerificationStructuredResultSchema } from '../../services/agentCommandResultValidation';
 
@@ -456,7 +456,6 @@ export async function processBackupVerificationResult(
   await recomputeRecoveryReadinessForDevice(orgId, pending.deviceId);
 }
 
-const VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Mark stale pending/running verifications as failed.

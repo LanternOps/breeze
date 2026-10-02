@@ -10,7 +10,7 @@ import {
   upsertRecoveryReadiness
 } from './store';
 import { resolveAllBackupAssignedDevices, type BackupAssignedDevice } from '../../services/featureConfigResolver';
-import type { RecoveryReadiness, RecoveryRiskFactor } from './types';
+import { VERIFICATION_TIMEOUT_MS, type BackupVerification, type RecoveryReadiness, type RecoveryRiskFactor } from './types';
 // NOTE: Circular import with verificationService is intentional and safe.
 // listBackupVerifications is only called at function invocation time, not at module evaluation.
 import {
@@ -356,12 +356,21 @@ export async function recomputeRecoveryReadinessForDevice(
   orgId: string,
   deviceId: string
 ): Promise<RecoveryReadiness> {
-  const [recent, previous] = await Promise.all([
+  const [listed, previous] = await Promise.all([
     listBackupVerifications(orgId, { deviceId, limit: BACKUP_MAX_RECENT_VERIFICATIONS, excludeSimulated: true }),
     getRecoveryReadinessForDevice(orgId, deviceId)
   ]);
   const previousScore = previous?.readinessScore ?? null;
   const now = Date.now();
+  // #7495: a verification that has not finished yet (pending/running) is
+  // neutral — it is excluded from the score instead of counting as a failure.
+  // One stuck past VERIFICATION_TIMEOUT_MS is a real failure (the timeout job
+  // will mark it failed; count it here too so a lagging reaper can't hide it).
+  const recent = listed.map((row): BackupVerification => {
+    if (row.status !== 'pending' && row.status !== 'running') return row;
+    const stuck = (now - toEpoch(row.startedAt)) > VERIFICATION_TIMEOUT_MS;
+    return stuck ? { ...row, status: 'failed' } : row;
+  }).filter((row) => row.status !== 'pending' && row.status !== 'running');
 
   if (recent.length === 0) {
     const readiness = await writeRecoveryReadiness({
