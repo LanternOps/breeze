@@ -69,20 +69,21 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     const inflightRefreshes = new Set<unknown>();
     const isRefresh = (r: { method(): string; url(): string }) =>
       r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
-    page.on('request', (r) => { if (isRefresh(r)) inflightRefreshes.add(r); });
+    let refreshStarts = 0;
+    page.on('request', (r) => { if (isRefresh(r)) { refreshStarts++; inflightRefreshes.add(r); } });
     const refreshFailures: string[] = [];
     page.on('requestfinished', (r) => { if (isRefresh(r)) inflightRefreshes.delete(r); });
-    page.on('response', (res) => {
-      if (!isRefresh(res.request())) return;
-      const status = res.status();
-      if (status < 200 || status >= 300) refreshFailures.push(`HTTP ${status}`);
-    });
     page.on('requestfailed', (r) => {
       if (!isRefresh(r)) return;
       inflightRefreshes.delete(r);
       refreshFailures.push(`request failed: ${r.failure()?.errorText ?? 'unknown'}`);
     });
     page.on('response', (res) => {
+      if (isRefresh(res.request())) {
+        const status = res.status();
+        if (status < 200 || status >= 300) refreshFailures.push(`HTTP ${status}`);
+        return;
+      }
       if (res.request().method() !== 'POST') return;
       if (!new URL(res.url()).pathname.endsWith('/auth/login')) return;
       loginResponses.push(
@@ -185,14 +186,27 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
       idlePolls = inflightRefreshes.size === 0 ? idlePolls + 1 : 0;
       await page.waitForTimeout(150);
     }
-    // Snapshot, then re-check: a refresh that started during the final poll
-    // sleep or the snapshot itself, or any refresh that failed, voids the state.
-    const state = await ctx.storageState();
-    if (inflightRefreshes.size > 0 || refreshFailures.length > 0) {
+    // Snapshot in a loop: accept only if no refresh started or was in flight
+    // while storageState() ran (a refresh can start AND finish inside it, which
+    // an in-flight check alone would miss), and none failed. Else drain, retry.
+    let state: Awaited<ReturnType<typeof ctx.storageState>> | undefined;
+    for (let attempt = 1; attempt <= 3 && !state; attempt++) {
+      const drainDeadline = Date.now() + 15_000;
+      while (inflightRefreshes.size > 0 && Date.now() < drainDeadline) await page.waitForTimeout(100);
+      const before = refreshStarts;
+      const snap = await ctx.storageState();
+      if (refreshFailures.length > 0) {
+        throw new Error(
+          `[auth-state] login's POST /auth/refresh failed (${refreshFailures.join(', ')}); ` +
+            'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
+        );
+      }
+      if (refreshStarts === before && inflightRefreshes.size === 0) state = snap;
+    }
+    if (!state) {
       throw new Error(
-        `[auth-state] login's POST /auth/refresh did not complete cleanly ` +
-          `(${inflightRefreshes.size} in flight; failures: ${refreshFailures.join(', ') || 'none'}); ` +
-          'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
+        '[auth-state] a POST /auth/refresh kept starting during 3 storageState snapshots; ' +
+          'refusing to save a storage state whose refresh cookie may be stale.'
       );
     }
     writeFileSync(statePath, JSON.stringify(state, null, 2));
