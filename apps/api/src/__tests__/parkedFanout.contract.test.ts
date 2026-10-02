@@ -280,6 +280,7 @@ const EXEMPT: Record<string, string> = {
   'services/deviceFunction.ts': 'org-pinned: membership check scoped to an explicit org and device pair',
   'services/deviceLifecycle.ts': 'lifecycle: restore/purge of one locked removed device',
   'services/deviceLinkGroups.ts': 'request path: mutations scoped to a link group or caller-supplied devices from link routes and the deletion cascade',
+  'services/deviceMtlsCertificateIssuance.ts': 'org-pinned: locks and activates a certificate for one caller-supplied (device, org) pair; not a selector',
   'services/deviceMaintenanceLease.ts': 'request path: locks one device at a time, ids from the maintenance route\'s request',
   'services/deviceRecovery/restoreCheckpoint.ts': 'derived: single deviceId param from AI script lane caller already targeting one chosen device',
   'services/deviceSiteResolver.ts': 'derived: single-device cache lookup keyed on deviceId supplied by an event publisher',
