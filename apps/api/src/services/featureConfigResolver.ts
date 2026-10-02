@@ -522,6 +522,23 @@ async function resolvePartnerTimezoneForDeviceRow(partnerId: string | null): Pro
 export async function resolvePatchConfigDetailsForDevice(
   deviceId: string
 ): Promise<ResolvedPatchConfigDetails | null> {
+  const resolved = await resolvePatchConfigPolicyForDevice(deviceId);
+  if (!resolved) return null;
+  return { ...resolved, resolvedTimezone: await resolveDeviceTimezone(deviceId) };
+}
+
+/**
+ * `resolvePatchConfigDetailsForDevice` without `resolvedTimezone` (#7647).
+ * The timezone half reads the partner-axis `partners` row through
+ * `readWithPartnerAxisVisibility` — a SECOND pooled connection under any
+ * non-system request context. Callers that only need WHICH config policy won
+ * (the ring-aware approval evaluator behind the device Patches tab) use this
+ * so they stay on the caller's one connection. Runs entirely in the caller's
+ * context: every read here has an RLS read branch for the caller's own partner.
+ */
+export async function resolvePatchConfigPolicyForDevice(
+  deviceId: string
+): Promise<Omit<ResolvedPatchConfigDetails, 'resolvedTimezone'> | null> {
   const hierarchy = await loadDeviceHierarchy(deviceId);
   if (!hierarchy) return null;
 
@@ -588,7 +605,6 @@ export async function resolvePatchConfigDetailsForDevice(
     assignmentLevel: winner.assignmentLevel,
     assignmentTargetId: winner.assignmentTargetId,
     assignmentPriority: winner.assignmentPriority,
-    resolvedTimezone: await resolveDeviceTimezone(deviceId),
   };
 }
 
