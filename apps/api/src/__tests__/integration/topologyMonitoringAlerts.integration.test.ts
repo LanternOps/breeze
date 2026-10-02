@@ -39,7 +39,10 @@ async function monitored() {
   const alertRows = () => system(() => db.select().from(alerts).where(eq(alerts.orgId, f.orgId)));
   const transitions = () => system(() => db.select().from(topologyChangeOutbox)
     .where(and(eq(topologyChangeOutbox.orgId, f.orgId), eq(topologyChangeOutbox.eventKind, 'monitoring.alert_transition'))));
-  return { ...f, occur, alertRows, transitions };
+  /** The instant `occur` would use next. Derived from the fixture's own clock, never a fresh Date.now(): a
+   *  second wall-clock read can land in the next interval bucket and add a missed-range gap (#7850). */
+  const nextOccurrenceAt = () => new Date(base + tick * INTERVAL_MS);
+  return { ...f, occur, nextOccurrenceAt, alertRows, transitions };
 }
 
 describe('recurring health streaks and site-owned alerts (M3 Task 8)', () => {
@@ -85,7 +88,7 @@ describe('recurring health streaks and site-owned alerts (M3 Task 8)', () => {
         VALUES (${id}::uuid,${f.orgId}::uuid,${f.siteId}::uuid,'gateway_basic',1,${f.env.user.id}::uuid,${f.nodeId}::uuid,${f.nodeId}::uuid,'{}'::jsonb,'{}'::jsonb,${'c'.repeat(64)},${id},${'d'.repeat(64)},gen_random_uuid(),now()+interval '30 seconds',now()+interval '120 seconds')`));
     }
     await system(() => db.update(topologyMonitoringPolicies).set({ nextScheduledAt: new Date(0) }).where(eq(topologyMonitoringPolicies.id, f.policyId)));
-    const gapAt = new Date(Math.floor(Date.now() / INTERVAL_MS) * INTERVAL_MS + 60_000 + 2 * INTERVAL_MS);
+    const gapAt = f.nextOccurrenceAt();
     expect((await dispatchDueTopologyPolicies({ now: gapAt, repository: f.repository })).gaps).toBe(1);
     await drainTopologyMonitoringAssessments({ now: gapAt });
     expect((await f.policy()).alertState.entries[0]).toMatchObject({ consecutiveFailures: 0 });
