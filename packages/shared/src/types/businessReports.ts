@@ -1,8 +1,9 @@
 /**
- * Shared summary types for the three business report generators
- * (ticket_sla_attainment, technician_time_billability, ar_aging — #3198 W02).
- * This is the contract between the generators (Task 7-9), the PDF renderers
- * (Task 10) and W03's web components.
+ * Shared summary types for the business report generators
+ * (ticket_sla_attainment, technician_time_billability, ar_aging — #3198 W02;
+ * ai_usage_by_client — #7608 W10). This is the contract between the generators
+ * (apps/api/src/services/businessReports/), the PDF renderers
+ * (packages/shared/src/reportPdf/) and the web components.
  */
 
 /** Money is ALWAYS a per-currency array. There is no single-currency field
@@ -176,6 +177,65 @@ export type ArAgingSummary = {
   rows: ArAgingDetailRow[];
 };
 
+export type AiUsageByClientGroupBy = 'organization' | 'model';
+
+/** One currency's chargeable money. Rounded once at the currency's minor unit
+ *  (`roundToCurrency`) from an exact numeric(20,6) sum. NEVER summed across
+ *  currencies — there is no single-currency field anywhere in this type. */
+export type AiUsageByClientChargeRow = {
+  currencyCode: string;
+  /** Chargeable amount (coverage 'billable', priced). */
+  amount: string;
+  /** Part of `amount` already on an issued invoice (charge.billing_status = 'billed'). */
+  billed: string;
+  /** `amount` not yet billed: not yet invoiced, or not yet aggregated into a charge. */
+  unbilled: string;
+};
+
+export type AiUsageByClientTotals = {
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** What the platform paid, USD, SUM(cost_cents) / 100 as numeric(14,2). Not what the client is charged. */
+  costUsd: string;
+  /** Breeze cost (USD) of usage whose profile coverage was 'included'. */
+  includedCostUsd: string;
+  /** Chargeable requests on a billable profile with no rate for the model. Counted, never treated as free. */
+  unpricedRequests: number;
+};
+
+export type AiUsageByClientGroupRow = AiUsageByClientTotals & {
+  groupKey: string;
+  groupLabel: string;
+  charges: AiUsageByClientChargeRow[];
+};
+
+/** Detail grain: organization x served model x charge currency (NULL currency =
+ *  usage that carries no charge: included, non-billable, not eligible). */
+export type AiUsageByClientDetailRow = AiUsageByClientTotals & {
+  orgId: string;
+  orgName: string | null;
+  model: string;
+  currencyCode: string | null;
+  amount: string | null;
+  billed: string | null;
+  unbilled: string | null;
+};
+
+export type AiUsageByClientSummary = {
+  generatedAt: string;
+  period: ReportPeriodMeta;
+  scope: ReportScopeMeta;
+  groupBy: AiUsageByClientGroupBy;
+  overall: AiUsageByClientTotals & { charges: AiUsageByClientChargeRow[] };
+  groups: AiUsageByClientGroupRow[];
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: AiUsageByClientDetailRow[];
+};
+
 const EMPTY_DETAIL: DetailRowMeta = { cap: 5000, stored: 0, available: 0, truncated: false };
 
 export function emptyTicketSlaSummary(note: string): TicketSlaSummary {
@@ -246,6 +306,30 @@ export function emptyArAgingSummary(note: string): ArAgingSummary {
     byCurrency: [],
     groups: [],
     otherOpenBalance: [],
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
+
+export function emptyAiUsageByClientSummary(note: string): AiUsageByClientSummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    period: { kind: 'custom', start: '', end: '', label: '', timeZone: 'UTC' },
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    overall: {
+      requests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: '0.00',
+      includedCostUsd: '0.00',
+      unpricedRequests: 0,
+      charges: [],
+    },
+    groups: [],
     detail: { ...EMPTY_DETAIL },
     notes: [note],
     rows: [],
