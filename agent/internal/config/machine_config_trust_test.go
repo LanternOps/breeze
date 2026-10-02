@@ -222,7 +222,7 @@ func TestReplaceEvidenceOnlyCountsTheAgentsOwnEntries(t *testing.T) {
 			if (tc.wantEvidence == "") != (evidence == "") || !strings.Contains(evidence, tc.wantEvidence) {
 				t.Errorf("evidence = %q, want %q", evidence, tc.wantEvidence)
 			}
-			if fmt.Sprint(foreign) != fmt.Sprint(tc.wantForeign) && !(len(foreign) == 0 && len(tc.wantForeign) == 0) {
+			if fmt.Sprint(foreign) != fmt.Sprint(tc.wantForeign) && (len(foreign) != 0 || len(tc.wantForeign) != 0) {
 				t.Errorf("set aside on their own = %v, want %v", foreign, tc.wantForeign)
 			}
 		})
