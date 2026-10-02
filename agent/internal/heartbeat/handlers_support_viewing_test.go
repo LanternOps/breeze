@@ -183,7 +183,7 @@ func TestSupportViewerComesFromTheStartPrompt(t *testing.T) {
 	}
 }
 
-// The WebRTC path (not yet usable by Quick Support) pokes the observer too,
+// The WebRTC path pokes the observer too,
 // and the heartbeat's own peer-disconnect hook keeps running.
 func TestSupportViewingObserverChainsTheWebRTCHooks(t *testing.T) {
 	h := &Heartbeat{
@@ -217,5 +217,43 @@ func TestSupportViewingObserverIsInertOnAnInstalledAgent(t *testing.T) {
 	h.SetSupportViewingObserver(func() { pokes.Add(1) })
 	if h.desktopMgr.OnSessionStarted != nil || pokes.Load() != 0 {
 		t.Fatal("only a Quick Support client wires the viewing observer")
+	}
+}
+
+// A WebRTC start the end user (or the consent policy) turns down must not
+// rename the indicator of a viewing that is already on screen: the viewer is
+// recorded only once the start has passed the consent gate, as on the
+// WebSocket path.
+func TestSupportViewerIsNotRenamedByADeniedWebRTCStart(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
+	h := &Heartbeat{supportMode: true, desktopMgr: desktop.NewSessionManager()}
+	first := "Alice"
+	h.noteSupportViewer(&ipc.DesktopPrompt{Mode: "notify", TechnicianName: &first})
+
+	result := handleStartDesktop(h, startDesktopCmd("sess-support-denied", consentModePrompt("block", 5000)))
+
+	assertConsentDenied(t, result, "no_user_session")
+	if got := h.SupportViewer(); got != "Alice" {
+		t.Fatalf("a denied start renamed the indicator to %q, want it to keep naming Alice", got)
+	}
+}
+
+// Stopping a WebRTC session directly (SessionManager.StopSession, which is
+// what the stop_desktop handler and teardown call) pokes the observer at
+// once, so the indicator does not wait for its poll to hide.
+func TestSupportViewingObserverIsPokedByAWebRTCStopSession(t *testing.T) {
+	h := &Heartbeat{
+		supportMode:  true,
+		desktopMgr:   desktop.NewSessionManager(),
+		wsDesktopMgr: desktop.NewWsSessionManager(),
+	}
+	var pokes atomic.Int32
+	h.SetSupportViewingObserver(func() { pokes.Add(1) })
+	base := pokes.Load()
+
+	h.desktopMgr.StopSession("s1")
+
+	if pokes.Load() <= base {
+		t.Fatal("a WebRTC StopSession must poke the viewing observer")
 	}
 }

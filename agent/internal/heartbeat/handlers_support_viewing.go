@@ -18,7 +18,9 @@ import "github.com/breeze-rmm/agent/internal/ipc"
 // replacement and teardown all change the managers' running set.
 
 // noteSupportViewer records who the support indicator should name, from a
-// desktop start's prompt block. No-op on an installed agent, or for a start
+// desktop start's prompt block. Callers record it only once the start has
+// passed the consent gate, so a denied start never renames the indicator of a
+// viewing already on screen. No-op on an installed agent, or for a start
 // without a prompt (the previous viewer, if any, is kept).
 func (h *Heartbeat) noteSupportViewer(prompt *ipc.DesktopPrompt) {
 	if h == nil || !h.supportMode || prompt == nil {
@@ -72,6 +74,9 @@ func (h *Heartbeat) SetSupportViewingObserver(changed func()) {
 		h.wsDesktopMgr.SetActivityObserver(changed)
 	}
 	if h.desktopMgr != nil {
+		// A direct stop (stop_desktop, teardown) fires no peer hook of its
+		// own until the connection reports Closed; this makes it prompt.
+		h.desktopMgr.SetActivityObserver(changed)
 		previousStart := h.desktopMgr.OnSessionStarted
 		previousStop := h.desktopMgr.OnSessionStopped
 		h.desktopMgr.OnSessionStarted = func(sessionID string) {

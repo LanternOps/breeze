@@ -14,10 +14,8 @@ import (
 const supportIndicatorSessionID = "quick-support"
 
 // supportIndicatorPoll is the safety net behind the pokes: the indicator is
-// re-checked this often even without a poke. It is load-bearing for one path:
-// a WebRTC stop through SessionManager.StopSession fires no hook, so it is
-// only seen here (WebRTC does not yet run in Quick Support). It also retries
-// a pill that failed to appear.
+// re-checked this often even without a poke. Every WebSocket and WebRTC start
+// and stop path pokes it; the poll also retries a pill that failed to appear.
 const supportIndicatorPoll = time.Second
 
 // supportIndicator is the Quick Support "a technician is viewing your screen"

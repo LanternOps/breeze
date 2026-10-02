@@ -141,7 +141,8 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// before the consent prompt, before capture — so a superseded or
 	// post-terminal start cannot spawn a helper, show a banner, or take a
 	// lease on its way to being refused.
-	if _, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start); refusal != nil {
+	fenceInput, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start)
+	if refusal != nil {
 		return *refusal
 	}
 
@@ -213,7 +214,6 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// `consent_denied` marker the API ingests to finalize the session as
 	// `denied`. An older API that sends no prompt leaves this path untouched.
 	prompt := parseDesktopPrompt(cmd.Payload)
-	h.noteSupportViewer(prompt)
 
 	// On-demand (RDS) hosts run zero helpers at rest: the helper this connect
 	// needs does not exist yet and is only spawned while a lease is held on its
@@ -302,6 +302,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 				h.setDesktopTarget(sessionID, targetSession)
 			}
 		}
+	}
+
+	// Name the viewer for the Quick Support indicator only now that this
+	// start has passed the consent gate and is still the session's current
+	// start, as the WebSocket path does: a denied or superseded start never
+	// renames the indicator of a viewing already on screen.
+	if ok, _ := h.desktopStartFence.stillCurrent(sessionID, fenceInput); ok {
+		h.noteSupportViewer(prompt)
 	}
 
 	// Route through IPC helper when running headless (no display access).
