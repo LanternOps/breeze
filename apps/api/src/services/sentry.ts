@@ -462,6 +462,13 @@ const ALLOWED_TAG_NAMES = new Set([
   'ai_reservation_id',
   'ai_invocation_id',
   'ai_agent_run_id',
+  // AI chargeback W10 (#7608): the UTC billing month ('YYYY-MM-01') of a
+  // monthly close that failed or found expired usage — with `org_id`, the key
+  // an operator needs to find the ai_usage_charge_runs slot. A date, one value
+  // per month, written only by jobs/aiChargebackWorker.ts. Named specifically
+  // rather than `period_start` for the same reason as the mobile pair above:
+  // the allowlist is keyed by NAME.
+  'ai_charge_period_start',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;

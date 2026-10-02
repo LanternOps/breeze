@@ -230,6 +230,18 @@ export const SENTRY_EVENT_CODES = [
    * the caller; a sustained stream means real capacity exhaustion.
    */
   'ai_session_cap_all_in_flight',
+  /**
+   * AI chargeback (#7608): one or more orgs' monthly close threw during the
+   * daily sweep. Each failure is also a captureException tagged org_id +
+   * ai_charge_period_start; the next daily sweep retries the month.
+   */
+  'ai_chargeback_close_failed',
+  /**
+   * AI chargeback (#7608): an org's close found chargeable usage that aged
+   * past the 92-day lookback without ever being closed. It will never be
+   * billed; tags carry org_id + ai_charge_period_start.
+   */
+  'ai_chargeback_usage_expired',
   /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
   'ai_budget_alert_no_recipients',
   /** An AI budget alert event never became visible before its retries ran out. */

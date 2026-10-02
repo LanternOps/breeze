@@ -1,19 +1,27 @@
 /**
  * AI chargeback daily sweep (#7608). Closes the most recent closed UTC month
- * for every org that has chargeable, unclaimed ledger rows and no run yet.
- * Daily (not monthly) so a missed run — downtime on the 1st — catches up the
- * next day; a closed month is a no-op (already_run). Each org closes in its
- * own short system transaction (runOrgChargePeriod's FK checks hold FOR KEY
- * SHARE on that org's row until commit, so one long multi-org transaction
- * would stall every org's AI admission behind it); one failure never aborts
- * the rest.
+ * for every org that has chargeable, unclaimed ledger rows in it and no run
+ * for that month yet. Daily (not monthly) so a missed run — downtime on the
+ * 1st — catches up the next day. An org whose month is already closed is never
+ * selected (the candidate query excludes it); runOrgChargePeriod's
+ * 'already_run' skip is only the fallback for a concurrent closer racing this
+ * one. Each org closes in its own short system transaction
+ * (runOrgChargePeriod's FK checks hold FOR KEY SHARE on that org's row until
+ * commit, so one long multi-org transaction would stall every org's AI
+ * admission behind it); one failure never aborts the rest.
+ *
+ * Signals: every failed close is a captureException tagged org_id +
+ * ai_charge_period_start, and any failure also raises one error-level
+ * 'ai_chargeback_close_failed' event for the sweep. Chargeable usage that aged
+ * past the lookback unbilled is a warning-level 'ai_chargeback_usage_expired'
+ * per org. The summary line carries all four counts.
  */
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
-import { captureException } from '../services/sentry';
-import { lookbackStartIso, previousClosedPeriod, utcStartIso } from '../services/aiChargeback/chargePeriods';
+import { captureException, captureMessage } from '../services/sentry';
+import { CHARGEBACK_LOOKBACK_DAYS, lookbackStartIso, previousClosedPeriod, utcStartIso } from '../services/aiChargeback/chargePeriods';
 import { runOrgChargePeriod } from '../services/aiChargeback/chargeRun';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
@@ -23,7 +31,7 @@ const QUEUE_NAME = 'ai-chargeback';
 const JOB_NAME = 'ai-chargeback-sweep';
 
 export async function runChargebackSweep(now: Date = new Date()): Promise<{
-  periodStart: string; charged: number; skipped: number; failed: number;
+  periodStart: string; charged: number; skipped: number; failed: number; expired: number;
 }> {
   const period = previousClosedPeriod(now);
   const orgIds = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
@@ -40,20 +48,34 @@ export async function runChargebackSweep(now: Date = new Date()): Promise<{
     return rows.map((r) => r.org_id);
   }, 'aiChargeback.candidates'));
 
-  let charged = 0; let skipped = 0; let failed = 0;
+  let charged = 0; let skipped = 0; let failed = 0; let expired = 0;
   for (const orgId of orgIds) {
+    const tags = { org_id: orgId, ai_charge_period_start: period.periodStart };
     try {
       const out = await runOutsideDbContext(() => withSystemDbAccessContext(
         () => runOrgChargePeriod({ orgId, periodStart: period.periodStart, now }), 'aiChargeback.close'));
-      if (out.kind === 'charged') charged += 1; else skipped += 1;
+      if (out.kind !== 'charged') { skipped += 1; continue; }
+      charged += 1;
+      if (out.expiredInvocationCount > 0) {
+        expired += out.expiredInvocationCount;
+        console.warn(`${LOG} org ${orgId}: ${out.expiredInvocationCount} chargeable row(s) older than the ${CHARGEBACK_LOOKBACK_DAYS}-day lookback were never closed and will not be billed`);
+        captureMessage(`AI chargeback: chargeable usage aged past the ${CHARGEBACK_LOOKBACK_DAYS}-day lookback unbilled`, {
+          eventCode: 'ai_chargeback_usage_expired', level: 'warning', tags,
+        });
+      }
     } catch (err) {
       failed += 1;
       console.error(`${LOG} close failed for org ${orgId} ${period.periodStart}`, err);
-      captureException(err);
+      captureException(err, undefined, tags);
     }
   }
-  console.log(`${LOG} ${period.periodStart}: charged ${charged}, skipped ${skipped}, failed ${failed}`);
-  return { periodStart: period.periodStart, charged, skipped, failed };
+  console.log(`${LOG} ${period.periodStart}: charged ${charged}, skipped ${skipped}, failed ${failed}, expired ${expired}`);
+  if (failed > 0) {
+    captureMessage(`AI chargeback sweep: ${failed} of ${orgIds.length} org close(s) failed for ${period.periodStart}`, {
+      eventCode: 'ai_chargeback_close_failed', level: 'error', tags: { ai_charge_period_start: period.periodStart },
+    });
+  }
+  return { periodStart: period.periodStart, charged, skipped, failed, expired };
 }
 
 let queue: Queue | null = null;

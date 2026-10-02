@@ -15,7 +15,7 @@
  * an org merge) are picked up by the NEXT run as their own charge rows, with
  * usage_period_start < period_start, and are invoiced as a labelled "usage
  * from {month}" line. Rows older than the 92-day lookback are left unbilled
- * (counted in the log).
+ * (counted as expiredInvocationCount; the daily sweep logs and reports them).
  *
  * Money (W10 rounding rules): amounts are the STAMPED charge_amount values
  * (never the current card); SUM is exact numeric (RR3); each charge rounds once
@@ -33,7 +33,7 @@ import { sql } from 'drizzle-orm';
 import { roundToCurrency } from '@breeze/shared';
 import { db, getCurrentDbAccessContext } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
-import { CHARGEBACK_LOOKBACK_DAYS, isPeriodClosed, lookbackStartIso, monthPeriod, utcStartIso, type ChargePeriod } from './chargePeriods';
+import { isPeriodClosed, lookbackStartIso, monthPeriod, utcStartIso, type ChargePeriod } from './chargePeriods';
 
 export class ChargeRunConflictError extends Error {
   constructor(message: string) { super(message); this.name = 'ChargeRunConflictError'; }
@@ -188,10 +188,9 @@ export async function runOrgChargePeriod(input: { orgId: string; periodStart: st
       AND i.created_at >= ${lookbackStartIso(previousMonth(period))}::timestamptz
       AND i.created_at < ${lookbackStartIso(period)}::timestamptz
       AND NOT EXISTS (SELECT 1 FROM ai_usage_charge_claims c WHERE c.invocation_id = i.id)`));
+  // Reported (log + Sentry 'ai_chargeback_usage_expired') by the caller, the
+  // daily sweep in jobs/aiChargebackWorker.ts — one place.
   const expired = expiredRow?.n ?? 0;
-  if (expired > 0) {
-    console.warn(`[AiChargeback] org ${input.orgId}: ${expired} chargeable row(s) older than the ${CHARGEBACK_LOOKBACK_DAYS}-day lookback were never closed and will not be billed`);
-  }
 
   return { kind: 'charged', runId: run.id, chargeCount: groups.length, invocationCount: expected,
     unpricedInvocationCount: unpriced, lateInvocationCount: late, expiredInvocationCount: expired };
