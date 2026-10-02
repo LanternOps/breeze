@@ -85,7 +85,6 @@ export default function AiQualityTable({ groupBy, orgId, from, to, onRange }: {
     })();
     return () => { cancelled = true; };
     // onRange is the parent's state setter (stable).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupBy, orgId, from, to]);
 
   const labelOf = (row: AiQualityRowDto): string => {
