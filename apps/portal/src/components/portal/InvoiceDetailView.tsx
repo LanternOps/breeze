@@ -1,7 +1,9 @@
+import { runAction } from '@/lib/runAction';
+import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
 import { useEffect, useState, Fragment } from 'react';
 import { ArrowLeft, AlertCircle, Download, CreditCard } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
+import { type BrandingConfig, type InvoiceDetail, type InvoiceAutopayDisclosure, type InvoiceStatus, buildPortalApiUrl, portalApi, lineWorkedVsBilledNote } from '@/lib/api';
 import { groupInvoiceLinesByTicket } from '@/lib/invoiceLineGroups';
 import { money, shortDate } from '@/lib/format';
 import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
@@ -65,6 +67,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
+  const [saveForAutopay, setSaveForAutopay] = useState(false);
+  useEffect(() => { setSaveForAutopay(false); }, [detail?.autopay?.disclosureHash]);
   const [payError, setPayError] = useState<string | null>(null);
   const [payTerminal, setPayTerminal] = useState(false);
   // Verify-on-return settle state. 'idle' until we detect the post-Checkout return.
@@ -99,28 +103,17 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     const invoiceId = detail.invoice.id;
     let cancelled = false;
     setSettleState('settling');
-    void portalApi.settleInvoice(invoiceId, sessionId)
-      .then((res) => {
-        if (cancelled) return;
-        if (res.data?.settled) {
-          // Reload WITHOUT the return params (replace, not push) so the page re-fetches
-          // fresh server data showing Paid — and a manual refresh won't re-trigger settle.
-          window.location.replace(withBase(`/invoices/${invoiceId}`));
-        } else if (res.error) {
-          // A failed settle call is not "still confirming": say so, and log it.
-          console.error('[portal] settle failed', { invoiceId, sessionId, statusCode: res.statusCode, error: res.error });
-          setSettleState('failed');
-        } else {
-          // A genuine {settled:false}: async payment method — the reconcile sweep
-          // will catch it. Tell the customer rather than silently leaving it "Sent".
-          setSettleState('pending');
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error('[portal] settle request threw', { invoiceId, sessionId, err });
-        setSettleState('failed');
-      });
+    void runAction<{ settled: boolean; invoiceId?: string }>({
+      request: () => portalApi.settleInvoice(invoiceId, sessionId),
+      onOutcome: (message, error) => {
+        if (!cancelled && error) { setPayError(message); setSettleState('failed'); }
+      },
+      successMessage: 'Payment checked.', errorFallback: 'Could not confirm payment. Please try again.',
+    }).then(result => {
+      if (cancelled) return;
+      if (result?.settled) window.location.replace(withBase(`/invoices/${invoiceId}`));
+      else if (result) setSettleState('pending');
+    });
     return () => { cancelled = true; };
   }, [detail]);
 
@@ -172,28 +165,17 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   ];
 
   const payInvoice = async () => {
-    if (paying) return;
-    setPaying(true);
-    setPayError(null);
-    const result = await portalApi.payInvoice(invoice.id);
-    if (result.data?.url) {
-      window.location.href = result.data.url;
-      return; // keep the button disabled while the browser navigates to Checkout
-    }
-    if (!result.error) {
-      // A 200 without a Checkout URL is a contract error, not a customer condition.
-      console.error('[portal] pay returned no checkout url', { invoiceId: invoice.id, statusCode: result.statusCode });
-    }
-    if (result.statusCode === 409) {
-      // Terminal condition (online payment unavailable / invoice not payable). Show the
-      // server's reason verbatim — "Please try again" would mislead since a retry won't help.
-      setPayError(result.error || 'Online payment is not available for this invoice.');
-      setPayTerminal(true);
-    } else {
-      setPayError(result.error || 'Could not start the payment. Please try again.');
-      setPayTerminal(false);
-    }
-    setPaying(false);
+    if (paying) return; setPaying(true); setPayError(null);
+    const result = await runAction<{ url: string }>({
+      request: async () => {
+        const response = await portalApi.payInvoice(invoice.id, {}, invoiceAutopayInput(saveForAutopay, detail.autopay));
+        setPayTerminal(response.statusCode === 409); return response;
+      },
+      onOutcome: (message, error) => { if (error) setPayError(message); },
+      successMessage: 'Opening secure checkout…', errorFallback: 'Could not start payment. Please try again.',
+      validate: value => typeof value.url === 'string' && value.url.startsWith('https://checkout.stripe.com/'),
+    });
+    if (result) window.location.href = result.url; else setPaying(false);
   };
 
   const downloadPdf = async () => {
@@ -236,16 +218,19 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         </a>
         <div className="flex flex-wrap items-center gap-2">
           {canPay && (
-            <button
-              type="button"
-              onClick={() => void payInvoice()}
-              disabled={paying || collectionInProgress != null}
-              data-testid="invoice-pay-button"
-              className={BTN_PRIMARY}
-            >
-              <CreditCard className="h-4 w-4" />
-              {paying ? 'Opening secure checkout' : payLabel}
-            </button>
+            <>
+              <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
+              <button
+                type="button"
+                onClick={() => void payInvoice()}
+                disabled={paying || collectionInProgress != null}
+                data-testid="invoice-pay-button"
+                className={BTN_PRIMARY}
+              >
+                <CreditCard className="h-4 w-4" />
+                {paying ? 'Opening secure checkout' : payLabel}
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -411,6 +396,21 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
       </DocumentPaper>
     </div>
   );
+}
+
+/** Shared by the signed-in and public invoice payment controls. */
+export function InvoiceAutopayConsent({ disclosure, checked, paying, onChange }: {
+  disclosure?: InvoiceAutopayDisclosure | null;
+  checked: boolean;
+  paying: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  if (!disclosure?.eligible) return null;
+  return <label className="block text-sm">
+    <input type="checkbox" data-testid="autopay-save-card" checked={checked} disabled={paying}
+      onChange={e => onChange(e.target.checked)} /> Use this card for future invoices
+    <span className="block" data-testid="autopay-save-card-text">{disclosure.consentText}</span>
+  </label>;
 }
 
 export default InvoiceDetailView;
