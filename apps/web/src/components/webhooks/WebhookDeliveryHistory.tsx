@@ -15,6 +15,31 @@ export type WebhookDelivery = {
   attempt?: number;
 };
 
+/**
+ * Map one row of `GET /webhooks/:id/deliveries` onto the table's row shape.
+ * The API speaks `pending | delivered | failed | retrying`, `createdAt` and
+ * `responseStatus`; an unmapped status would leave the row without an icon
+ * and crash the whole page, so anything unknown renders as pending.
+ */
+export function normalizeDelivery(raw: Record<string, unknown>): WebhookDelivery {
+  const status = raw.status;
+  const mapped: WebhookDeliveryStatus =
+    status === 'delivered' || status === 'success'
+      ? 'success'
+      : status === 'failed'
+        ? 'failed'
+        : 'pending';
+  const responseCode = raw.responseCode ?? raw.responseStatus;
+  return {
+    id: String(raw.id),
+    timestamp: String(raw.timestamp ?? raw.createdAt ?? ''),
+    event: String(raw.event ?? raw.eventType ?? ''),
+    status: mapped,
+    responseCode: typeof responseCode === 'number' ? responseCode : null,
+    attempt: typeof raw.attempt === 'number' ? raw.attempt : undefined,
+  };
+}
+
 type WebhookDeliveryHistoryProps = {
   deliveries: WebhookDelivery[];
   onRetry?: (delivery: WebhookDelivery) => void | Promise<void>;
