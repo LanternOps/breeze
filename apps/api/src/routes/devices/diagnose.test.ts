@@ -226,7 +226,34 @@ describe('device diagnose route', () => {
       orgId: 'org-123',
       hostname: 'macbook-pro',
       surface: 'device_diagnose',
+      isEphemeral: false,
     }));
+  });
+
+  it('tells the consent gate when the device is a Quick Support device', async () => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({
+      id: DEVICE_ID,
+      orgId: 'org-123',
+      hostname: 'qs-pc',
+      osType: 'windows',
+      osVersion: '11',
+      status: 'online',
+      isEphemeral: true,
+    } as never);
+    checkScreenAccessConsentGate.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      body: { error: 'refused', code: 'SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT' },
+    });
+
+    const res = await app.request(`/devices/${DEVICE_ID}/diagnose`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(checkScreenAccessConsentGate).toHaveBeenCalledWith(expect.objectContaining({ isEphemeral: true }));
   });
 
   it('does not run the consent gate for an offline device', async () => {

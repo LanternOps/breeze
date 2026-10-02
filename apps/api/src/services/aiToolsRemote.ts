@@ -81,6 +81,7 @@ async function screenAccessRefusal(
     hostname: device.hostname,
     surface,
     actor: auth,
+    isEphemeral: device.isEphemeral === true,
   });
   return gate.ok ? null : JSON.stringify(gate.body);
 }

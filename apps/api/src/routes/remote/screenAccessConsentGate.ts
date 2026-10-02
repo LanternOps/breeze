@@ -18,6 +18,10 @@ export type ScreenAccessSurface = 'take_screenshot' | 'analyze_screen' | 'comput
 
 export const SCREEN_ACCESS_CONSENT_BLOCKED_AUDIT_ACTION = 'screen_access_consent_blocked';
 
+export const SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT_CODE = 'SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT';
+export const SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT_MESSAGE =
+  'Screenshots and computer control are not available on a Quick Support device. Use the remote desktop session the user accepted.';
+
 export type ScreenAccessConsentGateResult =
   | { ok: true }
   | { ok: false; status: 409 | 503; body: { error: string; code: string } };
@@ -53,6 +57,11 @@ function auditActor(actor: ScreenAccessActor): { actorType: 'user' | 'agent' | '
  * policy refuses too, exactly as the desktop start paths do. `off` and
  * `notify` devices are unchanged.
  *
+ * A Quick Support (ephemeral) device refuses every one of these surfaces,
+ * whatever its prompt mode: the person at that machine is shown who is viewing
+ * their screen only while a remote desktop session runs, and the support
+ * client refuses these one-shot commands too.
+ *
  * Every refusal is written to the audit log (fire-and-forget with retry, so an
  * audit write failure never turns a refusal into an allow).
  */
@@ -62,7 +71,21 @@ export async function checkScreenAccessConsentGate(input: {
   hostname?: string | null;
   surface: ScreenAccessSurface;
   actor: ScreenAccessActor;
+  /** devices.isEphemeral: a Quick Support device. Required so no caller can omit it. */
+  isEphemeral: boolean;
 }): Promise<ScreenAccessConsentGateResult> {
+  if (input.isEphemeral) {
+    await auditRefusal(input, 'quick_support_session', null);
+    return {
+      ok: false,
+      status: 409,
+      body: {
+        error: SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT_MESSAGE,
+        code: SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT_CODE,
+      },
+    };
+  }
+
   let mode: SessionPromptMode;
   try {
     ({ mode } = await resolveRemoteSessionPromptConfig(input.deviceId));
@@ -94,7 +117,7 @@ export async function checkScreenAccessConsentGate(input: {
 
 async function auditRefusal(
   input: Parameters<typeof checkScreenAccessConsentGate>[0],
-  reason: 'prompt_unsupported' | 'policy_unavailable',
+  reason: 'prompt_unsupported' | 'policy_unavailable' | 'quick_support_session',
   promptMode: SessionPromptMode | null,
 ): Promise<void> {
   await createAuditLogAsync({
