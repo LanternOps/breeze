@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -155,14 +155,15 @@ describe('runFidelityCheck transport seam (W06 #7604)', () => {
     expect((sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options).not.toHaveProperty('cwd');
   });
 
-  it('with a transport, the subprocess runs in its own empty temp directory, removed afterwards', async () => {
+  it('with a transport, the subprocess runs in the shared empty private temp directory, never the host cwd', async () => {
     const { client } = fakeTransportClient();
     await runFidelityCheck(INPUT, { client: client as never, childEnv: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/t' }, probeAdaptiveEffort: false });
     const cwd = (sdkState.query.mock.calls[0]![0] as { options: { cwd?: string } }).options.cwd;
     expect(typeof cwd).toBe('string');
     expect(realpathSync(path.dirname(cwd!))).toBe(realpathSync(os.tmpdir()));
     expect(cwd!.startsWith(process.cwd())).toBe(false);
-    expect(existsSync(cwd!)).toBe(false);
+    expect(existsSync(cwd!)).toBe(true);
+    expect(readdirSync(cwd!)).toEqual([]);
   });
 
   it('with a transport, uses its client and child env and never builds an endpoint client', async () => {

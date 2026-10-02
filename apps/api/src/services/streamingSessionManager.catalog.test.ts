@@ -14,7 +14,7 @@
  *  3. a session pinned to a catalog revision rotates when that revision moves,
  *     exactly as it already rotates on key rotation.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const {
@@ -1102,7 +1102,10 @@ describe('getOrCreate — gateway (openai_compatible) sessions (W06 Task 9)', ()
 
     expect(revokeMock).toHaveBeenCalledWith(proxyKey);
     expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
-    expect(existsSync(cwd)).toBe(false);
+    // The shared private working directory outlives one session (resumes and
+    // other sessions use it); it stays empty.
+    expect(existsSync(cwd)).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
 
     gate.resolve();
     await session.processorPromise;

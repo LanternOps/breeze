@@ -7,7 +7,7 @@
  * gateway kinds (W06 openai_compatible, W07 cloud kinds).
  */
 import { rmSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { isRecognizedSelfHostSignal } from '../../config/env';
@@ -180,20 +180,54 @@ const GATEWAY_CHILD_PROVIDER_FLAGS: Readonly<Record<string, string>> = {
   CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
 };
 
-/** An empty, private working directory for one Agent SDK child. */
+/** An empty, private working directory for an Agent SDK child. */
 export interface IsolatedSdkCwd {
   cwd: string;
-  /** Deletes the directory. Idempotent and never throws. */
+  /** Releases the directory (a per-spawn fallback is deleted; the shared one is kept). Idempotent, never throws. */
   remove: () => void;
 }
 
+function sharedSdkCwdPath(): string {
+  const uid = typeof process.getuid === 'function' ? String(process.getuid()) : 'user';
+  return path.join(os.tmpdir(), `breeze-sdk-gateway-cwd-${uid}`);
+}
+
+/** True only for an existing or newly created real directory owned by this user, mode 0700-or-tighter, and empty. */
+async function isPrivateEmptyDir(dir: string): Promise<boolean> {
+  try {
+    await mkdir(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+  }
+  try {
+    const st = await lstat(dir);
+    if (st.isSymbolicLink() || !st.isDirectory()) return false;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false;
+    if ((st.mode & 0o077) !== 0) return false;
+    return (await readdir(dir)).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * A fresh, empty working directory for an Agent SDK child bound to an
- * untrusted endpoint. The CLI describes its working directory (path, git
- * status) in the system prompt it sends upstream; running it in an empty
- * temp directory keeps repository and host paths out of that context.
+ * The working directory for an Agent SDK child bound to an untrusted endpoint.
+ * The CLI describes its working directory (path, git status) in the system
+ * prompt it sends upstream, so the child runs in an empty private temp
+ * directory instead of the API's own (repository) directory.
+ *
+ * One shared directory per OS user, not one per spawn: the CLI keys persisted
+ * transcripts by working directory, so a fresh directory per spawn would leave
+ * a transcript folder behind for every gateway spawn. A resumed session finds
+ * its transcript either way (gatewaySdk.e2e.test.ts). The shared directory is
+ * used only while it is a real, private, empty directory owned by this user;
+ * otherwise (pre-created by someone else, loosened, written into, a symlink)
+ * each spawn gets its own fresh directory, deleted on release.
  */
-export async function createIsolatedSdkCwd(): Promise<IsolatedSdkCwd> {
+export async function createIsolatedSdkCwd(opts: { stableDir?: string } = {}): Promise<IsolatedSdkCwd> {
+  const shared = opts.stableDir ?? sharedSdkCwdPath();
+  if (await isPrivateEmptyDir(shared)) return { cwd: shared, remove: () => {} };
+  console.warn('[sdkChildEnv] the shared SDK child working directory is not private and empty; using a per-spawn directory');
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'breeze-sdk-'));
   let removed = false;
   return {

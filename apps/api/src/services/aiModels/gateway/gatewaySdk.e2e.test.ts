@@ -8,11 +8,12 @@
  * start.
  */
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -95,9 +96,11 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
     } finally {
       child.revoke();
     }
-    // The child ran in its own empty working directory, gone once revoked.
+    // The child ran in the shared private working directory, still empty after
+    // a full tool-using run (the CLI writes nothing into it).
     expect(child.cwd).toBeDefined();
-    expect(existsSync(child.cwd!)).toBe(false);
+    expect(existsSync(child.cwd!)).toBe(true);
+    expect(readdirSync(child.cwd!)).toEqual([]);
     expect(result, `no result; CLI stderr:\n${stderr.join('').slice(-4000)}`).not.toBeNull();
     expect(toolRuns).toBe(1);
     expect(result).toMatchObject({ subtype: 'success' });
@@ -169,4 +172,52 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
       await new Promise<void>((resolve) => trap.close(() => resolve()));
     }
   }, 120_000);
+
+  it('a resumed gateway chat sees its own transcript although each spawn gets a fresh cwd', async () => {
+    // Chat recreates its live query (eviction, model/config change, restart)
+    // with `resume: <sdk session id>`, through a fresh prepareSdkChild. The
+    // second spawn must load the first spawn's transcript, and the shared
+    // empty working directory must stay empty (the CLI writes nothing there).
+    const configDir = await mkdtemp(path.join(os.tmpdir(), 'breeze-e2e-claude-config-'));
+    const r = makeResolvedModel('openai_compatible');
+    const runTurn = async (prompt: string, resume?: string): Promise<{ sessionId: string | null; cwd: string | undefined }> => {
+      const child = await prepareSdkChild(r, { key: `e2e-resume-${resume ? 2 : 1}`, orgId: 'org-1', aiSessionId: null });
+      let sessionId: string | null = null;
+      try {
+        for await (const m of query({
+          prompt,
+          options: {
+            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], persistSession: true,
+            env: { ...child.env, CLAUDE_CONFIG_DIR: configDir },
+            ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+            ...(resume ? { resume } : {}),
+          },
+        })) {
+          const sid = (m as { session_id?: string }).session_id;
+          if (typeof sid === 'string') sessionId = sid;
+        }
+      } finally {
+        child.revoke();
+      }
+      return { sessionId, cwd: child.cwd };
+    };
+    try {
+      const first = await runTurn('Remember this: my code word is ZEBRA-42. Reply OK.');
+      expect(first.sessionId).toBeTruthy();
+      const callsBefore = upstreamCalls.length;
+      const second = await runTurn('What is my code word?', first.sessionId!);
+      expect(second.cwd).toBeDefined();
+      expect(second.cwd).toBe(first.cwd);
+      expect(readdirSync(second.cwd!)).toEqual([]);
+      // Transcripts live under the config dir, one project folder for every
+      // gateway spawn (keyed by the shared working directory).
+      expect(readdirSync(path.join(configDir, 'projects'))).toHaveLength(1);
+      const turn2Calls = upstreamCalls.slice(callsBefore);
+      expect(turn2Calls.length).toBeGreaterThan(0);
+      // The resumed request carries turn 1's user message: the transcript was found.
+      expect(JSON.stringify(turn2Calls.at(-1)!.messages)).toContain('ZEBRA-42');
+    } finally {
+      await rm(configDir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ vi.mock('../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: (e: Record<st
 
 import { closeModelGateway, getModelGateway } from './gateway';
 import { prepareSdkChild } from './connectionFactory';
+import { createIsolatedSdkCwd } from './sdkChildEnv';
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import { getLlmEgressProxy } from '../llm/llmEgressProxy';
 import { resolveToolSearchPolicy } from '../aiToolSearchPolicy';
@@ -61,36 +62,72 @@ describe('prepareSdkChild', () => {
     revoke();
   });
 
-  it('gateway: the child gets its own empty temp working directory, removed on revoke', async () => {
+  it('gateway: children share one private, empty temp working directory that outlives revoke', async () => {
+    // One stable directory: the CLI keys persisted transcripts by working
+    // directory, so a fresh directory per spawn would leave a transcript folder
+    // behind for every spawn. Isolation holds: empty, private, never the host cwd.
     const r = makeResolvedModel('openai_compatible');
     const a = await prepareSdkChild(r, { key: 'sess-cwd', orgId: 'org-1', aiSessionId: null, source: PARENT });
-    const b = await prepareSdkChild(r, { key: 'sess-cwd', orgId: 'org-1', aiSessionId: null, source: PARENT });
+    const b = await prepareSdkChild(r, { key: 'sess-cwd-2', orgId: 'org-1', aiSessionId: null, source: PARENT });
     expect(a.cwd).toBeDefined();
     expect(path.isAbsolute(a.cwd!)).toBe(true);
     expect(realpathSync(a.cwd!).startsWith(realpathSync(os.tmpdir()))).toBe(true);
-    expect(statSync(a.cwd!).isDirectory()).toBe(true);
-    expect(readdirSync(a.cwd!)).toEqual([]);
     expect(a.cwd!.startsWith(process.cwd())).toBe(false);
-    // One per dispatch: never shared between children.
-    expect(b.cwd).not.toBe(a.cwd);
+    const st = statSync(a.cwd!);
+    expect(st.isDirectory()).toBe(true);
+    expect(st.mode & 0o077).toBe(0);
+    expect(readdirSync(a.cwd!)).toEqual([]);
+    expect(b.cwd).toBe(a.cwd);
     a.revoke();
-    expect(existsSync(a.cwd!)).toBe(false);
-    expect(existsSync(b.cwd!)).toBe(true);
-    // Idempotent.
-    expect(() => a.revoke()).not.toThrow();
     b.revoke();
-    expect(existsSync(b.cwd!)).toBe(false);
+    expect(existsSync(a.cwd!)).toBe(true);
+    expect(() => a.revoke()).not.toThrow();
+  });
+
+  it('gateway: an untrustworthy shared directory is never used (per-spawn fallback, removed on revoke)', async () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'breeze-cwd-test-'));
+    try {
+      // Group/other-accessible.
+      const loose = path.join(base, 'loose');
+      mkdirSync(loose, { mode: 0o755 });
+      chmodSync(loose, 0o755);
+      // Not empty.
+      const dirty = path.join(base, 'dirty');
+      mkdirSync(dirty, { mode: 0o700 });
+      writeFileSync(path.join(dirty, 'CLAUDE.md'), 'injected');
+      // A symlink to elsewhere.
+      const link = path.join(base, 'link');
+      symlinkSync(base, link);
+      for (const stableDir of [loose, dirty, link]) {
+        const iso = await createIsolatedSdkCwd({ stableDir });
+        expect(iso.cwd).not.toBe(stableDir);
+        expect(readdirSync(iso.cwd)).toEqual([]);
+        iso.remove();
+        expect(existsSync(iso.cwd)).toBe(false);
+      }
+      // A fresh path is created private and reused.
+      const fresh = path.join(base, 'fresh');
+      const one = await createIsolatedSdkCwd({ stableDir: fresh });
+      const two = await createIsolatedSdkCwd({ stableDir: fresh });
+      expect(one.cwd).toBe(fresh);
+      expect(two.cwd).toBe(fresh);
+      expect(statSync(fresh).mode & 0o077).toBe(0);
+      one.remove();
+      expect(existsSync(fresh)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it('gateway: a failed dispatch leaves no working directory behind', async () => {
-    const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-')));
+    const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-') && !n.startsWith('breeze-sdk-gateway-cwd-')));
     // A kind with no registered adapter: the dispatch fails after the
     // working directory and the grants exist, and must release all of them.
     const base = makeResolvedModel('openai_compatible');
     const broken = { ...base, connection: { ...base.connection, kind: 'no_such_kind' } } as unknown as typeof base;
     await expect(prepareSdkChild(broken, { key: 'sess-x', orgId: 'org-1', aiSessionId: null, source: PARENT }))
       .rejects.toThrow(/No gateway adapter/);
-    const after = readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-') && !before.has(n));
+    const after = readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-') && !n.startsWith('breeze-sdk-gateway-cwd-') && !before.has(n));
     expect(after).toEqual([]);
   });
 
