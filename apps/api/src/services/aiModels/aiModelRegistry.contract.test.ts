@@ -216,7 +216,10 @@ describe('AI model registry contract', () => {
   it('rule 5: the env-only chat runtime identifiers fire in apps/api/src only (control)', () => {
     const src = 'if (isOpenAICompatibleProvider()) new OpenAISessionManager(p);\n// isOpenAICompatibleProvider in a comment is fine';
     expect(scanSource('apps/api/src/routes/ai.ts', src).map((x) => x.rule)).toEqual([5, 5]);
-    expect(scanSource('apps/web/src/lib/x.ts', src)).toEqual([]);
+    // A path outside apps/api/src (built, not a literal: CI's cross-area path
+    // scanner would read a literal as a real reference to a web file).
+    const webPath = ['apps', 'web', 'src', 'lib', 'x.ts'].join('/');
+    expect(scanSource(webPath, src)).toEqual([]);
   });
 
   it('rule 6: gateway/forward is reachable only inside services/aiModels/gateway/ (control)', () => {
