@@ -132,7 +132,7 @@ describe('aiToolHandoff', () => {
       it('bounds a huge stdout', () => {
         const out = describeIntentOutcome(done({ stdout: 'x'.repeat(100_000) }), evq);
         expect(out.message.length).toBeLessThan(20_000);
-        expect(out.message).toMatch(/truncated/i);
+        expect(out.message).toMatch(/INCOMPLETE/);
       });
 
       it('never splices for non-allowlisted commands, other tools, or unknown input', () => {
@@ -147,6 +147,24 @@ describe('aiToolHandoff', () => {
           expect(out.message).toBe(APPROVED_COMPLETED_MESSAGE);
           expect(out.message).not.toContain('hunter2');
         }
+      });
+
+      it('does not call a failed / timed-out / non-zero-exit command a successful read', () => {
+        for (const r of [
+          { status: 'failed', stdout: 'partial' },
+          { status: 'timeout', stdout: 'partial' },
+          { status: 'completed', exitCode: 1, stdout: 'partial' },
+        ]) {
+          expect(describeIntentOutcome(done(r), evq).message).toBe(APPROVED_COMPLETED_MESSAGE);
+        }
+      });
+
+      it('fences the output as untrusted and does not tell the model to skip a re-run when truncated', () => {
+        const ok = describeIntentOutcome(done({ stdout: 'abc' }), evq).message;
+        expect(ok).toContain('<tool_output untrusted>\nabc\n</tool_output>');
+        const cut = describeIntentOutcome(done({ stdout: 'x'.repeat(100_000) }), evq).message;
+        expect(cut).toMatch(/INCOMPLETE/);
+        expect(cut).not.toMatch(/do not re-run/i);
       });
 
       it('falls back to the generic completion when the result has no string stdout', () => {
