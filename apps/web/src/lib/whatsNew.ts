@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.121.0',
+    date: '2026-10-02',
+    title: 'Pick your AI model, bring your own endpoint, and bill clients for AI usage',
+    highlights: [
+      'Settings ▸ AI Providers & Models is the one place to manage AI connections, which models are offered and the default for each feature. Organizations can tighten those defaults, and AI Usage breaks spend down by model, feature, technician and organization.',
+      'Choose the model for each AI chat from the composer, and switch mid-conversation. Agent policies pick their model the same way.',
+      'Connect your own OpenAI-compatible endpoint (vLLM, LiteLLM, OpenRouter and others), verify its models, and use them across AI features, tools included. When a model is unavailable, AI can fail over to your ordered backup list.',
+      'Bill clients for AI usage: billing profiles carry AI coverage, markup and per-model prices, usage closes monthly into invoice lines, and a new AI usage by client report shows the totals.',
+      'Windows Quick Support now starts for standard (non-admin) users and shows the user an indicator while a technician is viewing.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.120.0',
     date: '2026-10-01',
     title: 'Storage-session backups, integrity-checked restores, and clearer remote consent',
