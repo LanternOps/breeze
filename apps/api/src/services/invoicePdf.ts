@@ -207,7 +207,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       const ticketNum = g.ticketNumber ? `Ticket #${escapeHtml(g.ticketNumber)}` : 'Ticket work';
       const subject = g.ticketSubject ? `: ${escapeHtml(g.ticketSubject)}` : '';
       const catBadge = g.ticketCategory ? ` <span style="font-size:11px;font-weight:normal;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px;margin-left:6px;">${escapeHtml(g.ticketCategory)}</span>` : '';
-      header = `<tr><td colspan="${showTax ? 4 : 3}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">${ticketNum}${subject}${catBadge}</td></tr>`;
+      header = `<tr><td colspan="${showTax ? 5 : 4}" style="padding:10px 8px 4px;font-size:12px;font-weight:600;color:#374151;border-top:1px solid #e5e7eb;background-color:#f9fafb;">${ticketNum}${subject}${catBadge}</td></tr>`;
     }
     const lineRows = g.lines.map((l) => {
       const t = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
@@ -219,6 +219,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       <tr>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(lineTitle(l))}${lineBlurb(l) ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(lineBlurb(l))}</div>` : ''}${note ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(note)}</div>` : ''}</td>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(String(Number(l.quantity)))}</td>
+        <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.unitPrice, currency, locale))}</td>
         ${taxCell}
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;text-align:right;white-space:nowrap;">${escapeHtml(formatMoney(l.lineTotal, currency, locale))}</td>
       </tr>`;
@@ -264,6 +265,7 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
           <tr>
             <th style="padding:8px;text-align:left;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Description</th>
             <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Qty</th>
+            <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Unit price</th>
             ${showTax ? '<th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Tax</th>' : ''}
             <th style="padding:8px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.5px;color:#9ca3af;text-transform:uppercase;border-bottom:2px solid #e5e7eb;">Amount</th>
           </tr>
@@ -305,10 +307,12 @@ export interface InvoicePdfColumns {
   showTax: boolean;
   /** Description column width (starts at `left`). */
   colDescW: number;
-  /** QTY / TAX / AMOUNT share one right-aligned box width. */
+  /** QTY / UNIT PRICE / TAX / AMOUNT share one right-aligned box width. */
   colNumW: number;
   colQtyX: number;
-  /** Only drawn when `showTax`; equals colQtyX otherwise so callers need no branch. */
+  /** Unit price column (#7508), between QTY and TAX/AMOUNT. */
+  colUnitX: number;
+  /** Only drawn when `showTax`; equals colUnitX otherwise so callers need no branch. */
   colTaxX: number;
   colAmtX: number;
   /** Totals block amount box — wider than the line rows because the
@@ -323,7 +327,8 @@ export interface InvoicePdfColumns {
 
 // Money columns are sized for prefix-code currencies (Intl renders e.g.
 // "CHF 888'888.88" — ~73pt at Helvetica 10, wider than any "$" figure), so
-// the taxed layout gives qty | tax | amount 0.17 each and the description 0.44.
+// the taxed layout gives qty | unit price | tax | amount 0.17 each and the
+// description 0.28 (0.175 each / 0.40 untaxed).
 // The totals block gets its own wider box (0.24) for the bold-14 emphasis row:
 // "CHF 1'000'000.00" at that size is ~113pt and would wrap inside the row box.
 // Both the AMOUNT column and the summary box end at the table's right edge so
@@ -341,23 +346,25 @@ export function invoiceColumnsFor(doc: PDFKit.PDFDocument, showTax: boolean): In
   if (showTax) {
     return {
       left, right, contentWidth, showTax,
-      colDescW: contentWidth * 0.44,
+      colDescW: contentWidth * 0.28,
       colNumW: contentWidth * 0.17,
-      colQtyX: left + contentWidth * 0.46,
-      colTaxX: left + contentWidth * 0.64,
+      colQtyX: left + contentWidth * 0.30,
+      colUnitX: left + contentWidth * 0.48,
+      colTaxX: left + contentWidth * 0.655,
       colAmtX: left + contentWidth * 0.83,
       ...summary,
     };
   }
   return {
     left, right, contentWidth, showTax,
-    colDescW: contentWidth * 0.60,
-    colNumW: contentWidth * 0.18,
-    colQtyX: left + contentWidth * 0.62,
-    colTaxX: left + contentWidth * 0.62,
-    // 0.82, not the historical 0.80: the AMOUNT box must end at the right
-    // edge so it lines up with the totals box below it.
-    colAmtX: left + contentWidth * 0.82,
+    colDescW: contentWidth * 0.40,
+    colNumW: contentWidth * 0.175,
+    colQtyX: left + contentWidth * 0.42,
+    colUnitX: left + contentWidth * 0.61,
+    colTaxX: left + contentWidth * 0.61,
+    // The AMOUNT box must end at the right edge so it lines up with the
+    // totals box below it.
+    colAmtX: left + contentWidth * 0.825,
     ...summary,
   };
 }
@@ -427,7 +434,7 @@ export function renderInvoicePdfBuffer(
       // Line table starts below the taller of the two columns. Column fractions
       // live in invoiceColumnsFor (measured by invoicePdf.test.ts).
       y = Math.max(fromY, billY) + 20;
-      const { colNumW, colQtyX, colTaxX, colAmtX, colDescW, colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW } = invoiceColumnsFor(doc, showTax);
+      const { colNumW, colQtyX, colUnitX, colTaxX, colAmtX, colDescW, colSummaryNumW, colSummaryAmtX, colSummaryLabelX, colSummaryLabelW } = invoiceColumnsFor(doc, showTax);
 
       doc.save();
       doc.rect(left - 6, y - 5, contentWidth + 12, 22).fill('#f8fafc');
@@ -435,6 +442,7 @@ export function renderInvoicePdfBuffer(
       doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica-Bold');
       doc.text('DESCRIPTION', left, y);
       doc.text('QTY', colQtyX, y, { width: colNumW, align: 'right' });
+      doc.text('UNIT PRICE', colUnitX, y, { width: colNumW, align: 'right' });
       if (showTax) doc.text('TAX', colTaxX, y, { width: colNumW, align: 'right' });
       doc.text('AMOUNT', colAmtX, y, { width: colNumW, align: 'right' });
       y += 18;
@@ -475,6 +483,10 @@ export function renderInvoicePdfBuffer(
             doc.fillColor('#1f2937').fontSize(10);
           }
           doc.font('Helvetica').text(String(Number(l.quantity)), colQtyX, y, { width: colNumW, align: 'right' });
+          const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
+          fitFontSize(doc, unitText, colNumW, 10);
+          doc.fillColor('#6b7280').text(unitText, colUnitX, y, { width: colNumW, align: 'right', lineBreak: false });
+          doc.fillColor('#1f2937').fontSize(10);
           // Money cells: single line, shrink-to-fit. The boxes fit ~1M at 10pt
           // but numeric(12,2) permits 9'999'999'999.99, and pdfkit TRUNCATES an
           // over-wide lineBreak:false string (a different number on the invoice).
