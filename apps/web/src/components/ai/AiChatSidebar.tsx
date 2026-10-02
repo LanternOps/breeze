@@ -14,6 +14,8 @@ import { useAiStore } from "@/stores/aiStore";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
+import AiModelPicker from "./AiModelPicker";
+import { useAiModelPickerStore } from "@/stores/aiModelPickerStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
 import { useTranslation } from "react-i18next";
@@ -115,6 +117,13 @@ export default function AiChatSidebar() {
       void loadSession(sessionId);
     }
   }, [isOpen, sessionId, hydratedSessionId, messages.length, isLoading, loadSession]);
+
+  // A sidebar opened with no session still offers the model menu (W05).
+  useEffect(() => {
+    if (isOpen && !sessionId && !useAiModelPickerStore.getState().choices) {
+      void useAiModelPickerStore.getState().load({});
+    }
+  }, [isOpen, sessionId]);
 
   // Load sessions when history panel opens
   useEffect(() => {
@@ -372,6 +381,9 @@ export default function AiChatSidebar() {
               onSendQuickAction={sendMessage}
               onIntentDecided={clearPendingApproval}
             />
+
+            {/* Model menu (W05) */}
+            <AiModelPicker disabled={isStreaming} />
 
             {/* Input */}
             <AiChatInput

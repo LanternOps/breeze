@@ -506,5 +506,25 @@
       "expired": "süresi doldu",
       "skipped": "atlandı"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Model seçin",
+    "default": "(varsayılan)",
+    "suggested": "Önerilen",
+    "context": "{{size}} bağlam",
+    "price": "Milyon belirteç başına {{input}} giriş / {{output}} çıkış",
+    "requiresRole": "{{roles}} gerekir",
+    "requiresPermission": "Premium yapay zeka modelleri izni gerekir",
+    "effort": "Çaba",
+    "effortDefault": "Varsayılan",
+    "effortLevels": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek",
+      "xhigh": "Çok yüksek",
+      "max": "Maksimum"
+    },
+    "fast": "Hızlı (milyon başına {{input}} giriş / {{output}} çıkış)",
+    "thinking": "Düşünme"
   }
 }

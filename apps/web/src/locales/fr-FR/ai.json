@@ -506,5 +506,25 @@
       "expired": "expiré",
       "skipped": "ignoré"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Choisir un modèle",
+    "default": "(par défaut)",
+    "suggested": "Suggéré",
+    "context": "Contexte de {{size}}",
+    "price": "{{input}} en entrée / {{output}} en sortie par M de jetons",
+    "requiresRole": "Nécessite {{roles}}",
+    "requiresPermission": "Nécessite l'autorisation d'accès aux modèles d'IA premium",
+    "effort": "Niveau d'effort",
+    "effortDefault": "Par défaut",
+    "effortLevels": {
+      "low": "Faible",
+      "medium": "Moyen",
+      "high": "Élevé",
+      "xhigh": "Très élevé",
+      "max": "Maximal"
+    },
+    "fast": "Rapide ({{input}} en entrée / {{output}} en sortie par M)",
+    "thinking": "Réflexion"
   }
 }

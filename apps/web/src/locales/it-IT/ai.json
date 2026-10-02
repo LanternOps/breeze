@@ -506,5 +506,25 @@
       "expired": "scaduto",
       "skipped": "saltato"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Scegli un modello",
+    "default": "(predefinito)",
+    "suggested": "Suggerito",
+    "context": "Contesto di {{size}}",
+    "price": "{{input}} in ingresso / {{output}} in uscita per M di token",
+    "requiresRole": "Richiede {{roles}}",
+    "requiresPermission": "Richiede il permesso per i modelli di IA premium",
+    "effort": "Impegno",
+    "effortDefault": "Predefinito",
+    "effortLevels": {
+      "low": "Basso",
+      "medium": "Medio",
+      "high": "Alto",
+      "xhigh": "Molto alto",
+      "max": "Massimo"
+    },
+    "fast": "Veloce ({{input}} in ingresso / {{output}} in uscita per M)",
+    "thinking": "Ragionamento"
   }
 }

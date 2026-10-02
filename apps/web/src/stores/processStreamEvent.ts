@@ -150,6 +150,8 @@ export interface StreamableState {
   topologyPhase?: AiTopologyProgressPhase | null;
   /** Topology M4: accepted run of an approved diagnostic proposal (aiStore only). */
   topologyRunId?: string | null;
+  /** W05: offering ids the server suggests after a refusal (set by Task 13). */
+  refusalAlternatives?: string[];
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;

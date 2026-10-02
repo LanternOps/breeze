@@ -506,5 +506,25 @@
       "expired": "abgelaufen",
       "skipped": "übersprungen"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Modell auswählen",
+    "default": "(Standard)",
+    "suggested": "Empfohlen",
+    "context": "{{size}} Kontext",
+    "price": "{{input}} Eingabe / {{output}} Ausgabe pro Mio. Tokens",
+    "requiresRole": "Erfordert {{roles}}",
+    "requiresPermission": "Erfordert die Berechtigung für Premium-KI-Modelle",
+    "effort": "Aufwand",
+    "effortDefault": "Standard",
+    "effortLevels": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "xhigh": "Sehr hoch",
+      "max": "Maximal"
+    },
+    "fast": "Schnell ({{input}} Eingabe / {{output}} Ausgabe pro Mio.)",
+    "thinking": "Denken"
   }
 }
