@@ -1,5 +1,6 @@
 ---
 spec: docs/superpowers/specs/billing/2026-10-01-autopay-design.md
+tracking_issue: LanternOps/breeze#7743
 ---
 
 # Autopay — Program Index
