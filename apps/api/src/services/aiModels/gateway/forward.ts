@@ -1,5 +1,5 @@
 import { recordLlmEgressEvent } from '../../llm/llmEgressRecorder';
-import { ResponseTooLargeError, safeFetch, SsrfBlockedError } from '../../urlSafety';
+import { ResponseHeadersTimeoutError, ResponseTooLargeError, safeFetch, SsrfBlockedError } from '../../urlSafety';
 import { byoEgressAllowances } from './byoEndpointPolicy';
 import {
   GATEWAY_CONNECT_TIMEOUT_MS,
@@ -150,11 +150,6 @@ export async function forwardUpstream(
 
   const allow = byoEgressAllowances();
   let resolvedIp: string | null = null;
-  // Connect + response-headers deadline (Codex review #12): aborts only if headers
-  // have not arrived in time; cleared as soon as fetch resolves (the body is then
-  // governed by safeFetch's inactivity timeout and the server's total timer).
-  const headersAc = new AbortController();
-  const headersDeadline = setTimeout(() => headersAc.abort(), GATEWAY_CONNECT_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetchImpl(target.toString(), {
@@ -163,9 +158,15 @@ export async function forwardUpstream(
       // safeFetch serialises a Buffer body natively (urlSafety.ts); the DOM BodyInit type just doesn't list it.
       ...(req.body !== undefined ? { body: req.body as unknown as BodyInit } : {}),
       redirect: 'error',
-      signal: AbortSignal.any([signal, headersAc.signal]),
-      // Codex review #12: safeFetch's timeoutMs is a SOCKET-INACTIVITY timeout (urlSafety.ts),
-      // so it is the stream idle limit, not a connect deadline (that is headersDeadline).
+      signal,
+      // DNS + connect + response-headers deadline. safeFetch stops it the moment
+      // headers arrive, in both modes — a non-streamed body buffers inside
+      // safeFetch, so an abort-based deadline here would also cut off a slow
+      // (but live) generation. The body is then bounded by the inactivity
+      // timeout, the byte cap and the server's total timer (`signal`).
+      headersTimeoutMs: GATEWAY_CONNECT_TIMEOUT_MS,
+      // safeFetch's timeoutMs is a SOCKET-INACTIVITY timeout (urlSafety.ts),
+      // so it is the stream idle limit, not a connect deadline.
       timeoutMs: GATEWAY_IDLE_TIMEOUT_MS,
       allowPrivateNetwork: allow.allowPrivateNetwork,
       requirePrivateForCleartext: allow.requirePrivateForCleartext,
@@ -176,9 +177,8 @@ export async function forwardUpstream(
       onConnect: (ip: string) => { resolvedIp = ip; },
     });
   } catch (error) {
-    clearTimeout(headersDeadline);
     auditGatewayEgress(grant, target.hostname, resolvedIp, true);
-    if (headersAc.signal.aborted && !signal.aborted) {
+    if (error instanceof ResponseHeadersTimeoutError && !signal.aborted) {
       throw new GatewayError(504, 'api_error', 'upstream_timeout', 'The endpoint did not respond in time.');
     }
     if (error instanceof SsrfBlockedError) {
@@ -190,7 +190,6 @@ export async function forwardUpstream(
     if (signal.aborted) throw new GatewayError(499, 'api_error', 'client_aborted', 'Request aborted.');
     throw new GatewayError(502, 'api_error', 'upstream_unreachable', 'The endpoint could not be reached.');
   }
-  clearTimeout(headersDeadline);
   auditGatewayEgress(grant, target.hostname, resolvedIp, false);
   if (res.status >= 300 && res.status < 400) {
     // safeFetch never follows; release the (possibly live) body socket and refuse.
