@@ -69,6 +69,17 @@ describe('compileTopologyRender', () => {
     expect(byId.get(ids.b)).toMatchObject({ label: 'FRONT-DESK', detail: '10.1.2.58 · Agent offline' });
   });
 
+  it('marks a neighbour-cache placement as corroborated, never as unverified or observed (#7816)', () => {
+    const { graph: g, ids } = lan();
+    const lanCard = g.presentation.nodes.find((n) => n.id === P('net-lan'))!;
+    lanCard.group!.members = lanCard.group!.members.map((m) => m.nodeId === ids.phone ? { ...m, placement: 'neighbor_seen', neighbor: {
+      method: 'neighbor_cache', evidenceClass: 'inferred', confidence: 'low', observerNodeId: ids.a, observerLabel: 'DRT-HYG3', sourceId: id(500), rowKey: 'nb-1',
+      interfaceName: 'eth0', address: '10.1.2.200', mac: '00:11:22:33:44:55', state: 'reachable', confirmedAt: '2026-10-02T00:00:00.000Z', expiresAt: '2026-10-02T00:15:00.000Z' } } : m);
+    const byId = new Map(compileTopologyRender(g, { showAllNetworks: false }).nodes.map((n) => [n.id, n]));
+    expect(byId.get(ids.phone)).toMatchObject({ parent: P('net-lan'), unverified: false, corroborated: true, health: null });
+    expect(byId.get(ids.a)).toMatchObject({ unverified: false, corroborated: false });
+  });
+
   it('replaces folded membership and route edges with the aggregate routes_via edge, oriented gateway-first for layout', () => {
     const { graph: g } = lan();
     const render = compileTopologyRender(g, { showAllNetworks: false });

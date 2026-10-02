@@ -668,6 +668,18 @@
     "devices_other": "{{count}} cihaz",
     "moreOutside_one": "Bu görünümün dışında {{count}} tane daha",
     "moreOutside_other": "Bu görünümün dışında {{count}} tane daha",
-    "gatewayAddressMatch": "Keşfedilen bir cihaz bu adresi kullanıyor (yalnızca adres eşleşmesi, doğrulanmadı):"
+    "gatewayAddressMatch": "Keşfedilen bir cihaz bu adresi kullanıyor (yalnızca adres eşleşmesi, doğrulanmadı):",
+    "neighborSeen": "komşu önbelleği",
+    "neighborSeenNote": "{{observer}} cihazının komşu önbelleğinde eşleşen IP/MAC; son onay: {{when}}.",
+    "neighborState": {
+      "permanent": "Statik önbellek girdisi.",
+      "unknown": "Erişilebilirlik bilinmiyor."
+    },
+    "neighborSeenCount_one": "{{count}} cihaz, başka bir cihazın komşu önbelleğindeki eşleşen IP/MAC nedeniyle buraya yerleştirildi.",
+    "neighborSeenCount_other": "{{count}} cihaz, diğer cihazların komşu önbelleklerindeki eşleşen IP/MAC nedeniyle buraya yerleştirildi.",
+    "neighborCoverageLimited": "Bu ağ için komşu önbelleği verileri eksik: bir cihazın önbellekte olmaması, ağda olmadığını göstermez.",
+    "conflictGatewayMac": "Bu aralıktaki cihazlar aynı ağ geçidi adresini bildiriyor, ancak komşu önbellekleri farklı ağ geçidi MAC adresleri gösterdiği için ayrı kartlara bölündü.",
+    "gatewayMac_one": "Ağ geçidi MAC {{mac}}: {{count}} cihazın komşu önbelleğinde; son onay: {{when}}",
+    "gatewayMac_other": "Ağ geçidi MAC {{mac}}: {{count}} cihazın komşu önbelleklerinde; son onay: {{when}}"
   }
 }

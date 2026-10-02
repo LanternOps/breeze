@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TopologyInspector from './TopologyInspector';
+import type { GraphResponse } from '@breeze/shared';
 import { topologyGraphFixture, NODE, ASSET, SITE } from './topologyFixtures';
 import { EXCLUSION, FDB, fdbDetail, fdbEvidence, fdbRelationship } from './physicalFixtures';
 import { fetchWithAuth } from '../../stores/auth';
@@ -166,5 +167,67 @@ describe('grouped overview inspector (2026-10-02)', () => {
     graph.nodes[0] = { ...graph.nodes[0]!, role: 'switch' };
     render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: NODE }} siteId={SITE} operations={operations} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
     expect(screen.getByTestId('topology-telemetry')).toBeInTheDocument();
+  });
+});
+
+describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => {
+  const PHONE = '10000000-0000-4000-8000-0000000000c1';
+  const OBSERVER = '10000000-0000-4000-8000-0000000000c2';
+  const neighbor = { method: 'neighbor_cache' as const, evidenceClass: 'inferred' as const, confidence: 'low' as const, observerNodeId: OBSERVER, observerLabel: 'FRONT-DESK',
+    sourceId: '10000000-0000-4000-8000-0000000000c3', rowKey: 'nb-1', interfaceName: 'eth0', address: '10.1.2.80', mac: '00:11:22:33:44:55', state: 'stale' as const,
+    confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z' };
+  const phoneInventory = { source: 'discovered_asset' as const, name: 'Lobby phone', addresses: ['10.1.2.80'], mac: '00:11:22:33:44:55', vendor: 'Yealink', model: null, os: null, type: 'phone',
+    presence: { state: 'online' as const, source: 'scan' as const, agentStatus: null, lastSeenAt: null } };
+  const card = (members: NonNullable<NonNullable<GraphResponse['presentation']['nodes'][number]['group']>['members']>, extra: Record<string, unknown> = {}) => ({
+    id: 'presentation:overview:s:net-a', view: 'overview' as const, role: 'network_group', label: '10.1.2.0/24', memberCount: members.length, frontierToken: 't', authority: false as const,
+    group: { kind: 'network' as const, basis: 'inferred_site_prefix' as const, networkClass: 'lan' as const, prefix: '10.1.2.0/24', address: null, gatewayAddresses: ['10.1.2.1'],
+      conflict: false, observerCount: 1, members, canonicalNodeIds: [], ...extra } });
+  function withPhone(member: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    const graph = topologyGraphFixture();
+    graph.nodes = [...graph.nodes, { ...graph.nodes[0]!, id: PHONE, kind: 'endpoint', label: 'Lobby phone', inventory: phoneInventory },
+      { ...graph.nodes[0]!, id: OBSERVER, kind: 'endpoint', label: 'FRONT-DESK' }];
+    graph.presentation.nodes = [card([{ nodeId: OBSERVER, placement: 'observed', primary: true, stale: false },
+      { nodeId: PHONE, placement: 'neighbor_seen', primary: true, stale: false, neighbor, ...member }] as never, extra)];
+    return graph;
+  }
+
+  it('explains a neighbor_seen placement by observer and confirmation time, never as verified', () => {
+    render(<TopologyInspector graph={withPhone({})} selection={{ kind: 'node', id: PHONE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    const note = screen.getByTestId('topology-neighbor-seen');
+    expect(note).toHaveTextContent(/^Matching IP\/MAC in FRONT-DESK's neighbour cache; last confirmed .+/);
+    expect(note.textContent).not.toMatch(/verified/i);
+    expect(screen.queryByText('Placed here because its address is in this range. Membership not verified.')).toBeNull();
+  });
+
+  it('qualifies static and reachability-unknown cache entries', () => {
+    const { unmount } = render(<TopologyInspector graph={withPhone({ neighbor: { ...neighbor, state: 'permanent' } })} selection={{ kind: 'node', id: PHONE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.getByTestId('topology-neighbor-seen')).toHaveTextContent('Static cache entry.');
+    unmount();
+    render(<TopologyInspector graph={withPhone({ neighbor: { ...neighbor, state: 'unknown' } })} selection={{ kind: 'node', id: PHONE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.getByTestId('topology-neighbor-seen')).toHaveTextContent('Reachability unknown.');
+  });
+
+  it('tags neighbor_seen members distinctly from address matches and explains limited coverage and MAC splits', () => {
+    const graph = withPhone({}, { neighborCoverage: 'limited', conflict: true, conflictBasis: ['gateway_mac'] });
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    const summary = screen.getByTestId('topology-group-summary');
+    expect(summary).toHaveTextContent("1 device is placed here from a matching IP/MAC in another device's neighbour cache.");
+    expect(summary).toHaveTextContent('neighbour cache');
+    expect(summary).not.toHaveTextContent('unverified');
+    expect(summary).toHaveTextContent('Neighbour-cache evidence is incomplete for this network');
+    expect(summary).toHaveTextContent('different gateway MAC addresses');
+    expect(summary).not.toHaveTextContent('Devices on this range report different gateways');
+  });
+
+  it('shows corroborated gateway MACs on a gateway group', () => {
+    const graph = topologyGraphFixture();
+    graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.1', memberCount: 0, frontierToken: 't', authority: false,
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.1', gatewayAddresses: [], conflict: false, observerCount: 2, members: [],
+        canonicalNodeIds: [graph.nodes[0]!.id],
+        gatewayMacs: [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01', observerCount: 2, confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z' }] } }];
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    const macs = screen.getByTestId('topology-gateway-macs');
+    expect(macs).toHaveTextContent(/Gateway MAC 00:00:5e:00:01:01: in 2 devices' neighbour caches; last confirmed .+/);
+    expect(macs.textContent).not.toMatch(/verified/i);
   });
 });

@@ -35,6 +35,8 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     { selector: 'node[presence="offline"]', style: { opacity: 0.6 } },
     { selector: 'node[?stale]', style: { 'border-style': 'dashed' } },
     { selector: 'node[?unverified]', style: { 'border-style': 'dashed', 'background-color': c.mutedBg } },
+    // Neighbour-cache placement (#7816): distinct from an address match, still neutral — never a health colour.
+    { selector: 'node[?corroborated]', style: { 'border-style': 'dotted', 'border-width': 1.5 } },
     // Red/amber/green describe measured health only (design §153); unknown stays neutral.
     { selector: 'node[health="healthy"]', style: { 'border-color': c.success, 'border-width': 2 } },
     { selector: 'node[health="degraded"]', style: { 'border-color': c.warning, 'border-width': 2 } },
@@ -93,7 +95,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         const card = node.kind === 'group' || node.kind === 'unidentified';
         return { group: 'nodes', data: { id: node.id, display: display(node), kind: node.kind, width, height, textWidth: card ? '4000px' : `${Math.max(80, width - 60)}px`,
           icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined,
-          health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, networkClass: node.networkClass ?? undefined,
+          health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, corroborated: node.corroborated, networkClass: node.networkClass ?? undefined,
           presentation: node.id.startsWith('presentation:'), headerSize: 15, ...(node.parent ? { parent: node.parent } : {}) },
           ...(card ? {} : { position: points.get(node.id) ?? { x: 0, y: 0 } }) };
       });

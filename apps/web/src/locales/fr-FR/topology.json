@@ -668,6 +668,18 @@
     "devices_other": "{{count}} appareils",
     "moreOutside_one": "{{count}} autre en dehors de cette vue",
     "moreOutside_other": "{{count}} autres en dehors de cette vue",
-    "gatewayAddressMatch": "Un appareil découvert utilise cette adresse (correspondance d'adresse seulement, non vérifiée) :"
+    "gatewayAddressMatch": "Un appareil découvert utilise cette adresse (correspondance d'adresse seulement, non vérifiée) :",
+    "neighborSeen": "cache des voisins",
+    "neighborSeenNote": "IP/MAC correspondante dans le cache des voisins de {{observer}} ; dernière confirmation : {{when}}.",
+    "neighborState": {
+      "permanent": "Entrée statique du cache.",
+      "unknown": "Joignabilité inconnue."
+    },
+    "neighborSeenCount_one": "{{count}} appareil est placé ici d’après une IP/MAC correspondante dans le cache des voisins d’un autre appareil.",
+    "neighborSeenCount_other": "{{count}} appareils sont placés ici d’après une IP/MAC correspondante dans les caches des voisins d’autres appareils.",
+    "neighborCoverageLimited": "Les données du cache des voisins de ce réseau sont incomplètes : l’absence d’un appareil dans un cache ne prouve pas qu’il est absent.",
+    "conflictGatewayMac": "Les appareils de cette plage signalent la même adresse de passerelle, mais leurs caches des voisins indiquent des adresses MAC de passerelle différentes ; elle est donc scindée en cartes distinctes.",
+    "gatewayMac_one": "MAC de la passerelle {{mac}} : dans le cache des voisins de {{count}} appareil ; dernière confirmation : {{when}}",
+    "gatewayMac_other": "MAC de la passerelle {{mac}} : dans les caches des voisins de {{count}} appareils ; dernière confirmation : {{when}}"
   }
 }
