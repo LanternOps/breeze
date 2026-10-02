@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   deviceCommands,
@@ -43,9 +43,7 @@ export type PatchInstallAttempt = {
   error: string | null;
   /** The install reported that a restart is needed to finish it. */
   rebootRequired: boolean;
-  /** When the attempt started — the "which attempt is newer" key. */
-  startedAt: Date;
-  /** When it finished (or started, if it has not). */
+  /** When it finished, or started if it has not — the "which attempt is newer" key. */
   at: Date;
 };
 
@@ -149,12 +147,18 @@ async function loadLatestAttempts(
     opts.allJobAttempts ? null : [...new Set(deviceAttempts.map((attempt) => attempt.deviceId))],
   );
 
+  // Across the two sources "newer" is the attempt that moved last: its finish
+  // time, or its start while it is still in flight. Start time alone would be
+  // wrong here — a job's result row is created at dispatch, so a job queued
+  // for an offline device that fails AFTER a later per-device install would
+  // lose to it and its newer failure would be hidden. (Within one source the
+  // DISTINCT ON keeps ordering by start, as #4223 did.)
   const latest = new Map<string, PatchInstallAttempt>();
-  // Job attempts first: on an exact start-time tie the job row stands.
+  // Job attempts first: on an exact tie the job row stands.
   for (const attempt of [...jobAttempts, ...deviceAttempts]) {
     const key = `${attempt.deviceId}:${attempt.patchId}`;
     const current = latest.get(key);
-    if (!current || attempt.startedAt.getTime() > current.startedAt.getTime()) {
+    if (!current || attempt.at.getTime() > current.at.getTime()) {
       latest.set(key, attempt);
     }
   }
@@ -226,7 +230,6 @@ async function loadJobAttempts(
       error: outcome === 'failed' ? row.errorMessage : null,
       // A restart the patch-reboot handler already carried out has finished the install.
       rebootRequired: outcome === 'installed' && row.rebootRequired && row.rebootedAt === null,
-      startedAt: row.createdAt,
       at: row.completedAt ?? row.createdAt,
     });
   }
@@ -242,16 +245,23 @@ async function loadDeviceCommandAttempts(
   scope: Scope,
 ): Promise<PatchInstallAttempt[]> {
   const conditions: SQL[] = [
-    eq(deviceCommands.type, 'install_patches'),
+    // A SQL literal, not a bound parameter: it is what lets the planner match
+    // the partial index idx_device_commands_install_patches_device_created
+    // (WHERE type = 'install_patches') under a generic prepared-statement plan.
+    sql`${deviceCommands.type} = 'install_patches'`,
     sql`${deviceCommands.payload}->>'patchJobId' IS NULL`,
     inArray(deviceCommands.status, [...DEVICE_INSTALL_ATTEMPT_STATUSES]),
     gte(deviceCommands.createdAt, new Date(Date.now() - DEVICE_INSTALL_LOOKBACK_MS)),
+    // A command queued while the device belonged to another org is that org's
+    // history, not this one's (NULL = written before provenance existed).
+    or(isNull(deviceCommands.submittedOrgId), eq(deviceCommands.submittedOrgId, devices.orgId))!,
   ];
   if (scope.deviceId) conditions.push(eq(deviceCommands.deviceId, scope.deviceId));
   if (scope.orgId) conditions.push(eq(devices.orgId, scope.orgId));
 
   const rows = await db
     .selectDistinctOn([deviceCommands.deviceId, devicePatches.patchId], {
+      id: deviceCommands.id,
       deviceId: deviceCommands.deviceId,
       patchId: devicePatches.patchId,
       status: deviceCommands.status,
@@ -282,8 +292,7 @@ async function loadDeviceCommandAttempts(
   return rows.map((row) => ({
     deviceId: row.deviceId,
     patchId: row.patchId,
-    ...deviceCommandOutcome(row.status, row.result, row.patchId),
-    startedAt: row.createdAt,
+    ...deviceCommandOutcome(row.status, row.result, row.patchId, row.id),
     at: row.completedAt ?? row.createdAt,
   }));
 }
@@ -297,7 +306,12 @@ type CommandOutcome = Pick<PatchInstallAttempt, 'outcome' | 'error' | 'rebootReq
  * keyed by `id` = `patches.id` and carry `status: 'installed' | 'failed' |
  * 'skipped'` (agent `executePatchInstallCommand`).
  */
-export function deviceCommandOutcome(commandStatus: string, result: unknown, patchId: string): CommandOutcome {
+export function deviceCommandOutcome(
+  commandStatus: string,
+  result: unknown,
+  patchId: string,
+  commandId?: string,
+): CommandOutcome {
   const envelope = asRecord(result);
   const envelopeError = nonEmptyString(envelope?.error) ?? nonEmptyString(envelope?.errorMessage);
 
@@ -308,7 +322,7 @@ export function deviceCommandOutcome(commandStatus: string, result: unknown, pat
     return { outcome: 'other', error: null, rebootRequired: false };
   }
 
-  const summary = parseStdout(envelope?.stdout);
+  const summary = parseStdout(envelope?.stdout, commandId);
   const entries = Array.isArray(summary?.results) ? summary.results : [];
   const entry = entries
     .map(asRecord)
@@ -336,12 +350,20 @@ export function deviceCommandOutcome(commandStatus: string, result: unknown, pat
   return { outcome: 'other', error: null, rebootRequired: false };
 }
 
-function parseStdout(stdout: unknown): Record<string, unknown> | null {
+function parseStdout(stdout: unknown, commandId?: string): Record<string, unknown> | null {
   if (typeof stdout !== 'string') return asRecord(stdout);
   try {
     return asRecord(JSON.parse(stdout));
-  } catch {
-    // Not a JSON summary (an older agent, or a plain-text error) — no per-patch lines.
+  } catch (err) {
+    // Plain text (an older agent, a bare error) has no per-patch lines and is
+    // expected. A summary that looks like JSON but does not parse is not: the
+    // patches it names fall back to the command-level outcome, so say so.
+    if (stdout.trimStart().startsWith('{')) {
+      console.warn(
+        `[patchInstallFailures] install_patches command ${commandId ?? '(unknown)'}: stored summary is not valid JSON; using the command-level outcome for its patches:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
     return null;
   }
 }
