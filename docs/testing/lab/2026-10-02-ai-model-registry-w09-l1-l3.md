@@ -335,3 +335,67 @@ The legacy `POST /ai-provider/key` does not clear cooldowns. That is the known g
   - the sealed invalid BYOK key, which the L3 rotation replaced.
 - The fault and billing proxies, SDK probe and assertion scripts lived in the job's scratch directory and are not committed.
 - Teardown: local billing stopped and its worktree `.env` deleted; `pnpm wt-stack down`; the stack worktree's `.env` deleted; the port-forward container removed.
+
+## Re-check 2026-10-02 (post-#7789)
+
+**Verdict: L1 PASS.** The low-credit chat case passes now. #7784 and #7786 are fixed on a live stack, and the 529 / 401 chat cases and the agent-run low-credit case have not regressed.
+
+- **Build:** `origin/main` at `a302d00a45`, which is the #7789 merge. A fresh worktree, brought up with `pnpm wt-stack up` with the same traps as the first run: `BREEZE_WORKSPACE_ENABLED=false`, a free subnet, and `BREEZE_AI_AGENTS_ENABLED=true`.
+- **Models:** the real platform key, held only in the stack env, with the fault proxy as `ANTHROPIC_BASE_URL` and the same injection bodies as the first run.
+- **Billing service:** not run. It is not needed for these cases. A reservation that billing would debit is marked `credits_debit_due_at`; a 0¢ reservation never is.
+- **Config (API):** Chat and AI agents default = platform Sonnet 5.5 `59cbb1ee`, backup = platform Haiku 4.5 `6f8ee408`, cross-funding off. There is no BYOK connection, so the backup is hop 1 here (it was hop 2 in the first run, behind the BYOK entry).
+- **Spend:** USD 0.19 from the ledger, plus about 4.7k input tokens of CLI background calls. The cap was USD 3.
+
+| Case | Verdict |
+|---|---|
+| Chat, low credit: cooldown + next-message failover (#7784) | **PASS** |
+| Chat, low credit: failed turn labelled with the bound model (#7786) | **PASS** |
+| Chat, 529 (regression) | **PASS** |
+| Chat, 401 (regression) | **PASS** |
+| Agent run, low credit (regression) | **PASS** |
+
+### Chat, low credit: PASS
+
+Turn 1: a single Sonnet request, injected `400 invalid_request_error` "credit balance is too low", no retry.
+
+- **Cooldown:** `ai-model:cooldown:59cbb1ee` = `quota_exhausted`, pttl 899,524 (**15 min**). Before #7789 no key was written at all.
+- **Label (#7786):** `turn_model` = `{"requestedModel":"claude-sonnet-5-5","servedModel":"claude-sonnet-5-5","fallbackUsed":false,…}`. `ai_sessions.last_turn_model` holds the same: bound model, `fallbackUsed: false`.
+- **Money:** ledger row `59cbb1ee` platform, 0 tokens, **0¢**, `stop_reason=error`. Its reservation settled at 0 with `credits_debit_due_at` NULL, so it is not debited.
+
+Turn 2, sent while the cooldown was live:
+
+```
+67c0c9c1  chat  6f8ee408 platform claude-haiku-4-5  in 3 / out 4 / cw 74,410  9.3036¢  hop 1  cause cooldown  from 59cbb1ee  end_turn
+reservation binding failover: {"hop": 1, "cause": "cooldown", "fromOfferingId": "59cbb1ee…"}
+turn_model: requested/served claude-haiku-4-5, fallbackUsed false
+```
+
+- **D6:** the session was not re-stamped. `ai_sessions.model` = `claude-sonnet-5-5`, offering `59cbb1ee`, `billing_source` platform.
+
+### Regression: chat 529 and 401: PASS
+
+| Case | Turn 1 | Cooldown | Turn 1 label | Turn 2 |
+|---|---|---|---|---|
+| 529 | about 3 min of CLI retries, then 0¢ `error` | `overloaded`, pttl 59,912 (60 s) | bound Sonnet, `fallbackUsed:false` (was Haiku/true before #7789) | platform Haiku, hop 1, cause `cooldown`, 0.81¢; session not re-stamped |
+| 401 | about 3 min of CLI retries, then 0¢ `error` | `auth_failed`, pttl 899,921 (15 min) | bound Sonnet, `fallbackUsed:false` | platform Haiku, hop 1, cause `cooldown`, 0.81¢; session not re-stamped |
+
+`last_turn_model` after turn 2 names the model that actually served (Haiku) with `fallbackUsed: false`. That is correct: Haiku was the resolved model for that turn, not a refusal swap.
+
+### Regression: agent-run low credit: PASS
+
+Run `52c6cd2d` (a triage partner baseline, profile `full`, so role `analysis`):
+
+```
+run: admitted 59cbb1ee platform → served 6f8ee408 platform, served_failover_hop 1, cause quota_exhausted
+hop 0  59cbb1ee  0¢     error     reservation ai-agent-run:52c6cd2d…        settled 0
+hop 1  6f8ee408  7.82¢  end_turn  reservation ai-agent-run:52c6cd2d…:hop:1  settled 7.82, binding failover {hop 1, cause quota_exhausted}
+cooldown: 59cbb1ee quota_exhausted, pttl about 892 s
+```
+
+### Still open (unchanged)
+
+- **#7785:** every failed chat turn still ends with only `turn_model` + `done`, with no error event. On 529 and 401 the empty answer arrives after about 3 minutes of CLI retries. It was out of scope for #7789.
+
+### Clean-up
+
+`pnpm wt-stack down`; the stack worktree's `.env` deleted; the fault proxy stopped. No billing service was started.
