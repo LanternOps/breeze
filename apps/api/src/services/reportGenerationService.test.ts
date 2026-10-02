@@ -27,6 +27,9 @@ vi.mock('./businessReports/technicianTimeReport', () => ({
 vi.mock('./businessReports/arAgingReport', () => ({
   generateArAgingReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ar_aging' } })),
 }));
+vi.mock('./businessReports/aiUsageByClientReport', () => ({
+  generateAiUsageByClientReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ai_usage_by_client' } })),
+}));
 
 // #6013 W05: backup_status reads through the W03 unified read model, whose
 // SQL is built from Drizzle subqueries this file's flat `db.select` chain
@@ -51,6 +54,7 @@ import { listBackupHealthRows, summarizeBackupHealth } from './backupHealthReadM
 import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaReport';
 import { generateTechnicianTimeBillabilityReport } from './businessReports/technicianTimeReport';
 import { generateArAgingReport } from './businessReports/arAgingReport';
+import { generateAiUsageByClientReport } from './businessReports/aiUsageByClientReport';
 import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
@@ -106,6 +110,7 @@ const BUSINESS_TYPES: readonly ReportType[] = [
   'ticket_sla_attainment',
   'technician_time_billability',
   'ar_aging',
+  'ai_usage_by_client',
 ];
 /** The mocked generator each BUSINESS_TYPES entry must reach, and the marker
  *  summary it returns. */
@@ -113,6 +118,7 @@ const BUSINESS_GENERATORS: Record<string, { fn: () => unknown; marker: string }>
   ticket_sla_attainment: { fn: generateTicketSlaAttainmentReport as never, marker: 'ticket_sla' },
   technician_time_billability: { fn: generateTechnicianTimeBillabilityReport as never, marker: 'technician_time' },
   ar_aging: { fn: generateArAgingReport as never, marker: 'ar_aging' },
+  ai_usage_by_client: { fn: generateAiUsageByClientReport as never, marker: 'ai_usage_by_client' },
 };
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 

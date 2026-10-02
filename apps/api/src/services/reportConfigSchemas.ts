@@ -281,3 +281,22 @@ export const arAgingConfigSchema = legacyReportConfigSchema.extend({
   includePaidInPeriod: z.boolean().optional(),
 });
 export type ArAgingConfig = z.infer<typeof arAgingConfigSchema>;
+
+/**
+ * #7608 W10 — AI usage by client.
+ *
+ * - `period` is the standard business-report period (owner timezone, `[start,
+ *   end)`); absent = the last full calendar month, applied by
+ *   `resolveReportPeriod`.
+ * - `groupBy` has NO `.default()`: the default depends on the owner scope
+ *   (`organization` at partner scope, `model` at org scope) and is applied in
+ *   the generator, exactly like ticket SLA's.
+ * - No org/site/device selector keys (ruling T3e): the org set comes from the
+ *   live org list at partner scope, never from config.
+ */
+export const aiUsageByClientConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  period: periodSchema.optional(),
+  groupBy: z.enum(['organization', 'model']).optional(),
+});
+export type AiUsageByClientConfig = z.infer<typeof aiUsageByClientConfigSchema>;
