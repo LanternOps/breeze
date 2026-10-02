@@ -12,16 +12,6 @@ import { Hono } from 'hono';
 // handlers open (the messages route and, W05, the continuation route).
 const dbCtx = vi.hoisted(() => ({ depth: 0 }));
 
-// OpenAI-compatible branch harness (#3127): provider switch + session manager.
-const openai = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-  manager: {
-    getOrCreate: vi.fn(),
-    tryTransitionToProcessing: vi.fn(),
-    startTurn: vi.fn(),
-  },
-}));
-
 // Topology M4 turn harness (#6000 on #3127): the lazily-imported route half.
 const topo = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -44,18 +34,12 @@ vi.mock('./aiTopologyTurn', () => ({
 
 vi.mock('../config/validate', () => ({
   getConfig: vi.fn(() => ({
-    MCP_LLM_PROVIDER: openai.provider,
+    MCP_LLM_PROVIDER: 'anthropic',
     MCP_LLM_BASE_URL: 'http://llm.example.test',
     MCP_LLM_API_KEY: 'k',
     MCP_LLM_PRICE_INPUT_PER_M_USD: 1,
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: 1,
   })),
-}));
-
-vi.mock('../services/llm/openaiSessionManager', () => ({
-  OpenAISessionManager: vi.fn(function OpenAISessionManager() {
-    return openai.manager;
-  }),
 }));
 
 vi.mock('../db', () => ({
@@ -332,7 +316,6 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    openai.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
     vi.mocked(getSessionMessages).mockResolvedValue({
@@ -455,14 +438,6 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'continuation_unsupported' });
     expect(chooseSessionModel).not.toHaveBeenCalled();
-  });
-
-  it('the env OpenAI-compatible deployment has no registry to continue on → 400', async () => {
-    openai.provider = 'openai-compatible';
-    const res = await post(app, { model: { offeringId: OFF } });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ code: 'continuation_unsupported' });
-    expect(reserveAiBudget).not.toHaveBeenCalled();
   });
 
   it('a chat with a reply still running → 409 turn_in_progress', async () => {
@@ -595,7 +570,6 @@ describe('first turn of a continuation (W05)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    openai.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
     active = makeActiveSession();
@@ -615,7 +589,7 @@ describe('first turn of a continuation (W05)', () => {
   function preflightWith(session: Record<string, unknown>) {
     vi.mocked(runPreFlightChecks).mockResolvedValue({
       ok: true, session: { ...DB_SESSION, ...session } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model,
     });
   }
 
