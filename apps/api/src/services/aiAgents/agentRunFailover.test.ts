@@ -37,7 +37,7 @@ vi.mock('../../db', () => ({
 }));
 
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
-import { markStaleHopReservations, nextAgentHop, startHopFor } from './agentRunFailover';
+import { markStaleHopReservations, nextAgentHop, probeAgentHop, startHopFor } from './agentRunFailover';
 
 const ORIGIN = { offeringId: 'p', funding: 'platform' as const, connectionId: null };
 const base = {
@@ -85,6 +85,28 @@ describe('nextAgentHop', () => {
     h.resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents', offering: { id: 'k', displayName: 'K' } }));
     expect(await nextAgentHop({ ...base, hop: 7 })).toMatchObject({ ok: false, reason: 'no_next_hop' });
     expect(h.resolveModel).not.toHaveBeenCalled();
+    expect(h.updates).toEqual([]);
+  });
+});
+
+describe('probeAgentHop (PR #7775 review: gates the mid-stream abort, no side effects)', () => {
+  const { runId: _runId, ...probeInput } = base;
+
+  it('resolves and admits exactly as nextAgentHop does, but records NOTHING on the run', async () => {
+    h.resolveModel.mockResolvedValue(makeResolvedModel('anthropic_byok', { surface: 'ai_agents', offering: { id: 'k', displayName: 'K' } }));
+    const r = await probeAgentHop(probeInput);
+    expect(r).toMatchObject({ ok: true, resolved: { offering: { id: 'k' } } });
+    expect(h.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ excludeOfferingIds: ['p'], failoverCause: 'overloaded' }));
+    expect(h.checkBudgetDetailed).toHaveBeenCalledWith('org-1', 'partner_key');
+    expect(h.updates).toEqual([]);
+  });
+
+  it('an unavailable or unadmitted backup probes as not ok', async () => {
+    h.resolveModel.mockResolvedValueOnce({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: null, message: 'gone' });
+    expect(await probeAgentHop(probeInput)).toMatchObject({ ok: false, reason: 'no_next_hop' });
+    h.resolveModel.mockResolvedValueOnce(makeResolvedModel('platform', { surface: 'ai_agents', offering: { id: 'p2', displayName: 'P2' } }));
+    h.checkBudgetDetailed.mockResolvedValueOnce({ message: 'Out of AI credits' });
+    expect(await probeAgentHop(probeInput)).toMatchObject({ ok: false, reason: 'admission_denied' });
     expect(h.updates).toEqual([]);
   });
 });

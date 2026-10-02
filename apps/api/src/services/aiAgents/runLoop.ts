@@ -104,6 +104,7 @@ import { refusalHeadline } from '../aiModels/refusals';
 import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
 import { resolveModel, type FailoverOrigin, type ResolvedModel } from '../aiModels/resolveModel';
 import {
+  classifySdkAssistantError,
   FAILOVER_CAUSES,
   hopIdempotencyKey,
   MAX_FAILOVER_HOP,
@@ -120,6 +121,7 @@ import {
   agentRunReservationBaseKey,
   markStaleHopReservations,
   nextAgentHop,
+  probeAgentHop,
   recordServedHop,
   startHopFor,
   type NextAgentHop,
@@ -255,6 +257,22 @@ export class AgentRunError extends Error {
     this.name = 'AgentRunError';
     this.errorCode = errorCode;
   }
+}
+
+/**
+ * W09 / PR #7775 review (D8): the classified provider status a hop ENDS on.
+ * The CLI's own final api-error assistant message, or a result's
+ * `api_error_status`, sets it (null when unclassified); an `api_retry` clears
+ * it, since an error the CLI then retried was not final. Everything else
+ * leaves it as it was.
+ */
+function nextTerminalProviderCause(current: ProviderFailureCause | null, message: unknown): ProviderFailureCause | null {
+  if (!message || typeof message !== 'object') return current;
+  const m = message as { type?: unknown; subtype?: unknown; error?: unknown; api_error_status?: unknown };
+  if (m.type === 'assistant' && typeof m.error === 'string') return classifySdkAssistantError(m.error, null);
+  if (m.type === 'system' && m.subtype === 'api_retry') return null;
+  if (m.type === 'result' && typeof m.api_error_status === 'number') return classifySdkAssistantError(null, m.api_error_status);
+  return current;
 }
 
 /**
@@ -2254,6 +2272,32 @@ async function driveSdkLoop(
         ? hopModel.failoverRemaining.filter((id) => !tried.includes(id))
         : [];
       let failoverCause = null as ProviderFailureCause | null;
+      // PR #7775 review (D8): the classified provider status this hop ENDED on —
+      // the CLI's own final api-error message, or a result's classified
+      // `api_error_status`. A later retry clears it (that error was not final);
+      // the exception/catch path never sets it. Only this may fail a hop over
+      // after the fact: a hop ending on a timeout, reset or exception has an
+      // unknown outcome and takes W03's no-result path (held indeterminate).
+      let terminalProviderCause = null as ProviderFailureCause | null;
+      let failedOnResult = false as boolean;
+      // PR #7775 review: the CLI's retries are aborted only for a backup that can
+      // serve. Probed (no side effects) at most once per hop.
+      let hopProbe: Promise<boolean> | null = null;
+      const hopIndexNow = hopIndex;
+      const backupAvailable = (cause: ProviderFailureCause): Promise<boolean> => {
+        hopProbe ??= probeAgentHop({
+          orgId: run.orgId, partnerId: ctx.orgPartnerId, role: modelRole, requestedOfferingId,
+          tried: [...tried], cause, hop: hopIndexNow + 1, origin: failoverOrigin,
+        }).then((probe) => probe.ok, (error: unknown) => {
+          const message = safeErrorMessage(error);
+          console.error('[aiAgentRunLoop] backup model probe failed; keeping the CLI\'s own retries', { runId: run.id, error: message });
+          captureException(new Error(`agent run backup model probe failed: ${message}`), undefined, {
+            org_id: run.orgId, ai_agent_run_id: run.id,
+          });
+          return false;
+        });
+        return hopProbe;
+      };
       const hopModelNow = hopModel;
       promptProvenance = promptProvenanceFor({ surface: 'ai_agents', profile: hopModelNow.promptProfile, subjectId: run.id });
       const hopPromptProvenance = promptProvenance;
@@ -2331,15 +2375,17 @@ async function driveSdkLoop(
           try {
             for await (const message of sdkQuery) {
               observeSdkMessage(observation, message);
+              terminalProviderCause = nextTerminalProviderCause(terminalProviderCause, message);
               // W09: a NON-result message may fail over once the CLI's own
               // retries are spent and nothing was produced (no output, no tool
-              // executed in this hop). A result is never short-circuited: the
-              // handling below bills its usage first (Codex review 1), and the
-              // post-hop check decides.
+              // executed in this hop) — and only when a backup can actually
+              // serve (else W03: the CLI keeps retrying). A result is never
+              // short-circuited: the handling below bills its usage first
+              // (Codex review 1), and the post-hop check decides.
               if (message.type !== 'result' && failoverRemaining.length > 0
                 && outcome.toolExecutionCount === toolsAtHopStart) {
                 const cause = shouldFailOverNow(observation, failoverRemaining);
-                if (cause) {
+                if (cause && await backupAvailable(cause)) {
                   failoverCause = cause;
                   abortController.abort();
                   break;
@@ -2389,6 +2435,7 @@ async function driveSdkLoop(
                   errorCode: disposition.kind === 'failure' ? disposition.errorCode : 'sdk_error',
                   message: detail,
                 };
+                failedOnResult = true;
                 console.error('[aiAgentRunLoop] SDK returned a terminal error result', {
                   runId: run.id, subtype: message.subtype, detail,
                 });
@@ -2436,11 +2483,15 @@ async function driveSdkLoop(
       }
 
       // A terminal SDK failure is failover-eligible too when the CLI gave up
-      // before shouldFailOverNow's threshold (a 401 result, say): a classified
-      // provider failure, no output and no tool executed in this hop.
-      if (!failoverCause && failure && failoverRemaining.length > 0 && !observation.sawOutput
-        && outcome.toolExecutionCount === toolsAtHopStart && observation.providerFailure) {
-        failoverCause = observation.providerFailure.cause;
+      // before shouldFailOverNow's threshold (a 401 result, say) — but only
+      // when the hop ENDED on a classified provider status (PR #7775 review,
+      // D8): failed on a result (never the exception/catch path), no output,
+      // no tool executed in this hop, and a backup that can serve.
+      if (!failoverCause && failure && failedOnResult && terminalProviderCause && failoverRemaining.length > 0
+        && !observation.sawOutput && outcome.toolExecutionCount === toolsAtHopStart
+        && !wallClockExceeded && !budgetExceeded && !maxTurnsExceeded
+        && await backupAvailable(terminalProviderCause)) {
+        failoverCause = terminalProviderCause;
       }
       if (!failoverCause || wallClockExceeded || budgetExceeded || maxTurnsExceeded) break;
 
@@ -2453,16 +2504,30 @@ async function driveSdkLoop(
       } catch (error) {
         console.warn('[aiAgentRunLoop] offering cooldown failed (non-fatal)', { runId: run.id, error: safeErrorMessage(error) });
       }
-      let next: NextAgentHop;
-      try {
-        next = await nextAgentHop({
-          runId: run.id, orgId: run.orgId, partnerId: ctx.orgPartnerId, role: modelRole,
-          requestedOfferingId, tried: [...tried], cause: failoverCause, hop: hopIndex + 1, origin: failoverOrigin,
-        });
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        console.error('[aiAgentRunLoop] failed to resolve the next AI model hop', { runId: run.id, error: message });
-        next = { ok: false, reason: 'no_next_hop', message: 'The backup AI model could not be resolved.' };
+      // PR #7775 review: the deadline (Codex review 7) and the run's remaining
+      // budget are checked BEFORE the next hop is recorded, so the run row
+      // never names a hop that was not dispatched. This hop's spend is its
+      // registry price (what its settlement below charges).
+      let next: NextAgentHop | null = null;
+      if (wallClockExceeded || Date.now() >= deadlineMs) {
+        wallClockExceeded = true;
+      } else if (priorHopsCostCents + sumCostCents(priceUsage(hopBinding, billed)) >= runLimits.maxBudgetCentsPerRun) {
+        budgetExceeded = true;
+      } else {
+        try {
+          next = await nextAgentHop({
+            runId: run.id, orgId: run.orgId, partnerId: ctx.orgPartnerId, role: modelRole,
+            requestedOfferingId, tried: [...tried], cause: failoverCause, hop: hopIndex + 1, origin: failoverOrigin,
+          });
+        } catch (error) {
+          // A DB / resolver error, distinguishable from "no backup configured".
+          const message = safeErrorMessage(error);
+          console.error('[aiAgentRunLoop] backup model lookup failed', { runId: run.id, error: message });
+          captureException(new Error(`agent run backup model lookup failed: ${message}`), undefined, {
+            org_id: run.orgId, ai_agent_run_id: run.id,
+          });
+          next = { ok: false, reason: 'no_next_hop', message: 'The backup AI model lookup failed.' };
+        }
       }
 
       // F4: settle THIS hop on its own binding and reservation, with its own
@@ -2490,16 +2555,23 @@ async function driveSdkLoop(
         // Review S1: deferred but NOT persisted — keep the reservation held.
         if (settledHop.unrecorded) await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId: hopReservationId });
       } catch (error) {
+        // Settlement errors are DB errors: scrubbed before any log or report (S2).
+        // Retain the hold FIRST, so nothing below can skip it.
+        const hopIds = { org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: hopReservationId };
+        await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId: hopReservationId })
+          .catch((markError: unknown) => {
+            const markMessage = safeErrorMessage(markError);
+            console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', { runId: run.id, error: markMessage });
+            captureException(new Error(`agent run hop reservation not retained as indeterminate: ${markMessage}`), undefined, hopIds);
+          });
         const message = safeErrorMessage(error);
         console.error('[aiAgentRunLoop] failed to settle a failed-over hop', { runId: run.id, error: message });
-        captureException(new Error(`agent run hop settlement failed: ${message}`), undefined, {
-          org_id: run.orgId, ai_agent_run_id: run.id, ai_reservation_id: hopReservationId,
-        });
-        priorHopsCostCents += sumCostCents(priceUsage(hopBinding, billed));
-        await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId: hopReservationId })
-          .catch((markError: unknown) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
-            runId: run.id, error: safeErrorMessage(markError),
-          }));
+        captureException(new Error(`agent run hop settlement failed: ${message}`), undefined, hopIds);
+        try {
+          priorHopsCostCents += sumCostCents(priceUsage(hopBinding, billed));
+        } catch (priceError) {
+          console.error('[aiAgentRunLoop] failed to price a failed-over hop', { runId: run.id, error: safeErrorMessage(priceError) });
+        }
       }
       // This hop is settled: nothing of it is left for the post-loop settlement.
       costCents = priorHopsCostCents;
@@ -2507,6 +2579,8 @@ async function driveSdkLoop(
       receivedResult = false;
       turnOutcome = null;
 
+      // The deadline or the run budget stopped the transition before any next hop was recorded.
+      if (!next) break;
       if (!next.ok) {
         failure = {
           errorCode: next.reason === 'admission_denied' ? 'org_budget_exceeded' : 'llm_unavailable',
@@ -2514,8 +2588,9 @@ async function driveSdkLoop(
         };
         break;
       }
-      // Codex review 7: never dispatch a hop after the run's deadline (the
-      // timer may have fired during the transition, aborting a spent controller).
+      // Belt (Codex review 7): never dispatch a hop after the run's deadline —
+      // the timer may have fired during the lookup/settlement above, aborting
+      // a spent controller; the recorded hop is then never reserved.
       if (wallClockExceeded || Date.now() >= deadlineMs) {
         wallClockExceeded = true;
         break;

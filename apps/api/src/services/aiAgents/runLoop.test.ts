@@ -403,11 +403,13 @@ vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed }));
 // REAL (the resume rule is what the re-drive cases pin); the DB-writing and
 // resolving helpers are scripted per test.
 const nextAgentHop = vi.hoisted(() => vi.fn());
+const probeAgentHop = vi.hoisted(() => vi.fn());
 const recordServedHop = vi.hoisted(() => vi.fn(async () => undefined));
 const markStaleHopReservations = vi.hoisted(() => vi.fn(async () => 0));
 vi.mock('./agentRunFailover', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./agentRunFailover')>()),
   nextAgentHop,
+  probeAgentHop,
   recordServedHop,
   markStaleHopReservations,
 }));
@@ -3545,6 +3547,7 @@ describe('W09 run failover', () => {
       const generator = (async function* () {
         for (const step of script) {
           if (signal.aborted) throw new Error('AbortError');
+          if (typeof step.__throw === 'string') throw new Error(step.__throw);
           if (typeof step.__tool === 'string') {
             const verdict = await hooks.pre!(step.__tool, {});
             preVerdicts.push(verdict);
@@ -3570,6 +3573,8 @@ describe('W09 run failover', () => {
   beforeEach(() => {
     queryOptions.length = 0;
     nextAgentHop.mockReset();
+    // Default: a usable backup exists, so the CLI may be aborted for it.
+    probeAgentHop.mockReset().mockResolvedValue({ ok: true, resolved: backup() });
     recordServedHop.mockReset().mockResolvedValue(undefined);
     markStaleHopReservations.mockReset().mockResolvedValue(0);
     noteProviderFailure.mockReset().mockResolvedValue(undefined);
@@ -3709,17 +3714,21 @@ describe('W09 run failover', () => {
     expect(finalTransition()!.patch.costCents).toBe(Math.round(perHop * 2));
   });
 
-  it('a hop transition after the deadline dispatches nothing more (Codex 7)', async () => {
+  it('a hop transition after the deadline dispatches nothing more, and records no hop that never ran (Codex 7, PR #7775 review)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
       resolveModel.mockResolvedValueOnce(primary());
-      nextAgentHop.mockImplementationOnce(async () => {
+      // The deadline passes during the transition, BEFORE the next hop is resolved and recorded.
+      noteProviderFailure.mockImplementationOnce(async () => {
         vi.setSystemTime(Date.now() + 10 * 60 * 60 * 1000);
-        return { ok: true, resolved: backup() };
       });
+      nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
       scriptQueries([[retry(1), retry(2)]]);
       await executeAgentRun(RUN_ID);
+      // The run row never names a hop that was not dispatched.
+      expect(nextAgentHop).not.toHaveBeenCalled();
+      expect(recordServedHop).not.toHaveBeenCalled();
       expect(reserveAiBudget).toHaveBeenCalledTimes(1);
       expect(queryMock).toHaveBeenCalledTimes(1);
       // The failed hop was settled on its own reservation; nothing is left held.
@@ -3728,6 +3737,141 @@ describe('W09 run failover', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('a hop whose spend already reaches the run budget records no next hop (PR #7775 review)', async () => {
+    seedRows({
+      admittedOfferingId: 'p', fundingSource: 'platform',
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxBudgetCentsPerRun: 10 } as AiAgentLimits }),
+    });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 50_000 } })]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).budgetExceeded).toBe(true);
+  });
+
+  // PR #7775 review (D8): only a hop that ENDED on a classified provider
+  // status may fail over after the fact. A timeout / reset / exception is an
+  // unknown outcome: W03's no-result path, never a $0 in-loop settlement.
+  it('a retry then an SDK exception → no failover; the reservation is kept indeterminate, not settled at zero', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[retry(1), { __throw: 'socket hang up' }]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settleInvocation).not.toHaveBeenCalled();
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: 'res-0' });
+  });
+
+  it('a retry then an UNCLASSIFIED error result → no failover (the stale retry cause does not count)', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[retry(1), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+  });
+
+  it('a classified 401 error result with no output and no tool → fails over', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 0 } })],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({ cause: 'auth_failed', hop: 1 }));
+    expect(reserveKeys().map(([k]) => k)).toEqual([`ai-agent-run:${RUN_ID}`, `ai-agent-run:${RUN_ID}:hop:1`]);
+    expect(finalTransition()!.to).toBe('completed');
+  });
+
+  it('the CLI\'s own final classified api-error message, then an error result → fails over', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([
+      [{ type: 'assistant', error: 'authentication_failed', message: { content: [] } }, errorResult()],
+      [successResult()],
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).toHaveBeenCalledWith(expect.objectContaining({ cause: 'auth_failed' }));
+  });
+
+  it('a classified 401 error result after a tool executed → no failover', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[toolUseThenExecute('query_devices'), errorResultWithUsage({ status: 401, usage: { input_tokens: 0, output_tokens: 0 } })]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+  });
+
+  it('output before the failure → no failover, one reservation (pins the sawOutput wiring)', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    scriptQueries([[
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Looking at the device.' }] } },
+      retry(5), errorResult(),
+    ]]);
+    await executeAgentRun(RUN_ID);
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(reserveAiBudget).toHaveBeenCalledTimes(1);
+    expect(yielded).toHaveLength(3);
+  });
+
+  // PR #7775 review: the CLI is only aborted for a backup that can actually serve.
+  it('a fallback list but no usable backup → no abort; the CLI\'s retries run out, W03 behaviour', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    probeAgentHop.mockReset().mockResolvedValue({ ok: false, reason: 'no_next_hop', message: 'No other AI model is available for this agent.' });
+    scriptQueries([[retry(1), retry(2), retry(3), retry(4), errorResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(yielded).toHaveLength(5); // nothing aborted the CLI's own retries
+    expect(probeAgentHop).toHaveBeenCalledTimes(1); // once per hop, cached
+    expect(probeAgentHop).toHaveBeenCalledWith(expect.objectContaining({ tried: ['p'], hop: 1, cause: 'overloaded' }));
+    expect(nextAgentHop).not.toHaveBeenCalled();
+    expect(recordServedHop).not.toHaveBeenCalled();
+    expect(reserveKeys()).toEqual([[`ai-agent-run:${RUN_ID}`, 'platform']]);
+    expect(settles().map((s) => s.reservationId)).toEqual(['res-0']);
+  });
+
+  it('a failed-over hop whose settlement AND indeterminate mark both fail is reported, never silent', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockResolvedValueOnce({ ok: true, resolved: backup() });
+    settleInvocation.mockRejectedValueOnce(new Error('settle down'));
+    markAiBudgetReservationIndeterminate.mockRejectedValueOnce(new Error('mark down'));
+    scriptQueries([[retry(1), retry(2)], [successResult()]]);
+    await executeAgentRun(RUN_ID);
+    expect(markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: 'res-0' });
+    const ids = { org_id: ORG_ID, ai_agent_run_id: RUN_ID, ai_reservation_id: 'res-0' };
+    const report = (re: RegExp) => captureException.mock.calls.find(([e]) => re.test(String((e as Error).message)));
+    expect(report(/hop settlement failed/)?.[2]).toEqual(ids);
+    expect(report(/not retained as indeterminate/)?.[2]).toEqual(ids);
+  });
+
+  it('a backup lookup that throws is reported and distinguishable from "no backup configured"', async () => {
+    seedRows({ admittedOfferingId: 'p', fundingSource: 'platform' });
+    resolveModel.mockResolvedValueOnce(primary());
+    nextAgentHop.mockRejectedValueOnce(new Error('connection terminated'));
+    scriptQueries([[retry(1), retry(2)]]);
+    await executeAgentRun(RUN_ID);
+    const report = captureException.mock.calls.find(([e]) => /backup model lookup failed/.test(String((e as Error).message)));
+    expect(report?.[2]).toEqual({ org_id: ORG_ID, ai_agent_run_id: RUN_ID });
+    // Only the error code is persisted; the Sentry report above is what tells a DB error from "no backup".
+    expect(finalTransition()!.patch.errorCode).toBe('llm_unavailable');
   });
 
   it('no next hop → the failed hop is settled once and the run fails; nothing is left for the post-loop settlement', async () => {

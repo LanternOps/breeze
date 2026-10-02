@@ -85,8 +85,7 @@ export type NextAgentHop =
 
 const NO_OTHER_MODEL = 'No other AI model is available for this agent.';
 
-export async function nextAgentHop(input: {
-  runId: string;
+export interface AgentHopProbeInput {
   orgId: string;
   partnerId: string;
   role: AiAgentEscalationRole;
@@ -97,7 +96,16 @@ export async function nextAgentHop(input: {
   hop: number;
   /** The run's first hop (its admitted offering and funding): F1 is judged against it. */
   origin: FailoverOrigin;
-}): Promise<NextAgentHop> {
+}
+
+/**
+ * PR #7775 review: the side-effect-free half of `nextAgentHop`. The run loop
+ * asks this BEFORE aborting the CLI's own retries, so a run with a fallback
+ * list but no usable backup (crossing off, permitted set, ineligible, cooling,
+ * funding not admitted) keeps W03's behaviour instead of failing
+ * `llm_unavailable`. Reads only: it never records the hop on the run.
+ */
+export async function probeAgentHop(input: AgentHopProbeInput): Promise<NextAgentHop> {
   if (!Number.isInteger(input.hop) || input.hop < 1 || input.hop > MAX_FAILOVER_HOP) {
     return { ok: false, reason: 'no_next_hop', message: NO_OTHER_MODEL };
   }
@@ -118,8 +126,17 @@ export async function nextAgentHop(input: {
   // F3: the next hop's OWN funding is admitted (credits on platform, caps on both) before anything is recorded.
   const denial = await checkBudgetDetailed(input.orgId, next.funding);
   if (denial) return { ok: false, reason: 'admission_denied', message: denial.message };
-  await recordServedHop(input.runId, { offeringId: next.offering.id, funding: next.funding, hop: input.hop, cause: input.cause });
   return { ok: true, resolved: next };
+}
+
+/** Probe, then RECORD the hop on the run (before its reservation exists: re-drive resumes on it). */
+export async function nextAgentHop(input: AgentHopProbeInput & { runId: string }): Promise<NextAgentHop> {
+  const next = await probeAgentHop(input);
+  if (!next.ok) return next;
+  await recordServedHop(input.runId, {
+    offeringId: next.resolved.offering.id!, funding: next.resolved.funding, hop: input.hop, cause: input.cause,
+  });
+  return next;
 }
 
 /** Re-drive: a run resumes on the hop it last recorded; a fresh run starts at hop 0 on its admitted offering. */
