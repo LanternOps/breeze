@@ -8,6 +8,7 @@ import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, node
 import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, safeCount, missingSubject,
   nodeExposure, relationshipExposure, type NodeRow, type ReadExposure, type RelationshipRow } from './graphRead';
 import { loadActiveExclusions } from './exclusions';
+import { buildPresentationGroups, readPresentationGroupInput } from './presentationGroups';
 import { readGraphCoverage } from './physicalCoverage';
 import { projectPhysicalView } from './physicalProjection';
 import { readRelationshipDetail, readRelationshipEvidence, type DetailRow } from './relationshipDetail';
@@ -109,7 +110,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     AND EXISTS (SELECT 1 FROM topology_nodes ns WHERE ns.id = r.source_node_id AND ${nodeFilter(ctx.scope, query, 'ns', exposure)})
     AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${nodeFilter(ctx.scope, query, 'nt', exposure)})`;
   const [relationshipCount] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_relationships r WHERE ${relationshipScope}`);
-  const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n
+  const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope, exposure)} FROM topology_nodes n
     WHERE ${filter} AND ${after} ORDER BY ${nodeOrder} LIMIT ${query.limit}`);
   const ids = rows.map((row) => row.id);
   const idArray = sql`ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[]`;
@@ -162,8 +163,8 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
       boundaryOnly: true, boundaryAfter: boundary.at(-1)?.id ?? claims?.boundaryAfter }),
       label: 'More boundary connections', memberCount: safeCount(boundaryRows[0]?.remaining ?? boundaryRows.length) - boundary.length });
   }
+  const scopeHash = createHash('sha256').update(`${authority.digest}:${state.graph}:${JSON.stringify(query)}:${claims?.after ?? ''}`).digest('hex').slice(0, 24);
   if (boundary.length) {
-    const scopeHash = createHash('sha256').update(`${authority.digest}:${state.graph}:${JSON.stringify(query)}:${claims?.after ?? ''}`).digest('hex').slice(0, 24);
     const groupId = `presentation:${query.view}:${scopeHash}:outside`;
     const firstOutside = ids.includes(boundary[0]!.sourceNodeId) ? boundary[0]!.targetNodeId : boundary[0]!.sourceNodeId;
     const groupToken = token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId: firstOutside } });
@@ -177,6 +178,17 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
         meaning: 'aggregate', contributingRelationshipIds: [edge.id], memberCount: 1,
         frontierToken: token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId: outside } }) };
     });
+  }
+  if (!groupOnly && query.view !== 'physical' && ids.length) {
+    // Grouped overview: inferred site+prefix cards over the COMPLETE site, listing only
+    // this page's canonical ids. Presentation only — never authority (D:50, C:19).
+    const groups = buildPresentationGroups(await readPresentationGroupInput(tx, ctx.scope, query.view, exposure), {
+      view: query.view, scopeHash, visibleNodeIds: new Set(ids),
+      tokenFor: (focusNodeId) => token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId } }),
+      maxNodes: 1_000 - graph.presentation.nodes.length, maxEdges: 2_000 - graph.presentation.edges.length,
+    });
+    graph.presentation.nodes.push(...groups.nodes);
+    graph.presentation.edges.push(...groups.edges);
   }
   if (graph.counts.omittedNodes || graph.counts.omittedRelationships) {
     graph.coverage = { state: graph.coverage.state === 'complete' ? 'limited' : graph.coverage.state,
@@ -203,7 +215,7 @@ export async function listTopologyNodes(ctx: TopologyRequestContext, query: Node
     const state = await readState(tx, ctx, claims);
     const where = listFilter(ctx.scope, filter, { physical: authority.physical });
     const [count] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_nodes n WHERE ${where}`);
-    const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n WHERE ${where}
+    const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope, { physical: authority.physical })} FROM topology_nodes n WHERE ${where}
       AND ${claims?.after ? sql`n.id > ${claims.after}::uuid` : sql`true`} ORDER BY n.id LIMIT ${parsed.limit + 1}`);
     const visible = rows.slice(0, parsed.limit);
     return response({ siteId: ctx.scope.siteId, graphRevision: state?.graph ?? '0', total: safeCount(count?.count), nodes: visible.map((row) => presentNode(row, authority.canEdit)),
@@ -226,7 +238,7 @@ export async function getTopologyNode(ctx: TopologyRequestContext, nodeId: strin
         WHERE ${scoped(ctx.scope, 'a')} AND a.id = ${nodeId}::uuid AND a.deleted_at IS NULL
       UNION ALL SELECT a.id, a.alias_target_id, aliases.path || a.id FROM aliases JOIN topology_nodes a ON a.id = aliases.alias_target_id
         WHERE ${scoped(ctx.scope, 'a')} AND a.deleted_at IS NULL AND NOT a.id = ANY(aliases.path) AND cardinality(aliases.path) < 16
-    ) SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n WHERE ${scoped(ctx.scope, 'n')}
+    ) SELECT ${nodeColumns(ctx.scope, { physical: authority.physical })} FROM topology_nodes n WHERE ${scoped(ctx.scope, 'n')}
       AND n.id IN (SELECT id FROM aliases WHERE alias_target_id IS NULL) AND n.deleted_at IS NULL AND ${nodeExposure(ctx.scope, authority, 'n')} LIMIT 1`);
     if (!row) throw missingSubject();
     const summaries = await tx.execute<RelationshipRow>(sql`SELECT ${relationshipColumns} FROM topology_relationships r

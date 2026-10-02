@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass } from '@breeze/shared';
+import { sql } from 'drizzle-orm';
+import { topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
+import type { db } from '../../db';
+import { nodeFilter, observedFreshUntilSql, relationshipFilter, scoped, type ReadExposure } from './graphRead';
 
 /**
  * Grouped-overview presentation (docs/superpowers/plans/monitoring/2026-10-02-topology-grouped-overview.md,
@@ -329,4 +332,41 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     edges.push(aggregate('sd', pair, source, target, entry.relationships, entry.endpoints.size, canonicalNetworks(candidates.get(entry.secondaryKey)!)[0]!));
   }
   return { nodes, edges: edges.slice(0, options.maxEdges ?? CONTRIBUTING_CAP) };
+}
+
+const deviceAddress = sql.raw(`nullif(btrim(split_part(dn.ip_address, '/', 1)), '')`);
+/**
+ * Complete-site grouping inputs (Q2: never the bounded page) under this view's node
+ * filters and relationship exposure (physical gate + view exclusions). One statement,
+ * so the projection gains exactly one read.
+ */
+export async function readPresentationGroupInput(
+  tx: Pick<typeof db, 'execute'>, scope: TopologyScope, view: Exclude<GraphQuery['view'], 'physical'>, exposure: ReadExposure,
+): Promise<PresentationGroupInput> {
+  const siteNodes = nodeFilter(scope, { view, hops: 1, includeHealth: false, limit: 1 }, 'n', exposure);
+  const [row] = await tx.execute<PresentationGroupInput>(sql`WITH site_nodes AS MATERIALIZED (
+      SELECT n.id, n.kind, n.attributes FROM topology_nodes n WHERE ${siteNodes}
+    ), rels AS MATERIALIZED (
+      SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
+      FROM topology_relationships r
+      WHERE ${relationshipFilter(scope, view, 'r', exposure)} AND r.kind IN ('network_member', 'default_route')
+        AND EXISTS (SELECT 1 FROM site_nodes s WHERE s.id = r.source_node_id) AND EXISTS (SELECT 1 FROM site_nodes t WHERE t.id = r.target_node_id)
+    ), memberships AS (
+      SELECT r.* FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'network' WHERE r.kind = 'network_member'
+    ) SELECT
+      (SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'prefix', s.attributes->>'prefix') ORDER BY s.id), '[]'::jsonb)
+        FROM site_nodes s WHERE s.kind = 'network') AS networks,
+      (SELECT coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'endpointId', m.source_node_id, 'networkId', m.target_node_id,
+          'interfaceId', m.source_interface_id, 'fresh', m.fresh) ORDER BY m.id), '[]'::jsonb) FROM memberships m) AS memberships,
+      (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'endpointId', r.source_node_id, 'gatewayId', r.target_node_id,
+          'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh) ORDER BY r.id), '[]'::jsonb)
+        FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'gateway' WHERE r.kind = 'default_route') AS routes,
+      (SELECT coalesce(jsonb_agg(jsonb_build_object('endpointId', e.id, 'addresses', coalesce((SELECT jsonb_agg(x.ip ORDER BY x.ip) FROM (
+            SELECT host(a.ip_address) AS ip FROM topology_node_bindings b JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
+              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND a.ip_address IS NOT NULL
+            UNION SELECT ${deviceAddress} FROM topology_node_bindings b JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
+              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL
+          ) x), '[]'::jsonb)) ORDER BY e.id), '[]'::jsonb)
+        FROM site_nodes e WHERE e.kind = 'endpoint' AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id)) AS unplaced`);
+  return { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [] };
 }
