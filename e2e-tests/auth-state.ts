@@ -193,6 +193,12 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     for (let attempt = 1; attempt <= 3 && !state; attempt++) {
       const drainDeadline = Date.now() + 15_000;
       while (inflightRefreshes.size > 0 && Date.now() < drainDeadline) await page.waitForTimeout(100);
+      if (inflightRefreshes.size > 0) {
+        throw new Error(
+          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) after 15s draining on snapshot attempt ${attempt}; ` +
+            'refusing to save a storage state whose refresh cookie may be stale.'
+        );
+      }
       const before = refreshStarts;
       const snap = await ctx.storageState();
       if (refreshFailures.length > 0) {
