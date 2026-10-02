@@ -15,11 +15,22 @@ rename, re-type or re-home anything below.
 |---|---|---|---|---|
 | W1 Foundation | `2026-10-01-autopay-w01-foundation.md` | — | 2 PRs: W1a schema+tenancy+settings, W1b money plumbing | nothing user-visible except the admin switch |
 | W2 Enrollment | `2026-10-01-autopay-w02-enrollment.md` | W1 | 2 PRs: W2a API+emails, W2b web+portal UI | clients of switched-on partners can enroll; nothing charges |
-| W3 Reminders | `2026-10-01-autopay-w03-reminders.md` | W1 (outbox, settings) | 1 PR | reminders for all invoices, off by default |
+| W3 Reminders | `2026-10-01-autopay-w03-reminders.md` | W1 (outbox, settings); W2b for the Payments tab shell (UI task only) | 1 PR | reminders for all invoices, off by default |
 | W4 Charging | `2026-10-01-autopay-w04-charging.md` | W1, W2, W3 | 2 PRs: W4a scheduler+notice, W4b collection engine+UI | autopay charges for switched-on partners |
 | W5 Processing fee | `2026-10-01-autopay-w05-processing-fee.md` | W1, W2, W4 | 1 PR | MSP-configurable card/ACH fee |
 
-W3 may be implemented in parallel with W2.
+W3's API and job work may be implemented in parallel with W2. Its UI task mounts into the
+Payments tab that W2b creates.
+
+**Payments tab visibility.** W2 shows the Payments tab (partner and org) only when the partner's
+`autopay_enabled` is true. W3 makes the tab always visible: the Reminders section always shows, and
+the Autopay section (and W5 Fees section) only shows when `autopay_enabled`. The partner settings
+`GET` (C7) returns `autopayEnabled: boolean` alongside the effective settings for this purpose.
+
+**Fee computation lands before the fee UI.** W1 ships the pure `quoteProcessingFee`. W2's setup
+page and W4's notice and charge path call it from day one. Fees stay zero until W5 because the W1
+settings API rejects `cardFeeBps`, `achFeeAmount` and attestation writes; W5 opens them. W5 adds
+the settings UI and attestation, principal/fee reversal allocation, and the accounting fee entry.
 
 ## Refinement of the spec (decided here, applies to all waves)
 
