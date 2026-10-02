@@ -17,6 +17,11 @@ export const LLM_EGRESS_SURFACES = [
   // W02 (#5612): the script-proposal reviewer's structured-verdict call.
   // CHECK re-issued in 2026-10-16-120000-llm-egress-events-script-review-surface.sql.
   'script_review_verdict',
+  // W05 (#7603): the transcript-fit token count before a model switch, and
+  // the continuation summary. CHECK re-issued in
+  // 2026-11-22-100000-llm-egress-events-w05-surfaces.sql.
+  'one_shot_token_count',
+  'one_shot_continuation_summary',
 ] as const;
 
 export type LlmEgressSurface = (typeof LLM_EGRESS_SURFACES)[number];
