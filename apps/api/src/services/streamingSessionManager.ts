@@ -1441,6 +1441,8 @@ export class StreamingSessionManager {
           // handlers and closes the SDK query. The next message rebuilds the
           // session from its row.
           session.topologyTurnSealed = true;
+          // A topology turn never shows gateway text; drop the note so a rebuilt session can't surface it later.
+          takeGatewayFailureNote(session.breezeSessionId);
           session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
           session.eventBus.publish({ type: 'done' });
           this.remove(session.breezeSessionId);

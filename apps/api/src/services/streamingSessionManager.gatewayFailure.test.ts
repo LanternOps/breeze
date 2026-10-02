@@ -110,6 +110,22 @@ describe('gateway failure reason in the chat turn error (#7794)', () => {
     expect(takeGatewayFailureNote('s-ok')).toBeNull();
   });
 
+  it('a query that throws (CLI process error) shows the gateway reason', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    m.queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() { await gate; throw new Error('Claude Code process exited with code 1'); },
+      interrupt: vi.fn(), close: vi.fn(),
+    }));
+    const session = await manager.getOrCreate(
+      's-throw', baseDbSession, baseAuth, undefined, 'PROMPT', undefined, makeResolvedModel('openai_compatible'),
+    );
+    noteGatewayFailure('s-throw', NOTE);
+    release();
+    await session.processorPromise;
+    expect(errorMessages(session)).toEqual([NOTE]);
+  });
+
   it('a note for another session never leaks into this one', async () => {
     const { errors } = await runTurn('s-mine', [{ ...sdkResult({ subtype: 'error_during_execution' }), errors: ['x'] }],
       () => noteGatewayFailure('s-other', NOTE));

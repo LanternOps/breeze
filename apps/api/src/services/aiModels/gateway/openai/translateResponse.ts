@@ -219,6 +219,21 @@ export function validateToolCalls(
   return out;
 }
 
+/**
+ * A log-safe description of a refused tool-call batch: the count and up to 8
+ * names, each cut to OpenAI's name alphabet and 64 characters (model output,
+ * so no newlines or log-forging), marked when the name is not an offered alias.
+ * Arguments are never logged.
+ */
+export function describeRefusedToolCalls(calls: ReadonlyArray<{ name?: unknown }>, tools: ToolNameMap): string {
+  const names = calls.slice(0, 8).map((c) => {
+    const raw = typeof c.name === 'string' ? c.name : '';
+    const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || '(none)';
+    return tools.fromOai.has(raw) ? safe : `${safe} (not offered)`;
+  });
+  return `refused ${calls.length} tool call(s): ${names.join(', ')}${calls.length > 8 ? ', …' : ''}`;
+}
+
 export function mapFinish(finish: string | null | undefined, emittedToolUse: boolean): AnthropicMessage['stop_reason'] {
   switch (finish) {
     case 'length': return 'max_tokens';
@@ -238,8 +253,12 @@ export function translateChatResponse(res: unknown, ctx: { model: string; tools:
   const content: AnthropicContentBlock[] = [];
   if (typeof choice.message.content === 'string' && choice.message.content.length > 0) content.push({ type: 'text', text: choice.message.content });
   const calls = Array.isArray(choice.message.tool_calls) ? choice.message.tool_calls : [];
-  const toolUses = validateToolCalls(calls.map((c) => ({ id: c?.id, name: c?.function?.name, arguments: c?.function?.arguments })), ctx.tools);
-  if (toolUses === null) content.push({ type: 'text', text: UNSAFE_TOOL_CALL_NOTE });
+  const mapped = calls.map((c) => ({ id: c?.id, name: c?.function?.name, arguments: c?.function?.arguments }));
+  const toolUses = validateToolCalls(mapped, ctx.tools);
+  if (toolUses === null) {
+    console.warn(`[modelGateway] ${describeRefusedToolCalls(mapped, ctx.tools)}`);
+    content.push({ type: 'text', text: UNSAFE_TOOL_CALL_NOTE });
+  }
   else content.push(...toolUses);
   const emitted = toolUses !== null && toolUses.length > 0;
   const stop = mapFinish(choice.finish_reason, emitted);

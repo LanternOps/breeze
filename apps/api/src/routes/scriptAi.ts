@@ -323,7 +323,7 @@ scriptAiRoutes.post(
         );
       } catch (err) {
         if (err instanceof LlmUnavailableError) {
-          return { kind: 'refused', response: c.json({ error: 'ai_unavailable' }, 503) };
+          return { kind: 'refused', response: c.json(llmUnavailableBody(err), 503) };
         }
         return { kind: 'failed', error: err };
       }
