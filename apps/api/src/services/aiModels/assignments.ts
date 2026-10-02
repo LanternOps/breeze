@@ -163,8 +163,30 @@ export function mergeEffectiveAssignment(input: {
   };
 }
 
-function pickForRole<T extends { role: string }>(rows: T[], role: string): T | null {
+function pickForRole<T extends { role: string }>(rows: readonly T[], role: string): T | null {
   return rows.find((r) => r.role === role) ?? rows.find((r) => r.role === 'default') ?? null;
+}
+
+/**
+ * W09 (#7607, D2): the two rows one (surface, role) merges. Each side is its
+ * role row, else its `default` row (W02, spec §9 step 1). One exception: an
+ * org's DEFAULT row standing in for role R does not carry its default model
+ * or its fallback list onto R when the partner configured R explicitly —
+ * otherwise any org that overrides the ai_agents default would silently
+ * collapse triage/analysis/remediation onto one model (#7570). Its narrowing
+ * (permitted set, user choice, options, cross-funding) still applies, so the
+ * merge stays tighten-only. Shared by the resolver and the settings view.
+ */
+export function selectRoleRows<T extends AssignmentRowInput & { orgId: string | null }>(
+  rows: readonly T[],
+  role: string,
+): { partner: AssignmentRowInput | null; org: AssignmentRowInput | null } {
+  const partner = pickForRole(rows.filter((r) => r.orgId === null), role);
+  let org: AssignmentRowInput | null = pickForRole(rows.filter((r) => r.orgId !== null), role);
+  if (role !== 'default' && org?.role === 'default' && partner?.role === role) {
+    org = { ...org, defaultOfferingId: null, fallbackOfferingIds: null };
+  }
+  return { partner, org };
 }
 
 export async function getEffectiveAssignment(input: {
@@ -191,10 +213,5 @@ export async function getEffectiveAssignment(input: {
       inArray(aiModelAssignments.role, role === 'default' ? ['default'] : [role, 'default']),
       owner,
     ));
-  return mergeEffectiveAssignment({
-    surface: input.surface,
-    role,
-    partner: pickForRole(rows.filter((r) => r.orgId === null), role),
-    org: pickForRole(rows.filter((r) => r.orgId !== null), role),
-  });
+  return mergeEffectiveAssignment({ surface: input.surface, role, ...selectRoleRows(rows, role) });
 }
