@@ -7,6 +7,9 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
+mod update_diagnostics;
+use update_diagnostics::{classify_update_error, UpdateFailStage, UpdateStep, UPDATER_LOG_FILE};
+
 const MAX_DEEP_LINK_BYTES: usize = 4096;
 const MAX_SESSION_WINDOWS: usize = 16;
 const MAX_ID_PARAM_BYTES: usize = 128;
@@ -595,6 +598,10 @@ fn apply_pending_update(
         return Err("no pending update to apply".to_string());
     };
     let version = update.version.clone();
+    log_update(
+        &app,
+        &format!("Applying update {version} (user chose Restart & update)"),
+    );
 
     // On Windows install() launches the installer and terminates the process,
     // so emit a labelled "Installing" first — the exit is then a known step,
@@ -603,8 +610,8 @@ fn apply_pending_update(
     emit_update_status(&app, UpdateStatus::Installing { version: version.clone() });
 
     if let Err(e) = update.install(bytes) {
-        eprintln!("Update install failed: {}", e);
-        emit_update_status(&app, UpdateStatus::Failed { version });
+        let stage = classify_update_error(UpdateStep::Install, &e);
+        report_update_failure(&app, &version, stage, e.to_string());
         return Err(e.to_string());
     }
 
@@ -626,7 +633,10 @@ fn apply_pending_update(
 /// is best-effort: a failure is logged but not surfaced, since the next launch
 /// re-checks regardless.
 #[tauri::command]
-fn dismiss_pending_update(pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
+fn dismiss_pending_update(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingUpdate>,
+) -> Result<(), String> {
     let taken = {
         let mut slot = lock_or_recover(&pending.0, "pending_update");
         slot.take()
@@ -634,10 +644,25 @@ fn dismiss_pending_update(pending: tauri::State<'_, PendingUpdate>) -> Result<()
     let Some((update, bytes)) = taken else {
         return Ok(());
     };
+    log_update(
+        &app,
+        &format!(
+            "Update {} postponed (user chose Remind me later)",
+            update.version
+        ),
+    );
 
     #[cfg(not(target_os = "windows"))]
     if let Err(e) = update.install(bytes) {
-        eprintln!("Deferred update disk-swap failed: {}", e);
+        let stage = classify_update_error(UpdateStep::Install, &e);
+        log_update(
+            &app,
+            &format!(
+                "Deferred update {} disk-swap failed at the {} stage: {e}",
+                update.version,
+                stage.as_str()
+            ),
+        );
     }
     #[cfg(target_os = "windows")]
     drop((update, bytes));
@@ -867,7 +892,15 @@ enum UpdateStatus {
     Installing { version: String },
     Restarting { version: String },
     Deferred { version: String },
-    Failed { version: String },
+    /// `stage` and `error` say where and why it failed (#7681); `logPath` is
+    /// the updater log holding the full sequence, `null` when it is unavailable.
+    Failed {
+        version: String,
+        stage: UpdateFailStage,
+        error: String,
+        #[serde(rename = "logPath")]
+        log_path: Option<String>,
+    },
     /// Downloaded and waiting for the user to choose Restart & update or
     /// Remind me later. Only emitted when no remote session is active.
     Ready { version: String },
@@ -879,6 +912,61 @@ fn emit_update_status(app: &tauri::AppHandle, status: UpdateStatus) {
     if let Err(e) = app.emit("update-status", status) {
         eprintln!("Failed to emit update-status: {}", e);
     }
+}
+
+/// `<app log dir>/updater.log`, or `None` when the platform has no log dir.
+fn updater_log_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_log_dir()
+        .ok()
+        .map(|dir| dir.join(UPDATER_LOG_FILE))
+}
+
+/// Record an updater event on stderr and in the updater log, returning the
+/// log path when the line reached it. The release Windows build has no
+/// console, so the log file is the only durable trace (#7681). Best-effort: a
+/// log write failure never affects the update.
+fn log_update(app: &tauri::AppHandle, message: &str) -> Option<std::path::PathBuf> {
+    eprintln!("{message}");
+    let path = updater_log_path(app)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    match update_diagnostics::append_log_line(&path, now, message) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!("Failed to write {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Log a failed update with its stage and cause, and tell the UI the same, so
+/// the banner says why instead of only "failed".
+fn report_update_failure(
+    app: &tauri::AppHandle,
+    version: &str,
+    stage: UpdateFailStage,
+    error: String,
+) {
+    // Only point the user at the log if this failure actually reached it.
+    let logged = log_update(
+        app,
+        &format!(
+            "Update {version} failed at the {} stage: {error}",
+            stage.as_str()
+        ),
+    );
+    emit_update_status(
+        app,
+        UpdateStatus::Failed {
+            version: version.to_string(),
+            stage,
+            error,
+            log_path: logged.map(|p| p.display().to_string()),
+        },
+    );
 }
 
 /// Whole-percent download progress, used to throttle UI events to one event
@@ -909,24 +997,43 @@ async fn auto_update(app: tauri::AppHandle) {
     // the WebRTC handshake complete on typical connections.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
+    // Check-time failures (no network, bad endpoint) go to the log only: no
+    // banner is showing yet, and a launch with no reachable update server is
+    // not something to interrupt the user about.
+    let current = app.package_info().version.to_string();
     let updater = match app.updater() {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("Failed to create updater: {}", e);
+            log_update(
+                &app,
+                &format!("Failed to create updater (running {current}): {e}"),
+            );
             return;
         }
     };
 
     let update = match updater.check().await {
         Ok(Some(update)) => update,
-        Ok(None) => return, // already up to date
+        Ok(None) => {
+            log_update(&app, &format!("Update check: {current} is up to date"));
+            return;
+        }
         Err(e) => {
-            eprintln!("Update check failed: {}", e);
+            log_update(
+                &app,
+                &format!("Update check failed (running {current}): {e}"),
+            );
             return;
         }
     };
 
-    eprintln!("Update {} available, downloading...", update.version);
+    log_update(
+        &app,
+        &format!(
+            "Update {} available (running {current}), downloading {}",
+            update.version, update.download_url
+        ),
+    );
 
     let version = update.version.clone();
     emit_update_status(&app, UpdateStatus::Available { version: version.clone() });
@@ -965,15 +1072,23 @@ async fn auto_update(app: tauri::AppHandle) {
     {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("Update download failed: {}", e);
             // Surface the failure so a banner already showing "Downloading…"
             // doesn't stay pinned forever, reintroducing the silent-crash look.
-            emit_update_status(&app, UpdateStatus::Failed { version: version.clone() });
+            let stage = classify_update_error(UpdateStep::Download, &e);
+            report_update_failure(&app, &version, stage, e.to_string());
             return;
         }
     };
 
-    eprintln!("Update {} downloaded", update.version);
+    // `download()` only returns Ok once the signature verified.
+    log_update(
+        &app,
+        &format!(
+            "Update {} downloaded and signature verified ({} bytes)",
+            update.version,
+            bytes.len()
+        ),
+    );
 
     // Decide what to do with the download based on whether a remote session is
     // live. Restarting/installing mid-session would kill it, so an active
@@ -993,14 +1108,21 @@ async fn auto_update(app: tauri::AppHandle) {
         #[cfg(not(target_os = "windows"))]
         {
             if let Err(e) = update.install(bytes) {
-                eprintln!("Deferred update disk-swap failed: {}", e);
+                // Nothing was staged, so "applies when this session ends"
+                // would be false — report the failure instead.
+                let stage = classify_update_error(UpdateStep::Install, &e);
+                report_update_failure(&app, &version, stage, e.to_string());
+                return;
             }
         }
         #[cfg(target_os = "windows")]
         {
             drop((update, bytes));
         }
-        eprintln!("Active remote session — deferring update to next launch");
+        log_update(
+            &app,
+            &format!("Update {version}: active remote session, deferring to next launch"),
+        );
         emit_update_status(&app, UpdateStatus::Deferred { version });
         return;
     }
@@ -1009,14 +1131,22 @@ async fn auto_update(app: tauri::AppHandle) {
     // Ready prompt (apply_pending_update / dismiss_pending_update).
     if let Some(pending) = app.try_state::<PendingUpdate>() {
         *lock_or_recover(&pending.0, "pending_update") = Some((update, bytes));
-        eprintln!("Update {} ready — awaiting user choice", version);
+        log_update(
+            &app,
+            &format!("Update {version} ready, awaiting user choice"),
+        );
         emit_update_status(&app, UpdateStatus::Ready { version });
     } else {
-        eprintln!("PendingUpdate state missing; cannot present update prompt");
         // Defensive: clear the banner so a (theoretically impossible) missing
         // state doesn't leave it pinned on "Downloading…" — the silent-look
         // this feature exists to remove.
-        emit_update_status(&app, UpdateStatus::Failed { version });
+        report_update_failure(
+            &app,
+            &version,
+            UpdateFailStage::Install,
+            "internal error: pending-update state missing; cannot present the update prompt"
+                .to_string(),
+        );
     }
 }
 
@@ -1499,8 +1629,34 @@ mod tests {
                 json!({ "phase": "deferred", "version": "1.2.3" }),
             ),
             (
-                UpdateStatus::Failed { version: v.clone() },
-                json!({ "phase": "failed", "version": "1.2.3" }),
+                UpdateStatus::Failed {
+                    version: v.clone(),
+                    stage: UpdateFailStage::Extract,
+                    error: "unsupported Zip archive: Compression method not supported".into(),
+                    log_path: Some("C:\\logs\\updater.log".into()),
+                },
+                json!({
+                    "phase": "failed",
+                    "version": "1.2.3",
+                    "stage": "extract",
+                    "error": "unsupported Zip archive: Compression method not supported",
+                    "logPath": "C:\\logs\\updater.log",
+                }),
+            ),
+            (
+                UpdateStatus::Failed {
+                    version: v.clone(),
+                    stage: UpdateFailStage::Download,
+                    error: "timed out".into(),
+                    log_path: None,
+                },
+                json!({
+                    "phase": "failed",
+                    "version": "1.2.3",
+                    "stage": "download",
+                    "error": "timed out",
+                    "logPath": null,
+                }),
             ),
             (
                 UpdateStatus::Ready { version: v.clone() },

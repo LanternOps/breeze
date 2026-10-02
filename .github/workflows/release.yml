@@ -2074,15 +2074,14 @@ jobs:
           name: breeze-viewer-windows.msi
           path: staging/
 
+      # Stored, not deflated: the updater's Windows extractor has no Deflate
+      # decoder, so a compressed bundle never installs (#7681). The script
+      # verifies the archive and fails the job if the entry is compressed.
       - name: Create updater zip
         run: |
-          set -euo pipefail
-          if [ ! -s staging/breeze-viewer-windows.msi ]; then
-            echo "::error::Signed MSI missing or empty at staging/breeze-viewer-windows.msi"
-            exit 1
-          fi
-          cd staging
-          zip -j breeze-viewer-windows.msi.zip breeze-viewer-windows.msi
+          bash scripts/release/package-viewer-windows-updater.sh \
+            staging/breeze-viewer-windows.msi \
+            staging/breeze-viewer-windows.msi.zip
 
       - name: Minisign the zip with Tauri key
         env:

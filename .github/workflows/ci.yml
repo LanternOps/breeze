@@ -304,6 +304,12 @@ jobs:
       - name: Test per-area job gating contract
         run: node --test .github/scripts/ci-area-gating.test.mjs
 
+      # The Windows viewer update bundle must be a STORED zip — the updater
+      # cannot decompress Deflate, so a compressed one never installs (#7681).
+      # release.yml only runs for releases, so this is the PR-time check.
+      - name: Test viewer Windows updater packaging
+        run: node --test scripts/release/package-viewer-windows-updater.test.mjs
+
       # The classifier fast-tracks changes to OTHER workflow files (app=false), and
       # security.yml — which also runs this suite — does not report `CI Success`, so
       # it cannot block a merge. lint runs on `code` alone, which makes this the
