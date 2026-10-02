@@ -289,6 +289,16 @@ jobs:
       - name: Test community README automation
         run: pnpm test:community-readme
 
+      # The Tauri CLI refuses to build when the `tauri` / `tauri-plugin-*`
+      # crates and their `@tauri-apps/*` npm packages differ in major.minor.
+      # Dependabot bumps cargo and npm in separate PRs, so a crate-only bump
+      # merged green and broke the v0.121.0 helper release build. Compares
+      # each app's Cargo.lock with pnpm-lock.yaml; needs no install.
+      - name: Guard Tauri crate/npm version parity
+        run: |
+          node --test scripts/check-tauri-versions.test.mjs
+          node scripts/check-tauri-versions.mjs
+
       - name: Test mobile native CI contract
         run: node --test .github/scripts/mobile-native-ci.test.mjs
 
