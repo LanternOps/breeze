@@ -236,6 +236,9 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['report_series', 'partner_id'],
   ['billing_profiles', 'partner_id'],
   ['billing_profile_rules', 'partner_id'],
+  // billing_profile_ai_rates (#7608 W10): per-model client AI price list on a card.
+  // Shape 3, same policy as billing_profile_rules (2026-11-26-100000).
+  ['billing_profile_ai_rates', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
   ['legacy_labour_pricing_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
