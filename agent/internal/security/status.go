@@ -116,6 +116,20 @@ func providerFromName(name string) string {
 	// "Bitdefender ..." name isn't misread as Microsoft Defender (#2075).
 	case strings.Contains(lower, "bitdefender"):
 		return "bitdefender"
+	// Vendor-name matches with no overlap with the broad cases below. They sit
+	// ahead of "defender" so a product name that also carries that word can't be
+	// misread as Microsoft Defender (#7551).
+	case strings.Contains(lower, "emsisoft"):
+		return "emsisoft"
+	case strings.Contains(lower, "webroot"):
+		return "webroot"
+	// WithSecure is F-Secure's business brand; older agents still register as
+	// "F-Secure ...".
+	case strings.Contains(lower, "withsecure"), strings.Contains(lower, "f-secure"):
+		return "withsecure"
+	// ThreatDown is Malwarebytes' business rebrand and runs the same engine.
+	case strings.Contains(lower, "threatdown"):
+		return "malwarebytes"
 	case strings.Contains(lower, "defender"):
 		return "windows_defender"
 	case strings.Contains(lower, "sophos"):
@@ -126,13 +140,37 @@ func providerFromName(name string) string {
 		return "crowdstrike"
 	case strings.Contains(lower, "malwarebytes"):
 		return "malwarebytes"
-	case strings.Contains(lower, "eset"):
+	case containsWord(lower, "eset"):
 		return "eset"
 	case strings.Contains(lower, "kaspersky"):
 		return "kaspersky"
 	default:
 		return "other"
 	}
+}
+
+// containsWord reports whether word occurs in s with no ASCII letter directly
+// before or after it. "eset" is short enough to appear inside unrelated product
+// names ("Preset", "Reset"), so a plain substring match misattributes them to
+// ESET (#7551). Digits and punctuation still count as boundaries, so
+// "eset_endpoint" and "ESET-NOD32" match.
+func containsWord(s, word string) bool {
+	for start := 0; ; {
+		i := strings.Index(s[start:], word)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(word)
+		if (i == 0 || !isASCIILetter(s[i-1])) && (end == len(s) || !isASCIILetter(s[end])) {
+			return true
+		}
+		start = i + 1
+	}
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // resolveWSCPrimary picks the Windows Security Center product that owns the
