@@ -181,10 +181,10 @@ Use this path to give every partner on a self-hosted instance a shared OpenAI-co
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `MCP_LLM_PROVIDER` | Yes | Set to `openai-compatible`. Hosted deployments refuse this value. |
+| `MCP_LLM_PROVIDER` | Yes | Set to `openai-compatible`. Breeze refuses to start with this value unless `IS_HOSTED` is explicitly set to `false` (an unset `IS_HOSTED` is refused too). |
 | `MCP_LLM_BASE_URL` | Yes | Base URL for the OpenAI-compatible endpoint. It must be a valid URL. |
 | `MCP_LLM_MODEL` | Yes | Model ID exposed by the endpoint. |
-| `MCP_LLM_API_KEY` | Optional | API key used to authenticate with the endpoint. |
+| `MCP_LLM_API_KEY` | Optional | API key used to authenticate with the endpoint. Leave unset for a keyless local server; when set it must be at least 8 characters. |
 | `MCP_LLM_PRICE_INPUT_PER_M_USD` | Optional | Input-token price in USD per million tokens. Defaults to `0`. |
 | `MCP_LLM_PRICE_OUTPUT_PER_M_USD` | Optional | Output-token price in USD per million tokens. Defaults to `0`. |
 
