@@ -30,24 +30,30 @@ const REPEAT_JOB_ID = 'ai-invocation-retention';
 export const AI_INVOCATION_RETENTION_DEFAULT_DAYS = 400;
 const MAX_RETENTION_DAYS = 3650;
 
-/** AI chargeback (#7608, spec §5.5 "aggregate before retention trims rows"): a
- *  chargeable row can still be closed until it is older than the lookback plus
- *  the longest month plus the close grace, so never prune one younger than this,
- *  whatever AI_INVOCATIONS_RETENTION_DAYS says. Claimed rows past it may go:
- *  their claim (ai_usage_charge_claims) outlives the ledger row. */
-export const CHARGEBACK_RETENTION_FLOOR_DAYS = CHARGEBACK_LOOKBACK_DAYS + 31 + 2;
+/** AI chargeback (#7608, spec §5.5 "aggregate before retention trims rows"):
+ *  never prune a chargeable row younger than this, whatever
+ *  AI_INVOCATIONS_RETENTION_DAYS says. The close of month P reads rows back to
+ *  lookbackStart(P) and also COUNTS the unclaimed rows that newly aged out,
+ *  [lookbackStart(P-1), lookbackStart(P)) — up to the lookback plus two months
+ *  old when the close runs. So: the lookback, plus two longest months (one for
+ *  the close, one for the expired count), plus 2 days of margin for the 1 h
+ *  close grace and a late (catch-up) sweep. Any chargeable row older than the
+ *  floor may be pruned; claimed rows are protected by their claim
+ *  (ai_usage_charge_claims outlives the ledger row). */
+export const CHARGEBACK_RETENTION_FLOOR_DAYS = CHARGEBACK_LOOKBACK_DAYS + 62 + 2;
 
-export async function pruneAiInvocations(opts: { retentionDays?: number; batchSize?: number; maxBatches?: number } = {}): Promise<{
+export async function pruneAiInvocations(opts: { retentionDays?: number; batchSize?: number; maxBatches?: number; now?: Date } = {}): Promise<{
   deleted: number; batches: number; hasMore: boolean; retentionDays: number;
 }> {
+  const nowMs = (opts.now ?? new Date()).getTime();
   const retentionDays = resolveRetentionDays(
     opts.retentionDays ?? process.env.AI_INVOCATIONS_RETENTION_DAYS,
     AI_INVOCATION_RETENTION_DEFAULT_DAYS, MAX_RETENTION_DAYS, LOG,
   );
   const batchSize = opts.batchSize ?? parsePositiveIntEnv(LOG, 'AI_INVOCATIONS_RETENTION_BATCH_SIZE', 5000);
   const maxBatches = opts.maxBatches ?? parsePositiveIntEnv(LOG, 'AI_INVOCATIONS_RETENTION_MAX_BATCHES', 200);
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-  const chargebackFloor = new Date(Date.now() - CHARGEBACK_RETENTION_FLOOR_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = new Date(nowMs - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const chargebackFloor = new Date(nowMs - CHARGEBACK_RETENTION_FLOOR_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   let deleted = 0;
   let batches = 0;
