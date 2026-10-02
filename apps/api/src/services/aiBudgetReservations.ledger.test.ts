@@ -290,6 +290,54 @@ describe('settleAiBudgetReservation with ledger rows', () => {
     })).rejects.toThrow(/does not match the turn binding/);
   });
 
+  describe('carried rates across a same-connection switch (W05)', () => {
+    const OPUS = { inputCentsPerM: 500, outputCentsPerM: 2500, cacheReadCentsPerM: 50, cacheWriteCentsPerM: 625 };
+    // Bound to Opus now; the session switched away from Sonnet, whose late
+    // delta (spike Q6) is reported under the Sonnet key.
+    const SWITCHED: TurnBinding = {
+      ...BINDING, wireModel: 'claude-opus-5-5', logicalModel: 'claude-opus-5-5',
+      rateSnapshot: { source: 'platform', standard: OPUS },
+      carriedRates: [{ wireModel: 'claude-sonnet-5-5', rateSnapshot: { source: 'platform', standard: STD } }],
+    };
+
+    it('accepts a row under a carried model key priced at exactly its carried snapshot', async () => {
+      primeSettle(reservationRow({ model_binding: SWITCHED }));
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID,
+        invocations: [
+          invocation({ requestedModel: 'claude-opus-5-5', servedModel: 'claude-opus-5-5', rateSnapshot: { source: 'platform', standard: OPUS } }),
+          invocation(), // claude-sonnet-5-5 at STD = the carried snapshot
+        ],
+      })).resolves.toMatchObject({ kind: 'settled' });
+    });
+
+    it('rejects a carried model key priced at anything but its carried snapshot', async () => {
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([reservationRow({ model_binding: SWITCHED })]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID,
+        invocations: [invocation({ rateSnapshot: { source: 'platform', standard: { ...STD, inputCentsPerM: 1 } } })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+    });
+
+    it('a carried snapshot is accepted only for ITS model key, never for another unbound key', async () => {
+      dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([reservationRow({ model_binding: SWITCHED })]);
+      await expect(settleAiBudgetReservation({
+        orgId: ORG_ID, reservationId: RESERVATION_ID,
+        invocations: [invocation({ requestedModel: 'claude-sonnet-4-6', servedModel: 'claude-sonnet-4-6' })],
+      })).rejects.toThrow(/does not match the turn binding/);
+      expect(hoisted.recordInvocation).not.toHaveBeenCalled();
+    });
+
+    it('a stable-key replay of a binding WITH carried rates is the same binding (parse keeps carriedRates)', async () => {
+      dbMock.execute
+        .mockResolvedValueOnce([{ id: ORG_ID }])
+        .mockResolvedValueOnce([reservationRow({ model_binding: JSON.parse(JSON.stringify(SWITCHED)) })]);
+      await reserveAiBudget({ orgId: ORG_ID, idempotencyKey: 'key-1', billingSource: 'platform', binding: SWITCHED });
+      expect(dbMock.execute).toHaveBeenCalledTimes(2); // no re-bind UPDATE
+    });
+  });
+
   it('rejects a row whose funding differs from the reservation billing source', async () => {
     dbMock.execute.mockResolvedValueOnce([{ id: ORG_ID }]).mockResolvedValueOnce([reservationRow()]);
     await expect(settleAiBudgetReservation({

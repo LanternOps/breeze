@@ -13,6 +13,12 @@ import type { RateSnapshot } from './pricing';
 import type { ResolvedModel } from './resolveModel';
 import type { WireParams } from './wireParams';
 
+/** W05: at most this many earlier models' rates ride on one binding. */
+export const MAX_CARRIED_RATES = 8;
+
+/** The rate of a model this session ran on before a same-connection switch (W05). */
+export interface CarriedRate { wireModel: string; rateSnapshot: RateSnapshot }
+
 export interface TurnBinding {
   v: 1;
   surface: AiSurface;
@@ -32,6 +38,13 @@ export interface TurnBinding {
   wireFingerprint: string;
   rateSnapshot: RateSnapshot;
   refusalFallback: { offeringId: string; wireModel: string; rateSnapshot: RateSnapshot } | null;
+  /**
+   * W05: rates of the models a same-connection switch moved away from. A
+   * resumed query's cumulative modelUsage can still report late deltas under
+   * their keys (interrupted turns under-count, spike Q6). Absent on bindings
+   * that never switched.
+   */
+  carriedRates?: CarriedRate[];
 }
 
 /** Key-order-independent JSON, for fingerprints and rate comparisons. */
@@ -130,6 +143,8 @@ const turnBindingSchema = z.object({
   refusalFallback: z.object({
     offeringId: z.string(), wireModel: z.string(), rateSnapshot: rateSnapshotSchema,
   }).nullable(),
+  carriedRates: z.array(z.object({ wireModel: z.string().min(1), rateSnapshot: rateSnapshotSchema }))
+    .max(MAX_CARRIED_RATES).optional(),
 });
 
 export function parseTurnBinding(raw: unknown): TurnBinding | null {
@@ -137,9 +152,30 @@ export function parseTurnBinding(raw: unknown): TurnBinding | null {
   return parsed.success ? (parsed.data as TurnBinding) : null;
 }
 
+/**
+ * W05: the binding plus the rates of the models this session switched away
+ * from on the same connection. Never carries the bound model or its refusal
+ * fallback (they have their own snapshots), keeps the LATEST rate per model,
+ * keeps at most MAX_CARRIED_RATES (the most recent), and returns the binding
+ * unchanged rather than emit `carriedRates: []` — so a binding that carries
+ * nothing stays byte-identical to W03's for the stable-key re-bind comparison.
+ */
+export function withCarriedRates(b: TurnBinding, carried: readonly CarriedRate[]): TurnBinding {
+  const byModel = new Map<string, CarriedRate>();
+  for (const c of carried) {
+    if (c.wireModel === b.wireModel || c.wireModel === b.refusalFallback?.wireModel) continue;
+    byModel.delete(c.wireModel);   // re-insert so the latest occurrence is last
+    byModel.set(c.wireModel, c);
+  }
+  const list = [...byModel.values()].slice(-MAX_CARRIED_RATES);
+  return list.length > 0 ? { ...b, carriedRates: list } : b;
+}
+
 export function rateForServedModel(b: TurnBinding, servedWireModel: string): RateSnapshot {
   if (servedWireModel === b.wireModel) return b.rateSnapshot;
   if (b.refusalFallback && servedWireModel === b.refusalFallback.wireModel) return b.refusalFallback.rateSnapshot;
+  const carried = b.carriedRates?.find((c) => c.wireModel === servedWireModel);
+  if (carried) return carried.rateSnapshot;
   // The SDK reported a model we did not bind (an internal helper call). Price
   // it at the primary rate — same connection, same funding, never a guess —
   // and make the mismatch visible.

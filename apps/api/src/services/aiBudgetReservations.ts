@@ -823,7 +823,8 @@ function sameJson(a: unknown, b: unknown): boolean {
 
 /**
  * A settlement may only bill a rate the turn claim bound (spec §9.2, §8): the
- * primary or the refusal-fallback snapshot. One exception, from the W05 spike:
+ * primary or the refusal-fallback snapshot, or (W05) a carried snapshot for its
+ * own model key. One exception, from the W05 spike:
  * the CLI can switch a platform turn to a model the binding never named (its
  * own refusal fallback). That row is accepted only when flagged fallbackUsed,
  * platform-funded, and priced at exactly that model's CURRENT platform rate,
@@ -838,6 +839,11 @@ async function assertInvocationsMatchBinding(binding: TurnBinding, invocations: 
     const rate = stripFees(row.rateSnapshot);
     if (sameJson(rate, binding.rateSnapshot)) continue;
     if (binding.refusalFallback && sameJson(rate, binding.refusalFallback.rateSnapshot)) continue;
+    // W05: a model this session switched away from on the SAME connection —
+    // its late delta (spike Q6) bills at the rate it was bound with. Keyed on
+    // requestedModel: toNewInvocations stores the usage key there.
+    const carried = binding.carriedRates?.find((c) => c.wireModel === row.requestedModel);
+    if (carried && sameJson(rate, carried.rateSnapshot)) continue;
     if (row.fallbackUsed && binding.funding === 'platform' && !boundModels.has(row.requestedModel)
         && (rate as { source?: unknown } | null)?.source === 'platform') {
       const platform = await getPlatformModelByModelId(row.requestedModel);
