@@ -477,3 +477,131 @@ describe('baseline-no-management: configured controlled destinations', () => {
     expect(settled.coverage).toBe('complete');
   });
 });
+
+/**
+ * Grouped overview (2026-10-02): three enrolled agents on one LAN, each reporting the
+ * same 10.1.2.0/24 and gateway 10.1.2.1 through the REAL collection seam, plus one
+ * discovered printer with an address in that range and no membership.
+ */
+async function sameLan(observers = 3) {
+  const env = await setupTestEnvironment({ scope: 'organization', rolePermissions: GRANTS });
+  const orgId = env.organization.id;
+  const siteId = env.site.id;
+  const scope = { orgId, siteId };
+  const scoped = <T>(fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
+  const deviceIds: string[] = Array.from({ length: observers }, () => crypto.randomUUID());
+  const printerId = crypto.randomUUID();
+  await system(() => db.update(organizations)
+    .set({ settings: { topologyFeatureFlags: { materialization: true } } }).where(eq(organizations.id, orgId)));
+  await scoped(async () => {
+    for (const [index, deviceId] of deviceIds.entries()) {
+      await db.execute(sql`INSERT INTO devices (id,org_id,site_id,agent_id,hostname,os_type,os_version,architecture,agent_version,status,last_seen_at,agent_token_hash)
+        VALUES (${deviceId}::uuid,${orgId}::uuid,${siteId}::uuid,${deviceId},${`lan-observer-${index}`},'linux','6.1','amd64','1','online',now(),${String(index + 1).padStart(64, 'b')})`);
+      await db.execute(sql`INSERT INTO device_network (device_id,org_id,interface_name,mac_address,ip_address,ip_type,is_primary)
+        VALUES (${deviceId}::uuid,${orgId}::uuid,'eth0',${`02:00:00:00:00:0${index}`},${`10.1.2.${10 + index}`},'ipv4',true)`);
+    }
+    await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type,is_online)
+      VALUES (${printerId}::uuid,${orgId}::uuid,${siteId}::uuid,'10.1.2.77','lan-printer','printer',true)`);
+  });
+  let imported = await scoped(() => importLegacyTopologySite(scope));
+  for (let attempt = 0; !imported.complete && attempt < 30; attempt++) imported = await scoped(() => drainTopologyOutbox(scope));
+  expect(imported.complete).toBe(true);
+
+  for (const [index, deviceId] of deviceIds.entries()) {
+    const config = await scoped(() => withDbTransaction(() => negotiateTopologyContext(deviceId)));
+    if (!('producerEpoch' in config)) throw new Error('fixture capability disabled');
+    const producer: AuthenticatedTopologyProducer = {
+      scope, producerId: deviceId, producerKind: 'agent', producerEpoch: config.producerEpoch!,
+      configurationRevision: config.configurationRevision!, sourceIdentity: config.sourceIdentity!,
+    };
+    const report = networkContextFixture();
+    Object.assign(report, { producerEpoch: producer.producerEpoch, sequence: '1', snapshotId: crypto.randomUUID(), capturedAt: new Date(Date.now() - 1000).toISOString() });
+    const interfaces = report.sections.find(section => section.kind === 'interfaces')!;
+    const routes = report.sections.find(section => section.kind === 'routes')!;
+    interfaces.rows[0]!.addresses = [{ ...interfaces.rows[0]!.addresses[0]!, address: `10.1.2.${10 + index}`, prefixLength: 24 }];
+    routes.rows[0]!.nextHops = [{ ...routes.rows[0]!.nextHops[0]!, address: '10.1.2.1' }];
+    for (const section of report.sections) section.contentDigest = topologySectionDigest(report, section, producer.sourceIdentity);
+    report.contentDigest = topologyContextDigest(report, producer.sourceIdentity);
+    const accepted = await scoped(() => ingestTopologyNetworkContext(producer, report));
+    expect(accepted.accepted, JSON.stringify(accepted)).toBe(true);
+  }
+  const published = await scoped(() => withDbTransaction(() => reconcileTopologySite(scope)));
+  expect(published.published).toBe(true);
+
+  const bound = async () => {
+    const rows = await scoped(() => db.execute(sql`SELECT node_id, device_id, discovered_asset_id FROM topology_node_bindings WHERE org_id=${orgId}::uuid AND site_id=${siteId}::uuid`));
+    return {
+      devices: rows.filter(row => row.device_id).map(row => ({ nodeId: String(row.node_id), deviceId: String(row.device_id) })),
+      printer: String(rows.find(row => String(row.discovered_asset_id) === printerId)!.node_id),
+    };
+  };
+  const graph = async (query = ''): Promise<GraphResponse> => {
+    clearPermissionCache();
+    const app = new Hono();
+    app.use('*', authMiddleware);
+    app.route('/topology', topologyGraphRoutes);
+    const response = await app.request(`/topology/sites/${siteId}/graph${query}`, { headers: { Authorization: `Bearer ${env.token}` } });
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    return graphResponseSchema.parse(body);
+  };
+  return { deviceIds, bound, graph };
+}
+
+describe('grouped overview: one LAN reported by three observers', () => {
+  it('folds the per-observer networks and gateways into one card each, with live names and inventory', async () => {
+    const f = await sameLan(3);
+    const { devices, printer } = await f.bound();
+    expect(devices).toHaveLength(3);
+    const body = await f.graph();
+
+    // Canonical identity is unchanged: one network and one gateway node per observer.
+    expect(body.nodes.filter(node => node.kind === 'network' && node.label === '10.1.2.0/24')).toHaveLength(3);
+    expect(body.nodes.filter(node => node.kind === 'gateway')).toHaveLength(3);
+
+    const lanCards = body.presentation.nodes.filter(node => node.group?.kind === 'network' && node.group.prefix === '10.1.2.0/24');
+    expect(lanCards).toHaveLength(1);
+    const card = lanCards[0]!;
+    expect(card.group).toMatchObject({ networkClass: 'lan', basis: 'inferred_site_prefix', gatewayAddresses: ['10.1.2.1'], conflict: false, observerCount: 3 });
+    expect(card.group!.canonicalNodeIds).toHaveLength(3);
+    const observed = card.group!.members.filter(member => member.placement === 'observed');
+    expect(new Set(observed.map(member => member.nodeId))).toEqual(new Set(devices.map(device => device.nodeId)));
+    expect(observed.every(member => member.primary && !member.stale)).toBe(true);
+    // The printer has no membership; its address is inside the only LAN candidate.
+    expect(card.group!.members.find(member => member.nodeId === printer)).toMatchObject({ placement: 'address_match' });
+
+    const gatewayCards = body.presentation.nodes.filter(node => node.group?.kind === 'gateway');
+    expect(gatewayCards).toHaveLength(1);
+    expect(gatewayCards[0]).toMatchObject({ label: 'Reported gateway 10.1.2.1' });
+    expect(gatewayCards[0]!.group).toMatchObject({ address: '10.1.2.1', observerCount: 3 });
+    expect(gatewayCards[0]!.group!.canonicalNodeIds).toHaveLength(3);
+    const routesVia = body.presentation.edges.filter(edge => edge.meaning === 'aggregate' && edge.role === 'routes_via');
+    expect(routesVia).toHaveLength(1);
+    expect(routesVia[0]).toMatchObject({ sourceNodeId: card.id, targetNodeId: gatewayCards[0]!.id, memberCount: 3 });
+
+    for (const entity of [...body.presentation.nodes, ...body.presentation.edges]) {
+      expect(entity.id).toMatch(/^presentation:overview:/);
+      expect(entity.authority).toBe(false);
+    }
+
+    // Labels are the live inventory names, never `endpoint <uuid>`.
+    expect(body.nodes.some(node => /^endpoint [0-9a-f-]{36}$/.test(node.label))).toBe(false);
+    for (const [index, device] of devices.sort((a, b) => f.deviceIds.indexOf(a.deviceId) - f.deviceIds.indexOf(b.deviceId)).entries()) {
+      const graphNode = body.nodes.find(node => node.id === device.nodeId)!;
+      expect(graphNode.label).toBe(`lan-observer-${index}`);
+      expect(graphNode.inventory).toMatchObject({ source: 'device', name: `lan-observer-${index}`, addresses: [`10.1.2.${10 + index}`],
+        mac: `02:00:00:00:00:0${index}`, os: 'linux 6.1', presence: { state: 'online', source: 'agent', agentStatus: 'online' } });
+      expect(graphNode.inventory!.presence.lastSeenAt).toEqual(expect.any(String));
+      // Freshly reported memberships/routes make the observer node fresh with OS evidence.
+      expect(graphNode.freshness).toBe('fresh');
+      expect(graphNode.evidence.methods).toEqual(expect.arrayContaining(['os_route', 'os_interface']));
+    }
+    const printerNode = body.nodes.find(node => node.id === printer)!;
+    expect(printerNode.label).toBe('lan-printer');
+    expect(printerNode.inventory).toMatchObject({ source: 'discovered_asset', addresses: ['10.1.2.77'], type: 'printer', presence: { state: 'online', source: 'scan' } });
+
+    // Physical view: unchanged, no grouping.
+    const physical = await f.graph('?view=physical');
+    expect(physical.presentation.nodes.some(node => node.group)).toBe(false);
+  });
+});
