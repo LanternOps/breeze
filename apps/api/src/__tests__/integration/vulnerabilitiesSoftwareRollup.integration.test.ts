@@ -6,9 +6,12 @@ import { and, eq } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../../db';
 import {
+  devicePatches,
   devices,
   deviceVulnerabilities,
   organizationUsers,
+  patchApprovals,
+  patches,
   softwareInventory,
   softwareProducts,
   softwareVulnerabilities,
@@ -49,6 +52,9 @@ async function get<T>(env: TestEnvironment, path: string): Promise<{ status: num
 
 beforeEach(async () => {
   await withSystemDbAccessContext(async () => {
+    await db.delete(patchApprovals);
+    await db.delete(devicePatches);
+    await db.delete(patches);
     await db.delete(deviceVulnerabilities);
     await db.delete(softwareVulnerabilities);
     await db.delete(softwareProducts);
@@ -181,6 +187,30 @@ async function seedChromeFleet(env: TestEnvironment) {
       );
     }
   }
+  // #7499: "Ready" means Remediate would act on it: an approved, PENDING patch on
+  // the device. One such patch advertises CVE-70001/70003 and (via Remediate's
+  // product-identity fallback for third-party software) covers CVE-70004 too.
+  // CVE-70002's catalog flag is off and nothing patches it → never Ready.
+  seq += 1;
+  const [chromePatch] = await getTestDb()
+    .insert(patches)
+    .values({
+      source: 'third_party',
+      externalId: `rollup-chrome-${Date.now()}-${seq}`,
+      title: 'Google Chrome',
+      cveIds: ['CVE-2026-70001', 'CVE-2026-70003'],
+    })
+    .returning({ id: patches.id });
+  if (!chromePatch) throw new Error('failed to seed patch');
+  for (const deviceId of [d1, d2, d3]) {
+    await getTestDb()
+      .insert(devicePatches)
+      .values({ deviceId, orgId: env.organization.id, patchId: chromePatch.id, status: 'pending' });
+  }
+  await getTestDb()
+    .insert(patchApprovals)
+    .values({ partnerId: env.partner.id, patchId: chromePatch.id, status: 'approved' });
+
   await seedFinding(env, d1, ffCve, { softwareInventoryId: firefox1, riskScore: '3.00' });
   await seedFinding(env, d2, osCve, { softwareInventoryId: null, riskScore: '8.00', status: 'mitigated' });
 
@@ -230,7 +260,8 @@ describe('fleet software rollup (#2262)', () => {
     expect(dev1.cveCount).toBe(4);
     expect(dev1.openFindingCount).toBe(3);
     expect(dev1.acceptedFindingCount).toBe(1);
-    // CVE-70002 has no patch → 2 of d1's 3 open findings are patch-ready.
+    // 70002 has no patch → 2 of d1's 3 open findings are patch-ready (#7499: via
+    // the seeded approved pending patch, not the catalog flag).
     expect(dev1.patchReadyFindingCount).toBe(2);
     expect(dev1.worstOpenSeverity).toBe('critical');
     expect(dev1.maxOpenRiskScore).toBe(9);
