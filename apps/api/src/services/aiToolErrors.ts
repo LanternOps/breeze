@@ -105,6 +105,9 @@ const MAX_SAFE_ERROR_CHARS = 300;
  */
 const MAX_RETURNED_ERROR_CHARS = 600;
 
+/** Bound on the original text written to the server log per scrubbed error. */
+const MAX_LOGGED_ERROR_CHARS = 4000;
+
 /** Extra context for the server-side log line written when text is scrubbed. */
 export interface ScrubLogContext {
   toolName?: string;
@@ -148,7 +151,7 @@ function logScrubbedReturnedError(
 ): void {
   console.error(
     `[aiTools] ${ctx?.toolName ?? 'unknown tool'} returned an error that was ${action} before reaching the chat; full original:`,
-    redactLogMessage(text),
+    redactLogMessage(text.length > MAX_LOGGED_ERROR_CHARS ? `${text.slice(0, MAX_LOGGED_ERROR_CHARS)}… [log-truncated, ${text.length} chars total]` : text),
   );
 }
 

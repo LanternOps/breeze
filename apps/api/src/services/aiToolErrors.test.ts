@@ -142,6 +142,11 @@ describe('aiToolErrors', () => {
         expect(console.error).toHaveBeenCalledTimes(1);
       });
 
+      it('bounds the size of the logged original', () => {
+        scrubErrorText(`relation "t" does not exist ${'z'.repeat(20000)}`, { toolName: 'manage_x' });
+        expect((vi.mocked(console.error).mock.calls[0] ?? []).join(' ').length).toBeLessThan(5000);
+      });
+
       it('propagates tool context through scrubErrorFieldsDeep', () => {
         scrubErrorFieldsDeep({ error: RAW_DRIZZLE_ERROR }, 0, false, { toolName: 'manage_y' });
         expect(String(vi.mocked(console.error).mock.calls[0]?.[0])).toContain('manage_y');
