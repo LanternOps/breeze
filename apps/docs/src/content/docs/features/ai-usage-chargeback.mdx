@@ -20,7 +20,7 @@ The organization's billing profile decides the price: the one assigned to it, ot
 
 ## What is billed
 
-- Only usage on client-work features: chat, the Helper, the script builder and script reviewer, the Office add-ins, and AI agents. Catalog copy, workspace enrichment and patch tests are never billed.
+- Only usage on client-work features: chat, the Helper, the script builder and script reviewer, the Office add-ins, and AI agents. Catalog enrichment, extension content and patch tests are never billed.
 - Only usage after you turn billing on. The price is fixed when the request is recorded. Changing the profile later never re-prices past usage.
 - A billable profile with no price for a model, for example a EUR profile with no price-list row, records that usage as **unpriced**. It appears in the report and is never billed at zero.
 
@@ -29,10 +29,12 @@ The organization's billing profile decides the price: the one assigned to it, ot
 - Usage is grouped by UTC calendar month. A request belongs to the month in which Breeze recorded it. A request made just before midnight UTC on the last day of a month, but recorded after midnight, belongs to the next month. This includes a request that Breeze had to replay later: it bills in the month of the replay.
 - Shortly after each month ends, Breeze closes it once per client. Each model becomes one charge, rounded once to the currency's smallest unit. A charge that rounds to zero is not billed.
 - Usage recorded for a month that was already closed, for example after merging two clients, is billed with the next month and labelled "usage from" and the month.
+- A month's charge exists only after that month closes, which happens shortly after 00:00 UTC on the 1st (by about 05:30 UTC). This month's usage therefore appears on the next invoice, not on one you create today.
+- Charges that round to zero, and usage older than 92 days, are never invoiced. They show in the report's unbilled column.
 
 ## Putting it on an invoice
 
-AI usage reaches an invoice through **Create invoice from unbilled work**. When you assemble an invoice for a client, its AI usage charges for that period are added as lines: "AI usage — (model) — (month) · (n) requests · (n) tokens".
+AI usage reaches an invoice through **Create invoice from unbilled work**. When you create an invoice from unbilled work, Breeze adds every unbilled AI usage charge for a month that has already closed and started on or before the invoice's end date. A month closes shortly after it ends (UTC), so this month's usage appears on the next invoice. Each charge becomes a line: "AI usage — (model) — (month) · (n) requests · (n) tokens".
 
 - Issuing the invoice marks the charges billed.
 - Voiding it releases them to be invoiced again.

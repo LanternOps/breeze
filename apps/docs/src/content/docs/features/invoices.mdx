@@ -62,7 +62,7 @@ Line items can come from several sources: catalog items, bundles, tracked time e
 
 ### AI usage lines
 
-When you assemble from work, a client's billed-month AI usage is added as one line per model, for example "AI usage — (model) — (month)". These lines are non-taxable by default, and you can edit them on a draft. See [AI usage chargeback](/features/ai-usage-chargeback/).
+When you assemble from work, every unbilled AI usage charge for a month that has already closed and started on or before the invoice's end date is added as one line per model, for example "AI usage — (model) — (month)". A month closes shortly after it ends (UTC), so this month's usage appears on the next invoice. Charges that round to zero and usage older than 92 days are never invoiced; they show in the report's unbilled column. These lines are non-taxable by default, and you can edit them on a draft. See [AI usage chargeback](/features/ai-usage-chargeback/).
 
 ### Time-entry line quantities
 

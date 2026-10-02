@@ -2,7 +2,7 @@ import type { AiCoverage } from '@breeze/shared';
 
 /** One price-list row as edited in the drawer. Amounts stay strings end to end
  * (the API stores numeric(14,6)); the patterns below mirror the shared zod
- * `aiRateRowSchema` / `aiMarkupSchema`, which remain the server authority. */
+ * `aiRateRowSchema` / `aiMarkupPercentSchema`, which remain the server authority. */
 export interface AiRateDraft {
   modelId: string;
   inputPricePerM: string;

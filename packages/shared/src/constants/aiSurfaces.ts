@@ -41,8 +41,8 @@ export const TOOL_REQUIRING_SURFACES = [
 
 /**
  * AI chargeback (#7608, spec §8): surfaces whose usage an MSP may rebill to the
- * client org. The rest is the MSP's own tooling (catalog copy, workspace
- * enrichment, patch tests) and is never chargeable. The script reviewer is
+ * client org. The rest is the MSP's own tooling (catalog enrichment,
+ * extension content, patch tests) and is never chargeable. The script reviewer is
  * chargeable (client work; decided by Todd 2026-10-02, #7598). Changing this
  * list changes only future stamps (snapshot rule).
  */
