@@ -156,6 +156,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
   }, invoice.currencyCode);
+  const collectionInProgress = detail.collectionInProgress ?? null; // #7824
   const payLabel = chargeNow.isDeposit
     ? `Pay deposit ${money(chargeNow.amount, currency)}`
     : `Pay ${money(chargeNow.amount, currency)}`;
@@ -238,7 +239,7 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
             <button
               type="button"
               onClick={() => void payInvoice()}
-              disabled={paying}
+              disabled={paying || collectionInProgress != null}
               data-testid="invoice-pay-button"
               className={BTN_PRIMARY}
             >
@@ -257,6 +258,12 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           </button>
         </div>
       </div>
+
+      {canPay && collectionInProgress && (
+        <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-collection-processing">
+          Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
+        </div>
+      )}
 
       {settleState === 'settling' && (
         <div role="status" className="rounded-md bg-warning/10 p-3 text-sm font-medium text-warning-on-tint" data-testid="invoice-settle-confirming">

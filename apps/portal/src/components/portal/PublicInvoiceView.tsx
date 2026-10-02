@@ -87,6 +87,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
   }
 
   const { invoice, lines, chargeNow, payable, branding } = detail;
+  const collectionInProgress = detail.collectionInProgress ?? null; // #7824
   const returnFlag = typeof window !== 'undefined'
     ? new URLSearchParams(window.location.search)
     : new URLSearchParams();
@@ -187,7 +188,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           <button
             type="button"
             onClick={() => void pay()}
-            disabled={paying}
+            disabled={paying || collectionInProgress != null}
             data-testid="public-invoice-pay"
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
@@ -216,6 +217,11 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           {isPaid
             ? `Paid${invoice.paidAt ? ` on ${shortDate(invoice.paidAt)}` : ''} — thank you! You can download a copy for your records below.`
             : 'Payment received — thank you! It may take a moment to appear on the invoice.'}
+        </div>
+      )}
+      {canPay && collectionInProgress && (
+        <div className="rounded-md bg-warning/10 p-3 text-sm text-warning" data-testid="public-invoice-collection-processing">
+          Payment processing via autopay — {money(collectionInProgress.amount, currency)} is being collected automatically. No action needed.
         </div>
       )}
       {paymentPending && !isPaid && (

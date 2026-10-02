@@ -35,6 +35,21 @@ export async function lockInvoiceForCollection(tx: Tx, invoiceId: string): Promi
   if (!amounts) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   return { invoice: { ...invoice, balance: amounts.balance }, reservedAmount: amounts.reservedAmount, unreservedBalance: amounts.unreservedBalance };
 }
+/** Lock-free read of "is an autopay/collection attempt in flight?" for customer
+ * views (#7824). Uses the same reserving-state set as the 409 gate
+ * (`assertNoActiveCollection`), so the UI state and the server refusal cannot
+ * diverge. Advisory only: it takes no lock, the pay routes still enforce.
+ */
+export async function readInFlightCollection(tx: Tx, invoiceId: string): Promise<{ inProgress: boolean; amount: string }> {
+  const [row] = await tx.select({
+    reservedAmount: sql<string>`coalesce(sum(${invoiceCollectionAttempts.principalAmount}), 0)::numeric(12,2)::text`,
+  }).from(invoiceCollectionAttempts)
+    .where(sql`${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}`)
+    .limit(1);
+  const amount = row?.reservedAmount ?? '0.00';
+  return { inProgress: hundredths(amount) > 0n, amount };
+}
 export async function assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void> {
   const locked = await lockInvoiceForCollection(tx, invoiceId);
   if (hundredths(locked.reservedAmount) > 0n) {

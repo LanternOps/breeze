@@ -532,6 +532,9 @@ export interface InvoiceDetail {
    *  CTA; absent (older API / fixtures) is treated as available — the pay route
    *  still 409s as the backstop. */
   onlinePaymentAvailable?: boolean;
+  /** #7824: server-side autopay collection in flight (same reservation the pay
+   *  route's 409 uses). Non-null disables the Pay button; null/absent = none. */
+  collectionInProgress?: { amount: string } | null;
 }
 
 export type QuoteStatus =
@@ -736,6 +739,8 @@ export interface PublicInvoiceDetail {
   lines: InvoiceLine[];
   chargeNow: { amount: string; isDeposit: boolean } | null;
   payable: boolean;
+  /** #7824: an autopay collection is in flight (server reservation). */
+  collectionInProgress?: { amount: string } | null;
   branding: {
     partnerName: string;
     contactEmail: string | null;

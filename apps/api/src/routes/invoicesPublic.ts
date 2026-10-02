@@ -21,6 +21,7 @@ import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
+import { readInFlightCollection } from '../services/autopay/reservation';
 
 /**
  * Unauthenticated, token-gated PUBLIC INVOICE surface — the customer's durable
@@ -156,8 +157,17 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     const chargeNow = computeChargeNow({
       depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
     });
+    // #7824: advisory in-flight autopay state (the pay route's 409 is the gate).
+    let collectionInProgress: { amount: string } | null = null;
+    try {
+      const inFlight = await readInFlightCollection(db, inv.id);
+      if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount };
+    } catch (err) {
+      console.error('[invoicesPublic] in-flight collection lookup failed', { invoiceId: inv.id, err });
+    }
     return {
       invoice: { ...toCustomerInvoiceHeader(inv), paidAt: inv.paidAt },
+      collectionInProgress,
       lines: rows.map(toCustomerInvoiceLine),
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.

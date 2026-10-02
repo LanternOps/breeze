@@ -162,3 +162,25 @@ describe('InvoiceDetailView — payment unavailable', () => {
     expect(screen.getByTestId('invoice-pay-next-step')).toHaveTextContent(/how to pay this invoice/);
   });
 });
+
+describe('InvoiceDetailView — autopay collection in flight (#7824)', () => {
+  it('disables the Pay button and explains why while a collection is processing', async () => {
+    const { portalApi } = await import('@/lib/api');
+    const pay = vi.spyOn(portalApi, 'payInvoice');
+    pay.mockClear(); // spy is shared with the earlier 409 test
+    render(<InvoiceDetailView detail={{ ...detail([line()]), collectionInProgress: { amount: '100.00' } }} />);
+    const btn = screen.getByTestId('invoice-pay-button') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(pay).not.toHaveBeenCalled();
+    const note = screen.getByTestId('invoice-collection-processing');
+    expect(note.textContent).toContain('Payment processing via autopay');
+    expect(note.textContent).toContain('$100.00');
+  });
+
+  it('keeps the Pay button enabled when nothing is in flight (null)', () => {
+    render(<InvoiceDetailView detail={{ ...detail([line()]), collectionInProgress: null }} />);
+    expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId('invoice-collection-processing')).toBeNull();
+  });
+});
