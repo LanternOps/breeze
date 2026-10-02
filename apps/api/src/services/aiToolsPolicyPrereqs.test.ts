@@ -954,6 +954,37 @@ describe('write-org resolution for org-owning creates (#6667)', () => {
   });
 });
 
+describe('manage_backup_configs refuses destination values in the stored encrypted format', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each(['create', 'update'] as const)('%s', async (action) => {
+    const { encryptSecret } = await import('./secretCrypto');
+    const tool = getBackupConfigsTool();
+    const output = await tool.handler(
+      {
+        action,
+        configId: BACKUP_CONFIG_ID,
+        name: 'S3 backup',
+        type: 'file',
+        provider: 's3',
+        providerConfig: {
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'key',
+          secretKey: encryptSecret('sealed-elsewhere'),
+        },
+      },
+      makeOrgAuth()
+    );
+
+    expect(JSON.parse(output).error).toMatch(/internal encrypted format/);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('manage_backup_configs storage key history', () => {
   const S3 = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
 

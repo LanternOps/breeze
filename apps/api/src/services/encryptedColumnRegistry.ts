@@ -1,69 +1,19 @@
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
+import { getActiveSecretEncryptionKeyId } from './secretCrypto';
+import { BACKUP_PROVIDER_CONFIG_COLUMN } from './backupProviderConfigSealing';
 import {
-  encryptSecret,
-  getActiveSecretEncryptionKeyId,
-  isEncryptedSecret,
-  reencryptSecret,
-  shouldReencryptSecret,
-} from './secretCrypto';
+  isSecretJsonPath,
+  transformEncryptedColumnValue,
+  type EncryptedColumnSpec,
+} from './encryptedColumnTransform';
 
-type EncryptedColumnKind = 'text' | 'text-array' | 'json';
-
-export interface EncryptedColumnSpec {
-  table: string;
-  column: string;
-  kind: EncryptedColumnKind;
-  idColumn?: string;
-  /**
-   * How the ciphertext is bound to its location.
-   *
-   * 'column' (default) — AAD is `table.column`. Stops a blob being moved
-   * between COLUMNS, which is all the historical columns need: their rows are
-   * addressed by an id the tenant cannot choose.
-   *
-   * 'row' — AAD is `table.column:<row id>`. Additionally stops a blob being
-   * moved between ROWS, which for a tenant-owned column means between TENANTS:
-   * without it, someone with DB write access could paste another tenant's
-   * ciphertext into their own row and have the application decrypt it back to
-   * them. Row-bound columns must be written by a caller that knows the row id
-   * (see services/tenantVariables.ts) — the generic
-   * `encryptColumnValueForWrite` helper refuses them rather than sealing a
-   * value under the wrong AAD.
-   */
-  aadBinding?: 'column' | 'row';
-  /**
-   * Override the `table.column` part of the AAD. Only for a column MOVED to a
-   * new table, whose existing ciphertext was sealed under its old location:
-   * the tag stays the column's logical identity so every stored value still
-   * decrypts (notification channel config, #6379).
-   */
-  aadTag?: string;
-  /**
-   * JSON columns only: secret leaves identified by WHERE they sit, in addition
-   * to the global `SECRET_JSON_KEYS` names. For a key too generic to seal in
-   * every registered JSON column (`webhooks`), or one that only names a
-   * credential in one place. Each path is object keys from the column root;
-   * array positions are not segments, so a path to an array covers every
-   * string entry in it.
-   */
-  secretJsonPaths?: readonly (readonly string[])[];
-  description: string;
-}
-
-/**
- * The AAD string for a registered column. The single constructor for both the
- * write path and the rotation walker, so the two can never derive a different
- * binding for the same column.
- */
-export function columnAad(spec: EncryptedColumnSpec, rowId?: string): string {
-  const base = spec.aadTag ?? `${spec.table}.${spec.column}`;
-  if (spec.aadBinding !== 'row') return base;
-  if (!rowId) {
-    throw new Error(`${base} is row-bound: a row id is required to derive its AAD`);
-  }
-  return `${base}:${rowId}`;
-}
+export {
+  columnAad,
+  isSecretJsonPath,
+  transformEncryptedColumnValue,
+  type EncryptedColumnSpec,
+} from './encryptedColumnTransform';
 
 export interface ReencryptSecretsOptions {
   dryRun?: boolean;
@@ -83,6 +33,8 @@ export interface ReencryptSecretsStats {
   scanned: number;
   changed: number;
   updated: number;
+  /** Rows changed by a concurrent write between read and re-seal; not written. */
+  contended: number;
   skippedMissingTables: string[];
   errors: Array<{ table: string; column: string; id: string; error: string }>;
 }
@@ -159,53 +111,10 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'tool_sources', column: 'auth_config_encrypted', kind: 'text', aadBinding: 'row', description: 'external tool source credential JSON (#5216, spec 2026-09-07 §5.2) — AAD bound to the row id' },
   { table: 'backup_storage_credential_history', column: 'sealed_previous_secret', kind: 'text', aadBinding: 'row', description: 'replaced S3 backup destination connection settings (endpoint, bucket, key pair), kept only to check the old key is disabled — AAD bound to the row id' },
   { table: 'backup_provider_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'external backup provider console credentials JSON (#6008 W01) — AAD bound to the row id, so a blob pasted into another partner\'s connection does not decrypt' },
+  // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
+  // so key rotation re-seals it.
+  BACKUP_PROVIDER_CONFIG_COLUMN,
 ];
-
-const SECRET_JSON_KEYS = new Set([
-  'secret',
-  'webhookSecret',
-  'clientSecret',
-  'accessToken',
-  'refreshToken',
-  'token',
-  'apiKey',
-  'apiSecret',
-  'apiKeyValue',
-  'authToken',
-  'authPassword',
-  'routingKey',
-  'integrationKey',
-  'webhookUrl',
-  'password',
-  'privateKey',
-  'encrypted',
-  'elasticsearchApiKey',
-  'elasticsearchPassword',
-  'community',
-  'authPassphrase',
-  'privacyPassphrase',
-  'authPassword',
-  'privPassword',
-]);
-
-function pathsEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((segment, index) => segment === b[index]);
-}
-
-/**
- * Whether the leaf at `path` (object keys from the column root) inside a
- * registered JSON column is a secret: its key is one of `SECRET_JSON_KEYS`, or
- * the path is one of the column's `secretJsonPaths`. The single definition
- * behind at-rest sealing below.
- */
-export function isSecretJsonPath(
-  path: readonly string[],
-  secretPaths: readonly (readonly string[])[] = [],
-): boolean {
-  const key = path[path.length - 1];
-  if (key !== undefined && SECRET_JSON_KEYS.has(key)) return true;
-  return secretPaths.some((secretPath) => pathsEqual(secretPath, path));
-}
 
 /**
  * `isSecretJsonPath` for the `settings` columns. Response masking
@@ -226,94 +135,6 @@ function rowsFromResult(result: unknown): Array<Record<string, unknown>> {
 
 function valuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-// Gate AAD-binding rollout behind an env var so this branch can ship the
-// machinery without forcing a v2 -> v3 rewrite across all production secrets
-// at the same time. Flip to default-on once the rotation script has been run
-// at least once with ENABLE_AAD_V3=true.
-function aadV3Enabled(): boolean {
-  return process.env.ENABLE_AAD_V3 === 'true';
-}
-
-function maybeReencryptString(value: string, force: boolean, aad?: string, alwaysAad = false): string {
-  const withAad = aad && (alwaysAad || aadV3Enabled()) ? aad : undefined;
-  const opts = withAad ? { aad: withAad } : undefined;
-  if (isEncryptedSecret(value)) {
-    return shouldReencryptSecret(value, { targetWithAad: Boolean(withAad) })
-      ? reencryptSecret(value, opts) ?? value
-      : value;
-  }
-  if (!force) {
-    return value;
-  }
-  // Plaintext reaching a registered column is a first encryption, not a
-  // rotation, so it goes through `encryptSecret`. `reencryptSecret` requires an
-  // active key id and throws without one, which would fail the whole write on a
-  // deployment that has not set APP_ENCRYPTION_KEY_ID — the shipped default.
-  // `encryptSecret` seals to v1 under the global key in that configuration,
-  // matching how every other write path degrades.
-  return encryptSecret(value, opts) ?? value;
-}
-
-interface JsonSecretWalk {
-  secretPaths: readonly (readonly string[])[];
-  aad?: string;
-  alwaysAad: boolean;
-}
-
-function transformJsonSecrets(value: unknown, path: readonly string[], walk: JsonSecretWalk): unknown {
-  if (typeof value === 'string') {
-    const secret = isSecretJsonPath(path, walk.secretPaths);
-    if (isEncryptedSecret(value) || (secret && value.length > 0)) {
-      return maybeReencryptString(value, secret, walk.aad, walk.alwaysAad);
-    }
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => transformJsonSecrets(entry, path, walk));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-        entryKey,
-        transformJsonSecrets(entryValue, [...path, entryKey], walk),
-      ])
-    );
-  }
-
-  return value;
-}
-
-export function transformEncryptedColumnValue(
-  spec: EncryptedColumnSpec,
-  value: unknown,
-  rowId?: string,
-): unknown {
-  // AAD binds the ciphertext to its schema location so a blob from one column
-  // cannot be silently swapped into another. Only written for new v3 rows
-  // (gated by ENABLE_AAD_V3); existing v2 rows continue to decrypt unchanged.
-  //
-  // Row-bound columns are exempt from that gate: they are new, so they have no
-  // v2 rows to migrate and no flag day to coordinate. Their binding is applied
-  // from the first write, which is also what makes it safe for the write path
-  // and this walker to agree without consulting an env var.
-  const aad = columnAad(spec, rowId);
-  const alwaysAad = spec.aadBinding === 'row';
-
-  if (spec.kind === 'text') {
-    return typeof value === 'string' ? maybeReencryptString(value, true, aad, alwaysAad) : value;
-  }
-
-  if (spec.kind === 'text-array') {
-    return Array.isArray(value)
-      ? value.map((entry) => typeof entry === 'string' ? maybeReencryptString(entry, true, aad, alwaysAad) : entry)
-      : value;
-  }
-
-  return transformJsonSecrets(value, [], { secretPaths: spec.secretJsonPaths ?? [], aad, alwaysAad });
 }
 
 /**
@@ -368,36 +189,41 @@ async function fetchBatch(
     .map((row) => ({ id: row.id as string, value: row.value }));
 }
 
+/**
+ * Writes the re-sealed value only if the row still holds exactly what was
+ * read (compare-and-set). A concurrent save — a credential edit landing
+ * between the read and this write — must never be overwritten with the
+ * re-sealed OLD value. Returns false when the row changed; the next run picks
+ * it up.
+ */
 async function updateValue(
   executor: SecretReencryptionExecutor,
   spec: EncryptedColumnSpec,
   id: string,
+  previous: unknown,
   value: unknown,
-): Promise<void> {
+): Promise<boolean> {
   const idColumn = spec.idColumn ?? 'id';
+  const target = sql.identifier(spec.column);
+  let assignment;
+  let unchanged;
   if (spec.kind === 'json') {
-    await executor.execute(sql`
-      UPDATE ${sql.identifier(spec.table)}
-      SET ${sql.identifier(spec.column)} = ${JSON.stringify(value)}::jsonb
-      WHERE ${sql.identifier(idColumn)} = ${id}
-    `);
-    return;
+    assignment = sql`${JSON.stringify(value)}::jsonb`;
+    unchanged = sql`${target} = ${JSON.stringify(previous)}::jsonb`;
+  } else if (spec.kind === 'text-array') {
+    assignment = sql`${value as string[]}::text[]`;
+    unchanged = sql`${target} = ${previous as string[]}::text[]`;
+  } else {
+    assignment = sql`${value as string}`;
+    unchanged = sql`${target} = ${previous as string}`;
   }
-
-  if (spec.kind === 'text-array') {
-    await executor.execute(sql`
-      UPDATE ${sql.identifier(spec.table)}
-      SET ${sql.identifier(spec.column)} = ${value as string[]}::text[]
-      WHERE ${sql.identifier(idColumn)} = ${id}
-    `);
-    return;
-  }
-
-  await executor.execute(sql`
+  const updated = rowsFromResult(await executor.execute(sql`
     UPDATE ${sql.identifier(spec.table)}
-    SET ${sql.identifier(spec.column)} = ${value as string}
-    WHERE ${sql.identifier(idColumn)} = ${id}
-  `);
+    SET ${target} = ${assignment}
+    WHERE ${sql.identifier(idColumn)} = ${id} AND ${unchanged}
+    RETURNING 1 AS updated
+  `));
+  return updated.length > 0;
 }
 
 export async function reencryptRegisteredSecrets(options: ReencryptSecretsOptions = {}): Promise<ReencryptSecretsStats> {
@@ -416,6 +242,7 @@ export async function reencryptRegisteredSecrets(options: ReencryptSecretsOption
     scanned: 0,
     changed: 0,
     updated: 0,
+    contended: 0,
     skippedMissingTables: [],
     errors: [],
   };
@@ -447,8 +274,12 @@ export async function reencryptRegisteredSecrets(options: ReencryptSecretsOption
 
             stats.changed++;
             if (!dryRun) {
-              await updateValue(executor, spec, row.id, transformed);
-              stats.updated++;
+              if (await updateValue(executor, spec, row.id, row.value, transformed)) {
+                stats.updated++;
+              } else {
+                stats.contended++;
+                logger.warn(`[secret-rotation] ${spec.table}.${spec.column} row ${row.id} changed while being re-sealed; left for the next run`);
+              }
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

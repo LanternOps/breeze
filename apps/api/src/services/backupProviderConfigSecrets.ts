@@ -1,5 +1,10 @@
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { urlOriginChanged } from './credentialOriginBinding';
+import { isSecretField } from './backupProviderConfigSealing';
+
+// The secret-field predicate lives with the at-rest sealing so masking on read
+// and sealing at rest can never disagree about which fields are credentials.
+export { isSecretField };
 
 /**
  * Shared provider-config secret handling for backup_configs.providerConfig —
@@ -12,32 +17,38 @@ import { urlOriginChanged } from './credentialOriginBinding';
 
 export const MASKED_SECRET = '********';
 
-const SECRET_FIELD_NAMES = new Set([
-  'accesskey',
-  'accesskeyid',
-  'apikey',
-  'apisecret',
-  'authtoken',
-  'clientsecret',
-  'credential',
-  'credentials',
-  'password',
-  'secret',
-  'secretaccesskey',
-  'secretkey',
-  'sessiontoken',
-  'token',
-]);
-
 export type JsonRecord = Record<string, unknown>;
 
 export function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function isSecretField(key: string): boolean {
-  const normalized = key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  return SECRET_FIELD_NAMES.has(normalized) || normalized.endsWith('token') || normalized.endsWith('secret');
+/**
+ * The provider config as API responses and AI tool output show it: every
+ * secret field (isSecretField — the same set sealed at rest) replaced by a
+ * marker saying whether a value is stored, never the value.
+ */
+export function redactProviderConfig(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactProviderConfig);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const redacted: JsonRecord = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    if (isSecretField(key)) {
+      redacted[key] = {
+        redacted: true,
+        hasSecret: nestedValue !== null && nestedValue !== undefined && nestedValue !== '',
+        masked: MASKED_SECRET,
+      };
+    } else {
+      redacted[key] = redactProviderConfig(nestedValue);
+    }
+  }
+  return redacted;
 }
 
 export function isRedactedSecretMarker(value: unknown): boolean {

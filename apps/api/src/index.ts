@@ -179,6 +179,7 @@ import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
+import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
@@ -1864,6 +1865,30 @@ async function bootstrap(): Promise<void> {
     .catch((err) => {
       console.error('[startup] Sealing stored settings secrets failed:', err);
       captureException(err, undefined, { area: 'settings_secret_backfill' });
+    });
+
+  // Backup destination credentials (backup_configs.provider_config) are sealed
+  // on write by the column type; this seals rows stored before that. Detached
+  // and idempotent like the settings sweep above — readers open both forms.
+  void sealUnsealedBackupProviderConfigs()
+    .then((stats) => {
+      if (stats.scanned > 0) {
+        console.log(
+          `[startup] Backup destination credentials sealed: ${stats.sealed}/${stats.scanned} config(s) `
+            + `(${stats.contended} changed concurrently, ${stats.failed} failed)`,
+        );
+      }
+      if (stats.failed > 0 || stats.contended > 0) {
+        captureException(
+          new Error(`backup destination credential sealing left ${stats.failed} failed and ${stats.contended} contended config(s)`),
+          undefined,
+          { area: 'backup_provider_config_backfill' },
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Sealing stored backup destination credentials failed:', err);
+      captureException(err, undefined, { area: 'backup_provider_config_backfill' });
     });
 
   // AI model registry W03 (#7601 Task 6A): cut every partner over to the

@@ -36,8 +36,10 @@ import {
   isRecord,
   isRedactedSecretMarker,
   preserveSecretFields,
+  redactProviderConfig,
   s3EndpointOriginChanged,
 } from './backupProviderConfigSecrets';
+import { findCiphertextShapedValue } from './backupProviderConfigSealing';
 import {
   resolvePeripheralPolicyDeviceIds,
   schedulePeripheralPolicyDevices,
@@ -942,6 +944,16 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
       }
 
+      if ((action === 'create' || action === 'update') && input.providerConfig) {
+        // Same refusal as the REST schema (routes/backup/schemas.ts): a value
+        // already in the stored encrypted format would be opened by the server
+        // as if it had sealed it itself.
+        const presealed = findCiphertextShapedValue(input.providerConfig);
+        if (presealed) {
+          return JSON.stringify({ error: `providerConfig.${presealed}: destination settings cannot contain values in the internal encrypted format` });
+        }
+      }
+
       if (action === 'list') {
         const conditions: SQL[] = [];
         const oc = orgWhere(auth, backupConfigs.orgId);
@@ -978,7 +990,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         const [config] = await db.select().from(backupConfigs).where(and(...conditions)).limit(1);
         if (!config) return JSON.stringify({ error: 'Backup config not found or access denied' });
         // Redact sensitive provider config fields
-        const safeConfig = { ...config, providerConfig: config.providerConfig ? { ...config.providerConfig as Record<string, unknown>, secretKey: undefined, accessKey: undefined, encryptionKey: undefined } : null };
+        const safeConfig = { ...config, providerConfig: config.providerConfig ? redactProviderConfig(config.providerConfig) : null };
         return JSON.stringify({ config: safeConfig });
       }
 
