@@ -44,9 +44,14 @@ CREATE TABLE IF NOT EXISTS org_payment_methods (
  is_autopay_method boolean NOT NULL DEFAULT false,
  created_at timestamptz NOT NULL DEFAULT now(),
  removed_at timestamptz,
+ detach_attempts integer NOT NULL DEFAULT 0,
+ detach_next_attempt_at timestamptz NOT NULL DEFAULT now(),
  CONSTRAINT org_payment_methods_id_org_id_unique UNIQUE (id,org_id),
  CONSTRAINT org_payment_methods_enrollment_org_fk FOREIGN KEY (enrollment_id,org_id) REFERENCES org_autopay_enrollments(id,org_id) DEFERRABLE INITIALLY IMMEDIATE
 );
+-- Also support replay against an earlier version of this unmerged foundation.
+ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_next_attempt_at timestamptz NOT NULL DEFAULT now();
 CREATE UNIQUE INDEX IF NOT EXISTS org_payment_methods_autopay_uq ON org_payment_methods(org_id) WHERE is_autopay_method AND status IN ('active','pending_verification');
 CREATE TABLE IF NOT EXISTS org_autopay_consents (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

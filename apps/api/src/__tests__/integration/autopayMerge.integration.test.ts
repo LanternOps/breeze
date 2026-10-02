@@ -1,5 +1,5 @@
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -7,6 +7,10 @@ import { createPartner, createOrganization } from './db-utils';
 import { collectMergeBlockers, runPolicy, OrgMergeBlockedError, buildMergeBlockedMessage } from '../../services/orgMerge';
 import { getOrgMergePolicies } from '../../services/orgMergeRegistry';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+
+const stripe = vi.hoisted(() => ({ getClient: vi.fn(), retrieve: vi.fn(), detach: vi.fn() }));
+vi.mock('../../services/partnerStripe', () => ({ getPartnerStripeClient: stripe.getClient }));
+import { drainAutopayMethodDetaches } from '../../services/autopay/merge';
 
 const run = it.runIf(Boolean(process.env.DATABASE_URL));
 async function seed() {
@@ -71,5 +75,48 @@ describe('autopay merge authority boundary',()=>{
       expect(token).toMatchObject({org_id:f.s.id,enrollment_id:null}); expect(token!.revoked_at).not.toBeNull();
       expect(await db.execute(sql`SELECT id FROM billing_payment_settings WHERE org_id IN (${f.l.id}::uuid,${f.s.id}::uuid)`)).toHaveLength(0);
     });
+  });
+});
+
+describe('durable detach retry scheduling', () => {
+  run('reaches a detachable row behind 100 persistent failures and caps retries at six hours', async () => {
+    const f = await seed();
+    stripe.getClient.mockResolvedValue({stripeAccountId:'acct_original',stripe:{paymentMethods:{retrieve:stripe.retrieve,detach:stripe.detach}}});
+    stripe.retrieve.mockResolvedValue({customer:'cus_original'});
+    stripe.detach.mockImplementation(async (id: string) => {
+      if (id !== 'pm_success') throw new Error('persistent provider failure');
+      return {customer:null};
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`UPDATE org_autopay_enrollments SET stripe_account_id='acct_original',stripe_customer_id='cus_original' WHERE id=${f.enrollment}::uuid`);
+        await db.execute(sql`INSERT INTO org_payment_methods(org_id,enrollment_id,stripe_payment_method_id,type,status,unusable_reason,removed_at)
+          SELECT ${f.l.id}::uuid,${f.enrollment}::uuid,'pm_fail_' || n,'card','removed','org_merged',now()-interval '1 day'
+          FROM generate_series(1,100) n`);
+        await db.execute(sql`INSERT INTO org_payment_methods(org_id,enrollment_id,stripe_payment_method_id,type,status,unusable_reason,removed_at)
+          VALUES (${f.l.id}::uuid,${f.enrollment}::uuid,'pm_success','card','removed','org_merged',now())`);
+      });
+      await drainAutopayMethodDetaches();
+      expect(stripe.detach).toHaveBeenCalledTimes(100);
+      await drainAutopayMethodDetaches();
+      expect(stripe.detach).toHaveBeenCalledWith('pm_success');
+      expect(stripe.detach).toHaveBeenCalledTimes(101);
+      await withSystemDbAccessContext(async () => {
+        const [pending] = await db.execute(sql`SELECT count(*)::int AS n FROM org_payment_methods
+          WHERE org_id=${f.l.id}::uuid AND unusable_reason='org_merged' AND detach_attempts=1
+          AND detach_next_attempt_at BETWEEN now()+interval '45 seconds' AND now()+interval '65 seconds'`);
+        expect(pending!.n).toBe(100);
+        await db.execute(sql`UPDATE org_payment_methods SET detach_attempts=30,detach_next_attempt_at=now()-interval '1 second'
+          WHERE org_id=${f.l.id}::uuid AND stripe_payment_method_id='pm_fail_1'`);
+      });
+      await drainAutopayMethodDetaches();
+      await withSystemDbAccessContext(async () => {
+        const [retry] = await db.execute(sql`SELECT detach_attempts,
+          detach_next_attempt_at BETWEEN now()+interval '5 hours 59 minutes' AND now()+interval '6 hours 1 minute' AS capped
+          FROM org_payment_methods WHERE org_id=${f.l.id}::uuid AND stripe_payment_method_id='pm_fail_1'`);
+        expect(retry).toMatchObject({detach_attempts:31,capped:true});
+      });
+    } finally { errors.mockRestore(); }
   });
 });

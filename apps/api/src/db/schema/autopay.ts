@@ -98,6 +98,8 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   isAutopayMethod: boolean('is_autopay_method').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   removedAt: timestamp('removed_at', { withTimezone: true }),
+  detachAttempts: integer('detach_attempts').notNull().default(0),
+  detachNextAttemptAt: timestamp('detach_next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   check('org_payment_methods_type_check', sql`${t.type} IN ('card','us_bank_account')`),
   check('org_payment_methods_card_exp_month_check', sql`${t.cardExpMonth} BETWEEN 1 AND 12`),

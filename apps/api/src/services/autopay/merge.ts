@@ -46,7 +46,8 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
     const rows=await withSystemDbAccessContext(()=>db.execute(sql`
       SELECT m.id,m.stripe_payment_method_id,e.partner_id,e.stripe_account_id,e.stripe_customer_id
       FROM org_payment_methods m JOIN org_autopay_enrollments e ON e.id=m.enrollment_id AND e.org_id=m.org_id
-      WHERE m.status='removed' AND m.unusable_reason='org_merged' ORDER BY m.removed_at,m.id LIMIT 100`));
+      WHERE m.status='removed' AND m.unusable_reason='org_merged' AND m.detach_next_attempt_at<=now()
+      ORDER BY m.detach_next_attempt_at,m.removed_at,m.id LIMIT 100`));
     for (const row of rows as unknown as Array<{id:string;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {
       try {
         const client=await withSystemDbAccessContext(()=>getPartnerStripeClient(row.partner_id));
@@ -57,6 +58,13 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
         if(customer) await client.stripe.paymentMethods.detach(row.stripe_payment_method_id);
         await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods SET unusable_reason='org_merged:detached' WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged'`));
       } catch(error) {
+        // Persist backoff before the next batch: a broken credential/customer must
+        // not keep older rows ahead of all other pending methods forever.
+        await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods
+          SET detach_attempts=detach_attempts+1,
+              detach_next_attempt_at=now()+LEAST(60*power(2,LEAST(detach_attempts,9)),21600)*interval '1 second'
+          WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged'`));
+
         console.error('[autopay] method detach remains queued',{methodId:row.id,error:error instanceof Error?error.message:'unknown'});
       }
     }

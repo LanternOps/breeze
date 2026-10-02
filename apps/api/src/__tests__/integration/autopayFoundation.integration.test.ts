@@ -72,6 +72,12 @@ describe('autopay foundation PostgreSQL contracts', () => {
       for(const fk of constraints) expect(fk).toMatchObject({condeferrable:true,condeferred:false});
     }
   });
+  run('initializes durable method detach retry fields', async () => {
+    const f = await fixture();
+    const [method] = await withSystemDbAccessContext(() => db.execute(sql`SELECT detach_attempts,
+      detach_next_attempt_at <= now() AS due FROM org_payment_methods WHERE id=${f.method}::uuid`));
+    expect(method).toMatchObject({detach_attempts:0,due:true});
+  });
   run('keeps all nine PostgreSQL enum vocabularies identical to C3',async()=>{
     const pairs=[['autopay_enrollment_status',vocabulary.AUTOPAY_ENROLLMENT_STATUSES],['autopay_schedule_state',vocabulary.AUTOPAY_SCHEDULE_STATES],['collection_attempt_state',vocabulary.COLLECTION_ATTEMPT_STATES],['billing_notice_kind',vocabulary.BILLING_NOTICE_KINDS],['billing_notice_status',vocabulary.BILLING_NOTICE_STATUSES],['billing_link_purpose',vocabulary.BILLING_LINK_PURPOSES],['org_payment_method_status',vocabulary.ORG_PAYMENT_METHOD_STATUSES],['ach_mode',vocabulary.ACH_MODES],['autopay_offset_rule',vocabulary.AUTOPAY_OFFSET_RULES]] as const;
     for(const [name,values] of pairs){

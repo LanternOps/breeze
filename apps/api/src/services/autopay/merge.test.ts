@@ -18,11 +18,11 @@ describe('durable removed-method detach queue',()=>{
   });
   it('leaves a failed detach queued for retry',async()=>{
     m.detach.mockRejectedValueOnce(new Error('network error'));
-    await drainAutopayMethodDetaches(); expect(m.execute).toHaveBeenCalledTimes(1);
+    await drainAutopayMethodDetaches(); expect(m.execute).toHaveBeenCalledTimes(2);
   });
   it('does not detach a method attached to another customer',async()=>{
     m.retrieve.mockResolvedValueOnce({customer:'cus_other'});
-    await drainAutopayMethodDetaches(); expect(m.detach).not.toHaveBeenCalled(); expect(m.execute).toHaveBeenCalledTimes(1);
+    await drainAutopayMethodDetaches(); expect(m.detach).not.toHaveBeenCalled(); expect(m.execute).toHaveBeenCalledTimes(2);
   });
   it('does not reuse a replacement Stripe account',async()=>{
     m.getClient.mockResolvedValueOnce({stripeAccountId:'acct_replacement',stripe:{paymentMethods:{retrieve:m.retrieve,detach:m.detach}}});
