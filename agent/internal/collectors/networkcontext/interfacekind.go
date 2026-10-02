@@ -142,16 +142,24 @@ func darwinInterfaceKind(name string) string {
 // connections (SSTP/L2TP/IKEv2/PPTP) are IF_TYPE_PPP; Wintun (WireGuard,
 // Tailscale) is IF_TYPE_PROP_VIRTUAL with no link-layer address, which cannot
 // be a LAN segment. A virtual adapter that has a MAC stays "virtual".
-func windowsInterfaceKind(ifType, physicalAddressLength uint32) string {
+// IF_TYPE_ETHERNET_CSMACD is also what TAP-style VPN adapters (OpenVPN
+// TAP-Windows, many vendor VPN miniports) and Hyper-V vEthernet report, so it
+// is "ethernet" (link evidence, which switches off the server's CGNAT guess)
+// only when Windows marks it a hardware interface; otherwise "virtual", which
+// leaves the CIDR fallback in charge.
+func windowsInterfaceKind(ifType uint32, hasLinkAddress, hardware bool) string {
 	switch ifType {
 	case 6: // IF_TYPE_ETHERNET_CSMACD
-		return "ethernet"
+		if hardware {
+			return "ethernet"
+		}
+		return "virtual"
 	case 71: // IF_TYPE_IEEE80211
 		return "wifi"
 	case 23, 131: // IF_TYPE_PPP, IF_TYPE_TUNNEL
 		return "tunnel"
 	case 53: // IF_TYPE_PROP_VIRTUAL
-		if physicalAddressLength == 0 {
+		if !hasLinkAddress {
 			return "tunnel"
 		}
 		return "virtual"

@@ -128,26 +128,27 @@ func TestDarwinInterfaceKind(t *testing.T) {
 
 func TestWindowsInterfaceKind(t *testing.T) {
 	tests := []struct {
-		name   string
-		ifType uint32
-		macLen uint32
-		want   string
+		name     string
+		ifType   uint32
+		hasMAC   bool
+		hardware bool
+		want     string
 	}{
-		{"ethernet", 6, 6, "ethernet"},
-		{"openvpn tap is indistinguishable from ethernet", 6, 6, "ethernet"},
-		{"wifi", 71, 6, "wifi"},
-		{"teredo / 6to4 / ip-https", 131, 0, "tunnel"},
-		{"ras vpn (sstp/l2tp/ikev2/pptp)", 23, 0, "tunnel"},
-		{"wintun (wireguard/tailscale): virtual with no link layer", 53, 0, "tunnel"},
-		{"virtual adapter with a mac", 53, 6, "virtual"},
-		{"mobile broadband", 243, 0, "cellular"},
-		{"mobile broadband cdma", 244, 0, "cellular"},
-		{"token ring", 9, 6, "other"},
+		{"physical nic", 6, true, true, "ethernet"},
+		{"tap vpn / vEthernet / vendor miniport is not link evidence", 6, true, false, "virtual"},
+		{"wifi", 71, true, true, "wifi"},
+		{"teredo / 6to4 / ip-https", 131, false, false, "tunnel"},
+		{"ras vpn (sstp/l2tp/ikev2/pptp)", 23, false, false, "tunnel"},
+		{"wintun (wireguard/tailscale): virtual with no link layer", 53, false, false, "tunnel"},
+		{"virtual adapter with a mac", 53, true, false, "virtual"},
+		{"mobile broadband", 243, false, true, "cellular"},
+		{"mobile broadband cdma", 244, false, true, "cellular"},
+		{"token ring", 9, true, true, "other"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := windowsInterfaceKind(tt.ifType, tt.macLen); got != tt.want || !reportableKinds[got] {
-				t.Fatalf("windowsInterfaceKind(%d, %d) = %q, want %q", tt.ifType, tt.macLen, got, tt.want)
+			if got := windowsInterfaceKind(tt.ifType, tt.hasMAC, tt.hardware); got != tt.want || !reportableKinds[got] {
+				t.Fatalf("windowsInterfaceKind(%d, %v, %v) = %q, want %q", tt.ifType, tt.hasMAC, tt.hardware, got, tt.want)
 			}
 		})
 	}

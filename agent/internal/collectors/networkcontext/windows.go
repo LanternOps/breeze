@@ -104,7 +104,7 @@ func readWindowsAdapters(ctx context.Context) ([]Adapter, error) {
 			if a.OperStatus == 1 {
 				state = "up"
 			}
-			kind := windowsInterfaceKind(a.IfType, a.PhysicalAddressLength)
+			kind := windowsInterfaceKind(a.IfType, a.PhysicalAddressLength > 0, a.IfType == 6 && windowsHardwareInterface(a.Luid))
 			adapter.Row = InterfaceRow{RowKey: key, InterfaceKey: key, OSIndex: a.IfIndex, Name: name, Kind: kind, AdminState: "unknown", OperState: state, MTU: ptr(a.Mtu), Addresses: []AddressRow{}}
 			if a.PhysicalAddressLength == 6 {
 				adapter.Row.CurrentMAC = net.HardwareAddr(a.PhysicalAddress[:6]).String()
@@ -401,4 +401,16 @@ func (r *WindowsReader) LookupRoute(ctx context.Context, request RouteLookupRequ
 		}
 	}
 	return out, nil
+}
+
+// windowsHardwareInterface reports MIB_IF_ROW2's HardwareInterface flag (bit 0
+// of InterfaceAndOperStatusFlags): true for a NIC backed by hardware (including
+// a VM's synthetic NIC), false for TAP, vEthernet and other software miniports.
+// A failed lookup is "not proven hardware" (#7819).
+func windowsHardwareInterface(luid uint64) bool {
+	row := windows.MibIfRow2{InterfaceLuid: luid}
+	if windows.GetIfEntry2Ex(windows.MibIfEntryNormalWithoutStatistics, &row) != nil {
+		return false
+	}
+	return row.InterfaceAndOperStatusFlags&0x01 != 0
 }
