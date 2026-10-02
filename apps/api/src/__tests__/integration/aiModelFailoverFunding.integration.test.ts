@@ -21,6 +21,8 @@ import { priceInvocation } from '../../services/aiModels/pricing';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { settleInvocation } from '../../services/aiModels/settleInvocation';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
+import { hopIdempotencyKey } from '../../services/aiModels/failover';
+import { agentRunReservationBaseKey, markStaleHopReservations } from '../../services/aiAgents/agentRunFailover';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedFailoverPartner, setPartnerDefault, setPartnerFallbacks, type SeededFailoverPartner } from './helpers/aiModelFailoverSeed';
 
@@ -299,5 +301,31 @@ describe.runIf(RUN)('W09 agent-run hop keys', () => {
     await settle();
     await settle();
     expect(deducts.filter((d) => d.key === `ai-settlement:${a.reservationId}`)).toHaveLength(1);
+  });
+
+  it('a crash after recording hop 1 but before settling hop 0: re-drive marks hop 0 indeterminate, never debits it, and reserves hop 1', async () => {
+    const f = await seedFailoverPartner();
+    const r = await resolveModel({ partnerId: f.partnerId, orgId: f.orgId, surface: 'ai_agents' });
+    if (!r.ok) throw new Error(r.reason);
+    const runId = randomUUID();
+    const base = agentRunReservationBaseKey(runId);
+    const hop0 = await reserveFailoverHop({ orgId: f.orgId })(r, turnBindingFrom(r), base);   // dispatched, never settled
+    if (!hop0.ok) throw new Error('not admitted');
+
+    // The re-driven run (startHopFor → hop 1) closes the window before reserving its own hop.
+    expect(await markStaleHopReservations({ runId, orgId: f.orgId, uptoHop: 1 })).toBe(1);
+    const [row] = await fixtureSql`SELECT status FROM ai_budget_reservations WHERE id = ${hop0.reservationId}`;
+    expect(row!.status).toBe('indeterminate');
+    // Idempotent: a second re-drive finds nothing active to mark.
+    expect(await markStaleHopReservations({ runId, orgId: f.orgId, uptoHop: 1 })).toBe(0);
+
+    const hop1 = await reserveFailoverHop({ orgId: f.orgId })(r, turnBindingFrom(r), hopIdempotencyKey(base, 1));
+    if (!hop1.ok) throw new Error('hop 1 not admitted');
+    expect(hop1.reservationId).not.toBe(hop0.reservationId);
+    expect((await reservationsLike(f.orgId, base)).map((x) => [x.idempotency_key, x.status])).toEqual([
+      [base, 'indeterminate'],
+      [`${base}:hop:1`, 'active'],
+    ]);
+    expect(deducts).toEqual([]);
   });
 });

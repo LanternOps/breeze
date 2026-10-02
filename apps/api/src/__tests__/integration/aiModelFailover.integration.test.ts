@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { reserveAiBudget } from '../../services/aiBudgetReservations';
+import { recordServedHop, startHopFor } from '../../services/aiAgents/agentRunFailover';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { seedFailoverPartner, setPartnerFallbacks, type SeededFailoverPartner } from './helpers/aiModelFailoverSeed';
@@ -206,5 +207,30 @@ describe.runIf(RUN)('W09 session stamping (D6)', () => {
     if (!hop.ok) throw new Error(hop.reason);
     await expect(reserveAiBudget({ orgId: f.orgId, idempotencyKey: `w09:${randomUUID()}`, billingSource: hop.funding,
       sessionId: other.chatSessionId, binding: turnBindingFrom(hop) })).rejects.toThrow(/not found/);
+  });
+});
+
+describe.runIf(RUN)('W09 agent-run served hop (Task 11)', () => {
+  it('recordServedHop writes all four served columns in one statement, and a re-drive resumes on that hop', async () => {
+    const s = await seedRegistryPartner('platform');
+    const [agent] = await fixtureSql`
+      INSERT INTO ai_agents (org_id, kind, name, created_by) VALUES (${s.orgId}, 'triage', 'w09', ${s.userId}) RETURNING id`;
+    const [run] = await fixtureSql`
+      INSERT INTO ai_agent_runs (agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, admitted_offering_id, funding_source)
+      VALUES (${agent!.id}, ${s.orgId}, 'manual', ${`w09-${randomUUID()}`}, 'shadow', '{}'::jsonb, ${s.offeringId}, 'platform')
+      RETURNING id`;
+    await recordServedHop(run!.id as string, { offeringId: s.offeringId, funding: 'platform', hop: 1, cause: 'overloaded' });
+    const [row] = await fixtureSql`
+      SELECT served_offering_id, served_funding_source, served_failover_hop, served_failover_cause, funding_source
+        FROM ai_agent_runs WHERE id = ${run!.id}`;
+    expect(row).toMatchObject({
+      served_offering_id: s.offeringId, served_funding_source: 'platform', served_failover_hop: 1,
+      served_failover_cause: 'overloaded', funding_source: 'platform',
+    });
+    expect(startHopFor({
+      admittedOfferingId: s.offeringId,
+      servedOfferingId: row!.served_offering_id as string,
+      servedFailoverHop: row!.served_failover_hop as number,
+    })).toEqual({ requestedOfferingId: s.offeringId, hop: 1 });
   });
 });
