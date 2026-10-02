@@ -127,6 +127,70 @@ beforeEach(() => {
   sdkState.query = happySubprocess();
 });
 
+// Before the runFidelityCheck suite: its last test un-mocks the agent SDK, so a
+// later stage-2 run would load the real SDK.
+describe('runFidelityCheck transport seam (W06 #7604)', () => {
+  function fakeTransportClient() {
+    const create = vi.fn()
+      .mockResolvedValueOnce(toolUseReply({ city: 'Berlin' }))
+      .mockResolvedValueOnce(finalReply('It is sunny and 21C in Berlin right now.'));
+    return { client: { messages: { create } }, create };
+  }
+  const sdkEnvOf = (call: number) =>
+    (sdkState.query.mock.calls[call]![0] as { options: { env: Record<string, string> } }).options.env;
+
+  it('without a transport, builds its own guarded endpoint client exactly as before', async () => {
+    stageOkAnthropic();
+    await runFidelityCheck(INPUT);
+    expect(anthropicState.constructorOptions.length).toBeGreaterThan(0);
+    for (const options of anthropicState.constructorOptions) {
+      expect(options.baseURL).toBe(INPUT.baseUrl);
+      expect(options.fetch).toBeTypeOf('function');
+    }
+    expect(sdkEnvOf(0)).toEqual(buildFidelityChildEnv(INPUT));
+  });
+
+  it('with a transport, uses its client and child env and never builds an endpoint client', async () => {
+    const { client, create } = fakeTransportClient();
+    const childEnv = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/t' };
+    const result = await runFidelityCheck(INPUT, { client: client as never, childEnv, probeAdaptiveEffort: false });
+
+    expect(anthropicState.constructorOptions).toHaveLength(0);
+    expect(anthropicState.create).not.toHaveBeenCalled();
+    // Direct stages only: the adaptive probe is not sent when the kind cannot carry it.
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(sdkEnvOf(0)).toEqual(childEnv);
+    expect(result.passed).toBe(true);
+    expect(result.probes).toEqual([
+      expect.objectContaining({ name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: expect.stringMatching(/^skipped:/) }),
+    ]);
+    expect(result.verifiedCapabilities.adaptiveEffort).toBe(false);
+  });
+
+  it('with a transport that may probe, the adaptive probe also goes through the transport client', async () => {
+    const { client, create } = fakeTransportClient();
+    create.mockResolvedValueOnce(finalReply('FIDELITY-OK'));
+    const result = await runFidelityCheck(INPUT, { client: client as never, childEnv: {}, probeAdaptiveEffort: true });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(anthropicState.constructorOptions).toHaveLength(0);
+    expect(result.verifiedCapabilities.adaptiveEffort).toBe(true);
+  });
+
+  it('a transport never turns a failed direct stage into a pass', async () => {
+    const create = vi.fn().mockResolvedValueOnce(finalReply('It is sunny in Berlin.'));
+    const result = await runFidelityCheck(INPUT, { client: { messages: { create } } as never, childEnv: {}, probeAdaptiveEffort: false });
+    expect(result.passed).toBe(false);
+    expect(sdkState.query).not.toHaveBeenCalled();
+    expect(result.steps.find((s) => s.name === FIDELITY_STEP_NAMES.sdkSubprocess))
+      .toMatchObject({ ok: false, detail: expect.stringMatching(/^skipped/) });
+  });
+
+  it('FIDELITY_HARNESS_VERSION is still 1 (a bump would unverify every catalog revision)', () => {
+    expect(FIDELITY_HARNESS_VERSION).toBe('1');
+  });
+});
+
+
 describe('runFidelityCheck', () => {
   it('passes when both the direct SDK round-trip and the subprocess round-trip succeed', async () => {
     stageOkAnthropic();

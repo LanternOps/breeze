@@ -4,8 +4,10 @@
  * manual "Refresh", and once shortly after boot). W03 (#7601) adds
  * `sync-connection` (one BYOK/catalog connection; on connect, on key or
  * endpoint rotation, and on demand) and the daily `sync-all-connections`
- * fan-out. W06 (#7604) adds gateway kinds (openai_compatible) to the fan-out;
- * a job payload carries only the connection id, never key material.
+ * fan-out. W06 (#7604) adds gateway kinds (openai_compatible) to the fan-out,
+ * and `verify-offering`: the fidelity harness run through the model gateway
+ * against ONE gateway-kind offering, on the admin's request only (never on
+ * discovery, D5). Job payloads carry only ids, never key material.
  */
 import { Queue, Worker, type Job } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -21,6 +23,7 @@ import {
   type ConnectionSyncReport,
   type SyncReport,
 } from '../services/aiModels/discovery';
+import { verifyConnectionOffering, type OfferingVerificationState } from '../services/aiModels/offeringVerification';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -28,6 +31,7 @@ export const AI_MODEL_DISCOVERY_QUEUE = 'ai-model-discovery';
 export const SYNC_PLATFORM_JOB = 'sync-platform';
 export const SYNC_CONNECTION_JOB = 'sync-connection';
 export const SYNC_ALL_CONNECTIONS_JOB = 'sync-all-connections';
+export const VERIFY_OFFERING_JOB = 'verify-offering';
 
 // BullMQ 5 rejects ':' in a custom jobId.
 const DAILY_REPEAT_JOB_ID = 'ai-model-discovery-sync-platform-daily';
@@ -41,7 +45,8 @@ const BOOT_DELAY_MS = 60_000;
 export type AiModelDiscoveryJobData =
   | { type: 'sync-platform'; trigger: 'schedule' | 'manual' | 'boot' }
   | { type: 'sync-connection'; connectionId: string }
-  | { type: 'sync-all-connections' };
+  | { type: 'sync-all-connections' }
+  | { type: 'verify-offering'; offeringId: string; partnerId: string };
 
 let queue: Queue<AiModelDiscoveryJobData> | null = null;
 let worker: Worker<AiModelDiscoveryJobData> | null = null;
@@ -77,6 +82,28 @@ export async function enqueueConnectionSync(connectionId: string): Promise<void>
   );
 }
 
+/** Colon-free, per offering: a second request collapses onto a waiting/active run. */
+export function verifyOfferingJobId(offeringId: string): string {
+  return `verify-offering-${offeringId}`;
+}
+
+/**
+ * Queue a harness verification of one gateway-kind offering. The payload is
+ * ids only. One attempt: a failed verification is a stored RESULT (tools off),
+ * not a transient error, and a retry would spend the partner's tokens again.
+ * Call it OUTSIDE any held DB context.
+ */
+export async function enqueueOfferingVerification(input: { offeringId: string; partnerId: string }): Promise<void> {
+  await enqueueOrReplaceStale(
+    getAiModelDiscoveryQueue() as unknown as Queue,
+    VERIFY_OFFERING_JOB,
+    verifyOfferingJobId(input.offeringId),
+    { type: 'verify-offering', offeringId: input.offeringId, partnerId: input.partnerId } satisfies AiModelDiscoveryJobData,
+    { attempts: 1, removeOnComplete: { count: 100 }, removeOnFail: { count: 100 } },
+    '[aiModelDiscovery]',
+  );
+}
+
 async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
   const ids = await withSystemDbAccessContext(async () => (await db
     .select({ id: partnerAiConnections.id })
@@ -92,7 +119,7 @@ async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
 
 export async function processAiModelDiscoveryJob(
   job: Pick<Job<AiModelDiscoveryJobData>, 'data'>,
-): Promise<SyncReport | ConnectionSyncReport | { enqueued: number }> {
+): Promise<SyncReport | ConnectionSyncReport | { enqueued: number } | { offeringId: string; state: OfferingVerificationState }> {
   switch (job.data.type) {
     case 'sync-platform': {
       const report = await syncPlatformModels();
@@ -113,6 +140,13 @@ export async function processAiModelDiscoveryJob(
     }
     case 'sync-all-connections':
       return enqueueAllConnectionSyncs();
+    case 'verify-offering': {
+      // Refusals (missing / foreign / non-gateway / disconnected) throw and fail
+      // the job; a failed run is stored on the offering and returned. The return
+      // value (kept in Redis) is the verdict only, never the record's detail.
+      const result = await verifyConnectionOffering({ offeringId: job.data.offeringId, partnerId: job.data.partnerId });
+      return { offeringId: result.offeringId, state: result.state };
+    }
     default:
       throw new Error(`Unknown ai-model-discovery job type: ${String((job.data as { type?: unknown }).type)}`);
   }

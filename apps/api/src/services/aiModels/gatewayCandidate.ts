@@ -76,9 +76,10 @@ function adapterCarriesThinking(kind: string): boolean {
  * itself (status in the same read as the key), so a disconnect that lands
  * between the connection read and this read can never surface as "keyless".
  * A LOOKUP failure is infrastructure (DB), not a dead key: it throws, scrubbed,
- * like every other read in the candidate loader (review S6).
+ * like every other read in the candidate loader (review S6). Also the Task 12
+ * verifier's credential read (offeringVerification.ts).
  */
-async function readCredential(conn: PartnerAiConnection): Promise<GatewayCredential | null> {
+export async function loadGatewayCredential(conn: PartnerAiConnection): Promise<GatewayCredential | null> {
   if (conn.status !== 'active') return null;
   let material: Awaited<ReturnType<typeof getConnectionKeyMaterial>>;
   try {
@@ -106,7 +107,7 @@ async function readCredential(conn: PartnerAiConnection): Promise<GatewayCredent
 
 export async function gatewayCandidate(input: { offering: Offering; conn: PartnerAiConnection }): Promise<LoadedCandidate> {
   const { offering, conn } = input;
-  const credential = await readCredential(conn);
+  const credential = await loadGatewayCredential(conn);
   const keyUsable = credential !== null;
 
   const verified = verifiedGatewayCapabilities(

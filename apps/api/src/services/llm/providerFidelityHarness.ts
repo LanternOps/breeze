@@ -77,6 +77,21 @@ export interface FidelityCheckInput {
   apiKey: string;
 }
 
+/**
+ * W06 (#7604): an alternative route to the model under test. The gateway
+ * verifier (services/aiModels/offeringVerification.ts) passes one so the SAME
+ * stages run through the loopback model gateway, exactly as production traffic
+ * flows. Omitted = the catalog path, byte-identical to before.
+ */
+export interface FidelityTransport {
+  /** Used for the direct stages and the adaptive probe instead of a guarded endpoint client. */
+  client: Anthropic;
+  /** Used for the Agent SDK subprocess stage instead of buildFidelityChildEnv(input). */
+  childEnv: Record<string, string>;
+  /** false when the connection kind cannot carry Anthropic thinking (openai_compatible): the probe is recorded as skipped. */
+  probeAdaptiveEffort: boolean;
+}
+
 export interface FidelityCheckStep {
   name: string;
   ok: boolean;
@@ -296,8 +311,8 @@ interface DirectStageOutcome {
   toolResult: FidelityCheckStep;
 }
 
-async function runDirectStage(input: FidelityCheckInput): Promise<DirectStageOutcome> {
-  const client = buildAnthropicClient(input);
+async function runDirectStage(input: FidelityCheckInput, injected?: Anthropic): Promise<DirectStageOutcome> {
+  const client = injected ?? buildAnthropicClient(input);
   const userMessage = { role: 'user' as const, content: PROMPT };
 
   let first: { content?: unknown; stop_reason?: unknown };
@@ -442,7 +457,7 @@ async function runDirectStage(input: FidelityCheckInput): Promise<DirectStageOut
   };
 }
 
-async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<FidelityCheckStep> {
+async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Record<string, string>): Promise<FidelityCheckStep> {
   const name = FIDELITY_STEP_NAMES.sdkSubprocess;
 
   let sdk: typeof import('@anthropic-ai/claude-agent-sdk');
@@ -489,7 +504,7 @@ async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<Fidelit
         // registry and the bootstrap rules don't know keeps `disabled`).
         ...agentSdkWireOptions(input.providerModel),
         abortController,
-        env: buildFidelityChildEnv(input),
+        env: childEnv ?? buildFidelityChildEnv(input),
       },
     } as Parameters<typeof sdk.query>[0]);
 
@@ -524,7 +539,7 @@ async function runSdkSubprocessStage(input: FidelityCheckInput): Promise<Fidelit
   }
 }
 
-async function runAdaptiveEffortProbe(input: FidelityCheckInput): Promise<FidelityCheckStep> {
+async function runAdaptiveEffortProbe(input: FidelityCheckInput, injected?: Anthropic): Promise<FidelityCheckStep> {
   const name = FIDELITY_PROBE_NAMES.adaptiveEffort;
   // Built by the one wire-param owner (index invariant 2): adaptive thinking
   // at the lowest effort. thinksWhenOmitted:true so the adapter always emits
@@ -535,7 +550,7 @@ async function runAdaptiveEffortProbe(input: FidelityCheckInput): Promise<Fideli
     requested: { effort: 'low' },
     maxTokens: FIDELITY_HARNESS_MAX_TOKENS,
   }), { thinksWhenOmitted: true });
-  const client = buildAnthropicClient(input);
+  const client = injected ?? buildAnthropicClient(input);
   try {
     const response = await client.messages.create({
       model: input.providerModel,
@@ -561,15 +576,15 @@ function sanitizeStep(step: FidelityCheckStep, secret: string): FidelityCheckSte
   return { name: step.name, ok: step.ok, detail };
 }
 
-export async function runFidelityCheck(input: FidelityCheckInput): Promise<FidelityCheckResult> {
-  const direct = await runDirectStage(input);
+export async function runFidelityCheck(input: FidelityCheckInput, transport?: FidelityTransport): Promise<FidelityCheckResult> {
+  const direct = await runDirectStage(input, transport?.client);
   const directPassed = direct.toolUse.ok && direct.toolResult.ok;
 
   // A stage that cannot run is a FAILING step, never an omitted one — the
   // caller persists these steps as the verification record, and a record with
   // a missing stage must never read as a pass.
   const subprocess = directPassed
-    ? await runSdkSubprocessStage(input)
+    ? await runSdkSubprocessStage(input, transport?.childEnv)
     : {
       name: FIDELITY_STEP_NAMES.sdkSubprocess,
       ok: false,
@@ -579,9 +594,11 @@ export async function runFidelityCheck(input: FidelityCheckInput): Promise<Fidel
   const steps = [direct.toolUse, direct.toolResult, subprocess]
     .map((step) => sanitizeStep(step, input.apiKey));
 
-  const probe: FidelityCheckStep = directPassed
-    ? await runAdaptiveEffortProbe(input)
-    : { name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: 'skipped: the direct SDK stage did not pass' };
+  const probe: FidelityCheckStep = !directPassed
+    ? { name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: 'skipped: the direct SDK stage did not pass' }
+    : (transport?.probeAdaptiveEffort ?? true)
+      ? await runAdaptiveEffortProbe(input, transport?.client)
+      : { name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: false, detail: 'skipped: not applicable to this connection kind' };
   const probes = [sanitizeStep(probe, input.apiKey)];
 
   return {
