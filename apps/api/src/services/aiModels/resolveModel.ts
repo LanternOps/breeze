@@ -7,6 +7,7 @@
  */
 import {
   AI_SURFACE_ROLES,
+  type AiModelChoiceDto,
   type AiSurface,
   type OfferingOptions,
   type OptionSupport,
@@ -273,6 +274,68 @@ async function finalize(
   };
 }
 
+/**
+ * The eligibility context resolveModel uses for a partner surface. Exported
+ * (W05) so read models — the chat and agent pickers — judge an offering with
+ * exactly the rules a dispatch will (spec §9 step 2), never a second copy.
+ */
+export async function eligibilityContextFor(input: {
+  partnerId: string;
+  orgId: string | null;
+  userId?: string | null;
+  surface: AiSurface;
+  transport: DispatchTransport;
+}): Promise<EligibilityContext> {
+  const userInitiated = typeof input.userId === 'string' && input.userId.length > 0;
+  const [partnerFacts, userHoldsPermission] = await Promise.all([
+    loadPartnerFacts(input.partnerId),
+    userInitiated
+      ? loadUserPermissionPredicate(input.userId!, input.partnerId, input.orgId)
+      : Promise.resolve((_key: string) => false),
+  ]);
+  return {
+    partnerId: input.partnerId,
+    surface: input.surface,
+    partnerPlan: partnerFacts.plan,
+    hosted: isHosted(),
+    residencyRequired: partnerFacts.residencyRequired,
+    geoCarriable: transportCarries(input.transport).inferenceGeo,
+    userInitiated,
+    userHoldsPermission,
+  };
+}
+
+/**
+ * W05: what a picker may offer for this offering on this transport. The SAME
+ * clamp dispatch applies (clampSupport: allowed_options, a fast rate, and
+ * transport carriage; budget thinking only where the transport carries it),
+ * so the picker can never offer an option the resolver would strip.
+ */
+export function pickerOptionSupport(c: LoadedCandidate, transport: DispatchTransport): AiModelChoiceDto['options'] {
+  const carriage = transportCarries(transport);
+  const support = clampSupport(c, carriage);
+  return {
+    // buildWireParams applies effort only on an adaptive model.
+    effort: c.capabilities.thinkingMode === 'adaptive' ? support.effort : [],
+    speed: support.speed,
+    budgetThinking: c.capabilities.thinkingMode === 'budget' && carriage.budgetThinking,
+  };
+}
+
+/**
+ * W05: the options a turn gets with no user choice — assignment → offering
+ * default, clamped exactly as dispatch would (the same requestedOptions +
+ * wireFor path finalize runs, with no request options and the model's own
+ * output cap).
+ */
+export function defaultOptionsFor(
+  c: LoadedCandidate,
+  assignmentOptions: Partial<OfferingOptions> | undefined,
+  transport: DispatchTransport,
+): OfferingOptions {
+  return wireFor(c, requestedOptions(c, undefined, assignmentOptions), undefined, transportCarries(transport)).applied;
+}
+
 export async function resolveModel(input: ResolveModelInput): Promise<ResolveModelResult> {
   const role = input.role ?? 'default';
   if (!(AI_SURFACE_ROLES[input.surface] as readonly string[]).includes(role)) {
@@ -306,23 +369,9 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
     () => getEffectiveAssignment({ partnerId, orgId: input.orgId, surface: input.surface, role }),
   ));
 
-  const userInitiated = typeof input.userId === 'string' && input.userId.length > 0;
-  const [partnerFacts, userHoldsPermission] = await Promise.all([
-    loadPartnerFacts(partnerId),
-    userInitiated
-      ? loadUserPermissionPredicate(input.userId!, partnerId, input.orgId)
-      : Promise.resolve((_key: string) => false),
-  ]);
-  const ctx: EligibilityContext = {
-    partnerId,
-    surface: input.surface,
-    partnerPlan: partnerFacts.plan,
-    hosted: isHosted(),
-    residencyRequired: partnerFacts.residencyRequired,
-    geoCarriable,
-    userInitiated,
-    userHoldsPermission,
-  };
+  const ctx = await eligibilityContextFor({
+    partnerId, orgId: input.orgId, userId: input.userId, surface: input.surface, transport,
+  });
 
   const origin: RequestOrigin = input.requested?.origin ?? 'user';
   // W05 (spec §11): a locked surface hides the menu AND the option controls.
