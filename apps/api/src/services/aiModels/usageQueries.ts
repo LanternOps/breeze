@@ -158,6 +158,7 @@ export function toUsageRow(r: RawRow): AiUsageRowDto {
     refusals,
     refusalRate: invocations === 0 ? 0 : refusals / invocations,
     fallbacks: Number(r.fallbacks ?? 0),
+    failovers: 0, // W09 stub (replaced in the usage-query task)
     ...(r.connection_disconnected === undefined ? {} : { connectionDisconnected: r.connection_disconnected === true }),
   };
 }

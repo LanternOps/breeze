@@ -182,6 +182,8 @@ function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
     permittedOfferingIds: r.permittedOfferingIds,
     allowUserChoice: r.allowUserChoice,
     options: (r.options ?? null) as OfferingOptions | null,
+    fallbackOfferingIds: null, // W09 stub (replaced in the registry-view task)
+    fallbackMayCrossFunding: null, // W09 stub
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -280,6 +282,7 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
       const p = partnerRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
       return {
         surface,
+        role: 'default', // W09 stub
         requiresTools: TOOL_SURFACES.has(surface),
         partner: p && assignmentRowDto(p),
         orgOverrideCount: allRows.filter((r) => r.surface === surface && r.orgId !== null).length,
@@ -323,12 +326,15 @@ export async function buildOrgModelDefaults(input: {
       const eff = mergeEffectiveAssignment({ surface, role: 'default', partner: p, org: o });
       return {
         surface,
+        role: 'default', // W09 stub
         requiresTools: TOOL_SURFACES.has(surface),
         inherited: {
           defaultOfferingId: p?.defaultOfferingId ?? null,
           permittedOfferingIds: p?.permittedOfferingIds ?? null,
           allowUserChoice: p?.allowUserChoice ?? true,
           options: (p?.options ?? {}) as OfferingOptions,
+          fallbackOfferingIds: [], // W09 stub
+          fallbackMayCrossFunding: false, // W09 stub
         },
         org: o && assignmentRowDto(o),
         effective: {
@@ -337,6 +343,8 @@ export async function buildOrgModelDefaults(input: {
           permittedOfferingIds: eff.permitted.kind === 'all' ? null : [...eff.permitted.offeringIds],
           allowUserChoice: eff.allowUserChoice,
           options: eff.options,
+          fallbackOfferingIds: [], // W09 stub
+          fallbackMayCrossFunding: false, // W09 stub
         },
       };
     }),

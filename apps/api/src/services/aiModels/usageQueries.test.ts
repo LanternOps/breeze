@@ -75,7 +75,7 @@ describe('buildUsageQuery', () => {
 describe('toUsageRow', () => {
   it('computes refusalRate and coerces numerics', () => {
     expect(toUsageRow({ key: 'k', label: 'L', invocations: '4', cost_cents: '12.5', input_tokens: '100', output_tokens: '50', refusals: '1', fallbacks: '0' }))
-      .toEqual({ key: 'k', label: 'L', invocations: 4, costCents: 12.5, inputTokens: 100, outputTokens: 50, refusals: 1, refusalRate: 0.25, fallbacks: 0 });
+      .toEqual({ key: 'k', label: 'L', invocations: 4, costCents: 12.5, inputTokens: 100, outputTokens: 50, refusals: 1, refusalRate: 0.25, fallbacks: 0, failovers: 0 });
   });
   it('refusalRate is 0 with no invocations', () => {
     expect(toUsageRow({ key: 'k', label: 'L', invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0' }).refusalRate).toBe(0);

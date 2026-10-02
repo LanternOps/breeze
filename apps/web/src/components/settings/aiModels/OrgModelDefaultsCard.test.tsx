@@ -27,11 +27,11 @@ const offering = (id: string, name: string) => ({
 type SurfaceOver = { inherited?: Partial<AiOrgSurfaceDefaultsDto['inherited']>; org?: AiAssignmentRowDto | null; effective?: Partial<AiOrgSurfaceDefaultsDto['effective']> };
 
 function surface(s: AiSurface, over: SurfaceOver = {}): AiOrgSurfaceDefaultsDto {
-  const inherited = { defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: {}, ...over.inherited };
+  const inherited = { defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: {}, fallbackOfferingIds: [] as string[], fallbackMayCrossFunding: false, ...over.inherited };
   const org = over.org ?? null;
   return {
-    surface: s, requiresTools: false, inherited, org,
-    effective: { defaultOfferingId: org?.defaultOfferingId ?? inherited.defaultOfferingId, defaultSource: org?.defaultOfferingId ? 'org' : 'partner', permittedOfferingIds: null, allowUserChoice: true, options: {}, ...over.effective },
+    surface: s, role: 'default', requiresTools: false, inherited, org,
+    effective: { defaultOfferingId: org?.defaultOfferingId ?? inherited.defaultOfferingId, defaultSource: org?.defaultOfferingId ? 'org' : 'partner', permittedOfferingIds: null, allowUserChoice: true, options: {}, fallbackOfferingIds: [] as string[], fallbackMayCrossFunding: false, ...over.effective },
   };
 }
 
@@ -80,7 +80,7 @@ describe('OrgModelDefaultsCard', () => {
 
   it('resetting a row to inherit sends an all-null row', async () => {
     fetchWithAuth
-      .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { org: { surface: 'chat', role: 'default', defaultOfferingId: B, permittedOfferingIds: null, allowUserChoice: null, options: null, updatedAt: T } } })))
+      .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { org: { surface: 'chat', role: 'default', defaultOfferingId: B, permittedOfferingIds: null, allowUserChoice: null, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: T } } })))
       .mockResolvedValueOnce(jsonRes({ assignments: [] }))
       .mockResolvedValueOnce(jsonRes(orgDefaults()));
     render(<OrgModelDefaultsCard orgId={ORG} />);
@@ -198,7 +198,7 @@ describe('OrgModelDefaultsCard', () => {
     // D was stored on the override but is no longer an enabled offering (absent from dto.offerings).
     const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const orgRow = (over: Partial<AiAssignmentRowDto>): AiAssignmentRowDto => ({
-      surface: 'chat', role: 'default', defaultOfferingId: null, permittedOfferingIds: null, allowUserChoice: null, options: null, updatedAt: T, ...over,
+      surface: 'chat', role: 'default', defaultOfferingId: null, permittedOfferingIds: null, allowUserChoice: null, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt: T, ...over,
     });
 
     it('renders a stored permitted id that is no longer offered as a checked "unavailable" entry that can be unticked', async () => {

@@ -102,6 +102,10 @@ export async function putPartnerAssignments(input: { partnerId: string; rows: Pa
     for (const row of input.rows) {
       const stored = existing.find((e) => e.surface === row.surface && e.role === row.role);
       assertNotStale(row.surface, stored, row.expectedUpdatedAt);
+      // W09 Task 1 stub: the contract now lets a role row clear its default; the write path for that lands with the escalation-role task.
+      if (row.defaultOfferingId === null) {
+        throw new RegistryWriteError('Choose a default model.', 'invalid', 422, { surface: row.surface, field: 'defaultOfferingId' });
+      }
       const def = await assertOfferingUsableForSurface({ partnerId, offeringId: row.defaultOfferingId, surface: row.surface, field: 'defaultOfferingId', ctx, cache });
       for (const id of newlyAddedIds(row.permittedOfferingIds, stored)) {
         await assertOfferingUsableForSurface({ partnerId, offeringId: id, surface: row.surface, field: 'permittedOfferingIds', ctx, cache });

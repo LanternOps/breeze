@@ -30,6 +30,13 @@ export const AI_SURFACE_ROLES: Readonly<Record<AiSurface, readonly string[]>> = 
   patch_test: ['default'],
 });
 
+/** W09 (#7607): the escalation stages an `ai_agents` run resolves (#7570). Mirrors AI_SURFACE_ROLES.ai_agents minus 'default'. */
+export const AI_AGENT_ESCALATION_ROLES = ['triage', 'analysis', 'remediation'] as const;
+export type AiAgentEscalationRole = (typeof AI_AGENT_ESCALATION_ROLES)[number];
+
+/** W09: the longest ordered failover list on one assignment row (the DB CHECK mirrors it). */
+export const MAX_FALLBACK_OFFERINGS = 5;
+
 /** An offering without verified tool support can't be assigned or permitted here (spec §7). */
 export const TOOL_REQUIRING_SURFACES = [
   'chat',

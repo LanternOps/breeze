@@ -23,12 +23,12 @@ const off = (id: string, over: Partial<AiOfferingDto> = {}) =>
   offeringRow({ id, enabled: true, displayName: `Model ${id.slice(0, 1)}`, ...over });
 
 function assignment(surface: AiSurface, defaultOfferingId: string, updatedAt = UPDATED): AiAssignmentRowDto {
-  return { surface, role: 'default', defaultOfferingId, permittedOfferingIds: null, allowUserChoice: true, options: null, updatedAt };
+  return { surface, role: 'default', defaultOfferingId, permittedOfferingIds: null, allowUserChoice: true, options: null, fallbackOfferingIds: null, fallbackMayCrossFunding: null, updatedAt };
 }
 
 function defaultsFor(surface: AiSurface, defaultOfferingId: string, over: Partial<AiSurfaceDefaultsDto> & { updatedAt?: string } = {}): AiSurfaceDefaultsDto {
   const { updatedAt, ...rest } = over;
-  return { surface, requiresTools: surface === 'chat', partner: assignment(surface, defaultOfferingId, updatedAt), orgOverrideCount: surface === 'helper' ? 2 : 0, ...rest };
+  return { surface, role: 'default', requiresTools: surface === 'chat', partner: assignment(surface, defaultOfferingId, updatedAt), orgOverrideCount: surface === 'helper' ? 2 : 0, ...rest };
 }
 
 function snapWithDefaults(over: { offerings?: AiOfferingDto[]; helperDefault?: string; chatUpdatedAt?: string; extra?: AiSurfaceDefaultsDto[] } = {}): AiModelsSnapshotDto {
@@ -196,7 +196,7 @@ describe('FeatureDefaultsCard', () => {
     const staleSnap = (chat: Partial<AiAssignmentRowDto>, offerings = [off(A), off(B, { enabled: false, displayName: 'Model B' })]): AiModelsSnapshotDto => ({
       ...SNAPSHOT,
       offerings,
-      defaults: [{ surface: 'chat', requiresTools: true, partner: { ...assignment('chat', A), ...chat }, orgOverrideCount: 0 }],
+      defaults: [{ surface: 'chat', role: 'default', requiresTools: true, partner: { ...assignment('chat', A), ...chat }, orgOverrideCount: 0 }],
     });
 
     it('renders a stored-but-disabled permitted id as a checked, labelled "unavailable" entry that can be unticked', async () => {
