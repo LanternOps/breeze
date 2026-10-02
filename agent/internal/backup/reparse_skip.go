@@ -9,7 +9,10 @@ import (
 	"unicode/utf16"
 )
 
-// Skipped reparse points (#7051).
+// Skipped reparse points (#7051). Junctions are captured as links since #7325
+// (junction.go); what follows is the skip path, which still covers volume
+// mount points, other reparse tags, and junctions whose target is not a
+// drive path.
 //
 // Since Go 1.23, os.Lstat on Windows reports a junction or volume mount point
 // (IO_REPARSE_TAG_MOUNT_POINT), and any other reparse point Go does not model,
@@ -81,13 +84,16 @@ func (s skippedReparsePoint) String() string {
 	return s.path + " (" + desc + ")"
 }
 
-// reparseSkips accumulates the reparse points skipped during one collection
-// walk: an exact total and per-kind count, plus the first
-// maxSkippedReparseSample entries in walk order.
+// reparseSkips accumulates what one collection walk did with the reparse
+// points it met. Junctions with a drive-path target are captured as links in
+// junctions (#7325) — every one, uncapped, since each is a manifest entry.
+// Everything else is skipped: an exact total and per-kind count, plus the
+// first maxSkippedReparseSample entries in walk order.
 type reparseSkips struct {
-	total  int
-	byKind map[reparseKind]int
-	sample []skippedReparsePoint
+	total     int
+	byKind    map[reparseKind]int
+	sample    []skippedReparsePoint
+	junctions []SnapshotJunction
 }
 
 func newReparseSkips() *reparseSkips {
@@ -155,7 +161,11 @@ func parseReparseBuffer(buf []byte) (tag uint32, kind reparseKind, target string
 	if nt && strings.HasPrefix(strings.ToLower(rest), "volume{") {
 		return tag, reparseKindMountPoint, `\\?\` + rest, nil
 	}
-	if print != "" {
+	// The substitute name is what the filesystem resolves; the print name
+	// is display text and may differ. The target is captured and restored
+	// (#7325), so it must be the substitute. The print name is used only
+	// when the substitute is not an NT path, which mklink never writes.
+	if !nt && print != "" {
 		return tag, reparseKindJunction, print, nil
 	}
 	return tag, reparseKindJunction, rest, nil

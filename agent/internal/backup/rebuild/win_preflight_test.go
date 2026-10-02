@@ -387,3 +387,32 @@ func TestIsDomainController_LoadsHiveReadOnly(t *testing.T) {
 		t.Fatalf("cmds = %v, isDomainController must never load read-write", sys.cmds)
 	}
 }
+
+// #7325: a junction from another volume would be flattened into the root
+// volume exactly like a file, so it is refused the same way.
+func TestWinPreflight_RefusesJunctionsFromOtherVolumes(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, sys := winFakeOptions(t, dir)
+	p := opts.Provider.(*memProvider)
+	var snap backup.Snapshot
+	if err := json.Unmarshal(p.files["snapshots/win-1/manifest.json"], &snap); err != nil {
+		t.Fatal(err)
+	}
+	snap.Junctions = append(snap.Junctions,
+		backup.SnapshotJunction{SourcePath: `D:\Shares\Link`, Target: `D:\Shares\Real`},
+		// A root-volume junction is fine.
+		backup.SnapshotJunction{SourcePath: `c:\Users\a\My Music`, Target: `C:\Users\a\Music`},
+	)
+	man, _ := json.Marshal(snap)
+	p.files["snapshots/win-1/manifest.json"] = man
+
+	res, err := Run(context.Background(), opts)
+	want := "snapshot contains 0 files and 1 junctions from volume D:; multi-volume Windows rebuilds are not supported in this build"
+	if err == nil || res == nil || res.Status != "refused" || res.Refusal != want {
+		t.Fatalf("res=%+v err=%v, want refused with %q", res, err, want)
+	}
+	if sys.has("CreateVHDX") || sys.has("WriteGPT") {
+		t.Fatalf("refusal must not write: %v", sys.cmds)
+	}
+}

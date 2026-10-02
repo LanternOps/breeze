@@ -1037,6 +1037,12 @@ func readReparsePoint(handle windows.Handle) (uint32, string) {
 		return 0, ""
 	}
 	h := (*reparseHeader)(unsafe.Pointer(&buf[0]))
+	if h.ReparseTag == windows.IO_REPARSE_TAG_MOUNT_POINT {
+		// A junction or volume mount point: its substitute name without
+		// the "\??\" prefix, which installJunction compares against.
+		target, _ := junctionTargetFromBuffer(buf[:returned])
+		return h.ReparseTag, target
+	}
 	if h.ReparseTag != windows.IO_REPARSE_TAG_SYMLINK || int(returned) < headerLen+payloadLen {
 		return h.ReparseTag, ""
 	}

@@ -2098,14 +2098,14 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL)$' -v 2>&1
+          $out = go test ./internal/securefs -run '^Test(InstallFileRejectsReparsePointAtEveryDepth|InstallFileResistsConcurrentComponentSwap|RenameRelativePublishesUnderThePinnedParent|InstallDirOnWindows|InstallSymlinkOnWindows|InstallSymlinkRefusesToReplaceAJunction|BuildSymlinkReparseBufferLayout|TargetIsDirectoryRefusesToProbeRemoteShapes|VerifyPrivateDirRejectsAReparsePoint|EnsurePrivateDirRepairsAnExistingInheritedDACL|EnsurePrivateDirTightensAPermissiveProtectedDACL|VerifyPrivateDirRejectsAnInheritedDACL|InstallJunctionOnWindows|InstallJunctionRefusesToReplaceOnWindows|InstallJunctionRefusesReparseAncestorOnWindows|EnsureNoReparsePointsAlongOnWindows)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the secure-staging boundary tests SKIPPED - the SEC-121 Windows reparse-point/DACL boundary has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 12) { throw "expected exactly 12 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 16) { throw "expected exactly 16 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # sd_windows.go/winpriv_windows.go are the HiveNightmare-class fix
       # (CVE-2021-36934) this wave depends on: a rebuilt C:\ with no
@@ -2336,6 +2336,26 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # Junctions backed up as links and recreated on restore (#7325). These
+      # plant real junctions with `mklink /J` and restore one to another
+      # location; the rest of the junction logic is covered by the portable
+      # tests in test-agent. internal/backup is excluded from the bare package
+      # list above, so name the tests and assert they PASSED.
+      - name: Run Windows junction backup/restore tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/backup -run '^Test(PlatformSkippedReparsePoint_ClassifiesRealJunction|CollectBackupFiles_JunctionCapturedNotTraversed|Junction_BackupRestoreRoundTripOnWindows)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the junction tests SKIPPED - junction capture/restore has no live coverage here" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # -race requires cgo, which remote/desktop cannot satisfy on Windows, so
       # this covers only packages that do not import it (heartbeat, agentapp and

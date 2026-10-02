@@ -246,6 +246,11 @@ type Snapshot struct {
 	ID        string         `json:"id"`
 	Timestamp time.Time      `json:"timestamp"`
 	Files     []SnapshotFile `json:"files"`
+	// Junctions are the NTFS directory junctions captured as links (#7325),
+	// recreated on restore. Deliberately NOT entries in Files, so readers
+	// that predate them ignore them — see junction.go. Omitted when the run
+	// met none, keeping every other manifest byte-identical.
+	Junctions []SnapshotJunction `json:"junctions,omitempty"`
 	// SecurityDescriptors is the run's deduplicated table of captured NTFS
 	// security descriptors (self-relative, base64), indexed 1-based by
 	// SnapshotFile.SDIndex — see sdTable. Omitted when nothing was captured.
@@ -652,6 +657,7 @@ type createSnapshotOptions struct {
 	systemStateStagingDir string
 	systemStateManifest   *systemstate.SystemStateManifest
 	layoutManifest        *layout.Manifest
+	junctions             []SnapshotJunction
 }
 
 // withRunIdentity stamps identity onto the new snapshot's BackupIdentity —
@@ -753,6 +759,15 @@ func withLayout(manifest *layout.Manifest) createSnapshotOption {
 // snapshot instead (D6); withSystemState publishes already-collected system
 // state under this call's snapshot ID BEFORE the ordinary manifest.json (see
 // withSystemState's doc comment for why the order matters).
+// withJunctions records the junctions the walk captured (#7325) on the
+// manifest. Set by finalizeManifest, so every publication carries them,
+// including a partial one. Junctions are re-collected by every scan, resumed
+// or not, and never inherited from a previous manifest: a junction deleted or
+// retargeted since then must not come back.
+func withJunctions(junctions []SnapshotJunction) createSnapshotOption {
+	return func(o *createSnapshotOptions) { o.junctions = junctions }
+}
+
 func createSnapshotWithProgress(ctx context.Context, provider providers.BackupProvider, files []backupFile, onProgress ProgressFn, journal *snapshotJournal, prevSnapshot *Snapshot, sourceLiveness sourceLivenessFn, opts ...createSnapshotOption) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -828,6 +843,7 @@ func createSnapshotWithProgress(ctx context.Context, provider providers.BackupPr
 			snapshot.FormatVersion = manifestFormatFidelity
 		}
 		snapshot.SecurityDescriptors = sdTbl.encoded()
+		snapshot.Junctions = options.junctions
 	}
 
 	prefix := path.Join(snapshotRootDir, snapshot.ID)
