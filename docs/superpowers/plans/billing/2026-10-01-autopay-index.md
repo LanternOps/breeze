@@ -199,7 +199,7 @@ export async function resumeAutopay(db: Tx, actor: InvoiceActor, orgId: string):
 export async function turnOffAutopay(db: Tx, actor: InvoiceActor, orgId: string): Promise<void>;
 export async function stopAutopayByClient(db: Tx, input: { orgId: string; source: 'link' | 'portal'; portalUserId?: string }): Promise<void>;
 export async function createAutopaySetupSession(input: { orgId: string; methodType: AutopayPaymentMethodType; consentAccepted: true; returnTo: 'public' | 'portal'; tokenId?: string; contactEmail: string; ip: string | null; userAgent: string | null }): Promise<{ url: string }>;
-export async function completeAutopaySetup(partnerId: string, ref: { checkoutSessionId?: string; setupIntentId?: string }): Promise<{ outcome: 'activated' | 'pending_verification' | 'stale_generation' | 'failed'; orgId: string }>;
+export async function completeAutopaySetup(partnerId: string, ref: { checkoutSessionId?: string; setupIntentId?: string }): Promise<{ outcome: 'activated' | 'pending_verification' | 'stale_generation' | 'failed' | 'in_progress' | 'abandoned'; orgId: string }>; // (W02 final review: additive)
 
 // paymentMethods.ts [W2]
 export async function getAutopayMethod(db: Tx, orgId: string): Promise<typeof orgPaymentMethods.$inferSelect | null>; // is_autopay_method & status in (active, pending_verification)

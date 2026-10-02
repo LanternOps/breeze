@@ -128,3 +128,15 @@ it.each([
   expect(JSON.parse(mutations[0][1]!.body as string)).toEqual({ action });
   expect(screen.queryByTestId('autopay-off-confirm')).toBeNull();
 });
+it('shows failed request delivery with a resend action',async()=>{
+ vi.mocked(fetchWithAuth).mockImplementation(async()=>Response.json({...row(orgA,'requested'),requestNoticeStatus:'handler_failed'}));
+ render(<OrgAutopayCard orgId={orgA}/>);
+ expect(await screen.findByTestId('autopay-request-delivery')).toHaveTextContent('Request email could not be delivered');
+ expect(screen.getByTestId('autopay-request')).toHaveTextContent('Resend');
+});
+it('shows readable warning for skipped requests',async()=>{
+ vi.mocked(fetchWithAuth).mockImplementation(async(_url,init)=>Response.json(init?.method?{requested:[],skipped:[{orgId:orgA,reason:'stripe_not_ready'}]}:row(orgA,'requested')));
+ render(<OrgAutopayCard orgId={orgA}/>);fireEvent.click(await screen.findByTestId('autopay-request'));
+ const result=await screen.findByTestId('autopay-org-result');expect(result).toHaveAttribute('role','alert');
+ expect(result).toHaveTextContent('Stripe is not ready');expect(result).not.toHaveTextContent('stripe_not_ready');
+});

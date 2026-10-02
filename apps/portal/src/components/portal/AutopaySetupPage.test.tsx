@@ -87,3 +87,11 @@ it('public storage removal failure preserves the confirmed outcome and reports f
   expect(screen.getByTestId('autopay-feedback')).toHaveTextContent('could not clear');
   expect(apiPost).toHaveBeenCalledTimes(1);
 });
+it.each(['in_progress','abandoned'])('renders %s honestly with a next action',async outcome=>{
+ window.history.replaceState({},'', '/autopay/return?target=public&session_id=cs_test');sessionStorage.setItem('autopay-return-token','test-token');
+ vi.mocked(apiPost).mockResolvedValue({data:{outcome,orgId:'org',methodLabel:null,feeText:''}});
+ render(<AutopaySetupPage mode="return"/>);fireEvent.click(screen.getByTestId('autopay-return-submit'));
+ expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent(outcome==='in_progress'?'Your setup is still being confirmed — check back shortly':'This setup session expired — start again');
+ if(outcome==='in_progress'){expect(sessionStorage.getItem('autopay-return-token')).toBe('test-token');expect(screen.getByTestId('autopay-return-submit')).toBeEnabled();}
+ else expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href','/portal/autopay/test-token');
+});

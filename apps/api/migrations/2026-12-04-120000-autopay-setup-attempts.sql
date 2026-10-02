@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS autopay_setup_attempts (
   consent_snapshot jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
-  outcome text CHECK(outcome IN ('activated','pending_verification','stale_generation','failed')),
+  outcome text CHECK(outcome IN ('activated','pending_verification','stale_generation','failed','in_progress','abandoned')),
   CONSTRAINT autopay_setup_attempts_enrollment_org_fk FOREIGN KEY(enrollment_id,org_id)
     REFERENCES org_autopay_enrollments(id,org_id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE,
   CONSTRAINT autopay_setup_attempts_org_partner_fk FOREIGN KEY(org_id,partner_id)
@@ -57,3 +57,7 @@ END $$;
 DROP TRIGGER IF EXISTS autopay_setup_attempts_immutable_authority ON autopay_setup_attempts;
 CREATE TRIGGER autopay_setup_attempts_immutable_authority BEFORE UPDATE ON autopay_setup_attempts
  FOR EACH ROW EXECUTE FUNCTION autopay_setup_attempts_immutable_authority();
+
+ALTER TABLE autopay_setup_attempts DROP CONSTRAINT IF EXISTS autopay_setup_attempts_outcome_check;
+ALTER TABLE autopay_setup_attempts ADD CONSTRAINT autopay_setup_attempts_outcome_check
+ CHECK(outcome IN ('activated','pending_verification','stale_generation','failed','in_progress','abandoned'));

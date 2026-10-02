@@ -511,7 +511,8 @@ export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: nu
   return `${worked} h worked · ${billed} h billed`;
 }
 
-export interface InvoiceAutopayDisclosure { eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string }
+import type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
+export type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
 export interface SaveForAutopayInput { saveForAutopay: boolean; consentAccepted?: true; disclosureHash?: string }
 
 export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: InvoiceAutopayDisclosure | null): SaveForAutopayInput {

@@ -5,18 +5,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import InheritedField from '../shared/InheritedField';
-export interface PaymentValues {
-  autopayOffsetDays: number | null; autopayOffsetRule: 'earlier' | 'later' | null;
-  autopayCapEnabled: boolean | null; autopayCapAmount: string | null;
-  autopayCapCurrency: string | null; achMode: 'ach_preferred' | 'ach_only' | null;
-}
-type Effective<T> = { value: T; source: 'org' | 'partner' | 'default' };
-type Resolved = {
-  autopayOffsetDays: Effective<number>; autopayOffsetRule: Effective<'earlier' | 'later'>;
-  autopayCap: Effective<{ enabled: false } | { enabled: true; amount: string; currency: string }>;
-  achMode: Effective<'ach_preferred' | 'ach_only'>;
-};
-export interface PaymentSettingsView { autopayEnabled: boolean; values: PaymentValues; inherited: Resolved; effective: Resolved }
+import type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
+export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export function usePaymentSettings(orgId?: string) {
   const { t } = useTranslation('billing');
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';

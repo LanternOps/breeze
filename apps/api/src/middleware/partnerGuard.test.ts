@@ -343,3 +343,11 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     expect(limitMock).toHaveBeenCalledTimes(1);
   });
 });
+it.each([
+ ['/api/v1/autopay/public/token',true],['/api/v1/autopay/public/token/stop',true],
+ ['/api/v1/autopay/public/token/setup-session',true],['/api/v1/autopay/public/setup-return',true],
+ ['/api/v1/autopay/public/token/admin',false],['/api/v1/autopay/public/token/stop/extra',false],
+ ['/api/v1/autopay/publicity',false],['/api/v1/autopay/requests',false],
+] as const)('autopay guard exempts only exact public routes: %s', (path,allowed)=>{
+ expect(isPartnerGuardExemptPath(path)).toBe(allowed);
+});

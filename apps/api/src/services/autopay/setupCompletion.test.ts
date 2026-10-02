@@ -10,12 +10,13 @@ vi.mock('../../db',()=>{
   runAfterDbContextExit:vi.fn(),hasDbAccessContext:()=>false};
 });
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
+vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn()}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
 import {completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
 const snapshot={partnerName:'Example MSP',version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),
- scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+ achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
  contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page',scheduleText:'On the due date.',feeText:'No fee.'};
 function attempt(extra:Record<string,unknown>={}){return {id:'11111111-1111-4111-8111-111111111111',orgId:'22222222-2222-4222-8222-222222222222',
  partnerId:'33333333-3333-4333-8333-333333333333',enrollmentId:'44444444-4444-4444-8444-444444444444',generation:3,tokenId:null,
@@ -37,7 +38,7 @@ beforeEach(()=>{
  m.mint.mockResolvedValue({id:'token',token:'token'});m.enqueue.mockResolvedValue({id:'notice',created:true});
 });
 describe('completion fences',()=>{
- it.each(['paused','cancelled'])('cannot activate %s',status=>{
+ it.each(['paused','cancelled'] as const)('cannot activate %s',status=>{
   expect(setupAuthorityOutcome({status,generation:3},3,true)).toBe('stale_generation');
  });
  it('old generations and superseded same-generation attempts never reactivate',()=>{
@@ -46,7 +47,7 @@ describe('completion fences',()=>{
  });
  it('microdeposits are pending but card authentication is never called success',()=>{
   expect(setupIntentOutcome({status:'requires_action',next_action:{type:'verify_with_microdeposits'}})).toBe('pending_verification');
-  expect(setupIntentOutcome({status:'requires_action',next_action:{type:'use_stripe_sdk'}})).toBe('failed');
+  expect(setupIntentOutcome({status:'requires_action',next_action:{type:'use_stripe_sdk'}})).toBe('in_progress');
  });
  it('retrieves provider truth and records the exact accepted authorization once',async()=>{
   queueAuthority();m.rows.push([],[],[{id:'method_one'}],[],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>{{org_name}}: {{payment_method}}</p>'}}}}]);
@@ -131,10 +132,10 @@ describe('completion fences',()=>{
   await expect(completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).rejects.toThrow(/mandate/);
   expect(m.writes).toEqual([]);
  });
- it('records card authentication failure without saving consent or a method',async()=>{
+ it('leaves card authentication in progress without saving consent or a method',async()=>{
   queueAuthority();m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'use_stripe_sdk'}});
-  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
-  expect(m.writes).toEqual([{needsAttentionReason:'verification_failed'},{outcome:'failed'}]);
+  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('in_progress');
+  expect(m.writes).toEqual([]);
   expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
  });
  it('rejects absent provider metadata as a binding mismatch before querying authority',async()=>{
@@ -150,4 +151,45 @@ describe('completion fences',()=>{
   expect(m.writes).toContainEqual(expect.objectContaining({isAutopayMethod:true,accountHolderType:null}));
  });
 
+});
+
+it.each(['processing','requires_confirmation','requires_payment_method'])('keeps %s unfinished without alerting',async status=>{
+ m.rows.push([attempt()]);m.intent.mockResolvedValue({...await m.intent(),status,payment_method:null});
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('in_progress');
+ expect(m.writes).toEqual([]);expect(m.mint).not.toHaveBeenCalled();
+});
+it('allows an unverified bank without a PaymentMethod customer',async()=>{
+ queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],[{settings:{}}]);
+ m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:null});
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
+});
+it('preserves activated audit outcome after a newer attempt or pause',async()=>{
+ queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));m.rows[5]=[{id:'newer'}];Object.assign(m.rows[3]![0]!,{status:'paused'});
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ expect(m.writes).toEqual([]);
+});
+it.each(['open','expired'])('handles %s Checkout without a SetupIntent',async status=>{
+ const value=attempt();m.session.mockResolvedValue({mode:'setup',status,customer:'cus_one',setup_intent:null});
+ if(status==='open')m.rows.push([value]);else queueAuthority(value);
+ expect((await completeAutopaySetup(value.partnerId,{checkoutSessionId:'cs_one'})).outcome).toBe(status==='open'?'in_progress':'abandoned');
+ expect(m.intent).not.toHaveBeenCalled();
+ expect(m.writes).toEqual(status==='open'?[]:[{outcome:'abandoned',completedAt:expect.any(Date)}]);
+});
+it('terminal failure completes once and preserves a working replacement method',async()=>{
+ queueAuthority();m.rows.push([],[{id:'working'}]);
+ m.intent.mockResolvedValue({...await m.intent(),status:'requires_payment_method',last_setup_error:{code:'card_declined'},payment_method:null});
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
+ expect(m.writes).toContainEqual({outcome:'failed',completedAt:expect.any(Date)});
+ expect(m.writes.some(row=>'needsAttentionReason'in row)).toBe(false);
+ m.rows.length=0;m.writes.length=0;queueAuthority(attempt({outcome:'failed',completedAt:new Date()}));
+ await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'});
+ expect(m.writes).toEqual([]);
+});
+it('queues a late provider capture after the attempt was terminally failed',async()=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ queueAuthority(attempt({outcome:'failed',completedAt:new Date()}));
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
+ expect(enqueueRejectedAutopayMethod).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({id:attempt().id}),expect.objectContaining({id:'pm_one'}));
+ expect(m.writes).toEqual([]);
 });

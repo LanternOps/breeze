@@ -30,6 +30,8 @@ const enrollmentRenderers: Partial<Record<BillingNoticeKind, (ctx: AutopayNotice
   autopay_request: (ctx, executor) => renderAutopayNotice('autopay_request', ctx, executor),
   autopay_enrolled: (ctx, executor) => renderAutopayNotice('autopay_enrolled', ctx, executor),
   autopay_stopped: (ctx, executor) => renderAutopayNotice('autopay_stopped', ctx, executor),
+  autopay_paused: (ctx, executor) => renderAutopayNotice('autopay_paused', ctx, executor),
+  autopay_resumed: (ctx, executor) => renderAutopayNotice('autopay_resumed', ctx, executor),
   card_expiring: (ctx, executor) => renderAutopayNotice('card_expiring', ctx, executor),
 };
 

@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import PartnerBillingSettingsPage from './PartnerBillingSettingsPage';
 import OrgBillingSettings from './OrgBillingSettings';
 import { fetchWithAuth } from '../../stores/auth';
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(),useAuthStore:(select:any)=>select({user:{canManagePartnerWide:true}}) }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./BillingRatesTab', () => ({ default: () => null }));

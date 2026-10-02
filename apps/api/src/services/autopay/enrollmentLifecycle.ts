@@ -54,7 +54,7 @@ async function openInvoiceLinks(db:Tx,orgId:string):Promise<NonNullable<AutopayN
  }
  return links;
 }
-async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices']){
+async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices']){
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
  if(!org||!partner)throw new Error('Autopay notice tenant disappeared');
@@ -71,7 +71,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,
   vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices}},db);
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
-  seq:enrollment.generation,dedupeKey:`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??'request'}`,
+  seq:enrollment.generation,dedupeKey:`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});
 }
 export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:string[];recipientOverride?:string}):Promise<{requested:string[];skipped:{orgId:string;reason:'no_billing_contact'|'already_active'|'stripe_not_ready'}[]}>{
@@ -110,21 +110,23 @@ export async function pauseAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promis
   .where(eq(orgAutopayEnrollments.id,enrollment.id)).returning();
  await db.update(invoiceAutopaySchedules).set({state:'cancelled',stateReason:'paused_by_msp'})
   .where(and(eq(invoiceAutopaySchedules.orgId,orgId),inArray(invoiceAutopaySchedules.state,[...NON_TERMINAL_SCHEDULE_STATES])));
- await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(and(eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,enrollment.generation),isNull(autopaySetupAttempts.completedAt)));
+ await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(and(eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,enrollment.generation),isNull(autopaySetupAttempts.completedAt),sql`${autopaySetupAttempts.outcome} IS DISTINCT FROM 'pending_verification'`));
  const links=await openInvoiceLinks(db,orgId);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
- if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:'Your service provider paused automatic payments',open_invoices_text:'Existing invoices remain payable using their payment links.'},undefined,links);
+ if(recipient)await notice(db,updated!,'autopay_paused',recipient,{stopped_by:'Your service provider',open_invoices_text:'Existing invoices remain payable using their payment links.'},undefined,links);
 }
 export async function resumeAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promise<void>{
- await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
+ const org=await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
  if(enrollment.status==='active')return;
  const method=await getAutopayMethod(db,orgId);
  if(enrollment.status!=='paused'||method?.status!=='active'||enrollment.needsAttentionReason)
   throw new InvoiceServiceError('Update the payment method before resuming',409,'INVALID_STATE');
  if(!await isAutopayEnabledForPartner(db,enrollment.partnerId)||!(await getAutopayStripeReadiness(db,enrollment.partnerId)).ready)
   throw new InvoiceServiceError('Stripe is not ready for automatic payments',409,'INVALID_STATE');
- await db.update(orgAutopayEnrollments).set({status:'active',effectiveFrom:new Date(),pausedBy:null,pausedAt:null})
-  .where(eq(orgAutopayEnrollments.id,enrollment.id));
+ const [updated]=await db.update(orgAutopayEnrollments).set({status:'active',effectiveFrom:new Date(),pausedBy:null,pausedAt:null})
+  .where(eq(orgAutopayEnrollments.id,enrollment.id)).returning();
+ const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
+ if(recipient)await notice(db,updated!,'autopay_resumed',recipient,{});
 }
 const clientStopToken=new AsyncLocalStorage<string>();
 /** Internal route orchestration only; deliberately not exported by the C4 facade. */

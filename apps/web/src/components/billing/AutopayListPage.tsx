@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
-import { readAutopay, mutateAutopay, methodLabel, type AutopayRow } from './autopayClient';
+import { readAutopay, mutateAutopay, methodLabel, skippedAutopayReason, type AutopayRow } from './autopayClient';
 export default function AutopayListPage() {
   const { t } = useTranslation('billing');
   const [rows, setRows] = useState<AutopayRow[]>([]); const [loading, setLoading] = useState(true);
@@ -33,9 +33,9 @@ export default function AutopayListPage() {
           checked={selected.includes(row.orgId)} disabled={busy || row.enrollment?.status === 'active'}
           onChange={e => setSelected(current => e.target.checked ? [...current, row.orgId] : current.filter(id => id !== row.orgId))} /></td>
         <td><a data-testid={`autopay-client-${row.orgId}`} href={`/organizations/${row.orgId}#billing`}>{row.orgName}</a></td>
-        <td>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}</td><td>{methodLabel(row.method)}</td></tr>)}</tbody></table>
+        <td>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}{(row.requestNoticeStatus==='failed'||row.requestNoticeStatus==='handler_failed')&&<div><p role="alert" data-testid={`autopay-delivery-${row.orgId}`} className="text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p><button data-testid={`autopay-resend-${row.orgId}`} disabled={busy} onClick={()=>void send([row.orgId])}>{t('autopay.resend')}</button></div>}</td><td>{methodLabel(row.method)}</td></tr>)}</tbody></table>
     {rows.length === 0 && <p data-testid="autopay-empty">{t('autopay.empty')}</p>}
-    {result && <section data-testid="autopay-bulk-result" role="status"><p>{t('autopay.requestedCount', { count: result.requested.length })}</p>
-      {result.skipped.map(item => <p key={item.orgId}>{rows.find(row => row.orgId === item.orgId)?.orgName ?? item.orgId}: {item.reason}</p>)}</section>}
+    {result && <section data-testid="autopay-bulk-result" role={result.skipped.length?'alert':'status'} className={result.skipped.length?'text-amber-800 dark:text-amber-200':undefined}><p>{t('autopay.requestedCount', { count: result.requested.length })}</p>
+      {result.skipped.map(item => <p key={item.orgId}>{rows.find(row => row.orgId === item.orgId)?.orgName ?? item.orgId}: {skippedAutopayReason(item.reason)}</p>)}</section>}
   </main>;
 }

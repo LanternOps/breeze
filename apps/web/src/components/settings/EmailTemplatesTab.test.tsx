@@ -43,12 +43,12 @@ beforeEach(() => {
 });
 
 describe('EmailTemplatesTab', () => {
-  it('mounts all four enrollment templates under Billing & payments and opens their existing editor', async () => {
+  it('mounts all enrollment templates under Billing & payments and opens their existing editor', async () => {
     routeFetch();
     render(<EmailTemplatesTab />);
     const group = await screen.findByTestId('autopay-email-template-group');
     expect(group.textContent).toContain('Billing & payments');
-    for (const id of ['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring']) {
+    for (const id of ['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']) {
       expect(within(group).getByTestId(`autopay-email-template-${id}`)).toBeTruthy();
     }
     fireEvent.click(within(group).getByTestId('autopay-email-template-autopay_request'));
@@ -69,10 +69,10 @@ describe('EmailTemplatesTab', () => {
       'portal_invite',
       'autopay_request',
       'autopay_enrolled',
-      'autopay_stopped',
+      'autopay_stopped','autopay_paused','autopay_resumed',
       'card_expiring',
     ]);
-    const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring']);
+    const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']);
     for (const id of EMAIL_TEMPLATE_IDS) {
       const row = screen.getByTestId(newIds.has(id) ? `autopay-email-template-${id}` : `email-template-row-${id}`);
       expect(row.textContent).toContain(emailTemplateLabel(id));

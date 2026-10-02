@@ -1349,6 +1349,8 @@
       "autopay_request": "Automatic payments request",
       "autopay_enrolled": "Automatic payments confirmed",
       "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Paiements automatiques suspendus",
+      "autopay_resumed": "Paiements automatiques repris",
       "card_expiring": "Saved card expiring"
     }
   },

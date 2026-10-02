@@ -2422,6 +2422,10 @@
     }
   },
   "autopay": {
+    "requestDeliveryFailed": "Request email could not be delivered. Resend the request.",
+    "skipNoContact": "No billing contact email is available. Add an email or enter a recipient.",
+    "skipStripeNotReady": "Stripe is not ready for automatic payments. Check the connection and permissions.",
+    "skipAlreadyActive": "Automatic payments are already active or paused.",
     "title": "Automatic payments",
     "loading": "Loading automatic payments…",
     "error": "Could not complete this action. Please try again.",

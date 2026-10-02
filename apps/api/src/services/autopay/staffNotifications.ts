@@ -40,6 +40,11 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
   if (!email) return;
   const service = getEmailService();
   if (!service) throw new Error('Staff email transport is unavailable');
+  const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
+    UPDATE org_autopay_enrollments SET staff_email_dedupe_keys=array_append(staff_email_dedupe_keys,${input.dedupeKey})
+    WHERE org_id=${input.orgId}::uuid AND partner_id=${input.partnerId}::uuid
+      AND NOT (${input.dedupeKey}=ANY(staff_email_dedupe_keys)) RETURNING id`)));
+  if (!Array.from(claimed).length) return;
   await runOutsideDbContext(() => service.sendEmail({ to: email, purpose: 'staff.autopay',
     subject: 'Automatic payments update', html: `<p>${escapeHtml(input.message)}</p>`, text: input.message }));
 }

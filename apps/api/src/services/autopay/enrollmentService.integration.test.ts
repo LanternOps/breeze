@@ -34,8 +34,8 @@ describe('real enrollment authority fence',()=>{
   expect(outcomes.map(row=>row.outcome)).toEqual(['stale_generation','stale_generation']);
   const rows=await withSystemDbAccessContext(()=>db.execute(sql`SELECT status FROM org_autopay_enrollments WHERE id=${enrollmentId}`));
   expect(Array.from(rows)).toEqual([{status:'cancelled'}]);
-  const methods=await withSystemDbAccessContext(()=>db.execute(sql`SELECT id FROM org_payment_methods WHERE org_id=${org.id}`));
-  expect(Array.from(methods)).toEqual([]);
+  const methods=await withSystemDbAccessContext(()=>db.execute(sql`SELECT status,is_autopay_method,detach_stripe_account_id FROM org_payment_methods WHERE org_id=${org.id}`));
+  expect(Array.from(methods)).toEqual([{status:'removed',is_autopay_method:false,detach_stripe_account_id:'acct_one'}]);
  });
  it('a rolled-back stop cannot detach, and committed stop keeps a processing debit intact',async()=>{
   const partner=await createPartner();const org=await createOrganization({partnerId:partner.id});
@@ -71,7 +71,7 @@ describe('real enrollment authority fence',()=>{
   const partner=await createPartner({name:'Example MSP'});const org=await createOrganization({partnerId:partner.id,name:'Example client'});
   const conn=await connection(partner.id,'acct_current');
   const snapshot={version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),partnerName:partner.name,
-   scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+   achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
    contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page',scheduleText:'On the due date.',feeText:'No fee.'};
   const methodType=outcome==='activated'?'card':'us_bank_account';
   const attempt=await withSystemDbAccessContext(async()=>{
@@ -99,4 +99,118 @@ describe('real enrollment authority fence',()=>{
   await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
  });
 
+});
+
+import {eq} from 'drizzle-orm';
+import {mintBillingLinkToken,resolveBillingLinkToken} from './linkTokens';
+import {pauseAutopay} from './enrollmentLifecycle';
+import {prepareAutopayCapture} from './setupSession';
+import {withAcceptedAutopayDisclosure} from './consentText';
+import {partners} from '../../db/schema';
+async function verificationFixture(){
+ const partner=await createPartner({name:'Example MSP'}),org=await createOrganization({partnerId:partner.id});
+ const conn=await connection(partner.id,'acct_verify');
+ return withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({autopayEnabled:true}).where(eq(partners.id,partner.id));
+  await db.update(stripeConnectAccounts).set({accountCountry:'US',autopayCapabilitiesCheckedAt:new Date(),autopayMissingPermissions:[]}).where(eq(stripeConnectAccounts.id,conn.id));
+  const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:org.id,partnerId:partner.id,stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_verify'}).returning();
+  const token=await mintBillingLinkToken(db,{orgId:org.id,enrollmentId:enrollment!.id,generation:1,purpose:'enroll',ttlDays:1});
+  const snapshot={version:'2026-10-01.v1',text:'Authorization',hash:'a'.repeat(64),textHash:'b'.repeat(64),partnerName:partner.name,
+   scheduleText:'Due date',feeText:'No fee',achMode:'ach_preferred',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
+   feeTerms:{methodType:'us_bank_account',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+   source:'setup_page',contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:null,checkoutKey:null};
+  const [attempt]=await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:partner.id,enrollmentId:enrollment!.id,generation:1,tokenId:token.id,
+   source:'setup_page',methodType:'us_bank_account',stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_verify',consentSnapshot:snapshot}).returning();
+  return {partner,org,conn,enrollment:enrollment!,attempt:attempt!,token};
+ });
+}
+it.each([false,true])('verifies pending microdeposits once, preserving consent/date and paused state (%s)',async paused=>{
+ const f=await verificationFixture();const bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
+ await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
+ const [pending]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));
+ expect(pending).toMatchObject({status:'active',effectiveFrom:expect.any(Date)});
+ const [pendingMethod]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));expect(pendingMethod?.status).toBe('pending_verification');
+ const charges=await withSystemDbAccessContext(()=>db.execute(sql`SELECT count(*)::int AS n FROM invoice_collection_attempts WHERE org_id=${f.org.id}`));expect(Array.from(charges)).toEqual([{n:0}]);
+ if(paused)await withSystemDbAccessContext(()=>pauseAutopay(db,{partnerId:f.partner.id,userId:null,accessibleOrgIds:[f.org.id]},f.org.id));
+ // A newer unfinished setup must not erase already-given bank consent.
+ await withSystemDbAccessContext(()=>db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,
+  source:'portal',methodType:'card',stripeConnectionId:f.conn.id,stripeAccountId:f.conn.stripeAccountId,stripeCustomerId:'cus_verify',consentSnapshot:f.attempt.consentSnapshot}));
+ for(let replay=0;replay<2;replay++)expect((await persistCapturedAutopayMethod(f.attempt.id,{...bank,customer:'cus_verify'},'activated','seti_verify','mandate_verify')).outcome).toBe('activated');
+ const saved=await withSystemDbAccessContext(async()=>({enrollments:await db.select().from(orgAutopayEnrollments),methods:await db.select().from(orgPaymentMethods),
+  consents:await db.select().from(orgAutopayConsents),tokens:await db.select().from(billingLinkTokens),notices:await db.select().from(billingNoticeOutbox)}));
+ expect(saved.enrollments[0]).toMatchObject({status:paused?'paused':'active',effectiveFrom:pending!.effectiveFrom,generation:1});
+ expect(saved.methods[0]).toMatchObject({status:'active',isAutopayMethod:true});expect(saved.consents).toHaveLength(1);
+ expect(saved.tokens.filter(t=>t.purpose==='stop_autopay')).toHaveLength(1);expect(saved.notices.filter(n=>n.kind==='autopay_enrolled')).toHaveLength(1);
+ expect(saved.tokens.find(t=>t.id===f.token.id)?.consumedAt).toBeInstanceOf(Date);
+ expect(await withSystemDbAccessContext(()=>resolveBillingLinkToken(db,f.token.token,'enroll'))).toBeNull();
+ if(!paused)await expect(withAcceptedAutopayDisclosure('a'.repeat(64),()=>prepareAutopayCapture({orgId:f.org.id,tokenId:f.token.id,methodType:'card',consentAccepted:true,returnTo:'public',contactEmail:'billing@example.test',ip:null,userAgent:null},'setup_page'))).rejects.toThrow('Setup link expired');
+});
+
+import {completeAutopaySetup} from './setupCompletion';
+import {reconcileAutopaySetups} from './setupReconciliation';
+it.each(['open','expired','requires_action','processing','failed'])('sweeps provider state %s twice without duplicate alerts',async state=>{
+ const f=await verificationFixture();
+ await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({checkoutSessionId:'cs_verify'}).where(eq(autopaySetupAttempts.id,f.attempt.id)));
+ vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{
+  checkout:{sessions:{retrieve:vi.fn(async()=>({mode:'setup',status:state==='open'||state==='expired'?state:'complete',customer:'cus_verify',setup_intent:'seti_verify'}))}},
+  setupIntents:{retrieve:vi.fn(async()=>({id:'seti_verify',customer:'cus_verify',status:state==='failed'?'requires_payment_method':state,
+   last_setup_error:state==='failed'?{code:'verification_failed'}:null,payment_method:null,next_action:state==='requires_action'?{type:'use_stripe_sdk'}:null,
+   metadata:{setup_attempt_id:f.attempt.id,org_id:f.org.id,enrollment_id:f.enrollment.id,generation:'1',token_id:f.token.id}}))}
+ }} as any);
+ for(let i=0;i<2;i++){
+  await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({discoveryNextAttemptAt:new Date(0)}));
+  await reconcileAutopaySetups();
+ }
+ const [attempt]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts));
+ const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));
+ expect(attempt?.outcome).toBe(state==='expired'?'abandoned':state==='failed'?'failed':null);
+ expect(enrollment?.needsAttentionReason).toBe(state==='failed'?'verification_failed':null);
+ if(state==='failed')await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
+ else expect(notifyAutopayStaff).not.toHaveBeenCalled();
+ expect(attempt?.completedAt!==null).toBe(['expired','failed'].includes(state));
+});
+
+import {Hono} from 'hono';
+import {publicAutopayRoutes} from '../../routes/autopay/public';
+import {portalPaymentMethodRoutes} from '../../routes/portal/paymentMethods';
+const portalIdentity=vi.hoisted(()=>({orgId:''}));
+vi.mock('../../routes/portal/auth',()=>({portalAuthMiddleware:async(c:any,next:any)=>{
+ c.set('portalAuth',{authMethod:'bearer',user:{id:'11111111-1111-4111-8111-111111111111',orgId:portalIdentity.orgId,email:'portal@example.test'}});return next();
+}}));
+it.each(['public','portal'])('allows %s stop when the partner is disabled, revoking links and detaching',async source=>{
+ const f=await verificationFixture();portalIdentity.orgId=f.org.id;
+ const token=await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id));
+  await db.update(orgAutopayEnrollments).set({status:'active',effectiveFrom:new Date()}).where(eq(orgAutopayEnrollments.id,f.enrollment.id));
+  await db.insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:f.enrollment.id,stripePaymentMethodId:'pm_stop',type:'card',status:'active',isAutopayMethod:true});
+  return mintBillingLinkToken(db,{orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1,purpose:'stop_autopay',ttlDays:1});
+ });
+ const detach=vi.fn(async()=>({}));vi.mocked(getPartnerStripeClient).mockResolvedValue({stripeAccountId:'acct_verify',defaultCurrency:'USD',stripe:{paymentMethods:{retrieve:vi.fn(async()=>({customer:'cus_verify'})),detach}}} as any);
+ const app=new Hono().route('/public',publicAutopayRoutes).route('/portal',portalPaymentMethodRoutes);
+ const res=await app.request(source==='public'?`/public/${token.token}/stop`:'/portal/autopay/stop',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:'{}'});
+ expect(res.status).toBe(200);
+ const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));expect(enrollment?.status).toBe('cancelled');
+ const links=await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens));expect(links.every(link=>link.revokedAt!==null)).toBe(true);
+ await vi.waitFor(()=>expect(detach).toHaveBeenCalledExactlyOnceWith('pm_stop'));
+});
+it('failed microdeposit verification retires the pending method and alerts once',async()=>{
+ const f=await verificationFixture(),bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
+ await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));vi.mocked(notifyAutopayStaff).mockClear();
+ for(let i=0;i<2;i++)expect((await persistCapturedAutopayMethod(f.attempt.id,bank,'failed','seti_verify',null)).outcome).toBe('failed');
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));expect(method?.status).toBe('unusable');
+ const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));expect(enrollment?.needsAttentionReason).toBe('verification_failed');
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
+});
+it('late bank verification cannot replace a newer activated card',async()=>{
+ const f=await verificationFixture(),bank={id:'pm_verify',type:'us_bank_account',customer:null} as Stripe.PaymentMethod;
+ await persistCapturedAutopayMethod(f.attempt.id,bank,'pending_verification','seti_verify',null);
+ const next=await withSystemDbAccessContext(async()=>{
+  const [row]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,
+   source:'portal',methodType:'card',stripeConnectionId:f.conn.id,stripeAccountId:f.conn.stripeAccountId,stripeCustomerId:'cus_verify',consentSnapshot:f.attempt.consentSnapshot}).returning();return row!;
+ });
+ await persistCapturedAutopayMethod(next.id,{id:'pm_new',type:'card',customer:'cus_verify'} as Stripe.PaymentMethod,'activated','seti_new',null);
+ expect((await persistCapturedAutopayMethod(f.attempt.id,{...bank,customer:'cus_verify'},'activated','seti_verify','mandate_verify')).outcome).toBe('stale_generation');
+ const rows=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));
+ expect(rows.find(m=>m.isAutopayMethod)?.stripePaymentMethodId).toBe('pm_new');
 });

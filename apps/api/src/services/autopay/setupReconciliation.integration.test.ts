@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import { db, withSystemDbAccessContext } from '../../db';
-import { orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts, stripeFinancialEvents } from '../../db/schema';
+import { orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts, stripeFinancialEvents, invoices, invoicePayments, invoiceStripePayments } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { createOrganization, createPartner } from '../../__tests__/integration/db-utils';
 const m = vi.hoisted(() => ({ client: vi.fn(), retrieve: vi.fn(), list: vi.fn(), complete: vi.fn(), finish: vi.fn(), notify: vi.fn() }));
@@ -156,4 +156,29 @@ describe('real reconciliation selection and durability', () => {
     expect(rows.find(r => r.orgId === other.orgId)!.status).toBe('active');
     expect(m.notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ orgId: f.orgId, partnerId: f.partnerId }));
   });
+});
+it('caps capture recovery with growing backoff and one terminal staff notice',async()=>{
+ const f=await fixture();const row=setup(f,{source:'pay_and_save',createdAt:new Date(Date.now()-25*60*60_000)});
+ await withSystemDbAccessContext(async()=>{
+  const [invoice]=await db.insert(invoices).values({orgId:f.orgId,partnerId:f.partnerId,status:'paid',currencyCode:'USD',total:'100.00',amountPaid:'100.00',balance:'0.00'}).returning();
+  const [payment]=await db.insert(invoicePayments).values({invoiceId:invoice!.id,orgId:f.orgId,amount:'100.00',method:'card',receivedAt:'2026-10-02'}).returning();
+  await db.insert(invoiceStripePayments).values({orgId:f.orgId,invoiceId:invoice!.id,invoicePaymentId:payment!.id,stripeAccountId:f.stripeAccountId,stripeObjectType:'checkout_session',stripeObjectId:row.checkoutSessionId!,amount:'100.00',currency:'USD',status:'succeeded'});
+ });
+ await withSystemDbAccessContext(()=>db.insert(autopaySetupAttempts).values(row));
+ m.finish.mockRejectedValue(new Error('permanent capture failure'));
+ let previousDelay=0;
+ for(let i=1;i<=8;i++){
+  await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({captureNextAttemptAt:new Date(0)}));
+  await reconcileAutopaySetups();
+  const [saved]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts));
+  if(i<8){const delay=saved!.captureNextAttemptAt.getTime()-Date.now();expect(delay).toBeGreaterThan(previousDelay);previousDelay=delay;}
+  else expect(saved).toMatchObject({outcome:'failed',completedAt:expect.any(Date)});
+ }
+ await reconcileAutopaySetups();expect(m.finish).toHaveBeenCalledTimes(8);expect(m.notify).toHaveBeenCalledTimes(1);
+ expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({message:'Payment booked, card not saved. Please request a new payment method.'}));
+});
+it('does not claim an unpaid abandoned capture was booked when retries expire',async()=>{
+ const f=await fixture();await withSystemDbAccessContext(()=>db.insert(autopaySetupAttempts).values(setup(f,{source:'pay_and_save',captureAttemptCount:7,createdAt:new Date(Date.now()-25*60*60_000)})));
+ m.finish.mockResolvedValue({outcome:'not_saved'});await reconcileAutopaySetups();
+ const [row]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts));expect(row?.outcome).toBe('abandoned');expect(m.notify).not.toHaveBeenCalled();
 });

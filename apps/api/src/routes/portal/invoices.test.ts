@@ -36,9 +36,10 @@ vi.mock('../../services/invoicePdf', () => ({
 // DB mock for the list query: select().from().where() resolves to either the
 // count row or the data rows depending on call order. insert().values() is a
 // thenable so the pay route's mapping INSERT awaits cleanly.
-const { dbResults, insertValuesMock, ctx } = vi.hoisted(() => ({
+const { dbResults, insertValuesMock, mappings, ctx } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
+  mappings: new Map<string,Record<string,unknown>>(),
   ctx: { depth: 0 },
 }));
 // SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
@@ -68,7 +69,10 @@ vi.mock('../../db', () => {
       return Promise.resolve(rows).then(resolve);
     };
     (chain as { insert: unknown }).insert = vi.fn(() => ({
-      values: (v: unknown) => { insertValuesMock(v); return Promise.resolve(undefined); },
+      values: (v: any) => { insertValuesMock(v);let ignore=false;
+        const result:any={onConflictDoNothing:()=>{ignore=true;return result;},returning:()=>result,
+          then:(resolve:any,reject:any)=>{const prior=mappings.get(v.stripeObjectId);if(prior&&!ignore)return Promise.reject(new Error('invoice_stripe_payments_object_uq')).then(resolve,reject);
+            if(!prior)mappings.set(v.stripeObjectId,v);return Promise.resolve(prior?[]:[{invoiceId:v.invoiceId}]).then(resolve,reject);}};return result; },
     }));
     return chain;
   };
@@ -184,7 +188,7 @@ it('portal invoice pay rejects missing authorization before Stripe', async () =>
 });
 
   beforeEach(() => {
-    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); reservation.inFlight.mockResolvedValue({ inProgress: false, amount: '0.00' }); dbResults.length = 0; insertValuesMock.mockReset(); onlinePayMock.mockResolvedValue(true); });
+    reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); reservation.inFlight.mockResolvedValue({ inProgress: false, amount: '0.00' }); dbResults.length = 0; insertValuesMock.mockReset(); mappings.clear(); onlinePayMock.mockResolvedValue(true); });
 
   it.each(['pay', 'settle'])('rejects cookie-authenticated POST /invoices/:id/%s without CSRF before side effects', async (action) => {
     const res = await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/${action}`, {
@@ -709,8 +713,33 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
 vi.mock('../../services/autopay/payAndSave', async importOriginal => {
   const actual = await importOriginal<typeof import('../../services/autopay/payAndSave')>();
   return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null),
+    bindCardPayAndSave:vi.fn(async()=>{}),
     prepareCardPayAndSave: vi.fn(async (_invoiceId: string, _orgId: string, input: { saveForAutopay?: boolean }) => {
       if (input.saveForAutopay) throw new Error('Unexpected accepted save in ordinary-payment fixture');
       return null;
     }) };
+});
+
+it('reuses a portal Checkout mapping on repeated create',async()=>{
+ mappings.clear();dbResults.length=0;
+ getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_reuse',url:'https://checkout.stripe.com/c/cs_reuse'});
+ for(let i=0;i<2;i++){
+  dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);if(i)dbResults.push([{invoiceId:INV_ID,stripeAccountId:'acct_9'}]);
+  const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST'});
+  expect(response.status).toBe(200);expect(await response.json()).toMatchObject({url:'https://checkout.stripe.com/c/cs_reuse'});
+ }
+ expect(mappings.size).toBe(1);
+});
+it('portal pay-and-save forwards consent and binds card-only off-session Checkout',async()=>{
+ mappings.clear();dbResults.length=0;
+ const capture={id:'33333333-3333-4333-8333-333333333333',stripeCustomerId:'cus_saved'};
+ vi.mocked(prepareCardPayAndSave).mockResolvedValueOnce(capture as any);
+ dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}],[{id:'connection'}],[]);
+ getPartnerStripeClientMock.mockResolvedValue(partnerClient('acct_9'));sessionsCreateMock.mockResolvedValue({id:'cs_saved',url:'https://checkout.stripe.com/c/cs_saved',payment_intent:'pi_saved'});
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({saveForAutopay:true,consentAccepted:true,disclosureHash:'a'.repeat(64)})});
+ expect(response.status).toBe(200);
+ expect(prepareCardPayAndSave).toHaveBeenCalledWith(INV_ID,ORG_ID,expect.objectContaining({saveForAutopay:true,consentAccepted:true,disclosureHash:'a'.repeat(64)}),expect.any(String));
+ expect(sessionsCreateMock).toHaveBeenCalledWith(expect.objectContaining({payment_method_types:['card'],customer:'cus_saved',payment_intent_data:{setup_future_usage:'off_session',metadata:{autopay_setup_attempt_id:capture.id}}}),expect.anything());
+ const {bindCardPayAndSave}=await import('../../services/autopay/payAndSave');
+ expect(bindCardPayAndSave).toHaveBeenCalledWith(capture,expect.objectContaining({id:'cs_saved'}));
 });

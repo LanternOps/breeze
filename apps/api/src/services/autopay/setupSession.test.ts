@@ -119,3 +119,11 @@ describe('capture preparation',()=>{
   await expect(withAcceptedAutopayDisclosure('hash',()=>createAutopaySetupSession(input))).rejects.toThrow('Automatic payment setup was cancelled');
  });
 });
+
+it.each(['matching','changed hash','stale generation','failed'] as const)('checkout-key reuse: %s',async state=>{
+ const snapshot={version:'v1',text:'Consent',textHash:'hash',partnerName:'MSP',scheduleText:'Schedule',feeText:'No fee',achMode:'card_only',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},source:'setup_page',contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:'invoice',checkoutKey:'key',hash:state==='changed hash'?'old':'hash'};
+ const prior={...attempt,consentSnapshot:snapshot,generation:state==='stale generation'?6:7,outcome:state==='failed'?'failed':null};
+ mock.rows=[[org],[enrollment],[connection],[token],[prior],[{...attempt,id:'new'}]];
+ const result=await withAcceptedAutopayDisclosure('hash',()=>prepareAutopayCapture(input,'setup_page','invoice','key'));
+ expect(result.id).toBe(state==='matching'?'attempt':'new');
+});

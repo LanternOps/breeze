@@ -29,3 +29,19 @@ describe('concurrent card expiry checks',()=>{
     expect(await checkExpiringAutopayCards(new Date('2026-10-03T06:28:00Z'))).toEqual({enqueued:0});
   });
 });
+it.each(['disabled partner','paused enrollment','bank method','suspended org','deleted org'])('excludes %s while retaining a happy-path control',async excluded=>{
+ const testDb=getTestDb();
+ const ids:string[]=[];
+ for(const skip of [false,true]){
+  const partner=await createPartner(),org=await createOrganization({partnerId:partner.id});ids.push(org.id);
+  await testDb.update(partners).set({autopayEnabled:!(skip&&excluded==='disabled partner')}).where(eq(partners.id,partner.id));
+  const {organizations}=await import('../../db/schema');
+  if(skip&&excluded==='suspended org')await testDb.update(organizations).set({status:'suspended'}).where(eq(organizations.id,org.id));
+  if(skip&&excluded==='deleted org')await testDb.update(organizations).set({deletedAt:new Date()}).where(eq(organizations.id,org.id));
+  const [connection]=await testDb.insert(stripeConnectAccounts).values({partnerId:partner.id,stripeAccountId:`acct_${randomUUID()}`,apiKey:'enc:synthetic',keyLast4:'test'}).returning();
+  const [enrollment]=await testDb.insert(orgAutopayEnrollments).values({orgId:org.id,partnerId:partner.id,status:skip&&excluded==='paused enrollment'?'paused':'active',stripeConnectionId:connection!.id,stripeAccountId:connection!.stripeAccountId,effectiveFrom:new Date(),requestRecipientEmail:'billing@example.test'}).returning();
+  await testDb.insert(orgPaymentMethods).values({orgId:org.id,enrollmentId:enrollment!.id,stripePaymentMethodId:`pm_${randomUUID()}`,type:skip&&excluded==='bank method'?'us_bank_account':'card',status:'active',isAutopayMethod:true,cardExpMonth:10,cardExpYear:2026});
+ }
+ expect(await checkExpiringAutopayCards(new Date('2026-10-02T06:28:00Z'))).toEqual({enqueued:1});
+ const notices=await testDb.select().from(billingNoticeOutbox);expect(notices.map(n=>n.orgId)).toEqual([ids[0]]);
+});

@@ -1,5 +1,8 @@
+import {enqueueRejectedAutopayMethod} from './paymentMethods';
+import type {InvoiceAutopayOffer} from '@breeze/shared';
+import {autopayConsentSnapshotSchema} from './types';
 import { z } from 'zod';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import { organizations, orgAutopayEnrollments, invoiceStripePayments, invoices } from '../../db/schema';
@@ -61,9 +64,7 @@ export async function prepareCardPayAndSave(invoiceId: string, orgId: string, in
   }, 'pay_and_save', invoiceId, checkoutKey));
 }
 
-export async function getInvoiceAutopayOffer(orgId: string): Promise<{
-  eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string;
-} | null> {
+export async function getInvoiceAutopayOffer(orgId: string): Promise<InvoiceAutopayOffer | null> {
   // orgId comes only from an authorized invoice or the verified portal identity.
   // The complete disclosure also reads partner-axis settings invisible to portal RLS.
   return readWithPartnerAxisVisibility(async () => {
@@ -86,11 +87,13 @@ export async function finishCardPayAndSave(partnerId: string, checkoutSessionId:
     .where(and(
       eq(invoiceStripePayments.stripeObjectId, checkoutSessionId),
       eq(invoices.partnerId, partnerId),
-      isNotNull(invoiceStripePayments.invoicePaymentId),
     )).limit(1));
-  if (!mapping) return {outcome:'not_saved'};
+  const findBoundCapture=()=>withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(and(
+    eq(autopaySetupAttempts.checkoutSessionId,checkoutSessionId),eq(autopaySetupAttempts.partnerId,partnerId),eq(autopaySetupAttempts.source,'pay_and_save'))).limit(1));
+  const [bound]=!mapping?.mapping.invoicePaymentId?await findBoundCapture():[];
+  if(!mapping?.mapping.invoicePaymentId&&!bound)return {outcome:'not_saved'};
   const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
-  if (stripeAccountId !== mapping.mapping.stripeAccountId) throw new Error('Stripe account changed');
+  if (stripeAccountId !== (mapping?.mapping.stripeAccountId??bound?.stripeAccountId)) throw new Error('Stripe account changed');
   const session = await runOutsideDbContext(() => stripe.checkout.sessions.retrieve(checkoutSessionId));
   if (session.mode !== 'payment' || session.payment_status !== 'paid') return {outcome:'not_saved'};
   const piId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
@@ -98,21 +101,28 @@ export async function finishCardPayAndSave(partnerId: string, checkoutSessionId:
   const intent = await runOutsideDbContext(() => stripe.paymentIntents.retrieve(piId));
   const attemptId = intent.metadata.autopay_setup_attempt_id;
   if (!attemptId) return {outcome:'not_saved'};
-  const [attempt] = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts).where(and(
+  const [scopedAttempt] = bound?[bound]:await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts).where(and(
     eq(autopaySetupAttempts.id, attemptId),
     eq(autopaySetupAttempts.partnerId, partnerId),
-    eq(autopaySetupAttempts.orgId, mapping.invoice.orgId),
+    eq(autopaySetupAttempts.orgId, mapping!.invoice.orgId),
     eq(autopaySetupAttempts.stripeAccountId, stripeAccountId),
     eq(autopaySetupAttempts.source, 'pay_and_save'),
   )).limit(1));
-  if (!attempt || (attempt.consentSnapshot as { invoiceId?: string }).invoiceId !== mapping.invoice.id
-    || intent.setup_future_usage !== 'off_session' || intent.status !== 'succeeded') return {outcome:'not_saved'};
+  const attempt=scopedAttempt??(await findBoundCapture())[0];
+  if(!attempt||attempt.stripeAccountId!==stripeAccountId||attempt.id!==attemptId||intent.status!=='succeeded')return {outcome:'not_saved'};
   const customer = typeof intent.customer === 'string' ? intent.customer : intent.customer?.id;
-  if (customer !== attempt.stripeCustomerId) throw new Error('Pay-and-save Customer mismatch');
+
   const methodId = typeof intent.payment_method === 'string' ? intent.payment_method : intent.payment_method?.id;
   if (!methodId) throw new Error('Paid card has no payment method');
   const method = await runOutsideDbContext(() => stripe.paymentMethods.retrieve(methodId));
-  if (method.type !== 'card') throw new Error('Pay-and-save must remain card-only');
+  if(customer!==attempt.stripeCustomerId||method.type!=='card'){
+    await withSystemDbAccessContext(()=>enqueueRejectedAutopayMethod(db,attempt,method));
+    throw new Error(customer!==attempt.stripeCustomerId?'Pay-and-save Customer mismatch':'Pay-and-save must remain card-only');
+  }
+  if(!mapping?.mapping.invoicePaymentId||mapping.invoice.orgId!==attempt.orgId||autopayConsentSnapshotSchema.parse(attempt.consentSnapshot).invoiceId!==mapping.invoice.id||intent.setup_future_usage!=='off_session'){
+    await withSystemDbAccessContext(()=>enqueueRejectedAutopayMethod(db,attempt,method));
+    return {outcome:'not_saved'};
+  }
   return persistCapturedAutopayMethod(attempt.id, method, 'activated', null, null);
 }
 

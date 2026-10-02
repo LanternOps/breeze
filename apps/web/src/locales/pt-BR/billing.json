@@ -2422,6 +2422,10 @@
     }
   },
   "autopay": {
+    "requestDeliveryFailed": "Não foi possível entregar o e-mail da solicitação. Envie novamente.",
+    "skipNoContact": "Não há e-mail de cobrança disponível. Adicione um ou informe um destinatário.",
+    "skipStripeNotReady": "O Stripe não está pronto para pagamentos automáticos. Verifique a conexão e as permissões.",
+    "skipAlreadyActive": "Os pagamentos automáticos já estão ativos ou pausados.",
     "title": "Pagamentos automáticos",
     "loading": "Carregando pagamentos automáticos…",
     "error": "Não foi possível concluir esta ação. Tente novamente.",

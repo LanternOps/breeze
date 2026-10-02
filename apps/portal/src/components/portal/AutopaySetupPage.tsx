@@ -10,6 +10,7 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
   const [method, setMethod] = useState<MethodType>('us_bank_account');
   const [accepted, setAccepted] = useState(false); const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState(''); const [failed, setFailed] = useState(false);
+  const [restartUrl,setRestartUrl]=useState('/portal/payment-methods');
   const [finished, setFinished] = useState(false); const [outcome, setOutcome] = useState<SetupOutcome | null>(null);
   const config = { redirectOnUnauthorized: portal };
   const base = portal ? '/portal/payment-methods' : `/autopay/public/${encodeURIComponent(token ?? '')}`;
@@ -61,8 +62,8 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
         onOutcome, successMessage: 'Setup checked.', errorFallback: 'Could not confirm setup. Try again.',
       });
       if (result) {
-        setOutcome(result);
-        if (!returnPortal) {
+        setOutcome(result);setRestartUrl(returnPortal?'/portal/payment-methods':`/portal/autopay/${encodeURIComponent(returnToken??'')}`);
+        if (!returnPortal && result.outcome!=='in_progress') {
           try { sessionStorage.removeItem('autopay-return-token'); }
           catch { onOutcome('Setup checked, but could not clear the return token from session storage. Close this tab when finished.', true); }
         }
@@ -82,11 +83,12 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
     {feedback && <p role={failed ? 'alert' : 'status'} data-testid="autopay-feedback">{feedback}</p>}
     {mode === 'return' ? <div data-testid="autopay-return">
       <h1>Confirm automatic payment setup</h1>
-      {!outcome && <button data-testid="autopay-return-submit" disabled={busy} onClick={() => void confirmReturn()}>Confirm setup</button>}
+      {(!outcome||outcome.outcome==='in_progress') && <button data-testid="autopay-return-submit" disabled={busy} onClick={() => void confirmReturn()}>Confirm setup</button>}
       {outcome && <div data-testid="autopay-return-outcome">
         <h2>{({ activated: 'Automatic payments are set up', pending_verification: 'Bank verification is pending',
-          stale_generation: 'This setup request is no longer current', failed: 'Setup was not completed' })[outcome.outcome]}</h2>
+          stale_generation: 'This setup request is no longer current', failed: 'Setup was not completed', in_progress: 'Your setup is still being confirmed — check back shortly', abandoned: 'This setup session expired — start again' })[outcome.outcome]}</h2>
         {(outcome.outcome === 'activated' || outcome.outcome === 'pending_verification') && <p>{outcome.methodLabel} — {outcome.feeText}</p>}
+        {outcome.outcome==='abandoned'&&<a data-testid="autopay-restart" href={restartUrl}>Start again</a>}
         {outcome.outcome === 'pending_verification' && <p>Follow Stripe’s verification instructions. No automatic payment can be made until verification completes.</p>}
         {outcome.outcome === 'stale_generation' && <p>This return did not restart automatic payments. Ask your service provider for a new request.</p>}
       </div>}

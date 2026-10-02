@@ -2422,6 +2422,10 @@
     }
   },
   "autopay": {
+    "requestDeliveryFailed": "No se pudo entregar el correo de solicitud. Vuelve a enviarlo.",
+    "skipNoContact": "No hay un correo de facturación disponible. Agrega uno o indica un destinatario.",
+    "skipStripeNotReady": "Stripe no está listo para pagos automáticos. Revisa la conexión y los permisos.",
+    "skipAlreadyActive": "Los pagos automáticos ya están activos o pausados.",
     "title": "Pagos automáticos",
     "loading": "Cargando pagos automáticos…",
     "error": "No se pudo completar esta acción. Inténtalo de nuevo.",

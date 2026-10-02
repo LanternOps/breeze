@@ -5,7 +5,7 @@ import { escapeHtml } from '../emailLayout';
 import { htmlToText } from '../inboundEmail/htmlToText';
 import { partnerEmailCustomFromSettings, renderPartnerEmail } from '../emailTemplates/renderPartnerEmail';
 import type { Tx, RenderedNotice } from './types';
-export type EnrollmentNoticeKind = 'autopay_request' | 'autopay_enrolled' | 'autopay_stopped' | 'card_expiring';
+export type EnrollmentNoticeKind = 'autopay_request' | 'autopay_enrolled' | 'autopay_stopped' | 'autopay_paused' | 'autopay_resumed' | 'card_expiring';
 export interface AutopayNoticeContext {
   partnerId: string; orgId: string; vars: Record<string,string>; ctaUrl?: string;
   scheduleText: string; feeText: string; stopUrl?: string; authorizationReference?: string;

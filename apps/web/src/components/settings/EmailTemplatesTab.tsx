@@ -15,7 +15,7 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 
 type TemplatesMap = Partial<Record<EmailTemplateId, EmailTemplateOverride>>;
 
-const AUTOPAY_TEMPLATE_IDS=new Set<EmailTemplateId>(['autopay_request','autopay_enrolled','autopay_stopped','card_expiring']);
+const AUTOPAY_TEMPLATE_IDS=new Set<EmailTemplateId>(['autopay_request','autopay_enrolled','autopay_stopped', 'autopay_paused', 'autopay_resumed','card_expiring']);
 const BILLING_TEMPLATE_IDS=new Set<EmailTemplateId>(['quote_send','invoice_send',...AUTOPAY_TEMPLATE_IDS]);
 
 function asOverride(row: unknown): EmailTemplateOverride | undefined {

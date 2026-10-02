@@ -46,7 +46,7 @@ publicAutopayRoutes.get('/:token/stop',boundary('stop_autopay'),gate,async c=>{
   const page=await getAutopayCustomerPage(c.get('autopayIdentity').orgId);
   return c.json({partnerName:page.partnerName,orgName:page.orgName,processingWarning:page.processingWarning});
 });
-publicAutopayRoutes.post('/:token/stop',boundary('stop_autopay'),gate,zValidator('json',z.object({}).strict()),async c=>{
+publicAutopayRoutes.post('/:token/stop',boundary('stop_autopay'),zValidator('json',z.object({}).strict()),async c=>{
   await withAutopayStopToken(c.req.param('token'),()=>withSystemDbAccessContext(
     ()=>stopAutopayByClient(db,{orgId:c.get('autopayIdentity').orgId,source:'link'})));return c.json({success:true});
 });

@@ -1349,6 +1349,8 @@
       "autopay_request": "Automatic payments request",
       "autopay_enrolled": "Automatic payments confirmed",
       "autopay_stopped": "Automatic payments stopped",
+      "autopay_paused": "Otomatik ödemeler duraklatıldı",
+      "autopay_resumed": "Otomatik ödemeler devam ediyor",
       "card_expiring": "Saved card expiring"
     }
   },

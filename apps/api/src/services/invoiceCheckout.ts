@@ -257,7 +257,7 @@ export async function createInvoicePayLink(
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
     raced = racedRevocation !== undefined || racedCollection || racedBalance;
-    await db.insert(invoiceStripePayments).values({
+    const [insertedMapping]=await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -268,7 +268,12 @@ export async function createInvoicePayLink(
       currency: inv.currencyCode,
       status: 'pending',
       providerExpiresAt: session.expires_at ? new Date(session.expires_at * 1000) : new Date(expiresAt * 1000),
-    });
+    }).onConflictDoNothing({target:invoiceStripePayments.stripeObjectId}).returning({invoiceId:invoiceStripePayments.invoiceId});
+    if(!insertedMapping){
+      const [existingMapping]=await db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripeObjectId,session.id)).limit(1);
+      if(!existingMapping||existingMapping.invoiceId!==inv.id||existingMapping.stripeAccountId!==stripeAccountId)
+        throw new InvoiceServiceError('Checkout session belongs to a different invoice',409,'INVALID_STATE');
+    }
     if (raced) {
       // Stamp intent on THIS transaction handle. Escaping to a second transaction
       // to re-take the invoice lock would deadlock against our publication lock.

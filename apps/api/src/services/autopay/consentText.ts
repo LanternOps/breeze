@@ -22,12 +22,8 @@ export function withAcceptedAutopayDisclosure<T>(hash:string,fn:()=>Promise<T>):
 export function requireAcceptedAutopayDisclosure(hash:string):void{
  if(accepted.getStore()!==hash)throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
 }
-export interface AutopayDisclosure {
- version:string;text:string;hash:string;textHash:string;partnerName:string;scheduleText:string;feeText:string;
- achMode:'ach_preferred'|'ach_only'|'card_only';
- scheduleTerms:{offsetDays:number;rule:'earlier'|'later';cap:{enabled:false}|{enabled:true;amount:string;currency:string}};
- feeTerms:{methodType:AutopayPaymentMethodType;cardFeeBps:number;achFeeAmount:string;feeAttested:boolean;currency:string};
-}
+import type { AutopayDisclosure } from '@breeze/shared';
+export type { AutopayDisclosure } from '@breeze/shared';
 export async function buildAutopayDisclosure(db:Tx,orgId:string,methodType:AutopayPaymentMethodType):Promise<AutopayDisclosure>{
  const [row]=await db.select({org:organizations,partner:partners}).from(organizations)
   .innerJoin(partners,eq(partners.id,organizations.partnerId)).where(eq(organizations.id,orgId)).limit(1);
@@ -50,8 +46,8 @@ export async function buildAutopayDisclosure(db:Tx,orgId:string,methodType:Autop
  const feeTerms={methodType,cardFeeBps:methodType==='card'?bps:0,achFeeAmount:methodType==='us_bank_account'?quote.feeAmount:'0.00',
   feeAttested:settings.feeAttested,currency:row.org.currencyCode};
  const version=CURRENT_AUTOPAY_CONSENT_VERSION;
- const text=AUTOPAY_CONSENT_TEXT[version]![methodType].replace('{{msp}}',row.partner.name)
-  .replace('{{schedule}}',scheduleText).replace('{{fee}}',feeText);
+ const substitutions:Record<string,string>={msp:row.partner.name,schedule:scheduleText,fee:feeText};
+ const text=AUTOPAY_CONSENT_TEXT[version]![methodType].replace(/\{\{(msp|schedule|fee)\}\}/g,(_,key:string)=>substitutions[key]!);
  const hash=createHash('sha256').update(JSON.stringify({version,text,scheduleTerms,feeTerms})).digest('hex');
  const textHash=createHash('sha256').update(text).digest('hex');
  return {version,text,hash,textHash,partnerName:row.partner.name,scheduleText,feeText,achMode,scheduleTerms,feeTerms};

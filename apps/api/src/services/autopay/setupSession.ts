@@ -1,5 +1,6 @@
+import {autopayConsentSnapshotSchema,AUTOPAY_SNAPSHOT_KEYS,type AutopayConsentSnapshot} from './types';
 import {and,eq,desc,sql} from 'drizzle-orm';
-import type {AutopayPaymentMethodType} from '@breeze/shared';
+import type {AutopaySetupSource,AutopayPaymentMethodType} from '@breeze/shared';
 import type Stripe from 'stripe';
 import {db,withSystemDbAccessContext,runOutsideDbContext} from '../../db';
 import {organizations,orgAutopayEnrollments,billingLinkTokens,stripeConnectAccounts} from '../../db/schema';
@@ -14,7 +15,7 @@ import {getAutopayStripeReadiness} from './stripeCapabilities';
 import {buildAutopayDisclosure,requireAcceptedAutopayDisclosure} from './consentText';
 export type SetupInput={orgId:string;methodType:AutopayPaymentMethodType;consentAccepted:true;
  returnTo:'public'|'portal';tokenId?:string;contactEmail:string;ip:string|null;userAgent:string|null};
-export async function prepareAutopayCapture(input:SetupInput,source:'setup_page'|'pay_and_save'|'portal',invoiceId?:string,checkoutKey?:string){
+export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetupSource,invoiceId?:string,checkoutKey?:string){
  assertNoHeldDbContextForStripe('prepareAutopayCapture');
  const attempt=await withSystemDbAccessContext(async()=>{
   const [org]=await db.select().from(organizations).where(eq(organizations.id,input.orgId)).limit(1).for('update');
@@ -38,14 +39,17 @@ export async function prepareAutopayCapture(input:SetupInput,source:'setup_page'
    throw new InvoiceServiceError('Payment method unavailable',409,'INVALID_STATE');
   if(checkoutKey){
    const [prior]=await db.select().from(autopaySetupAttempts).where(and(eq(autopaySetupAttempts.enrollmentId,enrollment.id),
-    eq(autopaySetupAttempts.generation,enrollment.generation),sql`${autopaySetupAttempts.consentSnapshot}->>'checkoutKey'=${checkoutKey}`,
-    sql`${autopaySetupAttempts.consentSnapshot}->>'hash'=${disclosure.hash}`)).orderBy(desc(autopaySetupAttempts.ordinal)).limit(1);
-   if(prior&&prior.outcome!=='stale_generation')return prior;
+    eq(autopaySetupAttempts.generation,enrollment.generation),sql`${autopaySetupAttempts.consentSnapshot}->>${AUTOPAY_SNAPSHOT_KEYS.checkoutKey}=${checkoutKey}`,
+    sql`${autopaySetupAttempts.consentSnapshot}->>${AUTOPAY_SNAPSHOT_KEYS.hash}=${disclosure.hash}`)).orderBy(desc(autopaySetupAttempts.ordinal)).limit(1);
+   if(prior&&!prior.completedAt&&prior.generation===enrollment.generation&&(prior.outcome===null||prior.outcome==='pending_verification')){
+    const snapshot=autopayConsentSnapshotSchema.parse(prior.consentSnapshot);
+    if(snapshot.checkoutKey===checkoutKey&&snapshot.hash===disclosure.hash)return prior;
+   }
   }
   const [saved]=await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:org.partnerId,enrollmentId:enrollment.id,
    generation:enrollment.generation,tokenId:input.tokenId??null,source,methodType:input.methodType,
    stripeConnectionId:connection.id,stripeAccountId:connection.stripeAccountId,stripeCustomerId:enrollment.stripeCustomerId,
-   consentSnapshot:{invoiceId:invoiceId??null,checkoutKey:checkoutKey??null,...disclosure,contactEmail:input.contactEmail,ip:input.ip,userAgent:input.userAgent,source}}).returning();
+   consentSnapshot:{invoiceId:invoiceId??null,checkoutKey:checkoutKey??null,...disclosure,contactEmail:input.contactEmail,ip:input.ip,userAgent:input.userAgent,source} satisfies AutopayConsentSnapshot}).returning();
   return saved!;
  });
  if(attempt.stripeCustomerId)return attempt;
@@ -71,13 +75,13 @@ export async function prepareAutopayCapture(input:SetupInput,source:'setup_page'
  });
 }
 export async function createHostedAutopaySession(attempt:{id:string;partnerId:string;orgId:string;enrollmentId:string;generation:number;tokenId:string|null;
- stripeCustomerId:string;stripeAccountId:string;methodType:string},returnTo:'public'|'portal'){
+ stripeCustomerId:string;stripeAccountId:string;methodType:AutopayPaymentMethodType},returnTo:'public'|'portal'){
  assertNoHeldDbContextForStripe('createHostedAutopaySession');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));
  if(stripeAccountId!==attempt.stripeAccountId)throw new Error('Stripe account changed');
  const metadata={org_id:attempt.orgId,enrollment_id:attempt.enrollmentId,generation:String(attempt.generation),token_id:attempt.tokenId??'',setup_attempt_id:attempt.id};
  try{return await runOutsideDbContext(()=>stripe.checkout.sessions.create({mode:'setup',customer:attempt.stripeCustomerId,
-  payment_method_types:[attempt.methodType as AutopayPaymentMethodType],
+  payment_method_types:[attempt.methodType],
   ...(attempt.methodType==='us_bank_account'?{currency:'usd',payment_method_options:{us_bank_account:{verification_method:'automatic' as const}}}:{}),
   metadata,setup_intent_data:{metadata},
   success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}`,

@@ -5,11 +5,11 @@ import type { Tx } from './types';
 const m = vi.hoisted(() => ({ rows: [] as unknown[][], execute: vi.fn(), detach: vi.fn(), retrieve: vi.fn(), client: vi.fn(), archive: vi.fn(), held: false, calls: [] as Array<{ op: string; value: unknown }> }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
-  for (const op of ['select', 'from', 'where', 'limit', 'for', 'update', 'set', 'returning']) {
+  for (const op of ['insert','values','onConflictDoNothing','innerJoin','select', 'from', 'where', 'limit', 'for', 'update', 'set', 'returning']) {
     chain[op] = (value: unknown) => { m.calls.push({ op, value }); return chain; };
   }
   chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(m.rows.shift() ?? []).then(resolve);
-  return { db: { ...chain, execute: m.execute }, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(), hasDbAccessContext: () => m.held };
+  return { runAfterDbContextExit:vi.fn(), db: { ...chain, execute: m.execute }, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(), hasDbAccessContext: () => m.held };
 });
 vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: m.client, PartnerStripeError: class extends Error {} }));
 vi.mock('../stripeCredentialArchive', () => ({ findLatestArchivedCredentialForAccount: m.archive }));
@@ -126,4 +126,31 @@ describe('durable post-commit detach', () => {
     expect(q).toContain('detach_attempts+1>=8'); expect(q).toContain('power(2,LEAST(detach_attempts,9))');
     expect(q).not.toContain("status='active'");
   });
+});
+it('queues rejected captures with immutable provider identity after commit',async()=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ m.rows.push([],[{id:'rejected'}]);
+ await enqueueRejectedAutopayMethod(db,{id:'attempt',orgId:'org',partnerId:'partner',enrollmentId:'enrollment',stripeAccountId:'acct_original',stripeCustomerId:'cus_original'},
+  {id:'pm_rejected',type:'card',customer:'cus_original'} as any);
+ expect(m.calls.filter(c=>c.op==='values').map(c=>c.value)).toContainEqual(expect.objectContaining({
+  stripePaymentMethodId:'pm_rejected',status:'removed',isAutopayMethod:false,detachStripeAccountId:'acct_original',detachStripeCustomerId:'cus_original'}));
+ expect(m.detach).not.toHaveBeenCalled();
+});
+it('never queues a current active method rejected by another capture',async()=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ m.rows.push([{id:'existing',status:'active'}]);
+ await enqueueRejectedAutopayMethod(db,{id:'attempt',orgId:'org',partnerId:'partner',enrollmentId:'enrollment',stripeAccountId:'acct_original',stripeCustomerId:'cus_original'},
+  {id:'pm_current',type:'card',customer:'cus_original'} as any);
+ expect(m.calls.some(c=>c.op==='insert'||c.op==='update')).toBe(false);
+});
+it('queues a failed verification without changing its unusable status',async()=>{
+ const {enqueueRejectedAutopayMethod}=await import('./paymentMethods');
+ m.rows.push([{id:'existing',status:'unusable',enrollmentId:'enrollment'}],[{id:'existing'}]);
+ await enqueueRejectedAutopayMethod(db,{id:'attempt',orgId:'org',partnerId:'partner',enrollmentId:'enrollment',stripeAccountId:'acct_original',stripeCustomerId:'cus_original'},
+  {id:'pm_failed',type:'us_bank_account',customer:'cus_original'} as any);
+ expect(m.calls.filter(c=>c.op==='set').map(c=>c.value)).toContainEqual(expect.objectContaining({
+  isAutopayMethod:false,removedAt:expect.any(Date),detachStripeAccountId:'acct_original',detachStripeCustomerId:'cus_original'}));
+ expect(m.calls.filter(c=>c.op==='set').map(c=>c.value)).not.toContainEqual(expect.objectContaining({status:'removed'}));
+ await drainAutopayMethodDetaches();
+ expect(query(m.execute.mock.calls[0]![0]).sql).toContain("m.status='unusable' AND m.removed_at IS NOT NULL AND m.detach_stripe_account_id IS NOT NULL");
 });

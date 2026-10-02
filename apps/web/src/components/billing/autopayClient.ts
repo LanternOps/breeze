@@ -1,13 +1,8 @@
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import { i18n } from '../../lib/i18n';
-export interface AutopayRow {
-  orgId: string; orgName: string; billingContact: { email?: string | null } | null;
-  stripeReadiness: {ready:boolean;missing:string[]};
-  status: 'not_requested' | 'requested' | 'active' | 'paused' | 'cancelled' | 'needs_attention';
-  enrollment: { status: 'requested' | 'active' | 'paused' | 'cancelled'; generation: number; effectiveFrom: string | null; needsAttentionReason: string | null } | null;
-  method: { type: 'card' | 'us_bank_account'; cardBrand: string | null; cardLast4: string | null; cardExpMonth: number | null; cardExpYear: number | null; bankName: string | null; bankLast4: string | null; status: string } | null;
-}
+import type {AutopayListRow as AutopayRow} from '@breeze/shared';
+export type {AutopayListRow as AutopayRow} from '@breeze/shared';
 export async function readAutopay<T>(path: string): Promise<T> {
   const response = await fetchWithAuth(path);
   if (!response.ok) throw new Error(i18n.t('billing:autopay.error'));
@@ -31,4 +26,9 @@ export function methodLabel(method: AutopayRow['method']): string {
   return method.type === 'card'
     ? `${method.cardBrand ?? i18n.t('billing:autopay.card')} ••${method.cardLast4 ?? '????'} ${method.cardExpMonth ?? ''}/${method.cardExpYear ?? ''}`
     : `${method.bankName ?? i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
+}
+
+export function skippedAutopayReason(reason:string):string{
+ const keys:Record<string,string>={no_billing_contact:'autopay.skipNoContact',stripe_not_ready:'autopay.skipStripeNotReady',already_active:'autopay.skipAlreadyActive'};
+ return i18n.t(/* i18n-dynamic */ keys[reason]?`billing:${keys[reason]}`:'billing:autopay.error');
 }

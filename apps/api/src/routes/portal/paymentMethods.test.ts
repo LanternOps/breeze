@@ -18,9 +18,9 @@ const headers={authorization:'Bearer test','content-type':'application/json'};
 beforeEach(()=>{vi.clearAllMocks();h.identity.mockResolvedValue({orgId:'11111111-1111-4111-8111-111111111111',partnerId:'22222222-2222-4222-8222-222222222222'});h.page.mockResolvedValue({});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});});
 describe('portal payment-method boundaries',()=>{
   it('requires a portal session',async()=>expect((await app.request('/portal/payment-methods')).status).toBe(401));
-  it('feature-off returns 404 on every method',async()=>{
+  it('feature-off still allows stopping existing authorization',async()=>{
     for(const path of ['/payment-methods','/payment-methods/setup-session','/payment-methods/setup-return','/autopay/stop']){
-      expect((await app.request(`/portal${path}`,{method:path==='/payment-methods'?'GET':'POST',headers:{...headers,'x-disabled':'1'},body:path==='/payment-methods'?undefined:'{}'})).status).toBe(404);
+      expect((await app.request(`/portal${path}`,{method:path==='/payment-methods'?'GET':'POST',headers:{...headers,'x-disabled':'1'},body:path==='/payment-methods'?undefined:'{}'})).status).toBe(path==='/autopay/stop'?200:404);
     }
   });
   it('cookie POST without double-submit CSRF is denied',async()=>{

@@ -10,7 +10,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'portal_invite',
   'autopay_request',
   'autopay_enrolled',
-  'autopay_stopped',
+  'autopay_stopped', 'autopay_paused', 'autopay_resumed',
   'card_expiring',
 ] as const;
 
@@ -98,6 +98,8 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
   autopay_stopped: ['partner_name','org_name','client_name','stopped_by','open_invoices_text'],
+  autopay_paused: ['partner_name','org_name','client_name'],
+  autopay_resumed: ['partner_name','org_name','client_name'],
   card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
 };
 
@@ -111,6 +113,8 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   autopay_request: 'Automatic payments request',
   autopay_enrolled: 'Automatic payments confirmed',
   autopay_stopped: 'Automatic payments stopped',
+  autopay_paused: 'Automatic payments paused',
+  autopay_resumed: 'Automatic payments resumed',
   card_expiring: 'Saved card expiring',
 };
 
@@ -124,6 +128,8 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   autopay_request: true,
   autopay_enrolled: false,
   autopay_stopped: false,
+  autopay_paused: false,
+  autopay_resumed: false,
   card_expiring: true,
 };
 
@@ -233,6 +239,16 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     html: `<p>Hi {{client_name}},</p><p>{{stopped_by}} stopped automatic payments with {{partner_name}}.</p>
 <p>We will not start any new automatic payments. A payment already processing may still complete.</p>
 <p>{{open_invoices_text}}</p><p>Please use the invoice payment links below for any amount still due.</p>`,
+  },
+  autopay_paused: {
+    subject: 'Automatic payments paused with {{partner_name}}',
+    heading: 'Automatic payments are paused', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p><p>{{partner_name}} paused your automatic payments. No new automatic payments will run until your service provider resumes them. We will notify you when they resume.</p><p>A payment already processing may still complete. Existing invoices remain payable using their payment links.</p>`,
+  },
+  autopay_resumed: {
+    subject: 'Automatic payments resumed with {{partner_name}}',
+    heading: 'Automatic payments have resumed', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p><p>{{partner_name}} resumed automatic payments for future eligible invoices issued after resumption. Previously cancelled payments will not restart.</p><p>We will email the amount and date before each payment. You can stop automatic payments using the link below.</p>`,
   },
   card_expiring: {
     subject: 'Please update your saved card for {{partner_name}}',

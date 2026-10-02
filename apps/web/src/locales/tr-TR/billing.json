@@ -2422,6 +2422,10 @@
     }
   },
   "autopay": {
+    "requestDeliveryFailed": "Talep e-postası teslim edilemedi. Talebi yeniden gönderin.",
+    "skipNoContact": "Faturalandırma e-postası bulunamadı. Bir e-posta ekleyin veya alıcı belirtin.",
+    "skipStripeNotReady": "Stripe otomatik ödemeler için hazır değil. Bağlantıyı ve izinleri kontrol edin.",
+    "skipAlreadyActive": "Otomatik ödemeler zaten etkin veya duraklatılmış.",
     "title": "Otomatik ödemeler",
     "loading": "Otomatik ödemeler yükleniyor…",
     "error": "Bu işlem tamamlanamadı. Lütfen tekrar deneyin.",

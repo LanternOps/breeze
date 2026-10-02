@@ -26,6 +26,12 @@ describe('durable setup authorization', () => {
         VALUES (${attempt},${org.id},${partner.id},${enrollment},1,'setup_page','card',
           ${connection},'acct_test','{"text":"accepted original"}'::jsonb)`);
     });
+    for(const column of ['source','method_type','outcome']){
+      await expect(withSystemDbAccessContext(()=>db.execute(sql`
+        INSERT INTO autopay_setup_attempts(org_id,partner_id,enrollment_id,generation,source,method_type,stripe_connection_id,stripe_account_id,consent_snapshot,outcome)
+        VALUES(${org.id},${partner.id},${enrollment},1,${column==='source'?'invalid':'portal'},${column==='method_type'?'invalid':'card'},${connection},'acct_test','{}'::jsonb,${column==='outcome'?'invalid':null})
+      `))).rejects.toMatchObject({cause:{code:'23514'}});
+    }
     await expect(withSystemDbAccessContext(() => db.execute(sql`
       UPDATE autopay_setup_attempts SET consent_snapshot='{}'::jsonb WHERE id=${attempt}
     `))).rejects.toMatchObject({cause:{code:'23514',message:'autopay setup authority is immutable'}});

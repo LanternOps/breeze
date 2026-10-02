@@ -27,12 +27,12 @@ describe('public autopay token boundaries',()=>{
     expect((await app.request('/autopay/public/token')).status).toBe(404);
     expect(h.page).not.toHaveBeenCalled();
   });
-  it('feature-off rejects public page, setup, return and stop',async()=>{
+  it('feature-off rejects setup and return but allows withdrawing authorization',async()=>{
     for(const [path,body] of [['/token',null],['/token/setup-session',{methodType:'card',consentAccepted:true,disclosureHash:'a'.repeat(64)}],['/setup-return',{token:'token',checkoutSessionId:'cs_test'}],['/token/stop',{}]] as const){
       const res=await app.request(`/autopay/public${path}`,{method:body?'POST':'GET',headers:{...headers,'x-disabled':'1'},body:body?JSON.stringify(body):undefined});
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(path==='/token/stop'?200:404);
     }
-    expect(h.create).not.toHaveBeenCalled();expect(h.complete).not.toHaveBeenCalled();expect(h.stop).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();expect(h.complete).not.toHaveBeenCalled();expect(h.stop).toHaveBeenCalledOnce();
   });
   it('requires true authorization and the displayed disclosure hash',async()=>{
     for(const body of [{methodType:'card',consentAccepted:false,disclosureHash:'a'.repeat(64)},{methodType:'card',consentAccepted:true},{methodType:'sepa_debit',consentAccepted:true,disclosureHash:'a'.repeat(64)}]){

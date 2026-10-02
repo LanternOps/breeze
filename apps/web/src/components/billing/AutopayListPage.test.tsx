@@ -16,7 +16,7 @@ beforeEach(() => {
 it('does not label all-skipped bulk failure as success and retains per-org reason', async () => {
   render(<AutopayListPage />);
   fireEvent.click(await screen.findByTestId('autopay-send-now'));
-  expect(await screen.findByTestId('autopay-bulk-result')).toHaveTextContent('no_billing_contact');
+  expect(await screen.findByTestId('autopay-bulk-result')).toHaveTextContent('No billing contact email is available');
   expect(vi.mocked(showToast).mock.calls.some(([toast]) => toast.type === 'success')).toBe(false);
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, i]) => i?.method === 'POST')!;
   expect(JSON.parse(call[1]!.body as string)).toEqual({ orgIds: [id] });
@@ -39,9 +39,16 @@ it('does not label partial bulk failure as success and shows both requested coun
   render(<AutopayListPage />);
   fireEvent.click(await screen.findByTestId('autopay-send-now'));
   const result = await screen.findByTestId('autopay-bulk-result');
+  expect(result).toHaveAttribute('role','alert');
   expect(result).toHaveTextContent('Request sent to 1 client.');
-  expect(result).toHaveTextContent('Skipped client: no_billing_contact');
+  expect(result).toHaveTextContent('Skipped client: No billing contact email is available');
   expect(vi.mocked(showToast).mock.calls.some(([toast]) => toast.type === 'success')).toBe(false);
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'POST')!;
   expect(JSON.parse(call[1]!.body as string)).toEqual({ orgIds: [id, requestedId] });
+});
+it('shows failed email delivery on the list and allows resending',async()=>{
+ vi.mocked(fetchWithAuth).mockImplementation(async()=>Response.json({data:[{orgId:id,orgName:'Example',status:'requested',enrollment:{status:'requested'},method:null,requestNoticeStatus:'failed'}]}));
+ render(<AutopayListPage/>);
+ expect(await screen.findByTestId(`autopay-delivery-${id}`)).toHaveTextContent('Request email could not be delivered');
+ expect(screen.getByTestId(`autopay-resend-${id}`)).toBeEnabled();
 });

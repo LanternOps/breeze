@@ -18,7 +18,7 @@ const identity:MiddlewareHandler=async(c,next)=>{
   c.set('autopayIdentity',owned);c.set('autopayPartnerId',owned.partnerId);c.header('Cache-Control','no-store');return next();
 };
 for(const path of ['/payment-methods','/payment-methods/setup-session','/payment-methods/setup-return','/autopay/stop']){
-  portalPaymentMethodRoutes.use(path,portalAuthMiddleware,identity,requireAutopayEnabled(),portalFinancialMutationGuard);
+  portalPaymentMethodRoutes.use(path,portalAuthMiddleware,identity,...(path==='/autopay/stop'?[]:[requireAutopayEnabled()]),portalFinancialMutationGuard);
 }
 portalPaymentMethodRoutes.get('/payment-methods',async c=>c.json(await getAutopayCustomerPage(c.get('portalAuth').user.orgId)));
 portalPaymentMethodRoutes.post('/payment-methods/setup-session',zValidator('json',z.object({

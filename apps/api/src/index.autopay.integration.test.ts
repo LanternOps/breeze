@@ -68,8 +68,8 @@ describe('autopay mounted in the production Hono application',()=>{
     const paused=await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{method:'PATCH',headers:f.headers,body:'{"action":"pause"}'});
     expect(paused.status,await paused.clone().text()).toBe(200);
     const notices=await getTestDb().select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id));
-    expect(notices.map(row=>row.kind).sort()).toEqual(['autopay_request','autopay_stopped']);
-    expect(notices.find(row=>row.kind==='autopay_stopped')).toMatchObject({rendered:{text:expect.stringContaining(f.partner.name)}});
+    expect(notices.map(row=>row.kind).sort()).toEqual(['autopay_paused','autopay_request']);
+    expect(notices.find(row=>row.kind==='autopay_paused')).toMatchObject({rendered:{text:expect.stringContaining(f.partner.name)}});
     // A raw transaction must stay usable and a caller rollback must undo resume.
     await expect(withSystemDbAccessContext(()=>db.transaction(async tx=>{
       await resumeAutopay(tx,f.actor,f.org.id);
@@ -160,7 +160,7 @@ describe('autopay mounted in the production Hono application',()=>{
       type:'card',status:'active',isAutopayMethod:true,cardBrand:'visa',cardLast4:'4242'}).returning();
     await getTestDb().insert(orgAutopayConsents).values({orgId:f.org.id,enrollmentId:enrollment!.id,generation:1,
       paymentMethodId:method!.id,consentTextVersion:'2026-10-01.v1',consentTextHash:'b'.repeat(64),
-      feeTerms:{privateSnapshot:'private consent snapshot'},scheduleTerms:{offsetDays:0,rule:'later'},
+      feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
       contactEmail:'billing@example.test',source:'setup_page'});
     const response=await app.request('/api/v1/billing/autopay',{headers:f.headers});
     expect(response.status,await response.clone().text()).toBe(200);
@@ -172,13 +172,13 @@ describe('autopay mounted in the production Hono application',()=>{
     expect(active).toEqual({orgId:f.org.id,orgName:f.org.name,billingContact:{email:'billing@example.test'},status:'active',
       enrollment:{status:'active',generation:1,effectiveFrom:'2026-01-01T00:00:00.000Z',needsAttentionReason:null},
       method:{type:'card',cardBrand:'visa',cardFunding:null,cardLast4:'4242',cardExpMonth:null,cardExpYear:null,
-        bankName:null,bankLast4:null,status:'active'},stripeReadiness:{ready:true,missing:[]},lastChargeResult:null});
+        bankName:null,bankLast4:null,status:'active'},stripeReadiness:{ready:true,missing:[]},lastChargeResult:null,requestNoticeStatus:'pending'});
     const detail=await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{headers:f.headers});
     expect(detail.status).toBe(200);
     expect(await detail.json()).toEqual(active);
     if(access==='all'){
       expect(body.data.find((row:{orgId:string})=>row.orgId===sibling.id)).toEqual({orgId:sibling.id,orgName:sibling.name,
-        billingContact:null,status:'not_requested',enrollment:null,method:null,stripeReadiness:{ready:true,missing:[]},lastChargeResult:null});
+        billingContact:null,status:'not_requested',enrollment:null,method:null,stripeReadiness:{ready:true,missing:[]},lastChargeResult:null,requestNoticeStatus:null});
     }else{
       expect((await app.request(`/api/v1/orgs/${sibling.id}/autopay`,{headers:f.headers})).status).toBe(404);
     }

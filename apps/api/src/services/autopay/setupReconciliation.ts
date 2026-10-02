@@ -2,7 +2,7 @@ import type Stripe from 'stripe';
 import {createHash} from 'node:crypto';
 import {and,asc,eq,inArray,isNotNull,isNull,or,sql} from 'drizzle-orm';
 import {db,withSystemDbAccessContext,runOutsideDbContext} from '../../db';
-import {stripeConnectAccounts,stripeFinancialEvents,orgPaymentMethods,orgAutopayEnrollments} from '../../db/schema';
+import {stripeConnectAccounts,stripeFinancialEvents,orgPaymentMethods,orgAutopayEnrollments,invoiceStripePayments} from '../../db/schema';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import {getPartnerStripeClient} from '../partnerStripe';
 import {assertNoHeldDbContextForStripe,HeldDbContextForStripeError} from '../stripeSettle';
@@ -118,19 +118,29 @@ export async function reconcileAutopaySetups():Promise<number>{
   isNotNull(autopaySetupAttempts.checkoutSessionId),sql`${autopaySetupAttempts.captureNextAttemptAt} <= NOW()`))
   .orderBy(asc(autopaySetupAttempts.captureNextAttemptAt),asc(autopaySetupAttempts.id)).limit(200));
  for(const attempt of captures){
+  const attemptCount=attempt.captureAttemptCount+1;
+  let claimedCapture=false;
   try{
    // Persist the next turn before external work: crashes and permanent no-ops
    // move behind untried rows instead of monopolizing the oldest batch.
    const claimed=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts)
-    .set({captureNextAttemptAt:new Date(Date.now()+10*60_000)})
+    .set({captureAttemptCount:attemptCount,captureNextAttemptAt:new Date(Date.now()+Math.min(360,5*2**(attemptCount-1))*60_000)})
     .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt),
      sql`${autopaySetupAttempts.captureNextAttemptAt} <= NOW()`)).returning({id:autopaySetupAttempts.id}));
    if(!claimed.length)continue;
+   claimedCapture=true;
    const result=await finishCardPayAndSave(attempt.partnerId,attempt.checkoutSessionId!);
    if(result.outcome==='activated')completed++;
   }catch(error){
    if(error instanceof HeldDbContextForStripeError)throw error;
    console.error('[autopay.capture-reconcile]',{attemptId:attempt.id,message:error instanceof Error?error.message:String(error)});
+  }
+  if(claimedCapture&&attemptCount>=8){
+   const [booked]=await withSystemDbAccessContext(()=>db.select({id:invoiceStripePayments.id}).from(invoiceStripePayments).where(and(
+    eq(invoiceStripePayments.orgId,attempt.orgId),eq(invoiceStripePayments.stripeAccountId,attempt.stripeAccountId),eq(invoiceStripePayments.stripeObjectId,attempt.checkoutSessionId!),isNotNull(invoiceStripePayments.invoicePaymentId))).limit(1));
+   const terminal=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({outcome:booked?'failed':'abandoned',completedAt:new Date()})
+    .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt))).returning({id:autopaySetupAttempts.id}));
+   if(terminal.length&&booked)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.needs_attention',dedupeKey:`${attempt.id}:capture_failed`,message:'Payment booked, card not saved. Please request a new payment method.'});
   }
  }
  return completed;

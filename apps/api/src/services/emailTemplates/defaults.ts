@@ -15,6 +15,8 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   autopay_request: 'Set up payments for future invoices.',
   autopay_enrolled: 'Your automatic payment details.',
   autopay_stopped: 'Future automatic payments have stopped.',
+  autopay_paused: 'Automatic payments will wait until your service provider resumes them.',
+  autopay_resumed: 'Automatic payments apply to future eligible invoices.',
   card_expiring: 'Update your saved payment method.',
 };
 
@@ -28,6 +30,8 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   autopay_request: undefined,
   autopay_enrolled: undefined,
   autopay_stopped: undefined,
+  autopay_paused: undefined,
+  autopay_resumed: undefined,
   card_expiring: undefined,
 };
 

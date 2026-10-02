@@ -12,3 +12,7 @@ ALTER TABLE autopay_setup_attempts
 CREATE INDEX IF NOT EXISTS autopay_setup_attempts_discovery_due_idx
   ON autopay_setup_attempts(discovery_next_attempt_at,created_at,id)
   WHERE completed_at IS NULL;
+ALTER TABLE org_autopay_enrollments ADD COLUMN IF NOT EXISTS staff_email_dedupe_keys text[] NOT NULL DEFAULT '{}';
+ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_stripe_account_id text;
+ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_stripe_customer_id text;
+ALTER TABLE autopay_setup_attempts ADD COLUMN IF NOT EXISTS capture_attempt_count integer NOT NULL DEFAULT 0 CHECK(capture_attempt_count>=0);

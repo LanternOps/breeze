@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
-import { readAutopay, mutateAutopay, methodLabel, type AutopayRow } from './autopayClient';
+import { readAutopay, mutateAutopay, methodLabel, skippedAutopayReason, type AutopayRow } from './autopayClient';
 export default function OrgAutopayCard({ orgId }: { orgId: string }) {
   // A new organization gets fresh state, including confirmations and action results.
   return <OrgAutopayCardContent key={orgId} orgId={orgId} />;
@@ -11,6 +11,7 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
   const { t } = useTranslation('billing');
   const [row, setRow] = useState<AutopayRow | null>(null); const [error, setError] = useState(false);
   const [recipient, setRecipient] = useState(''); const [busy, setBusy] = useState(false);
+  const [warning,setWarning]=useState(false);
   const [off, setOff] = useState(false); const [result, setResult] = useState('');
   const load = useCallback(async () => {
     const current = generation.current;
@@ -34,11 +35,12 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
         const response = await mutateAutopay<{ requested: string[]; skipped: { orgId: string; reason: string }[] }>(
           '/billing/autopay/requests', { orgIds: [orgId], ...(recipient.trim() ? { recipientOverride: recipient.trim() } : {}) });
         if (current !== generation.current) return;
-        setResult(response.skipped.map(item => item.reason).join(', ') || t('autopay.done'));
+        setWarning(response.skipped.length>0);
+        setResult(response.skipped.map(item => skippedAutopayReason(item.reason)).join(', ') || t('autopay.done'));
       } else {
         await mutateAutopay(`/orgs/${orgId}/autopay`, { action }, 'PATCH');
         if (current !== generation.current) return;
-        setResult(t('autopay.done'));
+        setWarning(false);setResult(t('autopay.done'));
       }
       setOff(false); await load();
     } catch (e) {
@@ -54,6 +56,7 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
   const email = recipient.trim() || row.billingContact?.email || '';
   return <section data-testid="autopay-org-card" className="rounded-lg border bg-card p-6 space-y-3">
     <h2>{t('autopay.title')}</h2><p data-testid="autopay-status">{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}</p>
+    {(row.requestNoticeStatus==='failed'||row.requestNoticeStatus==='handler_failed')&&<p role="alert" data-testid="autopay-request-delivery" className="text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p>}
     <p>{methodLabel(row.method)}</p>
     {row.method?.status === 'pending_verification' && <p>{t('autopay.pending')}</p>}
     <p>{t('autopay.effective', { date: row.enrollment?.effectiveFrom ?? '—' })}</p>
@@ -69,6 +72,6 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
     {off && <div data-testid="autopay-off-confirm"><p>{t('autopay.processingWarning')}</p>
       <button data-testid="autopay-off-confirm-submit" disabled={busy} onClick={() => void act('turn_off')}>{t('autopay.turnOff')}</button>
       <button data-testid="autopay-off-cancel" onClick={() => setOff(false)}>{t('autopay.cancel')}</button></div>}
-    {result && <p role="status" data-testid="autopay-org-result">{result}</p>}
+    {result && <p role={warning?'alert':'status'} className={warning?'text-amber-800 dark:text-amber-200':undefined} data-testid="autopay-org-result">{result}</p>}
   </section>;
 }
