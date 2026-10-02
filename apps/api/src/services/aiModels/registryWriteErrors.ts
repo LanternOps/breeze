@@ -13,7 +13,11 @@ import { ConnectionKeyError } from './connectionKeys';
 export type RegistryWriteCode =
   | 'not_found' | 'unpriced' | 'not_eligible' | 'offering_in_use' | 'stale_write'
   | 'conflict' | 'invalid' | 'tools_unsupported' | 'widens_partner' | 'write_failed'
-  | 'registry_busy' | 'crosses_funding';
+  | 'registry_busy' | 'crosses_funding'
+  // W06 (#7604) gateway connections: an env-managed (MCP_LLM_*) connection is
+  // read-only; a connection whose model is still a default can't be removed;
+  // a (connection, model id) pair exists once; verification is gateway-only.
+  | 'managed_by_env' | 'connection_in_use' | 'duplicate_model' | 'not_gateway';
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 

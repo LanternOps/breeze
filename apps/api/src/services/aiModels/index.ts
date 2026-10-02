@@ -14,6 +14,7 @@ export * from './offerings';
 export * from './registryWriteErrors';
 export * from './offeringWrites';
 export * from './assignmentWrites';
+export * from './gatewayConnections';
 export * from './residency';
 export * from './connectionSettings';
 export * from './assignments';
