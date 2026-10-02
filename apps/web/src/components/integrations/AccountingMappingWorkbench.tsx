@@ -169,6 +169,17 @@ export default function AccountingMappingWorkbench({
 
   const [proposals, setProposals] = useState<MappingProposal[] | null>(null);
   const [loading, setLoading] = useState(false);
+  // Per-row settle-poll generation: a new action on the row (or leaving the
+  // tab) bumps it, and any older poll for that row stops on its next tick.
+  const settleEpochRef = useRef<Record<string, number>>({});
+  const supersedeSettlePolls = (id?: string) => {
+    const epochs = settleEpochRef.current;
+    if (id) {
+      epochs[id] = (epochs[id] ?? 0) + 1;
+      return;
+    }
+    for (const key of Object.keys(epochs)) epochs[key] += 1;
+  };
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -202,6 +213,7 @@ export default function AccountingMappingWorkbench({
   function switchTab(next: WorkbenchTab) {
     window.location.hash = next;
     setTab(next);
+    supersedeSettlePolls();
     setProposals(null);
     setRowError({});
   }
@@ -388,9 +400,12 @@ export default function AccountingMappingWorkbench({
    * stays pending and "Sync now" remains the retry.
    */
   async function settleRowAfterInFlightSync(p: MappingProposal) {
+    supersedeSettlePolls(p.breezeEntityId);
+    const epoch = settleEpochRef.current[p.breezeEntityId];
+    const superseded = () => !mountedRef.current || settleEpochRef.current[p.breezeEntityId] !== epoch;
     for (let attempt = 0; attempt < SETTLE_POLL_ATTEMPTS; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_INTERVAL_MS));
-      if (!mountedRef.current) return;
+      if (superseded()) return;
       let res: { data: MappingProposal[] };
       try {
         res = await runAction<{ data: MappingProposal[] }>({
@@ -405,8 +420,8 @@ export default function AccountingMappingWorkbench({
         if (err instanceof ActionError && err.status === 401) throw err;
         continue;
       }
-      if (!mountedRef.current) return;
-      const fresh = res.data.find((row) => row.breezeEntityId === p.breezeEntityId);
+      if (superseded()) return;
+      const fresh =res.data.find((row) => row.breezeEntityId === p.breezeEntityId);
       if (!fresh || fresh.syncStatus === "pending") continue;
       setProposals((prev) => prev?.map((row) => (row.breezeEntityId === fresh.breezeEntityId ? { ...row, ...fresh } : row)) ?? prev);
       setRowError((prev) => ({
@@ -422,11 +437,13 @@ export default function AccountingMappingWorkbench({
     }
     // Still pending after the poll window: don't leave the click without an
     // outcome. The row is saved; the worker (or "Sync now") finishes it.
+    if (superseded()) return;
     showToast({ message: t("accountingMapping.mappingSaved", { provider: providerName }), type: "success" });
   }
 
   async function decide(p: MappingProposal, decision: MappingDecision, remoteEntityId?: string) {
     const id = p.breezeEntityId;
+    supersedeSettlePolls(id);
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
     setSearchSeed((prev) => {
@@ -494,6 +511,7 @@ export default function AccountingMappingWorkbench({
 
   async function sync(p: MappingProposal) {
     const id = p.breezeEntityId;
+    supersedeSettlePolls(id);
     setRowBusy((prev) => ({ ...prev, [id]: true }));
     setRowError((prev) => ({ ...prev, [id]: null }));
     setSearchSeed((prev) => {

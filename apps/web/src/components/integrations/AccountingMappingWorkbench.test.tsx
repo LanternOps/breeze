@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import AccountingMappingWorkbench from "./AccountingMappingWorkbench";
 
 // SEC-2026-09-05-057: every mutating control here is gated on
@@ -1671,5 +1671,105 @@ describe("AccountingMappingWorkbench — decision racing the worker's sync (#738
     );
     expect(screen.queryByTestId(`quickbooks-mapping-error-${ORG_ID}`)).not.toBeInTheDocument();
     expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "error" }));
+  });
+
+  // Shared harness: PUT succeeds, the follow-up sync loses the lock, and every
+  // GET after the initial load returns `settled` (the worker's view of the row).
+  function mockRaceWithPoll(settled: Record<string, unknown>) {
+    let listCalls = 0;
+    const counter = { polls: 0 };
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("/mappings/sync")) {
+        return jsonResponse({ error: "already in progress", code: "sync_in_progress" }, 409);
+      }
+      if (method === "PUT") {
+        return jsonResponse({
+          data: {
+            breezeEntityType: "org",
+            breezeEntityId: ORG_ID,
+            remoteEntityType: "Customer",
+            remoteEntityId: "qb-12",
+            linkStatus: "confirmed",
+            syncStatus: "pending",
+            lastSyncedAt: null,
+            lastError: null,
+          },
+        });
+      }
+      listCalls++;
+      if (listCalls > 1) counter.polls++;
+      return jsonResponse({ data: [listCalls === 1 ? suggestedOrgProposal : { ...suggestedOrgProposal, ...settled }] });
+    });
+    return counter;
+  }
+
+  async function loadAndConfirm() {
+    render(
+      <AccountingMappingWorkbench provider="quickbooks" onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+  }
+
+  it("poll exhaustion: a row still pending after the window stays Not synced, toasts 'saved', and stops polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const counter = mockRaceWithPoll({ linkStatus: "confirmed", syncStatus: "pending" });
+      await loadAndConfirm();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_000);
+      });
+      expect(counter.polls).toBe(15);
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "success", message: "Mapping saved." }),
+      );
+      expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent("Not synced");
+      expect(screen.queryByTestId(`quickbooks-mapping-error-${ORG_ID}`)).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(counter.polls).toBe(15);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("worker error: the poll surfaces the worker's lastError on the row and does not toast success", async () => {
+    mockRaceWithPoll({ linkStatus: "confirmed", syncStatus: "error", lastError: "QBO rejected the customer" });
+    await loadAndConfirm();
+    await waitFor(
+      () =>
+        expect(screen.getByTestId(`quickbooks-mapping-error-${ORG_ID}`)).toHaveTextContent(
+          "QBO rejected the customer",
+        ),
+      { timeout: 5000 },
+    );
+    expect(screen.getByTestId(`quickbooks-mapping-status-${ORG_ID}`)).toHaveTextContent("Sync failed");
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "success" }));
+  });
+
+  it("supersede: leaving the tab mid-poll cancels the row's poll — no further polls, no stale toast", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const counter = mockRaceWithPoll({ linkStatus: "confirmed", syncStatus: "pending" });
+      await loadAndConfirm();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_500);
+      });
+      expect(counter.polls).toBeGreaterThan(0);
+      fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+      const before = counter.polls;
+      showToastMock.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(counter.polls).toBe(before);
+      expect(showToastMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
