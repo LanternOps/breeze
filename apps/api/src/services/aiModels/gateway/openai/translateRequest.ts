@@ -25,7 +25,10 @@ const droppedBlock = z.object({ type: z.enum(['thinking', 'redacted_thinking']) 
 const anyBlock = z.object({ type: z.string() }).passthrough();
 
 const messageSchema = z.object({
-  role: z.enum(['user', 'assistant']),
+  // 'system': the Agent SDK CLI (2.1.x) sends its environment context as a
+  // system-role entry inside `messages`; it is folded into the leading system
+  // message below (text only).
+  role: z.enum(['user', 'assistant', 'system']),
   content: z.union([z.string(), z.array(anyBlock)]),
 });
 const toolSchema = z.object({
@@ -106,11 +109,26 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
   }
 
   const messages: OaiMessage[] = [];
+  // One leading system message: the top-level system plus any system-role
+  // entries, in order. Many OpenAI-compatible chat templates accept a system
+  // message only in first position.
+  const systemText: string[] = [];
   if (req.system !== undefined) {
     const sys = typeof req.system === 'string' ? req.system : req.system.map((b) => b.text).join('\n\n');
-    if (sys.length > 0) messages.push({ role: 'system', content: sys });
+    if (sys.length > 0) systemText.push(sys);
   }
   for (const m of req.messages) {
+    if (m.role !== 'system') continue;
+    const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+    for (const raw of blocks) {
+      const t = textBlock.safeParse(raw);
+      if (!t.success) throw bad(`Content block type "${String(raw.type)}" is not supported in a system message.`);
+      if (t.data.text.length > 0) systemText.push(t.data.text);
+    }
+  }
+  if (systemText.length > 0) messages.push({ role: 'system', content: systemText.join('\n\n') });
+  for (const m of req.messages) {
+    if (m.role === 'system') continue;
     if (typeof m.content === 'string') { messages.push({ role: m.role, content: m.content }); continue; }
     if (m.role === 'user') {
       const { tools: toolMsgs, parts } = userParts(m.content);

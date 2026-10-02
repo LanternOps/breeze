@@ -22,6 +22,29 @@ describe('translateMessagesRequest', () => {
     expect(b.body.messages[0]).toEqual({ role: 'system', content: 'one\n\ntwo' });
   });
 
+  it('system-role entries inside messages (Agent SDK CLI ≥ 2.1) fold into the one leading system message', () => {
+    const t = translateMessagesRequest({
+      ...base, system: [{ type: 'text', text: 'top' }],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'q' }] },
+        { role: 'system', content: '# Environment\nctx' },
+        { role: 'system', content: [{ type: 'text', text: 'more' }] },
+        { role: 'assistant', content: 'a' },
+      ],
+    }, 'qwen');
+    expect(t.body.messages).toEqual([
+      { role: 'system', content: 'top\n\n# Environment\nctx\n\nmore' },
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+    ]);
+    // Without a top-level system, the folded text still leads.
+    const u = translateMessagesRequest({ ...base, messages: [{ role: 'user', content: 'q' }, { role: 'system', content: 'env' }] }, 'qwen');
+    expect(u.body.messages[0]).toEqual({ role: 'system', content: 'env' });
+    // A system entry carrying anything but text is refused, never forwarded.
+    expect(() => translateMessagesRequest({ ...base, messages: [{ role: 'system', content: [{ type: 'image', source: { type: 'url', url: 'https://x.example.com/a.png' } }] }] }, 'qwen'))
+      .toThrow(GatewayError);
+  });
+
   it('drops thinking, output_config, metadata, betas and thinking/redacted_thinking blocks', () => {
     const t = translateMessagesRequest({
       ...base, thinking: { type: 'adaptive' }, output_config: { effort: 'medium' }, metadata: { user_id: 'u' },

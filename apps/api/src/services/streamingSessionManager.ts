@@ -26,7 +26,8 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 // real runtime cycle. TypeScript erases this one.
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { anthropicDialectConfig, grantCatalogSdkEgress, sdkModelOptions } from './aiModels/connectionFactory';
+import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
+import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -53,16 +54,12 @@ import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits 
 import type { RequestLike } from './auditEvents';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
-import { isRecognizedSelfHostSignal } from '../config/env';
-import type { ResolvedLlmEndpoint, UsableLlmConfig } from './llm/llmConfigResolver';
-import { PLATFORM_LLM_CREDENTIAL_ENV_KEYS } from './llm/llmAvailability';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { DEFAULT_APPROVAL_WAIT_BUDGET_MS, loadApprovalWaitBudgetMs } from './aiApprovalTimeout';
 import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
 import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 import { isSdkBuiltinToolUse, resolveToolSearchPolicy } from './aiToolSearchPolicy';
-import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './llm/sdkChildEnvGuards';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -165,145 +162,9 @@ const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
 
-const SDK_CHILD_ENV_ALLOWLIST = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  // ANTHROPIC_MODEL (#1412): raw-vLLM model id override. Harmless to forward
-  // (the model is also passed explicitly via options.model); not a redirect
-  // vector, so unlike ANTHROPIC_BASE_URL it needs no hosted gating.
-  'ANTHROPIC_MODEL',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'CLAUDE_AGENT_SDK_CLIENT_APP',
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'NODE_EXTRA_CA_CERTS',
-  'SSL_CERT_FILE',
-  'SSL_CERT_DIR',
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'SystemRoot',
-  'COMSPEC',
-] as const;
-
-// The platform credentials — the same set `isPlatformLlmConfigured` counts as
-// "a model provider is configured", so readiness and the subprocess agree.
-const SDK_CHILD_ENV_CREDENTIAL_KEYS = new Set<string>(PLATFORM_LLM_CREDENTIAL_ENV_KEYS);
-
-/**
- * Proxy configuration the parent process may carry. Forwarded as-is for
- * platform and direct-Anthropic partner sessions (an operator's outbound proxy
- * is legitimate there), but DROPPED wholesale for a catalog session: those must
- * traverse the grant-scoped CONNECT proxy, and a parent `NO_PROXY=*` (or a
- * lowercase `https_proxy` shadowing our uppercase one) would quietly restore
- * direct, unpinned egress to the provider (#3922, quorum P4).
- */
-const SDK_CHILD_ENV_PROXY_KEYS = new Set<string>([
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-]);
-
-/** The catalog endpoint of a partner session, or null for every other shape. */
-function catalogEndpointOf(
-  resolved: UsableLlmConfig,
-): Extract<ResolvedLlmEndpoint, { kind: 'catalog' }> | null {
-  return resolved.source === 'partner' && resolved.endpoint.kind === 'catalog'
-    ? resolved.endpoint
-    : null;
-}
-
-export function buildClaudeSdkChildEnv(
-  resolved: UsableLlmConfig,
-  source: NodeJS.ProcessEnv = process.env,
-  options: { egressProxyUrl?: string } = {},
-): Record<string, string> {
-  const catalogEndpoint = catalogEndpointOf(resolved);
-
-  const env: Record<string, string> = {
-    CI: 'true',
-    CLAUDE_AGENT_SDK_CLIENT_APP: source.CLAUDE_AGENT_SDK_CLIENT_APP ?? 'breeze-api/ai-agent',
-    // HOME is forwarded below; without these the CLI prepends the host's
-    // Claude Code auto-memory to every request (#7444). Shared by every return
-    // path because they all return this object.
-    ...SDK_CHILD_HOST_CONTEXT_GUARDS,
-  };
-
-  for (const key of SDK_CHILD_ENV_ALLOWLIST) {
-    if (resolved.source === 'partner' && SDK_CHILD_ENV_CREDENTIAL_KEYS.has(key)) continue;
-    if (catalogEndpoint && SDK_CHILD_ENV_PROXY_KEYS.has(key)) continue;
-    const value = source[key];
-    if (typeof value === 'string' && value.length > 0) {
-      env[key] = value;
-    }
-  }
-
-  // `resolved.source === 'partner'` is implied by a catalog endpoint existing;
-  // it is restated so `resolved.apiKey` narrows to a required string.
-  if (catalogEndpoint && resolved.source === 'partner') {
-    const { egressProxyUrl } = options;
-    // No proxy URL means no grant, and no grant means the child would dial the
-    // provider itself with none of the allowlisting, DNS pinning, or egress
-    // audit this whole path exists for. Refuse to build such an environment
-    // rather than start a subprocess that silently egresses unguarded.
-    if (!egressProxyUrl) {
-      throw new Error(
-        'A catalog LLM session requires an egress proxy URL; refusing to build an unproxied child environment.',
-      );
-    }
-    // The endpoint's own URL — deliberately NOT the parent's
-    // ANTHROPIC_BASE_URL, which is never in the allowlist and stays irrelevant
-    // here whatever IS_HOSTED says (#1412 governs the PLATFORM path only).
-    env.ANTHROPIC_BASE_URL = catalogEndpoint.baseUrl;
-    // Exactly one credential var; the other was already excluded above with the
-    // rest of the parent's credentials, so the SDK cannot fall back to a
-    // platform key and leak it to a third party.
-    if (catalogEndpoint.authMode === 'bearer') {
-      env.ANTHROPIC_AUTH_TOKEN = resolved.apiKey;
-    } else {
-      env.ANTHROPIC_API_KEY = resolved.apiKey;
-    }
-    env.HTTPS_PROXY = egressProxyUrl;
-    env.HTTP_PROXY = egressProxyUrl;
-    // Explicit and empty: an unset NO_PROXY would let the parent's (already
-    // dropped) value or a library default exempt hosts from the proxy.
-    env.NO_PROXY = '';
-    return env;
-  }
-
-  if (resolved.source === 'partner') {
-    env.ANTHROPIC_API_KEY = resolved.apiKey;
-    return env;
-  }
-
-  // ANTHROPIC_BASE_URL (#1412): forward ONLY when self-host is affirmatively
-  // declared (IS_HOSTED explicitly false/0/no/off). Fail-closed — unset / empty
-  // / garbage / truthy IS_HOSTED all strip it, so a stray/misconfigured value
-  // (including the #570 unmapped-IS_HOSTED footgun) can never redirect platform
-  // AI traffic to a third-party backend. The config validator also boot-refuses
-  // this combo; this is defense-in-depth at the actual subprocess boundary (the
-  // function reads process.env directly, not the validated config singleton).
-  const anthropicBaseUrl = source.ANTHROPIC_BASE_URL;
-  if (
-    isRecognizedSelfHostSignal(source.IS_HOSTED)
-    && typeof anthropicBaseUrl === 'string'
-    && anthropicBaseUrl.length > 0
-  ) {
-    env.ANTHROPIC_BASE_URL = anthropicBaseUrl;
-  }
-
-  return env;
-}
+// The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
+// re-exported so existing importers (scripts, tests) keep working.
+export { buildClaudeSdkChildEnv } from './aiModels/sdkChildEnv';
 
 export function redactClaudeSdkStderr(data: string): string {
   return redactAiToolOutputText(data).trim();
@@ -547,6 +408,10 @@ export interface ActiveSession {
    * Releases this session's CONNECT-proxy grant. Set for catalog sessions only;
    * invoked by `remove()` so a torn-down, rotated or evicted session stops
    * being able to reach the provider immediately.
+   */
+  /**
+   * Releases every grant the SDK child holds (catalog CONNECT grant; gateway
+   * grant + deny-all proxy grant, W06). Idempotent; called on every teardown.
    */
   revokeEgressGrant?: () => void;
   sdkSessionId: string | null;
@@ -1070,9 +935,11 @@ export class StreamingSessionManager {
       loadApprovalWaitBudgetMs(dbSession.orgId),
     ]);
 
-    // W06 Task 8 interim: refuses a gateway connection until Task 9 wires the model gateway here.
-    const connectionConfig = anthropicDialectConfig(resolved.connection);
-    const catalogEndpoint = catalogEndpointOf(connectionConfig);
+    // Catalog provenance stamp only (below). A gateway connection (W06) has no
+    // catalog revision: its provenance is llm_egress_events.connection_id and
+    // ai_invocations.connection_id, so the stamp clears both columns.
+    const connectionConfig = resolved.connection.config;
+    const catalogEndpoint = connectionConfig.source === 'gateway' ? null : catalogEndpointOf(connectionConfig);
 
     // Device-bound sessions execute tools under the DEVICE's org, not the
     // login org (#3087). `toolAuth` (MCP tool handlers + their RLS context)
@@ -1237,14 +1104,15 @@ export class StreamingSessionManager {
     // `mcpServerFactory`, `createBreezeMcpServer` — would otherwise leak the
     // grant until the process restarted, since `remove()` never runs for a
     // session that was never registered.
-    // Shared with agent runs (aiModels/connectionFactory.grantCatalogSdkEgress):
-    // null for a non-catalog connection; audited CONNECT grant otherwise.
-    const egress = await grantCatalogSdkEgress(resolved, {
+    // Shared with agent runs (aiModels/connectionFactory.prepareSdkChild, the
+    // one SDK-child seam): the child env plus every grant it needs — an
+    // audited CONNECT grant for a catalog connection, a gateway grant and a
+    // deny-all proxy grant for a gateway connection (W06), nothing otherwise.
+    const child = await prepareSdkChild(resolved, {
       key: breezeSessionId, orgId: dbSession.orgId, aiSessionId: breezeSessionId,
     });
-    const egressProxyUrl = egress?.proxyUrl;
-    const revokeEgressGrant = egress?.revoke;
-    if (revokeEgressGrant) session.revokeEgressGrant = revokeEgressGrant;
+    const revokeEgressGrant = child.revoke;
+    session.revokeEgressGrant = revokeEgressGrant;
 
     // Durable per-session provenance (#3922 phase 2). `billing_source` stays
     // 'partner_key' for direct and catalog BYOK alike, so these two columns are
@@ -1302,7 +1170,7 @@ export class StreamingSessionManager {
     // request completes and the transaction commits.
     try {
       runOutsideDbContextSafe(() => {
-        const childEnv = buildClaudeSdkChildEnv(connectionConfig, process.env, { egressProxyUrl });
+        const childEnv = child.env;
         const toolSearchPolicy = resolveToolSearchPolicy({
           surfaceSearch: options?.toolSearch === true,
           childEnv,
@@ -1350,7 +1218,7 @@ export class StreamingSessionManager {
       // `this.sessions`, so `remove()` will never run for it and the grant
       // would leak until the process restarted. The grant is taken immediately
       // above this block precisely so there is no un-covered window.
-      try { revokeEgressGrant?.(); } catch { /* teardown must not mask err */ }
+      try { revokeEgressGrant(); } catch { /* teardown must not mask err */ }
       throw err;
     }
 
@@ -1394,9 +1262,10 @@ export class StreamingSessionManager {
     try { session.query.close(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to close SDK query:', sessionId, err);
     }
-    // Release the CONNECT-proxy allowance (catalog sessions only). Done on
-    // every teardown path — rotation, eviction, processor exit — so a session
-    // that is going away cannot keep a tunnel to the provider open.
+    // Release the child's grants (catalog CONNECT allowance; gateway grant +
+    // deny-all proxy grant). Done on every teardown path — rotation, eviction,
+    // processor exit — so a session that is going away cannot keep a tunnel
+    // to the provider, or a gateway grant, open.
     try { session.revokeEgressGrant?.(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', sessionId, err);
     }

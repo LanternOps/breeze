@@ -380,11 +380,13 @@ vi.mock('../aiModels/promptVariants', async (orig) => ({
     { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'active', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
   ],
 }));
-const grantCatalogSdkEgress = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<{ proxyUrl: string; revoke: () => void } | null>>(async () => null));
+// W06 Task 9: the run loop's SDK child env + grants come from the one seam,
+// connectionFactory.prepareSdkChild (its own behaviour: prepareSdkChild.test.ts).
+const prepareSdkChild = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; revoke: () => void }>>());
 vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/connectionFactory')>()),
-  grantCatalogSdkEgress,
+  prepareSdkChild,
 }));
 const notifyModelBlocked = vi.hoisted(() => vi.fn<(input: Record<string, unknown>) => Promise<void>>(async () => undefined));
 vi.mock('./modelBlocked', async (importOriginal) => ({
@@ -392,9 +394,6 @@ vi.mock('./modelBlocked', async (importOriginal) => ({
   notifyModelBlocked,
 }));
 
-const buildClaudeSdkChildEnv = vi.hoisted(() =>
-  vi.fn<(resolved: { source: string }) => Record<string, string>>(() => ({ CI: 'true' })));
-vi.mock('../streamingSessionManager', () => ({ buildClaudeSdkChildEnv }));
 
 const checkBudgetDetailed = vi.hoisted(() => vi.fn<(orgId: string, funding: string) => Promise<{ message: string } | null>>(async () => null));
 vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed }));
@@ -418,9 +417,11 @@ vi.mock('../aiModels/offeringHealth', () => ({ noteProviderFailure }));
 
 const reserveAiBudget = vi.hoisted(() => vi.fn());
 const markAiBudgetReservationIndeterminate = vi.hoisted(() => vi.fn());
+const releaseUnusedAiBudgetReservation = vi.hoisted(() => vi.fn(async () => ({ kind: 'released' })));
 vi.mock('../aiBudgetReservations', () => ({
   reserveAiBudget,
   markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation,
 }));
 
 // checkToolPermission must NEVER be reachable from an agent run. Spying through
@@ -744,7 +745,7 @@ beforeEach(() => {
   reconcileHungExecutions.mockResolvedValue(0);
   closeAgentRunSession.mockResolvedValue(undefined);
   resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
-  grantCatalogSdkEgress.mockResolvedValue(null);
+  prepareSdkChild.mockImplementation(async () => ({ env: { CI: 'true' }, revoke: vi.fn() }));
   // The billed number the real settlement returns: the registry price.
   settleInvocation.mockImplementation(async (input) => ({
     costCents: realSettle.sumCostCents(realSettle.priceUsage(
@@ -828,32 +829,76 @@ describe('executeAgentRun', () => {
   // AI model registry W03 (Task 12): resolve, translate, fund, settle
   // -------------------------------------------------------------------------
 
-  it('catalog agent runs send the TRANSLATED wire model through a proxied env (legacy sent the logical id)', async () => {
+  it('catalog agent runs send the TRANSLATED wire model through the prepareSdkChild env (legacy sent the logical id)', async () => {
     seedRows();
     const catalog = makeResolvedModel('catalog', { surface: 'ai_agents' });
     resolveModel.mockResolvedValue(catalog);
     const revoke = vi.fn();
-    grantCatalogSdkEgress.mockResolvedValue({ proxyUrl: 'http://127.0.0.1:9999', revoke });
+    prepareSdkChild.mockResolvedValue({ env: { HTTPS_PROXY: 'http://127.0.0.1:9999' }, revoke });
 
     await executeAgentRun(RUN_ID);
 
     expect(lastQueryOptions!.model).toBe('anthropic/claude-sonnet-5.5');
-    expect(grantCatalogSdkEgress).toHaveBeenCalledWith(catalog, {
+    expect(prepareSdkChild).toHaveBeenCalledWith(catalog, {
       key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1',
     });
-    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
-      catalog.connection.config, process.env, { egressProxyUrl: 'http://127.0.0.1:9999' },
-    );
+    expect(lastQueryOptions!.env).toEqual({ HTTPS_PROXY: 'http://127.0.0.1:9999' });
     // The grant never outlives the run.
     expect(revoke).toHaveBeenCalledTimes(1);
   });
 
-  it('a non-catalog run builds an unproxied child env from the resolved connection', async () => {
+  it('a non-catalog run takes its child env from prepareSdkChild for the resolved connection', async () => {
     seedRows();
     await executeAgentRun(RUN_ID);
-    expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'platform' }), process.env, {},
+    expect(prepareSdkChild).toHaveBeenCalledWith(
+      expect.objectContaining({ connection: expect.objectContaining({ kind: 'platform' }) }),
+      { key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1' },
     );
+    expect(lastQueryOptions!.env).toEqual({ CI: 'true' });
+  });
+
+  it('W06: a gateway (openai_compatible) run spawns on the prepareSdkChild env and revokes its grants when the run ends', async () => {
+    seedRows();
+    const gateway = makeResolvedModel('openai_compatible', { surface: 'ai_agents' });
+    resolveModel.mockResolvedValue(gateway);
+    const revoke = vi.fn();
+    const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/tok', ANTHROPIC_API_KEY: 'breeze-gateway' };
+    prepareSdkChild.mockResolvedValue({ env, revoke });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(prepareSdkChild).toHaveBeenCalledWith(gateway, {
+      key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1',
+    });
+    expect(lastQueryOptions!.model).toBe('qwen2.5-coder:7b');
+    expect(lastQueryOptions!.env).toEqual(env);
+    expect(JSON.stringify(lastQueryOptions!.env)).not.toContain('sk-fixture-upstream');
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('the child grants are revoked when the SDK query throws', async () => {
+    seedRows();
+    const revoke = vi.fn();
+    prepareSdkChild.mockResolvedValue({ env: { CI: 'true' }, revoke });
+    queryMock.mockImplementation(() => { throw new Error('spawn failed'); });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('a prepareSdkChild failure dispatches nothing, releases the unused reservation and fails llm_unavailable', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('openai_compatible', { surface: 'ai_agents' }));
+    prepareSdkChild.mockRejectedValue(new Error('gateway could not start'));
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({
+      orgId: ORG_ID, reservationId: '00000000-0000-4000-8000-0000000000e1',
+    });
+    expect(finalTransition()?.patch).toMatchObject({ errorCode: 'llm_unavailable' });
   });
 
   it('dispatches with the resolver\'s wire params (thinking/effort) and its refusal fallback', async () => {
