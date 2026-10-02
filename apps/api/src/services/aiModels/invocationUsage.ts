@@ -294,6 +294,19 @@ function servedModelOf(
     const appeared = grown.filter(([k]) => newKeys.has(k) && k !== binding.wireModel);
     if (appeared.length === 1) return appeared[0]![0];
   }
+  // #7766: the CLI swapped to a refusal fallback this turn but named no model,
+  // and there is no snapshot to say which key is new (a query's first turn).
+  // The bound model is the one that REFUSED, so it is never "what served":
+  // prefer the bound refusal fallback's key, else the one grown key that is
+  // neither the bound model nor a model this session switched away from.
+  if (obs.refusalFallback) {
+    if (binding.refusalFallback && grown.some(([k]) => k === binding.refusalFallback!.wireModel)) {
+      return binding.refusalFallback.wireModel;
+    }
+    const carried = new Set((binding.carriedRates ?? []).map((c) => c.wireModel));
+    const others = grown.filter(([k]) => k !== binding.wireModel && !carried.has(k));
+    if (others.length === 1) return others[0]![0];
+  }
   if (grown.length === 1) return grown[0]![0];
   if (grown.some(([k]) => k === binding.wireModel)) return binding.wireModel;
   if (obs.refusalFallback && binding.refusalFallback && grown.some(([k]) => k === binding.refusalFallback!.wireModel)) {
@@ -469,6 +482,18 @@ function thisTurnUsage(
     : null;
   const turnValid = turnRaw !== null && turnRaw.every((v) => v !== 'invalid');
   let usage: BilledUsage[] = [];
+  if (turnValid && obs.refusalFallback && nonZero.length > 1) {
+    // #7766: a refusal swap on a query's first turn. When the per-key
+    // modelUsage adds up EXACTLY to this turn's usage, it carries nothing from
+    // earlier turns, so each model is billed on its own row at its own rate
+    // (the refused attempt under the bound model, the answer under the
+    // fallback). Otherwise the per-key split is only a ceiling and the capped
+    // turn usage goes to the served model below.
+    const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
+    const exact = input === sum.tokens.input && output === sum.tokens.output && cacheRead === sum.tokens.cacheRead
+      && cacheWrite === sum.tokens.cacheWrite && web === sum.webSearchRequests;
+    if (exact) return { usage: nonZero.map(([k, e]) => billed(k, e)), servedModel, turnValid, nonZeroKeys: nonZero.length };
+  }
   if (turnValid) {
     const [input, output, cacheRead, cacheWrite, web] = turnRaw as number[];
     const capped: Entry = {

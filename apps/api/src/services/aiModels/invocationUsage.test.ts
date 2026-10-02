@@ -382,6 +382,45 @@ describe('sdkTurnUsage — served model is read from the usage, never assumed', 
     expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
   });
 
+  it('#7766: a first-turn CLI refusal swap with no fallback_model labels the fallback as served and bills each key on its own row', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: 'cyber' });
+    const refused = tok(100, 5);
+    const answered = tok(120, 60);
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: obs, previousSnapshot: null,
+      result: success({ usage: ru(add(refused, answered)), modelUsage: { [OPUS]: mu(refused), [OPUS48]: mu(answered) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS48, fallbackUsed: true });
+    expect(out.usage).toEqual([std(OPUS, refused), std(OPUS48, answered)]);
+  });
+
+  it('#7766: the bound refusal fallback\'s key is the served model when it grew', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: null });
+    const out = sdkTurnUsage({ binding: B, observation: obs, previousSnapshot: null,
+      result: success({ usage: ru(add(T, T)), modelUsage: { [SONNET]: mu(T), [HAIKU]: mu(T) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: HAIKU, fallbackUsed: true });
+  });
+
+  it('#7766: when modelUsage also carries earlier turns, the capped turn usage is attributed to the fallback, not the bound model', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', scope: 'session', api_refusal_category: null });
+    const turn = tok(50, 20);
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: obs, previousSnapshot: null,
+      // a resumed transcript: OPUS carries earlier turns, so the per-key split is only a ceiling
+      result: success({ usage: ru(turn), modelUsage: { [OPUS]: mu(tok(900, 400)), [OPUS48]: mu(tok(30, 15)) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS48 });
+    expect(out.usage).toEqual([std(OPUS48, turn)]);
+  });
+
+  it('without a refusal swap, two grown keys on a first result still bill as the bound model (unchanged)', () => {
+    const out = sdkTurnUsage({ binding: { ...B, wireModel: OPUS, logicalModel: OPUS, refusalFallback: null },
+      observation: newSdkTurnObservation(), previousSnapshot: null,
+      result: success({ usage: ru(tok(10, 5)), modelUsage: { [OPUS]: mu(tok(900, 400)), [OPUS48]: mu(tok(30, 15)) } }) });
+    expect(out.outcome).toMatchObject({ servedModel: OPUS });
+  });
+
   it('a single key on the first result is the served model even when it is not the bound one', () => {
     const out = sdkTurnUsage({ binding: B, observation: newSdkTurnObservation(), previousSnapshot: null,
       result: success({ usage: ru(T), modelUsage: { [OPUS48]: mu(T) } }) });
