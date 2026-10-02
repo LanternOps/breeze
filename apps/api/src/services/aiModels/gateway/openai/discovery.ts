@@ -1,5 +1,5 @@
 /**
- * W06 (#7604) Task 11: model discovery for an `openai_compatible` connection —
+ * Model discovery for an `openai_compatible` connection —
  * `GET {base_url}/models` on a partner-supplied, untrusted endpoint.
  *
  * One of the two places allowed to send a request to a partner base URL
@@ -61,7 +61,7 @@ function displayNameOf(item: object, secret: string | null): string | null {
  * The OpenAI `{ data: [{ id }] }` shape or a bare array. Invalid ids are
  * dropped, duplicates collapse to the first; anything that is not a list
  * throws. More than DISCOVERY_MAX_MODELS entries throws DiscoveryTruncatedError
- * (Codex review #9: a cut-off list would age the models past the cut). With
+ * (a cut-off list would age the models past the cut). With
  * `secret`, a name carrying it in any form is dropped before it is capped; ids
  * are screened for the key by the caller (aiModels/discovery withoutKeyMaterial).
  */

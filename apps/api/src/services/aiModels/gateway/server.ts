@@ -34,8 +34,18 @@ import {
 export interface ModelGateway {
   grant(input: GatewayGrantInput): GatewayGrant;
   revoke(token: string): void;
+  /** Revokes every grant in this process bound to the connection (aborting in-flight requests); returns how many. */
+  revokeConnection(connectionId: string): number;
   port(): number;
+  /** The address the listener is actually bound to (always 127.0.0.1). */
+  listenAddress(): string;
   close(): Promise<void>;
+}
+
+/** Per-listener timing overrides; production uses the limits.ts defaults. */
+export interface GatewayServerOptions {
+  totalTimeoutMs?: number;
+  idleTimeoutMs?: number;
 }
 
 /** `/g/<token-segment>[/<path>][?query]` — the token segment is anything up to the next slash; the store validates it. */
@@ -59,7 +69,7 @@ async function readBody(req: IncomingMessage, limit: number, signal: AbortSignal
   }
   const parts: Buffer[] = [];
   let total = 0;
-  // Codex review #13: an abort destroys the request stream so a stalled sender
+  // An abort destroys the request stream so a stalled sender
   // cannot hold a grant slot until the next chunk arrives.
   const onAbort = (): void => { req.destroy(); };
   signal.addEventListener('abort', onAbort, { once: true });
@@ -77,20 +87,21 @@ async function readBody(req: IncomingMessage, limit: number, signal: AbortSignal
   return Buffer.concat(parts);
 }
 
-async function writeResponse(res: ServerResponse, out: GatewayResponse, signal: AbortSignal): Promise<void> {
+async function writeResponse(res: ServerResponse, out: GatewayResponse, signal: AbortSignal, idleTimeoutMs: number): Promise<void> {
   res.writeHead(out.status, { ...out.headers, 'cache-control': 'no-store' });
   if (Buffer.isBuffer(out.body)) { res.end(out.body); return; }
   let idle: NodeJS.Timeout | null = null;
+  let complete = false;
   const arm = (): void => {
     if (idle) clearTimeout(idle);
-    idle = setTimeout(() => res.destroy(new Error('gateway idle timeout')), GATEWAY_IDLE_TIMEOUT_MS);
+    idle = setTimeout(() => res.destroy(new Error('gateway idle timeout')), idleTimeoutMs);
   };
   arm();
   try {
     for await (const chunk of out.body) {
       if (signal.aborted || res.destroyed) break;
       if (!res.write(chunk)) {
-        // Codex review #13: wait for drain, but also wake on abort / close / error.
+        // Wait for drain, but also wake on abort / close / error.
         await new Promise<void>((resolve) => {
           const done = (): void => {
             res.off('drain', done); res.off('close', done); res.off('error', done);
@@ -104,9 +115,12 @@ async function writeResponse(res: ServerResponse, out: GatewayResponse, signal: 
       }
       arm();
     }
+    complete = !signal.aborted && !res.destroyed;
   } finally {
     if (idle) clearTimeout(idle);
-    res.end();
+    // A stream cut short (timeout, revocation, disconnect) must not end cleanly:
+    // a clean end would let the caller read a truncated answer as a complete one.
+    if (complete) res.end(); else res.destroy();
   }
 }
 
@@ -117,7 +131,7 @@ function headersOf(req: IncomingMessage): Record<string, string> {
 }
 
 /**
- * Defence in depth for Review Focus 2: an Anthropic-dialect request whose JSON
+ * Defence in depth for the bound-model rule: an Anthropic-dialect request whose JSON
  * body names a top-level `model` must name a bound one, whatever the adapter does.
  * Bodies that are not a JSON object are left to the adapter (which rejects them).
  */
@@ -130,8 +144,16 @@ function assertAnthropicBodyModel(adapter: GatewayAdapter, body: Buffer, grant: 
   }
 }
 
-export async function startModelGateway(store: GrantStore = createGrantStore()): Promise<ModelGateway> {
+const TIMED_OUT = gatewayErrorBody('api_error', 'The model endpoint did not answer in time.');
+
+export async function startModelGateway(
+  store: GrantStore = createGrantStore(),
+  options: GatewayServerOptions = {},
+): Promise<ModelGateway> {
+  const totalTimeoutMs = options.totalTimeoutMs ?? GATEWAY_TOTAL_TIMEOUT_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? GATEWAY_IDLE_TIMEOUT_MS;
   let listenPort = 0;
+  let listenHost = '';
   const sweeper = setInterval(() => store.sweep(), 60_000);
   sweeper.unref();
 
@@ -153,7 +175,10 @@ export async function startModelGateway(store: GrantStore = createGrantStore()):
       }
       const ac = new AbortController();
       grant.inFlight.add(ac);
-      const total = setTimeout(() => ac.abort(), GATEWAY_TOTAL_TIMEOUT_MS);
+      // The server's own deadline is told apart from a client disconnect: the
+      // first is answered (504), the second cannot be delivered anyway.
+      let timedOut = false;
+      const total = setTimeout(() => { timedOut = true; ac.abort(); }, totalTimeoutMs);
       res.on('close', () => ac.abort());
       try {
         const body = await readBody(req, GATEWAY_MAX_REQUEST_BYTES, ac.signal);
@@ -163,9 +188,11 @@ export async function startModelGateway(store: GrantStore = createGrantStore()):
           { method: req.method ?? 'GET', path, headers: headersOf(req), body, signal: ac.signal },
           grant,
         );
-        await writeResponse(res, out, ac.signal);
+        await writeResponse(res, out, ac.signal, idleTimeoutMs);
       } catch (error) {
-        if (error instanceof GatewayError) {
+        if (timedOut) {
+          send(res, 504, TIMED_OUT);
+        } else if (error instanceof GatewayError) {
           if (error.code === 'gateway_model_mismatch') {
             // The request never reached forwardUpstream; record the refusal against
             // the upstream it was bound for.
@@ -181,6 +208,9 @@ export async function startModelGateway(store: GrantStore = createGrantStore()):
         }
       } finally {
         clearTimeout(total);
+        if (timedOut) {
+          console.warn(`[modelGateway] request exceeded the total timeout (grant ${grant.id}, connection ${grant.config.connectionId}).`);
+        }
         grant.inFlight.delete(ac);
       }
     })();
@@ -194,6 +224,7 @@ export async function startModelGateway(store: GrantStore = createGrantStore()):
       server.off('error', reject);
       const addr = server.address();
       listenPort = typeof addr === 'object' && addr ? addr.port : 0;
+      listenHost = typeof addr === 'object' && addr ? addr.address : '';
       resolve();
     });
   });
@@ -211,7 +242,9 @@ export async function startModelGateway(store: GrantStore = createGrantStore()):
       };
     },
     revoke: (token) => store.revoke(token),
+    revokeConnection: (connectionId) => store.revokeConnection(connectionId),
     port: () => listenPort,
+    listenAddress: () => listenHost,
     async close() {
       clearInterval(sweeper);
       store.revokeAll();

@@ -22,7 +22,7 @@ export interface ToolNameMap {
 export interface OaiChatChoice {
   index: number;
   message?: { role: 'assistant'; content: string | null; tool_calls?: OaiToolCall[]; reasoning_content?: string | null };
-  delta?: { role?: 'assistant'; content?: string | null; tool_calls?: Array<{ index: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }>; reasoning_content?: string | null };
+  delta?: { role?: 'assistant'; content?: string | null; tool_calls?: Array<{ index?: number; id?: string; type?: 'function'; function?: { name?: string; arguments?: string } }>; reasoning_content?: string | null };
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call' | null;
 }
 export interface OaiUsage { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }

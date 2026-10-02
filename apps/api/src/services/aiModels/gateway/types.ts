@@ -1,9 +1,11 @@
+import type { GatewayConnectionKind } from '@breeze/shared';
+
 export type GatewayDialect = 'anthropic' | 'bedrock' | 'vertex' | 'foundry';
 
 /** The `source: 'gateway'` arm of a resolved connection's config. W07 appends cloud arms. */
 export type GatewayConnectionConfig = {
   source: 'gateway';
-  kind: 'openai_compatible';
+  kind: GatewayConnectionKind;
   partnerId: string;
   connectionId: string;
   configVersion: number;
@@ -15,7 +17,7 @@ export interface GatewayCredential {
   secret: string | null;
 }
 
-/** One model a gateway connection's provider listed, already sanitised (W06 Task 11). */
+/** One model a gateway connection's provider listed, already sanitised (openai/discovery.ts). */
 export interface DiscoveredConnectionModel {
   modelId: string;
   displayName: string | null;
@@ -23,18 +25,25 @@ export interface DiscoveredConnectionModel {
 
 export type GatewayGrantPurpose = 'dispatch' | 'verification' | 'discovery';
 
-export interface GatewayGrantInput {
+interface GatewayGrantInputBase {
   config: GatewayConnectionConfig;
   credential: GatewayCredential;
   /** Exact ids the upstream may be asked for (primary + refusal fallback). */
   wireModels: readonly string[];
-  /** null only for partner-level verification/discovery (no egress audit row is written then); a dispatch grant always has one. */
-  orgId: string | null;
   aiSessionId: string | null;
-  purpose: GatewayGrantPurpose;
   /** Default GRANT_DEFAULT_TTL_MS; clamped to GRANT_SESSION_TTL_MS. */
   ttlMs?: number;
 }
+
+/**
+ * A dispatch grant always carries an org: the per-request egress audit row is
+ * org-keyed. orgId is null only for partner-level verification/discovery (no
+ * egress audit row is written then). grants.ts re-checks this at runtime.
+ */
+export type GatewayGrantInput = GatewayGrantInputBase & (
+  | { purpose: 'dispatch'; orgId: string }
+  | { purpose: Exclude<GatewayGrantPurpose, 'dispatch'>; orgId: string | null }
+);
 
 export interface GatewayGrant { token: string; baseUrl: string; revoke: () => void }
 

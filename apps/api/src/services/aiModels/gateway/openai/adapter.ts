@@ -24,6 +24,10 @@ export function estimateInputTokens(body: unknown): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 3);
 }
 
+function isEventStream(contentType: string | null): boolean {
+  return (contentType ?? '').split(';')[0]!.trim().toLowerCase() === 'text/event-stream';
+}
+
 function upstreamErrorType(status: number): AnthropicErrorType {
   if (status === 429) return 'rate_limit_error';
   if (status === 401 || status === 403) return 'authentication_error';
@@ -63,11 +67,18 @@ async function messages(body: Buffer, grant: GatewayGrantRecord, signal: AbortSi
     return json(200, translateChatResponse(payload, { model, tools: translated.tools, estimatedInputTokens: estimateInputTokens(parsed) }));
   }
   if (!res.body) throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned an empty stream.');
+  if (!isEventStream(res.headers.get('content-type'))) {
+    // A JSON answer or an HTML error page is not SSE; reading it as one would end
+    // as an empty "complete" message. Drain a bounded prefix, drop the rest.
+    await readUpstreamErrorText(res, grant);
+    throw new GatewayError(502, 'api_error', 'upstream_not_streamed', 'The endpoint did not stream its answer.');
+  }
   return {
     status: 200,
     headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
     body: translateChatStream(res.body as unknown as AsyncIterable<Uint8Array>, {
       model, tools: translated.tools, messageId: genMessageId(), estimatedInputTokens: estimateInputTokens(parsed),
+      grantId: grant.id, connectionId: grant.config.connectionId, secrets: [grant.credential.secret],
     }),
   };
 }

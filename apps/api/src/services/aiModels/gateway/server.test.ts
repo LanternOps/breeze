@@ -6,8 +6,9 @@ vi.mock('../../llm/llmEgressRecorder', () => ({ recordLlmEgressEvent: (e: unknow
 
 import { __resetGatewayAdaptersForTests, assertBoundModel, registerGatewayAdapter } from './adapter';
 import { closeModelGateway, getModelGateway, startModelGateway, type ModelGateway } from './server';
+import { createGrantStore, type GrantStore } from './grants';
 import { GATEWAY_MAX_REQUEST_BYTES } from './limits';
-import type { GatewayGrantInput } from './types';
+import { GatewayError, type GatewayGrantInput } from './types';
 
 const grantInput: GatewayGrantInput = {
   config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p1', connectionId: 'c1', configVersion: 1, baseUrl: 'https://x.example.com/v1' },
@@ -53,6 +54,7 @@ function rawRequest(path: string, method = 'GET'): Promise<number> {
 describe('model gateway server', () => {
   it('binds 127.0.0.1 only', async () => {
     expect(gw.port()).toBeGreaterThan(0);
+    expect(gw.listenAddress()).toBe('127.0.0.1');
     const { baseUrl } = gw.grant(grantInput);
     expect(baseUrl.startsWith(`http://127.0.0.1:${gw.port()}/g/`)).toBe(true);
   });
@@ -170,6 +172,99 @@ describe('model gateway server', () => {
     expect(text).not.toContain('sk-secret-abcdef');
     expect(text).not.toContain('10.0.0.1');
     expect(logged.join('\n')).not.toContain('sk-secret-abcdef');
+  });
+
+  it('revokeConnection aborts in-flight requests of that connection and refuses its grants afterwards; other connections are untouched', async () => {
+    let started!: () => void;
+    const inFlight = new Promise<void>((r) => { started = r; });
+    const signals: AbortSignal[] = [];
+    registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+      handle: (req) => {
+        if (req.path !== '/hang') return Promise.resolve({ status: 200, headers: {}, body: Buffer.from('{}') });
+        signals.push(req.signal); started();
+        return new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const c1 = gw.grant(grantInput);
+    const c2 = gw.grant({ ...grantInput, config: { ...grantInput.config, connectionId: 'c2' } });
+    const pending = fetch(url(c1.token, '/hang'), { method: 'POST', body: '{}' }).catch(() => null);
+    await inFlight;
+    expect(gw.revokeConnection('c1')).toBe(1);
+    expect(signals[0]!.aborted).toBe(true);
+    await pending;
+    expect((await fetch(url(c1.token, '/x'), { method: 'POST', body: '{}' })).status).toBe(401);
+    expect((await fetch(url(c2.token, '/x'), { method: 'POST', body: '{}' })).status).toBe(200);
+  });
+
+  describe('timeouts and disconnects', () => {
+    let gw2: ModelGateway | null = null;
+    let store: GrantStore;
+    afterEach(async () => { await gw2?.close(); gw2 = null; });
+    const start = async (opts: { totalTimeoutMs?: number; idleTimeoutMs?: number }) => {
+      store = createGrantStore();
+      gw2 = await startModelGateway(store, opts);
+      const { token } = gw2.grant(grantInput);
+      return { token, rec: store.lookup(token)!, at: (path: string) => `http://127.0.0.1:${gw2!.port()}/g/${token}${path}` };
+    };
+    /** An adapter that streams one SSE chunk, then stalls until its signal aborts. */
+    const stallingStream = (): void => {
+      registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+        async handle(req) {
+          async function* body() {
+            yield Buffer.from('event: ping\ndata: {}\n\n');
+            await new Promise((r) => req.signal.addEventListener('abort', r, { once: true }));
+          }
+          return { status: 200, headers: { 'content-type': 'text/event-stream' }, body: body() };
+        } });
+    };
+    const waitFor = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setTimeout(r, 10));
+      expect(cond()).toBe(true);
+    };
+
+    it('the total timeout before the answer starts → 504, not a client-abort 400', async () => {
+      registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+        handle: (req) => new Promise((_, reject) => req.signal.addEventListener('abort',
+          () => reject(new GatewayError(499, 'api_error', 'client_aborted', 'Request aborted.')))) });
+      const { at, rec: grantRec } = await start({ totalTimeoutMs: 100 });
+      const res = await fetch(at('/v1/x'), { method: 'POST', body: '{}' });
+      expect(res.status).toBe(504);
+      expect(await res.json()).toEqual({ type: 'error', error: { type: 'api_error', message: 'The model endpoint did not answer in time.' } });
+      await waitFor(() => grantRec.inFlight.size === 0);
+    });
+
+    it('the total timeout mid-stream destroys the response (no clean end) and frees the slot', async () => {
+      stallingStream();
+      const { at, rec: grantRec } = await start({ totalTimeoutMs: 150 });
+      const res = await fetch(at('/v1/x'), { method: 'POST', body: '{}' });
+      expect(res.status).toBe(200);
+      await expect(res.text()).rejects.toThrow();
+      await waitFor(() => grantRec.inFlight.size === 0);
+    });
+
+    it('the idle timeout mid-stream destroys the response and frees the slot', async () => {
+      stallingStream();
+      const { at, rec: grantRec } = await start({ idleTimeoutMs: 100 });
+      const res = await fetch(at('/v1/x'), { method: 'POST', body: '{}' });
+      expect(res.status).toBe(200);
+      await expect(res.text()).rejects.toThrow();
+      await waitFor(() => grantRec.inFlight.size === 0);
+    });
+
+    it('a client disconnect aborts the adapter signal and frees the slot', async () => {
+      let signal: AbortSignal | null = null;
+      registerGatewayAdapter({ kind: 'openai_compatible', dialect: 'anthropic', sdkChildEnv: () => ({}),
+        handle: (req) => { signal = req.signal; return new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(new Error('aborted')))); } });
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { token, rec: grantRec } = await start({});
+      const req = httpRequest({ host: '127.0.0.1', port: gw2!.port(), path: `/g/${token}/v1/x`, method: 'POST' });
+      req.on('error', () => {});
+      req.end('{}');
+      await waitFor(() => signal !== null);
+      req.destroy();
+      await waitFor(() => signal!.aborted);
+      await waitFor(() => grantRec.inFlight.size === 0);
+    });
   });
 
   it('getModelGateway is a lazy singleton and closeModelGateway resets it', async () => {

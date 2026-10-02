@@ -14,6 +14,8 @@ export interface GrantStore {
   issue(input: GatewayGrantInput): { token: string; record: GatewayGrantRecord };
   lookup(token: string): GatewayGrantRecord | null;
   revoke(token: string): void;
+  /** Revokes every grant bound to the connection; returns how many were revoked. */
+  revokeConnection(connectionId: string): number;
   revokeAll(): void;
   sweep(): void;
   size(): number;
@@ -45,8 +47,9 @@ export function createGrantStore(now: () => number = Date.now): GrantStore {
     issue(input) {
       if (input.wireModels.length === 0) throw new Error('A gateway grant needs at least one wire model.');
       // A dispatch is always an org's turn, and the per-request egress audit row
-      // is keyed by org: an org-less dispatch grant would forward unaudited.
-      if (input.purpose === 'dispatch' && input.orgId === null) {
+      // is keyed by org: an org-less dispatch grant would forward unaudited. The
+      // input type already requires it; this guards untyped and cast callers.
+      if (input.purpose === 'dispatch' && !(input.orgId as string | null)) {
         throw new Error('A dispatch gateway grant needs an org.');
       }
       const token = randomBytes(32).toString('base64url');
@@ -73,6 +76,13 @@ export function createGrantStore(now: () => number = Date.now): GrantStore {
       return rec;
     },
     revoke(token) { drop(digest(token)); },
+    revokeConnection(connectionId) {
+      let n = 0;
+      for (const [key, rec] of [...byDigest]) {
+        if (rec.config.connectionId === connectionId) { drop(key); n += 1; }
+      }
+      return n;
+    },
     revokeAll() { for (const key of [...byDigest.keys()]) drop(key); },
     sweep() {
       const t = now();

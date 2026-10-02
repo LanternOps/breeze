@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { translateChatStream } from './translateStream';
 import { UNSAFE_TOOL_CALL_NOTE } from './translateResponse';
 const tools = {
@@ -39,12 +39,23 @@ describe('translateChatStream', () => {
     expect(ev.map((e) => `${e.ev}:${e.data.index ?? ''}`)).toEqual(['message_start:', 'content_block_start:0', 'content_block_delta:0', 'content_block_stop:0', 'content_block_start:1', 'content_block_delta:1', 'content_block_stop:1', 'message_delta:', 'message_stop:']);
   });
   it('reasoning_content deltas are dropped', async () => { const ev = await run({ choices: [{ index: 0, delta: { reasoning_content: 'secret' }, finish_reason: null }] }, { choices: [{ index: 0, delta: { content: 'a' }, finish_reason: 'stop' }] }, '[DONE]'); expect(JSON.stringify(ev)).not.toContain('secret'); });
-  it('a stream truncated mid tool call (no finish_reason, no [DONE]) never emits tool_use (Codex review #1)', async () => {
-    const ev = await run({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] }, finish_reason: null }] }); expect(ev.some((e) => e.data.content_block?.type === 'tool_use')).toBe(false); expect(ev.some((e) => e.data.delta?.text === UNSAFE_TOOL_CALL_NOTE)).toBe(true);
+  it('a stream truncated mid tool call (no finish_reason, no [DONE]) never emits tool_use and ends with an error (Codex review #1)', async () => {
+    const ev = await run({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] }, finish_reason: null }] }); expect(ev.some((e) => e.data.content_block?.type === 'tool_use')).toBe(false);
+    expect(ev.at(-1)).toMatchObject({ ev: 'error', data: { type: 'error', error: { type: 'api_error', message: 'The endpoint stream ended early.' } } });
+    expect(ev.some((e) => e.ev === 'message_stop')).toBe(false);
   });
   it('blank tool arguments are not treated as {} (Codex review #1)', async () => { const ev = await run({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'get_weather', arguments: '' } }] }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }, '[DONE]'); expect(ev.some((e) => e.data.content_block?.type === 'tool_use')).toBe(false); });
   it('no usage chunk → message_delta carries an estimate, never 0 input tokens (Codex review #5)', async () => { const ev = await run({ choices: [{ index: 0, delta: { content: 'abcdef' }, finish_reason: 'stop' }] }, '[DONE]'); expect(ev.find((e) => e.ev === 'message_delta')!.data.usage).toMatchObject({ input_tokens: 9, output_tokens: 2 }); });
-  it('an upstream that ends without [DONE] or finish_reason still closes the message (end_turn)', async () => { const ev = await run({ choices: [{ index: 0, delta: { content: 'a' }, finish_reason: null }] }); expect(ev.at(-1)!.ev).toBe('message_stop'); });
+  it('a text-only upstream that ends without [DONE] or a finish_reason ends with an error event, never a clean end_turn', async () => {
+    const ev = await run({ choices: [{ index: 0, delta: { content: 'a' }, finish_reason: null }] });
+    expect(ev.at(-1)).toMatchObject({ ev: 'error', data: { type: 'error', error: { type: 'api_error', message: 'The endpoint stream ended early.' } } });
+    expect(ev.some((e) => e.ev === 'message_delta' || e.ev === 'message_stop')).toBe(false);
+  });
+  it('a text-only upstream that ends after an unrecognised finish_reason (no [DONE]) also ends with an error event', async () => {
+    const ev = await run({ choices: [{ index: 0, delta: { content: 'a' }, finish_reason: 'paused_midway' }] });
+    expect(ev.at(-1)!.ev).toBe('error');
+    expect(ev.some((e) => e.ev === 'message_stop')).toBe(false);
+  });
   it('a malformed SSE data line becomes an Anthropic error event, not a crash', async () => { const ev = await run('{not json'); expect(ev.some((e) => e.ev === 'error')).toBe(true); });
 });
 
@@ -68,7 +79,7 @@ describe('translateChatStream tool-call validation', () => {
   });
   it('an unknown finish_reason followed by EOF (no [DONE]) never emits tool calls', async () => {
     const ev = await run(tc(0, 'get_weather', '{"city":"Oslo"}', 'a'), finishWith('paused_midway'));
-    expect(hasToolUse(ev)).toBe(false); expect(hasNote(ev)).toBe(true);
+    expect(hasToolUse(ev)).toBe(false); expect(ev.at(-1)!.ev).toBe('error');
   });
   it('an unknown finish_reason followed by [DONE] is a complete stream', async () => {
     const ev = await run(tc(0, 'get_weather', '{"city":"Oslo"}', 'a'), finishWith('paused_midway'), '[DONE]');
@@ -117,5 +128,104 @@ describe('translateChatStream usage counters', () => {
   it('reported 0 output tokens for a rejected tool call still bills the generated arguments', async () => {
     const ev = await run(tc(0, 'set_alert', '{"deviceId":7,"padding":"xxxxxxxxxxxxxxxxxxxxxxxxx"}', 'a'), finishWith('tool_calls'), { choices: [], usage: { prompt_tokens: 50, completion_tokens: 0 } }, '[DONE]');
     expect(ev.find((e) => e.ev === 'message_delta')!.data.usage.output_tokens).toBeGreaterThan(0);
+  });
+});
+
+const toolUses = (ev: Awaited<ReturnType<typeof run>>) => ev.filter((e) => e.data.content_block?.type === 'tool_use').map((e) => e.data.content_block as { id: string; name: string });
+const toolInputs = (ev: Awaited<ReturnType<typeof run>>) => ev.filter((e) => e.data.delta?.type === 'input_json_delta').map((e) => JSON.parse(e.data.delta.partial_json as string) as unknown);
+const raw = (calls: unknown[]) => ({ choices: [{ index: 0, delta: { tool_calls: calls }, finish_reason: null }] });
+
+describe('translateChatStream tool-call keying', () => {
+  it('two distinct complete calls in one chunk without index (with ids) become two tool_use blocks', async () => {
+    const ev = await run(raw([
+      { id: 'a', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } },
+      { id: 'b', function: { name: 'set_alert', arguments: '{"deviceId":"d1"}' } },
+    ]), finishWith('tool_calls'), '[DONE]');
+    expect(toolUses(ev).map((t) => [t.id, t.name])).toEqual([['a', 'get_weather'], ['b', 'set_alert']]);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }, { deviceId: 'd1' }]);
+  });
+  it('two distinct complete calls in one chunk with neither index nor id are split on each new function name', async () => {
+    const ev = await run(raw([
+      { function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } },
+      { function: { name: 'get_weather', arguments: '{"city":"Rome"}' } },
+    ]), finishWith('tool_calls'), '[DONE]');
+    expect(toolUses(ev).map((t) => t.name)).toEqual(['get_weather', 'get_weather']);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }, { city: 'Rome' }]);
+  });
+  it('index-less argument fragments continue the call they follow', async () => {
+    const ev = await run(
+      raw([{ id: 'a', function: { name: 'get_weather', arguments: '{"ci' } }]),
+      raw([{ function: { arguments: 'ty":"Oslo"}' } }]),
+      finishWith('tool_calls'), '[DONE]',
+    );
+    expect(toolUses(ev).map((t) => t.id)).toEqual(['a']);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }]);
+  });
+  it('two calls at the same index with different ids are two calls, not one concatenated call', async () => {
+    const ev = await run(tc(0, 'get_weather', '{"city":"Oslo"}', 'a'), tc(0, 'set_alert', '{"deviceId":"d1"}', 'b'), finishWith('tool_calls'), '[DONE]');
+    expect(toolUses(ev).map((t) => [t.id, t.name])).toEqual([['a', 'get_weather'], ['b', 'set_alert']]);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }, { deviceId: 'd1' }]);
+  });
+  it('interleaved parallel calls keyed by index reassemble each call', async () => {
+    const ev = await run(
+      tc(0, 'get_weather', '{"ci', 'a'), tc(1, 'set_alert', '{"devi', 'b'),
+      tc(0, undefined, 'ty":"Oslo"}'), tc(1, undefined, 'ceId":"d1"}'),
+      finishWith('tool_calls'), '[DONE]',
+    );
+    expect(toolUses(ev).map((t) => [t.id, t.name])).toEqual([['a', 'get_weather'], ['b', 'set_alert']]);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }, { deviceId: 'd1' }]);
+  });
+  it('interleaved parallel calls without index are reassembled by id', async () => {
+    const ev = await run(
+      raw([{ id: 'a', function: { name: 'get_weather', arguments: '{"ci' } }]),
+      raw([{ id: 'b', function: { name: 'set_alert', arguments: '{"devi' } }]),
+      raw([{ id: 'a', function: { arguments: 'ty":"Oslo"}' } }]),
+      raw([{ id: 'b', function: { arguments: 'ceId":"d1"}' } }]),
+      finishWith('tool_calls'), '[DONE]',
+    );
+    expect(toolUses(ev).map((t) => [t.id, t.name])).toEqual([['a', 'get_weather'], ['b', 'set_alert']]);
+    expect(toolInputs(ev)).toEqual([{ city: 'Oslo' }, { deviceId: 'd1' }]);
+  });
+});
+
+describe('translateChatStream diagnostics', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  const secret = 'live9f8e7d6c5b4a3210zzQQ';
+  const diagCtx = { model: 'qwen', tools, messageId: 'msg_gw_1', estimatedInputTokens: 9, grantId: 'grant-77', connectionId: 'conn-42', secrets: [secret] };
+  const captureWarns = (): string[] => {
+    const warns: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+    return warns;
+  };
+
+  it('a malformed event logs a scrubbed warning with the grant and connection ids', async () => {
+    const warns = captureWarns();
+    const ev = await events(translateChatStream(sse(`{not json ${secret}`), diagCtx));
+    expect(ev.some((e) => e.ev === 'error')).toBe(true);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('grant-77');
+    expect(warns[0]).toContain('conn-42');
+    expect(warns[0]).not.toContain(secret);
+  });
+  it('a failing upstream stream logs a scrubbed warning with the ids and the reason', async () => {
+    const warns = captureWarns();
+    async function* broken() {
+      yield enc.encode('data: {"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}\n\n');
+      throw new Error(`socket reset near ${secret}`);
+    }
+    const ev = await events(translateChatStream(broken(), diagCtx));
+    expect(ev.at(-1)!.ev).toBe('error');
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('grant-77');
+    expect(warns[0]).toContain('conn-42');
+    expect(warns[0]).toContain('socket reset');
+    expect(warns[0]).not.toContain(secret);
+  });
+  it('an early end logs a warning with the ids', async () => {
+    const warns = captureWarns();
+    await events(translateChatStream(sse({ choices: [{ index: 0, delta: { content: 'a' }, finish_reason: null }] }), diagCtx));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('grant-77');
+    expect(warns[0]).toContain('conn-42');
   });
 });

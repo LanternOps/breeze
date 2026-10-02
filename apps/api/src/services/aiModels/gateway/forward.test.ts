@@ -10,6 +10,7 @@ vi.mock('./byoEndpointPolicy', async (orig) => ({
 
 import { __setLookupForTests, assertSafeUrl, SsrfBlockedError } from '../../urlSafety';
 import { __setUpstreamFetchForTests, forwardUpstream, readUpstreamErrorText } from './forward';
+import { setGatewayConnectionCheck } from './index';
 import type { GatewayGrantRecord } from './types';
 
 const grant = (over: Partial<GatewayGrantRecord> = {}): GatewayGrantRecord => ({
@@ -153,6 +154,22 @@ describe('forwardUpstream', () => {
     expect(text.length).toBeLessThanOrEqual(300);
   });
 
+  it('an unreachable upstream logs a scrubbed warning with the grant id, connection id and cause — never the key', async () => {
+    const warns: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+    __setUpstreamFetchForTests((async () => {
+      throw new Error('connect ECONNREFUSED 203.0.113.9:443 while sending sk-secret-123456', { cause: new Error('socket hang up') });
+    }) as never);
+    await expect(forwardUpstream(grant(), { url: 'https://llm.example.com/v1/models', method: 'GET', headers: {}, stream: false }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'upstream_unreachable', status: 502 });
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('g1');
+    expect(warns[0]).toContain('c1');
+    expect(warns[0]).toContain('ECONNREFUSED');
+    expect(warns[0]).toContain('socket hang up');
+    expect(warns[0]).not.toContain('sk-secret-123456');
+  });
+
   it('readUpstreamErrorText reads only a bounded prefix of a huge error body', async () => {
     let pulled = 0;
     const body = new ReadableStream<Uint8Array>({
@@ -165,5 +182,49 @@ describe('forwardUpstream', () => {
     const text = await readUpstreamErrorText(new Response(body, { status: 500 }), grant());
     expect(text.length).toBeLessThanOrEqual(300);
     expect(pulled).toBeLessThan(10);
+  });
+});
+
+describe('forwardUpstream connection freshness check', () => {
+  const req = { url: 'https://llm.example.com/v1/models', method: 'GET' as const, headers: {}, stream: false };
+  let dialled = 0;
+  beforeEach(() => {
+    rec.events.length = 0; env.hosted = true; dialled = 0;
+    __setUpstreamFetchForTests((async () => { dialled += 1; return new Response('{}'); }) as never);
+  });
+  afterEach(() => { setGatewayConnectionCheck(null); __setUpstreamFetchForTests(null); vi.restoreAllMocks(); });
+
+  it('dials when no check is registered', async () => {
+    await expect(forwardUpstream(grant(), req, new AbortController().signal)).resolves.toBeInstanceOf(Response);
+    expect(dialled).toBe(1);
+  });
+
+  it('asks the check with the grant connection id and config version, and dials when it allows', async () => {
+    const seen: Array<[string, number]> = [];
+    setGatewayConnectionCheck(async (id, version) => { seen.push([id, version]); return true; });
+    await forwardUpstream(grant(), req, new AbortController().signal);
+    expect(seen).toEqual([['c1', 1]]);
+    expect(dialled).toBe(1);
+  });
+
+  it('a stale connection is refused with 401 grant_stale, no upstream call and a blocked audit row', async () => {
+    setGatewayConnectionCheck(async () => false);
+    await expect(forwardUpstream(grant(), req, new AbortController().signal)).rejects.toMatchObject({
+      status: 401, errorType: 'authentication_error', code: 'grant_stale', message: 'This connection changed; the request was not sent.',
+    });
+    expect(dialled).toBe(0);
+    expect(rec.events).toEqual([expect.objectContaining({ blocked: true, connectionId: 'c1' })]);
+  });
+
+  it('a failing check fails closed (same refusal) and logs a scrubbed warning', async () => {
+    const warns: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+    setGatewayConnectionCheck(async () => { throw new Error('db down; key sk-secret-123456'); });
+    await expect(forwardUpstream(grant(), req, new AbortController().signal)).rejects.toMatchObject({ status: 401, code: 'grant_stale' });
+    expect(dialled).toBe(0);
+    expect(rec.events).toEqual([expect.objectContaining({ blocked: true })]);
+    expect(warns.join('\n')).toContain('db down');
+    expect(warns.join('\n')).toContain('c1');
+    expect(warns.join('\n')).not.toContain('sk-secret-123456');
   });
 });

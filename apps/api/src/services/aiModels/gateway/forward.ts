@@ -34,6 +34,39 @@ export function __setUpstreamFetchForTests(fn: typeof safeFetch | null): void { 
 
 let warnedNoOrg = false;
 
+/** Whether a grant's connection is still current (same row, same config version). */
+export type GatewayConnectionCheck = (connectionId: string, configVersion: number) => Promise<boolean>;
+let connectionCheck: GatewayConnectionCheck | null = null;
+
+/**
+ * Registers the check forwardUpstream runs before every dial. A grant outlives
+ * the moment it was issued, so an edited, disabled or deleted connection must
+ * stop reaching its upstream even while grants for it are still live. With no
+ * check registered every request is allowed.
+ */
+export function setGatewayConnectionCheck(fn: GatewayConnectionCheck | null): void {
+  connectionCheck = fn;
+}
+
+function staleGrant(): GatewayError {
+  return new GatewayError(401, 'authentication_error', 'grant_stale', 'This connection changed; the request was not sent.');
+}
+
+/** An error's message plus its cause chain (fetch reports the socket error as `cause`). */
+function describeError(error: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = error;
+  for (let depth = 0; cur !== undefined && cur !== null && depth < 3; depth += 1) {
+    parts.push(cur instanceof Error ? cur.message : String(cur));
+    cur = cur instanceof Error ? (cur as Error & { cause?: unknown }).cause : undefined;
+  }
+  return parts.join(' <- ');
+}
+
+function logIds(grant: GatewayGrantRecord): string {
+  return `grant ${grant.id}, connection ${grant.config.connectionId}`;
+}
+
 /** The upstream origin a grant may reach. W07 adds a cloud arm per kind (the `never` default forces it). */
 export function upstreamOriginFor(grant: GatewayGrantRecord): string {
   switch (grant.config.kind) {
@@ -115,7 +148,7 @@ function offOrigin(): GatewayError {
 
 /**
  * The ONLY function that dials a gateway connection's upstream (Global
- * Constraints; contract test in Task 16). Origin- and path-pinned to the
+ * Constraints; enforced by aiModelRegistry.contract.test.ts). Origin- and path-pinned to the
  * connection, SSRF-guarded with DNS pinning (safeFetch, re-resolved on every
  * call), no redirects, response size capped, credential injected here and
  * nowhere else, one audit row per attempt.
@@ -138,6 +171,22 @@ export async function forwardUpstream(
   ) {
     auditGatewayEgress(grant, target.hostname, null, true);
     throw offOrigin();
+  }
+
+  if (connectionCheck) {
+    let current: boolean;
+    try {
+      current = await connectionCheck(grant.config.connectionId, grant.config.configVersion);
+    } catch (error) {
+      // Fail closed: an unverifiable grant does not dial.
+      console.warn(`[modelGateway] connection check failed (${logIds(grant)}):`,
+        scrubSecrets(describeError(error), [grant.credential.secret]));
+      current = false;
+    }
+    if (current !== true) {
+      auditGatewayEgress(grant, target.hostname, null, true);
+      throw staleGrant();
+    }
   }
 
   const headers: Record<string, string> = {};
@@ -188,6 +237,8 @@ export async function forwardUpstream(
       throw new GatewayError(502, 'api_error', 'upstream_too_large', 'The endpoint response exceeded the size limit.');
     }
     if (signal.aborted) throw new GatewayError(499, 'api_error', 'client_aborted', 'Request aborted.');
+    console.warn(`[modelGateway] upstream unreachable (${logIds(grant)}):`,
+      scrubSecrets(describeError(error), [grant.credential.secret]));
     throw new GatewayError(502, 'api_error', 'upstream_unreachable', 'The endpoint could not be reached.');
   }
   auditGatewayEgress(grant, target.hostname, resolvedIp, false);
@@ -203,7 +254,7 @@ export async function forwardUpstream(
  * Error text from a non-2xx upstream response, safe to return or store: reads at
  * most GATEWAY_UPSTREAM_ERROR_READ_BYTES (the rest is cancelled unread), then
  * scrubs the grant's credential and generic key shapes and caps the length.
- * Adapters use this for every upstream error they surface (Review Focus 5).
+ * Adapters use this for every upstream error they surface.
  */
 export async function readUpstreamErrorText(res: Response, grant: GatewayGrantRecord, max = 300): Promise<string> {
   let text = '';

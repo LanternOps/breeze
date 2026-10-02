@@ -67,6 +67,54 @@ describe('openai_compatible adapter (real Anthropic client through the gateway)'
     expect(JSON.stringify(err?.error)).not.toContain('sk-upstream-secret-1');
   });
 
+  const streamFailure = async (): Promise<{ status: number; message: string }> => {
+    try {
+      await clientFor().messages.stream({ model: 'qwen', max_tokens: 64, messages: [{ role: 'user', content: 'x' }] }).finalMessage();
+    } catch (e) {
+      const err = e as { status: number; error?: { error?: { message?: string } } };
+      return { status: err.status, message: err.error?.error?.message ?? '' };
+    }
+    throw new Error('expected the stream to fail');
+  };
+
+  it('a streamed request answered with JSON (not text/event-stream) → 502, never fed to the SSE translator', async () => {
+    reply = () => Response.json({ choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'hi' } }] });
+    expect(await streamFailure()).toEqual({ status: 502, message: 'The endpoint did not stream its answer.' });
+  });
+
+  it('a streamed request answered with an HTML page → 502, and only a bounded prefix is read', async () => {
+    let pulled = 0;
+    reply = () => new Response(new ReadableStream<Uint8Array>({
+      pull(c) { pulled += 1; if (pulled > 1000) { c.close(); return; } c.enqueue(new TextEncoder().encode('<html>'.padEnd(64 * 1024, 'x'))); },
+    }), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    expect(await streamFailure()).toEqual({ status: 502, message: 'The endpoint did not stream its answer.' });
+    expect(pulled).toBeLessThan(10);
+  });
+
+  it('a streamed 2xx with no body → 502 empty stream', async () => {
+    reply = () => new Response(null, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    expect(await streamFailure()).toEqual({ status: 502, message: 'The endpoint returned an empty stream.' });
+  });
+
+  it('a non-streamed 2xx whose body is not JSON → 502 upstream_malformed', async () => {
+    reply = () => new Response('<html>oops</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    let err: { status: number; error?: { error?: { message?: string } } } | undefined;
+    try {
+      await clientFor().messages.create({ model: 'qwen', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] });
+    } catch (e) { err = e as typeof err; }
+    expect(err?.status).toBe(502);
+    expect(err?.error?.error?.message).toBe('The endpoint returned malformed JSON.');
+  });
+
+  it('stream diagnostics carry the grant and connection ids', async () => {
+    const warns: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(' ')); });
+    reply = () => new Response('data: {not json\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    await streamFailure().catch(() => null);
+    spy.mockRestore();
+    expect(warns.some((w) => /grant [0-9a-f-]{36}, connection c\)/.test(w))).toBe(true);
+  });
+
   it('count_tokens over-estimates and never calls upstream', async () => {
     lastUpstream = null;
     const r = await clientFor().messages.countTokens({ model: 'qwen', messages: [{ role: 'user', content: 'a'.repeat(300) }] });

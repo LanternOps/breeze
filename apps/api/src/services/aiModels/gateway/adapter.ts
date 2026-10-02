@@ -42,7 +42,7 @@ export function __resetGatewayAdaptersForTests(): void {
 }
 
 /**
- * The bound-model rule (Review Focus 2): the upstream may only be asked for a
+ * The bound-model rule: the upstream may only be asked for a
  * model the resolver priced for this dispatch (primary + its refusal fallback).
  */
 export function assertBoundModel(grant: GatewayGrantRecord, model: unknown): string {
