@@ -517,7 +517,12 @@
       "error": "Impossibile caricare il dettaglio dell'utilizzo.",
       "disconnected": "Disconnessa",
       "disconnectedHint": "La connessione che ha servito queste chiamate è stata nel frattempo disconnessa.",
-      "footnote": "Il tasso di rifiuto è calcolato per chiamata al modello. I conteggi iniziano dall'attivazione del registro dei modelli; l'utilizzo precedente è incluso nei totali sopra."
+      "footnote": "Il tasso di rifiuto è calcolato per chiamata al modello. I conteggi iniziano dall'attivazione del registro dei modelli; l'utilizzo precedente è incluso nei totali sopra.",
+      "view": {
+        "label": "Mostra",
+        "spend": "Spesa",
+        "quality": "Qualità"
+      }
     },
     "link": {
       "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
@@ -525,6 +530,59 @@
       "noDefault": "nessun predefinito impostato",
       "partner": "Predefiniti del partner",
       "org": "Override di questa organizzazione"
+    },
+    "quality": {
+      "title": "Qualità dei modelli",
+      "subtitleAll": "Come vanno le conversazioni su ogni modello in tutte le organizzazioni: rifiuti, segnalazioni, passaggi a un altro modello e turni fino alla risoluzione.",
+      "subtitleOrg": "Come vanno le conversazioni su ogni modello per l'organizzazione selezionata.",
+      "groupBy": {
+        "model": "Modello",
+        "surface": "Funzione",
+        "prompt_profile": "Famiglia di modelli"
+      },
+      "columns": {
+        "conversations": "Conversazioni",
+        "costPerConversation": "Costo / conversazione",
+        "refusalRate": "Tasso di rifiuto",
+        "failoverRate": "Tasso di failover",
+        "flagRate": "Tasso di segnalazione",
+        "leftRate": "Passate a un altro modello",
+        "turnsToResolution": "Turni fino alla risoluzione",
+        "agentCompletion": "Esecuzioni agente completate"
+      },
+      "help": {
+        "conversations": "Sessioni di chat ed esecuzioni agente la cui ultima chiamata al modello in questo periodo era su questa riga.",
+        "costPerConversation": "Spesa media su questa riga per ogni conversazione che l'ha usata.",
+        "refusalRate": "Chiamate al modello rifiutate dal modello, per chiamata.",
+        "failoverRate": "Chiamate passate a un modello di riserva perché questo ha avuto un errore o non era disponibile.",
+        "flagRate": "Sessioni segnalate da una persona. Le segnalazioni automatiche dopo un errore di strumento sono contate a parte.",
+        "leftRate": "Conversazioni passate a un altro modello o proseguite in una nuova sessione su un altro modello.",
+        "turnsToResolution": "Mediana dei messaggi inviati da un tecnico nelle sessioni concluse senza segnalazione di una persona né passaggio a una nuova sessione. Include la sessione da cui proseguiva.",
+        "agentCompletion": "Esecuzioni agente completate, sul totale delle esecuzioni terminate."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Small",
+        "generic": "Altri modelli"
+      },
+      "unrecorded": "Non registrato",
+      "unattributed": "Non attribuito a un modello",
+      "removedModel": "Modello rimosso",
+      "platformConnection": "Piattaforma Breeze",
+      "notRecorded": "Non ancora registrato su questo server",
+      "switchesOnly": "Solo passaggi",
+      "few": "Poche conversazioni",
+      "autoFlagged_one": "{{count}} segnalata automaticamente",
+      "autoFlagged_other": "{{count}} segnalate automaticamente",
+      "leftBreakdown": "{{switched}} passate, {{continued}} proseguite",
+      "resolvedCount_one": "{{count}} risolta",
+      "resolvedCount_other": "{{count}} risolte",
+      "loading": "Caricamento della qualità…",
+      "empty": "Nessuna chiamata al modello in questo periodo.",
+      "error": "Impossibile caricare la vista Qualità.",
+      "timeout": "Questo intervallo è troppo ampio per essere riassunto rapidamente. Scegli un intervallo più breve.",
+      "footnote": "Una conversazione conta per l'ultimo modello usato e un passaggio per il modello lasciato. Le chiamate servite da un modello di riserva contano per il modello scelto. I conteggi partono dall'attivazione del monitoraggio della qualità. Leggi con cautela i numeri piccoli."
     }
   },
   "partnerDefaults": {

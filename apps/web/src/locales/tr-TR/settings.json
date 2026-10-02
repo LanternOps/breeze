@@ -517,7 +517,12 @@
       "error": "Kullanım dökümü yüklenemedi.",
       "disconnected": "Bağlantı kesildi",
       "disconnectedHint": "Bu çağrıları karşılayan bağlantı o zamandan beri kesildi.",
-      "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır."
+      "footnote": "Ret oranı model çağrısı başınadır. Sayımlar model kaydı devreye girdiğinde başlar; önceki kullanım yukarıdaki toplamlardadır.",
+      "view": {
+        "label": "Göster",
+        "spend": "Harcama",
+        "quality": "Kalite"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -525,6 +530,59 @@
       "noDefault": "varsayılan ayarlanmamış",
       "partner": "İş ortağı varsayılanları",
       "org": "Bu kuruluşun geçersiz kılması"
+    },
+    "quality": {
+      "title": "Model kalitesi",
+      "subtitleAll": "Tüm kuruluşlarda her modelde konuşmaların nasıl geçtiği: retler, işaretlemeler, başka bir modele geçişler ve çözüme kadar geçen turlar.",
+      "subtitleOrg": "Seçili kuruluş için her modelde konuşmaların nasıl geçtiği.",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Özellik",
+        "prompt_profile": "Model ailesi"
+      },
+      "columns": {
+        "conversations": "Konuşmalar",
+        "costPerConversation": "Maliyet / konuşma",
+        "refusalRate": "Ret oranı",
+        "failoverRate": "Yedeğe geçiş oranı",
+        "flagRate": "İşaretleme oranı",
+        "leftRate": "Başka modele geçti",
+        "turnsToResolution": "Çözüme kadar tur",
+        "agentCompletion": "Tamamlanan ajan çalıştırmaları"
+      },
+      "help": {
+        "conversations": "Bu dönemdeki son model çağrısı bu satırda olan sohbet oturumları ve ajan çalıştırmaları.",
+        "costPerConversation": "Bu satırı kullanan her konuşma için bu satırdaki ortalama harcama.",
+        "refusalRate": "Modelin reddettiği model çağrıları, çağrı başına.",
+        "failoverRate": "Bu model başarısız olduğu veya kullanılamadığı için yedek modele geçen çağrılar.",
+        "flagRate": "Bir kişinin işaretlediği oturumlar. Araç hatasından sonraki otomatik işaretlemeler ayrı sayılır.",
+        "leftRate": "Başka bir modele geçen veya başka bir modelle yeni bir oturumda devam eden konuşmalar.",
+        "turnsToResolution": "Bir kişi işaretlemeden ve yeni bir oturuma geçmeden biten oturumlarda bir teknisyenin gönderdiği mesajların ortancası. Devam edilen oturumu da içerir.",
+        "agentCompletion": "Biten çalıştırmalar içinde tamamlanan ajan çalıştırmaları."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Small",
+        "generic": "Diğer modeller"
+      },
+      "unrecorded": "Kaydedilmedi",
+      "unattributed": "Bir modele atfedilmedi",
+      "removedModel": "Kaldırılan model",
+      "platformConnection": "Breeze platformu",
+      "notRecorded": "Bu sunucuda henüz kaydedilmiyor",
+      "switchesOnly": "Yalnızca geçişler",
+      "few": "Az sayıda konuşma",
+      "autoFlagged_one": "{{count}} otomatik işaretlendi",
+      "autoFlagged_other": "{{count}} otomatik işaretlendi",
+      "leftBreakdown": "{{switched}} geçti, {{continued}} devam etti",
+      "resolvedCount_one": "{{count}} çözüldü",
+      "resolvedCount_other": "{{count}} çözüldü",
+      "loading": "Kalite yükleniyor…",
+      "empty": "Bu dönemde model çağrısı yok.",
+      "error": "Kalite görünümü yüklenemedi.",
+      "timeout": "Bu aralık hızlıca özetlenemeyecek kadar geniş. Daha kısa bir aralık seçin.",
+      "footnote": "Bir konuşma son kullandığı modele, bir geçiş ise ayrıldığı modele sayılır. Yedek modelin karşıladığı çağrılar seçilen modele sayılır. Sayımlar kalite takibinin başladığı andan itibaren başlar. Küçük sayıları dikkatle yorumlayın."
     }
   },
   "partnerDefaults": {

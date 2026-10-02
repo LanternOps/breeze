@@ -517,7 +517,12 @@
       "error": "Couldn't load the usage breakdown.",
       "disconnected": "Disconnected",
       "disconnectedHint": "The connection that served these calls has since been disconnected.",
-      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above."
+      "footnote": "Refusal rate is per model call. Counts start when the model registry went live; earlier usage is in the totals above.",
+      "view": {
+        "label": "Show",
+        "spend": "Spend",
+        "quality": "Quality"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -525,6 +530,59 @@
       "noDefault": "no default set",
       "partner": "Partner defaults",
       "org": "This organization's override"
+    },
+    "quality": {
+      "title": "Model quality",
+      "subtitleAll": "How conversations go on each model across all organizations: refusals, flags, moves to another model and turns to resolve.",
+      "subtitleOrg": "How conversations go on each model for the selected organization.",
+      "groupBy": {
+        "model": "Model",
+        "surface": "Feature",
+        "prompt_profile": "Model family"
+      },
+      "columns": {
+        "conversations": "Conversations",
+        "costPerConversation": "Cost / conversation",
+        "refusalRate": "Refusal rate",
+        "failoverRate": "Failover rate",
+        "flagRate": "Flag rate",
+        "leftRate": "Left for another model",
+        "turnsToResolution": "Turns to resolve",
+        "agentCompletion": "Agent runs completed"
+      },
+      "help": {
+        "conversations": "Chat sessions and agent runs whose last model call in this period was on this row.",
+        "costPerConversation": "Average spend on this row for each conversation that used it.",
+        "refusalRate": "Model calls the model declined, per call.",
+        "failoverRate": "Calls that moved to a backup model because this one failed or was unavailable.",
+        "flagRate": "Sessions a person flagged. Automatic flags after a tool error are counted separately.",
+        "leftRate": "Conversations that switched to another model, or continued in a new session on another model.",
+        "turnsToResolution": "Median messages a technician sent in sessions that finished without a person's flag or a move to a new session. Includes the session it continued from.",
+        "agentCompletion": "Agent runs that completed, out of runs that finished."
+      },
+      "profiles": {
+        "claude-frontier": "Frontier Claude",
+        "claude-standard": "Standard Claude",
+        "claude-small": "Small Claude",
+        "generic": "Other models"
+      },
+      "unrecorded": "Not recorded",
+      "unattributed": "Not attributed to a model",
+      "removedModel": "Removed model",
+      "platformConnection": "Breeze platform",
+      "notRecorded": "Not recorded on this server yet",
+      "switchesOnly": "Switches only",
+      "few": "Few conversations",
+      "autoFlagged_one": "{{count}} flagged automatically",
+      "autoFlagged_other": "{{count}} flagged automatically",
+      "leftBreakdown": "{{switched}} switched, {{continued}} continued",
+      "resolvedCount_one": "{{count}} resolved",
+      "resolvedCount_other": "{{count}} resolved",
+      "loading": "Loading quality…",
+      "empty": "No model calls in this period.",
+      "error": "Couldn't load the quality view.",
+      "timeout": "This range is too large to summarize quickly. Choose a shorter range.",
+      "footnote": "A conversation counts toward the model it last used, and a switch toward the model it left. Calls served by a fallback or a backup model count toward the model that was chosen. Counts start when quality tracking went live. Read small numbers with care."
     }
   },
   "partnerDefaults": {

@@ -17,6 +17,7 @@ import { fetchWithAuth } from '@/stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { Drawer } from '../shared/Drawer';
+import PromptVariantsCard from './PromptVariantsCard';
 // Initializes the shared i18next singleton before any island renders translated text.
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -392,6 +393,8 @@ export default function AiModels() {
           </table>
         </div>
       )}
+
+      <PromptVariantsCard />
 
       <Drawer
         open={editing !== null}
