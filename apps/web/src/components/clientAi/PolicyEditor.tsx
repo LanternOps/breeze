@@ -6,6 +6,7 @@ import { runAction, handleActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import ModelDefaultsLink from "../settings/aiModels/ModelDefaultsLink";
 
 /**
  * AI for Office — per-org policy editor (spec §9.2). Reached via
@@ -57,20 +58,12 @@ const DLP_BUILTINS: {
   { key: "phone", label: "Phone numbers", defaultAction: "off" },
 ];
 
-// The models priced in apps/api/src/services/aiCostTracker.ts:17-18. Empty
-// selection = all available models (Plan-1 default allowedModels: []).
-const KNOWN_MODELS: { id: string; label: string }[] = [
-  { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
-  { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-];
-
 interface PolicyDto {
   orgId: string;
   enabled: boolean;
   userAccess: "all" | "selected";
   selectedUserIds: string[];
   allowedProviders: string[];
-  allowedModels: string[];
   writeMode: "readwrite" | "readonly";
   writeApproval?: "ask" | "allow_auto";
   dlpConfig: {
@@ -131,7 +124,6 @@ export default function PolicyEditor({
   const [enabled, setEnabled] = useState(false);
   const [userAccess, setUserAccess] = useState<"all" | "selected">("all");
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
-  const [allowedModels, setAllowedModels] = useState<string[]>([]);
   const [writeMode, setWriteMode] = useState<"readwrite" | "readonly">(
     "readwrite",
   );
@@ -166,7 +158,6 @@ export default function PolicyEditor({
       setEnabled(policy.enabled);
       setUserAccess(policy.userAccess);
       setSelectedUserIds(policy.selectedUserIds ?? []);
-      setAllowedModels(policy.allowedModels ?? []);
       setWriteMode(policy.writeMode);
       // Default-deny: anything other than the explicit 'allow_auto' is 'ask'.
       setWriteApproval(
@@ -232,7 +223,6 @@ export default function PolicyEditor({
     enabled,
     userAccess,
     selectedUserIds: userAccess === "selected" ? selectedUserIds : [],
-    allowedModels,
     writeMode,
     writeApproval,
     dlpConfig: {
@@ -297,10 +287,6 @@ export default function PolicyEditor({
     }
   };
 
-  const toggleModel = (id: string) =>
-    setAllowedModels((prev) =>
-      prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id],
-    );
   const toggleUser = (id: string) =>
     setSelectedUserIds((prev) =>
       prev.includes(id) ? prev.filter((u) => u !== id) : [...prev, id],
@@ -429,24 +415,10 @@ export default function PolicyEditor({
           </label>
           <div className="text-sm">
             <span className="text-muted-foreground">
-              {t("policyEditor.allowedModels")}
+              {t("policyEditor.aiModel")}
             </span>
-            <div className="mt-1 space-y-1.5">
-              {KNOWN_MODELS.map((m) => (
-                <label key={m.id} className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={allowedModels.includes(m.id)}
-                    onChange={() => toggleModel(m.id)}
-                    className="rounded border-border"
-                    data-testid={`ai-office-policy-model-${m.id}`}
-                  />
-                  {m.label}
-                </label>
-              ))}
-              <p className="text-xs text-muted-foreground">
-                {t("policyEditor.allModelsHint")}
-              </p>
+            <div className="mt-1">
+              <ModelDefaultsLink surface="office_chat" orgId={orgId} level="org" />
             </div>
           </div>
         </div>

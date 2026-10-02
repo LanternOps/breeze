@@ -26,7 +26,8 @@ import {
 import { lockPartnerRegistryReconcile } from './aiModels/legacyReconcile';
 import { isOfferablePlatformModel } from './aiModels/platformModels';
 import { ensurePartnerCutover } from './aiModels/registryCutover';
-import { carriesQueryValues, formatSafeDbErrorDetail, safeDbErrorDetail, safeErrorMessage } from './aiModels/safeDbError';
+import { safeErrorMessage } from './aiModels/safeDbError';
+import { RegistryWriteError, toRegistryWriteError } from './aiModels/registryWriteErrors';
 import { LlmEgressViolationError } from './llm/guardedLlmFetch';
 // `isLlmProviderCatalogEnabled` is called from inside function bodies here,
 // never at module-evaluation time.
@@ -48,29 +49,26 @@ export class PartnerLlmError extends Error {
   }
 }
 
-/**
- * A database failure inside a provider write, reduced to what is safe to log
- * (the shared scrubber: aiModels/safeDbError.ts). A Drizzle query error's
- * message and `params` (and a postgres.js error's `query` / `parameters`)
- * carry the statement's values — here the key ciphertext and fingerprint
- * (createConnection's insert, the rotation's update) — so they must never
- * reach the route's error handler, the console or Sentry. What survives: the
- * class, the SQLSTATE (Sentry tags it from `cause.code`), the constraint, and
- * the Postgres primary message — except for SQLSTATE class 22 (data
- * exception), whose primary message can quote the offending input value.
- */
-function toSafeWriteError(error: unknown): PartnerLlmError {
-  const safeDetail = safeDbErrorDetail(error);
-  const { code, kind } = safeDetail;
-  const detail = formatSafeDbErrorDetail(safeDetail);
-  const cause = Object.assign(new Error(`AI provider write failed: ${kind}${detail ? ` (${detail})` : ''}`), code ? { code } : {});
-  const safe = new PartnerLlmError('Could not save the AI provider configuration.', 500);
-  safe.cause = cause;
-  return safe;
-}
-
 const notCutOver = () => new PartnerLlmError('AI configuration is being upgraded. Try again in a moment.', 503);
 const configChanged = () => new PartnerLlmError('The AI provider configuration changed. Reload and try again.', 409);
+
+/**
+ * A registry write failure as the facade reports it (#7602 BD-5). Raw database
+ * errors go through the one registry mapper (aiModels/registryWriteErrors.ts),
+ * which scrubs query values — key ciphertext and fingerprint from
+ * createConnection's insert or the rotation's update — so they never reach the
+ * route's error handler, the console or Sentry. A unique violation or a stale
+ * write means another write won the race: 409, reload. Anything else is a safe
+ * 500. The registry error's own message is never surfaced; the scrubbed cause
+ * (SQLSTATE, constraint, primary message) is kept for Sentry.
+ */
+function fromRegistryWriteError(error: RegistryWriteError): PartnerLlmError {
+  const mapped = error.code === 'conflict' || error.code === 'stale_write'
+    ? configChanged()
+    : new PartnerLlmError('Could not save the AI provider configuration.', 500);
+  mapped.cause = error.cause;
+  return mapped;
+}
 
 /**
  * #7601 W03 Task 6B — the authority flip. For a cut-over partner the registry
@@ -105,11 +103,16 @@ async function inRegistryWrite<T>(partnerId: string, write: () => Promise<T>): P
     if (error instanceof RegistryNotCutOverError) throw notCutOver();
     if (error instanceof CompatConnectionMissingError) throw configChanged();
     if (error instanceof ConnectionKeyError) throw new PartnerLlmError('Could not store the API key.', 500);
-    // Only errors that carry SQL values are rewritten. Anything else (a remap
-    // invariant, a TypeError) keeps its message and stack so a blocked
+    // Only registry errors and errors that carry SQL values are rewritten:
+    // toRegistryWriteError rethrows anything else (a remap invariant, a
+    // TypeError) untouched, keeping its message and stack so a blocked
     // /ai/provider write stays diagnosable in Sentry.
-    if (carriesQueryValues(error)) throw toSafeWriteError(error);
-    throw error;
+    try {
+      toRegistryWriteError(error, 'Could not save the AI provider configuration.');
+    } catch (mapped) {
+      if (mapped instanceof RegistryWriteError) throw fromRegistryWriteError(mapped);
+      throw mapped;
+    }
   }
 }
 

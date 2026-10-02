@@ -287,6 +287,28 @@ describe('client-ai admin — policy', () => {
     );
   });
 
+  it('PUT ignores allowedModels (single home: the office_chat assignment)', async () => {
+    getOrgPolicyMock.mockResolvedValue({ orgId: ORG_ID, enabled: true });
+    const setSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([MAPPING_ROW])) }));
+    const valuesMock = vi.fn(() => ({ onConflictDoUpdate: setSpy }));
+    dbInsertMock.mockImplementation(() => ({ values: valuesMock }));
+
+    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
+      method: 'PUT',
+      headers: AUTHED,
+      body: JSON.stringify({ enabled: true, allowedModels: ['x'] }),
+    });
+    expect(res.status).toBe(200);
+    const [values] = valuesMock.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(values).not.toHaveProperty('allowedModels');
+    const [conflict] = setSpy.mock.calls[0] as unknown as [{ set: Record<string, unknown> }];
+    expect(conflict.set).not.toHaveProperty('allowedModels');
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: { changedKeys: ['enabled'] } }),
+    );
+  });
+
   it('PUT persists writeApproval and audits it as a changed key', async () => {
     getOrgPolicyMock.mockResolvedValue({ orgId: ORG_ID, enabled: true });
     const valuesMock = vi.fn(() => ({

@@ -57,6 +57,13 @@ function mockApi(policy: unknown = DEFAULT_POLICY) {
         data: [{ id: USER_1, email: 'a@contoso.com', name: 'A', lastLoginAt: null }],
       });
     }
+    if (url === `/ai/models/orgs/${ORG_ID}/assignments`) {
+      return makeJsonResponse({
+        orgId: ORG_ID,
+        offerings: [],
+        surfaces: [{ surface: 'office_chat', effective: { defaultOfferingId: null, defaultSource: 'none' } }],
+      });
+    }
     return makeJsonResponse({ error: 'unexpected' }, false, 500);
   });
 }
@@ -76,7 +83,6 @@ describe('PolicyEditor', () => {
     fireEvent.change(screen.getByTestId('ai-office-policy-writeapproval'), {
       target: { value: 'allow_auto' },
     });
-    fireEvent.click(screen.getByTestId('ai-office-policy-model-claude-sonnet-4-5-20250929'));
     fireEvent.change(screen.getByTestId('ai-office-policy-monthly-budget'), { target: { value: '25.00' } });
     fireEvent.change(screen.getByTestId('ai-office-policy-dlp-ssn'), { target: { value: 'block' } });
     fireEvent.click(screen.getByTestId('ai-office-policy-dlp-add-rule'));
@@ -96,7 +102,6 @@ describe('PolicyEditor', () => {
       enabled: true,
       userAccess: 'all',
       selectedUserIds: [],
-      allowedModels: ['claude-sonnet-4-5-20250929'],
       writeMode: 'readonly',
       writeApproval: 'allow_auto',
       dlpConfig: {
@@ -119,6 +124,28 @@ describe('PolicyEditor', () => {
       retentionDays: null,
       branding: { displayName: 'Lantern IT', logoUrl: null },
     });
+  });
+
+  it('no longer edits allowed models; points to the office_chat assignment instead', async () => {
+    mockApi();
+    render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-policy-editor')).toBeInTheDocument());
+    expect(screen.queryByTestId(/^ai-office-policy-model-/)).toBeNull();
+    expect(await screen.findByTestId('model-defaults-link-office_chat')).toBeTruthy();
+    expect(screen.getByTestId('model-defaults-link-org').getAttribute('href')).toBe(`/settings/organizations/${ORG_ID}#ai`);
+    // The link leads to one model default, not an allow-list.
+    expect(screen.getByText('AI model')).toBeTruthy();
+    expect(screen.queryByText('Allowed models')).toBeNull();
+  });
+
+  it('does not send allowedModels on save, even when the loaded policy carries some', async () => {
+    mockApi({ ...DEFAULT_POLICY, allowedModels: ['legacy-model'] });
+    render(<PolicyEditor orgId={ORG_ID} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('ai-office-policy-editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ai-office-policy-save'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT');
+    expect(JSON.parse(String(put![1]!.body))).not.toHaveProperty('allowedModels');
   });
 
   it('sends selectedUserIds when access is "selected"', async () => {

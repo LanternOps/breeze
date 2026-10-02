@@ -4,7 +4,7 @@
  * reason a caller sees is deterministic. Ownership is checked first so a
  * foreign offering is never described by any other reason.
  */
-import { TOOL_REQUIRING_SURFACES, type AiSurface } from '@breeze/shared';
+import { TOOL_REQUIRING_SURFACES, type AiSurface, type OfferingEnableBlocker } from '@breeze/shared';
 import type { RateSnapshot } from './pricing';
 
 /** Ascending. Pinned to planTypeEnum by eligibility.test.ts. */
@@ -103,6 +103,98 @@ export function checkEligibility(c: CandidateFacts, ctx: EligibilityContext): Re
     && !c.supportedInferenceGeos.includes(c.inferenceGeo)
   ) {
     return 'residency_unavailable';
+  }
+  return null;
+}
+
+// ── W04 (#7602): the enable-time gate ────────────────────────────────────────
+// Spec §8 / §5.1 / §6: enabling re-checks offered, lifecycle, price and plan.
+// It REUSES checkEligibility (one rule table) by neutralising the inputs that
+// are not decided at enable time:
+//   enabled            → true            (that is what we are deciding)
+//   connection status  → active/usable   (transient; reported, never blocking)
+//                        — EXCEPT 'disconnected' (W03 soft-disconnect, #7601):
+//                        that connection is gone (keyless, never listed), not
+//                        unhealthy, so its offerings are refused as
+//                        connection_unavailable and can never be re-enabled.
+//   tools              → supported       (decided per surface at assignment)
+//   requiredPermission → null            (decided per user at dispatch)
+//   residency required → false           (decided per partner at dispatch)
+// `chat` is only the surface label checkEligibility needs; with supportsTools
+// forced true the tools rule cannot fire for any surface.
+//
+// NOT neutralised (ruling BD-1): the platform-geo rule. A platform offering
+// whose configured AI_PLATFORM_INFERENCE_GEO the model cannot serve can never
+// dispatch on the platform key, so it must not be enableable — and the gate
+// reports the true reason, `residency_unavailable`.
+export interface EnableEligibilityContext {
+  partnerId: string;
+  partnerPlan: PartnerPlan | null;
+  hosted: boolean;
+}
+export type EnableGateReason =
+  | 'not_permitted'
+  | 'model_unavailable'
+  | 'unpriced'
+  | 'plan_required'
+  | 'residency_unavailable'
+  /** Only for a disconnected connection; every other connection_unavailable cause maps to model_unavailable. */
+  | 'connection_unavailable';
+
+/** W03 soft-disconnect: the connection row is kept as provenance only (status 'disconnected'). */
+export function onDisconnectedConnection(c: CandidateFacts): boolean {
+  return c.connection.status === 'disconnected';
+}
+
+function neutralised(c: CandidateFacts): CandidateFacts {
+  return {
+    ...c,
+    enabled: true,
+    connection: onDisconnectedConnection(c) ? c.connection : { ...c.connection, status: 'active', keyUsable: true },
+    supportsTools: true,
+    requiredPermission: null,
+  };
+}
+
+function enableContext(ctx: EnableEligibilityContext): EligibilityContext {
+  return {
+    partnerId: ctx.partnerId,
+    surface: 'chat',
+    partnerPlan: ctx.partnerPlan,
+    hosted: ctx.hosted,
+    residencyRequired: false,
+    geoCarriable: true,
+    userInitiated: false,
+    userHoldsPermission: () => true,
+  };
+}
+
+/** The enable-time gate. Returns null when the offering may be enabled. Connection health never blocks; a disconnected connection does. */
+export function checkEnableEligibility(c: CandidateFacts, ctx: EnableEligibilityContext): EnableGateReason | null {
+  const reason = checkEligibility(neutralised(c), enableContext(ctx));
+  if (reason === null) return null;
+  switch (reason) {
+    case 'not_permitted':
+    case 'model_unavailable':
+    case 'unpriced':
+    case 'plan_required':
+    case 'residency_unavailable':
+      return reason;
+    default:
+      if (reason === 'connection_unavailable' && onDisconnectedConnection(c)) return 'connection_unavailable';
+      // Otherwise connection_unavailable can only come from a non-dispatchable
+      // kind (openai_compatible before W06). Treat it as unavailable for enabling.
+      return 'model_unavailable';
+  }
+}
+
+/** Same rules, reporting connection health too (for the snapshot DTO's enableBlocker). */
+export function enableBlockerFor(c: CandidateFacts, ctx: EnableEligibilityContext): OfferingEnableBlocker | null {
+  const gate = checkEnableEligibility(c, ctx);
+  if (gate === 'not_permitted') return 'model_unavailable';
+  if (gate) return gate;
+  if (c.connection.kind !== 'platform' && (c.connection.status !== 'active' || !c.connection.keyUsable)) {
+    return 'connection_unavailable';
   }
   return null;
 }

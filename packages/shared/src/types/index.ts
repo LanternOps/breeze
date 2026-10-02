@@ -12,6 +12,7 @@ export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
 export * from './scriptProposals';
 export * from './backupHealth';
+export * from './aiModelRegistry';
 
 // ============================================
 // Multi-Tenancy Types

@@ -256,8 +256,7 @@
       "allowAuto": "Automatische Anwendung zulassen (Endbenutzer kann sie aktivieren)"
     },
     "autoApplyHint": "Die automatische Anwendung ist standardmäßig deaktiviert und nur möglich, wenn sie hier zugelassen wird.",
-    "allowedModels": "Zulässige Modelle",
-    "allModelsHint": "Keine Auswahl = alle verfügbaren Modelle.",
+    "aiModel": "KI-Modell",
     "whoCanUse": "Zugriffsberechtigte Benutzer",
     "userAccessOptions": {
       "all": "Alle Benutzer im zugeordneten Mandanten",

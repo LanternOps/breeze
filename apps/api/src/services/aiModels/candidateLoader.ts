@@ -162,6 +162,57 @@ function asPlan(value: string | null | undefined): PartnerPlan | null {
   return (PARTNER_PLAN_ORDER as readonly string[]).includes(value ?? '') ? (value as PartnerPlan) : null;
 }
 
+/**
+ * W04 (#7602, BD-4): capabilities and selectable options of a platform row as
+ * the platform key serves it: unknown trees resolved like legacy (tools true),
+ * unrated fast stripped, geographies limited to the platform key's. Pure; the
+ * registry snapshot uses it for not-yet-added rows so they show exactly what
+ * the loaded offering will.
+ */
+export function platformModelView(row: PlatformModel): { capabilities: DerivedCapabilities; optionSupport: OptionSupport } {
+  const { capabilities, legacySupport } = anthropicCapabilities(row.capabilities, row.modelId);
+  // W01 D3: the platform key serves only PLATFORM_KEY_INFERENCE_GEOS; the
+  // same effective list feeds eligibility AND wire params, so they agree.
+  return {
+    capabilities,
+    optionSupport: {
+      ...withPricedSpeeds(row.optionSupport, row.optionRates ?? null),
+      ...(legacySupport ?? {}),
+      inferenceGeo: effectivePlatformInferenceGeos(row.optionSupport.inferenceGeo),
+    },
+  };
+}
+
+/**
+ * W04 (#7602, ruling BD-1): eligibility facts for a platform model the partner
+ * has not added yet (registry snapshot / add-and-enable). Pure: the caller
+ * awaits getPlatformInferenceGeo() and passes it in. Built from the SAME
+ * helpers as platformCandidate below (effective platform-key geographies,
+ * plan, rate, capabilities), so a synthesized row gets the same enable verdict
+ * as the loaded offering, including W03's platform-geo `residency_unavailable`.
+ * Connection health is reported as usable: the enable gate neutralises it.
+ */
+export function platformCandidateFacts(
+  partnerId: string,
+  row: PlatformModel,
+  platformInferenceGeo: string | null,
+): CandidateFacts {
+  const standard = platformRate(row);
+  return {
+    ownerPartnerId: partnerId,
+    enabled: false,
+    lifecycle: 'available',
+    requiredPermission: null,
+    platform: { platformOffered: row.platformOffered, lifecycle: row.lifecycle, minPlan: asPlan(row.minPlan) },
+    connection: { kind: 'platform', status: 'active', keyUsable: true },
+    catalog: null,
+    rate: standard ? { source: 'platform', standard } : null,
+    supportsTools: platformModelView(row).capabilities.supportsTools,
+    inferenceGeo: platformInferenceGeo,
+    supportedInferenceGeos: effectivePlatformInferenceGeos(row.optionSupport.inferenceGeo),
+  };
+}
+
 /** Platform offering, or the partnerless system candidate (patch_test). */
 async function platformCandidate(
   row: PlatformModel,
@@ -174,16 +225,9 @@ async function platformCandidate(
   const configured = isPlatformLlmConfigured(process.env.ANTHROPIC_API_KEY, 'agent_sdk');
   const standard = platformRate(row);
   const config: UsableLlmConfig = { source: 'platform', apiKey: process.env.ANTHROPIC_API_KEY, model: row.modelId };
-  const { capabilities, legacySupport } = anthropicCapabilities(row.capabilities, row.modelId);
+  const { capabilities, optionSupport } = platformModelView(row);
   const optionRates = row.optionRates ?? null;
-  // W01 D3: the platform key serves only PLATFORM_KEY_INFERENCE_GEOS; the
-  // same effective list feeds eligibility AND wire params, so they agree.
-  const inferenceGeos = effectivePlatformInferenceGeos(row.optionSupport.inferenceGeo);
-  const optionSupport: OptionSupport = {
-    ...withPricedSpeeds(row.optionSupport, optionRates),
-    ...(legacySupport ?? {}),
-    inferenceGeo: inferenceGeos,
-  };
+  const inferenceGeos = optionSupport.inferenceGeo;
   return {
     facts: {
       ownerPartnerId: offering?.partnerId ?? null,

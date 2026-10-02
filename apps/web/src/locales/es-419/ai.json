@@ -256,8 +256,7 @@
       "allowAuto": "Permitir la aplicación automática (el usuario final puede optar por la aplicación automática)"
     },
     "autoApplyHint": "La aplicación automática está desactivada de forma predeterminada y solo es posible cuando se permite aquí.",
-    "allowedModels": "Modelos permitidos",
-    "allModelsHint": "Ninguna selección = todos los modelos disponibles.",
+    "aiModel": "Modelo de IA",
     "whoCanUse": "¿Quién puede utilizar el asistente?",
     "userAccessOptions": {
       "all": "Todos los usuarios del inquilino asignado",

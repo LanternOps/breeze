@@ -60,6 +60,7 @@
     "billing": "Facturation",
     "organizations": "Organisations",
     "aiUsage": "Utilisation de l’IA",
+    "aiProvidersModels": "Fournisseurs et modèles d'IA",
     "scriptAuthoring": "Rédaction de scripts",
     "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",

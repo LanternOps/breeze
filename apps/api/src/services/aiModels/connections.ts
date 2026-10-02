@@ -13,6 +13,7 @@ import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
 import { hmacFingerprint } from '../secretCrypto';
 import { ConnectionKeyError, encryptConnectionKey } from './connectionKeys';
+import { toRegistryWriteError } from './registryWriteErrors';
 
 export {
   ConnectionKeyError,
@@ -107,24 +108,35 @@ export async function createConnection(input: CreateConnectionInput): Promise<Pa
     throw new Error('A catalog connection needs a catalog entry.');
   }
   const id = input.id ?? randomUUID();
-  const [created] = await db
-    .insert(partnerAiConnections)
-    .values({
-      id,
-      partnerId: input.partnerId,
-      kind: input.kind,
-      name: input.name,
-      inferenceGeo: input.inferenceGeo ?? null,
-      apiKeyEncrypted: encryptConnectionKey(id, apiKey),
-      keyLast4: apiKey.slice(-4),
-      keyFingerprint: hmacFingerprint(apiKey),
-      catalogEntryId: input.kind === 'catalog' ? input.catalogEntryId! : null,
-      status: 'active',
-      configVersion: 1,
-      verifiedAt: input.verifiedAt,
-      connectedBy: input.connectedBy,
-    })
-    .returning(PUBLIC_COLUMNS);
+  // Sealed before the insert so a sealing failure stays a ConnectionKeyError
+  // (the /ai/provider facade answers it as "Could not store the API key.").
+  const apiKeyEncrypted = encryptConnectionKey(id, apiKey);
+  let created: PartnerAiConnection | undefined;
+  try {
+    [created] = await db
+      .insert(partnerAiConnections)
+      .values({
+        id,
+        partnerId: input.partnerId,
+        kind: input.kind,
+        name: input.name,
+        inferenceGeo: input.inferenceGeo ?? null,
+        apiKeyEncrypted,
+        keyLast4: apiKey.slice(-4),
+        keyFingerprint: hmacFingerprint(apiKey),
+        catalogEntryId: input.kind === 'catalog' ? input.catalogEntryId! : null,
+        status: 'active',
+        configVersion: 1,
+        verifiedAt: input.verifiedAt,
+        connectedBy: input.connectedBy,
+      })
+      .returning(PUBLIC_COLUMNS);
+  } catch (error) {
+    // PR #7665 handoff: a failed insert's query params carry the key ciphertext
+    // and fingerprint. Scrub at the source so every caller (W03 connectCompat,
+    // W04 routes, W06/W07) gets a RegistryWriteError, never the raw error.
+    toRegistryWriteError(error, 'Could not save the AI connection.');
+  }
   if (!created) throw new Error('Could not create the connection.');
   return created;
 }

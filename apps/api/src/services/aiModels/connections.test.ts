@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ inserted: [] as Array<Record<string, unknown>>, selected: [] as unknown[], returned: [] as unknown[][] }));
+const state = vi.hoisted(() => ({ inserted: [] as Array<Record<string, unknown>>, selected: [] as unknown[], returned: [] as unknown[][], rejectNext: null as unknown }));
 
 vi.mock('../../db', () => ({
   db: {
@@ -9,6 +9,11 @@ vi.mock('../../db', () => ({
         state.inserted.push(values);
         return { returning: vi.fn((fields: Record<string, unknown>) => {
           state.selected.push(fields);
+          if (state.rejectNext) {
+            const error = state.rejectNext;
+            state.rejectNext = null;
+            return Promise.reject(error);
+          }
           return Promise.resolve(state.returned.shift() ?? []);
         }) };
       }),
@@ -38,6 +43,7 @@ import {
   listConnections,
   PARTNER_AI_CONNECTION_KEY_SPEC,
 } from './connections';
+import { RegistryWriteError } from './registryWriteErrors';
 
 const ID = '44444444-4444-4444-8444-444444444444';
 const PARTNER = '55555555-5555-4555-8555-555555555555';
@@ -49,6 +55,7 @@ beforeEach(() => {
   state.inserted.length = 0;
   state.selected.length = 0;
   state.returned.length = 0;
+  state.rejectNext = null;
 });
 afterEach(() => {
   if (saved.key === undefined) delete process.env.APP_ENCRYPTION_KEY; else process.env.APP_ENCRYPTION_KEY = saved.key;
@@ -110,5 +117,53 @@ describe('connection reads never select key material (#7600 W02)', () => {
       expect(Object.keys(fields as object)).not.toContain('apiKeyEncrypted');
       expect(Object.keys(fields as object)).not.toContain('keyFingerprint');
     }
+  });
+});
+
+describe('createConnection error scrubbing (PR #7665 handoff)', () => {
+  function drizzleInsertError(code: string, params: unknown[]): Error {
+    const pg = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code, constraint_name: 'partner_ai_connections_compat_uq', severity: 'ERROR', query: 'insert', parameters: params,
+    });
+    return Object.assign(new Error(`Failed query: insert … params: ${params.join(',')}`), {
+      name: 'DrizzleQueryError', query: 'insert', params, cause: pg,
+    });
+  }
+
+  it('throws a scrubbed RegistryWriteError when the insert fails with query values', async () => {
+    state.rejectNext = drizzleInsertError('23505', ['enc:v3:SECRETCIPHERTEXT', 'SECRETFINGERPRINT']);
+    const err = await createConnection({
+      partnerId: PARTNER, kind: 'anthropic_byok', name: 'Anthropic', apiKey: 'sk-ant-' + 'x'.repeat(40),
+      connectedBy: null, verifiedAt: null,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(RegistryWriteError);
+    expect(err.code).toBe('conflict');
+    expect(err.status).toBe(409);
+    expect(err.details).toEqual({ constraint: 'partner_ai_connections_compat_uq' });
+    const surfaced = `${String(err.message)} ${String(err.cause)} ${JSON.stringify(err.details)}`;
+    expect(surfaced).not.toContain('SECRET');
+    expect((err.cause as { code?: string }).code).toBe('23505');
+  });
+
+  it('maps a non-constraint insert failure to a 500 write_failed with a safe message', async () => {
+    state.rejectNext = drizzleInsertError('XX000', ['enc:v3:SECRETCIPHERTEXT']);
+    const err = await createConnection({
+      partnerId: PARTNER, kind: 'anthropic_byok', name: 'Anthropic', apiKey: 'sk-ant-' + 'x'.repeat(40),
+      connectedBy: null, verifiedAt: null,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(RegistryWriteError);
+    expect([err.code, err.status, err.message]).toEqual(['write_failed', 500, 'Could not save the AI connection.']);
+    expect(String(err.cause)).not.toContain('SECRET');
+  });
+
+  it('leaves a key-sealing failure as a ConnectionKeyError (the facade keeps "Could not store the API key.")', async () => {
+    // A whitespace-only key seals to null: encryptConnectionKey throws before any DB call.
+    const err = await createConnection({
+      partnerId: PARTNER, kind: 'anthropic_byok', name: 'Anthropic', apiKey: '   ',
+      connectedBy: null, verifiedAt: null,
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(ConnectionKeyError);
+    expect(err).not.toBeInstanceOf(RegistryWriteError);
+    expect(state.inserted).toEqual([]);
   });
 });

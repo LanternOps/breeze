@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Bot, Coins, DollarSign, Flag, MessageSquare, Zap, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import AiUsageBreakdown from './aiModels/AiUsageBreakdown';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import {
@@ -338,6 +339,8 @@ export default function AiUsagePage() {
           {t('aiUsagePage.effectiveBudgetUnavailable')}
         </p>
       )}
+
+      <AiUsageBreakdown orgId={currentOrgId ?? null} />
 
       {/* Session history */}
       <div className="rounded-lg border bg-card">

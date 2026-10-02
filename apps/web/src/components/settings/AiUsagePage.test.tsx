@@ -52,6 +52,24 @@ beforeEach(() => {
   fetchWithAuth.mockReset();
 });
 
+describe('AiUsagePage model breakdown', () => {
+  it('mounts the usage breakdown scoped to the selected org, above Recent Sessions', async () => {
+    orgState.currentOrgId = 'org-9';
+    mockUsage();
+    const { getByTestId, getByText } = renderPage();
+    await waitFor(() => expect(getByText('Recent Sessions')).toBeInTheDocument());
+    const card = getByTestId('ai-usage-breakdown');
+    expect(card.compareDocumentPosition(getByText('Recent Sessions')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The card mounts in the same async commit that renders Recent Sessions, and
+    // fetches from a passive effect React may flush a task later — so wait for the
+    // request rather than asserting it synchronously (CI flake on PR #7701).
+    await waitFor(() => expect(
+      fetchWithAuth.mock.calls.some(([u]) => /^\/ai\/models\/usage\?groupBy=model.*orgId=org-9/.test(String(u))),
+    ).toBe(true));
+    orgState.currentOrgId = null;
+  });
+});
+
 describe('AiUsagePage billedTo indicator', () => {
   it('renders the partner-key billing note when usage is billed to the partner key', async () => {
     mockUsage('partner_key');

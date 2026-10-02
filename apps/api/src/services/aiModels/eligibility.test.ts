@@ -3,6 +3,8 @@ import { planTypeEnum } from '../../db/schema/orgs';
 import {
   PARTNER_PLAN_ORDER,
   checkEligibility,
+  checkEnableEligibility,
+  enableBlockerFor,
   planSatisfies,
   type CandidateFacts,
   type EligibilityContext,
@@ -129,5 +131,88 @@ describe('plan ordering', () => {
     expect(planSatisfies('pro', 'community')).toBe(true);
     expect(planSatisfies('starter', 'community')).toBe(false);
     expect(planSatisfies('free', null)).toBe(true);
+  });
+});
+
+describe('checkEnableEligibility (W04 enable gate; one rule table)', () => {
+  const P = 'partner-1';
+  const rates = { source: 'platform' as const, standard: { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 } };
+  const facts = (over: Partial<CandidateFacts> = {}): CandidateFacts => ({
+    ownerPartnerId: P, enabled: false, lifecycle: 'available', requiredPermission: 'ai_models:premium',
+    platform: { platformOffered: true, lifecycle: 'available', minPlan: null },
+    connection: { kind: 'platform', status: 'active', keyUsable: true },
+    catalog: null, rate: rates, supportsTools: false, inferenceGeo: null, supportedInferenceGeos: [],
+    ...over,
+  });
+  const ctx = { partnerId: P, partnerPlan: 'pro' as const, hosted: true };
+
+  it.each([
+    ['a disabled, offered, priced platform model', facts(), null],
+    ['a model the operator stopped offering', facts({ platform: { platformOffered: false, lifecycle: 'available', minPlan: null } }), 'model_unavailable'],
+    ['a retired platform row', facts({ platform: { platformOffered: true, lifecycle: 'retired', minPlan: null } }), 'model_unavailable'],
+    ['a missing offering', facts({ lifecycle: 'missing' }), 'model_unavailable'],
+    ['an unpriced connection model', facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'active', keyUsable: true }, rate: null }), 'unpriced'],
+    ['a plan-gated model on a lower plan (hosted)', facts({ platform: { platformOffered: true, lifecycle: 'available', minPlan: 'enterprise' } }), 'plan_required'],
+    ['a catalog model no longer mapped+verified', facts({ platform: null, connection: { kind: 'catalog', status: 'active', keyUsable: true }, catalog: { usable: false } }), 'model_unavailable'],
+    ['another partner’s offering', facts({ ownerPartnerId: 'other' }), 'not_permitted'],
+  ])('%s → %s', (_label, f, expected) => {
+    expect(checkEnableEligibility(f, ctx)).toBe(expected);
+  });
+
+  it('does not gate on tools, user permission or residency (decided at assignment / dispatch)', () => {
+    expect(checkEnableEligibility(facts({ supportsTools: false, requiredPermission: 'ai_models:premium' }), ctx)).toBeNull();
+  });
+
+  it('ignores min_plan when not hosted (self-host has no plans)', () => {
+    expect(checkEnableEligibility(facts({ platform: { platformOffered: true, lifecycle: 'available', minPlan: 'enterprise' } }), { ...ctx, hosted: false })).toBeNull();
+  });
+
+  it('never blocks enabling on connection health, but enableBlockerFor reports it', () => {
+    const f = facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'error', keyUsable: false }, rate: rates });
+    expect(checkEnableEligibility(f, ctx)).toBeNull();
+    expect(enableBlockerFor(f, ctx)).toBe('connection_unavailable');
+  });
+
+  // W03 soft-disconnect (#7601): a disconnected connection is not transient
+  // health — it is gone (keyless, never listed). Its offerings must never be
+  // re-enabled, so the gate refuses them as connection_unavailable.
+  it('blocks enabling an offering on a disconnected connection, as connection_unavailable', () => {
+    const f = facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'disconnected', keyUsable: false }, rate: rates });
+    expect(checkEnableEligibility(f, ctx)).toBe('connection_unavailable');
+    expect(enableBlockerFor(f, ctx)).toBe('connection_unavailable');
+  });
+
+  it('blocks a disconnected catalog connection the same way', () => {
+    const f = facts({ platform: null, connection: { kind: 'catalog', status: 'disconnected', keyUsable: false }, catalog: { usable: true }, rate: rates });
+    expect(checkEnableEligibility(f, ctx)).toBe('connection_unavailable');
+  });
+
+  it('a connection in error (key still usable or not) stays enableable (D2: transient health never blocks)', () => {
+    expect(checkEnableEligibility(facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'error', keyUsable: true }, rate: rates }), ctx)).toBeNull();
+    expect(checkEnableEligibility(facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'error', keyUsable: false }, rate: rates }), ctx)).toBeNull();
+  });
+
+  // BD-1: W03's platform-geo rule is NOT neutralised (a platform offering the
+  // platform key cannot dispatch must not be enableable), and the gate reports
+  // the true reason rather than collapsing it to model_unavailable.
+  it('blocks a platform offering whose configured platform geo the model cannot serve, as residency_unavailable', () => {
+    const f = facts({ inferenceGeo: 'eu', supportedInferenceGeos: ['us', 'global'] });
+    expect(checkEnableEligibility(f, ctx)).toBe('residency_unavailable');
+    expect(enableBlockerFor(f, ctx)).toBe('residency_unavailable');
+  });
+
+  it('does not block a connection offering on an unlisted geography (spec §7: simply not sent)', () => {
+    const f = facts({ platform: null, connection: { kind: 'anthropic_byok', status: 'active', keyUsable: true }, inferenceGeo: 'eu', supportedInferenceGeos: ['us'] });
+    expect(checkEnableEligibility(f, ctx)).toBeNull();
+  });
+
+  it('treats a not-yet-dispatchable connection kind as model_unavailable for enabling', () => {
+    const f = facts({ platform: null, connection: { kind: 'openai_compatible', status: 'active', keyUsable: true } });
+    expect(checkEnableEligibility(f, ctx)).toBe('model_unavailable');
+    expect(enableBlockerFor(f, ctx)).toBe('model_unavailable');
+  });
+
+  it('enableBlockerFor folds a foreign offering into model_unavailable', () => {
+    expect(enableBlockerFor(facts({ ownerPartnerId: 'other' }), ctx)).toBe('model_unavailable');
   });
 });

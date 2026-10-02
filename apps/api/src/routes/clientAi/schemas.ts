@@ -88,6 +88,8 @@ export const putPolicySchema = z
     userAccess: z.enum(['all', 'selected']).optional(),
     selectedUserIds: z.array(z.string().guid()).max(1000).optional(),
     allowedProviders: z.array(z.string().min(1).max(50)).min(1).max(10).optional(),
+    /** Legacy, accepted and IGNORED for one wave (old cached bundles still send it): the office_chat model
+     * assignment under AI Providers & Models is its single home. W08 drops the key and the column. */
     allowedModels: z.array(z.string().min(1).max(100)).max(50).optional(),
     writeMode: z.enum(['readwrite', 'readonly']).optional(),
     /** Org gate for pane auto-apply (spec §7). 'ask' is the default-deny value. */

@@ -1397,6 +1397,11 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
           currentPartner.settings,
           updates.settings as Record<string, unknown>,
         );
+        // settings.ai is owned by /ai/models/residency (one home, W04 #7602): a
+        // wholesale settings write keeps the stored subtree and ignores any incoming one.
+        const next = updates.settings as Record<string, unknown>;
+        const stored = (currentPartner.settings as Record<string, unknown> | null)?.ai;
+        if (stored === undefined) delete next.ai; else next.ai = stored;
       }
 
       // Keep the first-class `partners.timezone` column in sync with the

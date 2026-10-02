@@ -7,7 +7,6 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { listOfferableModelIds } from '../services/aiModels/platformModels';
 import { resolveDefaultModel } from '../services/aiModel';
 import { isLlmProviderCatalogEnabled } from '../services/llm/llmConfigResolver';
-import { getListedProviders } from '../services/llmProviderCatalog';
 import {
   deletePartnerLlmConfig,
   getPartnerLlmStatus,
@@ -22,6 +21,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
 import { captureException } from '../services/sentry';
+import { buildCatalogSummary } from '../services/aiModels/registryView';
 
 export const aiProviderRoutes = new Hono();
 
@@ -37,29 +37,6 @@ const updateEndpointSchema = z.object({
   catalogEntryId: z.string().trim().min(1).nullable(),
   acknowledgeDataNote: z.boolean().optional().default(false),
 });
-
-/** GET / payload shape for one listed catalog entry — never the raw base URL, auth mode, or pricing. */
-async function buildCatalogSummary(): Promise<Array<{
-  entryId: string;
-  slug: string;
-  name: string;
-  dataNote: string | null;
-  models: string[];
-}>> {
-  const providers = await getListedProviders();
-  return providers.map((provider) => ({
-    entryId: provider.entryId,
-    slug: provider.slug,
-    name: provider.name,
-    dataNote: provider.dataNote,
-    // Verified ∩ mapped: a verification recorded against a model no longer in
-    // this revision's modelMap must never appear selectable. `Object.hasOwn`,
-    // not `in` — `modelMap` is a jsonb round-trip, so `'constructor' in
-    // modelMap` is true by inheritance and would offer the UI a model the
-    // revision has no wire id or pricing for (#3922 W3 review round 2).
-    models: provider.verifiedModels.filter((modelId) => Object.hasOwn(provider.modelMap, modelId)),
-  }));
-}
 
 aiProviderRoutes.use('*', authMiddleware);
 
@@ -147,11 +124,14 @@ aiProviderRoutes.post(
 aiProviderRoutes.patch(
   '/',
   requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
+  requireMfa(), // W04 (#7602): parity with /ai/models writes
   zValidator('json', updateConfigSchema),
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    // No approvals:decide gate: W03 changeCompatDefaultModel only re-points
+    // DEFAULT_FOLLOWING_SURFACES, which excludes script_reviewer.
     const { defaultModel } = c.req.valid('json');
     try {
       const result = await updatePartnerLlmConfig({ partnerId: auth.partnerId, defaultModel });
