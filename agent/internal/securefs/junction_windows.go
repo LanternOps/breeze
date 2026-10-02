@@ -40,7 +40,7 @@ func installJunction(base, relative, target string, winAttrs uint32) ([]error, e
 	// and a volume mount point, which shares the junction's reparse tag.
 	switch existing, err := inspectRelative(parentHandle, name); {
 	case err == nil && existing.kind == entryReparse && existing.tag == windows.IO_REPARSE_TAG_MOUNT_POINT:
-		if strings.EqualFold(existing.linkTarget, target) {
+		if strings.EqualFold(trimJunctionTarget(existing.linkTarget), target) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%s exists and is a junction or mount point to %q, not %q", relative, existing.linkTarget, target)
@@ -63,7 +63,11 @@ func installJunction(base, relative, target string, winAttrs uint32) ([]error, e
 	var returned uint32
 	if err := windows.DeviceIoControl(handle, windows.FSCTL_SET_REPARSE_POINT,
 		&buf[0], uint32(len(buf)), nil, 0, &returned, nil); err != nil {
-		_ = deleteRelativeAny(parentHandle, name)
+		if delErr := deleteRelativeAny(parentHandle, name); delErr != nil {
+			// The empty placeholder directory stays behind and a re-run
+			// will refuse it as "not a junction": say so here.
+			return nil, fmt.Errorf("set junction target: %w (empty placeholder directory left behind: %v)", err, delErr)
+		}
 		return nil, fmt.Errorf("set junction target: %w", err)
 	}
 
@@ -74,7 +78,7 @@ func installJunction(base, relative, target string, winAttrs uint32) ([]error, e
 	// warning — the junction exists and resolves.
 	var warnings []error
 	if settable := winAttrs & installableWinAttrs; settable != 0 {
-		basic := fileBasicInfo{FileAttributes: settable | windows.FILE_ATTRIBUTE_DIRECTORY}
+		basic := fileBasicInfo{FileAttributes: settable}
 		if err := setBasicInfo(handle, &basic); err != nil {
 			warnings = append(warnings, fmt.Errorf("could not apply attributes %#x to junction: %w", settable, err))
 		}

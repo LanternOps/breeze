@@ -107,3 +107,11 @@ func TestJunctionReparseBuffer_RejectsUnsafeTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestTrimJunctionTarget(t *testing.T) {
+	for in, want := range map[string]string{`C:\x\`: `C:\x`, `C:\x`: `C:\x`, `C:\`: `C:\`} {
+		if got := trimJunctionTarget(in); got != want {
+			t.Errorf("trimJunctionTarget(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

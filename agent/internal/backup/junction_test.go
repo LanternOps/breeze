@@ -112,7 +112,11 @@ func stubJunctionInstall(t *testing.T, installErr error, reparseAlong func(base,
 		reparseAlong = func(string, string) error { return nil }
 	}
 	ensureNoReparsePointsAlong = reparseAlong
-	t.Cleanup(func() { installJunction, ensureNoReparsePointsAlong = origInstall, origAlong })
+	origSupported := junctionsSupported
+	junctionsSupported = true
+	t.Cleanup(func() {
+		installJunction, ensureNoReparsePointsAlong, junctionsSupported = origInstall, origAlong, origSupported
+	})
 	return &calls
 }
 
@@ -128,7 +132,7 @@ func TestRestoreJunctions_AlternateLocation(t *testing.T) {
 		{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`, WinAttrs: 0x6},
 		{SourcePath: `C:\Data\Elsewhere`, Target: `E:\Elsewhere`},
 		{SourcePath: `C:\Users\a\Escape`, Target: `C:\Users\..\..\Windows`},
-	}, false, result)
+	}, false, nil, result)
 
 	if len(*calls) != 1 {
 		t.Fatalf("only the contained junction may be created, got %+v", *calls)
@@ -143,14 +147,14 @@ func TestRestoreJunctions_AlternateLocation(t *testing.T) {
 	if len(along) != 1 || along[0] != `D:\restore|Users\a\Music` {
 		t.Fatalf("a rewritten target must be checked for reparse points along it, got %v", along)
 	}
-	if result.FilesRestored != 1 || result.FilesFailed != 0 {
-		t.Fatalf("refused junctions are warnings, not failures: %+v", result)
+	// A valid target on another volume is a policy refusal (warning); a
+	// recorded target that climbs out with ".." is an invalid entry (failed).
+	if result.FilesRestored != 1 || result.FilesFailed != 1 || len(result.FailedFiles) != 1 || result.FailedFiles[0] != `C:\Users\a\Escape` {
+		t.Fatalf("result = %+v", result)
 	}
 	joined := strings.Join(result.Warnings, "\n")
-	for _, want := range []string{`C:\Data\Elsewhere`, `C:\Users\a\Escape`} {
-		if !strings.Contains(joined, "junction "+want+" not recreated") {
-			t.Errorf("missing refusal warning for %s:\n%s", want, joined)
-		}
+	if !strings.Contains(joined, "junction C:\\Data\\Elsewhere not recreated") {
+		t.Errorf("missing refusal warning for the cross-volume junction:\n%s", joined)
 	}
 }
 
@@ -165,7 +169,7 @@ func TestRestoreJunctions_InPlaceKeepsTargets(t *testing.T) {
 	restoreJunctions(`C:\`, []SnapshotJunction{
 		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3\Users\a\My Music`, OriginalPath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`},
 		{SourcePath: `C:\Data`, Target: `D:\Data`},
-	}, false, result)
+	}, false, nil, result)
 	wantRel, _ := restoreRelativePath(`C:\Users\a\My Music`)
 	if len(*calls) != 2 || (*calls)[0].target != `C:\Users\a\Music` || (*calls)[0].relative != wantRel || (*calls)[1].target != `D:\Data` {
 		t.Fatalf("install calls = %+v", *calls)
@@ -180,11 +184,46 @@ func TestRestoreJunctions_ReparseAlongTargetIsRefused(t *testing.T) {
 		return errors.New(`path component "a" is a reparse point`)
 	})
 	result := &RestoreResult{}
-	restoreJunctions(`D:\restore`, []SnapshotJunction{{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}}, false, result)
+	restoreJunctions(`D:\restore`, []SnapshotJunction{{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}}, false, nil, result)
 	if len(*calls) != 0 {
 		t.Fatalf("a target that resolves through a reparse point must not get a junction, got %+v", *calls)
 	}
-	if result.FilesRestored != 0 || result.FilesFailed != 0 || len(result.Warnings) != 1 {
+	if result.FilesRestored != 0 || result.FilesFailed != 0 || len(result.Warnings) != 1 ||
+		!strings.Contains(result.Warnings[0], "resolves through a link") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// A recorded target that fails validation is a corrupt or tampered manifest
+// entry, not a policy skip: it fails the entry, so the restore is partial.
+func TestRestoreJunctions_InvalidRecordedTargetIsAFailedEntry(t *testing.T) {
+	calls := stubJunctionInstall(t, nil, nil)
+	result := &RestoreResult{}
+	restoreJunctions(`C:\`, []SnapshotJunction{{SourcePath: `C:\Users\a\x`, Target: `\\attacker\share`}}, false, nil, result)
+	if len(*calls) != 0 || result.FilesFailed != 1 || len(result.FailedFiles) != 1 {
+		t.Fatalf("result = %+v calls = %+v", result, *calls)
+	}
+}
+
+// Nothing is created beneath a directory whose recorded security descriptor
+// could not be applied: junctions are refused there like files and links.
+func TestRestoreJunctions_BlockedDirectoryIsAFailedEntry(t *testing.T) {
+	calls := stubJunctionInstall(t, nil, nil)
+	result := &RestoreResult{}
+	blockedRel, _ := restoreRelativePath(`C:\Users\a\My Music`)
+	restoreJunctions(`C:\`, []SnapshotJunction{
+		{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`},
+		{SourcePath: `C:\Users\b\My Music`, Target: `C:\Users\b\Music`},
+	}, false, func(relative string) string {
+		if relative == blockedRel {
+			return "Users"
+		}
+		return ""
+	}, result)
+	if len(*calls) != 1 || !strings.Contains((*calls)[0].target, `Users\b`) {
+		t.Fatalf("only the unblocked junction may be created, got %+v", *calls)
+	}
+	if result.FilesFailed != 1 || result.FailedFiles[0] != `C:\Users\a\My Music` || result.FilesRestored != 1 {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -192,21 +231,39 @@ func TestRestoreJunctions_ReparseAlongTargetIsRefused(t *testing.T) {
 func TestRestoreJunctions_InstallFailureIsAFailedEntry(t *testing.T) {
 	stubJunctionInstall(t, errors.New("exists and is not a junction"), nil)
 	result := &RestoreResult{}
-	restoreJunctions(`C:\`, []SnapshotJunction{{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}}, false, result)
+	restoreJunctions(`C:\`, []SnapshotJunction{{SourcePath: `C:\Users\a\My Music`, Target: `C:\Users\a\Music`}}, false, nil, result)
 	if result.FilesFailed != 1 || len(result.FailedFiles) != 1 || result.FailedFiles[0] != `C:\Users\a\My Music` {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
 // A Windows snapshot restored on another OS: one summary warning, no failure,
-// so the rest of the restore still completes.
+// so the rest of the restore still completes. Decided before any target is
+// computed: an alternate-location rewrite on a non-Windows root would
+// otherwise refuse each junction separately.
 func TestRestoreJunctions_UnsupportedHostWarnsOnce(t *testing.T) {
+	calls := stubJunctionInstall(t, nil, nil)
+	junctionsSupported = false
+	result := &RestoreResult{}
+	skipped := restoreJunctions(`/restore`, []SnapshotJunction{
+		{SourcePath: `C:\a`, Target: `C:\b`},
+		{SourcePath: `C:\c`, Target: `C:\d`},
+	}, false, nil, result)
+	if skipped != 2 || len(*calls) != 0 || result.FilesFailed != 0 || result.FilesRestored != 0 || len(result.Warnings) != 1 ||
+		!strings.Contains(result.Warnings[0], "2 junction(s) not recreated") {
+		t.Fatalf("skipped=%d result=%+v", skipped, result)
+	}
+}
+
+// The installer's own unsupported error (a host the build thought could)
+// is still summarised once, not failed.
+func TestRestoreJunctions_InstallerUnsupportedWarnsOnce(t *testing.T) {
 	stubJunctionInstall(t, securefs.ErrJunctionUnsupported, nil)
 	result := &RestoreResult{}
 	restoreJunctions(`C:\`, []SnapshotJunction{
 		{SourcePath: `C:\a`, Target: `C:\b`},
 		{SourcePath: `C:\c`, Target: `C:\d`},
-	}, false, result)
+	}, false, nil, result)
 	if result.FilesFailed != 0 || result.FilesRestored != 0 || len(result.Warnings) != 1 ||
 		!strings.Contains(result.Warnings[0], "2 junction(s) not recreated") {
 		t.Fatalf("result = %+v", result)
@@ -284,6 +341,26 @@ func TestRestoreFromSnapshot_JunctionOnlySelection(t *testing.T) {
 	}
 }
 
+// A selection matching only junctions that are all deliberately skipped
+// (here a cross-volume target on an alternate restore) is "completed" with a
+// warning, not "failed" with nothing failed.
+func TestRestoreFromSnapshot_JunctionOnlySelectionAllSkippedIsCompleted(t *testing.T) {
+	provider, snapshotID := setupRestoreTestSnapshot(t, map[string]string{"a.txt": "hello"})
+	addJunctionsToManifest(t, provider, snapshotID, []SnapshotJunction{
+		{SourcePath: "/profile/Elsewhere", Target: `E:\Elsewhere`},
+	})
+	calls := stubJunctionInstall(t, nil, nil)
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{
+		SnapshotID: snapshotID, TargetPath: t.TempDir(), SelectedPaths: []string{"/profile"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 0 || res.Status != "completed" || res.FilesFailed != 0 || len(res.Warnings) != 1 {
+		t.Fatalf("result = %+v calls = %+v", res, *calls)
+	}
+}
+
 // Without the stub: on a non-Windows host the junction is reported, the
 // restore still completes, and nothing is written at the junction's path.
 func TestRestoreFromSnapshot_JunctionsOnNonWindowsHost(t *testing.T) {
@@ -295,7 +372,7 @@ func TestRestoreFromSnapshot_JunctionsOnNonWindowsHost(t *testing.T) {
 		{SourcePath: "/original/My Music", Target: `C:\Users\a\Music`},
 	})
 	target := t.TempDir()
-	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target, JunctionTargetsAsCaptured: true}, nil)
+	res, err := RestoreFromSnapshot(provider, RestoreConfig{SnapshotID: snapshotID, TargetPath: target}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,3 +442,19 @@ func TestSnapshotJSON_JunctionsStayOutOfFiles(t *testing.T) {
 		t.Fatalf("a manifest with no junctions must be byte-identical to before: %s", empty)
 	}
 }
+
+func TestCapturedJunction_TrimsTrailingSeparator(t *testing.T) {
+	info := fakeFileInfo{}
+	for in, want := range map[string]string{`C:\Users\a\Music\`: `C:\Users\a\Music`, `D:\`: `D:\`} {
+		sp := skippedReparsePoint{path: `C:\x`, kind: reparseKindJunction, target: in}
+		j, ok := capturedJunction(&sp, info)
+		if !ok || j.Target != want {
+			t.Fatalf("capturedJunction(%q) = %+v, %v; want target %q", in, j, ok, want)
+		}
+	}
+}
+
+type fakeFileInfo struct{ os.FileInfo }
+
+func (fakeFileInfo) ModTime() time.Time { return time.Unix(1, 0) }
+func (fakeFileInfo) Sys() any           { return nil }

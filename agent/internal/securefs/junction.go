@@ -115,6 +115,15 @@ func junctionTargetFromBuffer(buf []byte) (string, bool) {
 	return strings.TrimPrefix(string(utf16.Decode(u)), `\??\`), true
 }
 
+// trimJunctionTarget drops one trailing separator from a non-root target, so
+// `C:\x\` and `C:\x` compare equal; a volume root keeps its separator.
+func trimJunctionTarget(target string) string {
+	if len(target) > 3 {
+		return strings.TrimSuffix(target, `\`)
+	}
+	return target
+}
+
 // InstallJunction recreates a directory junction to target beneath base,
 // relative to the pinned parent directory, never by pathname: no ancestor can
 // be traversed as a link, exactly as for InstallSymlink.

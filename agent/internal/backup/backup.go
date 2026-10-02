@@ -1164,6 +1164,10 @@ func (m *BackupManager) RunBackupContext(ctx context.Context, excludes []string)
 				// whole job result server-side.
 				Files:          []SnapshotFile{},
 				BackupIdentity: m.runBackupIdentity(),
+				// Junctions the walk captured (#7325) belong on this
+				// manifest too: a path holding nothing but junctions walks
+				// zero files.
+				Junctions: reparseSkipped.junctions,
 			}
 			rec := newControlRecorder(nil)
 			snapshot.PublishedObjects = rec.objects

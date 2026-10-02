@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -74,6 +75,11 @@ func RestoreJunctionVolume(j SnapshotJunction) string {
 func capturedJunction(sp *skippedReparsePoint, info os.FileInfo) (SnapshotJunction, bool) {
 	if sp.kind != reparseKindJunction {
 		return SnapshotJunction{}, false
+	}
+	// Some tools write the substitute name with a trailing separator
+	// (`\??\C:\x\`); it names the same directory. Keep a volume root's.
+	if len(sp.target) > 3 {
+		sp.target = strings.TrimSuffix(sp.target, `\`)
 	}
 	if err := securefs.ValidJunctionTarget(sp.target); err != nil {
 		if sp.detail == "" {
@@ -147,33 +153,60 @@ func junctionRestoreTarget(targetBase, source, target string, asCaptured bool) (
 	return resolved, true, nil
 }
 
-// Seams over the securefs calls, so the junction pass can be driven on hosts
-// that have no junctions.
+// Seams over the securefs calls and the host check, so the junction pass can
+// be driven on hosts that have no junctions.
 var (
 	installJunction            = securefs.InstallJunction
 	ensureNoReparsePointsAlong = securefs.EnsureNoReparsePointsAlong
+	junctionsSupported         = runtime.GOOS == "windows"
 )
 
 // restoreJunctions recreates the selected junctions under targetBase. It runs
 // after every file, symlink and directory is in place, so no other entry is
-// ever written through a junction this pass creates.
+// ever written through a junction this pass creates. blockedBeneath names the
+// restricted directory a relative path lies under ("" if none), exactly as
+// for files and links: nothing is created beneath a directory whose recorded
+// security descriptor could not be applied.
 //
-// Outcomes: a created (or already-correct) junction counts as restored; one
-// whose placement path is invalid or whose creation fails counts as failed,
-// like a symlink; one whose target is refused (outside the restore location,
-// unsafe, or resolving through a reparse point) is a warning, not a failure:
-// it is a deliberate skip, as the backup's own skip of a volume mount point
-// is. A host with no junctions (a Windows snapshot restored elsewhere) gets
-// one summary warning.
-func restoreJunctions(targetBase string, junctions []SnapshotJunction, asCaptured bool, result *RestoreResult) {
+// Outcomes:
+//   - restored: a created (or already-correct) junction;
+//   - failed: an invalid placement path or recorded target (a corrupt or
+//     tampered entry), a blocked directory, or a creation error, like a
+//     symlink;
+//   - skipped (returned count, warning only): a valid target refused for
+//     this restore (on another volume than the junction, or resolving
+//     through a reparse point), or a host that has no junctions (one summary
+//     warning). A deliberate skip, as the backup's own skip of a volume
+//     mount point is.
+func restoreJunctions(targetBase string, junctions []SnapshotJunction, asCaptured bool, blockedBeneath func(relative string) string, result *RestoreResult) (skipped int) {
+	if len(junctions) == 0 {
+		return 0
+	}
+	if !junctionsSupported {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%d junction(s) not recreated: %v", len(junctions), securefs.ErrJunctionUnsupported))
+		return len(junctions)
+	}
+	fail := func(display, warning string) {
+		result.FilesFailed++
+		result.FailedFiles = append(result.FailedFiles, display)
+		result.Warnings = append(result.Warnings, warning)
+	}
 	unsupported := 0
 	for _, j := range junctions {
 		display := j.restorePath()
 		relative, err := restoreRelativePath(display)
 		if err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, display)
-			result.Warnings = append(result.Warnings, fmt.Sprintf("invalid restore path for junction %s: %v", display, err))
+			fail(display, fmt.Sprintf("invalid restore path for junction %s: %v", display, err))
+			continue
+		}
+		if blockedBeneath != nil && blockedBeneath(relative) != "" {
+			fail(display, fmt.Sprintf("junction %s not recreated: its directory could not be restricted", display))
+			continue
+		}
+		// A recorded target this build never captures is a corrupt or
+		// tampered entry, not a policy skip: fail it.
+		if vErr := securefs.ValidJunctionTarget(j.Target); vErr != nil {
+			fail(display, fmt.Sprintf("junction %s has an invalid recorded target: %v", display, vErr))
 			continue
 		}
 		target, rewritten, err := junctionRestoreTarget(targetBase, display, j.Target, asCaptured)
@@ -192,6 +225,7 @@ func restoreJunctions(targetBase string, junctions []SnapshotJunction, asCapture
 		}
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("junction %s not recreated: %v", display, err))
+			skipped++
 			continue
 		}
 		warnings, err := installJunction(targetBase, relative, target, j.WinAttrs)
@@ -200,9 +234,7 @@ func restoreJunctions(targetBase string, junctions []SnapshotJunction, asCapture
 			continue
 		}
 		if err != nil {
-			result.FilesFailed++
-			result.FailedFiles = append(result.FailedFiles, display)
-			result.Warnings = append(result.Warnings, fmt.Sprintf("could not recreate junction %s: %v", display, err))
+			fail(display, fmt.Sprintf("could not recreate junction %s: %v", display, err))
 			continue
 		}
 		for _, w := range warnings {
@@ -213,6 +245,7 @@ func restoreJunctions(targetBase string, junctions []SnapshotJunction, asCapture
 	if unsupported > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("%d junction(s) not recreated: %v", unsupported, securefs.ErrJunctionUnsupported))
 	}
+	return skipped + unsupported
 }
 
 // filterJunctions is filterFiles for junctions: the same selection rule,

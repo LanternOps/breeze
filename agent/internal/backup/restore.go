@@ -486,7 +486,7 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 	if checkCancelled() {
 		return result, nil
 	}
-	restoreJunctions(targetBase, junctions, cfg.JunctionTargetsAsCaptured, result)
+	junctionsSkipped := restoreJunctions(targetBase, junctions, cfg.JunctionTargetsAsCaptured, blockedBeneath, result)
 
 	result.Warnings = append(result.Warnings, applyDirWinAttrs(targetBase, dirAttrs)...)
 
@@ -524,7 +524,10 @@ func RestoreFromSnapshotContext(ctx context.Context, provider providers.BackupPr
 
 	// 6. Determine status
 	switch {
-	case result.FilesFailed == 0 && result.FilesRestored > 0:
+	// A junction deliberately not recreated (refused target, a host with
+	// no junctions) is neither restored nor failed; a restore whose only
+	// entries were such skips completed, with the warnings saying why.
+	case result.FilesFailed == 0 && (result.FilesRestored > 0 || junctionsSkipped > 0):
 		result.Status = "completed"
 	case result.FilesRestored == 0:
 		result.Status = "failed"
