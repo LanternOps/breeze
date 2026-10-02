@@ -17,7 +17,8 @@ Read the approved prerequisite plans before changing their code:
 
 - `docs/superpowers/plans/billing/2026-10-01-autopay-w01-foundation.md`: Tasks 5/7 settings and routes, 9 principal settlement and reversal, 13 rendering, 16 `quoteProcessingFee`.
 - `docs/superpowers/plans/billing/2026-10-01-autopay-w02-enrollment.md`: Tasks 1/7 consent and completion, 3 rendering, 11 customer views, 14 settings, 16/18 portal components and composition.
-- `docs/superpowers/plans/billing/2026-10-01-autopay-w04-charging.md`: Tasks 2/3 notices, 10/11 collection, 13 receipts, 14 returns, 17 confirmation, 20 real-DB fixtures.
+- `docs/superpowers/plans/billing/2026-10-01-autopay-w03-reminders.md`: Task 7 final Payments composition and ungated reminders.
+- `docs/superpowers/plans/billing/2026-10-01-autopay-w04-charging.md`: Tasks 2/3 notices, 10/11 collection, 13 receipts, 14 linked-attempt returns, 16 bank-payment authorization, 17 confirmation, 20 real-DB fixtures.
 
 Those plans, rather than absent files in this checkout, are the evidence for their new symbols. Existing symbols below were checked against this checkout. Re-read the named symbol when implementing; line numbers are not contracts. Recheck `ls apps/api/migrations | sort | tail -1` against C1 before writing migrations. Rename only unshipped W05 migrations if necessary and update every test reference.
 
@@ -31,6 +32,8 @@ Those plans, rather than absent files in this checkout, are the evidence for the
 6. **Providers lack fee/refund primitives.** `AccountingProvider` (`services/accounting/types.ts`) has `createPayment` and `deletePayment`, not fee income or refunds. `quickbooksProvider` and `xeroProvider` implement invoice-linked principal payments. Add `postFeeEntry`: QBO SalesReceipt/RefundReceipt; Xero RECEIVE/SPEND BankTransaction. These are cash income/reversal records for the existing customer, never a second receivable or invoice line. Tax defaults to NON/NoTax. Fees require an explicit income item/account and the existing payment/deposit account (Xero also requires the exempt code); a missing mapping parks the fee debt visibly and does not roll back captured money.
 7. **Reversal debt survives setting changes.** Initial fee export uses the principal push gates, including auto mode, payment push, currency and activation horizon. Once exported, its refund/restoration debt remains owed even if payment push is disabled; this matches `requestPaymentDelete`/`deletePaymentInAccounting` in `accountingPaymentPush.ts`. Bind every operation to its original connection and remote customer. A replacement connection must never receive old debt. Ambiguous provider writes become adopt-only after the provider’s replay window; never generate a new key to make an error disappear.
 8. **No new scheduled job or route.** Extend the already mounted settings routes and `processReconcileSweep` in `jobs/accountingReconcileWorker.ts`. Its fee pass must be independent of payment pull being enabled. Existing `scheduleRegistry`/worker registration is retained and tested. A final composition task verifies all fee controls through their actual page shells.
+
+9. **Preserve completed cross-wave boundaries (CW-11–CW-13).** Task 4 retains W4 Task 16’s integer `feeMinor` authorization comparison after clamping. Task 6 uses W4 Task 14’s linked-attempt bank fixture and verifies withdrawal application before reinstatement. Tasks 11–12 apply the index’s whole-feature rollout gate to accounting fee configuration: use W1’s `isAutopayEnabledForPartner`, expose `autopayEnabled` on the existing authorized accounting status GET, hide fee controls when false, and reject fee-field PATCHes (including null clears and mixed bodies) with `404 autopay_not_enabled`. Ordinary accounting settings, status/debt attention and already-owed debt draining remain available. Refinement 7 permits continued debt processing only; it grants no off-rollout mapping-repair exception.
 
 ## Global Constraints
 
@@ -64,10 +67,10 @@ Those plans, rather than absent files in this checkout, are the evidence for the
 
 ## Review Focus
 
-1. **A fee rises or becomes illegal after notice:** real collection assertions cover noticed upper bound, debit replacement, banned state, CO cap, and missing attestation (Task 4).
-2. **Tiny partial refunds, duplicate events, and dispute reinstatement:** cumulative property tests and real reducer tests prove exact conservation and principal-only invoice restoration (Tasks 5–6).
+1. **A fee rises or becomes illegal after notice:** real collection assertions cover noticed upper bound, debit replacement, banned state, CO cap, missing attestation, and a nonzero bank fee exceeding client authorization (Task 4).
+2. **Tiny partial refunds, duplicate events, and dispute reinstatement:** cumulative property tests and real reducer tests prove exact conservation and principal-only invoice restoration using a linked bank attempt and an asserted applied withdrawal before reinstatement (Tasks 5–6).
 3. **Remote accounting write succeeds but the local acknowledgement is lost:** replay uses one frozen operation/key, stale leases cannot acknowledge successors, and expired ambiguity becomes adopt-only (Tasks 8–10).
-4. **A tenant, rollout, or settings boundary is crossed:** org cannot attest; selected-org partner cannot edit defaults; null and zero differ; fees stay hidden/off while reminders remain usable (Tasks 1–2 and 12).
+4. **A tenant, rollout, or settings boundary is crossed:** org cannot attest; selected-org partner cannot edit defaults; null and zero differ; fee mapping writes and controls are gated while ordinary accounting settings, reminders and existing debt attention/draining remain usable (Tasks 1–2 and 11–12).
 5. **Partner edits the template or the customer’s card turns out to be debit:** required fee itemization remains outside editable text and the actual enrollment confirmation says zero without rewriting consent (Task 3).
 
 ## File map
@@ -108,8 +111,8 @@ Existing W1/W2/W4 files are modified after those waves merge. Each path below is
 - `apps/docs/src/content/docs/features/online-payments.mdx` — processing-fee rules, attestation, accounting and liability documentation.
 - `apps/api/src/services/autopay/collectionFee.ts` — integer current-fee/notice ceiling clamp.
 - `apps/api/src/services/autopay/collectionFee.test.ts` — regression tests for collectionFee.
-- `apps/api/src/services/autopay/collectionEngine.ts` — use the clamp while preserving W4 notice and consent gates.
-- `apps/api/src/services/autopay/charging.integration.test.ts` — real reservation/provider assertions for changed fee eligibility.
+- `apps/api/src/services/autopay/collectionEngine.ts` — use the clamp and retain integer fee authorization for W4 bank payments.
+- `apps/api/src/services/autopay/charging.integration.test.ts` — real reservation/provider assertions for changed fee eligibility and nonzero bank authorization ceilings.
 - `apps/api/src/services/autopay/refundAllocation.ts` — cumulative proportional principal/fee allocation.
 - `apps/api/src/services/autopay/refundAllocation.test.ts` — seeded property tests for conservation, residue and full refunds.
 - `apps/api/migrations/2026-11-20-140000-accounting-fee-income-mapping.sql` — idempotent partner connection income references with RLS assertions.
@@ -121,7 +124,7 @@ Existing W1/W2/W4 files are modified after those waves merge. Each path below is
 - `apps/api/src/db/schema/stripePayments.ts` — Drizzle reversal and journal columns and checks.
 - `apps/api/src/services/tenantExportPolicyRegistry.ts` — classify every new org-export column.
 - `apps/api/src/services/stripeReversalState.ts` — reverse invoice principal only and persist cumulative fee share.
-- `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts` — real principal-only partial, dispute and unapplied reversals.
+- `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts` — real principal-only partial, linked-attempt ACH withdrawal/reinstatement and unapplied reversals.
 - `apps/api/src/services/accounting/types.ts` — provider fee entry and durable operation types.
 - `apps/api/src/services/accounting/accountingFeeEntry.ts` — stable identity, settings preflight and conservative adoption rules.
 - `apps/api/src/services/accounting/accountingFeeEntry.test.ts` — regression tests for accountingFeeEntry.
@@ -138,8 +141,8 @@ Existing W1/W2/W4 files are modified after those waves merge. Each path below is
 - `apps/api/vitest.config.ts` — exclude the accounting real-DB suite from unit runs.
 - `apps/web/src/components/integrations/AccountingFeeSettings.tsx` — one explicit Save for provider-specific income mapping.
 - `apps/web/src/components/integrations/AccountingFeeSettings.test.tsx` — regression tests for AccountingFeeSettings.
-- `apps/api/src/routes/accounting/index.ts` — extend existing accounting settings/status routes without a new mount.
-- `apps/api/src/routes/accounting/index.test.ts` — regression tests for index.
+- `apps/api/src/routes/accounting/index.ts` — gate fee-field PATCHes with W1 rollout and project its flag on authorized accounting status GET; retain ordinary settings and debt attention.
+- `apps/api/src/routes/accounting/index.test.ts` — fee mapping rollout-off refusals, ordinary settings and ungated status/debt regressions.
 - `apps/web/src/locales/en/integrations.json` — fee accounting mapping and attention copy with locale key parity.
 - `apps/web/src/locales/de-DE/integrations.json` — fee accounting mapping and attention copy with locale key parity.
 - `apps/web/src/locales/es-419/integrations.json` — fee accounting mapping and attention copy with locale key parity.
@@ -152,8 +155,8 @@ Existing W1/W2/W4 files are modified after those waves merge. Each path below is
 - `apps/web/src/components/billing/OrgBillingSettings.tsx` — compose org overrides with the existing page Save.
 - `apps/web/src/components/billing/PartnerBillingSettingsPage.test.tsx` — regression tests for PartnerBillingSettingsPage.
 - `apps/web/src/components/billing/OrgBillingSettings.test.tsx` — regression tests for OrgBillingSettings.
-- `apps/web/src/components/integrations/AccountingConnectionPanel.tsx` — mount fee mapping and durable accounting attention.
-- `apps/web/src/components/integrations/AccountingConnectionPanel.test.tsx` — regression tests for AccountingConnectionPanel.
+- `apps/web/src/components/integrations/AccountingConnectionPanel.tsx` — mount fee mapping only with rollout enabled; retain durable accounting attention when disabled.
+- `apps/web/src/components/integrations/AccountingConnectionPanel.test.tsx` — enabled fee mapping and rollout-off hidden controls with visible ordinary settings/debt attention.
 - `apps/web/src/components/integrations/IntegrationsPage.fees.test.tsx` — exercise the real Integrations page and accounting panel.
 - `e2e-tests/tests/autopay-processing-fees.spec.ts` — authenticated browser fee-display and Save smoke.
 
@@ -730,8 +733,8 @@ git commit -m "feat(billing): disclose processing fees throughout autopay"
 ```
 
 ### Task 4: Prove current legality and the delivered fee ceiling at collection
-**Files:** Create `apps/api/src/services/autopay/collectionFee.ts`, `apps/api/src/services/autopay/collectionFee.test.ts`; Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/services/autopay/charging.integration.test.ts`.
-**Interfaces:** Consumes C4 `quoteProcessingFee(input: FeeQuoteInput): FeeQuote`, W4 Task 10 `reserveCollection`, W4 Task 20 `fixture()`, `attempts(invoiceId)` and `provider` mock at `getPartnerStripeClient`. Produces private `clampNoticedFee(quote: FeeQuote, currency: string, noticedFee?: string): string`. The C4 collection signatures do not change.
+**Files:** Create `apps/api/src/services/autopay/collectionFee.ts`, `apps/api/src/services/autopay/collectionFee.test.ts`; Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/services/autopay/charging.integration.test.ts`; Read W4-owned `apps/api/src/services/autopay/clientPaymentAuthority.ts` and W1-owned `apps/api/src/services/autopay/linkTokens.ts` (retain their contracts).
+**Interfaces:** Consumes C4 `quoteProcessingFee(input: FeeQuoteInput): FeeQuote`, W4 Tasks 10/16 `reserveCollection` and `withClientPaymentAuthority`, C4 `mintBillingLinkToken`, W4 Task 20 `fixture()`, `attempts(invoiceId)` and `provider` mock at `getPartnerStripeClient`. Produces private `clampNoticedFee(quote: FeeQuote, currency: string, noticedFee?: string): string`. The C4 collection signatures do not change.
 
 - [ ] **Step 1: Write the failing test** — create `collectionFee.test.ts`:
 
@@ -757,7 +760,7 @@ it('refuses malformed or negative notice amounts',()=>{
 });
 ```
 
-Append to W4’s `charging.integration.test.ts`; import `billingPaymentSettings`, `users`, `organizations` into its existing schema import and `AutopayTerms` from `./chargingNotice`. This is a real DB suite, not a mocked lock test:
+Append to W4’s `charging.integration.test.ts`; merge `billingPaymentSettings`, `users`, `billingLinkTokens` into its existing schema import (retain `organizations`), and import `AutopayTerms` from `./chargingNotice`, `withClientPaymentAuthority` from `./clientPaymentAuthority`, and `mintBillingLinkToken` from `./linkTokens`. This is a real DB suite, not a mocked lock test:
 
 ```ts
 it.each([
@@ -782,7 +785,35 @@ it.each([
 });
 ```
 
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/collectionFee.test.ts` (missing module). Then root `pnpm test-stack up`; `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/autopay/charging.integration.test.ts`. Existing W4 collection behavior is expected to pass the new legal-reduction cases; do not manufacture a regression to turn those red.
+Add this real-reservation regression to the same suite. The valid invoice-bound token and matching principal/method/generation isolate the fee ceiling; refusal must leave the token unconsumed and create no attempt or provider call:
+
+```ts
+it('refuses a nonzero bank fee above the client authorization before consuming its token',async()=>{
+  const f=await fixture();
+  const token=await withSystemDbAccessContext(async()=>{
+    const actor=await createUser({partnerId:f.partner.id,email:`bank-fee-${randomUUID()}@example.test`});
+    await db.insert(billingPaymentSettings).values({partnerId:f.partner.id,orgId:null,
+      cardFeeBps:0,achFeeAmount:'3.00',feeAttestedBy:actor.id,feeAttestedAt:new Date()});
+    await db.update(organizations).set({billingAddressCountry:'US',billingAddressRegion:'NY'})
+      .where(eq(organizations.id,f.org.id));
+    await db.update(orgPaymentMethods).set({type:'us_bank_account',accountHolderType:'company',
+      bankName:'Test bank',bankLast4:'6789',cardFunding:null}).where(eq(orgPaymentMethods.id,f.method.id));
+    return mintBillingLinkToken(db,{orgId:f.org.id,enrollmentId:f.enrollment.id,invoiceId:f.invoice.id,
+      purpose:'enroll',generation:f.enrollment.generation,ttlDays:1});
+  });
+  const result=await withClientPaymentAuthority({tokenId:token.id,invoiceId:f.invoice.id,
+    generation:f.enrollment.generation,methodId:f.method.id,principal:'100.00',fee:'2.50',currency:'USD'},
+    ()=>attemptCollection({invoiceId:f.invoice.id,initiatedBy:'client_on_session'}));
+  expect(result).toMatchObject({outcome:'refused',reason:'client_authorization_required',attemptId:null});
+  expect(await attempts(f.invoice.id)).toHaveLength(0);
+  expect(provider.create).not.toHaveBeenCalled();
+  const [authorization]=await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens)
+    .where(eq(billingLinkTokens.id,token.id)));
+  expect(authorization!.consumedAt).toBeNull();
+});
+```
+
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/collectionFee.test.ts` (missing module). Then root `pnpm test-stack up`; `cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/autopay/charging.integration.test.ts`. Existing W4 collection behavior is expected to pass the new legal-reduction and bank-authorization cases; do not manufacture a regression to turn those red.
 - [ ] **Step 3: Implement** — create `collectionFee.ts`:
 
 ```ts
@@ -803,10 +834,11 @@ export function clampNoticedFee(quote:FeeQuote,currency:string,noticedFee?:strin
 Import it in `collectionEngine.ts`. Replace W4’s `feeMinor` declaration with:
 
 ```ts
-const feeAmount=clampNoticedFee(quote,invoice.currencyCode,terms?.feeAmount);
+const feeAmount = clampNoticedFee(quote, invoice.currencyCode, terms?.feeAmount);
+const feeMinor = toMinorUnits(feeAmount, invoice.currencyCode);
 ```
 
-Use `feeAmount` directly in the attempt insert. Preserve the preceding current-settings/funding/address quote and re-notice branches verbatim: increases, changed policy or method changes still defer; a helper clamp does not authorize bypassing notice. Preserve W4’s separately consented `client_on_session` bank flow and its current-amount binding. That flow has no schedule and therefore no noticedFee argument; its consent gate remains mandatory.
+Use `feeAmount` directly in the attempt insert. Keep `toMinorUnits` imported and place both declarations before W4 Task 16’s authorization guard; retain its `feeMinor > toMinorUnits(authority.fee, invoice.currencyCode)` comparison unchanged. Preserve the preceding current-settings/funding/address quote and re-notice branches verbatim: increases, changed policy or method changes still defer; a helper clamp does not authorize bypassing notice. Preserve W4’s separately consented `client_on_session` bank flow and its current-amount binding. That flow has no schedule and therefore no noticedFee argument; its consent gate remains mandatory.
 - [ ] **Step 4: Run it, expect PASS** — repeat both commands; all mock Stripe calls must observe `hasDbAccessContext() === false` through W4’s existing provider fixture.
 - [ ] **Step 5: Commit**:
 
@@ -893,7 +925,7 @@ git commit -m "feat(billing): allocate cumulative principal and fee reversals"
 
 ### Task 6: Persist reversal shares and durable fee bookkeeping without changing invoice principal
 **Files:** Create `apps/api/migrations/2026-11-20-140000-accounting-fee-income-mapping.sql`, `apps/api/migrations/2026-11-20-140001-processing-fee-reversals.sql`, `apps/api/src/services/autopay/processingFeeSchema.integration.test.ts`; Modify `apps/api/src/services/accounting/accountingConnectionService.ts`, `apps/api/src/services/accounting/accountingConnectionService.test.ts`, `apps/api/src/db/schema/accounting.ts`, `apps/api/src/db/schema/stripePayments.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`, `apps/api/src/services/stripeReversalState.ts`, `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`.
-**Interfaces:** Consumes Task 5 `allocateReversal`, W1 Task 9 gross-aware `applyStripeFinancialEvent`, W4 Task 14 unapplied full refund. Produces `invoiceStripePayments.feeReversedAmount: string`, `.feeAccountingJournal: unknown[]`, `.feeAccountingError: string | null`, connection `.feeIncomeItemRef`/`.feeIncomeAccountRef`. Journal entries are defined in Task 10; pending entries and unbooked reversals cannot be silently erased.
+**Interfaces:** Consumes Task 5 `allocateReversal`, W1 Task 9 gross-aware `applyStripeFinancialEvent`, W4 Task 14 unapplied full refund and its existing local `seedAutopayBank(linkPayment=true)` fixture with linked enrollment/method/attempt and return-notice handoff. Produces `invoiceStripePayments.feeReversedAmount: string`, `.feeAccountingJournal: unknown[]`, `.feeAccountingError: string | null`, connection `.feeIncomeItemRef`/`.feeIncomeAccountRef`. Journal entries are defined in Task 10; pending entries and unbooked reversals cannot be silently erased.
 
 - [ ] **Step 1: Write the failing test** — create the co-located schema integration test:
 
@@ -919,7 +951,7 @@ it('replays the two migrations and retains forced tenant isolation',async()=>{
 });
 ```
 
-Append to the **existing** `stripeReversalState.integration.test.ts` using its verified local `seed(false)`, `financialEvent`, and `runDb` helpers. `recordStripePayment` accepts gross after W1 Task 9:
+Append to the **existing** `stripeReversalState.integration.test.ts` using its verified local `seed(false)`, W4’s `seedAutopayBank`, `financialEvent`, and `runDb` helpers; retain W4’s `invoiceCollectionAttempts` and `stripeFinancialEvents` imports. `recordStripePayment` accepts gross after W1 Task 9:
 
 ```ts
 runDb('partial refunds allocate once, ignore old totals and return the full fee at the end',async()=>{
@@ -940,15 +972,23 @@ runDb('partial refunds allocate once, ignore old totals and return the full fee 
   expect(mapping).toMatchObject({status:'refunded',invoicePaymentId:null,feeReversedAmount:'3.00'});
 });
 runDb('won ACH dispute restores only unrefunded principal and the correct rail',async()=>{
-  const f=await seed(false);
-  await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeAmount:'3.00',paymentMethodType:'us_bank_account',
-    source:'autopay',stripeObjectType:'payment_intent',stripeObjectId:f.paymentIntentId})
-    .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
-  await recordStripePayment({stripeObjectId:f.paymentIntentId,stripePaymentIntentId:f.paymentIntentId,stripeAccountId:f.accountId,amount:'103.00',currency:'USD'});
+  const f=await seedAutopayBank();
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceStripePayments).set({feeAmount:'3.00'}).where(eq(invoiceStripePayments.id,f.mappingId));
+    await db.update(invoiceCollectionAttempts).set({feeAmount:'3.00'}).where(eq(invoiceCollectionAttempts.id,f.attemptId));
+  });
   await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:5150,providerCreated:200}));
-  await ingestStripeFinancialEvent(financialEvent(f,{eventType:'charge.dispute.funds_withdrawn',chargeAmountMinor:10300,
-    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:true,providerCreated:300}));
-  await ingestStripeFinancialEvent(financialEvent(f,{eventType:'charge.dispute.funds_reinstated',chargeAmountMinor:10300,
+  const withdrawal=financialEvent(f,{stripeEventId:`evt_fee_withdrawal_${f.invoiceId}`,
+    eventType:'charge.dispute.funds_withdrawn',chargeAmountMinor:10300,disputeId:`dp_fee_${f.invoiceId}`,
+    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:true,providerCreated:300});
+  expect(await ingestStripeFinancialEvent(withdrawal)).toMatchObject({state:'applied'});
+  const [withdrawn]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.id,f.mappingId)));
+  expect(withdrawn).toMatchObject({status:'disputed',invoicePaymentId:null,feeReversedAmount:'3.00'});
+  const [appliedWithdrawal]=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents)
+    .where(eq(stripeFinancialEvents.stripeEventId,withdrawal.stripeEventId)));
+  expect(appliedWithdrawal!.status).toBe('applied');
+  await ingestStripeFinancialEvent(financialEvent(f,{eventType:'charge.dispute.funds_reinstated',chargeAmountMinor:10300,disputeId:`dp_fee_${f.invoiceId}`,
     refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:false,providerCreated:301}));
   const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
   const [payment]=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.id,mapping!.invoicePaymentId!)));
@@ -1808,9 +1848,16 @@ git commit -m "feat(accounting): drain durable processing fee receipts and rever
 
 ### Task 11: Expose fee income mappings and sync attention in the existing connection settings
 **Files:** Create `apps/web/src/components/integrations/AccountingFeeSettings.tsx`, `apps/web/src/components/integrations/AccountingFeeSettings.test.tsx`; Modify `apps/api/src/routes/accounting/index.ts`, `apps/api/src/routes/accounting/index.test.ts`, `apps/web/src/locales/en/integrations.json`, `apps/web/src/locales/de-DE/integrations.json`, `apps/web/src/locales/es-419/integrations.json`, `apps/web/src/locales/fr-CA/integrations.json`, `apps/web/src/locales/fr-FR/integrations.json`, `apps/web/src/locales/it-IT/integrations.json`, `apps/web/src/locales/pt-BR/integrations.json`, `apps/web/src/locales/tr-TR/integrations.json`.
-**Interfaces:** Consumes Task 6 connection fields and existing `PATCH /accounting/:provider/settings`, `mapConnection`, `upsertConnection`, `resetConnectionForRealmChange`, `accountingPath(provider,suffix?)`, `runAction`. Consumes Task 6’s nullable fee refs on `AccountingConnection`. Produces `AccountingFeeSettings({provider,itemRef,accountRef,disabled,onSaved})`; Task 12 mounts it.
+**Read:** W1-owned `apps/api/src/services/autopay/autopayGate.ts`; reuse its flag lookup without modifying the helper.
+**Interfaces:** Consumes Task 6 connection fields and existing `PATCH /accounting/:provider/settings`, `mapConnection`, `upsertConnection`, `resetConnectionForRealmChange`, `accountingPath(provider,suffix?)`, `runAction`. Consumes Task 6’s nullable fee refs on `AccountingConnection` and W1 C4 `isAutopayEnabledForPartner(db, partnerId)`. Fee-field PATCHes require rollout; ordinary settings remain ungated. Produces read-only `autopayEnabled:boolean` on both existing accounting status GET branches and `AccountingFeeSettings({provider,itemRef,accountRef,disabled,onSaved})`; Task 12 mounts it.
 
-- [ ] **Step 1: Write the failing test** — append to the existing accounting route suite using its verified `app`, `mocks.dbUpdateSet`, `mocks.dbUpdateReturning`, `authState`:
+- [ ] **Step 1: Write the failing test** — append to the existing accounting route suite using its verified `app`, `mocks.dbUpdateSet`, `mocks.dbUpdateReturning`, `authState`. Add `autopayEnabled:vi.fn(async()=>true)` to its existing hoisted `mocks` object, add this module mock, and reset with `mocks.autopayEnabled.mockResolvedValue(true);` in the existing `beforeEach`:
+
+```ts
+vi.mock('../../services/autopay/autopayGate',()=>({isAutopayEnabledForPartner:mocks.autopayEnabled}));
+```
+
+Append these complete route regressions:
 
 ```ts
 it('writes only the supplied fee mapping and refuses the wrong provider field',async()=>{
@@ -1825,6 +1872,42 @@ it('writes only the supplied fee mapping and refuses the wrong provider field',a
   expect((await request('quickbooks',{feeIncomeItemRef:'x'.repeat(65)})).status).toBe(400);
   authState.scope='organization';
   expect((await request('quickbooks',{feeIncomeItemRef:'fee-item'})).status).toBe(403);
+});
+```
+
+```ts
+it.each([
+  ['quickbooks',{feeIncomeItemRef:'fee-item'}],
+  ['quickbooks',{feeIncomeItemRef:null}],
+  ['xero',{feeIncomeAccountRef:'200'}],
+  ['xero',{feeIncomeAccountRef:null}],
+  ['quickbooks',{feeIncomeAccountRef:null,pushPayments:false}],
+  ['xero',{feeIncomeItemRef:null,pushMode:'manual'}],
+] as const)('refuses fee fields for %s with rollout off, including clears and mixed writes',async(provider,body)=>{
+  mocks.autopayEnabled.mockResolvedValue(false);
+  const res=await app.request(`/accounting/${provider}/settings`,{method:'PATCH',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  expect(res.status).toBe(404);
+  expect(await res.json()).toMatchObject({code:'autopay_not_enabled'});
+  expect(mocks.autopayEnabled).toHaveBeenCalledWith(expect.anything(),authState.partnerId);
+  expect(mocks.dbUpdateSet).not.toHaveBeenCalled();
+});
+it('preserves ordinary accounting settings with rollout off',async()=>{
+  mocks.autopayEnabled.mockResolvedValue(false);
+  mocks.dbUpdateReturning.mockResolvedValueOnce([{status:'connected',pushMode:'manual'}]);
+  const res=await app.request('/accounting/quickbooks/settings',{method:'PATCH',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({pushMode:'manual'})});
+  expect(res.status).toBe(200);
+  expect(mocks.dbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({pushMode:'manual'}));
+  expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).not.toHaveProperty('feeIncomeItemRef');
+  expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).not.toHaveProperty('feeIncomeAccountRef');
+});
+it.each([true,false])('projects the existing partner rollout flag %s on accounting status',async enabled=>{
+  mocks.autopayEnabled.mockResolvedValue(enabled);
+  const res=await app.request('/accounting/quickbooks');
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({autopayEnabled:enabled});
+  expect(mocks.autopayEnabled).toHaveBeenCalledWith(expect.anything(),authState.partnerId);
 });
 ```
 
@@ -1851,7 +1934,7 @@ it('saves one nullable provider-specific ref and reports failure without losing 
 });
 ```
 
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/routes/accounting/index.test.ts`; `cd apps/web && npx vitest run src/components/integrations/AccountingFeeSettings.test.tsx`. Expected: ignored/unknown fee settings, missing form.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/routes/accounting/index.test.ts`; `cd apps/web && npx vitest run src/components/integrations/AccountingFeeSettings.test.tsx`. Expected: ignored/unknown fee settings, missing form/status flag, and fee-field writes accepted with rollout off.
 - [ ] **Step 3: Implement** — Add these fields to `settingsSchema` in `routes/accounting/index.ts`:
 
 ```ts
@@ -1859,7 +1942,22 @@ feeIncomeItemRef: z.string().trim().min(1).max(64).nullable().optional(),
 feeIncomeAccountRef: z.string().trim().min(1).max(64).nullable().optional(),
 ```
 
-After `const body = c.req.valid('json')` in the existing PATCH handler, add:
+Import W1’s helper in `routes/accounting/index.ts`:
+
+```ts
+import {isAutopayEnabledForPartner} from '../../services/autopay/autopayGate';
+```
+
+In the existing PATCH handler, after `const body = c.req.valid('json')`, `resolvePartnerId`, and its error guard, but before any update or the provider-field validation below, add:
+
+```ts
+if (('feeIncomeItemRef' in body || 'feeIncomeAccountRef' in body)
+  && !await isAutopayEnabledForPartner(db,partner.partnerId)) {
+  return c.json({error:'Automatic payments are not enabled',code:'autopay_not_enabled'},404);
+}
+```
+
+Check field presence, not truthiness: null clears and mixed ordinary/fee patches must be rejected as a whole without any write. Keep existing authentication, partner authority, MFA, validation and permissions. Do not gate the entire accounting router or ordinary settings patches. Then add the provider-field validation:
 
 ```ts
 if ((provider==='xero' && body.feeIncomeItemRef != null)
@@ -1886,6 +1984,14 @@ feeIncomeAccountRef: accountingConnections.feeIncomeAccountRef,
 feeIncomeItemRef: connection.feeIncomeItemRef ?? null,
 feeIncomeAccountRef: connection.feeIncomeAccountRef ?? null,
 ```
+
+In the authorized GET `/:provider` handler, after `resolvePartnerId` and its error guard, read the same flag:
+
+```ts
+const autopayEnabled=await isAutopayEnabledForPartner(db,partner.partnerId);
+```
+
+Add `autopayEnabled,` to both connected and disconnected JSON responses. This is a read-only projection, never a writable accounting setting, and the GET itself remains ungated so existing debt stays visible. Task 12 consumes this flag; no second rollout switch or settings endpoint is introduced.
 
 The existing route already has full partner authority, `ACCOUNTING_MANAGE`, MFA, and a partner/provider predicate. No new route or duplicate mount in `index.ts`. Do not put these refs into billing settings.
 
@@ -1946,7 +2052,7 @@ git commit -m "feat(accounting): configure processing fee income mappings"
 
 ### Task 12: Compose fee modules into the actual pages and exercise a browser Save
 **Files:** Modify `apps/web/src/components/billing/PartnerBillingSettingsPage.tsx`, `apps/web/src/components/billing/OrgBillingSettings.tsx`, `apps/web/src/components/billing/PartnerBillingSettingsPage.test.tsx`, `apps/web/src/components/billing/OrgBillingSettings.test.tsx`, `apps/web/src/components/integrations/AccountingConnectionPanel.tsx`, `apps/web/src/components/integrations/AccountingConnectionPanel.test.tsx`, `apps/api/src/routes/accounting/index.ts`, `apps/api/src/routes/accounting/index.test.ts`; Create `apps/web/src/components/integrations/IntegrationsPage.fees.test.tsx`, `e2e-tests/tests/autopay-processing-fees.spec.ts`; Read `apps/web/src/components/integrations/IntegrationsPage.tsx` (existing shell, no edit).
-**Interfaces:** Consumes W3 Task 7’s final composition of W2’s `PaymentsSettingsTab`/`OrgPaymentsSettingsSection` and Task 11 `AccountingFeeSettings`. Produces page-level `autopay-fee-settings-page`, `autopay-org-fee-settings-page`, and the mounted `autopay-accounting-fees` module. Existing page URLs and hash keys remain unchanged; no new settings screen or `settingsPageRegistry` entry.
+**Interfaces:** Consumes W3 Task 7’s final composition of W2’s `PaymentsSettingsTab`/`OrgPaymentsSettingsSection` and Task 11 `AccountingFeeSettings` plus accounting status `autopayEnabled:boolean` derived from W1’s rollout helper. Configuration requires `status?.autopayEnabled === true`; status, ordinary settings and debt attention remain ungated. Produces page-level `autopay-fee-settings-page`, `autopay-org-fee-settings-page`, and the mounted `autopay-accounting-fees` module. Existing page URLs and hash keys remain unchanged; no new settings screen or `settingsPageRegistry` entry.
 
 - [ ] **Step 1: Write the failing test** — in both billing page test files add this full fixture factory; it includes W3’s required reminder projection so a fee test cannot accidentally fail during reminder loading:
 
@@ -2000,12 +2106,28 @@ Append to the existing `AccountingConnectionPanel.test.tsx`, using its verified 
 ```tsx
 it('mounts the fee form in the connected accounting card',async()=>{
   fetchWithAuth.mockImplementation(async(url:string)=>url==='/accounting/quickbooks'
-    ?jsonResponse({...connected,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,feeAccountingErrorCount:1})
+    ?jsonResponse({...connected,autopayEnabled:true,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,feeAccountingErrorCount:1})
     :jsonResponse({data:[],count:0}));
   render(<AccountingConnectionPanel provider="quickbooks"/>);
   expect(await screen.findByTestId('autopay-accounting-fees')).toBeInTheDocument();
   expect(screen.getByTestId('autopay-accounting-fee-ref')).toHaveValue('fee-item');
   expect(screen.getByTestId('autopay-accounting-fee-attention')).toBeInTheDocument();
+});
+```
+
+Append this rollout-off composition regression to the same panel suite; it renders the real form owner and waits for loaded status before asserting absence:
+
+```tsx
+it('hides fee configuration with rollout off but retains ordinary settings and debt attention',async()=>{
+  fetchWithAuth.mockImplementation(async(url:string)=>url==='/accounting/quickbooks'
+    ?jsonResponse({...connected,autopayEnabled:false,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,feeAccountingErrorCount:1})
+    :jsonResponse({data:[],count:0}));
+  render(<AccountingConnectionPanel provider="quickbooks"/>);
+  expect(await screen.findByTestId('autopay-accounting-fee-attention')).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-accounting-fees')).toBeNull();
+  expect(screen.queryByTestId('autopay-accounting-fee-ref')).toBeNull();
+  expect(screen.queryByTestId('autopay-accounting-fee-save')).toBeNull();
+  expect(screen.getByTestId('quickbooks-pushmode-manual')).toBeInTheDocument();
 });
 ```
 
@@ -2019,11 +2141,12 @@ Append these tests in the existing route suite before adding the aggregate:
 
 ```ts
 it('reports only the partner fee-error count even with no surviving connection',async()=>{
+  mocks.autopayEnabled.mockResolvedValue(false);
   mocks.getConnection.mockResolvedValueOnce(null);
   mocks.dbFeeErrorWhere.mockResolvedValueOnce([{n:2}]);
   const res=await app.request('/accounting/quickbooks');
   expect(res.status).toBe(200);
-  expect(await res.json()).toMatchObject({status:'disconnected',feeAccountingErrorCount:2});
+  expect(await res.json()).toMatchObject({status:'disconnected',autopayEnabled:false,feeAccountingErrorCount:2});
 });
 it('denies selected-org callers before reading the fee-error aggregate',async()=>{
   authState.partnerOrgAccess='selected';
@@ -2046,16 +2169,19 @@ vi.mock('@/lib/navigation',()=>({navigateTo:vi.fn()}));
 vi.mock('./AccountingMappingWorkbench',()=>({default:()=>null}));
 vi.mock('./AccountingCustomerImport',()=>({default:()=>null}));
 import IntegrationsPage from './IntegrationsPage';
-it('reaches the fee module through Integrations → accounting',async()=>{
+it.each([true,false])('composes accounting fee visibility from rollout %s through Integrations',async enabled=>{
   window.history.replaceState({},'', '/integrations#quickbooks-customers');
   const capabilities={connect:true,mapping:true,customerImport:true,invoicePush:true,paymentPull:true,paymentPush:true};
   h.fetch.mockImplementation(async(path:string)=>Response.json(path==='/accounting/providers'?{
     data:[{id:'quickbooks',displayName:'QuickBooks',configured:true,capabilities},{id:'xero',displayName:'Xero',configured:false,capabilities}],
     activeConnection:{provider:'quickbooks',status:'connected'},
   }:path==='/accounting/quickbooks'?{status:'connected',environment:'sandbox',pushMode:'auto',pullPayments:true,pushPayments:true,
-    capabilities,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,features:{tenantSelection:false,settingsOptions:false}}:{data:[],count:0}));
+    capabilities,autopayEnabled:enabled,feeAccountingErrorCount:1,feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null,features:{tenantSelection:false,settingsOptions:false}}:{data:[],count:0}));
   render(<IntegrationsPage/>);
-  expect(await screen.findByTestId('autopay-accounting-fees')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-accounting-fee-attention')).toBeInTheDocument();
+  expect(screen.getByTestId('quickbooks-pushmode-manual')).toBeInTheDocument();
+  if(enabled)expect(screen.getByTestId('autopay-accounting-fees')).toBeInTheDocument();
+  else expect(screen.queryByTestId('autopay-accounting-fees')).toBeNull();
 });
 ```
 
@@ -2088,7 +2214,7 @@ test('processing fees display and save through the actual Payments page',async({
 ```
 
 This browser smoke verifies composition/hydration and Save serialization. Real RLS and money behavior remain in the integration suites; a mocked browser response is not evidence of Stripe collection.
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/web && npx vitest run src/components/billing/PartnerBillingSettingsPage.test.tsx src/components/billing/OrgBillingSettings.test.tsx src/components/integrations/AccountingConnectionPanel.test.tsx src/components/integrations/IntegrationsPage.fees.test.tsx`. Expected: missing wrappers/accounting fee mount. Also run `cd apps/api && npx vitest run src/routes/accounting/index.test.ts`; the disconnected fee-error count is missing.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/web && npx vitest run src/components/billing/PartnerBillingSettingsPage.test.tsx src/components/billing/OrgBillingSettings.test.tsx src/components/integrations/AccountingConnectionPanel.test.tsx src/components/integrations/IntegrationsPage.fees.test.tsx`. Expected: missing wrappers/accounting fee mount or fee controls visible with rollout off. Also run `cd apps/api && npx vitest run src/routes/accounting/index.test.ts`; the disconnected rollout-off fee-error count is missing.
 - [ ] **Step 3: Implement** — replace the partner Payments tab expression (W3 Task 7) with:
 
 ```tsx
@@ -2106,11 +2232,11 @@ Replace W3’s org Payments composition with:
 </div>}
 ```
 
-In `AccountingConnectionPanel.tsx`, import `AccountingFeeSettings` and extend `QuickbooksStatus` with `feeIncomeItemRef?:string|null; feeIncomeAccountRef?:string|null; feeAccountingErrorCount?:number;`. Place this in the main panel content outside the connected/disconnected branch; the form itself is connected-only:
+In `AccountingConnectionPanel.tsx`, import `AccountingFeeSettings` and extend `QuickbooksStatus` with `autopayEnabled?:boolean; feeIncomeItemRef?:string|null; feeIncomeAccountRef?:string|null; feeAccountingErrorCount?:number;`. Missing/loading flags fail closed for configuration. Place this in the main panel content outside the connected/disconnected branch; the form itself requires a connected account and W1 rollout, while the debt attention stays outside that gate:
 
 ```tsx
 {!isOrgScoped&&<>
-  {isConnected&&<AccountingFeeSettings provider={provider} itemRef={status?.feeIncomeItemRef??null} accountRef={status?.feeIncomeAccountRef??null}
+  {isConnected&&status?.autopayEnabled===true&&<AccountingFeeSettings provider={provider} itemRef={status?.feeIncomeItemRef??null} accountRef={status?.feeIncomeAccountRef??null}
     disabled={!canManageAccounting} onSaved={value=>setStatus(previous=>previous?{...previous,...value}:previous)}/>}
   {!!status?.feeAccountingErrorCount&&<p role="alert" data-testid="autopay-accounting-fee-attention">{t('accountingFees.attention')}</p>}
 </>}
@@ -2124,12 +2250,13 @@ const feeErrors=await db.select({n:sql<number>`count(*)::int`}).from(invoiceStri
   .where(and(eq(invoices.partnerId,partner.partnerId),sql`${invoiceStripePayments.feeAccountingError} IS NOT NULL`));
 ```
 
-Add `feeAccountingErrorCount: feeErrors[0]?.n ?? 0` to both connected and disconnected responses. Any pending fee error for this partner remains visible even when its old connection is unavailable; the text makes no claim that retargeting is safe. Keep GET read-only. The Step 1 aggregate mock and denied-caller test cover its exact Drizzle chain.
+Add `feeAccountingErrorCount: feeErrors[0]?.n ?? 0` to both connected and disconnected responses, retaining Task 11’s `autopayEnabled` projection on both. Do not gate this aggregate, its attention UI, or Task 10’s already-owed fee-debt drain on rollout. Any pending fee error for this partner remains visible even when its old connection is unavailable; the text makes no claim that retargeting is safe. Keep GET read-only. The Step 1 aggregate mock and denied-caller test cover its exact Drizzle chain.
 
 No new URL/nav destination exists. Run `settingsPageRegistry.test.ts` and preserve Payments’ hash-state behavior. Each new module now has a real page-level test; do not replace it with a stub returning its test ID.
 - [ ] **Step 4: Run it, expect PASS**:
 
 ```bash
+(cd apps/api && npx vitest run src/routes/accounting/index.test.ts)
 (cd apps/web && npx vitest run src/components/billing/PartnerBillingSettingsPage.test.tsx src/components/billing/OrgBillingSettings.test.tsx src/components/integrations/AccountingConnectionPanel.test.tsx src/components/integrations/IntegrationsPage.fees.test.tsx src/lib/__tests__/settingsPageRegistry.test.ts src/lib/__tests__/no-silent-mutations.test.ts)
 pnpm wt-stack up
 (cd e2e-tests && npx playwright test tests/autopay-processing-fees.spec.ts --project=chromium)
@@ -2143,7 +2270,7 @@ git commit -m "feat(billing): compose fee controls and accounting attention in s
 ```
 
 ### Task 13: Verification and Stripe test-mode lab
-**Files:** Test every test file named in Tasks 1–12; no new implementation file. Review `apps/api/src/index.ts`, `apps/api/src/jobs/scheduleRegistry.ts`, `apps/api/src/services/workerRegistry.ts`, `apps/api/src/worker.ts`, `apps/web/src/lib/settingsCatalog.ts` for retained registrations.
+**Files:** Test every test file named in Tasks 1–12, explicitly including Task 4 bank authorization, Task 6 linked-attempt reversals, and Tasks 11–12 accounting API/panel/page rollout regressions; no new implementation file. Review `apps/api/src/index.ts`, `apps/api/src/jobs/scheduleRegistry.ts`, `apps/api/src/services/workerRegistry.ts`, `apps/api/src/worker.ts`, `apps/web/src/lib/settingsCatalog.ts` for retained registrations.
 **Interfaces:** Consumes the complete single-PR change; produces recorded test output and lab evidence in the PR body. A plan’s expected results are not a claim that tests passed.
 
 - [ ] **Step 1: Write the failing test** — the erasure regression below belongs to Task 10's initial test batch, before its implementation; keep it in `accountingFeePush.integration.test.ts`. At verification time, inspect the initial failing output and execute the completed test again. This task adds no late production behavior.
@@ -2183,7 +2310,7 @@ pnpm wt-stack down
 pnpm test-stack down
 ```
 
-- [ ] **Step 4: Run it, expect PASS** — all above commands discover their intended files and pass; no skipped real-DB suite counts as a pass. Check a cross-org write as `breeze_app` fails with `42501`. The typecheck must include both provider adapters and the web/portal islands. Inspect a small viewport: labels, basis-point/percent pairing, both affirmations, inherited zero/blank state, and one Save per fee form are readable and keyboard accessible.
+- [ ] **Step 4: Run it, expect PASS** — all above commands discover their intended files and pass; no skipped real-DB suite counts as a pass. Check a cross-org write as `breeze_app` fails with `42501`. Explicitly verify CW-11: the bank fee ceiling returns `client_authorization_required` with no attempt/provider call/token consumption; CW-12: the linked-attempt withdrawal is applied before principal/rail reinstatement assertions; CW-13: fee-field PATCHes (including null and mixed bodies) return `404 autopay_not_enabled`, enabled writes still work, off-rollout forms stay hidden, and ordinary settings plus connected/disconnected debt attention remain available. Task 10 debt processing retains its existing ungated behavior. The typecheck must include the collection engine (including W4’s retained `feeMinor` comparison), both provider adapters and the web/portal islands. Inspect a small viewport: labels, basis-point/percent pairing, both affirmations, inherited zero/blank state, and one Save per fee form are readable and keyboard accessible.
 - [ ] **Step 5: Commit** — implementation-time verification checkpoint. The regression was written and committed with Task 10; `--allow-empty` records this final checkpoint without rewriting or duplicating test changes:
 
 ```bash
@@ -2196,8 +2323,8 @@ git commit --allow-empty -m "test(billing): record processing fee verification c
 - [ ] Enable the partner rollout switch. Set card 300 bps and ACH 2.50 without attestation: a credit quote returns `not_attested`, card charge fee stays zero. Attest both statements through the partner form and verify server user/time. Try the org API with the same attestation: 400; try an org token against partner PUT: 403.
 - [ ] Enroll a test credit card for a US/NY customer. Verify per-method setup terms, protected enrolled text, notice `$100.00 + $3.00 card processing fee`, Stripe gross 103.00, invoice principal 100.00 and protected receipt principal/fee/total. Override the editable template to omit amounts and repeat: protected text remains.
 - [ ] Verify debit, prepaid/unknown funding, CA/CT/ME/MA and non-US account quotes suppress card fees. Move the organization to CO after a 3.00 notice: the charge is at most 2.00. Increase fees after a smaller notice: collection defers/re-notices, never silently charges above that notice.
-- [ ] Override an org to zero, then clear it to inherit. Confirm the API raw values, resolver source and resulting charge agree. Disable rollout: fees disappear while reminders remain editable; already processing attempts still reconcile.
-- [ ] Enroll ACH with instant verification and microdeposit pending. Verify fee terms before authorization, no fee on setup itself, and eventual USD principal+flat fee on the PaymentIntent. Test a return; invoice reopens by principal only, fee reversal is tracked. A stop while processing does not erase the fee history.
+- [ ] Override an org to zero, then clear it to inherit. Confirm the API raw values, resolver source and resulting charge agree. Disable rollout: billing and accounting fee controls disappear while reminders and ordinary accounting settings remain editable; PATCH either fee-mapping field, including null clears, returns `404 autopay_not_enabled` without applying mixed ordinary fields. Existing fee debt attention remains visible and already-owed debt drains; already processing attempts still reconcile. Re-enable rollout before changing mappings; no off-rollout repair exception exists.
+- [ ] Enroll ACH with instant verification and microdeposit pending. Verify fee terms before authorization, no fee on setup itself, and eventual USD principal+flat fee on the PaymentIntent. Authorize a nonzero bank fee, then raise the configured fee before collection: the original authorization must refuse the excess without consuming its token. Test a return; invoice reopens by principal only, fee reversal is tracked. A stop while processing does not erase the fee history.
 - [ ] Refund 51.50 of a 103.00 charge, repeat the event, then refund the rest. Expect principal reversal 50.00 then 100.00 cumulative, fee 1.50 then 3.00 cumulative, never a fee in `invoice_payments`. Test a dispute withdrawal and reinstatement after a partial refund; retain the prior refunded share and original card/ACH method.
 - [ ] Configure QBO’s fee item in the sandbox. Verify SalesReceipt amount equals fee only, the same customer, no invoice linkage, NON tax, and RefundReceipt on fee reversal. Verify the configured payment account receives the receipt and funds the refund; a missing account must fail before a journal operation is frozen. Export the principal through its existing Payment path once.
 - [ ] Configure Xero’s income account, payment account and exempt code. Verify RECEIVE fee income and SPEND reversal, ContactID binding, NoTax treatment and unchanged accounting invoice. A won dispute produces a new positive entry for only the restored fee share.
