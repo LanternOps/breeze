@@ -15,3 +15,7 @@ export const GATEWAY_ERROR_TEXT_MAX = 600;
 export const GATEWAY_UPSTREAM_ERROR_READ_BYTES = 4 * 1024;
 export const DISCOVERY_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const DISCOVERY_MAX_MODELS = 500;
+/** Largest single upstream SSE event, in UTF-8 bytes, the gateway will buffer. */
+export const GATEWAY_MAX_SSE_EVENT_BYTES = 1024 * 1024;
+/** Ceiling for any one upstream-reported token counter; larger values are clamped. */
+export const GATEWAY_MAX_USAGE_TOKENS = 10_000_000;
