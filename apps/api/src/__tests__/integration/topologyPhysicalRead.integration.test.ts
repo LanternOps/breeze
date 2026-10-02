@@ -157,9 +157,10 @@ describe('M2 physical read gating, exclusions, coverage and evidence (real DB)',
     const detail = await json(env, `relationships/${ids.fdb}`, (v) => relationshipDetailResponseSchema.parse(v));
     expect(detail.relationship).toMatchObject({ id: ids.fdb, excluded: true, evidence: { methods: ['fdb'] } });
     expect(detail.exclusions).toEqual([expect.objectContaining({ id: exclusionId, view: 'physical', reason: 'Not a real cable' })]);
-    expect(detail.endpoints.source).toMatchObject({ label: 'Core switch', port: { name: 'port-24', alias: 'Desk drop', key: 'if:24' } });
+    // The switch node is bound to a device: its label is the live device hostname (grouped overview §2), not the copied attribute label.
+    expect(detail.endpoints.source).toMatchObject({ label: 'core-switch', port: { name: 'port-24', alias: 'Desk drop', key: 'if:24' } });
     expect(detail.physical).toMatchObject({ method: 'fdb', portRole: 'learned', fdbSelection: 'competing' });
-    expect(detail.alternatives).toEqual([expect.objectContaining({ relationshipId: ids.fdb2, sourceNodeLabel: 'Core switch', port: expect.objectContaining({ name: 'port-2' }) })]);
+    expect(detail.alternatives).toEqual([expect.objectContaining({ relationshipId: ids.fdb2, sourceNodeLabel: 'core-switch', port: expect.objectContaining({ name: 'port-2' }) })]);
     const evidence = await json(env, `relationships/${ids.fdb}/evidence?limit=1`, (v) => relationshipEvidenceResponseSchema.parse(v));
     expect(evidence.observations.map((o) => [o.id, o.status, o.producerKind])).toEqual([[ids.observation, 'current', 'discovery']]);
     expect(evidence.confirmations).toHaveLength(1);

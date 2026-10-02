@@ -73,7 +73,7 @@ export async function readTopologyAiGraph(ctx: TopologyRequestContext, input: To
     view: input.view ?? 'overview',
     ...(input.focusNodeId ? { focusNodeId: input.focusNodeId } : {}),
     hops: 1, includeHealth: true, limit,
-  });
+  }, { presentationGroups: false });
   if (input.graphRevision !== undefined && input.graphRevision !== graph.revisions.graph) {
     return { error: 'graph_revision_changed', graphRevision: graph.revisions.graph } satisfies TopologyAiReadError;
   }
