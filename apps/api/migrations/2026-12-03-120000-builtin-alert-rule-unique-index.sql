@@ -45,6 +45,8 @@ DECLARE
   n_links integer;
   n_off integer;
   n_deleted integer;
+  lock_orgs uuid[];
+  lock_partners uuid[];
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
@@ -75,6 +77,25 @@ BEGIN
   IF n_dupes > 0 THEN
     RAISE WARNING '#7650: found % duplicate built-in alert rule(s) to merge', n_dupes;
   END IF;
+
+  -- Configuration-family partner-export pre-locks (#5912): partners
+  -- exclusive, then their orgs, before the first write. The set is every org
+  -- the config_policy_feature_links trigger touches for the links step b
+  -- re-points (breeze_partner_export_policy_child_orgs: the policy's own org,
+  -- or every org of its partner for a partner-wide policy) and those orgs'
+  -- partners. Empty (a no-op) on a clean table.
+  SELECT
+    COALESCE(array_agg(DISTINCT o.id ORDER BY o.id), ARRAY[]::uuid[]),
+    COALESCE(array_agg(DISTINCT o.partner_id ORDER BY o.partner_id), ARRAY[]::uuid[])
+    INTO lock_orgs, lock_partners
+    FROM config_policy_feature_links l
+    JOIN breeze_7650_rule_merge m ON m.loser_id = l.feature_policy_id
+    JOIN configuration_policies cp ON cp.id = l.config_policy_id
+    JOIN organizations o
+      ON o.id = cp.org_id OR (cp.org_id IS NULL AND o.partner_id = cp.partner_id)
+   WHERE l.feature_type = 'alert_rule';
+  PERFORM public.breeze_partner_export_lock_partners_exclusive(lock_partners);
+  PERFORM public.breeze_partner_export_lock_orgs_under_exclusive_partners(lock_orgs, lock_partners);
 
   -- a. Resolve open alerts that would collide once re-pointed.
   UPDATE alerts a

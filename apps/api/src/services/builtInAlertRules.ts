@@ -13,7 +13,7 @@ import { alertRules } from '../db/schema';
  * these values.
  *
  * The partial unique index `alert_rules_builtin_anchor_uidx`
- * (migrations/2026-11-19-110000-builtin-alert-rule-unique-index.sql) enforces
+ * (migrations/2026-12-03-120000-builtin-alert-rule-unique-index.sql) enforces
  * that identity, and its predicate lists these same strings. A new built-in
  * producer must add its source here AND ship a migration that recreates the
  * index with it, or concurrent first fire can create the rule twice again.

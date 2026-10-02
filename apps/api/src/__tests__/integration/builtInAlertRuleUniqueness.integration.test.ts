@@ -49,7 +49,7 @@ import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
-const MIGRATION = '2026-11-19-110000-builtin-alert-rule-unique-index.sql';
+const MIGRATION = '2026-12-03-120000-builtin-alert-rule-unique-index.sql';
 const INDEX_NAME = 'alert_rules_builtin_anchor_uidx';
 const RACERS = 8;
 
