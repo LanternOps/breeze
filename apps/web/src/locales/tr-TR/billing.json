@@ -933,7 +933,7 @@
         "subtotal": "Ara Toplam",
         "tax": "Vergi",
         "taxRate": "Vergi oranı",
-        "taxRateHelp": "Vergiye tabi olarak işaretlenen satırlar için geçerlidir. Bu oran teklif oluşturulurken belirlendi; gelecekteki teklifler için değiştirmek üzere kuruluşun vergi ayarlarını güncelleyin.",
+        "taxRateHelp": "Vergiye tabi olarak işaretlenen satırlar için geçerlidir. Kuruluşun vergi ayarlarından veya kuruluşun ayarı yoksa varsayılan vergi oranınızdan gelir. Teklif taslak olduğu sürece bu ayarları izler ve teklif gönderildiğinde sabitlenir.",
         "title": "Canlı toplamlar",
         "total": "Toplam"
       },

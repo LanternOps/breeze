@@ -22,11 +22,11 @@ export class OrgNotVisibleForTaxError extends Error {
 
 /**
  * The ONE tax-rate resolver (settings audit rule 5) — used today by quote
- * creation, quote org-reassignment and quote update (via
- * quoteService.resolveQuoteTaxRate, a thin wrapper) and the draft-invoice
- * detail preview. Persisted draft-invoice recompute (M18, #6227) uses the
- * transaction-aware sibling resolveOrgTaxRateOn below — same core, no second
- * transaction. The issued-invoice path keeps its own read (invoiceService.ts)
+ * creation and quote clone (via quoteService.resolveQuoteTaxRate, a thin
+ * wrapper) and the draft-invoice detail preview. Persisted draft-invoice
+ * recompute (M18, #6227) and every quote draft recompute / send-time snapshot
+ * (#7507, quoteService.resolveDraftTaxRateOn) use the transaction-aware sibling
+ * resolveOrgTaxRateOn below — same core, no second transaction. The issued-invoice path keeps its own read (invoiceService.ts)
  * because it runs inside an already-open system transaction with the
  * invoice/lines rows locked and reads the whole partner row there anyway.
  *

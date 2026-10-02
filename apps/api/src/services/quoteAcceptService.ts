@@ -38,6 +38,7 @@ import {
   type QuoteSupersedeResult,
 } from './quoteLifecycle';
 import type { QuoteLineForMath } from './quoteMath';
+import { syncDraftQuoteTaxRate } from './quoteService';
 
 export interface AcceptQuoteParams {
   quoteId: string;
@@ -264,6 +265,15 @@ export async function acceptQuote(
     // contract document whose declared variables are unresolved (the renderer
     // substitutes '' and reports an "unreachable" Sentry capture), or convert a
     // quote whose deposit terms became unsatisfiable while it was drafted.
+    //
+    // Tax snapshot moment first (#7507), exactly as sendQuote does: this claim
+    // is when the draft becomes customer-bound, so the deposit gate, the content
+    // hash and the issued invoice must all use the rate current NOW. The row is
+    // already held FOR UPDATE; overlay the refreshed row onto the in-memory one.
+    if (await syncDraftQuoteTaxRate(quote.id)) {
+      const [refreshed] = await db.select().from(quotes).where(eq(quotes.id, quote.id)).limit(1);
+      Object.assign(quote, refreshed);
+    }
     assertQuoteSendGates(quote, blocks, lines as QuoteLineForMath[], params.contractRenderData ?? [], 'accept');
     // Same helper, same lock order as sendQuote. On a revision the parent is
     // retired, so a customer still holding the PARENT's link cannot accept it

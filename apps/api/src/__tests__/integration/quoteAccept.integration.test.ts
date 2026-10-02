@@ -152,10 +152,11 @@ describe('quote accept → convert', () => {
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Taxable item', quantity: 1, unitPrice: 100, taxable: true, customerVisible: true, recurrence: 'one_time' } as any, actor));
-    // Quote snapshot = 10%; org's live rate = 25% (deliberately different).
-    await withSystemDbAccessContext(() => db.update(quotes).set({ taxRate: '0.100' }).where(eq(quotes.id, created.id)));
-    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.250' }).where(eq(organizations.id, org.id)));
+    // Quote snapshot = 10% (the org's rate when it is SENT, #7507); the org then
+    // moves to 25% before the customer accepts (deliberately different).
+    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.100' }).where(eq(organizations.id, org.id)));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.250' }).where(eq(organizations.id, org.id)));
 
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane' }));
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
