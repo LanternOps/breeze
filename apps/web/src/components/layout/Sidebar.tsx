@@ -610,7 +610,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   useEffect(() => { setHydrated(true); }, []);
   const permissions = hydrated ? storedPermissions : undefined;
   const canManagePartnerWide = hydrated ? storedCanManagePartnerWide : undefined;
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- accessToken is the cache key for the decode
+  // accessToken is the cache key for the decode (getJwtClaims reads the store, not React state).
   const jwtScope = useMemo(() => (hydrated ? getJwtClaims().scope : null), [hydrated, accessToken]);
 
   // Runtime-extension navigation (see the comment above `navSections`).
