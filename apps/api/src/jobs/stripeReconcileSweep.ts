@@ -1,3 +1,4 @@
+import { reconcileAutopaySetups } from '../services/autopay/setupReconciliation';
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -102,8 +103,9 @@ function createWorker(): Worker<SweepJobData> {
       try {
         // No wrapping context: the pass owns its own short transactions (#7065).
         const settled = await reconcilePendingStripePayments();
+        const setups = await reconcileAutopaySetups();
         const financialEvents = await pollStripeFinancialEvents();
-        return { settled, financialEvents };
+        return { settled, setups, financialEvents };
       } catch (err) {
         console.error('[StripeReconcileSweep] run failed:', err);
         captureException(err instanceof Error ? err : new Error(String(err)));

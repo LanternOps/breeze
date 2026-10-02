@@ -77,7 +77,7 @@ export async function getInvoiceAutopayOffer(orgId: string): Promise<{
   });
 }
 
-export async function finishCardPayAndSave(partnerId: string, checkoutSessionId: string): Promise<void> {
+export async function finishCardPayAndSave(partnerId: string, checkoutSessionId: string): Promise<{outcome: 'not_saved'} | Awaited<ReturnType<typeof persistCapturedAutopayMethod>>> {
   assertNoHeldDbContextForStripe('finishCardPayAndSave');
   // Stripe being paid is insufficient: terminal/refused captures also return an
   // invoice id. Only a durable invoice payment authorizes saving the card.
@@ -88,16 +88,16 @@ export async function finishCardPayAndSave(partnerId: string, checkoutSessionId:
       eq(invoices.partnerId, partnerId),
       isNotNull(invoiceStripePayments.invoicePaymentId),
     )).limit(1));
-  if (!mapping) return;
+  if (!mapping) return {outcome:'not_saved'};
   const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
   if (stripeAccountId !== mapping.mapping.stripeAccountId) throw new Error('Stripe account changed');
   const session = await runOutsideDbContext(() => stripe.checkout.sessions.retrieve(checkoutSessionId));
-  if (session.mode !== 'payment' || session.payment_status !== 'paid') return;
+  if (session.mode !== 'payment' || session.payment_status !== 'paid') return {outcome:'not_saved'};
   const piId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id;
-  if (!piId) return;
+  if (!piId) return {outcome:'not_saved'};
   const intent = await runOutsideDbContext(() => stripe.paymentIntents.retrieve(piId));
   const attemptId = intent.metadata.autopay_setup_attempt_id;
-  if (!attemptId) return;
+  if (!attemptId) return {outcome:'not_saved'};
   const [attempt] = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts).where(and(
     eq(autopaySetupAttempts.id, attemptId),
     eq(autopaySetupAttempts.partnerId, partnerId),
@@ -106,14 +106,14 @@ export async function finishCardPayAndSave(partnerId: string, checkoutSessionId:
     eq(autopaySetupAttempts.source, 'pay_and_save'),
   )).limit(1));
   if (!attempt || (attempt.consentSnapshot as { invoiceId?: string }).invoiceId !== mapping.invoice.id
-    || intent.setup_future_usage !== 'off_session' || intent.status !== 'succeeded') return;
+    || intent.setup_future_usage !== 'off_session' || intent.status !== 'succeeded') return {outcome:'not_saved'};
   const customer = typeof intent.customer === 'string' ? intent.customer : intent.customer?.id;
   if (customer !== attempt.stripeCustomerId) throw new Error('Pay-and-save Customer mismatch');
   const methodId = typeof intent.payment_method === 'string' ? intent.payment_method : intent.payment_method?.id;
   if (!methodId) throw new Error('Paid card has no payment method');
   const method = await runOutsideDbContext(() => stripe.paymentMethods.retrieve(methodId));
   if (method.type !== 'card') throw new Error('Pay-and-save must remain card-only');
-  await persistCapturedAutopayMethod(attempt.id, method, 'activated', null, null);
+  return persistCapturedAutopayMethod(attempt.id, method, 'activated', null, null);
 }
 
 /** Bind only after the invoice mapping commits; pending attempts remain recoverable. */

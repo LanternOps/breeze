@@ -35,7 +35,7 @@ function queueBooked() {
 }
 beforeEach(() => {
   vi.clearAllMocks(); m.rows.length = 0; m.held = false;
-  m.persist.mockReset();
+  m.persist.mockReset();m.persist.mockResolvedValue({outcome:'activated',orgId:'org'});
   m.client.mockResolvedValue({ stripeAccountId: 'acct_one', stripe: { checkout: { sessions: { retrieve: m.session } },
     paymentIntents: { retrieve: m.intent }, paymentMethods: { retrieve: m.method } } });
   m.session.mockResolvedValue({ id: 'cs_one', mode: 'payment', payment_status: 'paid', payment_intent: 'pi_one', amount_total: 10000, currency: 'usd' });
@@ -46,11 +46,11 @@ beforeEach(() => {
 });
 describe('booked card capture', () => {
   it('saves a booked, explicitly authorized card', async () => {
-    queueBooked(); await finishCardPayAndSave('partner', 'cs_one');
+    queueBooked(); expect(await finishCardPayAndSave('partner', 'cs_one')).toEqual({outcome:'activated',orgId:'org'});
     expect(m.persist).toHaveBeenCalledWith('attempt', { id: 'pm_one', type: 'card', customer: 'cus_one' }, 'activated', null, null);
   });
   it('does not contact Stripe without a booked mapping', async () => {
-    m.rows.push([]); await finishCardPayAndSave('partner', 'cs_one');
+    m.rows.push([]); expect(await finishCardPayAndSave('partner', 'cs_one')).toEqual({outcome:'not_saved'});
     expect(m.client).not.toHaveBeenCalled(); expect(m.persist).not.toHaveBeenCalled();
   });
   it.each(['invoice', 'off_session', 'succeeded', 'customer', 'card', 'account', 'attempt', 'paid'])('refuses a mismatched %s binding', async binding => {

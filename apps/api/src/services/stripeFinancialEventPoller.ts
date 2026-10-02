@@ -1,3 +1,4 @@
+import { AUTOPAY_STRIPE_EVENT_TYPES, isAutopayStripeEvent, ingestAutopayStripeEvent, replayAutopayStripeEvents } from './autopay/setupReconciliation';
 import type Stripe from 'stripe';
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -7,6 +8,7 @@ import { ingestStripeFinancialEvent, processPendingStripeFinancialEvents, type N
 import { captureException } from './sentry';
 
 export const STRIPE_FINANCIAL_EVENT_TYPES = [
+  ...AUTOPAY_STRIPE_EVENT_TYPES,
   'charge.refunded',
   'charge.dispute.created',
   'charge.dispute.updated',
@@ -139,6 +141,11 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
     if (Boolean(event.livemode) !== connection.livemode) {
       throw new Error(`Stripe event ${event.id} livemode does not match its credential-bound account`);
     }
+    if (isAutopayStripeEvent(event.type)) {
+      await ingestAutopayStripeEvent(partnerId, stripeAccountId, event);
+      ingested++;
+      continue;
+    }
     const normalized = await normalizeStripeFinancialEvent({
       event, partnerId, stripeAccountId, stripe,
     });
@@ -218,5 +225,6 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
     }
   }
   const applied = await processPendingStripeFinancialEvents(PAGE_SIZE);
+  await replayAutopayStripeEvents();
   return { accounts: accounts.length, events, applied };
 }

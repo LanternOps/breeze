@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
 import { accountingEntityMappings } from '../db/schema/accounting';
@@ -489,6 +489,7 @@ export async function processPendingStripeFinancialEvents(limit = 200): Promise<
     .from(stripeFinancialEvents)
     .where(and(
       inArray(stripeFinancialEvents.status, ['pending']),
+      like(stripeFinancialEvents.eventType, 'charge.%'),
       // Fresh next_attempt_at values come from PostgreSQL's DEFAULT NOW(). Use
       // that same clock for eligibility: an application host a few milliseconds
       // behind the database must not hide a newly durable reversal until the
@@ -528,6 +529,7 @@ export async function processPendingStripeFinancialEventsForPayment(
   const pending = await withSystemDbAccessContext(() => db.select({ id: stripeFinancialEvents.stripeEventId })
     .from(stripeFinancialEvents).where(and(
       eq(stripeFinancialEvents.status, 'pending'),
+      like(stripeFinancialEvents.eventType, 'charge.%'),
       eq(stripeFinancialEvents.stripeAccountId, stripeAccountId),
       eq(stripeFinancialEvents.paymentIntentId, paymentIntentId),
     )).orderBy(asc(stripeFinancialEvents.providerCreated), asc(stripeFinancialEvents.createdAt)));
