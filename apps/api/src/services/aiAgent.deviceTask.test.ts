@@ -16,6 +16,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
+// W01 #7599: session model validation reads the platform model registry.
+// This suite is about device binding, so the registry offers W00's list.
+vi.mock('./aiModels/platformModels', () => ({
+  isOfferablePlatformModel: async (model: string) =>
+    ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-fable-5'].includes(model),
+}));
 vi.mock('./effectiveSettings', () => ({
   getEffectiveAiBudget: vi.fn().mockResolvedValue({ maxTurnsPerSession: 50 }),
 }));

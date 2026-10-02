@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::desktop::{self, ConsentBridge, ConsentDecision, ConsentRequest, ConsentResult};
+use super::consent::{
+    ConsentRequest, ConsentTracker, Outbound, RequestAction, UiEvent, CONSENT_PROTOCOL_VERSION,
+};
+use super::desktop::{self, ConsentBridge};
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
 use super::token::HelperToken;
 use super::transport::{
@@ -95,6 +98,9 @@ struct AuthRequest {
     binary_kind: String,
     #[serde(rename = "desktopContext", skip_serializing_if = "String::is_empty")]
     desktop_context: String,
+    /// The consent prompt exchange this helper speaks (see `consent.rs`).
+    #[serde(rename = "consentProtocolVersion")]
+    consent_protocol_version: i32,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -147,6 +153,7 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         helper_role: "assist".to_string(),
         binary_kind: "assist_helper".to_string(),
         desktop_context: String::new(),
+        consent_protocol_version: CONSENT_PROTOCOL_VERSION,
     }
 }
 
@@ -250,39 +257,32 @@ where
         }
     };
 
-    // --- Consent decision bridge ---
-    // The `submit_consent` Tauri command runs on a different task; it can't touch
-    // this stream directly. Instead it sends a ConsentDecision through this
-    // channel, which we drain in the select! below and write back over the same
-    // socket (same send_seq / session_key) as a `consent_result` frame.
-    let (decision_tx, mut decision_rx) =
-        tokio::sync::mpsc::unbounded_channel::<ConsentDecision>();
+    // --- Consent bridge ---
+    // The `consent_presented` / `submit_consent` Tauri commands run on other
+    // tasks; they can't touch this stream directly. They send a UiEvent
+    // through this channel, which we drain in the select! below; the
+    // ConsentTracker turns it into the frame to write on this socket (same
+    // send_seq / session_key).
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     if let Some(ctx) = desktop_ctx {
-        ctx.bridge.set_sender(decision_tx);
+        ctx.bridge.set_sender(event_tx);
     }
-    // On any session-loop exit, clear the bridge so a later submit_consent on a
+    // On any session-loop exit, clear the bridge so a later command on a
     // dead session fails fast instead of writing into the orphaned channel.
     let _bridge_guard = BridgeClearGuard {
         bridge: desktop_ctx.map(|c| c.bridge.clone()),
     };
+    let mut consent = ConsentTracker::default();
 
     // --- Receive loop (session key) ---
     loop {
         let res = tokio::select! {
-            // A consent verdict from the UI: write it back to the agent as the
-            // response to the pending `consent_request` (env id `consent-<id>`).
-            Some(decision) = decision_rx.recv() => {
-                let payload = to_raw_payload(&ConsentResult { decision: decision.decision })?;
-                let resp_id = format!("consent-{}", decision.session_id);
-                write_frame(
-                    &mut stream,
-                    &session_key,
-                    &mut send_seq,
-                    &resp_id,
-                    "consent_result",
-                    Some(payload),
-                )
-                .await?;
+            // An event from the consent window: the prompt is on screen, or
+            // the user answered / the countdown ran out.
+            Some(event) = event_rx.recv() => {
+                if let Some(frame) = consent.on_ui_event(event) {
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
                 continue;
             }
             r = tokio::time::timeout(
@@ -317,18 +317,38 @@ where
                 // NEVER log the token value.
                 eprintln!("[helper] helper token received via IPC");
             }
-            "consent_request" => {
-                // Pop the always-on-top consent window. The user's verdict comes
-                // back asynchronously via the decision channel above; the agent's
-                // SendCommandAndWait has its own timeout fallback if no response
-                // arrives.
-                match parse_payload::<ConsentRequest>(&env.payload) {
-                    Ok(req) => {
-                        if let Some(ctx) = desktop_ctx {
-                            desktop::show_consent_window(&ctx.app, &req);
+            "consent_request" => match parse_payload::<ConsentRequest>(&env.payload) {
+                Ok(req) => match consent.on_request(&env.id, &req) {
+                    RequestAction::Reply(frame) => {
+                        eprintln!("[helper] consent prompt refused: another prompt is on screen");
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                    RequestAction::Show => {
+                        let shown = match desktop_ctx {
+                            Some(ctx) => desktop::show_consent_window(&ctx.app, &ctx.bridge, &req),
+                            None => Err("no desktop context".to_string()),
+                        };
+                        if let Err(e) = shown {
+                            eprintln!("[helper] consent prompt could not be shown: {}", e);
+                            if let Some(frame) = consent.on_show_failed() {
+                                write_outbound(&mut stream, &session_key, &mut send_seq, frame)
+                                    .await?;
+                            }
                         }
                     }
-                    Err(e) => eprintln!("[helper] bad consent_request payload: {}", e),
+                },
+                // Nothing we can correlate a reply to; the agent's own
+                // deadline reports the prompt as not shown.
+                Err(e) => eprintln!("[helper] bad consent_request payload: {}", e),
+            },
+            "consent_cancel" => {
+                // The agent stopped waiting for this prompt; take it down.
+                if let Ok(c) = parse_payload::<ConsentCancelPayload>(&env.payload) {
+                    if consent.on_cancel(&c.nonce) {
+                        if let Some(ctx) = desktop_ctx {
+                            desktop::close_consent_window(&ctx.app);
+                        }
+                    }
                 }
             }
             "banner_show" => {
@@ -365,6 +385,36 @@ where
             _ => { /* assist client handles nothing else */ }
         }
     }
+}
+
+/// The `consent_cancel` payload.
+#[derive(Debug, Deserialize)]
+struct ConsentCancelPayload {
+    #[serde(default)]
+    nonce: String,
+}
+
+/// Write one consent frame produced by the [`ConsentTracker`].
+async fn write_outbound<S>(
+    stream: &mut S,
+    session_key: &[u8; 32],
+    send_seq: &mut u64,
+    frame: Outbound,
+) -> Result<(), SessionError>
+where
+    S: AsyncWrite + Unpin,
+{
+    let payload = to_raw_payload(&frame.payload)?;
+    write_frame(
+        stream,
+        session_key,
+        send_seq,
+        &frame.id,
+        frame.typ,
+        Some(payload),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Clears the consent bridge's sender when the session loop exits (normal,
@@ -589,6 +639,9 @@ mod tests {
         assert_eq!(v["binaryKind"], "assist_helper");
         assert_eq!(v["protocolVersion"], PROTOCOL_VERSION);
         assert_eq!(v["sessionId"], "assist-tester-12345");
+        // The agent only hands v2 consent prompts to a helper that says it
+        // speaks v2.
+        assert_eq!(v["consentProtocolVersion"], 2);
 
         // 2. Reply auth_response (still ZERO key) with a fixed session key.
         let session_key = [7u8; 32];
@@ -790,6 +843,78 @@ mod tests {
         .await
         .expect("write disconnect");
 
+        let res = session.await.expect("join");
+        assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
+    }
+
+    /// A v2 consent prompt that cannot be shown (here: no window at all) is
+    /// answered `unavailable` for its nonce on the request's envelope id —
+    /// never left to the agent's deadline, and never a decision.
+    #[tokio::test]
+    async fn test_v2_consent_request_without_a_window_is_unavailable() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+
+        let session =
+            tokio::spawn(
+                async move { run_session_with_identity(client_half, &token, &id, None).await },
+            );
+
+        let mut broker_send = 0u64;
+        let mut broker_recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv)
+            .await
+            .expect("read auth_request");
+        let session_key = [5u8; 32];
+        let resp = format!(
+            r#"{{"accepted":true,"sessionKey":"{}"}}"#,
+            hex::encode(session_key)
+        );
+        write_frame(
+            &mut broker_half,
+            &ZERO_KEY,
+            &mut broker_send,
+            &env.id,
+            "auth_response",
+            Some(raw(&resp)),
+        )
+        .await
+        .expect("write auth_response");
+
+        write_frame(
+            &mut broker_half,
+            &session_key,
+            &mut broker_send,
+            "consent-sess-1",
+            "consent_request",
+            Some(raw(r#"{"sessionId":"sess-1","technicianName":"T","timeoutMs":30000,"onTimeout":"proceed","protocolVersion":2,"nonce":"n-1"}"#)),
+        )
+        .await
+        .expect("write consent_request");
+
+        let reply = read_frame(&mut broker_half, &session_key, &mut broker_recv)
+            .await
+            .expect("read consent_result");
+        assert_eq!(reply.id, "consent-sess-1");
+        assert_eq!(reply.typ, "consent_result");
+        let v: serde_json::Value =
+            serde_json::from_str(reply.payload.as_ref().unwrap().get()).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"nonce": "n-1", "outcome": "unavailable", "detail": "window_failed"})
+        );
+
+        write_frame(
+            &mut broker_half,
+            &session_key,
+            &mut broker_send,
+            "bye",
+            "disconnect",
+            None,
+        )
+        .await
+        .expect("write disconnect");
         let res = session.await.expect("join");
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
     }

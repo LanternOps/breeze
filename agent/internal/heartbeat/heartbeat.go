@@ -271,7 +271,12 @@ type SecurityCapabilities struct {
 	// silently drops an unfamiliar `prompt` key (JSON unmarshal into a known
 	// struct ignores unrecognized fields) and streams unconditionally, so the
 	// API refuses to start a session that requires consent or notification
-	// against an agent reporting 0.
+	// against an agent reporting 0. Version 2 also reports, on every
+	// consent-mode start, whether the prompt was shown and answered and
+	// whether anyone is signed in to the captured session (consent_gate.go),
+	// and never proceeds when a signed-in user could not be asked. An API that
+	// only knows version 1 treats 2 as 0 and refuses consent/notify starts, so
+	// the API must ship before (or with) this agent.
 	ConsentPromptProtocolVersion int                      `json:"consentPromptProtocolVersion,omitempty"`
 	PamReconciliation            *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
@@ -492,6 +497,14 @@ type Heartbeat struct {
 	// like isService/isHeadless.
 	supportMode    bool
 	supportWorkDir string
+	// supportReleaseFiles closes the files a support session holds open in
+	// its folder (its log); set by runSupportSession, called by
+	// supportCleanup before the folder is removed.
+	supportReleaseFiles func()
+	// supportSelfCleanupOnce guards the post-exit cleanup (delete the
+	// executable, remove the folder), which teardown and supportCleanup both
+	// start.
+	supportSelfCleanupOnce sync.Once
 	// headlessCachedAt memoizes the Linux resolver-backed headless probe used by
 	// currentHeadless() for the outgoing heartbeat payload. Stores a
 	// headlessCache; an atomic.Value so the heartbeat and command-handler
@@ -7979,6 +7992,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		RevocationLeaseProtocolVersion:  1,
 		DesktopFenceProtocolVersion:     1,
 		DesktopWsFenceProtocolVersion:   1,
-		ConsentPromptProtocolVersion:    1,
+		ConsentPromptProtocolVersion:    2,
 	}
 }

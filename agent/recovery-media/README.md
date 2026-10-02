@@ -31,6 +31,13 @@ docker run --rm --privileged -v "$PWD/..":/src -w /src debian:bookworm bash -c '
 
 Expected: `ISO-OK <hash prefix>`. Typical size 350-450 MB.
 
+The build host's architecture must match `--arch`: live-build skips its
+bootstrap stage for a foreign-architecture target, and `build.sh` refuses
+the mismatch up front. To build arm64 media, run the same command on an
+arm64 host (e.g. Docker on Apple Silicon, or the release workflow's
+`ubuntu-24.04-arm` runner), with `GOARCH=arm64`, `grub-efi-arm64-bin` and
+`--arch arm64`. `build_test.sh` infers the arch from the ISO filename.
+
 ## Media contents / security
 
 No SSH server, no passwords, no secrets are baked into the image. The

@@ -89,6 +89,10 @@ The following actions are flagged as security events and appear in the security 
 - `automation.policy.evaluate`
 - `agent.source.ip.changed` — emitted when an agent's source IP changes between heartbeats; can indicate NAT changes, mobility, or stolen tokens.
 
+### Remote Session Consent Events
+
+Remote desktop consent outcomes are recorded as `session_consent_granted`, `session_consent_denied`, `session_consent_bypassed`, `session_consent_blocked_unanswered`, and `session_consent_blocked_unavailable` entries. Their details carry the `reason` (for example `user`, `timeout`, `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked), `consentProtocol` (`1` for older agents, `2` for current ones), and, from protocol 2 agents, `consentOutcome` (whether the prompt was shown and answered) and `consentOccupancy` (whether anyone was signed in). See [Remote Access → Session Consent](/features/remote-access/#session-consent--end-user-notification).
+
 ### Tamper Evidence
 
 Audit log rows are append-only at the database layer. Postgres triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` against the table — even a superuser cannot rewrite history without explicit administrative privileges.

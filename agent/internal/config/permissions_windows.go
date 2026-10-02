@@ -557,15 +557,31 @@ func removeMainAgentLockRelative(dir windows.Handle, name string) error {
 	return nil
 }
 
+// The three enforce functions below apply the machine-wide policy, except
+// inside a registered user workspace (the Quick Support client's temp dir),
+// which gets the user-private policy instead: owner = the caller's own user,
+// PROTECTED DACL for that user, SYSTEM and Administrators only. A standard
+// user may not assign SYSTEM or Administrators as owner, so the machine-wide
+// policy can never succeed there (#7620). See user_workspace.go.
+
 func enforceConfigDirPermissions(path string) error {
+	if inUserWorkspace(path) {
+		return secureUserWorkspaceDir(path)
+	}
 	return applyWindowsDACL(path, windowsConfigDirSDDL)
 }
 
 func enforceConfigFilePermissions(path string) error {
+	if inUserWorkspace(path) {
+		return applyUserWorkspaceFileDACL(path)
+	}
 	return applyWindowsDACL(path, windowsConfigFileSDDL)
 }
 
 func enforceSecretFilePermissionsImpl(path string) error {
+	if inUserWorkspace(path) {
+		return applyUserWorkspaceFileDACL(path)
+	}
 	return applyWindowsDACL(path, windowsSecretFileSDDL)
 }
 

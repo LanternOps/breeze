@@ -62,6 +62,7 @@ import {
   Power,
   ServerCog,
   Inbox,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -403,6 +404,7 @@ export const navSections: NavSection[] = [
       { name: 'Quarantined Devices', labelKey: 'nav.quarantinedDevices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
       { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
       { name: 'LLM Provider Catalog', labelKey: 'nav.llmProviderCatalog', href: '/admin/llm-provider-catalog', icon: Cpu, platformAdminOnly: true },
+      { name: 'AI Models', labelKey: 'nav.aiModels', href: '/admin/ai-models', icon: Sparkles, platformAdminOnly: true },
       { name: 'Connected Apps', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
       // #4208 — the platform-wide AI emergency stop's first UI. The
       // write surface (routes/admin/aiKillState.ts) shipped in #3828/PR #4168

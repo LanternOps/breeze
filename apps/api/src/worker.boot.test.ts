@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
+    registerInvocationLedgerShadow: vi.fn(),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
     partnerTrustMode: vi.fn(() => 'off'),
@@ -150,6 +151,9 @@ vi.mock('./db', () => ({
   withSystemDbAccessContext: mocks.withSystemDbAccessContext,
   closeDb: mocks.closeDb,
 }));
+// AI model registry W01 (#7599): the boot path starts the platform model
+// snapshot refresher; it reads the database, which this suite mocks out.
+vi.mock('./services/aiModels/platformModels', () => ({ startPlatformModelSnapshotRefresher: vi.fn(() => () => undefined) }));
 vi.mock('./services/redis', () => ({
   getRedis: mocks.getRedis,
   closeRedis: mocks.closeRedis,
@@ -160,6 +164,7 @@ vi.mock('./extensions/builtinExtensions', () => ({ loadBuiltinExtensions: mocks.
 vi.mock('./extensions/contributionRegistry', () => ({ extensionContributionRegistry: {} }));
 vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.createExtensionStateStore }));
 vi.mock('./jobs/aiAgentEnqueuer', () => ({ registerAiAgentEnqueuer: mocks.registerAiAgentEnqueuer }));
+vi.mock('./services/aiModels/invocationLedger', () => ({ registerInvocationLedgerShadow: mocks.registerInvocationLedgerShadow }));
 vi.mock('./services/eventSubscribers', () => ({ registerAllEventSubscribers: mocks.registerAllEventSubscribers }));
 vi.mock('./services/webhookFanoutDeps', () => ({ buildWebhookFanoutDeps: mocks.buildWebhookFanoutDeps }));
 vi.mock('./services/workerRegistry', () => ({
@@ -395,6 +400,7 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
+    expect(mocks.registerInvocationLedgerShadow).toHaveBeenCalledTimes(1);
   });
 
   it('exits non-zero when production DB-role verification fails, before Redis is probed or workers start', async () => {

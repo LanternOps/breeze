@@ -11,12 +11,22 @@ import "os"
 // agent ID, and helper-scoped token. The full agent/watchdog tokens and mTLS
 // keys are NOT in agent.yaml — they live in secrets.yaml, which stays
 // owner-only (0600).
+//
+// Inside a registered user workspace (the Quick Support client's temp dir,
+// see user_workspace.go) there is no Helper to read anything, so the directory
+// is 0700 and every file 0600.
 
 func enforceConfigDirPermissions(path string) error {
+	if inUserWorkspace(path) {
+		return secureUserWorkspaceDir(path)
+	}
 	return os.Chmod(path, 0755)
 }
 
 func enforceConfigFilePermissions(path string) error {
+	if inUserWorkspace(path) {
+		return os.Chmod(path, 0600)
+	}
 	return os.Chmod(path, 0644)
 }
 

@@ -1266,7 +1266,7 @@ Canned reply templates are partner-scoped. Management operations require `partne
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/ai/sessions` | Create chat session |
+| `POST` | `/ai/sessions` | Create chat session. A `model` the platform does not offer (and that is not the configured default) returns `400` `invalid_model` |
 | `GET` | `/ai/sessions` | List sessions |
 | `GET` | `/ai/sessions/search` | Search sessions |
 | `GET` | `/ai/sessions/:id` | Get session |

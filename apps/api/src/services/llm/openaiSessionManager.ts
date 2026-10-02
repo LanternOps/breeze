@@ -28,6 +28,7 @@ import { captureException, captureMessage } from '../sentry';
 import { OpenAICompatibleProvider } from './openaiCompatibleProvider';
 import { buildMessagesFromHistory, ToolUseInHistoryError } from './historyBuilder';
 import { deductBillingCredits } from '../aiCostTracker';
+import { emitLegacyCostRecorded } from '../aiModels/legacyCostEvents';
 import {
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
@@ -375,6 +376,15 @@ export class OpenAISessionManager {
             session: { id: breezeSessionId },
           });
           reservationSettled = true;
+          // #7600 W02 shadow ledger, after the legacy settle succeeded. The env
+          // OpenAI-compatible path has no registry offering until W06; the row
+          // is recorded unpriced and not diff-logged. emit never throws.
+          emitLegacyCostRecorded({
+            orgId, sessionId: breezeSessionId, model: providerModel, billingSource: 'platform', catalogPricing: null,
+            tokens: { input: inputTokens, output: outputTokens, cacheRead: 0, cacheWrite: 0 },
+            legacyCostCents: Math.round(costUsd * 100 * 100) / 100, legacyAdditionalCostCents: 0,
+            legacyCostSource: 'openai_env', sdkReportedCostUsd: null, ledger: null,
+          });
           await deductBillingCredits(orgId, Math.round(costUsd * 100 * 100) / 100);
         } catch (err) {
           captureException(err);

@@ -186,7 +186,7 @@ curl -X PATCH /api/v1/devices/<device-id> \
 
 ### Accepted value types
 
-Each value must first match the Zod wire schema (`string`, `number`, `boolean`, or `null` -- `null` removes the field), then be validated against the **target definition's own declared `type` and `options`**. A value that fails either check is rejected -- not silently stored -- with `400 { error, code: "invalid-custom-field-value", fields: [{ fieldKey, reason }] }`. `reason` is one of:
+Each value must first match the Zod wire schema (`string`, `number`, `boolean`, or `null` -- `null` removes the field), then be validated against the **target definition's own declared `type` and `options`**. A value that fails either check is rejected -- not silently stored -- with `400 { error, code: "INVALID_CUSTOM_FIELD_VALUE", fields: [{ fieldKey, reason }] }`. `reason` is one of:
 
 | Reason | Meaning |
 |---|---|

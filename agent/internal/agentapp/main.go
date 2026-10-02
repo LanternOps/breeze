@@ -431,6 +431,9 @@ func initLogging(cfg *config.Config) {
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+		if err == nil {
+			trackLogFile(rw)
+		}
 		if err != nil {
 			logFileFallbackReason = describeLogFileError(err)
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
@@ -1918,6 +1921,9 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 	}
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+	if err == nil {
+		trackLogFile(rw)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %s — structured logs will go to stdout\n", cfg.LogFile, describeLogFileError(err))
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)

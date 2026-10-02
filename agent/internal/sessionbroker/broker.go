@@ -2421,6 +2421,7 @@ func (b *Broker) handleConnection(rawConn net.Conn) {
 		session.BinaryKind = ipc.HelperBinaryUserHelper
 	}
 	session.DesktopContext = authReq.DesktopContext
+	session.ConsentProtocolVersion = consentProtocolFromAuth(helperRole, authReq)
 	session.peerProcess = peerProcessRef
 
 	// Use the kernel-verified Windows session ID (computed above from the peer
@@ -2790,6 +2791,29 @@ func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos,
 		scopes = append(scopes, ipc.ScopeConsentUIFallback)
 	}
 	return scopes
+}
+
+// consentProtocolFromAuth is the consent prompt exchange the agent will speak
+// with this helper. Only helpers that can be handed a consent prompt carry
+// one: the assist helper, and a user-role helper that advertised native
+// dialog support (the same condition grantScopes uses for
+// consent_ui_fallback). A future version clamps to the newest this agent
+// speaks — the helper replies in the form the request asks for.
+func consentProtocolFromAuth(role ipc.HelperRole, authReq ipc.AuthRequest) int {
+	switch {
+	case role == ipc.HelperRoleAssist:
+	case role == ipc.HelperRoleUser && authReq.SupportsConsentUI:
+	default:
+		return 0
+	}
+	v := authReq.ConsentProtocolVersion
+	if v < 2 {
+		return 0
+	}
+	if v > ipc.ConsentProtocolVersion {
+		return ipc.ConsentProtocolVersion
+	}
+	return v
 }
 
 func (b *Broker) isDesktopHelperPeerPath(peerPath string) bool {

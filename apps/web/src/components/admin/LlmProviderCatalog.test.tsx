@@ -56,6 +56,16 @@ function mockApi(initial: unknown, handlers: Record<string, () => Response> = {}
     const handler = handlers[`${method} ${url}`];
     if (handler) return Promise.resolve(handler());
     if (method === 'GET' && url === '/admin/llm-provider-catalog') return Promise.resolve(jsonRes(initial));
+    if (method === 'GET' && url === '/admin/ai-models') {
+      return Promise.resolve(jsonRes({
+        models: [
+          { modelId: 'claude-sonnet-4-6', lifecycle: 'available' },
+          { modelId: 'vendor-new-model', lifecycle: 'available' },
+          { modelId: 'vendor-retired-model', lifecycle: 'retired' },
+        ],
+        planOptions: [],
+      }));
+    }
     throw new Error(`Unexpected request: ${method} ${url}`);
   });
 }
@@ -66,6 +76,17 @@ beforeEach(() => {
 });
 
 describe('LlmProviderCatalog', () => {
+  // An expanded provider with no revisions said "No catalog entries yet." —
+  // the page-level empty state — directly under a list showing that entry.
+  it('says the provider has no revisions, not that the catalog is empty', async () => {
+    mockApi([{ ...draftEntry, revisions: [] }]);
+    render(<LlmProviderCatalog />);
+    fireEvent.click(await screen.findByTestId('llm-catalog-row-entry-1-toggle'));
+    const panel = await screen.findByTestId('llm-catalog-revisions-entry-1');
+    expect(panel.textContent).toContain('No revisions yet.');
+    expect(panel.textContent).not.toContain('No catalog entries yet.');
+  });
+
   it('shows a platform-admin-required panel on a 403', async () => {
     mockApi(null);
     fetchWithAuth.mockResolvedValue(jsonRes({ error: 'platform admin access required' }, 403));
@@ -80,6 +101,20 @@ describe('LlmProviderCatalog', () => {
     expect(screen.getByText('openrouter')).toBeTruthy();
     expect(screen.getByTestId('llm-catalog-row-entry-1-status').textContent).toBe('Draft');
     expect(screen.getByTestId('llm-catalog-total').textContent).toBe('1');
+  });
+
+  it('offers every non-retired registry model in the revision model map (W01 #7599)', async () => {
+    mockApi([{
+      entryId: 'e1', slug: 'gw', name: 'Gateway', status: 'draft', activeRevisionId: null, notes: null,
+      createdAt: '2026-11-13T00:00:00.000Z', updatedAt: '2026-11-13T00:00:00.000Z', revisions: [],
+    }]);
+    render(<LlmProviderCatalog />);
+    await screen.findByTestId('llm-catalog-row-e1');
+    fireEvent.click(screen.getByTestId('llm-catalog-row-e1-toggle'));
+    fireEvent.click(await screen.findByTestId('llm-catalog-row-e1-add-revision'));
+    expect(await screen.findByTestId('llm-catalog-modelmap-vendor-new-model')).toBeTruthy();
+    expect(screen.getByTestId('llm-catalog-modelmap-claude-sonnet-4-6')).toBeTruthy();
+    expect(screen.queryByTestId('llm-catalog-modelmap-vendor-retired-model')).toBeNull();
   });
 
   it('shows empty state when no entries returned', async () => {

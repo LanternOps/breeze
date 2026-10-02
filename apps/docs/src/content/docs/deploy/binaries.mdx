@@ -85,7 +85,7 @@ Binaries are served from disk. The API reads from these directories:
 |---|---|---|
 | `AGENT_BINARY_DIR` | `./agent/bin` | Agent binaries (e.g. `breeze-agent-linux-amd64`) |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | Viewer installers (e.g. `breeze-viewer-macos.dmg`) |
-| `HELPER_BINARY_DIR` | `./agent/bin` | Helper binaries (e.g. `breeze-helper-windows.msi`). The bundled `docker-compose.yml` overrides this to `/data/binaries/helper`, alongside the other two directories under the shared `binaries` volume. |
+| `HELPER_BINARY_DIR` | `AGENT_BINARY_DIR` | Helper binaries (e.g. `breeze-helper-windows.msi`). When unset it uses the same directory as `AGENT_BINARY_DIR` (v0.120.0+; earlier releases used `./agent/bin` regardless of `AGENT_BINARY_DIR`). The bundled `docker-compose.yml` overrides this to `/data/binaries/helper`, alongside the other two directories under the shared `binaries` volume. |
 
 macOS agent packages and `Breeze Installer.app.zip` are privileged installers.
 Local mode serves them only when the release's original
@@ -168,11 +168,16 @@ This offloads download bandwidth from your API server to S3/R2/MinIO.
 | `S3_REGION` | `us-east-1` | Bucket region |
 | `S3_PRESIGN_TTL` | `900` | Presigned URL expiration in seconds (15 min) |
 
-S3 is activated when `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` are all set. Files are uploaded to:
-- `s3://{bucket}/agent/` — agent binaries
+S3 is activated when `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY` are all set. Each binaries directory is uploaded to one prefix, and every download reads from the prefix of the directory its file is staged in:
+- `s3://{bucket}/agent/` — everything in `AGENT_BINARY_DIR`: agent binaries plus the watchdog, backup, user-helper and recovery-media binaries staged alongside them
 - `s3://{bucket}/viewer/` — viewer installers
+- `s3://{bucket}/helper/` — Breeze Assist (Helper) installers from `HELPER_BINARY_DIR` (v0.120.0+). When `HELPER_BINARY_DIR` is the same directory as `AGENT_BINARY_DIR`, the files are uploaded once, under `agent/`.
 
-Helper and user-helper binaries are **not** synced to S3 — downloads for those fall through to disk even when S3 is configured.
+The sync runs to completion on every API start before the API begins serving, so S3 always matches the binaries staged for the running release.
+
+<Aside type="note" title="Upgrading from v0.119.x or earlier">
+  Before v0.120.0, watchdog, backup, user-helper and recovery-media downloads looked for objects under `backup/`, `watchdog/`, `user-helper/` and `recovery-iso/` prefixes that the startup sync never wrote, so they fell back to streaming from disk through the API, and the Assist installer was not synced at all. From v0.120.0 those downloads are served from `agent/` and those four prefixes are no longer read. If you copied objects into them by hand, you can delete them; no manual S3 step is needed on future upgrades.
+</Aside>
 
 ## Download Endpoints
 

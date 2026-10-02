@@ -81,6 +81,7 @@ const EXPECTED_WORKER_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher', 'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
+  'aiInvocationRetention',
   'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',
@@ -101,6 +102,8 @@ const EXPECTED_WORKER_NAMES = [
   'sendingDomainsWorker',
   // AI Suggested Fixes W1 — fix-outcome sweeper.
   'fixOutcomeWorker',
+  // AI model registry W01 (#7599).
+  'aiModelDiscoveryWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {

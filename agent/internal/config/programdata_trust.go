@@ -73,15 +73,34 @@ type programDataPathSecurity struct {
 
 var readProgramDataPathSecurityFn = readProgramDataPathSecurity
 
+// workspaceOwnerSIDFn returns the SID of the user this process runs as; a
+// seam so tests can name it.
+var workspaceOwnerSIDFn = workspaceOwnerSID
+
 // VerifyProgramDataPath reports, read-only, whether path and every directory
 // between the agent's ProgramData root and it are real objects owned by
 // SYSTEM, Administrators or TrustedInstaller that no other principal can
 // write. A missing component returns an error matching os.ErrNotExist.
+//
+// In a support session the root is the session's private folder (ConfigDir
+// returns it), and the user the session runs as is also an accepted owner and
+// writer: the folder is private to that user, SYSTEM and Administrators, and
+// that user is the one loading the file. No other principal is accepted, so
+// a component another user owns or can write is still refused (#7629).
 func VerifyProgramDataPath(path string) error {
+	if registeredUserWorkspace() != "" {
+		return verifyProgramDataChainTrusting(ConfigDir(), path, workspaceOwnerSIDFn())
+	}
 	return verifyProgramDataChain(ConfigDir(), path)
 }
 
 func verifyProgramDataChain(root, path string) error {
+	return verifyProgramDataChainTrusting(root, path, "")
+}
+
+// verifyProgramDataChainTrusting is verifyProgramDataChain with one extra
+// principal (a SID string, or "" for none) accepted as owner and writer.
+func verifyProgramDataChainTrusting(root, path, extraTrusted string) error {
 	components, err := programDataChain(root, path)
 	if err != nil {
 		return err
@@ -94,7 +113,7 @@ func verifyProgramDataChain(root, path string) error {
 		if !sec.Exists {
 			return fmt.Errorf("%s does not exist: %w", p, os.ErrNotExist)
 		}
-		if err := checkProgramDataObject(p, sec); err != nil {
+		if err := checkProgramDataObjectTrusting(p, sec, extraTrusted); err != nil {
 			return err
 		}
 	}
@@ -138,13 +157,23 @@ func isDenyACE(t uint8) bool {
 
 // checkProgramDataObject applies the trust rules to one already-read path.
 func checkProgramDataObject(p string, sec programDataPathSecurity) error {
+	return checkProgramDataObjectTrusting(p, sec, "")
+}
+
+func checkProgramDataObjectTrusting(p string, sec programDataPathSecurity, extraTrusted string) error {
+	trusted := func(sid string) bool {
+		return trustedProgramDataPrincipal(sid) || (extraTrusted != "" && sid == extraTrusted)
+	}
 	if sec.NameSurrogate {
 		return fmt.Errorf("%s is a link to another location", p)
 	}
 	if sec.Reparse {
 		return fmt.Errorf("%s is a reparse point", p)
 	}
-	if !trustedProgramDataPrincipal(sec.OwnerSID) {
+	if !trusted(sec.OwnerSID) {
+		if extraTrusted != "" {
+			return fmt.Errorf("%s owner %s is not this user, SYSTEM, Administrators or TrustedInstaller", p, sec.OwnerSID)
+		}
 		return fmt.Errorf("%s owner %s is not SYSTEM, Administrators or TrustedInstaller", p, sec.OwnerSID)
 	}
 	if !sec.DACLPresent {
@@ -157,7 +186,7 @@ func checkProgramDataObject(p string, sec programDataPathSecurity) error {
 		if ace.Type != aceTypeAccessAllowed {
 			return fmt.Errorf("%s has an allow entry of unrecognised entry type 0x%02x", p, ace.Type)
 		}
-		if trustedProgramDataPrincipal(ace.SID) {
+		if trusted(ace.SID) {
 			continue
 		}
 		if ace.Mask&programDataWriteMask != 0 {

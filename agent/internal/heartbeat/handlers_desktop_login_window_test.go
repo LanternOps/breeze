@@ -75,31 +75,34 @@ func TestHandleStartDesktopRefusesAtMacLoginWindow(t *testing.T) {
 }
 
 func TestHandleStartDesktopAllowsMacUserSession(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	withDesktopStartHostOS(t, "darwin")
 	h := loginWindowTestHeartbeat(t, "alice")
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-user-session", consentModePrompt("block", 5000)))
 
 	assertNotLoginWindowRefusal(t, result)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 }
 
 // Before the darwin console watcher reports anything the console user is
 // unknown. Refusing then would block every connect on a detection gap, so
 // unknown keeps the pre-#7047 behavior.
 func TestHandleStartDesktopAllowsUnknownMacConsoleUser(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	withDesktopStartHostOS(t, "darwin")
 	h := loginWindowTestHeartbeat(t, "")
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-unknown-console", consentModePrompt("block", 5000)))
 
 	assertNotLoginWindowRefusal(t, result)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 }
 
 // The gate is macOS-only: Windows drives the secure desktop and Winlogon
 // through its own helper path, and "loginwindow" is never a console user there.
 func TestHandleStartDesktopLoginWindowGateIsMacOnly(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	for _, goos := range []string{"windows", "linux"} {
 		t.Run(goos, func(t *testing.T) {
 			withDesktopStartHostOS(t, goos)
@@ -108,17 +111,18 @@ func TestHandleStartDesktopLoginWindowGateIsMacOnly(t *testing.T) {
 			result := handleStartDesktop(h, startDesktopCmd("sess-gate-"+goos, consentModePrompt("block", 5000)))
 
 			assertNotLoginWindowRefusal(t, result)
-			assertConsentDenied(t, result, "helper_absent")
+			assertConsentDenied(t, result, "helper_unreachable")
 		})
 	}
 }
 
 func TestHandleStartDesktopLoginWindowGateWithoutBroker(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	withDesktopStartHostOS(t, "darwin")
 	h := &Heartbeat{desktopMgr: desktop.NewSessionManager()}
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-no-broker", consentModePrompt("block", 5000)))
 
 	assertNotLoginWindowRefusal(t, result)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 }

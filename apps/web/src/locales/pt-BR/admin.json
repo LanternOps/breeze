@@ -400,6 +400,7 @@
       "addEntry": "Adicionar provedor",
       "loading": "Carregando catálogo…",
       "empty": "Ainda não há entradas no catálogo.",
+      "noRevisions": "Nenhuma revisão ainda.",
       "dismiss": "Dispensar",
       "platformAdmin": {
         "title": "Acesso de administrador de plataforma necessário",
@@ -616,6 +617,93 @@
           "security-abuse": "Segurança e abuso",
           "integrations": "Integrações"
         }
+      }
+    },
+    "aiModels": {
+      "title": "Modelos de IA",
+      "subtitle": "Modelos que a plataforma conhece pela descoberta da Anthropic. Novos modelos chegam sem preço e não são oferecidos a ninguém até que você defina o preço e os ofereça.",
+      "refresh": "Atualizar modelos",
+      "requiresPlatformAdmin": "É necessário acesso de administrador da plataforma para gerenciar modelos de IA.",
+      "empty": "Nenhum modelo ainda. Atualize para descobrir modelos com a chave da plataforma.",
+      "newBadge": "Novo",
+      "notSeen": "Ainda não visto pela descoberta",
+      "unpriced": "Sem preço",
+      "yes": "Sim",
+      "no": "Não",
+      "edit": "Editar",
+      "columns": {
+        "model": "Modelo",
+        "status": "Status",
+        "thinking": "Raciocínio",
+        "price": "Entrada / saída por MTok",
+        "offered": "Oferecido",
+        "default": "Padrão da plataforma",
+        "actions": "Ações"
+      },
+      "lifecycle": {
+        "available": "Disponível",
+        "missing": "Ausente",
+        "retired": "Desativado"
+      },
+      "thinkingMode": {
+        "adaptive": "Adaptativo",
+        "budget": "Orçamento",
+        "none": "Nenhum",
+        "unknown": "Não verificado"
+      },
+      "thinkingDisplay": {
+        "omitted": "Omitido",
+        "summarized": "Resumido",
+        "updates": "Atualizações de progresso"
+      },
+      "promptProfile": {
+        "claude-frontier": "Fronteira",
+        "claude-standard": "Padrão",
+        "claude-small": "Pequeno",
+        "generic": "Genérico"
+      },
+      "drawer": {
+        "title": "Editar {{name}}",
+        "prices": "Preços (dólares americanos por milhão de tokens)",
+        "storedPrice": "Salvo: {{value}}",
+        "priceChangeTitle": "Confirmar grande mudança de preço",
+        "priceChangeIntro": "Estes preços diferem dos valores salvos em mais de 10×. Confira a unidade: você está inserindo dólares por milhão de tokens.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Confirmar e salvar",
+        "priceChangeBack": "Voltar",
+        "priceGroupStandard": "Padrão",
+        "priceGroupFast": "Modo rápido",
+        "fastPrices": "Preços do modo rápido (opcional)",
+        "fastPricesHint": "O modo rápido não pode ser selecionado até que os quatro preços rápidos sejam definidos.",
+        "inputCentsPerM": "Entrada",
+        "outputCentsPerM": "Saída",
+        "cacheReadCentsPerM": "Leitura de cache",
+        "cacheWriteCentsPerM": "Gravação de cache",
+        "effort": "Níveis de esforço",
+        "thinkingDisplay": "Exibição do raciocínio",
+        "fast": "Modo rápido compatível",
+        "inferenceGeo": "Geografias de inferência",
+        "inferenceGeoHint": "Valores separados por vírgula confirmados na API da Anthropic, por exemplo us, global.",
+        "minPlan": "Plano mínimo",
+        "allPlans": "Todos os planos",
+        "promptProfile": "Perfil de prompt",
+        "offered": "Oferecido na chave da plataforma",
+        "offeredHint": "Exige os quatro preços.",
+        "isDefault": "Padrão da plataforma",
+        "defaultHint": "Registrado para o futuro resolvedor de modelo por recurso. Até que ele seja lançado, o padrão da implantação vem de ANTHROPIC_MODEL ou do padrão integrado.",
+        "defaultLocked": "Este é o padrão da plataforma. Torne outro modelo o padrão para alterá-lo.",
+        "save": "Salvar",
+        "cancel": "Cancelar"
+      },
+      "notice": {
+        "saved": "Modelo salvo.",
+        "refreshQueued": "Atualização de modelos enfileirada."
+      },
+      "errors": {
+        "load": "Não foi possível carregar os modelos de IA.",
+        "save": "Não foi possível salvar o modelo.",
+        "refresh": "Não foi possível enfileirar a atualização de modelos.",
+        "invalidRates": "Informe os quatro preços como números não negativos ou deixe os quatro em branco."
       }
     }
   },

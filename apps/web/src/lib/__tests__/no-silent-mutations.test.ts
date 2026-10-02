@@ -37,6 +37,7 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
+  'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
   // their outcome through runAction from birth.
@@ -872,7 +873,8 @@ describe('no silent mutations in targeted set', () => {
     // Multi-org report series W03 adds reports/series/seriesApi.ts: 202 → 203.
     // Multi-org report series W04 adds reports/series/CombineDialog.tsx: 203 → 204.
     // Backup storage key revocation card (StorageKeyRevocationCard.tsx): 204 → 205.
-    expect(absoluteFiles.length).toBe(205);
+    // AI model registry W01 #7599 adds admin/AiModels.tsx: 205 → 206.
+    expect(absoluteFiles.length).toBe(206);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

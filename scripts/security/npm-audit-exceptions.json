@@ -1,0 +1,34 @@
+{
+  "//": [
+    "Reviewed npm-audit exceptions: pnpm workspace (pnpm-lock.yaml).",
+    "",
+    "An entry here suppresses ONE advisory id on ONE package name in the CI",
+    "dependency audit (scripts/security/check-npm-audit.sh, HIGH+CRITICAL gate).",
+    "The bar for adding one is high. The advisory must have NO fixed release to",
+    "upgrade to. The package must not be reachable from production: absent from",
+    "the production dependency closure of every shipped workspace package",
+    "(`pnpm -r why <pkg> --prod`) and from every built artifact, with that",
+    "evidence in the PR. A public tracking issue must exist so the entry is",
+    "removed the moment a fixed release ships. An advisory with an available fix",
+    "must be fixed by upgrading (or a pnpm override), never listed here.",
+    "",
+    "Enforced by check-npm-audit.sh on every run: exact id + package match only;",
+    "every entry is printed; an entry past `expires` fails the run even after",
+    "the advisory disappears; `expires` may be at most 30 days out, so renewing",
+    "an entry means re-reviewing it; a malformed or missing file fails the run.",
+    "",
+    "Entry format:",
+    "  id       OSV/GHSA id exactly as osv-scanner reports it",
+    "  package  npm package name exactly as osv-scanner reports it",
+    "  reason   why it is unreachable from production, and the tracking issue as #<number>",
+    "  expires  YYYY-MM-DD (UTC), the last day the exception is honoured"
+  ],
+  "exceptions": [
+    {
+      "id": "GHSA-86w9-cpqp-85rv",
+      "package": "node-forge",
+      "reason": "No fixed release (<=1.4.0 affected; 1.4.0 is latest). Build tooling, dev/EAS build hosts only: breeze-mobile → expo → @expo/cli / @expo/code-signing-certificates (Expo CLI, declared as an expo runtime dependency), and mkcert ← office-addin-dev-certs (Office add-in devDependency). Not shipped: 0 node-forge in the Android/iOS Hermes bundles and 0 in every production Docker deps stage (api, web, portal, m365 executors). Gate-owner ruling and re-check procedure: Tracking: #7703",
+      "expires": "2026-10-31"
+    }
+  ]
+}

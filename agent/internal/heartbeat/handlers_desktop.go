@@ -267,24 +267,39 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	// Why a consent-mode start was allowed to proceed, reported to the API as
-	// consentReason: "user" (the end user allowed it) or "helper_absent" /
-	// "timeout" (nobody could be asked and consentUnavailableBehavior is
-	// "proceed"). Never collapse the latter two into "user" — the API audits
-	// "user" as the end user granting the session (#6819).
-	consentReason := ""
-	if prompt != nil && prompt.Mode == "consent" {
-		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, targetSession)
-		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
-		consentReason = reason
-		if !proceed {
+	// The consent gate's decision for a consent-mode start. Its reason is
+	// reported to the API as consentReason ("user", "timeout" or
+	// "no_user_session") alongside the structured outcome — never collapse the
+	// latter two into "user": the API audits "user" as the end user granting
+	// the session (#6819).
+	var consent consentVerdict
+	consentGated := prompt != nil && prompt.Mode == "consent"
+	if consentGated {
+		consent = h.runConsentGate(sessionID, prompt, targetSession)
+		if !consent.proceed {
 			log.Info("remote session denied by consent gate",
-				"sessionId", sessionID, "reason", reason)
+				"sessionId", sessionID, "reason", consent.reason, "outcome", consent.outcome)
 			// The session never started — no disconnect event will ever arrive
 			// to release this via handleConsentSessionEnd, so clear it here.
 			h.releaseDesktopLeases(sessionID)
 			h.takeDesktopTarget(sessionID)
-			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
+			if consent.detail == consentDetailSessionEnded {
+				// A stop withdrew the prompt: report it as the stop it was.
+				return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
+			}
+			return consentDeniedResult(sessionID, consent, time.Since(start).Milliseconds())
+		}
+		// Bind the capture to the desktop of the user who answered: an
+		// untargeted Windows start is pinned to that session, so the capture
+		// cannot pick another one.
+		if pinned := consentCaptureTarget(consentHostOS, targetSession, consent.helper); pinned != targetSession {
+			if n, err := strconv.Atoi(pinned); err == nil {
+				log.Info("pinning desktop capture to the consenting session",
+					"sessionId", sessionID, "winSession", pinned)
+				targetSession = pinned
+				cmd.Payload["targetSessionId"] = float64(n) // startDesktopViaHelper re-parses payload
+				h.setDesktopTarget(sessionID, targetSession)
+			}
 		}
 	}
 
@@ -304,9 +319,19 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		if result.Status == "completed" && h.desktopSessionTerminalAfterStart(sessionID) {
 			return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
 		}
+		if result.Status == "completed" && consentGated {
+			// Consent binds to the desktop it was given for: re-check before
+			// the answer is released to the viewer.
+			if detail := h.consentBindingDetail(sessionID, consent, targetSession, true); detail != "" {
+				log.Warn("consent no longer holds for the started capture; tearing it down",
+					"sessionId", sessionID, "detail", detail)
+				h.teardownStartedDesktop(sessionID)
+				return consentDeniedResult(sessionID, consentBindingLost(consent, detail), time.Since(start).Milliseconds())
+			}
+		}
 		if result.Status == "completed" && prompt != nil {
 			h.afterDesktopStart(sessionID, prompt, targetSession)
-			result = withConsentGranted(result, prompt, consentReason)
+			result = withConsentGranted(result, prompt, consent)
 		} else if result.Status != "completed" {
 			// Helper start failed — no live session, so no disconnect event
 			// will come to release the target or the leases. Clear both now.
@@ -320,10 +345,9 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	// Direct mode (console or non-Windows). Note: when there is no session
-	// broker (h.sessionBroker == nil), requestConsent returns helper-absent
-	// immediately, so the consent gate above never blocks the session. In that
-	// case consentUnavailableBehavior (the policy fallback) governs whether to
-	// proceed or block — the console user is NOT interactively prompted here.
+	// broker (h.sessionBroker == nil) no helper can show the prompt, so the
+	// gate above proceeded only if nobody is signed in and the policy allows
+	// it — the console user is never skipped here.
 	answer, err := h.desktopMgr.StartSession(sessionID, offer, iceServers, displayIndex, policy)
 	if err != nil {
 		// Direct start failed — same reasoning as the helper-start-failed case
@@ -336,6 +360,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if h.desktopSessionTerminalAfterStart(sessionID) {
 		return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
 	}
+	if consentGated {
+		if detail := h.consentBindingDetail(sessionID, consent, targetSession, false); detail != "" {
+			log.Warn("consent no longer holds for the started capture; tearing it down",
+				"sessionId", sessionID, "detail", detail)
+			h.teardownStartedDesktop(sessionID)
+			return consentDeniedResult(sessionID, consentBindingLost(consent, detail), time.Since(start).Milliseconds())
+		}
+	}
 	if onDemand {
 		// Not reachable in production (on-demand implies a Windows service, which
 		// always takes the helper path above) but a lease taken must always end up
@@ -345,7 +377,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if prompt != nil {
 		h.afterDesktopStart(sessionID, prompt, targetSession)
 	}
-	return directStartResult(sessionID, answer, prompt, consentReason, time.Since(start).Milliseconds())
+	return directStartResult(sessionID, answer, prompt, consent, time.Since(start).Milliseconds())
 }
 
 // admitDesktopStartAtFence runs a desktop start (start_desktop or the
@@ -400,18 +432,30 @@ func (h *Heartbeat) admitDesktopStartAtFence(sessionID string, cmd Command, star
 }
 
 // directStartResult builds the direct-mode start result. In consent mode it
-// carries the gate's consentReason (#6819) exactly as the helper path does via
+// carries the gate's consent marker (#6819) exactly as the helper path does via
 // withConsentGranted. Split out so the marker is unit-testable on linux, where
 // handleStartDesktop always takes this path and capture cannot run in tests.
-func directStartResult(sessionID, answer string, prompt *ipc.DesktopPrompt, consentReason string, durationMs int64) tools.CommandResult {
+func directStartResult(sessionID, answer string, prompt *ipc.DesktopPrompt, consent consentVerdict, durationMs int64) tools.CommandResult {
 	resultData := map[string]any{
 		"sessionId": sessionID,
 		"answer":    answer,
 	}
 	if prompt != nil && prompt.Mode == "consent" {
-		resultData["consentReason"] = consentReason
+		resultData["consentReason"] = consent.reason
+		for k, v := range consentMarkerFields(consent) {
+			resultData[k] = v
+		}
 	}
 	return tools.NewSuccessResult(resultData, durationMs)
+}
+
+// consentBindingLost turns a verdict whose grounds no longer hold into the
+// refusal reported for it: no valid consent for the desktop being captured.
+func consentBindingLost(v consentVerdict, detail string) consentVerdict {
+	v.proceed = false
+	v.reason = consentReasonNoUser
+	v.detail = detail
+	return v
 }
 
 // parseDesktopSessionPolicy extracts the agent-enforced session policy from a
@@ -523,6 +567,7 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
 	}
 	h.desktopStartFence.noteStop(sessionID, stopInput)
+	withdrawConsentPrompt(sessionID)
 
 	// Drop any on-demand helper leases first: the lease is what keeps the
 	// helper alive, and it must be released even if the stop below fails.
@@ -665,15 +710,18 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 	// party positioned to ask the end user and to refuse before capture
 	// starts). Only "consent" mode blocks; "notify" is informational.
 	prompt := parseDesktopPrompt(cmd.Payload)
-	consentReason := ""
-	if prompt != nil && prompt.Mode == "consent" {
-		verdict, helperPresent, timedOut := h.requestConsent(sessionID, prompt, "")
-		proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
-		consentReason = reason
-		if !proceed {
+	var consent consentVerdict
+	consentGated := prompt != nil && prompt.Mode == "consent"
+	if consentGated {
+		consent = h.runConsentGate(sessionID, prompt, "")
+		if !consent.proceed {
 			log.Info("remote stream session denied by consent gate",
-				"sessionId", sessionID, "reason", reason)
-			return consentDeniedResult(sessionID, reason, time.Since(start).Milliseconds())
+				"sessionId", sessionID, "reason", consent.reason, "outcome", consent.outcome)
+			if consent.detail == consentDetailSessionEnded {
+				// A stop withdrew the prompt: report it as the stop it was.
+				return tools.NewErrorResult(streamStartOvertakenError(desktopFenceReasonTerminal), time.Since(start).Milliseconds())
+			}
+			return consentDeniedResult(sessionID, consent, time.Since(start).Milliseconds())
 		}
 	}
 
@@ -708,6 +756,16 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		h.stopWsDesktopStreamExact(sessionID, stream)
 		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
+	if consentGated {
+		// Same post-capture re-check as the WebRTC path: the grounds the gate
+		// proceeded on must still hold before anything is shown or relayed.
+		if detail := h.consentBindingDetail(sessionID, consent, "", false); detail != "" {
+			log.Warn("consent no longer holds for the started stream; stopping it",
+				"sessionId", sessionID, "detail", detail)
+			h.stopWsDesktopStreamExact(sessionID, stream)
+			return consentDeniedResult(sessionID, consentBindingLost(consent, detail), time.Since(start).Milliseconds())
+		}
+	}
 	if prompt != nil {
 		h.afterDesktopStreamStart(sessionID, cmd.ID, prompt)
 	}
@@ -730,8 +788,11 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		"screenWidth":  w,
 		"screenHeight": h2,
 	}
-	if consentReason != "" {
-		result["consentReason"] = consentReason
+	if consentGated {
+		result["consentReason"] = consent.reason
+		for k, v := range consentMarkerFields(consent) {
+			result[k] = v
+		}
 	}
 	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }
@@ -772,6 +833,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 		// but intentionally returns no ID-bound outcome and therefore can never
 		// satisfy the API's durable-proof parser.
 		h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
+		withdrawConsentPrompt(sessionID)
 		if h.stopWsDesktopStream(sessionID) {
 			h.endWsStreamUX(sessionID)
 		}
@@ -788,6 +850,7 @@ func handleDesktopStreamStop(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	h.desktopStartFence.noteStop(sessionID, desktopStopFenceInput{})
+	withdrawConsentPrompt(sessionID)
 	outcome := "already_absent"
 	if h.stopWsDesktopStream(sessionID) {
 		outcome = "stopped"

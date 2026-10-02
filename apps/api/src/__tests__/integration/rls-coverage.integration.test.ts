@@ -101,6 +101,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
+  'ai_platform_models', // AI model registry W01 (#7599): system-wide platform model catalog (Anthropic model ids, capabilities, operator prices, option support). No tenant column and NO RLS — same posture as llm_provider_catalog; every request context reads it for pricing and capabilities. Writes are gated to the ai-model-discovery worker and the platform-admin + MFA /admin/ai-models routes. No org_id / device_id, so no cascade, merge or export registration applies. Plan: docs/superpowers/plans/ai-mcp/2026-09-30-ai-model-registry-w01-platform-catalog.md.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
   'exchange_rates', // Global reporting-only FX reference data (multi-currency spec §8). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read rates to render an approximate total), system-only writes. Mirrors supported_currencies. Proven by exchangeRates.integration.test.ts.
@@ -318,6 +319,15 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // stripeConnectCredentialsRls.integration.test.ts.
   ['stripe_connect_credentials', 'partner_id'],
   ['partner_llm_configs', 'partner_id'],
+  // AI model registry W02 (#7600): partner_ai_connections — partner axis like
+  // partner_llm_configs (rows copied with the same id); no org_id, so no
+  // org-cascade / export-policy entry. No org-token read branch by design.
+  ['partner_ai_connections', 'partner_id'],
+  // partner_ai_models (#7600 W02): partner axis + a SEPARATE FOR SELECT
+  // org-token branch partner_ai_models_org_read_enabled
+  // (enabled AND partner_id = breeze_current_partner_id()). Forge proofs:
+  // aiModelRegistryForgery.integration.test.ts.
+  ['partner_ai_models', 'partner_id'],
   // authenticator_policies: per-MSP approval-security policy (Shape 3). One row
   // per partner; policy gates on breeze_has_partner_access(partner_id) with a
   // system-scope OR branch. Functional forge: authenticatorRls.integration.test.ts.
@@ -464,6 +474,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // Functional cross-partner forge proof:
   // aiScriptPoliciesPartnerRls.integration.test.ts.
   'ai_script_policies',
+  // ai_model_assignments (AI model registry W02, #7600): org override (org_id
+  // set) OR partner-wide (partner_id set, org_id NULL). Created dual-axis from
+  // day one in 2026-11-14-100200 with its partner-wide SELECT branch in the
+  // same file. Functional forge proof: aiModelAssignmentsPartnerRls.integration.test.ts.
+  'ai_model_assignments',
   // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
   // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
   // set, org_id NULL — one service tier applied across every org the MSP
@@ -807,6 +822,8 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'monitor_conversion_outputs',
   // ai_script_policies_one_owner_chk, 2026-10-16-120200 (#5612 W04).
   'ai_script_policies',
+  // ai_model_assignments_one_owner_chk, 2026-11-14-100200 (#7600 W02).
+  'ai_model_assignments',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',

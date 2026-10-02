@@ -42,6 +42,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_WS_UPDATE_STATUS_MESSAGE_BUDGET_REFILL_PER_SECOND: 'agent WS message budget knob',
   // AI_*
   AI_COMPUTE_PRICE_MULTIPLIER: 'AI billing price multiplier',
+  AI_INVOCATIONS_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  AI_INVOCATIONS_RETENTION_DAYS: 'data retention window',
+  AI_INVOCATIONS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
@@ -211,6 +214,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',
   HELPER_SCREENSHOT_RATE_WINDOW_SECONDS: 'rate limit knob',
+  // HOME
+  HOME: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // HTTPS_*
   HTTPS_PROXY: 'egress proxy passthrough',
   // HTTP_*
@@ -339,6 +344,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT: 'rate limit knob',
   PARTNER_MEETING_URL: 'partner onboarding copy link',
   PARTNER_TRUST_MODE: 'hosted partner trust mode',
+  // PATH
+  PATH: 'OS env passed to the Agent SDK CLI by a dev spike script',
   // PATCH_*
   PATCH_REPORT_STORAGE_PATH: 'filesystem path',
   PATCH_TOMBSTONE_PRUNE_AFTER_HOURS: 'data retention window',

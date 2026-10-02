@@ -3,6 +3,9 @@
 package userhelper
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 
@@ -11,11 +14,11 @@ import (
 
 // showConsentDialogOS renders the consent prompt via zenity. consentUISupported
 // only verifies zenity + a display are present at auth time; if zenity is
-// later missing or crashes (TOCTOU: uninstalled or the display went away
-// between auth and this call), the exec.ExitError branch below still handles
-// it explicitly by denying rather than silently pretending a timeout.
+// later missing, crashes, or cannot open the display (the display went away
+// between auth and this call), the result is unavailable — never a user
+// denial or an expiry (classifyZenityExit).
 // zenity exit codes: 0=OK(Allow), 1=Cancel(Deny), 5=timeout.
-func showConsentDialogOS(req ipc.ConsentRequest) (allow bool, answered bool) {
+func showConsentDialogOS(ctx context.Context, req ipc.ConsentRequest, presented func()) dialogOutcome {
 	title, body := buildConsentDialogText(req)
 	args := []string{
 		"--question",
@@ -27,18 +30,34 @@ func showConsentDialogOS(req ipc.ConsentRequest) (allow bool, answered bool) {
 	if req.TimeoutMs > 0 {
 		args = append(args, fmt.Sprintf("--timeout=%d", (req.TimeoutMs+999)/1000))
 	}
-	err := exec.Command("zenity", args...).Run()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "zenity", args...)
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		log.Warn("zenity consent dialog could not start", "error", err.Error())
+		return classifyZenityExit(-1, false, "")
+	}
+	presented()
+	err := cmd.Wait()
 	if err == nil {
-		return true, true
+		return classifyZenityExit(0, true, stderr.String())
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		switch exitErr.ExitCode() {
-		case 1:
-			return false, true // Deny
-		case 5:
-			return false, false // timeout
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		outcome := classifyZenityExit(exitErr.ExitCode(), true, stderr.String())
+		if outcome == dialogUnavailable {
+			log.Warn("zenity consent dialog failed", "exitCode", exitErr.ExitCode(), "stderr", truncateForLog(stderr.String()))
 		}
+		return outcome
 	}
-	// zenity missing/crashed: deny explicitly rather than pretend a timeout.
-	return false, true
+	log.Warn("zenity consent dialog failed", "error", err.Error())
+	return dialogUnavailable
+}
+
+func truncateForLog(s string) string {
+	const max = 256
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }

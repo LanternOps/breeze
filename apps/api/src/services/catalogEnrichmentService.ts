@@ -362,6 +362,7 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
           await recordUsage(
             null, actor.orgId, model, totalIn, totalOut, true, billingSource,
             wire.catalogPricing, reservationId, totalWebSearches * WEB_SEARCH_COST_CENTS,
+            { surface: 'catalog_enrichment', userId: actor.userId ?? null },
           );
         } catch (settleError) {
           await markAiBudgetReservationIndeterminate({ orgId: actor.orgId, reservationId })
@@ -395,6 +396,7 @@ export const aiEnrichmentProvider: EnrichmentProvider = {
         wire.catalogPricing,
         reservationId,
         totalWebSearches * WEB_SEARCH_COST_CENTS,
+        { surface: 'catalog_enrichment', userId: actor.userId ?? null },
         );
       } catch (err) {
         console.error('[catalog-enrich] recordUsage failed:', err);
@@ -912,6 +914,8 @@ export async function polishCatalogText(
             // Revision rates for catalog traffic, never Anthropic list rates.
             wire.catalogPricing,
             reservationId,
+            0,
+            { surface: 'catalog_enrichment', userId: actor.userId ?? null },
           );
         }
       } catch (err) {

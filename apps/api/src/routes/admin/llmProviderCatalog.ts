@@ -254,6 +254,8 @@ llmProviderCatalogMutationRoutes.post(
     let safeResult: {
       passed: boolean;
       steps: Array<{ name: string; ok: boolean; detail?: string }>;
+      probes: Array<{ name: string; ok: boolean; detail?: string }>;
+      verifiedCapabilities: { adaptiveEffort: boolean };
       harnessVersion: string;
     };
     try {
@@ -272,6 +274,12 @@ llmProviderCatalogMutationRoutes.post(
             ? {}
             : { detail: redactSecret(step.detail, apiKey) }),
         })),
+        probes: result.probes.map((probe) => ({
+          ...probe,
+          name: redactSecret(probe.name, apiKey),
+          ...(probe.detail === undefined ? {} : { detail: redactSecret(probe.detail, apiKey) }),
+        })),
+        verifiedCapabilities: result.verifiedCapabilities,
         harnessVersion: redactSecret(result.harnessVersion, apiKey),
       };
     } catch (error) {
@@ -314,6 +322,8 @@ llmProviderCatalogMutationRoutes.post(
         passed: safeResult.passed,
         detail: {
           steps: safeResult.steps,
+          probes: safeResult.probes,
+          verifiedCapabilities: safeResult.verifiedCapabilities,
           harnessVersion: safeResult.harnessVersion,
         },
         verifiedBy: c.get('auth').user.id,

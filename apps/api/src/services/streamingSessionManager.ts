@@ -12,7 +12,7 @@
  * - Background SDK Processor: iterates Query output, translates to AiStreamEvents
  */
 
-import { resolveModelThinking } from './aiModelThinking';
+import { agentSdkWireOptions } from './aiModels/modelWireOptions';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -34,6 +34,7 @@ import {
   sumInputTokens,
   type CatalogPricingSnapshot,
 } from './aiCostTracker';
+import { sdkTurnCostFromRunningTotal } from './sdkTurnCost';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -528,6 +529,19 @@ export interface ActiveSession {
    */
   revokeEgressGrant?: () => void;
   sdkSessionId: string | null;
+  /**
+   * True while the live query's running `total_cost_usd` may include cost that
+   * no baseline accounts for (#7667): the query was started with `resume` (its
+   * first result carries earlier queries' cost), or an earlier result on it
+   * arrived without a usable total. Optional so fixtures that build
+   * ActiveSession literals compile unchanged.
+   */
+  sdkTotalCarriesPriorCost?: boolean;
+  /**
+   * Highest SDK running `total_cost_usd` seen on this session's live query;
+   * undefined until its first result. Each turn is billed against it (#7667).
+   */
+  sdkCostBaselineUsd?: number;
   query: Query;
   abortController: AbortController;
   inputController: StreamInputController;
@@ -1082,6 +1096,8 @@ export class StreamingSessionManager {
     // silently re-pointing the run at the default model's wire id while the
     // ledger records a model that never ran.
     const wire = resolveWireModel(resolved, effectiveModel);
+    // One source for both the SDK `resume:` option and the cost baseline (#7667).
+    const resumeSdkSessionId = dbSession.sdkSessionId ?? undefined;
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
@@ -1093,6 +1109,9 @@ export class StreamingSessionManager {
       budgetReservationId: options?.budgetReservationId,
       revokeEgressGrant: undefined,
       sdkSessionId: dbSession.sdkSessionId,
+      // Derived from the same value as the `resume:` option passed to query() below.
+      sdkTotalCarriesPriorCost: resumeSdkSessionId !== undefined,
+      sdkCostBaselineUsd: undefined,
       query: null as unknown as Query, // set below
       abortController,
       inputController,
@@ -1311,12 +1330,13 @@ export class StreamingSessionManager {
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },
-            resume: dbSession.sdkSessionId ?? undefined,
+            resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
-            // #7587: per-model thinking/effort (never a hard-coded `disabled`,
-            // which current models reject with a 400). Keyed on the wire id.
-            ...resolveModelThinking(wire.model),
+            // #7587, #7599: per-model thinking/effort from agentSdkWireOptions (never a
+            // hard-coded `disabled`, which current models reject with a 400).
+            // Keyed on the wire id.
+            ...agentSdkWireOptions(wire.model),
             stderr: (data: string) => {
               if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
                 console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
@@ -1875,14 +1895,38 @@ export class StreamingSessionManager {
             const turnToolExecutionCount = session.pendingTurnToolExecutionCount;
             session.pendingTurnToolExecutionCount = 0;
 
+            const turnUsage = {
+              input_tokens: effectiveUsage.inputTokens,
+              output_tokens: effectiveUsage.outputTokens,
+              cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
+              cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
+            };
+            // #7667: `total_cost_usd` is the SDK's running total for the whole
+            // query (and, after a resume, the transcript before it). Convert it
+            // to THIS turn's cost once, here, so the org ledger, the credit
+            // deduction, the per-user hook and the `done` event all agree.
+            // Catalog sessions ignore the SDK total (priced from the revision
+            // snapshot below), so their value passes through untouched.
+            let turnTotalCostUsd = resultMsg.total_cost_usd ?? 0;
+            if (!session.catalogPricing) {
+              const turnCost = sdkTurnCostFromRunningTotal({
+                reportedTotalUsd: resultMsg.total_cost_usd,
+                baselineUsd: session.sdkCostBaselineUsd,
+                totalCarriesPriorCost: session.sdkTotalCarriesPriorCost === true,
+                model: session.model,
+                usage: turnUsage,
+              });
+              turnTotalCostUsd = turnCost.turnCostUsd;
+              session.sdkCostBaselineUsd = turnCost.baselineUsd;
+              // Once a result has been seen, any later total that still has no
+              // baseline also includes this turn — bill the next from its usage.
+              session.sdkTotalCarriesPriorCost = true;
+            }
+
             const usageData = {
-              total_cost_usd: resultMsg.total_cost_usd ?? 0,
-              usage: {
-                input_tokens: effectiveUsage.inputTokens,
-                output_tokens: effectiveUsage.outputTokens,
-                cache_read_input_tokens: effectiveUsage.cacheReadInputTokens,
-                cache_creation_input_tokens: effectiveUsage.cacheCreationInputTokens,
-              },
+              // This turn's cost only (see above), despite the SDK field name.
+              total_cost_usd: turnTotalCostUsd,
+              usage: turnUsage,
               num_turns: resultMsg.num_turns ?? 0,
               // Model id for token-based cost fallback when the SDK reports $0.
               model: session.model,

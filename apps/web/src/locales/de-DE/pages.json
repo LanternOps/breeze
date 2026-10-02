@@ -171,7 +171,8 @@
     "signedAgreements": "Unterzeichnete Vereinbarungen",
     "settingsTicketing": "Ticketing-Einstellungen",
     "securityScans": "IOC-Scans",
-    "devicesTime": "Zeitsynchronisierung"
+    "devicesTime": "Zeitsynchronisierung",
+    "adminAiModels": "KI-Modelle"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

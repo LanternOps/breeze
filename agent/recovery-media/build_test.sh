@@ -9,6 +9,23 @@ set -euo pipefail
 iso="$1"
 test -s "$iso"
 
+# Arch comes from an optional second argument, else from the
+# breeze-recovery-linux-<arch>.iso filename build.sh always produces. It
+# selects the UEFI removable-media loader name checked below.
+arch="${2:-}"
+if [ -z "$arch" ]; then
+  case "$(basename "$iso")" in
+    *-amd64.iso) arch=amd64 ;;
+    *-arm64.iso) arch=arm64 ;;
+    *) echo "cannot infer arch from $iso; pass it as the second argument"; exit 1 ;;
+  esac
+fi
+case "$arch" in
+  amd64) efi_loader=bootx64.efi ;;
+  arm64) efi_loader=bootaa64.efi ;;
+  *) echo "unsupported arch: $arch"; exit 1 ;;
+esac
+
 xorriso -indev "$iso" -report_el_torito plain 2>/dev/null | grep -q "El Torito boot img" || { echo "not El Torito bootable"; exit 1; }
 
 xorriso -indev "$iso" -find / -type f 2>/dev/null > /tmp/iso-files.txt
@@ -20,10 +37,11 @@ xorriso -indev "$iso" -find / -type f 2>/dev/null > /tmp/iso-files.txt
 grep -qE "^'/live/vmlinuz'\$|^'/live/vmlinuz-" /tmp/iso-files.txt || { echo "missing /live/vmlinuz*"; exit 1; }
 grep -qE "^'/live/initrd\.img'\$|^'/live/initrd\.img-" /tmp/iso-files.txt || { echo "missing /live/initrd.img*"; exit 1; }
 grep -qx "'/live/filesystem.squashfs'" /tmp/iso-files.txt || { echo "missing /live/filesystem.squashfs"; exit 1; }
-# grub-efi's ISO9660 tree uses lowercase (EFI/boot/bootx64.efi), not the
-# fallback-name case UEFI firmware itself accepts case-insensitively on the
-# FAT ESP image — confirmed by inspecting a real build.
-grep -qiE "^'/EFI/boot/bootx64\.efi'\$" /tmp/iso-files.txt || { echo "missing /EFI/boot/bootx64.efi"; exit 1; }
+# grub-efi's ISO9660 tree uses lowercase (EFI/boot/bootx64.efi,
+# EFI/boot/bootaa64.efi), not the fallback-name case UEFI firmware itself
+# accepts case-insensitively on the FAT ESP image — confirmed by inspecting
+# real amd64 and arm64 builds.
+grep -qixF "'/EFI/boot/$efi_loader'" /tmp/iso-files.txt || { echo "missing /EFI/boot/$efi_loader"; exit 1; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

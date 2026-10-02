@@ -227,7 +227,7 @@ Push notifications to the Android app go through Firebase Cloud Messaging.
 | `BINARY_GITHUB_REPOSITORY` | `lanternops/breeze` | | GitHub `owner/repository` used for **all** release consumption in `github` mode — download redirects, release sync, and manifest validation. Shape-validated at boot in every environment (`owner/repository`; no `.`/`..` segments). Point it at your signing repo to serve self-signed packages (see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/)). In production, overriding it requires `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` to be explicitly set to **your** manifest key — leaving the official Breeze key as the only trust root while pointing at a non-official repo is refused at boot (every sync would otherwise fail closed and silently freeze your fleet). |
 | `AGENT_BINARY_DIR` | `./agent/bin` | | Local directory containing agent binaries |
 | `VIEWER_BINARY_DIR` | `./viewer/bin` | | Local directory containing viewer installers |
-| `HELPER_BINARY_DIR` | `./agent/bin` | | Local directory containing helper binaries. The bundled Docker Compose sets this to `/data/binaries/helper`. |
+| `HELPER_BINARY_DIR` | `AGENT_BINARY_DIR` | | Local directory containing helper (Breeze Assist) installers. When unset it uses the same directory as `AGENT_BINARY_DIR` (v0.120.0+; earlier releases used `./agent/bin`). The bundled Docker Compose sets this to `/data/binaries/helper`. With S3 configured, it is synced to the `helper/` prefix on startup. |
 | `GITHUB_REPO` | — | | **Deprecated** alias for `BINARY_GITHUB_REPOSITORY`, kept so a deployment that set it before the release-source unification does not silently revert to the official repo on upgrade. It is honoured only when `BINARY_GITHUB_REPOSITORY` is unset, logs a deprecation warning, and counts as an override for the production key requirement below. Migrate to `BINARY_GITHUB_REPOSITORY`. |
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
 | `BINARY_VERSION` | — | | Release tag used for both the download redirect **and** boot-time GitHub sync (falls back to `BREEZE_VERSION`, then `latest`). Point it at the newest release that is actually **published** on GitHub — a pin to a tag with no published release registers no agent binaries at all, and does not fall back to `latest`. |
@@ -306,6 +306,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `AGENT_LOG_RETENTION_DAYS` | `7` | Days to keep uploaded agent diagnostic logs, clamped to 1–365 |
 | `AGENT_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `AGENT_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `AI_INVOCATIONS_RETENTION_DAYS` | `400` | Days to keep AI invocation ledger rows, capped at 3650 |
+| `AI_INVOCATIONS_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `AI_INVOCATIONS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per daily run |
 | `CHANGE_LOG_RETENTION_DAYS` | `90` | Days to keep processed device change-log entries, clamped to 1–365 |
 | `CHANGE_LOG_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `CHANGE_LOG_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |

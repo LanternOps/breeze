@@ -1284,3 +1284,6 @@ export * from './businessReports';
 
 // Partner company-identity tolerant reader (#6228 W05)
 export * from './companyIdentity';
+
+// AI model registry W01 (#7599): option / support / rate schemas.
+export * from './aiModelOptions';

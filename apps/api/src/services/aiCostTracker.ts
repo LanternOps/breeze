@@ -18,6 +18,10 @@ import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
 import { settleAiBudgetReservationDurably } from './aiBudgetReservations';
 import { topologySessionCondition, type TopologySessionVisibility } from './topology/aiSessionAccess';
+import { isPlatformModelSnapshotLoaded, peekPlatformModel } from './aiModels/platformModelSnapshot';
+import { computeInvocationCents, platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
+import { emitLegacyCostRecorded, type InvocationLedgerContext, type LegacyCostEvent } from './aiModels/legacyCostEvents';
+import type { ModelRates } from '@breeze/shared';
 
 export type AiBillingSource = 'platform' | 'partner_key';
 
@@ -118,8 +122,35 @@ const MODEL_PRICING: Record<
   'claude-sonnet-4-5-20250929': { inputPerMillion: 300, outputPerMillion: 1500 }
 };
 
+/**
+ * W01 (#7599): the platform model registry decides; MODEL_PRICING is the
+ * bootstrap for a cold snapshot or an id the registry doesn't hold. W03
+ * deletes MODEL_PRICING / DEFAULT_PRICING / isPricedModel.
+ */
+function legacyRateSnapshot(model: string): RateSnapshot | null {
+  const pricing = MODEL_PRICING[model];
+  if (!pricing) return null;
+  return {
+    source: 'platform',
+    standard: {
+      inputCentsPerM: pricing.inputPerMillion,
+      outputCentsPerM: pricing.outputPerMillion,
+      cacheReadCentsPerM: pricing.cacheReadPerMillion ?? pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
+      cacheWriteCentsPerM: pricing.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
+    },
+  };
+}
+
+function resolveTokenRate(model: string): RateSnapshot | null {
+  if (isPlatformModelSnapshotLoaded()) {
+    const row = peekPlatformModel(model);
+    if (row) return platformRateSnapshot(row);
+  }
+  return legacyRateSnapshot(model);
+}
+
 export function isPricedModel(model: string): boolean {
-  return model in MODEL_PRICING;
+  return resolveTokenRate(model) !== null;
 }
 
 // Sandbox COMPUTE pricing (spec §5.6) lives in its own pure module and is
@@ -603,38 +634,96 @@ export function sumInputTokens(usage: SdkInputTokenUsage | null | undefined): nu
   );
 }
 
+/**
+ * computeInvocationCents rejects non-finite or negative counts. The SDK usage
+ * object types cache counts `number | null`, and a destructuring default only
+ * replaces undefined, so a runtime null reaches here; W00 priced it as 0. Clamp
+ * at this boundary so recording usage never fails on a malformed count.
+ */
+function billableTokenCount(value: number | null | undefined): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (value !== null && value !== undefined) {
+    // Not W00 parity: W00 produced a negative or NaN cost here. Pricing it as
+    // 0 under-bills, so surface it rather than only logging.
+    console.warn(`[AI] Ignoring invalid token count ${String(value)} when pricing usage`);
+    captureMessage('AI usage priced with an invalid token count; priced as 0', {
+      eventCode: 'ai_usage_invalid_token_count',
+      level: 'warning',
+    });
+  }
+  return 0;
+}
+
 export function calculateCostCents(
   model: string,
   inputTokens: number,
   outputTokens: number,
   // Cache tokens are reported separately from `input_tokens` by the SDK usage
-  // object and are billed at different rates (see the multiplier constants).
-  // Default to 0 so callers that don't care about caching are unaffected.
+  // object and are billed at different rates. Default to 0 so callers that
+  // don't care about caching are unaffected.
   cacheReadInputTokens = 0,
   cacheCreationInputTokens = 0
 ): number {
-  let pricing: { inputPerMillion: number; outputPerMillion: number; cacheReadPerMillion?: number } | undefined =
-    MODEL_PRICING[model];
-  if (!pricing) {
-    pricing = DEFAULT_PRICING;
-    // Surface unrecognized models so we can add them to MODEL_PRICING rather than
-    // silently billing at the conservative default rate.
+  let rate = resolveTokenRate(model);
+  if (!rate) {
+    // Surface unpriced models: price them in the registry (/admin/ai-models)
+    // rather than silently billing at the conservative default rate.
     console.warn(
-      `[AI] No pricing entry for model "${model}" — falling back to DEFAULT_PRICING ` +
-      `($${(DEFAULT_PRICING.inputPerMillion / 100).toFixed(2)}/$${(DEFAULT_PRICING.outputPerMillion / 100).toFixed(2)} per MTok). Add it to MODEL_PRICING.`
+      `[AI] No price for model "${model}" — falling back to DEFAULT_PRICING ` +
+      `($${(DEFAULT_PRICING.inputPerMillion / 100).toFixed(2)}/$${(DEFAULT_PRICING.outputPerMillion / 100).toFixed(2)} per MTok). ` +
+      'Set its price on /admin/ai-models.'
     );
+    rate = {
+      source: 'platform',
+      standard: {
+        inputCentsPerM: DEFAULT_PRICING.inputPerMillion,
+        outputCentsPerM: DEFAULT_PRICING.outputPerMillion,
+        cacheReadCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
+        cacheWriteCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
+      },
+    };
   }
-  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
-  const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
-  // Cache reads (~0.1x input) and cache writes/creation (~1.25x input) are priced
-  // off the per-model input rate. Omitting them undercounts cost for any cached
-  // request — the bulk of input tokens on multi-turn sessions land in the cache.
-  const cacheReadCost =
-    (cacheReadInputTokens / 1_000_000) *
-    (pricing.cacheReadPerMillion ?? pricing.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER);
-  const cacheWriteCost =
-    (cacheCreationInputTokens / 1_000_000) * pricing.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER;
-  return Math.round((inputCost + outputCost + cacheReadCost + cacheWriteCost) * 100) / 100;
+  // One rounding to 2 dp, exactly as W00 (#7593) rounded. computeInvocationCents
+  // sums the components in W00's order.
+  const cents = computeInvocationCents(
+    rate,
+    {
+      input: billableTokenCount(inputTokens),
+      output: billableTokenCount(outputTokens),
+      cacheRead: billableTokenCount(cacheReadInputTokens),
+      cacheWrite: billableTokenCount(cacheCreationInputTokens),
+    },
+    {},
+  );
+  return Math.round(cents * 100) / 100;
+}
+
+/**
+ * The per-million rates calculateCostCents() charges for `model`, as a
+ * registry ModelRates (#7600 W02): W01's resolveTokenRate (platform snapshot,
+ * else bootstrap MODEL_PRICING), else DEFAULT_PRICING. Used ONLY to price
+ * backfilled non-platform offerings at exactly what legacy bills, so the W02
+ * shadow ledger and the W03 cutover agree with it. A prototype key
+ * ('constructor', '__proto__') is never a model id; without the guard
+ * MODEL_PRICING[...] would resolve through Object.prototype.
+ * W03 moves this and its rate table to aiModels/legacySurfaceModels.ts (its
+ * per-partner cutover still runs the projection); W08 deletes it.
+ */
+export function getLegacyModelRates(model: string): {
+  rates: ModelRates;
+  source: 'priced' | 'default_pricing';
+} {
+  const rate = model in Object.prototype ? null : resolveTokenRate(model);
+  if (rate) return { source: 'priced', rates: { ...rate.standard } };
+  return {
+    source: 'default_pricing',
+    rates: {
+      inputCentsPerM: DEFAULT_PRICING.inputPerMillion,
+      outputCentsPerM: DEFAULT_PRICING.outputPerMillion,
+      cacheReadCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_READ_INPUT_MULTIPLIER,
+      cacheWriteCentsPerM: DEFAULT_PRICING.inputPerMillion * CACHE_WRITE_INPUT_MULTIPLIER,
+    },
+  };
 }
 
 export function calculateCatalogCostCents(
@@ -842,6 +931,7 @@ export async function recordUsage(
   catalogPricing?: CatalogPricingSnapshot,
   budgetReservationId?: string,
   additionalCostCents = 0,
+  ledger?: InvocationLedgerContext,
 ): Promise<void> {
   if (!Number.isFinite(additionalCostCents) || additionalCostCents < 0) {
     throw new Error('additionalCostCents must be a finite non-negative amount');
@@ -850,6 +940,19 @@ export async function recordUsage(
     ? calculateCatalogCostCents(catalogPricing, inputTokens, outputTokens)
     : calculateCostCents(model, inputTokens, outputTokens);
   const costCents = tokenCostCents + additionalCostCents;
+  // #7600 W02 shadow ledger: what legacy charged. Emitted only once the legacy
+  // record below has been written (never inside its try/catch), so the emit
+  // cannot change what is written, what throws, or what is returned.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId, model, billingSource,
+    catalogPricing: catalogPricing ?? null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: 0, cacheWrite: 0 },
+    legacyCostCents: tokenCostCents,
+    legacyAdditionalCostCents: additionalCostCents,
+    legacyCostSource: catalogPricing ? 'catalog' : 'model_pricing',
+    sdkReportedCostUsd: null,
+    ledger: ledger ?? null,
+  };
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -865,6 +968,7 @@ export async function recordUsage(
       toolExecutionCount: isToolExecution ? 1 : 0,
       ...(sessionId !== null ? { session: { id: sessionId, turnCount: 1 } } : {}),
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed:', err);
     });
@@ -940,6 +1044,8 @@ export async function recordUsage(
     }
   }
 
+  emitLegacyCostRecorded(legacyCostEvent);
+
   // Cost anomaly detection (after counter updates)
   checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed:', err);
@@ -1002,6 +1108,7 @@ export async function recordUsageFromSdkResult(
   const recordedInputTokens = sumInputTokens(result.usage);
 
   let costCents: number;
+  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = catalogPricing ? 'catalog' : 'sdk';
   if (catalogPricing) {
     costCents = calculateCatalogCostCents(
       catalogPricing,
@@ -1031,6 +1138,7 @@ export async function recordUsageFromSdkResult(
           cacheReadTokens,
           cacheCreationTokens
         );
+        legacyCostSource = 'model_pricing';
         console.warn(
           `[AI] SDK reported total_cost_usd=${result.total_cost_usd} for session=${sessionId} ` +
           `(${inputTokens} in / ${outputTokens} out / ${cacheReadTokens} cache-read / ` +
@@ -1046,6 +1154,18 @@ export async function recordUsageFromSdkResult(
       }
     }
   }
+  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
+  // record is written, before the credit deduction, which is unaffected.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId, model: result.model ?? null, billingSource,
+    catalogPricing: catalogPricing ?? null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
+    legacyCostCents: costCents,
+    legacyAdditionalCostCents: 0,
+    legacyCostSource,
+    sdkReportedCostUsd: result.total_cost_usd,
+    ledger: null,
+  };
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
   const monthlyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -1061,6 +1181,7 @@ export async function recordUsageFromSdkResult(
       toolExecutionCount,
       session: { id: sessionId, turnCount: result.num_turns },
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed:', err);
     });
@@ -1127,6 +1248,8 @@ export async function recordUsageFromSdkResult(
     }
   }
 
+  emitLegacyCostRecorded(legacyCostEvent);
+
   // Cost anomaly detection
   checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (SDK):', err);
@@ -1179,6 +1302,7 @@ export async function recordSessionlessSdkUsage(
   },
   billingSource: AiBillingSource,
   budgetReservationId?: string,
+  ledger?: InvocationLedgerContext,
 ): Promise<void> {
   if (!orgId) {
     console.warn('[AI] Skipping recordSessionlessSdkUsage — empty orgId');
@@ -1195,6 +1319,7 @@ export async function recordSessionlessSdkUsage(
     inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheCreationTokens > 0;
 
   let costCents = result.costCents;
+  let legacyCostSource: LegacyCostEvent['legacyCostSource'] = 'precomputed';
   if (costCents <= 0 && anyTokens && result.model) {
     costCents = calculateCostCents(
       result.model,
@@ -1203,7 +1328,20 @@ export async function recordSessionlessSdkUsage(
       cacheReadTokens,
       cacheCreationTokens,
     );
+    legacyCostSource = 'model_pricing';
   }
+  // #7600 W02 shadow ledger (see recordUsage): emitted only after the legacy
+  // record is written, before the credit deduction, which is unaffected.
+  const legacyCostEvent: LegacyCostEvent = {
+    orgId, sessionId: null, model: result.model ?? null, billingSource,
+    catalogPricing: null,
+    tokens: { input: inputTokens, output: outputTokens, cacheRead: cacheReadTokens, cacheWrite: cacheCreationTokens },
+    legacyCostCents: Math.max(0, costCents),
+    legacyAdditionalCostCents: 0,
+    legacyCostSource,
+    sdkReportedCostUsd: null,
+    ledger: ledger ?? null,
+  };
 
   // What the `*_input_tokens` COLUMNS store: the three disjoint input slices
   // summed. Pricing above deliberately keeps them split (different rates).
@@ -1224,6 +1362,7 @@ export async function recordSessionlessSdkUsage(
       messageCount,
       toolExecutionCount,
     });
+    emitLegacyCostRecorded(legacyCostEvent);
     checkCostAnomalies(null, orgId, costCents).catch(err => {
       console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
     });
@@ -1278,6 +1417,8 @@ export async function recordSessionlessSdkUsage(
       // Continue to attempt the other period.
     }
   }
+
+  emitLegacyCostRecorded(legacyCostEvent);
 
   checkCostAnomalies(null, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);

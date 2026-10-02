@@ -39,7 +39,10 @@ export type DRStepType = (typeof DR_STEP_TYPES)[number];
  *  placeholder. */
 export const DEFAULT_REBUILD_OUTPUT_DIR = REBUILD_DEFAULT_OUTPUT_DIR_LINUX;
 const REBUILD_HOST_OSES: readonly RebuildHostOs[] = ['linux', 'windows'];
-export const DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES = 240;
+/** Mirrors `DR_BARE_METAL_REBUILD_DEFAULT_WAIT_TIMEOUT_MINUTES` on the API: 24 h,
+ *  the rebuild command's own ceiling, so a multi-hour rehearsal is not
+ *  cancelled by the step (#7087). */
+export const DEFAULT_REBUILD_WAIT_TIMEOUT_MINUTES = 1440;
 /** Mirrors `drBareMetalRebuildConfigSchema.outputDir.max` on the API (#6382). */
 export const REBUILD_OUTPUT_DIR_MAX_LENGTH = 1024;
 export const REBUILD_WAIT_TIMEOUT_MIN = 5;

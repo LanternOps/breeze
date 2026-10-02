@@ -5,12 +5,11 @@
 // those heavy modules. aiCostTracker re-exports OFFERABLE_AI_MODELS for its
 // existing importers.
 
-// Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
-// snapshot ids for cost attribution on old sessions; those must not be offered
-// (or accepted) as new defaults — a retired snapshot pinned partner-wide fails
-// every AI session against the partner's own key.
-// Also the allowlist for a session's requested `model` on the platform key (#7587).
-// The 4.x / fable-5 ids stay so existing partner pins keep validating.
+// W00 (#7587) offerable-model list. Since W01 (#7599) no production code reads
+// it: offerability is `ai_platform_models.platform_offered` (see
+// services/aiModels/platformModels.ts listOfferableModelIds /
+// isOfferablePlatformModel). It stays exported, and re-exported by
+// aiCostTracker.ts, only until W03 deletes it with MODEL_PRICING (spec §8).
 export const OFFERABLE_AI_MODELS: readonly string[] = Object.freeze([
   'claude-opus-5-5',
   'claude-sonnet-5-5',

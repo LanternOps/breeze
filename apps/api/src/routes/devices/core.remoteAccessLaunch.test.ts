@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { getTableName, is, Table } from 'drizzle-orm';
 
 const { evaluateCapability, requireCapability } = vi.hoisted(() => {
@@ -399,7 +400,7 @@ describe('POST /devices/:id/remote-access-launch', () => {
     });
     expect(res.status).toBe(422);
     const body = await res.json() as { code?: string };
-    expect(body.code).toBe('scheme_not_allowed');
+    expect(body.code).toBe(ERROR_CODES.SCHEME_NOT_ALLOWED);
 
     expect(writeRouteAudit).toHaveBeenCalledOnce();
     const auditCall = vi.mocked(writeRouteAudit).mock.calls[0]![1];

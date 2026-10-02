@@ -130,6 +130,7 @@ describe('enrichCatalogItem', () => {
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', undefined,
       '55555555-5555-4555-8555-555555555555', 2,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
   });
 
@@ -182,6 +183,7 @@ describe('enrichCatalogItem', () => {
       undefined,
       '55555555-5555-4555-8555-555555555555',
       0,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
     expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
@@ -216,6 +218,7 @@ describe('enrichCatalogItem', () => {
       null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
       '55555555-5555-4555-8555-555555555555',
       0,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
   });
 
@@ -558,6 +561,8 @@ describe('polishCatalogText', () => {
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
       '55555555-5555-4555-8555-555555555555',
+      0,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
   });
 
@@ -591,6 +596,8 @@ describe('polishCatalogText', () => {
     expect(recordUsage).toHaveBeenCalledWith(
       null, 'o1', 'claude-sonnet-4-6', 200, 100, true, 'partner_key', CATALOG_PRICING,
       '55555555-5555-4555-8555-555555555555',
+      0,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
   });
 
@@ -842,6 +849,8 @@ describe('polishCatalogText', () => {
       'partner_key',
       undefined,
       '55555555-5555-4555-8555-555555555555',
+      0,
+      { surface: 'catalog_enrichment', userId: 'u1' },
     );
   });
 });
