@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   permissions: vi.fn(),
   access: vi.fn(),
   flags: vi.fn(),
-  llm: vi.fn(),
   providerUsable: vi.fn(),
   budget: vi.fn(),
 }));
@@ -44,7 +43,7 @@ vi.mock('../../db', async () => {
 vi.mock('../permissions', () => ({ getUserPermissions: mocks.permissions }));
 vi.mock('./access', async (original) => ({ ...await original<object>(), requireTopologySiteAccess: mocks.access }));
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
-vi.mock('../llm/llmConfigResolver', () => ({ resolveLlmConfig: mocks.llm, llmUnusableCodeForOrgInSystemContext: mocks.providerUsable }));
+vi.mock('../aiModels/readiness', () => ({ chatReadinessInSystemContext: mocks.providerUsable }));
 vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
 
 import * as dbModule from '../../db';
@@ -74,7 +73,6 @@ beforeEach(() => {
   mocks.permissions.mockResolvedValue({ permissions: [] });
   mocks.access.mockImplementation(async (_auth, _perm, siteId: string) => ({ auth: _auth, permissions: _perm, scope: { orgId: ORG, siteId } }));
   mocks.flags.mockResolvedValue(ALL_ON);
-  mocks.llm.mockResolvedValue({ source: 'platform' });
   mocks.providerUsable.mockImplementation(async () => {
     // Readiness reads only ever run on a SYSTEM connection.
     if (dbModule.getCurrentDbAccessContext()?.scope !== 'system') throw new Error('provider readiness outside a system context');
@@ -206,12 +204,10 @@ describe('topology AI readiness never double-holds the pool (review R1)', () => 
     expect(result).toMatchObject({ ok: true, pinnedSiteId: SITE_A });
     expect(pool.acquisitions).toEqual([{ scope: 'organization', nested: false }]);
     expect(mocks.providerUsable).toHaveBeenCalledTimes(1);
-    expect(mocks.llm).not.toHaveBeenCalled();
   });
 
-  it('never runs the full LLM resolver (its unconditional escapes) for readiness; an uncarried held check takes at most ONE escape, none when system-scoped', async () => {
+  it('readiness takes no escape of its own (registry readiness reads on the held connection); an uncarried held check takes at most ONE escape, none when system-scoped', async () => {
     expect(await inRequestContext('organization', () => authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound))).toMatchObject({ ok: true });
-    expect(mocks.llm).not.toHaveBeenCalled();
     expect(pool.acquisitions.filter((a) => a.nested)).toHaveLength(1);
     pool.acquisitions.length = 0;
     expect(await inRequestContext('system', () => authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound))).toMatchObject({ ok: true });

@@ -36,7 +36,9 @@ import {
 import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
 import { __resetRegistryCutoverMemoForTests, ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { columnAad } from '../../services/encryptedColumnRegistry';
-import { markPartnerLlmError, resolveLlmConfig } from '../../services/llm/llmConfigResolver';
+import { chatReadinessInSystemContext } from '../../services/aiModels/readiness';
+import { resolveModel } from '../../services/aiModels/resolveModel';
+import { markPartnerLlmError } from '../../services/llm/llmConfigResolver';
 import { encryptSecret } from '../../services/secretCrypto';
 import { closeRegistryFixtures, fixtureSql, keySpec, seedByokConnection, seedOffering, seedPricedPlatformModel } from './aiModelRegistryFixtures';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -212,7 +214,8 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
     const offeringsAfter = await sys(() => db.select().from(partnerAiModels).where(eq(partnerAiModels.connectionId, connectionId)));
     expect(offeringsAfter.map((o) => o.id).sort()).toEqual(onConnection.map((o) => o.id).sort());
     expect(offeringsAfter.every((o) => o.enabled === false)).toBe(true);
-    expect(await resolveLlmConfig(partnerId)).toMatchObject({ source: 'platform' });
+    // Chat is platform-funded again: with no platform key it reports not configured (never the dead key).
+    expect(await sys(() => chatReadinessInSystemContext(orgId, { platformConfigured: () => false }))).toBe('ai_not_configured');
     expect(await liveConnection(partnerId)).toBeUndefined();
   });
 
@@ -244,7 +247,8 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
     expect(conns[0]).toMatchObject({ id: s.connectionId, status: 'disconnected', key_last4: null });
     expect(conns[1]).toMatchObject({ id: connectionId, status: 'active', key_last4: '0009' });
     expect(await chatDefault(s.partnerId)).toMatchObject({ conn: connectionId, model: s.modelId });
-    expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'partner', configId: connectionId });
+    expect(await resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' }))
+      .toMatchObject({ ok: true, funding: 'partner_key', connection: { id: connectionId } });
     // The reconnected key rotates normally.
     await expect(rotateAnthropicKey({ partnerId: s.partnerId, connectionId, apiKey: 'sk-ant-api03-lifecycle-0010', userId: s.userId }))
       .resolves.toEqual({ last4: '0010', configVersion: 2 });
@@ -349,14 +353,18 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
     expect(await fixtureSql`SELECT 1 FROM partner_llm_configs WHERE partner_id = ${disconnected.partnerId}`).toHaveLength(0);
   });
 
-  it('the legacy resolver reads the connection: a runtime credential failure marks it, and a rotation clears it', async () => {
+  it('the resolver reads the connection: a runtime credential failure marks it, and a rotation clears it', async () => {
     const s = await seedRegistryPartner('byok');
-    expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'partner', configId: s.connectionId, configVersion: 1 });
+    const chat = () => resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' });
+    expect(await chat()).toMatchObject({ ok: true, funding: 'partner_key', connection: { id: s.connectionId }, configVersion: 1 });
     expect(await markPartnerLlmError({ configId: s.connectionId!, configVersion: 1, reason: 'auth_rejected' })).toBe(true);
     expect(await liveConnection(s.partnerId)).toMatchObject({ status: 'error', last_error: 'auth_rejected' });
-    expect(await resolveLlmConfig(s.partnerId)).toEqual({ source: 'unavailable', partnerId: s.partnerId, reason: 'key_error' });
+    expect(await chat()).toMatchObject({ ok: false, reason: 'connection_unavailable' });
     await rotateAnthropicKey({ partnerId: s.partnerId, connectionId: s.connectionId!, apiKey: 'sk-ant-api03-lifecycle-0004', userId: s.userId });
-    expect(await resolveLlmConfig(s.partnerId)).toMatchObject({ source: 'partner', apiKey: 'sk-ant-api03-lifecycle-0004', configVersion: 2 });
+    expect(await chat()).toMatchObject({
+      ok: true, funding: 'partner_key', configVersion: 2,
+      connection: { id: s.connectionId, config: { apiKey: 'sk-ant-api03-lifecycle-0004' } },
+    });
   });
 
   it('the W02 legacy mirror trigger is gone', async () => {

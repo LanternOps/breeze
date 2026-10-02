@@ -15,11 +15,9 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { llmProviderCatalog, partnerAiConnections, partnerLlmConfigs } from '../../db/schema';
+import { llmProviderCatalog, partnerLlmConfigs } from '../../db/schema';
 import { changeAnthropicEndpoint } from '../../services/aiModels/anthropicConnectionWrites';
 import { probeAnthropicKey } from '../../services/aiModels/connectionProbe';
-import { createConnection } from '../../services/aiModels/connections';
-import { resolveLlmConfig } from '../../services/llm/llmConfigResolver';
 import {
   createCatalogEntry,
   createRevision,
@@ -142,45 +140,16 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
   // routing traffic to a delisted third party, and never fall back to the
   // platform key.
   // =========================================================================
-  runDb('a delisted entry makes the resolver fail closed with provider_delisted for an already-pinned partner', async () => {
-    const { partner, entry } = await withSystemDbAccessContext(async () => {
-      const partner = await createPartner();
-      const user = await createUser({ partnerId: partner.id });
-      const entry = await seedListedEntry(user.id);
-      return { partner, entry };
-    });
+  runDb('a delisted entry makes the resolver fail closed for a partner already routed through it — never the platform key', async () => {
+    const s = await seedRegistryPartner('catalog');
+    const chat = () => resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' });
 
-    // W03 Task 6B: a partner's AI configuration is its compat connection
-    // (partner_llm_configs is frozen and no longer read by the resolver).
-    const apiKey = 'sk-ant-integration-test-key-1234567890';
-    await withSystemDbAccessContext(async () => {
-      const conn = await createConnection({
-        partnerId: partner.id,
-        kind: 'catalog',
-        name: 'OpenRouter (integration test)',
-        apiKey,
-        catalogEntryId: entry.entryId,
-        connectedBy: null,
-        verifiedAt: new Date(),
-      });
-      await db.update(partnerAiConnections).set({ legacyDefaultModel: MODEL_ID }).where(eq(partnerAiConnections.id, conn.id));
-    });
+    expect(await chat()).toMatchObject({ ok: true, funding: 'partner_key', connection: { id: s.connectionId } });
 
-    const beforeDelist = await resolveLlmConfig(partner.id);
-    expect(beforeDelist).toMatchObject({
-      source: 'partner',
-      partnerId: partner.id,
-      endpoint: { kind: 'catalog', catalogEntryId: entry.entryId, revisionId: entry.revisionId },
-    });
+    await setEntryStatus({ entryId: s.catalogEntryId!, status: 'delisted' });
 
-    await setEntryStatus({ entryId: entry.entryId, status: 'delisted' });
-
-    const afterDelist = await resolveLlmConfig(partner.id);
-    expect(afterDelist).toEqual({
-      source: 'unavailable',
-      partnerId: partner.id,
-      reason: 'provider_delisted',
-    });
+    // Fail closed on the connection's catalog revision: no silent fallback to platform funding.
+    expect(await chat()).toMatchObject({ ok: false, reason: 'model_unavailable' });
   });
 
   // =========================================================================

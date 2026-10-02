@@ -69,14 +69,6 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
-vi.mock('./llm/llmAvailability', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./llm/llmAvailability')>();
-  return {
-    ...actual,
-    llmUnusableCode: vi.fn(actual.llmUnusableCode),
-  };
-});
-
 // W06: an env OpenAI-compatible deployment (MCP_LLM_PROVIDER) is plain config;
 // chat on it resolves through the registry like every other surface.
 const envConfig = vi.hoisted(() => ({ provider: null as string | null }));

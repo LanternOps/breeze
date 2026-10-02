@@ -33,7 +33,7 @@ import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiSessions } from '../../db/schema';
 import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { getEffectiveAiBudget } from '../effectiveSettings';
-import { llmUnusableCodeForOrgInSystemContext } from '../llm/llmConfigResolver';
+import { chatReadinessInSystemContext } from '../aiModels/readiness';
 import { getUserPermissions } from '../permissions';
 import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import { loadTopologyFlags, resolveTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
@@ -123,7 +123,7 @@ const carriedReadiness = new AsyncLocalStorage<{ orgId: string; readiness: Topol
 /** Readiness reads on the caller's held SYSTEM connection; each half fails closed. */
 async function readReadinessInSystemContext(orgId: string): Promise<TopologyAiReadiness> {
   // Sequential on purpose: one transaction, one connection.
-  const unusable = await llmUnusableCodeForOrgInSystemContext(orgId).catch(() => 'ai_unavailable' as const);
+  const unusable = await chatReadinessInSystemContext(orgId).catch(() => 'ai_unavailable' as const);
   const orgPolicy = await getEffectiveAiBudget(orgId).then((budget) => budget.enabled === true, () => false);
   return { provider: unusable === null, ...(unusable === 'ai_not_configured' ? { providerNotConfigured: true as const } : {}), orgPolicy };
 }
