@@ -44,6 +44,7 @@ import {
   serveWindowsBootstrapMsi,
 } from "../services/installerBuilder";
 import { renameAppInZip } from "../services/installerAppZip";
+import { ReleaseManifestTooOldError } from "../services/releaseArtifactManifest";
 import {
   InstallerFilenameHostError,
   macosBundleApiHost,
@@ -2560,6 +2561,19 @@ enrollmentKeyRoutes.post(
           `[installer-link] pre-flight check failed for ${platform}:`,
           err,
         );
+        // A pinned release too old to vouch for the pkg (#7830) is the
+        // operator's own configuration, not an outage: say which release to
+        // pin. Only this typed, operator-actionable cause is surfaced (this
+        // route is admin-authenticated) — any other verification failure
+        // keeps the generic message — and it is not reported to Sentry,
+        // since no retry can clear it.
+        const cause = err instanceof Error ? err.cause : undefined;
+        if (cause instanceof ReleaseManifestTooOldError) {
+          return c.json(
+            { error: `macOS PKG not reachable: ${cause.message}` },
+            503,
+          );
+        }
         captureException(err, c);
         return c.json(
           { error: "macOS PKG not reachable" },

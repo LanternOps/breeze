@@ -118,6 +118,11 @@ vi.mock("../services/permissions", () => ({
     userPerms.permissions.includes("*:*"),
 }));
 
+vi.mock("../services/sentry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/sentry")>()),
+  captureException: vi.fn(),
+}));
+
 vi.mock("../services/auditService", () => ({
   createAuditLogAsync: vi.fn(),
 }));
@@ -203,7 +208,9 @@ import {
 } from "./enrollmentKeys";
 import { db, withSystemDbAccessContext } from "../db";
 import { createAuditLogAsync } from "../services/auditService";
-import { fetchMacosInstallerAppZip } from "../services/installerBuilder";
+import { assertMacosInstallerPkgsReachable, fetchMacosInstallerAppZip } from "../services/installerBuilder";
+import { ReleaseManifestTooOldError } from "../services/releaseArtifactManifest";
+import { captureException } from "../services/sentry";
 import { renameAppInZip } from "../services/installerAppZip";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
 
@@ -473,6 +480,67 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.shortUrl).toMatch(/^https?:\/\/.+\/s\/[A-Za-z0-9]{10}$/);
+  });
+
+  // #7830: a pinned BINARY_VERSION whose signed manifest is too old to vouch
+  // for the macOS pkg used to surface only "macOS PKG not reachable" — the
+  // operator had no way to learn that raising the pin is the fix.
+  describe("macOS pre-flight failure", () => {
+    function mockParentKey() {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeKeyRow()]),
+          }),
+        }),
+      } as any);
+    }
+
+    function requestMacosLink() {
+      return app.request(`/enrollment-keys/${KEY_ID}/installer-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: "macos" }),
+      });
+    }
+
+    it("tells the operator which release to pin when the pinned manifest is too old", async () => {
+      mockParentKey();
+      const tooOld = new ReleaseManifestTooOldError({
+        message:
+          "The signed release manifest for v0.104.0 predates the macOS publisher identity for breeze-agent-darwin-amd64.pkg (first recorded in v0.112.0). Set BINARY_VERSION to v0.112.0 or later.",
+        release: "v0.104.0",
+        minimumRelease: "v0.112.0",
+      });
+      vi.mocked(assertMacosInstallerPkgsReachable).mockRejectedValueOnce(
+        new Error("macOS amd64 installer package failed release verification", { cause: tooOld }),
+      );
+
+      const res = await requestMacosLink();
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toMatch(/^macOS PKG not reachable: /);
+      expect(body.error).toContain("Set BINARY_VERSION to v0.112.0 or later");
+      expect(db.insert).not.toHaveBeenCalled();
+      // Operator configuration, not an outage: no Sentry event per click.
+      expect(captureException).not.toHaveBeenCalled();
+    });
+
+    it("keeps the generic message for any other verification failure", async () => {
+      mockParentKey();
+      vi.mocked(assertMacosInstallerPkgsReachable).mockRejectedValueOnce(
+        new Error("macOS arm64 installer package failed release verification", {
+          cause: new Error("Release artifact digest mismatch for breeze-agent-darwin-arm64.pkg"),
+        }),
+      );
+
+      const res = await requestMacosLink();
+
+      expect(res.status).toBe(503);
+      await expect(res.json()).resolves.toEqual({ error: "macOS PKG not reachable" });
+      expect(captureException).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("refuses to build an installer when parent key is within 60s of expiry", async () => {
