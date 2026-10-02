@@ -64,8 +64,8 @@ function accountHeadline(dashboard: DashboardDto): string {
   ) {
     clauses.push(
       devices.protected === devices.total
-        ? `All ${devices.total} ${devices.total === 1 ? 'device' : 'devices'} protected`
-        : `${devices.protected} of ${devices.total} devices protected`,
+        ? `All ${devices.total} ${devices.total === 1 ? 'device has' : 'devices have'} endpoint protection`
+        : `${devices.protected} of ${devices.total} devices have endpoint protection`,
     );
   }
 
@@ -317,7 +317,7 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
       <dl className="divide-y divide-border/70">
         <LedgerRow
           testId="portal-dashboard-tile-devices"
-          label="Devices protected"
+          label="Endpoint protection"
           status={effectiveStatus(
             devicesProtected.status,
             devicesProtected.protected != null &&

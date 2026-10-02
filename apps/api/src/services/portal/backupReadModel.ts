@@ -45,6 +45,12 @@ function firstPartyConfiguredSql(orgId: string, deviceId: SQL) {
 }
 
 /**
+ * "Backed up" (#7505) means covered by ANY backup source — Breeze's own or a
+ * connected third-party provider — counted over the same population the Backups
+ * table lists: managed devices plus unlinked third-party rows. The dashboard's
+ * "Devices protected" tile is a different concept (endpoint security) and is
+ * labelled as such.
+ *
  * The dashboard tile is built for every org unconditionally
  * (`portal/dashboard.ts`), so third-party backup rows fold in only when the
  * org has turned portal Backups on — the same gate as the Backups page (spec
@@ -100,7 +106,7 @@ export async function backupTile(orgId: string, now: Date) {
       .limit(1),
   ]);
 
-  const total = Number(totalRows[0]?.total ?? 0);
+  let total = Number(totalRows[0]?.total ?? 0);
   const hasActiveConfig = activeConfigRows.length > 0;
   let configured = Number(configuredRows[0]?.configured ?? 0);
   const latest = latestRows[0];
@@ -127,8 +133,14 @@ export async function backupTile(orgId: string, now: Date) {
       )
       .where(eq(backupProviderDevices.orgId, orgId));
     const linkedOnly = Number(counts?.linkedOnly ?? 0);
-    configured += linkedOnly;
-    hasThirdPartyBackup = linkedOnly > 0 || Number(counts?.unlinked ?? 0) > 0;
+    const unlinked = Number(counts?.unlinked ?? 0);
+    // One population for the count AND the Backups table (#7505): the table
+    // lists every managed device plus each unlinked third-party row, and each
+    // of those rows is by definition backed up. Counting them in both numerator
+    // and denominator keeps "N of M" equal to the table's row total.
+    configured += linkedOnly + unlinked;
+    total += unlinked;
+    hasThirdPartyBackup = linkedOnly > 0 || unlinked > 0;
   }
 
   return {
