@@ -1,4 +1,5 @@
 import { AI_SYSTEM_PROMPT_BASE, AI_SYSTEM_PROMPT_TAIL } from './aiAgentSystemPrompt';
+import { AI_SYSTEM_PROMPT_DIAGNOSIS } from './aiAgentDiagnosisPrompt';
 import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS, type AiToolDomain } from '@breeze/shared';
 import { aiTools } from './aiToolNames';
 import { getToolDomain, getToolSearchHint } from './aiTools';
@@ -61,5 +62,5 @@ export function renderToolIndexByDomain(names: Iterable<string>): string {
 
 /** Static production chat prompt, before user and page context is appended. */
 export function composeStaticSystemPrompt(toolNames: readonly string[]): string {
-  return [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(toolNames), AI_SYSTEM_PROMPT_TAIL].join('\n');
+  return [AI_SYSTEM_PROMPT_BASE, renderToolIndexByDomain(toolNames), AI_SYSTEM_PROMPT_TAIL, AI_SYSTEM_PROMPT_DIAGNOSIS].join('\n');
 }

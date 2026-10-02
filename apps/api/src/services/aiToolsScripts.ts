@@ -669,7 +669,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
               'file_list', 'file_read',
               'event_logs_list', 'event_logs_query'
             ],
-            description: 'The type of command to execute'
+            description: 'The type of command to execute. Before kill_process, restate the evidence tying that PID to the problem, each claim labelled verified or inferred.'
           },
           payload: {
             type: 'object',
@@ -900,7 +900,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'manage_processes',
-      description: 'List running processes on a device with CPU and memory usage, or terminate a process. Actions: list, kill.',
+      description: 'List running processes on a device with CPU and memory usage, or terminate a process. Before kill, restate the evidence tying the PID to the problem, each claim labelled verified or inferred. Actions: list, kill.',
       input_schema: {
         type: 'object' as const,
         properties: {
