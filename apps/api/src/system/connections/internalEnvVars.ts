@@ -460,6 +460,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TD_SYNNEX_DIGITAL_BRIDGE_TIMEOUT_MS: 'timing knob',
   // TENANT_*
   TENANT_TOOL_MAX_IN_FLIGHT_PER_ORG: 'tenant tool in-flight cap',
+  // TERMINAL_*
+  TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
+  TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
