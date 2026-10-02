@@ -378,3 +378,9 @@ test('an unparseable report fails and surfaces the scanner stderr', () => {
   assert.equal(res.status, 1, out(res));
   assert.match(res.stderr, /parse failure detail/, out(res));
 });
+
+test('scanner exit 1 with a report that lists no vulnerabilities fails (reshaped report)', () => {
+  const res = runGate({ osvReport: report(), exceptions: { exceptions: [] }, scannerExit: 1 });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /report lists no vulnerabilities/, out(res));
+});

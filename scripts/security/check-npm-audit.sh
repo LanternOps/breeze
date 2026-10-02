@@ -159,6 +159,12 @@ scanned_count="$(jq '[.results[]?.packages[]?] | length' "$report")"
 pkg_count="$(jq '[.results[]?.packages[]? | select((.vulnerabilities // []) | length > 0)] | length' "$report")"
 total_vulns="$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' "$report")"
 
+# Exit 1 means the scanner found something; a report that shows none means the
+# report shape changed under us (the selectors above tolerate missing keys).
+if [ "$scan_status" -eq 1 ] && [ "$total_vulns" -eq 0 ]; then
+  fail "osv-scanner exited 1 (findings) but the report lists no vulnerabilities — report shape unrecognised, treating as audit failure"
+fi
+
 echo "osv-scanner: scanned ${scanned_count} package(s) from $LOCKFILE (lockfile lists ${lock_count}): ${total_vulns} advisories across ${pkg_count} affected package(s)"
 
 # Every finding as {package, version, id, severity, excepted}. `excepted` is an
