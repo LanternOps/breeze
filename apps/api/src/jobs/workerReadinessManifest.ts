@@ -222,6 +222,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('metricAnomalyIncidentPublisher'),
   consumers('aiUnattendedExposureRetention'),
   consumers('aiInvocationRetention'),
+  consumers('aiChargebackWorker'),
   consumers('alertVerdictScheduler'),
   consumers('aiAgentSweepScheduler'),
   // Task 8 merge-forward (origin/main fcd5b498a): three more `global` registry

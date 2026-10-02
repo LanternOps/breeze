@@ -1457,6 +1457,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #7608 W10: daily AI chargeback close. Its closure is db + services only
+    // (no route graph, no socket import) — `global`, like the retention workers.
+    name: 'aiChargebackWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiChargebackWorker');
+      return { init: m.initializeAiChargebackWorker, shutdown: m.shutdownAiChargebackWorker };
+    },
+  },
+  {
     // Phase 2 wave P2-1 (alert verdicts), task 13: delayed BullMQ job that
     // admits a verdict run for an alert that stays open and uncorrelated for
     // UNGROUPED_VERDICT_DELAY_MINUTES. Its closure reaches
