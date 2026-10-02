@@ -467,7 +467,10 @@ func replaceConfigRoot(root string, forEnroll bool) error {
 	// The first move fails while a process holds the old folder, or anything
 	// in it, open without delete sharing: the agent then does not start,
 	// rather than run in a folder that process can still change.
-	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, renameEntry, func(p string) bool {
+	// Plain moves: the folder's own move never needs more (ProgramData grants
+	// SYSTEM and Administrators delete-child), and a refusal — a file in it
+	// held open — must leave it exactly as it was.
+	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, os.Rename, func(p string) bool {
 		_, err := os.Lstat(p)
 		return err == nil
 	})
@@ -533,69 +536,81 @@ func readEntrySecurity(path string) (programDataPathSecurity, error) {
 	return sec, err
 }
 
-// renameEntry moves from to to. If the entry's DACL denies the move (another
-// account set it to deny SYSTEM and Administrators, and the parent does not
-// grant delete-child), the agent takes the entry over first (takeOverEntry)
-// and moves it again.
+// renameEntry moves from to to. If the entry's own DACL denies the move
+// (another account set it to deny SYSTEM and Administrators, and the parent
+// does not grant delete-child), it is moved again through a handle opened
+// with backup intent (SeRestorePrivilege grants DELETE then), which leaves
+// its owner and DACL exactly as they were. Any other failure — a folder that
+// holds an open file, say — is returned as is, with nothing changed.
 func renameEntry(from, to string) error {
 	err := os.Rename(from, to)
 	if err == nil || !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
 		return err
 	}
-	if terr := takeOverEntry(from); terr != nil {
-		return fmt.Errorf("%w (taking it over: %v)", err, terr)
+	if sec, serr := readEntrySecurity(from); serr != nil || !sec.Unreadable {
+		return err
 	}
-	log.Warn("Took over an entry another account had locked so it could be moved aside", "path", from)
-	return os.Rename(from, to)
+	if rerr := renameWithBackupIntent(from, to); rerr != nil {
+		return fmt.Errorf("%w (moving it with backup intent: %v)", err, rerr)
+	}
+	log.Warn("Moved aside an entry whose permissions deny the agent, leaving them unchanged", "path", from, "to", to)
+	return nil
 }
 
-// takeOverAdminsFullControlSDDL is what takeOverEntry leaves on an entry:
-// owned by Administrators, full control for SYSTEM and Administrators only.
-const takeOverAdminsFullControlSDDL = `O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`
+// fileRenameInformation mirrors FILE_RENAME_INFORMATION (x64 layout: the
+// BOOLEAN at 0, padding, RootDirectory at 8, FileNameLength at 16, FileName
+// at 20).
+type fileRenameInformation struct {
+	ReplaceIfExists uint32
+	RootDirectory   windows.Handle
+	FileNameLength  uint32
+	FileName        [1]uint16
+}
 
-// takeOverEntry makes path (not its contents) owned by Administrators with
-// a DACL granting only SYSTEM and Administrators, whatever its DACL said:
-// the owner is written with SeTakeOwnershipPrivilege (which grants
-// WRITE_OWNER regardless of the DACL), then the DACL as that owner. Both go
-// through handles opened without following links, and nothing is
-// propagated to children.
-func takeOverEntry(path string) error {
-	sd, err := windows.SecurityDescriptorFromString(takeOverAdminsFullControlSDDL)
-	if err != nil {
-		return err
-	}
-	owner, _, err := sd.Owner()
-	if err != nil {
-		return err
-	}
-	dacl, _, err := sd.DACL()
-	if err != nil {
-		return err
-	}
-	release, err := enableTokenPrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege")
+const fileRenameInformationClass = 10
+
+// renameWithBackupIntent renames from to to (an absolute path, never
+// replacing an existing entry) through a handle opened for DELETE with
+// FILE_FLAG_BACKUP_SEMANTICS while SeRestorePrivilege and SeBackupPrivilege
+// are enabled, without following a link at from.
+func renameWithBackupIntent(from, to string) error {
+	release, err := enableTokenPrivileges("SeRestorePrivilege", "SeBackupPrivilege")
 	if err != nil {
 		return err
 	}
 	defer release()
-	set := func(access uint32, info windows.SECURITY_INFORMATION, o *windows.SID, d *windows.ACL) error {
-		p16, err := windows.UTF16PtrFromString(path)
-		if err != nil {
-			return err
-		}
-		h, err := windows.CreateFile(p16, access,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
-			windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		defer func() { _ = windows.CloseHandle(h) }()
-		return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, o, nil, d, nil)
+	p16, err := windows.UTF16PtrFromString(from)
+	if err != nil {
+		return err
 	}
-	if err := set(windows.WRITE_OWNER, windows.OWNER_SECURITY_INFORMATION, owner, nil); err != nil {
-		return fmt.Errorf("take ownership of %s: %w", path, err)
+	h, err := windows.CreateFile(p16, windows.DELETE|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", from, err)
 	}
-	if err := set(windows.WRITE_DAC, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, dacl); err != nil {
-		return fmt.Errorf("reset permissions on %s: %w", path, err)
+	defer func() { _ = windows.CloseHandle(h) }()
+	abs, err := filepath.Abs(to)
+	if err != nil {
+		return err
+	}
+	name, err := windows.UTF16FromString(`\??\` + abs)
+	if err != nil {
+		return err
+	}
+	nameLen := len(name)*2 - 2
+	var layout fileRenameInformation
+	size := int(unsafe.Offsetof(layout.FileName)) + nameLen
+	if minimum := int(unsafe.Sizeof(layout)); size < minimum {
+		size = minimum
+	}
+	buf := make([]byte, size)
+	info := (*fileRenameInformation)(unsafe.Pointer(&buf[0]))
+	info.FileNameLength = uint32(nameLen)
+	copy(unsafe.Slice(&info.FileName[0], nameLen/2), name[:nameLen/2])
+	var iosb windows.IO_STATUS_BLOCK
+	if err := windows.NtSetInformationFile(h, &iosb, &buf[0], uint32(len(buf)), fileRenameInformationClass); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", from, to, err)
 	}
 	return nil
 }

@@ -130,3 +130,20 @@ func TestServiceStartReportsANewReason(t *testing.T) {
 		t.Errorf("reports = %v, want one per distinct reason", *reports)
 	}
 }
+
+// TestServiceStartDoesNotRepeatAReasonThatOnlyDiffersInItsTimestamp: the
+// same refusal names a new timestamped folder on every attempt; it is still
+// recorded once.
+func TestServiceStartDoesNotRepeatAReasonThatOnlyDiffersInItsTimestamp(t *testing.T) {
+	_, _, reports, _ := stubServiceStart(t, func(call int) error {
+		if call <= 5 {
+			return fmt.Errorf(`%w: set C:\ProgramData\Breeze aside: rename C:\ProgramData\Breeze C:\ProgramData\Breeze.untrusted-20261001T1200%02d.00000000%dZ: Access is denied.`,
+				config.ErrConfigDirUntrusted, call, call)
+		}
+		return nil
+	})
+	prepareServiceStart(ProcessStartup{}, make(chan struct{}), func() {})
+	if len(*reports) != 1 {
+		t.Errorf("reports = %d, want 1: %v", len(*reports), *reports)
+	}
+}

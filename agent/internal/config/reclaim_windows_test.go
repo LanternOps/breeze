@@ -382,13 +382,13 @@ func lockOutAgent(t *testing.T, dir, path string) {
 func releaseLockedEntries(dir string) {
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if _, serr := readProgramDataPathSecurity(p); errors.Is(serr, windows.ERROR_ACCESS_DENIED) || err != nil {
-			_ = takeOverEntry(p)
+			_ = takeOverEntryForTest(p)
 		}
 		return nil
 	})
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			_ = takeOverEntry(p)
+			_ = takeOverEntryForTest(p)
 		}
 		return nil
 	})
@@ -453,10 +453,11 @@ func TestReclaimConfigDirTakesBackWhatTheAgentCannotInspect(t *testing.T) {
 	})
 }
 
-// TestReclaimConfigDirTakesOverAnEntryItMayNotMove: an entry whose DACL
-// denies the move, in a folder that does not grant delete-child, is taken
-// over (Administrators owner, SYSTEM and Administrators only) and moved.
-func TestReclaimConfigDirTakesOverAnEntryItMayNotMove(t *testing.T) {
+// TestReclaimConfigDirMovesAnEntryItMayNotMoveUnchanged: an entry whose DACL
+// denies the move, in a folder that does not grant delete-child, is still
+// moved aside (with backup intent), and its owner and DACL are left exactly
+// as they were for review.
+func TestReclaimConfigDirMovesAnEntryItMayNotMoveUnchanged(t *testing.T) {
 	requireElevatedRunner(t)
 	dir := t.TempDir()
 	parent := filepath.Join(dir, "parent")
@@ -469,14 +470,51 @@ func TestReclaimConfigDirTakesOverAnEntryItMayNotMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockOutAgent(t, dir, entry)
-	t.Cleanup(func() { _ = takeOverEntry(parent) })
+	t.Cleanup(func() { _ = takeOverEntryForTest(parent) })
 	if err := os.Rename(entry, filepath.Join(parent, "moved-plain")); err == nil {
 		t.Fatal("the plain move succeeded: the test plants nothing")
 	}
-	if err := renameEntry(entry, filepath.Join(parent, "moved")); err != nil {
+	moved := filepath.Join(parent, "moved")
+	if err := renameEntry(entry, moved); err != nil {
 		t.Fatalf("renameEntry: %v", err)
 	}
-	assertTrustedObject(t, filepath.Join(parent, "moved"))
+	if exists(entry) {
+		t.Error("the entry is still at its old name")
+	}
+	if _, err := readProgramDataPathSecurity(moved); !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Errorf("the moved entry's permissions were changed (security read: %v)", err)
+	}
+}
+
+// takeOverEntryForTest makes path removable by the test: Administrators
+// owner, SYSTEM and Administrators full control, set through handles with
+// SeTakeOwnership and SeRestore.
+func takeOverEntryForTest(path string) error {
+	sd, err := windows.SecurityDescriptorFromString(`O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`)
+	if err != nil {
+		return err
+	}
+	owner, _, _ := sd.Owner()
+	dacl, _, _ := sd.DACL()
+	release, err := enableTokenPrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege")
+	if err != nil {
+		return err
+	}
+	defer release()
+	set := func(access uint32, info windows.SECURITY_INFORMATION, o *windows.SID, d *windows.ACL) error {
+		p16, _ := windows.UTF16PtrFromString(path)
+		h, err := windows.CreateFile(p16, access, shareAll, nil, windows.OPEN_EXISTING,
+			windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = windows.CloseHandle(h) }()
+		return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, info, o, nil, d, nil)
+	}
+	if err := set(windows.WRITE_OWNER, windows.OWNER_SECURITY_INFORMATION, owner, nil); err != nil {
+		return err
+	}
+	return set(windows.WRITE_DAC, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, dacl)
 }
 
 // TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote: before an
@@ -585,6 +623,7 @@ func TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAFileOpen(t *testing.T) 
 			root := filepath.Join(t.TempDir(), "Breeze")
 			plantFolderAsStandardUser(t, root)
 			closeHandle, _ := openAsStandardUser(t, filepath.Join(root, "agent.state"), windows.GENERIC_WRITE, share, 0)
+			before := reclaimSDDL(t, root)
 
 			if err := reclaimConfigDir(root, false); !errors.Is(err, ErrConfigDirUntrusted) {
 				t.Fatalf("err = %v while another account holds a file open, want ErrConfigDirUntrusted", err)
@@ -594,6 +633,11 @@ func TestReclaimConfigDirRefusesWhileAnotherAccountHoldsAFileOpen(t *testing.T) 
 			}
 			if !exists(filepath.Join(root, "agent.state")) {
 				t.Error("the folder was changed by a refused reclaim")
+			}
+			// A refused move must not rewrite the folder's owner or DACL:
+			// that would erase why it has to be replaced.
+			if after := reclaimSDDL(t, root); after != before {
+				t.Errorf("a refused reclaim changed the folder's security:\nbefore %s\nafter  %s", before, after)
 			}
 			closeHandle()
 			if err := reclaimConfigDir(root, false); err != nil {
