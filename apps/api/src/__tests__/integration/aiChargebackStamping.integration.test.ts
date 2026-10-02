@@ -187,9 +187,16 @@ describe.skipIf(!RUN)('chargeback is stamped at ledger write (#7608)', () => {
     } finally { await blocker.release(); error.mockRestore(); }
     expect(await ledgerFor(s.chatSessionId)).toHaveLength(0); // deferred: no ledger row yet
     await fixtureSql`UPDATE billing_profiles SET ai_markup_percent = 40 WHERE id = ${card}`;
+    // The database clock, read before the replay starts (same server as the write).
+    const [{ replay_start: replayStart }] = await fixtureSql`SELECT clock_timestamp() AS replay_start` as unknown as [{ replay_start: Date }];
     expect((await settleAndDebitAiReservations()).replayed).toBe(1);
     const [row] = await ledgerFor(s.chatSessionId);
     expect(Number(row!.charge_amount)).toBeCloseTo(Number(row!.cost_cents) * 1.40 / 100, 6);
+    // RF2a by observation: the ledger row is WRITTEN at replay (created_at is the
+    // replay transaction's time), so it bills in the replay month (decided 2026-10-02, #7598).
+    const [written] = await q<{ created_at: Date }>(sql`
+      SELECT created_at FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`);
+    expect(new Date(written!.created_at).getTime()).toBeGreaterThanOrEqual(new Date(replayStart).getTime());
   }, 30_000);
 
   it('stamping happens before the org lock: a held org lock defers, it does not wedge the stamp read', async () => {

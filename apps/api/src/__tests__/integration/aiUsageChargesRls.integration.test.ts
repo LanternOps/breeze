@@ -42,6 +42,38 @@ describe.runIf(RUN)('ai_usage_charges / runs / claims tenancy (#7608)', () => {
     expect((own as unknown as unknown[]).length).toBe(1);
   });
 
+  it('an org token cannot mark another org\'s charge billed (0 rows); the owning org can (control)', async () => {
+    const p = await createPartner();
+    const a = await createOrganization({ partnerId: p.id });
+    const b = await createOrganization({ partnerId: p.id });
+    const aCharge = await seedCharge(a.id, p.id);
+    const flip = (orgId: string) => withDbAccessContext(orgContext(orgId, p.id), async () => rowsOf<{ id: string }>(await db.execute(sql`
+      UPDATE ai_usage_charges SET billing_status = 'billed' WHERE id = ${aCharge} RETURNING id`)));
+    expect(await flip(b.id)).toEqual([]);
+    const [still] = await fixtureSql`SELECT billing_status FROM ai_usage_charges WHERE id = ${aCharge}`;
+    expect(still!.billing_status).toBe('not_billed');
+    expect((await flip(a.id)).map((r) => String(r.id))).toEqual([aCharge]);
+    const [flipped] = await fixtureSql`SELECT billing_status FROM ai_usage_charges WHERE id = ${aCharge}`;
+    expect(flipped!.billing_status).toBe('billed');
+  });
+
+  it('an org token cannot read another org\'s runs or claims; the owning org can (control)', async () => {
+    const p = await createPartner();
+    const a = await createOrganization({ partnerId: p.id });
+    const b = await createOrganization({ partnerId: p.id });
+    const [run] = await fixtureSql`INSERT INTO ai_usage_charge_runs (org_id, partner_id, period_start, period_end)
+      VALUES (${a.id}, ${p.id}, '2026-11-01', '2026-12-01') RETURNING id`;
+    const charge = await seedCharge(a.id, p.id, 'not_billed', String(run!.id));
+    await fixtureSql`INSERT INTO ai_usage_charge_claims (invocation_id, org_id, run_id, charge_id)
+      VALUES (${randomUUID()}, ${a.id}, ${run!.id}, ${charge})`;
+    const seen = (orgId: string) => withDbAccessContext(orgContext(orgId, p.id), async () => ({
+      runs: rowsOf(await db.execute(sql`SELECT id FROM ai_usage_charge_runs WHERE org_id = ${a.id}`)).length,
+      claims: rowsOf(await db.execute(sql`SELECT invocation_id FROM ai_usage_charge_claims WHERE org_id = ${a.id}`)).length,
+    }));
+    expect(await seen(b.id)).toEqual({ runs: 0, claims: 0 });
+    expect(await seen(a.id)).toEqual({ runs: 1, claims: 1 });
+  });
+
   it('a partner context cannot forge a charge for an org it cannot access (42501)', async () => {
     const p = await createPartner(); const other = await createPartner();
     const victim = await createOrganization({ partnerId: other.id });

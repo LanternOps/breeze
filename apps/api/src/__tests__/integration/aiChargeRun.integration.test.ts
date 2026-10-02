@@ -139,6 +139,48 @@ describe.runIf(RUN)('runOrgChargePeriod (#7608)', () => {
     expect(await charges(f.orgId)).toEqual([expect.objectContaining({ priced: false, amount: null, billing_status: 'unpriced' })]);
   });
 
+  it('one model in one month as USD priced, USD unpriced and EUR priced: three charges, each row claimed into its own', async () => {
+    const f = await fixture();
+    const usdPriced = await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-05T00:00:00Z', amount: '1.250000' });
+    const usdUnpriced = await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-06T00:00:00Z', amount: null });
+    const eurPriced = await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-07T00:00:00Z', currency: 'EUR', amount: '2.000000' });
+    expect(await run(f.orgId)).toMatchObject({ kind: 'charged', chargeCount: 3, invocationCount: 3, unpricedInvocationCount: 1 });
+    const byInvocation = new Map((await fixtureSql`
+      SELECT cl.invocation_id, ch.currency_code, ch.priced, ch.invocation_count, ch.amount::text AS amount, ch.billing_status
+      FROM ai_usage_charge_claims cl JOIN ai_usage_charges ch ON ch.id = cl.charge_id
+      WHERE cl.org_id = ${f.orgId}`).map((r) => [String(r.invocation_id), {
+        currency: r.currency_code, priced: r.priced, count: r.invocation_count, amount: r.amount, status: r.billing_status }]));
+    expect(byInvocation.size).toBe(3);
+    expect(byInvocation.get(usdPriced)).toEqual({ currency: 'USD', priced: true, count: 1, amount: '1.25', status: 'not_billed' });
+    expect(byInvocation.get(usdUnpriced)).toEqual({ currency: 'USD', priced: false, count: 1, amount: null, status: 'unpriced' });
+    expect(byInvocation.get(eurPriced)).toEqual({ currency: 'EUR', priced: true, count: 1, amount: '2.00', status: 'not_billed' });
+    const [distinct] = await fixtureSql`SELECT count(DISTINCT charge_id)::int AS n FROM ai_usage_charge_claims WHERE org_id = ${f.orgId}`;
+    expect(distinct!.n).toBe(3);
+  });
+
+  it('snapshots the line label from ai_platform_models.display_name, falling back to the model id', async () => {
+    const f = await fixture();
+    const modelId = `w10-test-${randomUUID()}`;
+    await fixtureSql`INSERT INTO ai_platform_models (provider, model_id, display_name) VALUES ('anthropic', ${modelId}, 'W10 Friendly Name')`;
+    try {
+      await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-05T00:00:00Z', servedModel: modelId });
+      await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-05T00:00:00Z', servedModel: 'w10-test-unregistered' });
+      await run(f.orgId);
+      const labels = await fixtureSql`SELECT served_model, model_label FROM ai_usage_charges WHERE org_id = ${f.orgId} ORDER BY served_model`;
+      expect(labels.map((r) => [r.served_model, r.model_label]).sort()).toEqual([
+        [modelId, 'W10 Friendly Name'],
+        ['w10-test-unregistered', 'w10-test-unregistered'],
+      ].sort());
+      // A snapshot: renaming the model later never rewrites the charge.
+      await fixtureSql`UPDATE ai_platform_models SET display_name = 'Renamed' WHERE model_id = ${modelId}`;
+      const [after] = await fixtureSql`SELECT model_label FROM ai_usage_charges WHERE org_id = ${f.orgId} AND served_model = ${modelId}`;
+      expect(after!.model_label).toBe('W10 Friendly Name');
+    } finally {
+      // ai_platform_models is global (not reached by the tenant-root truncate).
+      await fixtureSql`DELETE FROM ai_platform_models WHERE model_id = ${modelId}`;
+    }
+  });
+
   it('re-run of a closed period is a no-op', async () => {
     const f = await fixture();
     await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-05T00:00:00Z' });
