@@ -226,14 +226,14 @@ ${label.join}
 ORDER BY c.cost_cents DESC NULLS LAST, c.invocations DESC`;
 }
 
-export interface RawQualityRow {
+export type RawQualityRow = {
   key: string; label: string | null; connection_name: string | null;
   invocations: string; cost_cents: string | null; refusals: string; failovers: string;
   touched: string; conversation_cost: string | null;
   conversations: string; sessions: string; flagged: string; auto_flagged: string; continued: string;
   resolved_sessions: string; median_turns: string | null; agent_runs: string; agent_runs_completed: string;
   switched_away: string; left_conversations: string;
-}
+};
 
 const num = (v: string | null | undefined): number => Number(v ?? 0);
 const rate = (n: number, d: number): number | null => (d > 0 ? n / d : null);
