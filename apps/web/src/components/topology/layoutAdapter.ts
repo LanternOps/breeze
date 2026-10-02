@@ -2,7 +2,7 @@ import type { ElkNode } from 'elkjs/lib/elk-api';
 import type { LayoutBox, LayoutPosition, LayoutRequest, LayoutResult } from './layoutTypes';
 
 const GAP = 32;
-const roleOrder: Record<string, number> = { internet: 0, gateway: 1, network: 2, endpoint: 3 };
+const roleOrder: Record<string, number> = { internet: 0, gateway: 1, network: 2, group: 2, endpoint: 3, device: 3, unidentified: 4 };
 const sorted = (nodes: LayoutBox[]) => [...nodes].sort((a, b) =>
   (roleOrder[a.role] ?? 4) - (roleOrder[b.role] ?? 4) || a.id.localeCompare(b.id, 'en'));
 const intersects = (a: LayoutPosition, ab: LayoutBox, b: LayoutPosition, bb: LayoutBox) =>
@@ -24,7 +24,7 @@ export function layeredThoroughness(elements: number): number {
   return 1; // V1000 (3,000) up to the 5,000-element packing cap
 }
 
-export function toElkGraph(request: LayoutRequest): ElkNode {
+export function toElkGraph(request: LayoutRequest, direction: 'RIGHT' | 'DOWN' = 'RIGHT'): ElkNode {
   // Interface ports (M2): an edge with a known endpoint port attaches to an ELK
   // port on that node, so parallel cables between one pair stay distinct.
   const known = new Set(request.nodes.map((node) => node.id));
@@ -57,7 +57,7 @@ export function toElkGraph(request: LayoutRequest): ElkNode {
     // long-edge dummy nodes to route and uncross (V1000: 54 → 23 layers).
     // Determinism comes from the pinned seed plus the sorted input above.
     layoutOptions: {
-      'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.randomSeed': '7',
+      'elk.algorithm': 'layered', 'elk.direction': direction, 'elk.randomSeed': '7',
       'elk.spacing.nodeNode': '32', 'elk.layered.spacing.nodeNodeBetweenLayers': '96',
       'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
       'elk.layered.cycleBreaking.strategy': 'BFS_NODE_ORDER',
@@ -78,6 +78,10 @@ function elkPositions(root: ElkNode, offsetX = 0, offsetY = 0, result = new Map<
 
 /** Fixed positions are obstacles; ELK does not support arbitrary absolute pins. */
 export function packTopologyLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
+  if (isGroupedRequest(request)) return packGroupedLayout(request, proposed, fallback);
+  return packFlatLayout(request, proposed, fallback);
+}
+function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const boxes = new Map(request.nodes.map((node) => [node.id, node]));
   const positions = new Map(request.positions.filter((p) => boxes.has(p.nodeId) && (request.mode === 'incremental' || p.pinned)).map((p) => [p.nodeId, { ...p }]));
   const fixed = [...positions.values()];
@@ -109,6 +113,93 @@ export function packTopologyLayout(request: LayoutRequest, proposed = new Map<st
 /** Imported only by the module worker (unit tests exercise the real engine). */
 export async function computeTopologyLayout(request: LayoutRequest, engine: { layout: (graph: ElkNode) => Promise<ElkNode> }): Promise<LayoutResult> {
   if (request.nodes.length + request.edges.length > 5000) return packTopologyLayout(request, undefined, true);
+  if (isGroupedRequest(request)) {
+    const { top } = groupedStages(request);
+    return packGroupedLayout(request, elkPositions(await engine.layout(toElkGraph(top, 'DOWN'))));
+  }
   const layout = await engine.layout(toElkGraph(request));
   return packTopologyLayout(request, elkPositions(layout));
+}
+
+// ── Grouped overview: two-stage layout (design 2026-10-02, quorum "Layout — revised") ──
+// Stage 1 packs each card's members into a grid (ELK Layered would stack edge-less
+// members in one layer: the production "vertical strip"). Stage 2 lays out a flat
+// graph of cards, gateways and ungrouped tiles with Layered DOWN. Stage 3 translates
+// members by their card's origin. Cards themselves never get a position.
+const GROUP_ROLES = new Set(['group', 'unidentified']);
+/** Space above the first row for the card's header label, and inner padding (the canvas compound padding). */
+export const GROUP_HEADER = 40, GROUP_PADDING = 24;
+const CELL_GAP = 16;
+export function isGroupedRequest(request: LayoutRequest) {
+  const groups = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
+  return groups.size > 0 && request.nodes.some((node) => node.groupId && groups.has(node.groupId));
+}
+type Card = { id: string; width: number; height: number; local: Map<string, { x: number; y: number }>; fixed?: { x: number; y: number } };
+const fixedPositions = (request: LayoutRequest) => new Map(request.positions
+  .filter((p) => request.mode === 'incremental' || p.pinned).map((p) => [p.nodeId, p]));
+
+function packCard(group: LayoutBox, members: LayoutBox[], fixed: Map<string, LayoutPosition>): Card {
+  const ordered = [...members].sort((a, b) => (a.rank ?? 9) - (b.rank ?? 9) || (a.name ?? a.id).localeCompare(b.name ?? b.id, 'en') || a.id.localeCompare(b.id, 'en'));
+  const free = ordered.filter((member) => !fixed.has(member.id)), pinned = ordered.filter((member) => fixed.has(member.id));
+  const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP, cellH = Math.max(1, ...members.map((m) => m.height)) + CELL_GAP;
+  // Roughly 3:2 cards: wide enough to read as a network, never a one-tile strip.
+  const cols = Math.max(1, Math.min(free.length, Math.ceil(Math.sqrt(free.length * 1.5 * cellH / cellW))));
+  const rows = Math.ceil(free.length / cols);
+  const local = new Map<string, { x: number; y: number }>();
+  free.forEach((member, index) => local.set(member.id, { x: GROUP_PADDING + (index % cols) * cellW + member.width / 2, y: GROUP_HEADER + Math.floor(index / cols) * cellH + member.height / 2 }));
+  const gridW = 2 * GROUP_PADDING + Math.max(0, cols * cellW - CELL_GAP), gridH = GROUP_HEADER + GROUP_PADDING + Math.max(0, rows * cellH - CELL_GAP);
+  if (!pinned.length) return { id: group.id, width: Math.max(gridW, 240), height: Math.max(gridH, GROUP_HEADER + GROUP_PADDING), local };
+  // A card holding a pinned member is anchored: pins stay put, the free grid sits directly below them.
+  const boxes = new Map(members.map((m) => [m.id, m]));
+  const x1 = Math.min(...pinned.map((m) => fixed.get(m.id)!.x - boxes.get(m.id)!.width / 2)) - GROUP_PADDING;
+  const y1 = Math.min(...pinned.map((m) => fixed.get(m.id)!.y - boxes.get(m.id)!.height / 2)) - GROUP_HEADER;
+  const x2 = Math.max(...pinned.map((m) => fixed.get(m.id)!.x + boxes.get(m.id)!.width / 2)) + GROUP_PADDING;
+  const pinnedBottom = Math.max(...pinned.map((m) => fixed.get(m.id)!.y + boxes.get(m.id)!.height / 2)) + CELL_GAP;
+  const anchored = new Map<string, { x: number; y: number }>();
+  for (const [id, point] of local) anchored.set(id, { x: point.x - GROUP_PADDING + x1 + GROUP_PADDING, y: point.y - GROUP_HEADER + pinnedBottom });
+  for (const m of pinned) anchored.set(m.id, { x: fixed.get(m.id)!.x, y: fixed.get(m.id)!.y });
+  const width = Math.max(x2 - x1, gridW), height = pinnedBottom - y1 + (rows ? gridH - GROUP_HEADER : 0) + GROUP_PADDING;
+  // Store anchored member positions relative to the card's top-left so stage 3 is uniform.
+  const rel = new Map([...anchored].map(([id, p]) => [id, { x: p.x - x1, y: p.y - y1 }]));
+  return { id: group.id, width, height, local: rel, fixed: { x: x1 + width / 2, y: y1 + height / 2 } };
+}
+
+function groupedStages(request: LayoutRequest) {
+  const fixed = fixedPositions(request);
+  const groupIds = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
+  const membersOf = new Map<string, LayoutBox[]>();
+  for (const node of request.nodes) if (node.groupId && groupIds.has(node.groupId)) membersOf.set(node.groupId, [...(membersOf.get(node.groupId) ?? []), node]);
+  const cards = new Map<string, Card>();
+  for (const group of request.nodes) if (groupIds.has(group.id) && membersOf.has(group.id)) cards.set(group.id, packCard(group, membersOf.get(group.id)!, fixed));
+  const homeOf = new Map<string, string>();
+  for (const [group, members] of membersOf) if (cards.has(group)) for (const member of members) homeOf.set(member.id, group);
+  const topNodes: LayoutBox[] = request.nodes.filter((node) => !homeOf.has(node.id) && !(groupIds.has(node.id) && !cards.has(node.id)))
+    .map((node) => cards.has(node.id) ? { id: node.id, role: node.role, width: cards.get(node.id)!.width, height: cards.get(node.id)!.height } : node);
+  const lift = (id: string) => homeOf.get(id) ?? id;
+  const seen = new Set<string>();
+  const topEdges = request.edges.map((edge) => ({ id: edge.id, source: lift(edge.source), target: lift(edge.target) }))
+    .filter((edge) => edge.source !== edge.target && !seen.has(`${edge.source}>${edge.target}`) && seen.add(`${edge.source}>${edge.target}`));
+  const topPositions = [
+    ...request.positions.filter((p) => !homeOf.has(p.nodeId) && !groupIds.has(p.nodeId)),
+    ...[...cards.values()].filter((card) => card.fixed).map((card) => ({ nodeId: card.id, ...card.fixed!, pinned: true })),
+  ];
+  const top: LayoutRequest = { ...request, nodes: topNodes, edges: topEdges, positions: topPositions };
+  return { top, cards, homeOf, fixed };
+}
+
+function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
+  const { top, cards, homeOf, fixed } = groupedStages(request);
+  // Cards that hold pins are fixed obstacles; their pins are reported, not "pinned overlap" of the card itself.
+  const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
+  const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
+  const positions: LayoutPosition[] = [];
+  for (const point of placed.positions) if (!cards.has(point.nodeId)) positions.push({ ...point, pinned: fixed.get(point.nodeId)?.pinned ?? false });
+  for (const [member, group] of homeOf) {
+    const card = cards.get(group)!, c = centre.get(group)!, local = card.local.get(member)!;
+    const pin = fixed.get(member);
+    positions.push(pin ? { ...pin } : { nodeId: member, x: c.x - card.width / 2 + local.x, y: c.y - card.height / 2 + local.y, pinned: false });
+  }
+  const { requestId, graphRevision, layoutRevision, measurementRevision, algorithmVersion } = request;
+  return { requestId, graphRevision, layoutRevision, measurementRevision, algorithmVersion,
+    positions: positions.sort((a, b) => a.nodeId.localeCompare(b.nodeId, 'en')), ...(placed.warning ? { warning: placed.warning } : {}) };
 }

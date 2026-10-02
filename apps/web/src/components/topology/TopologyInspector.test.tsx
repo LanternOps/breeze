@@ -119,3 +119,47 @@ describe('Explain this in the inspector (M4 Task 5)', () => {
     expect(screen.queryByTestId('topology-explain-not-configured')).toBeNull();
   });
 });
+
+describe('grouped overview inspector (2026-10-02)', () => {
+  const inventory = { source: 'device' as const, name: 'DRT-HYG3', addresses: ['10.1.2.57'], mac: 'aa:bb:cc:dd:ee:ff', vendor: null, model: null, os: 'windows 10.0.19045', type: 'workstation',
+    presence: { state: 'offline' as const, source: 'agent' as const, agentStatus: 'offline', lastSeenAt: '2026-10-01T22:00:00.000Z' } };
+  it('leads with identity — presence as text, addresses, OS — and keeps evidence in a collapsed section', () => {
+    const graph = topologyGraphFixture();
+    graph.nodes[0] = { ...graph.nodes[0]!, kind: 'endpoint', label: 'DRT-HYG3', inventory };
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: NODE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.getByTestId('topology-presence')).toHaveTextContent('Agent offline');
+    expect(screen.getByTestId('topology-identity')).toHaveTextContent('10.1.2.57');
+    expect(screen.getByTestId('topology-identity')).toHaveTextContent('windows 10.0.19045');
+    expect(screen.getByText('Evidence and freshness').closest('details')).not.toHaveAttribute('open');
+  });
+
+  it('lists each reporter of a folded gateway and selects that reporter’s own canonical gateway', () => {
+    const graph = topologyGraphFixture();
+    const gatewayId = graph.nodes[0]!.id;
+    const reporter = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000b1', kind: 'endpoint' as const, label: 'FRONT-DESK' };
+    graph.nodes = [graph.nodes[0]!, reporter];
+    graph.relationships = [{ ...graph.relationships[0]!, kind: 'default_route', sourceNodeId: reporter.id, targetNodeId: gatewayId }];
+    graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.100', memberCount: 0, frontierToken: 't', authority: false,
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.100', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [gatewayId] } }];
+    const onSelectNode = vi.fn();
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} onSelectNode={onSelectNode} />);
+    expect(screen.getByTestId('topology-group-summary')).toHaveTextContent('1 device reports 10.1.2.100 as its default gateway');
+    fireEvent.click(screen.getByRole('button', { name: reporter.label }));
+    expect(onSelectNode).toHaveBeenCalledWith(gatewayId);
+    expect(screen.queryByTestId('topology-diagnose')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('topology-expand')).not.toBeInTheDocument();
+  });
+
+  it('offers SNMP port measurement for infrastructure, never for a workstation', () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({})));
+    const operations = { interfaceHealth: true, monitoring: false, canConfigure: true };
+    const graph = topologyGraphFixture();
+    graph.nodes[0] = { ...graph.nodes[0]!, kind: 'endpoint', role: null, label: 'DRT-HYG3', inventory };
+    const { unmount } = render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: NODE }} siteId={SITE} operations={operations} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.queryByTestId('topology-telemetry')).not.toBeInTheDocument();
+    unmount();
+    graph.nodes[0] = { ...graph.nodes[0]!, role: 'switch' };
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: NODE }} siteId={SITE} operations={operations} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.getByTestId('topology-telemetry')).toBeInTheDocument();
+  });
+});
