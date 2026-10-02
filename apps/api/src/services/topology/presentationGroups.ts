@@ -216,18 +216,29 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   }
 
   // 4. Address placement (Q4, labelled spec extension): an endpoint with no membership
-  //    whose inventory address falls inside exactly ONE LAN candidate across the site.
+  //    whose inventory address falls inside exactly ONE LAN address range across the site.
+  //    A range split into candidates by a gateway conflict is still one range: the
+  //    unverified tile is drawn in the candidate with the most observers (ties: smallest
+  //    key). This only places an unverified tile; it asserts no route for the device.
   const memberEndpoints = new Set(memberships.map((m) => m.endpointId));
   const lanCandidates = [...candidates.values()].filter((candidate) => candidate.networkClass === 'lan');
+  const observers = (candidate: Candidate) => new Set(candidate.memberships.map((m) => m.endpointId)).size;
   const unidentified: string[] = [];
   for (const row of input.unplaced) {
     if (memberEndpoints.has(row.endpointId)) continue;
-    const hits = new Set<string>();
+    const ranges = new Map<string, Candidate[]>();
     for (const address of row.addresses) {
-      for (const candidate of lanCandidates) if (cidrContains(candidate.prefix, address)) hits.add(candidate.key);
+      for (const candidate of lanCandidates) {
+        if (!cidrContains(candidate.prefix, address)) continue;
+        const range = `${candidate.family}|${candidate.prefix}`;
+        const list = ranges.get(range) ?? [];
+        if (!list.includes(candidate)) list.push(candidate);
+        ranges.set(range, list);
+      }
     }
-    if (hits.size === 1) candidates.get([...hits][0]!)!.addressMatches.add(row.endpointId);
-    else unidentified.push(row.endpointId);
+    if (ranges.size !== 1) { unidentified.push(row.endpointId); continue; }
+    const [home] = [...ranges.values()][0]!.sort((a, b) => observers(b) - observers(a) || bySmallest(a.key, b.key));
+    home!.addressMatches.add(row.endpointId);
   }
 
   // 5. One primary parent per endpoint: LAN before any other class, IPv4 before IPv6,

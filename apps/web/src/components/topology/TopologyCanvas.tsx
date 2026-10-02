@@ -16,17 +16,19 @@ function palette() {
     muted: token('--muted-foreground', '#64748b'), mutedBg: token('--muted', '#f1f5f9'), primary: token('--primary', '#3b56c4'),
     success: token('--success', '#16a34a'), warning: token('--warning-strong', '#b45309'), destructive: token('--destructive', '#dc2626') };
 }
+/** Cytoscape's own ellipsis truncates far too early on scaled canvases; clip in JS and let labels wrap. */
+const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const display = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified'
-  ? [node.label, node.detail].filter(Boolean).join('   ·   ') : [node.label, node.detail].filter(Boolean).join('\n');
+  ? [node.label, node.detail].filter(Boolean).join('   ·   ')
+  : [clip(node.label, node.kind === 'gateway' ? 26 : 22), node.detail ? clip(node.detail, 28) : null].filter(Boolean).join('\n');
 
 function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
   return [
     { selector: 'node', style: { shape: 'round-rectangle', width: 'data(width)', height: 'data(height)', 'background-color': c.card, 'border-width': 1, 'border-color': c.border,
-      label: 'data(display)', color: c.foreground, 'font-size': 12, 'font-weight': 500, 'text-wrap': 'ellipsis', 'text-max-width': 'data(textWidth)', 'text-valign': 'center',
+      label: 'data(display)', color: c.foreground, 'font-size': 12, 'font-weight': 500, 'text-wrap': 'wrap', 'text-max-width': 'data(textWidth)', 'text-valign': 'center',
       'text-halign': 'center', 'text-justification': 'left', 'text-margin-x': 18, 'line-height': 1.35, 'min-zoomed-font-size': 7,
       'background-image': 'data(icon)', 'background-width': 30, 'background-height': 30, 'background-position-x': 12, 'background-position-y': '50%', 'background-clip': 'none',
       'background-image-containment': 'over' } },
-    { selector: 'node[?multiline]', style: { 'text-wrap': 'wrap' } },
     { selector: 'node[kind="gateway"], node[kind="internet"]', style: { 'border-width': 1.5, 'border-color': c.primary, 'font-weight': 600, 'font-size': 13, 'background-width': 34, 'background-height': 34 } },
     { selector: 'node[kind="outside"]', style: { shape: 'round-diamond', 'border-style': 'dotted', 'background-image': 'none', 'text-margin-x': 0, color: c.muted } },
     { selector: 'node[kind="network"]', style: { 'border-style': 'dashed' } },
@@ -39,7 +41,7 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     { selector: 'node[health="failed_check"]', style: { 'border-color': c.destructive, 'border-width': 2.5 } },
     { selector: ':parent', style: { shape: 'round-rectangle', 'background-color': c.primary, 'background-opacity': 0.045, 'border-color': c.primary, 'border-opacity': 0.4,
       'border-width': 1.5, padding: '24px', 'background-image': 'none', 'text-valign': 'top', 'text-halign': 'center', 'text-margin-x': 0, 'text-margin-y': -6,
-      'font-size': 15, 'font-weight': 600, 'text-max-width': '2000px', 'min-zoomed-font-size': 4, color: c.foreground } },
+      'font-size': 'data(headerSize)', 'font-weight': 600, 'text-max-width': '4000px', 'min-zoomed-font-size': 4, color: c.foreground } },
     { selector: ':parent[kind="unidentified"], :parent[networkClass!="lan"][kind="group"]', style: { 'border-style': 'dashed', 'background-color': c.mutedBg, 'background-opacity': 0.5, 'border-color': c.muted, 'border-opacity': 0.6 } },
     { selector: 'edge', style: { width: 1.5, 'line-color': c.muted, 'line-opacity': 0.75, 'curve-style': 'bezier', 'line-style': 'dashed', 'line-dash-pattern': [6, 4] } },
     { selector: 'edge[style="physical"]', style: { 'line-style': 'solid', width: 2 } },
@@ -89,10 +91,10 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       const nodes: cytoscape.ElementDefinition[] = ordered.map((node) => {
         const width = sizes.get(node.id)?.width ?? 208, height = sizes.get(node.id)?.height ?? 60;
         const card = node.kind === 'group' || node.kind === 'unidentified';
-        return { group: 'nodes', data: { id: node.id, display: display(node), kind: node.kind, width, height, textWidth: `${Math.max(80, width - 64)}px`,
-          icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), multiline: !card && !!node.detail, presence: node.presence ?? undefined,
+        return { group: 'nodes', data: { id: node.id, display: display(node), kind: node.kind, width, height, textWidth: card ? '4000px' : `${Math.max(80, width - 60)}px`,
+          icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined,
           health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, networkClass: node.networkClass ?? undefined,
-          presentation: node.id.startsWith('presentation:'), ...(node.parent ? { parent: node.parent } : {}) },
+          presentation: node.id.startsWith('presentation:'), headerSize: 15, ...(node.parent ? { parent: node.parent } : {}) },
           ...(card ? {} : { position: points.get(node.id) ?? { x: 0, y: 0 } }) };
       });
       const edges: cytoscape.ElementDefinition[] = render.edges.map((edge) => ({ group: 'edges', data: { id: edge.id, source: edge.source, target: edge.target, style: edge.style, ...(edge.label ? { label: edge.label } : {}) } }));
@@ -109,6 +111,12 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       }
       renderer.nodes().ungrabify(); if (editable) renderer.nodes().grabify();
       renderer.elements().unselect(); if (selection) renderer.getElementById(selection.id).select();
+    });
+    // Card headers scale with the card (compound bounds are final only after the batch),
+    // so a site-wide fit still reads "10.1.2.0/24 · 70 devices".
+    renderer.nodes(':parent').forEach((card) => {
+      const chars = Math.max(10, String(card.data('display') ?? '').length);
+      card.data('headerSize', Math.round(Math.min(26, Math.max(14, (card.width() - 24) / (chars * 0.56)))));
     });
     if (fitted.current !== fitKey && positions.length) { renderer.fit(undefined, 48); fitted.current = fitKey; }
   }, [render, positions, boxes, selection, editable, fitKey]);

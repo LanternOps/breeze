@@ -63,6 +63,9 @@ describe('compileTopologyRender', () => {
     expect(byId.get(ids.a)).toMatchObject({ parent: P('net-lan'), glyph: 'workstation', presence: 'online', stale: false, unverified: false });
     expect(byId.get(ids.b)).toMatchObject({ parent: P('net-lan'), presence: 'offline', stale: true });
     expect(byId.get(ids.phone)).toMatchObject({ parent: P('net-lan'), glyph: 'phone', unverified: true });
+    // A nameless discovered device reads as what it is, with its address underneath.
+    expect(byId.get(ids.phone)).toMatchObject({ label: 'Yealink', detail: '10.1.2.200' });
+    expect(byId.get(ids.b)).toMatchObject({ label: 'FRONT-DESK', detail: '10.1.2.58 · Agent offline' });
   });
 
   it('replaces folded membership and route edges with the aggregate routes_via edge, oriented gateway-first for layout', () => {

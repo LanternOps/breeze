@@ -152,12 +152,21 @@ describe('buildPresentationGroups', () => {
     expect(v6.group!.members.find((m) => m.nodeId === E(41))).toMatchObject({ placement: 'address_match' });
     expect(unidentified(unique.nodes)).toHaveLength(0);
 
-    // Two candidates for the same prefix (conflict split): ambiguous, never placed.
-    const split = build(lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }], {
-      unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }],
-    }));
-    expect(networks(split.nodes).flatMap((node) => node.group!.members).some((m) => m.nodeId === E(40))).toBe(false);
-    expect(unidentified(split.nodes)[0]!.group!.members.map((m) => m.nodeId)).toEqual([E(40)]);
+    // One address range split by a gateway conflict is still ONE range: the device is drawn (unverified)
+    // in the candidate most observers report, so one misconfigured host cannot orphan the range's phones.
+    const split = build(lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' },
+      { n: 3, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }] }));
+    const home = networks(split.nodes).find((node) => node.group!.members.some((m) => m.nodeId === E(40)));
+    expect(home!.group).toMatchObject({ gatewayAddresses: ['10.1.2.1'], conflict: true });
+    expect(home!.group!.members.find((m) => m.nodeId === E(40))).toMatchObject({ placement: 'address_match', primary: true });
+    expect(unidentified(split.nodes)).toHaveLength(0);
+    // A tie is broken by the stable candidate key, not by input order.
+    const tie = (order: number[]) => {
+      const observers = [{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }];
+      const nodes = build(lan(order.map((i) => observers[i]!), { unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }] })).nodes;
+      return networks(nodes).find((node) => node.group!.members.some((m) => m.nodeId === E(40)))!.group!.gatewayAddresses;
+    };
+    expect(tie([0, 1])).toEqual(tie([1, 0]));
 
     // Overlapping prefixes: also ambiguous.
     const overlap = build(lan([{ n: 1, prefix: '10.0.0.0/8' }, { n: 2, prefix: '10.1.2.0/24' }], {

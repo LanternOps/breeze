@@ -667,6 +667,7 @@
     "devices_one": "{{count}} device",
     "devices_other": "{{count}} devices",
     "moreOutside_one": "{{count}} more outside this view",
-    "moreOutside_other": "{{count}} more outside this view"
+    "moreOutside_other": "{{count}} more outside this view",
+    "gatewayAddressMatch": "A discovered device uses this address (address match only, not verified):"
   }
 }

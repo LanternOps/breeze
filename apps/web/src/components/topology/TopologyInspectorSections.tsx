@@ -49,8 +49,12 @@ export function GroupSummary({ graph, group, onSelectNode }: { graph: GraphRespo
     const reporters = g.canonicalNodeIds.flatMap((gatewayId) => graph.relationships
       .filter((edge) => edge.kind === 'default_route' && edge.targetNodeId === gatewayId)
       .map((edge) => ({ gatewayId, reporter: label(edge.sourceNodeId), freshness: edge.freshness })));
+    // Inventory at the same address is a hint, never an identity merge (D:88: binding hardware to a gateway role needs evidence).
+    const sameAddress = graph.nodes.filter((node) => g.address && node.inventory?.addresses.includes(g.address));
     return <div data-testid="topology-group-summary" className="space-y-3 text-sm">
       <p>{t('grouped.gatewayExplanation', { address: g.address, count: g.observerCount })}</p>
+      {sameAddress.map((node) => <p key={node.id} data-testid="topology-gateway-address-match" className="text-muted-foreground">{t('grouped.gatewayAddressMatch')}{' '}
+        <button className="text-primary underline underline-offset-4" onClick={() => onSelectNode?.(node.id)}>{[node.inventory?.vendor, node.inventory?.model].filter(Boolean).join(' ') || node.label}</button></p>)}
       <div><p className="font-medium">{t('grouped.reportedBy')}</p><ul className="mt-1 max-h-64 space-y-1 overflow-auto">{reporters.map((item) =>
         <li key={`${item.gatewayId}:${item.reporter}`}><button className="text-left text-primary underline underline-offset-4" onClick={() => onSelectNode?.(item.gatewayId)}>{item.reporter}</button>
           {item.freshness === 'stale' && <span className="ml-2 text-xs text-muted-foreground">{t('grouped.stale')}</span>}</li>)}</ul>

@@ -28,7 +28,7 @@ const sameBoxes = (a: LayoutBox[], b: LayoutBox[]) => a.length === b.length && a
 const isCard = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified';
 /** Inside a card: infrastructure first, then servers, workstations, printers, phones, the rest; unverified placements last. */
 const GLYPH_RANK: Record<string, number> = { router: 0, firewall: 0, switch: 1, access_point: 1, server: 2, nas: 2, workstation: 3, laptop: 3, printer: 4, phone: 5, camera: 6, iot: 6 };
-const memberRank = (node: RenderNode) => (GLYPH_RANK[node.glyph] ?? 7) + (node.unverified ? 10 : 0);
+const memberRank = (node: RenderNode) => (GLYPH_RANK[node.glyph] ?? 7) + (node.unverified && (GLYPH_RANK[node.glyph] ?? 7) > 1 ? 10 : 0);
 
 export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');

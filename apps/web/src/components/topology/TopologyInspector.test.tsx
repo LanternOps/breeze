@@ -137,13 +137,18 @@ describe('grouped overview inspector (2026-10-02)', () => {
     const graph = topologyGraphFixture();
     const gatewayId = graph.nodes[0]!.id;
     const reporter = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000b1', kind: 'endpoint' as const, label: 'FRONT-DESK' };
-    graph.nodes = [graph.nodes[0]!, reporter];
+    const udm = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000b2', kind: 'endpoint' as const, label: '10.1.2.100',
+      inventory: { ...inventory, source: 'discovered_asset' as const, name: null, addresses: ['10.1.2.100'], vendor: 'Ubiquiti', model: 'UDM-Pro', type: 'router' } };
+    graph.nodes = [graph.nodes[0]!, reporter, udm];
     graph.relationships = [{ ...graph.relationships[0]!, kind: 'default_route', sourceNodeId: reporter.id, targetNodeId: gatewayId }];
     graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.100', memberCount: 0, frontierToken: 't', authority: false,
       group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.100', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [gatewayId] } }];
     const onSelectNode = vi.fn();
     render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} onSelectNode={onSelectNode} />);
     expect(screen.getByTestId('topology-group-summary')).toHaveTextContent('1 device reports 10.1.2.100 as its default gateway');
+    expect(screen.getByTestId('topology-gateway-address-match')).toHaveTextContent('not verified');
+    fireEvent.click(screen.getByRole('button', { name: 'Ubiquiti UDM-Pro' }));
+    expect(onSelectNode).toHaveBeenCalledWith(udm.id);
     fireEvent.click(screen.getByRole('button', { name: reporter.label }));
     expect(onSelectNode).toHaveBeenCalledWith(gatewayId);
     expect(screen.queryByTestId('topology-diagnose')).not.toBeInTheDocument();

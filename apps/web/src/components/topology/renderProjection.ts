@@ -18,15 +18,23 @@ export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 's
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
 export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number };
 
-const memberDetail = (node: GraphNode) => {
-  const address = node.inventory?.addresses[0] ?? null;
-  const offline = node.inventory?.presence.state === 'offline' && node.inventory.presence.source === 'agent';
-  return [address && address !== node.label ? address : null, offline ? 'Agent offline' : null].filter(Boolean).join(' · ') || null;
-};
+/**
+ * Tile title + second line. A nameless device whose server label is only its address reads as
+ * what it is ("Yealink T54W") with the address underneath, so a card of phones is not a wall of IPs.
+ */
+function tileText(node: GraphNode): { title: string; detail: string | null } {
+  const inventory = node.inventory;
+  const address = inventory?.addresses[0] ?? null;
+  const product = [inventory?.vendor, inventory?.model].filter(Boolean).join(' ');
+  const title = !inventory?.name && address && node.label === address && product ? product : node.label;
+  const offline = inventory?.presence.state === 'offline' && inventory.presence.source === 'agent';
+  return { title, detail: [address && address !== title ? address : null, offline ? 'Agent offline' : null].filter(Boolean).join(' · ') || null };
+}
 
 function canonicalNode(node: GraphNode, parent?: string, member?: { stale: boolean; placement: string }): RenderNode {
   const kind: RenderKind = node.kind === 'gateway' ? 'gateway' : node.kind === 'internet' ? 'internet' : node.kind === 'network' ? 'network' : 'device';
-  return { id: node.id, label: node.label, detail: memberDetail(node), kind, glyph: topologyGlyph(node), ...(parent ? { parent } : {}),
+  const text = tileText(node);
+  return { id: node.id, label: text.title, detail: text.detail, kind, glyph: topologyGlyph(node), ...(parent ? { parent } : {}),
     presence: node.inventory?.presence.state ?? null, health: node.health.status === 'unknown' ? null : node.health.status,
     stale: member ? member.stale : false, unverified: member?.placement === 'address_match', networkClass: null, memberCount: 0 };
 }
