@@ -92,9 +92,9 @@ export async function runOrgChargePeriod(input: { orgId: string; periodStart: st
     RETURNING id`));
   if (!run) return { kind: 'skipped', reason: 'already_run' };
 
-  // 2. Freeze ONE candidate set for this run (Codex review finding 5): the
-  //    aggregate and the claim both read this temp table, so they process the
-  //    identical invocation ids by construction. Temp tables carry no RLS and
+  // 2. Freeze ONE candidate set for this run: the aggregate and the claim both
+  //    read this temp table, so they process the identical invocation ids by
+  //    construction (breeze_app holds TEMP via ensureAppRole). Temp tables carry no RLS and
   //    die at commit/rollback (one per transaction: the sweep runs each org in
   //    its own transaction).
   await db.execute(sql`
@@ -177,12 +177,13 @@ export async function runOrgChargePeriod(input: { orgId: string; periodStart: st
         unpriced_invocation_count = ${unpriced}, late_invocation_count = ${late}, completed_at = now()
     WHERE id = ${run.id}::uuid`);
 
-  // 6. Rows that aged past the lookback unclaimed are never billed — count and
-  //    say so (Codex review finding 13), never silently. Only the month that
-  //    newly aged out at THIS close is scanned (the previous month's run counted
-  //    the one before), so the scan stays one month of rows instead of the
-  //    org's whole retained history inside a transaction whose FK checks hold
-  //    FOR KEY SHARE on the org row.
+  // 6. Rows that aged past the lookback unclaimed are never billed — count them
+  //    so the sweep can say so, never silently. Only the month that newly aged
+  //    out at THIS close is scanned (the previous month's run counted the one
+  //    before), so the scan stays one month of rows instead of the org's whole
+  //    retained history inside a transaction whose FK checks hold FOR KEY SHARE
+  //    on the org row. CHARGEBACK_RETENTION_FLOOR_DAYS keeps that month's rows
+  //    from being pruned before this count.
   const [expiredRow] = rowsOf<{ n: number }>(await db.execute(sql`
     SELECT count(*)::int AS n FROM ai_invocations i
     WHERE i.org_id = ${input.orgId}::uuid AND i.chargeable AND i.ledger_mode = 'authoritative'
