@@ -213,6 +213,11 @@ const timestampText = (value: string | Date | null) => (value === null ? null : 
  * `max(3 x cadence, 900 s)` expiry, extended by compact confirmations only while the
  * published digest is still the current one. Neighbour rows are narrowed to the
  * `addresses` asked about (canonical text, as the collection schema normalises it).
+ *
+ * Cost: sources are selected, ordered and capped on plain columns FIRST (the graph read
+ * holds the publication lock); only the <= NEIGHBOR_SOURCE_CAP chosen neighbour sources and
+ * their interfaces sources ever have a baseline document read or a JSON predicate evaluated.
+ * A capped slot whose document then fails the epoch/digest checks is simply unused.
  */
 export async function readNeighborEvidence(
   tx: Pick<typeof db, 'execute'>, scope: TopologyScope, view: Exclude<GraphQuery['view'], 'physical'>, exposure: ReadExposure, requested: Iterable<string>,
@@ -223,54 +228,65 @@ export async function readNeighborEvidence(
   if (!addresses.length) return { baselines: [], limited };
   const siteNodes = nodeFilter(scope, { view, hops: 1, includeHealth: false, limit: 1 }, 'n', exposure);
   const addressArray = `{${addresses.map((address) => `"${address.replace(/["\\]/g, '')}"`).join(',')}}`;
-  const rows = await tx.execute<BaselineRow>(sql`WITH site_endpoints AS MATERIALIZED (
+  const cheap = sql`cs.producer_kind = 'agent' AND cs.revoked_at IS NULL AND cs.published_digest IS NOT NULL`;
+  const [result] = await tx.execute<{ capped: string | number; sources: BaselineRow[] | null }>(sql`WITH site_endpoints AS MATERIALIZED (
       SELECT n.id FROM topology_nodes n WHERE ${siteNodes} AND n.kind = 'endpoint'
-    ), qualified AS MATERIALIZED (
-      SELECT DISTINCT ON (cs.id) cs.id, cs.producer_id, cs.protocol, cs.context_key, cs.address_family, cs.producer_epoch, b.node_id,
+    ), capped_sources AS MATERIALIZED (
+      SELECT cs.id, cs.producer_id, cs.context_key, ob.node_id,
+        row_number() OVER (ORDER BY cs.producer_id, cs.context_key, cs.address_family, cs.id) AS ord
+      FROM topology_collection_sources cs
+      CROSS JOIN LATERAL (SELECT b.node_id FROM topology_node_bindings b JOIN site_endpoints s ON s.id = b.node_id
+        WHERE ${scoped(scope, 'b')} AND b.device_id = cs.producer_id ORDER BY b.id LIMIT 1) ob
+      WHERE ${scoped(scope, 'cs')} AND cs.protocol = 'neighbors' AND ${cheap}
+      ORDER BY cs.producer_id, cs.context_key, cs.address_family, cs.id
+      LIMIT ${NEIGHBOR_SOURCE_CAP + 1}
+    ), kept AS (
+      SELECT * FROM capped_sources WHERE ord <= ${NEIGHBOR_SOURCE_CAP}
+    ), selected AS MATERIALIZED (
+      SELECT k.id, k.node_id FROM kept k
+      UNION ALL SELECT cs.id, k.node_id FROM topology_collection_sources cs
+        JOIN (SELECT DISTINCT producer_id, context_key, node_id FROM kept) k ON k.producer_id = cs.producer_id AND k.context_key = cs.context_key
+        WHERE ${scoped(scope, 'cs')} AND cs.protocol = 'interfaces' AND ${cheap}
+    ), chosen AS (
+      SELECT cs.id, cs.producer_id, cs.protocol, cs.context_key, cs.address_family, cs.producer_epoch, x.node_id,
         (cs.published_digest = cs.content_digest AND cs.last_outcome IN ('complete','partial')) AS compact,
         cs.confirmed_through_at, cs.fresh_until, cs.published_baseline
-      FROM topology_collection_sources cs
-      JOIN topology_node_bindings b ON ${scoped(scope, 'b')} AND b.device_id = cs.producer_id
-      JOIN site_endpoints s ON s.id = b.node_id
-      WHERE ${scoped(scope, 'cs')} AND cs.producer_kind = 'agent' AND cs.protocol IN ('neighbors','interfaces') AND cs.revoked_at IS NULL
-        AND cs.published_digest IS NOT NULL AND cs.published_baseline->>'producerEpoch' = cs.producer_epoch
+      FROM selected x JOIN topology_collection_sources cs ON cs.id = x.id AND ${scoped(scope, 'cs')}
+      WHERE cs.published_baseline->>'producerEpoch' = cs.producer_epoch
         AND cs.published_baseline->>'contentDigest' = cs.published_digest
         AND cs.published_baseline->'section'->>'kind' = cs.protocol
-      ORDER BY cs.id, b.id
-    ), neighbor_sources AS (
-      SELECT * FROM qualified WHERE protocol = 'neighbors' ORDER BY producer_id, context_key, address_family, id LIMIT ${NEIGHBOR_SOURCE_CAP + 1}
-    ), chosen AS (
-      SELECT * FROM neighbor_sources
-      UNION ALL SELECT q.* FROM qualified q WHERE q.protocol = 'interfaces'
-        AND EXISTS (SELECT 1 FROM neighbor_sources ns WHERE ns.producer_id = q.producer_id AND ns.context_key = q.context_key AND ns.node_id = q.node_id)
+    ), assembled AS (
+      SELECT c.protocol, c.producer_id, c.context_key, c.address_family, c.id, jsonb_build_object(
+        'sourceId', c.id, 'producerId', c.producer_id, 'protocol', c.protocol, 'contextKey', c.context_key, 'addressFamily', c.address_family,
+        'observerNodeId', c.node_id, 'observerLabel', (SELECT ${nodeLabelSql} FROM topology_nodes n WHERE n.id = c.node_id),
+        'outcome', c.published_baseline->'section'->>'outcome',
+        'omittedRowCount', CASE WHEN c.published_baseline->'section'->>'omittedRowCount' ~ '^[0-9]{1,10}$' THEN c.published_baseline->'section'->>'omittedRowCount' END,
+        'confirmedAt', CASE WHEN c.compact THEN greatest(run.effective_at, c.confirmed_through_at) ELSE run.effective_at END,
+        'expiresAt', CASE WHEN c.compact THEN greatest(run.fresh_until, c.fresh_until) ELSE run.fresh_until END,
+        'rows', CASE WHEN c.protocol = 'neighbors' THEN (SELECT coalesce(jsonb_agg(f.r ORDER BY f.o), '[]'::jsonb) FROM (
+            SELECT x.r, x.o FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.published_baseline->'section'->'rows') = 'array'
+              THEN c.published_baseline->'section'->'rows' ELSE '[]'::jsonb END) WITH ORDINALITY AS x(r, o)
+            WHERE x.r->>'address' = ANY(${addressArray}::text[]) ORDER BY x.o LIMIT ${NEIGHBOR_ROWS_PER_SOURCE_CAP + 1}) f)
+          ELSE CASE WHEN jsonb_typeof(c.published_baseline->'section'->'rows') = 'array' THEN c.published_baseline->'section'->'rows' ELSE '[]'::jsonb END
+        END,
+        'interfaceIds', CASE WHEN c.protocol = 'interfaces' THEN (SELECT coalesce(jsonb_object_agg(ti.interface_key, ti.id ORDER BY ti.id), '{}'::jsonb)
+          FROM topology_interfaces ti WHERE ${scoped(scope, 'ti')} AND ti.owner_node_id = c.node_id AND ti.epoch = c.producer_epoch AND ti.retired_at IS NULL)
+          ELSE '{}'::jsonb END) AS source
+      FROM chosen c
+      LEFT JOIN LATERAL (
+        SELECT r.effective_at, r.effective_at + make_interval(secs => greatest(3 * r.expected_interval_seconds, 900)) AS fresh_until
+        FROM topology_collection_runs r
+        WHERE ${scoped(scope, 'r')} AND r.source_id = c.id AND r.producer_epoch = c.producer_epoch
+          AND c.published_baseline->>'sequence' ~ '^[0-9]{1,20}$' AND r.sequence = (c.published_baseline->>'sequence')::numeric
+        LIMIT 1
+      ) run ON true
     )
-    SELECT c.id AS "sourceId", c.producer_id AS "producerId", c.protocol, c.context_key AS "contextKey", c.address_family AS "addressFamily",
-      c.node_id AS "observerNodeId", (SELECT ${nodeLabelSql} FROM topology_nodes n WHERE n.id = c.node_id) AS "observerLabel",
-      c.published_baseline->'section'->>'outcome' AS outcome,
-      CASE WHEN c.published_baseline->'section'->>'omittedRowCount' ~ '^[0-9]{1,10}$' THEN c.published_baseline->'section'->>'omittedRowCount' END AS "omittedRowCount",
-      CASE WHEN c.compact THEN greatest(run.effective_at, c.confirmed_through_at) ELSE run.effective_at END AS "confirmedAt",
-      CASE WHEN c.compact THEN greatest(run.fresh_until, c.fresh_until) ELSE run.fresh_until END AS "expiresAt",
-      CASE WHEN c.protocol = 'neighbors' THEN (SELECT coalesce(jsonb_agg(f.r ORDER BY f.o), '[]'::jsonb) FROM (
-          SELECT x.r, x.o FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.published_baseline->'section'->'rows') = 'array'
-            THEN c.published_baseline->'section'->'rows' ELSE '[]'::jsonb END) WITH ORDINALITY AS x(r, o)
-          WHERE x.r->>'address' = ANY(${addressArray}::text[]) ORDER BY x.o LIMIT ${NEIGHBOR_ROWS_PER_SOURCE_CAP + 1}) f)
-        ELSE CASE WHEN jsonb_typeof(c.published_baseline->'section'->'rows') = 'array' THEN c.published_baseline->'section'->'rows' ELSE '[]'::jsonb END
-      END AS rows,
-      CASE WHEN c.protocol = 'interfaces' THEN (SELECT coalesce(jsonb_object_agg(ti.interface_key, ti.id ORDER BY ti.id), '{}'::jsonb)
-        FROM topology_interfaces ti WHERE ${scoped(scope, 'ti')} AND ti.owner_node_id = c.node_id AND ti.epoch = c.producer_epoch AND ti.retired_at IS NULL)
-        ELSE '{}'::jsonb END AS "interfaceIds"
-    FROM chosen c
-    LEFT JOIN LATERAL (
-      SELECT r.effective_at, r.effective_at + make_interval(secs => greatest(3 * r.expected_interval_seconds, 900)) AS fresh_until
-      FROM topology_collection_runs r
-      WHERE ${scoped(scope, 'r')} AND r.source_id = c.id AND r.producer_epoch = c.producer_epoch
-        AND c.published_baseline->>'sequence' ~ '^[0-9]{1,20}$' AND r.sequence = (c.published_baseline->>'sequence')::numeric
-      LIMIT 1
-    ) run ON true
-    ORDER BY c.protocol, c.producer_id, c.context_key, c.address_family, c.id`);
+    SELECT (SELECT count(*) FROM capped_sources) AS capped,
+      (SELECT jsonb_agg(a.source ORDER BY a.protocol, a.producer_id, a.context_key, a.address_family, a.id) FROM assembled a) AS sources`);
 
+  if (Number(result?.capped ?? 0) > NEIGHBOR_SOURCE_CAP) limited = true;
+  const rows = Array.isArray(result?.sources) ? result.sources : [];
   const neighbors = rows.filter((row) => row.protocol === 'neighbors');
-  if (neighbors.length > NEIGHBOR_SOURCE_CAP) limited = true;
   const interfaces = new Map<string, BaselineRow>();
   for (const row of rows) {
     if (row.protocol !== 'interfaces') continue;
@@ -278,7 +294,7 @@ export async function readNeighborEvidence(
     // Two interface scopes for one context (per-family sections) are ambiguous: use neither.
     interfaces.set(key, interfaces.has(key) ? { ...row, rows: null } : row);
   }
-  const baselines = neighbors.slice(0, NEIGHBOR_SOURCE_CAP).map((row): NeighborObserverBaseline => {
+  const baselines = neighbors.map((row): NeighborObserverBaseline => {
     const list = Array.isArray(row.rows) ? row.rows as NeighborRowInput[] : [];
     const iface = interfaces.get(JSON.stringify([row.observerNodeId, row.producerId, row.contextKey]));
     const ifaceRows = iface && Array.isArray(iface.rows) ? iface.rows as InterfaceRowInput[] : null;

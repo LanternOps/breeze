@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  buildNeighborEvidenceIndex, canonicalMac, qualifyNeighborRow, topologyOsContextKey,
+  NEIGHBOR_SOURCE_CAP, buildNeighborEvidenceIndex, canonicalMac, qualifyNeighborRow, readNeighborEvidence, topologyOsContextKey,
   type InterfaceRowInput, type NeighborObserverBaseline, type NeighborRowInput,
 } from './neighborEvidence';
 
@@ -156,5 +158,29 @@ describe('buildNeighborEvidenceIndex', () => {
     const index = buildNeighborEvidenceIndex({ baselines: many, limited: false }, NOW, { tupleBudget: 450 });
     expect(index.tupleCount).toBe(450);
     expect(index.coverage).toBe('limited');
+  });
+});
+
+describe('readNeighborEvidence query shape', () => {
+  it('selects, orders and caps sources on cheap columns before any baseline payload is read', async () => {
+    const executed: { sql: string; params: unknown[] }[] = [];
+    const tx = { execute: async (query: SQL) => { executed.push(new PgDialect().sqlToQuery(query)); return []; } };
+    await readNeighborEvidence(tx as never, { orgId: OBSERVER, siteId: SOURCE }, 'overview', { physical: true, excluded: new Set() }, ['10.1.2.80']);
+    expect(executed).toHaveLength(1);
+    const { sql: text, params } = executed[0]!;
+    // Locate the source cap: the LIMIT whose parameter is NEIGHBOR_SOURCE_CAP + 1 (overflow is detectable).
+    const capIndex = params.findIndex((value) => value === NEIGHBOR_SOURCE_CAP + 1);
+    expect(capIndex).toBeGreaterThanOrEqual(0);
+    const capAt = text.indexOf(`LIMIT $${capIndex + 1}`);
+    expect(capAt).toBeGreaterThan(0);
+    const beforeCap = text.slice(0, capAt);
+    expect(beforeCap).toContain('topology_collection_sources');
+    // Nothing up to the source cap may detoast or evaluate a baseline document.
+    expect(beforeCap).not.toMatch(/baseline/);
+  });
+
+  it('asks nothing when there is nothing to ask about', async () => {
+    const tx = { execute: async () => { throw new Error('no read expected'); } };
+    await expect(readNeighborEvidence(tx as never, { orgId: OBSERVER, siteId: SOURCE }, 'overview', { physical: true, excluded: new Set() }, [])).resolves.toEqual({ baselines: [], limited: false });
   });
 });
