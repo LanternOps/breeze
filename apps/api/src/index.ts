@@ -181,6 +181,7 @@ import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
+import { runStartupTaskWithRetry } from './services/startupTaskRetry';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -1834,7 +1835,11 @@ async function bootstrap(): Promise<void> {
   // partners × ~40 queries each must never delay /health. One-time per partner
   // (partners.settings marker), each partner its own transaction; opt out with
   // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
-  void ensureBuiltInMonitorsForAllPartners()
+  void runStartupTaskWithRetry('built-in monitors provisioning', () => ensureBuiltInMonitorsForAllPartners(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error, result }) =>
+      console.error(`[startup] Built-in monitors provisioning attempt ${attempt + 1} failed:`, error ?? `${result?.failed} partner(s) failed`),
+  })
     .then((result) => {
       if (result.provisioned > 0 || result.failed > 0) {
         console.log(
@@ -1850,7 +1855,11 @@ async function bootstrap(): Promise<void> {
   // write; this seals values stored before that. Detached after serve() like
   // the built-ins above: readers open both forms, so nothing waits on it.
   // Idempotent — once every value is sealed it finds nothing to do.
-  void sealUnsealedSettingsSecrets()
+  void runStartupTaskWithRetry('settings secret sealing', () => sealUnsealedSettingsSecrets(), {
+    hasFailures: (r) => Object.values(r).some((s) => s.failed > 0),
+    onFailure: ({ attempt, error }) =>
+      console.error(`[startup] Sealing stored settings secrets attempt ${attempt + 1} failed:`, error ?? 'row failures'),
+  })
     .then((result) => {
       const touched = Object.entries(result).filter(([, stats]) => stats.scanned > 0);
       if (touched.length > 0) {
@@ -1889,7 +1898,14 @@ async function bootstrap(): Promise<void> {
   // until there is evidence it was disabled. Detached after serve() like the
   // sweep above; idempotent (a destination whose current key is recorded is
   // skipped) and never logs a key.
-  void baselineCredentialHistory()
+  void runStartupTaskWithRetry('backup storage key history', () => baselineCredentialHistory(), {
+    hasFailures: (r) => r.failed > 0,
+    onFailure: ({ attempt, error }) =>
+      console.error(
+        `[startup] Recording backup storage key history attempt ${attempt + 1} failed:`,
+        error instanceof Error ? error.name : error ? 'unknown' : 'destination failures',
+      ),
+  })
     .then((result) => {
       if (result.recorded > 0 || result.failed > 0) {
         console.log(
