@@ -594,3 +594,20 @@ it('self-manages the per-rule convert-to-monitor POST (its converter opens its o
   expect(isSelfManagedDbContextRoute('POST', `/api/v1/monitor-definitions/convert-from-rule/${rule}/extra`)).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/monitor-definitions')).toBe(false);
 });
+
+// AI model registry W05 (#7603): the two model pickers run many short loader
+// transactions; they must not hold the request's connection meanwhile (#1105).
+it.each([
+  ['GET', '/api/v1/ai/models/choices/chat'],
+  ['GET', '/api/v1/ai/models/choices/chat/'],
+  ['GET', '/api/v1/ai/models/choices/ai-agents'],
+])('W05: %s %s manages its own DB context', (method, path) => {
+  expect(isSelfManagedDbContextRoute(method, path)).toBe(true);
+});
+it('W05: the W04 snapshot GET /ai/models and every sibling keep the request context', () => {
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models/choices')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/models/choices/chat')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models/choices/chat/extra')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models/offerings')).toBe(false);
+});

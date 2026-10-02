@@ -223,6 +223,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },
   'aiModels/assignments.ts': { exempt: 'human_only_ai_governance', note: 'Per-feature model defaults and permitted sets -- the AI must not choose its own model policy.' },
+  'aiModels/choices.ts': { exempt: 'ai_transport', note: 'Chat-composer and agent-policy model pickers (W05): a UI read of the caller\'s own permitted offerings; agents choose a model through policy, not this list.' },
   'aiModels/connections.ts': { exempt: 'human_only_ai_governance', note: 'BYO model connections and keys -- a credential, and the AI must not manage its own model provider.' },
   'aiModels/index.ts': { exempt: 'human_only_ai_governance', note: 'Partner AI model registry snapshot -- what models and keys the AI may use; the AI must not manage its own model provider.' },
   'aiModels/offerings.ts': { exempt: 'human_only_ai_governance', note: 'Enabling, pricing and gating AI models -- the AI must not widen its own model access or spend.' },
