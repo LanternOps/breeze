@@ -35,6 +35,7 @@ const PRINTER_MAC = '00:11:22:33:44:77';
 const GATEWAY_MAC = '00:00:5e:00:01:01';
 const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn, 'topology neighbour corroboration test'));
 type NeighborRow = Extract<NetworkContextFull['sections'][number], { kind: 'neighbors' }>['rows'][number];
+type InterfaceKind = Extract<NetworkContextFull['sections'][number], { kind: 'interfaces' }>['rows'][number]['kind'];
 const neighbor = (rowKey: string, address: string, mac: string, state: NeighborRow['state'] = 'reachable'): NeighborRow =>
   ({ rowKey, address, family: 'ipv4', zone: null, interfaceKey: 'if-1', mac, state, isRouter: null });
 const gatewayRow = neighbor('nb-gateway', '10.1.2.1', GATEWAY_MAC);
@@ -70,8 +71,8 @@ async function lanSite(observers: number) {
     producers.push({ scope, producerId: deviceId, producerKind: 'agent', producerEpoch: config.producerEpoch!,
       configurationRevision: config.configurationRevision!, sourceIdentity: config.sourceIdentity! });
   }
-  /** One full report from observer `index` with the given ARP rows. */
-  const report = async (index: number, sequence: string, rows: NeighborRow[]) => {
+  /** One full report from observer `index` with the given ARP rows (and, optionally, its interface kind and CIDR). */
+  const report = async (index: number, sequence: string, rows: NeighborRow[], iface: { kind?: InterfaceKind; address?: string; prefixLength?: number } = {}) => {
     const producer = producers[index]!;
     const value = networkContextFixture();
     Object.assign(value, { producerEpoch: producer.producerEpoch, sequence, snapshotId: crypto.randomUUID(),
@@ -79,7 +80,8 @@ async function lanSite(observers: number) {
     const interfaces = value.sections.find((section) => section.kind === 'interfaces')!;
     const routes = value.sections.find((section) => section.kind === 'routes')!;
     const neighbors = value.sections.find((section) => section.kind === 'neighbors')!;
-    interfaces.rows[0]!.addresses = [{ ...interfaces.rows[0]!.addresses[0]!, address: `10.1.2.${10 + index}`, prefixLength: 24 }];
+    interfaces.rows[0]!.addresses = [{ ...interfaces.rows[0]!.addresses[0]!, address: iface.address ?? `10.1.2.${10 + index}`, prefixLength: iface.prefixLength ?? 24 }];
+    if (iface.kind) interfaces.rows[0]!.kind = iface.kind;
     routes.rows[0]!.nextHops = [{ ...routes.rows[0]!.nextHops[0]!, address: '10.1.2.1' }];
     Object.assign(neighbors, { rows, rowCount: rows.length });
     for (const section of value.sections) section.contentDigest = topologySectionDigest(value, section, producer.sourceIdentity);
@@ -148,6 +150,18 @@ describe('neighbour-cache corroboration over published baselines', () => {
     await system(() => db.execute(sql`UPDATE topology_collection_sources SET producer_epoch = 'rotated-epoch'
       WHERE org_id=${site.orgId}::uuid AND producer_id=${site.deviceIds[0]}::uuid AND protocol='neighbors'`));
     expect((await site.placement()).member).toMatchObject({ placement: 'address_match' });
+  });
+
+  it('classifies each card by the reporting interface kind, not the CIDR (#7819)', async () => {
+    const site = await lanSite(3);
+    // WireGuard on RFC1918, a genuine CGNAT LAN on Wi-Fi, and CGNAT on an interface of unknown kind.
+    await site.report(0, '1', [], { kind: 'tunnel' });
+    await site.report(1, '1', [], { kind: 'wifi', address: '100.64.0.11', prefixLength: 16 });
+    await site.report(2, '1', [], { kind: 'unknown', address: '100.72.0.12', prefixLength: 16 });
+    await site.publish();
+    const body = await site.graph();
+    const classes = Object.fromEntries(body.presentation.nodes.filter((node) => node.group?.kind === 'network').map((node) => [node.group!.prefix, node.group!.networkClass]));
+    expect(classes).toMatchObject({ '10.1.2.0/24': 'overlay', '100.64.0.0/16': 'lan', '100.72.0.0/16': 'overlay' });
   });
 
   it('reads only its own org and site', async () => {
