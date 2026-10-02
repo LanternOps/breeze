@@ -100,6 +100,24 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     if (tab === 'cli') void initializeCli();
   };
 
+  // One parent key per site and user, reused across Download / Generate Link
+  // clicks; the server mints one only when there is no good one (#7345).
+  async function getAddDeviceParent(): Promise<{ id: string; reused: boolean } | { error: string }> {
+    const keyRes = await fetchWithAuth('/enrollment-keys/add-device-parent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ siteId, orgId }),
+    });
+    if (!keyRes.ok) {
+      const body = await keyRes.json().catch(() => ({}));
+      return {
+        error: body.error || t('setup.enroll.errors.createEnrollmentKeyFailed', { status: keyRes.status }),
+      };
+    }
+    const data = (await keyRes.json()) as { id: string; reused?: boolean };
+    return { id: data.id, reused: data.reused === true };
+  }
+
   // --- Installer download ---
   const handleDownload = async () => {
     if (downloading) return;
@@ -108,30 +126,18 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setDownloadSuccess(false);
 
     try {
-      // Create enrollment key scoped to the setup site. maxUsage is
-      // deliberately left unset — it is an enforced enrollment budget, not a
-      // display label. See the note in AddDeviceModal.handleDownload (#2992);
-      // on Windows and the macOS app-bundle path the installer's real
+      // The setup site's parent key, shared with the Add Device modal (#7345):
+      // reused while still good, minted only when not. Its max_usage stays 1
+      // — an enforced enrollment budget, not a display label (#2992). On
+      // Windows and the macOS app-bundle path the installer's real
       // device-count cap lives on the bootstrap token (on the legacy macOS zip
-      // fallback it lives on a child key), and the Enrollment Keys list now
-      // reads the former.
-      const keyRes = await fetchWithAuth('/enrollment-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: `Setup installer (${new Date().toISOString().slice(0, 10)})`,
-          siteId,
-          orgId,
-        }),
-      });
-
-      if (!keyRes.ok) {
-        const body = await keyRes.json().catch(() => ({}));
-        setDownloadError(body.error || t('setup.enroll.errors.createEnrollmentKeyFailed', { status: keyRes.status }));
+      // fallback it lives on a child key), and the Enrollment Keys list reads
+      // the former.
+      const parent = await getAddDeviceParent();
+      if ('error' in parent) {
+        setDownloadError(parent.error);
         return;
       }
-
-      const keyData = await keyRes.json();
 
       // Download installer
       const dlController = new AbortController();
@@ -139,9 +145,10 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       let dlRes: Response;
       try {
         dlRes = await fetchWithAuth(
-          // discardKeyOnFailure (#7217): a failed build must not leave this
-          // freshly minted parent key live.
-          `/enrollment-keys/${keyData.id}/installer/${selectedPlatform}?count=${deviceCount}&discardKeyOnFailure=1`,
+          // discardKeyOnFailure (#7217): a failed build must not leave a
+          // freshly minted parent key live. Never for a reused parent — it
+          // already backs installers delivered earlier.
+          `/enrollment-keys/${parent.id}/installer/${selectedPlatform}?count=${deviceCount}${parent.reused ? '' : '&discardKeyOnFailure=1'}`,
           { signal: dlController.signal },
         );
       } finally {
@@ -186,25 +193,13 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
     setGeneratedLink('');
 
     try {
-      const keyRes = await fetchWithAuth('/enrollment-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: `Setup link (${new Date().toISOString().slice(0, 10)})`,
-          siteId,
-          orgId,
-        }),
-      });
-
-      if (!keyRes.ok) {
-        const body = await keyRes.json().catch(() => ({}));
-        setLinkError(body.error || t('setup.enroll.errors.createEnrollmentKeyFailed', { status: keyRes.status }));
+      const parent = await getAddDeviceParent();
+      if ('error' in parent) {
+        setLinkError(parent.error);
         return;
       }
 
-      const keyData = await keyRes.json();
-
-      const linkRes = await fetchWithAuth(`/enrollment-keys/${keyData.id}/installer-link?discardKeyOnFailure=1`, {
+      const linkRes = await fetchWithAuth(`/enrollment-keys/${parent.id}/installer-link${parent.reused ? '' : '?discardKeyOnFailure=1'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform: selectedPlatform, count: deviceCount }),
