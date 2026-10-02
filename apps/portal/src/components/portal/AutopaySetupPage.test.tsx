@@ -98,3 +98,16 @@ it.each(['in_progress','abandoned'])('renders %s honestly with a next action',as
  if(outcome==='in_progress'){expect(sessionStorage.getItem('autopay-return-token')).toBe('test-token');expect(screen.getByTestId('autopay-return-submit')).toBeEnabled();}
  else expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href','/portal/autopay/test-token');
 });
+
+it.each(['stop','setup'] as const)('uses disabled-partner stop-only data in portal %s mode',async mode=>{
+  vi.mocked(apiGet).mockResolvedValue({statusCode:200,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status:'paused'},method:null}});
+  render(<AutopaySetupPage portal mode={mode}/>);
+  expect(await screen.findByTestId('autopay-stop-confirm')).toHaveTextContent('Example MSP');
+  expect(apiGet).toHaveBeenCalledExactlyOnceWith('/portal/payment-methods',{redirectOnUnauthorized:true});
+  expect(screen.queryByTestId('autopay-setup-submit')).toBeNull();expect(screen.queryByTestId('autopay-consent')).toBeNull();
+  expect(apiPost).not.toHaveBeenCalled();
+  vi.mocked(apiPost).mockResolvedValue({data:{success:true}});
+  fireEvent.click(screen.getByTestId('autopay-stop-submit'));
+  await waitFor(()=>expect(apiPost).toHaveBeenCalledExactlyOnceWith('/portal/autopay/stop',{}, {redirectOnUnauthorized:true}));
+  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Automatic payments stopped');
+});

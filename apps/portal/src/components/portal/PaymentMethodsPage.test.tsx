@@ -36,3 +36,27 @@ it('refreshes the summary after stopping and retains success feedback', async ()
   if (screen.queryByTestId('autopay-back')) fireEvent.click(screen.getByTestId('autopay-back'));
   expect(screen.getByTestId('autopay-payment-methods')).toHaveTextContent('Automatic payments stopped.');
 });
+
+it.each(['active','requested','paused','verification_failed'])('offers only Stop for disabled partner with %s enrollment',async status=>{
+  vi.mocked(apiGet).mockResolvedValue({statusCode:200,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status},method:{type:'card',cardLast4:'1234',status:'active'}}});
+  render(<PaymentMethodsPage/>);
+  expect(await screen.findByTestId('autopay-saved-method')).toHaveTextContent('1234');
+  expect(screen.queryByTestId('autopay-update-method')).toBeNull();
+  expect(screen.queryByText('Ask your service provider to send an automatic payment request.')).toBeNull();
+  fireEvent.click(screen.getByTestId('autopay-portal-stop'));
+  expect(await screen.findByTestId('autopay-stop-confirm')).toHaveTextContent('Example MSP');
+  expect(apiPost).not.toHaveBeenCalled();
+  vi.mocked(apiPost).mockResolvedValue({data:{success:true}});
+  vi.mocked(apiGet).mockResolvedValue({statusCode:404,error:'Automatic payments are not enabled'});
+  fireEvent.click(screen.getByTestId('autopay-stop-submit'));
+  expect(await screen.findByTestId('autopay-stop-feedback')).toHaveTextContent('Automatic payments stopped');
+  expect(screen.queryByTestId('autopay-portal-stop')).toBeNull();
+  expect(screen.queryByTestId('autopay-payment-methods-error')).toBeNull();
+  expect(apiPost).toHaveBeenCalledExactlyOnceWith('/portal/autopay/stop',{}, {redirectOnUnauthorized:true});
+});
+it('offers no actions when disabled with no live enrollment',async()=>{
+  vi.mocked(apiGet).mockResolvedValue({statusCode:404,error:'Automatic payments are not enabled'});
+  render(<PaymentMethodsPage/>);
+  await screen.findByTestId('autopay-payment-methods-error');
+  expect(screen.queryByTestId('autopay-update-method')).toBeNull();expect(screen.queryByTestId('autopay-portal-stop')).toBeNull();
+});

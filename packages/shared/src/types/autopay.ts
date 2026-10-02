@@ -64,12 +64,17 @@ export interface AutopayListRow {
  enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastChargeResult:null;requestNoticeStatus:BillingNoticeStatus|null;
 }
 export interface AutopayCustomerPage {
+ stopOnly?:false;
  orgId:string;orgName:string;partnerName:string;logoUrl:string|null;primaryColor:string|null;contactEmail:string;
  scheduleText:string;achMode:AchMode|'card_only';consentVersion:string;consentText:Record<AutopayPaymentMethodType,string>;
  disclosures:Record<AutopayPaymentMethodType,AutopayDisclosure>;
  fees:Record<AutopayPaymentMethodType|'debit',{text:string;feeAmount:string;kind:'none'|'card_percent'|'ach_flat';appliedBps:number|null;reason:string}>;
  enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;processingWarning:string;
 }
+/** Minimal portal read model when enrollment setup is disabled. */
+export type AutopayStopOnlyPage = Pick<AutopayCustomerPage,
+ 'orgId'|'orgName'|'partnerName'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
+export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
 export interface PaymentValues {
  autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
  autopayCapAmount:string|null;autopayCapCurrency:string|null;achMode:AchMode|null;

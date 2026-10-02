@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { and,eq,inArray,isNull } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
-import type { AutopayCustomerPage,AutopaySetupResult,BillingLinkPurpose } from '@breeze/shared';
+import type { AutopayCustomerPage,AutopayPortalPage,AutopaySetupResult,BillingLinkPurpose } from '@breeze/shared';
 import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
 import { organizations,partners,portalBranding,orgAutopayEnrollments,billingLinkTokens } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
@@ -66,14 +66,26 @@ async function findOwnedSetup(identity:AutopayIdentity,checkoutSessionId:string)
   )).limit(1);
   return attempt;
 }
-export async function getAutopayCustomerPage(orgId:string):Promise<AutopayCustomerPage>{
+export function getAutopayCustomerPage(orgId:string):Promise<AutopayCustomerPage>;
+export function getAutopayCustomerPage(orgId:string,options:{allowStopOnly:true}):Promise<AutopayPortalPage>;
+export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnly:true}):Promise<AutopayPortalPage>{
   return scoped(async()=>{
     const [org]=await db.select().from(organizations).where(eq(organizations.id,orgId)).limit(1);
     if(!org)throw new HTTPException(404,{message:'Automatic payments not found'});
-    const [partner]=await db.select({name:partners.name}).from(partners).where(eq(partners.id,org.partnerId)).limit(1);
+    const [partner]=await db.select({name:partners.name,autopayEnabled:partners.autopayEnabled}).from(partners).where(eq(partners.id,org.partnerId)).limit(1);
     const [brand]=await db.select({logoUrl:portalBranding.logoUrl,primaryColor:portalBranding.primaryColor}).from(portalBranding).where(eq(portalBranding.orgId,orgId)).limit(1);
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,orgId)).limit(1);
+    const stopOnly=options?.allowStopOnly===true&&partner?.autopayEnabled!==true;
+    if(stopOnly&&(!enrollment||enrollment.status==='cancelled'))throw new HTTPException(404,{
+      res:Response.json({error:'Automatic payments are not enabled',code:'autopay_not_enabled'},{status:404}),
+    });
     const method=await getAutopayMethod(db,orgId);
+    const summary={orgId,orgName:org.name,partnerName:partner?.name??'',
+      enrollment:enrollment?{status:enrollment.status,generation:enrollment.generation,effectiveFrom:enrollment.effectiveFrom?.toISOString()??null,needsAttentionReason:enrollment.needsAttentionReason}:null,
+      method:method?{type:method.type,cardBrand:method.cardBrand,cardFunding:method.cardFunding,cardLast4:method.cardLast4,
+        cardExpMonth:method.cardExpMonth,cardExpYear:method.cardExpYear,bankName:method.bankName,bankLast4:method.bankLast4,status:method.status}:null,
+      processingWarning:'A payment already processing may still complete after you stop automatic payments.'};
+    if(stopOnly)return {...summary,stopOnly:true};
     const card=await buildAutopayDisclosure(db,orgId,'card');
     const bank=await buildAutopayDisclosure(db,orgId,'us_bank_account');
     const readiness=await getAutopayStripeReadiness(db,org.partnerId);
@@ -84,18 +96,14 @@ export async function getAutopayCustomerPage(orgId:string):Promise<AutopayCustom
       achFeeAmount:bank.feeTerms.achFeeAmount,feeAttested:card.feeTerms.feeAttested,
     });
     const contact=org.billingContact as {email?:string}|null;
-    return {orgId,orgName:org.name,partnerName:partner?.name??card.partnerName,
+    return {...summary,partnerName:partner?.name??card.partnerName,
       logoUrl:brand?.logoUrl??null,primaryColor:brand?.primaryColor??null,
       contactEmail:enrollment?.requestRecipientEmail??contact?.email??'',
       scheduleText:card.scheduleText,achMode:card.achMode,consentVersion:card.version,
       consentText:{card:card.text,us_bank_account:bank.text},disclosures:{card,us_bank_account:bank},
       fees:{card:{...quote('card','credit'),text:card.feeText},
         debit:{...quote('card','debit'),text:'No fee applies to debit or prepaid cards.'},
-        us_bank_account:{...quote('us_bank_account',null),text:bank.feeText}},
-      enrollment:enrollment?{status:enrollment.status,generation:enrollment.generation,effectiveFrom:enrollment.effectiveFrom?.toISOString()??null,needsAttentionReason:enrollment.needsAttentionReason}:null,
-      method:method?{type:method.type,cardBrand:method.cardBrand,cardFunding:method.cardFunding,cardLast4:method.cardLast4,
-        cardExpMonth:method.cardExpMonth,cardExpYear:method.cardExpYear,bankName:method.bankName,bankLast4:method.bankLast4,status:method.status}:null,
-      processingWarning:'A payment already processing may still complete after you stop automatic payments.'};
+        us_bank_account:{...quote('us_bank_account',null),text:bank.feeText}}};
   });
 }
 export async function completeOwnedAutopaySetup(identity:AutopayIdentity,checkoutSessionId:string):Promise<AutopaySetupResult>{

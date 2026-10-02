@@ -1,5 +1,6 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 const h=vi.hoisted(()=>({page:vi.fn(),identity:vi.fn(),complete:vi.fn(),create:vi.fn(),stop:vi.fn()}));
 vi.mock('../../db',()=>({db:{},runOutsideDbContext:(fn:()=>unknown)=>fn(),withSystemDbAccessContext:(fn:()=>unknown)=>fn()}));
 vi.mock('./auth',()=>({portalAuthMiddleware:async(c:any,next:any)=>{
@@ -18,7 +19,8 @@ const headers={authorization:'Bearer test','content-type':'application/json'};
 beforeEach(()=>{vi.clearAllMocks();h.identity.mockResolvedValue({orgId:'11111111-1111-4111-8111-111111111111',partnerId:'22222222-2222-4222-8222-222222222222'});h.page.mockResolvedValue({});h.create.mockResolvedValue({url:'https://checkout.stripe.com/c/test'});});
 describe('portal payment-method boundaries',()=>{
   it('requires a portal session',async()=>expect((await app.request('/portal/payment-methods')).status).toBe(401));
-  it('feature-off still allows stopping existing authorization',async()=>{
+  it('feature-off without a live enrollment hides GET and setup but still allows stop',async()=>{
+    h.page.mockRejectedValueOnce(new HTTPException(404, { res: Response.json({code:'autopay_not_enabled'}, {status:404}) }));
     for(const path of ['/payment-methods','/payment-methods/setup-session','/payment-methods/setup-return','/autopay/stop']){
       expect((await app.request(`/portal${path}`,{method:path==='/payment-methods'?'GET':'POST',headers:{...headers,'x-disabled':'1'},body:path==='/payment-methods'?undefined:'{}'})).status).toBe(path==='/autopay/stop'?200:404);
     }
@@ -33,7 +35,7 @@ describe('portal payment-method boundaries',()=>{
     expect(h.stop).toHaveBeenCalledWith({}, {orgId:'11111111-1111-4111-8111-111111111111',source:'portal',portalUserId:'33333333-3333-4333-8333-333333333333'});
   });
   it('GET never invokes a mutation',async()=>{
-    await app.request('/portal/payment-methods',{headers});
+    expect((await app.request('/portal/payment-methods',{headers})).status).toBe(200);
     expect(h.stop).not.toHaveBeenCalled();expect(h.create).not.toHaveBeenCalled();expect(h.complete).not.toHaveBeenCalled();
   });
 });
@@ -59,3 +61,12 @@ describe('portal mutation validation and outcomes',()=>{
     expect(h.page).not.toHaveBeenCalled();
   });
 });
+
+ it('serves a read-only stop summary with the switch off for the authenticated org',async()=>{
+   const summary={stopOnly:true,partnerName:'Example MSP',enrollment:{status:'active'},method:{type:'card',cardLast4:'1234'}};
+   h.page.mockResolvedValueOnce(summary);
+   const response=await app.request('/portal/payment-methods?orgId=44444444-4444-4444-8444-444444444444',{headers:{...headers,'x-disabled':'1'}});
+   expect(response.status).toBe(200);expect(await response.json()).toEqual(summary);
+   expect(h.page).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111',{allowStopOnly:true});
+   expect(h.create).not.toHaveBeenCalled();expect(h.complete).not.toHaveBeenCalled();expect(h.stop).not.toHaveBeenCalled();
+ });

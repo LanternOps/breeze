@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api';
 import { runAction } from '@/lib/runAction';
-import type { AutopayPageData, MethodType, SetupOutcome } from '@/lib/autopay';
+import type { AutopayPageData, AutopayPortalPage, MethodType, SetupOutcome } from '@/lib/autopay';
 export default function AutopaySetupPage({ token, portal = false, mode = 'setup', onStopped }: {
   token?: string; portal?: boolean; mode?: 'setup' | 'return' | 'stop'; onStopped?: () => void;
 }) {
@@ -19,10 +19,10 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
     if (mode === 'return') return;
     let cancelled = false;
     const path = mode === 'stop' && !portal ? `${base}/stop` : base;
-    void apiGet<AutopayPageData & { orgName?: string }>(path, { redirectOnUnauthorized: portal }).then(result => {
+    void apiGet<AutopayPortalPage>(path, { redirectOnUnauthorized: portal }).then(result => {
       if (cancelled) return;
       if (!result.data) { onOutcome(result.error || 'This link is unavailable. Ask your service provider for a new one.', true); return; }
-      if (mode === 'stop') { setStopName(result.data.partnerName); return; }
+      if (mode === 'stop' || result.data.stopOnly) { setStopName(result.data.partnerName); return; }
       setData(result.data); setMethod(result.data.achMode === 'card_only' ? 'card' : 'us_bank_account'); setAccepted(false);
     });
     return () => { cancelled = true; };
@@ -92,7 +92,7 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
         {outcome.outcome === 'pending_verification' && <p>Follow Stripe’s verification instructions. No automatic payment can be made until verification completes.</p>}
         {outcome.outcome === 'stale_generation' && <p>This return did not restart automatic payments. Ask your service provider for a new request.</p>}
       </div>}
-    </div> : mode === 'stop' ? stopName && <div data-testid="autopay-stop-confirm">
+    </div> : mode === 'stop' || stopName ? stopName && <div data-testid="autopay-stop-confirm">
       <h1>Stop automatic payments to {stopName}?</h1>
       <p>Future automatic payments will stop. A bank payment already processing cannot be recalled. Open invoices still need to be paid.</p>
       <button data-testid="autopay-stop-submit" disabled={busy || finished} onClick={() => void stop()}>Stop automatic payments</button>
