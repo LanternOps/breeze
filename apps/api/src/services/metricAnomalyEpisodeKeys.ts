@@ -32,10 +32,13 @@ export const EPISODE_SNOOZE_DAYS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_SN
 /** How far back the assembly scan looks for unassigned rows. */
 export const EPISODE_ASSEMBLY_LOOKBACK_HOURS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_ASSEMBLY_LOOKBACK_HOURS', 24);
 /**
- * Distinct buckets a new episode needs. Lone buckets of a settled island close
- * `cleared` with no episode (planner persistence gate).
+ * Distinct buckets a new episode needs. Shorter settled islands close
+ * `cleared` with no episode (planner persistence gate). 3, not 2: after the
+ * gate shipped at 2, half of the remaining episodes were exactly two buckets
+ * (10 minutes) — mostly process CPU and disk/network bursts (2026-10-02 prod
+ * review).
  */
-export const EPISODE_MIN_BUCKETS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_MIN_BUCKETS', 2);
+export const EPISODE_MIN_BUCKETS = parseEpisodeEnvInt('METRIC_ANOMALY_EPISODE_MIN_BUCKETS', 3);
 /** Raw rollup grain the detectors and the clean-data check read. Not tunable. */
 export const EPISODE_BUCKET_SECONDS = 300;
 
@@ -79,6 +82,17 @@ export const EPISODE_METRIC_FAMILIES: Readonly<Record<string, Readonly<Record<st
     top_process_count: { family: 'process_count_top', dimension: null },
   },
 };
+
+/**
+ * Peak representative rule, shared by the planner, the SQL recompute and the
+ * episode DTO's peak member: a member of one of these metrics wins over a
+ * higher-scoring member of another, then score DESC, window_start ASC. The ram
+ * and disk families mix a percent and an absolute metric; without this the
+ * same device's episodes flip between "67% to 84%" and "8774 MB to 11657 MB"
+ * depending on which rule scored higher. The growth scores of the pair are on
+ * the same gate-multiple scale, so either is a fair peak score.
+ */
+export const EPISODE_PEAK_PREFERRED_METRICS: readonly string[] = ['ram_percent', 'disk_percent'];
 
 export function episodeKeyFor(
   sourceTable: string,
