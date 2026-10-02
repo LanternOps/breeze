@@ -3,7 +3,7 @@
 // the trigger admits nothing but an org-merge re-point. Registered in
 // AUDIT_ADMIN_REQUIRED_TABLES. No FKs on provenance ids (see the migration).
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, char, index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, char, index, integer, jsonb, numeric, pgTable, smallint, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import type { AiSurface, PromptProfile } from '@breeze/shared';
 import { organizations } from './orgs';
 
@@ -37,6 +37,12 @@ export const aiInvocations = pgTable('ai_invocations', {
   stopReason: text('stop_reason'),
   refusalCategory: text('refusal_category'),
   fallbackUsed: boolean('fallback_used').notNull().default(false),
+  /** W09 (#7607): the offering routed to before failover; null on hop 0. Provenance, no FK. */
+  failoverFromOfferingId: uuid('failover_from_offering_id'),
+  /** W09: candidates passed over before the serving one (0 = no failover). */
+  failoverHop: smallint('failover_hop').notNull().default(0),
+  /** W09: FailoverCause; null on hop 0. */
+  failoverCause: text('failover_cause'),
   catalogRevisionId: uuid('catalog_revision_id'),
   connectionConfigVersion: integer('connection_config_version'),
   inputTokens: tokens('input_tokens'),
