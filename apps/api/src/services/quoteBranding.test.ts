@@ -12,7 +12,7 @@ vi.mock('../db', () => {
   return { db: { select: () => chain } };
 });
 
-import { resolveQuoteBranding, type QuoteBrandingSource } from './quoteBranding';
+import { resolveQuoteBranding, resolveInvoiceBranding, type QuoteBrandingSource } from './quoteBranding';
 
 function queue(partner: unknown | null, brand: unknown | null): void {
   dbRows.next = [partner ? [partner] : [], brand ? [brand] : []];
@@ -217,5 +217,32 @@ describe('resolveQuoteBranding', () => {
       expect(b.theme).toBe('classic');
       expect(b.pageSize).toBe('a4');
     });
+  });
+});
+
+describe('resolveQuoteBranding: partner Branding settings feed the document (Q-2026-0027)', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgo=';
+  const brandedPartner = { ...basePartner, settings: { branding: { logoUrl: PNG, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' } } };
+
+  it("uses the partner's logo and colours when the customer org has no portal branding", async () => {
+    queue(brandedPartner, null);
+    const b = await resolveQuoteBranding(source());
+    expect(b.logoUrl).toBe(PNG);
+    expect(b.primaryColor).toBe('#00bfa6');
+    expect(b.secondaryColor).toBe('#0b1b2d');
+  });
+
+  it('keeps a per-org portal_branding value ahead of the partner default', async () => {
+    queue(brandedPartner, baseBrand);
+    const b = await resolveQuoteBranding(source());
+    expect(b.logoUrl).toBe('logo.png');
+    expect(b.primaryColor).toBe('#1c8a9e');
+  });
+
+  it('leaves invoice branding on the portal row only (quotes-only change)', async () => {
+    queue(brandedPartner, null);
+    const b = await resolveInvoiceBranding({ ...source(), documentTheme: null, documentPageSize: null } as never);
+    expect(b.logoUrl).toBeNull();
+    expect(b.primaryColor).toBeNull();
   });
 });

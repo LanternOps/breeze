@@ -11,16 +11,20 @@
 // renderTableIntoPdf uses for oversized rows.
 
 import { quoteCalloutContentSchema } from '@breeze/shared';
-import { measureRichText, renderRichTextIntoPdf } from './richTextPdf';
+import { measureRichText, renderRichTextIntoPdf, WEB_TYPOGRAPHY } from './richTextPdf';
 import type { PdfThemeFonts } from './documentThemes';
 import type { EnsureRoomRich } from './tablePdf';
 
 const CALLOUT_PAD = 12;
 const CALLOUT_BAR_WIDTH = 3;
 const CALLOUT_RADIUS = 6;
-const TITLE_FONT_SIZE = 11;
+// Web parity (quoteBlocks.tsx / QuoteDocument.tsx): title text-sm semibold in
+// the body face (14px → 10.5pt) with mb-1, body at the web rich-text size, a
+// 10% tone tint.
+const TITLE_FONT_SIZE = 10.5;
+const TITLE_GAP = 3;
 const TITLE_COLOR = '#111827';
-const TINT_ALPHA = 0.08;
+const TINT_ALPHA = 0.1;
 
 const VARIANT_BASE_COLOR: Record<'info' | 'accent' | 'warn', string> = {
   info: '#6b7280',
@@ -94,9 +98,9 @@ export function renderCalloutIntoPdf(doc: PDFKit.PDFDocument, content: unknown, 
   const { x, width, fonts, accent } = opts;
 
   const innerWidth = Math.max(0, width - 2 * CALLOUT_PAD - CALLOUT_BAR_WIDTH);
-  doc.font(fonts.heading.bold).fontSize(TITLE_FONT_SIZE);
-  const titleHeight = title ? doc.heightOfString(title, { width: innerWidth }) + 6 : 0;
-  const bodyHeight = measureRichText(doc, html, innerWidth, fonts.body);
+  doc.font(fonts.body.bold).fontSize(TITLE_FONT_SIZE);
+  const titleHeight = title ? doc.heightOfString(title, { width: innerWidth }) + TITLE_GAP : 0;
+  const bodyHeight = measureRichText(doc, html, innerWidth, fonts.body, WEB_TYPOGRAPHY);
   const boxHeight = titleHeight + bodyHeight + 2 * CALLOUT_PAD;
 
   const usablePageHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
@@ -134,14 +138,14 @@ export function renderCalloutIntoPdf(doc: PDFKit.PDFDocument, content: unknown, 
   const textWidth = innerWidth;
   let cy = y + CALLOUT_PAD;
   if (title) {
-    doc.font(fonts.heading.bold).fontSize(TITLE_FONT_SIZE).fillColor(TITLE_COLOR).text(title, textX, cy, { width: textWidth });
-    cy = doc.y + 6;
+    doc.font(fonts.body.bold).fontSize(TITLE_FONT_SIZE).fillColor(TITLE_COLOR).text(title, textX, cy, { width: textWidth });
+    cy = doc.y + TITLE_GAP;
   }
   // The box height already reserves exactly titleHeight + bodyHeight + padding
   // via opts.ensureRoom(boxHeight) above, so the body never needs a REAL page
   // break — this inner ensureRoom is a no-op that just echoes doc.y back.
-  renderRichTextIntoPdf(doc, html, { x: textX, width: textWidth, startY: cy, ensureRoom: () => doc.y, fonts: fonts.body });
+  renderRichTextIntoPdf(doc, html, { x: textX, width: textWidth, startY: cy, ensureRoom: () => doc.y, fonts: fonts.body, typography: WEB_TYPOGRAPHY });
   doc.fillColor(TITLE_COLOR);
 
-  return y + boxHeight + 6;
+  return y + boxHeight;
 }

@@ -23,8 +23,14 @@ import { measureInlineRuns, renderInlineRunsIntoPdf, renderRichTextIntoPdf } fro
 import type { PdfThemeFonts } from './documentThemes';
 
 export const MIN_COLUMN_WIDTH = 40;
+/** Vertical cell padding. Horizontal padding is CELL_PADDING_X — the portal's
+ *  table cells are px-3 py-2 (12/8px → 9/6pt). */
 export const CELL_PADDING = 6;
-const BODY_FONT_SIZE = 10;
+export const CELL_PADDING_X = 9;
+/** text-sm (14px) on the web → 10.5pt. */
+const BODY_FONT_SIZE = 10.5;
+const CAPTION_FONT_SIZE = 9;
+const CAPTION_GAP = 3;
 
 export interface TableModel {
   columns: { label: string; align: 'left' | 'center' | 'right'; width: number }[];
@@ -116,8 +122,22 @@ export function parseTable(content: unknown, availableWidth: number): TableModel
  *  themed bold face can have taller line metrics than its regular face,
  *  under-measuring the header height otherwise. */
 function measureCellHeight(doc: PDFKit.PDFDocument, text: string, width: number, fonts: PdfThemeFonts, forceBold = false): number {
-  const innerWidth = Math.max(0, width - 2 * CELL_PADDING);
-  return measureInlineRuns(doc, text, innerWidth, BODY_FONT_SIZE, fonts.body, forceBold) + 2 * CELL_PADDING;
+  const innerWidth = Math.max(0, width - 2 * CELL_PADDING_X);
+  return measureInlineRuns(doc, text, innerWidth, BODY_FONT_SIZE, forceBold ? headerFaces(fonts) : fonts.body, forceBold) + 2 * CELL_PADDING;
+}
+
+/** Header cells draw in the theme's heading face (Barlow Condensed in the
+ *  condensed theme, like the web's `th`); classic's heading face is Helvetica
+ *  Bold, the same as before. */
+function headerFaces(fonts: PdfThemeFonts): PdfThemeFonts['body'] {
+  const h = fonts.heading.bold;
+  return { regular: h, bold: h, italic: h, boldItalic: h };
+}
+
+/** Height of the header plus the first body row — the smallest piece of a
+ *  table that may start a page, so the header is never left at a page foot. */
+export function tableLeadHeight(model: TableModel): number {
+  return model.headerHeight + (model.rows[0]?.height ?? 0);
 }
 
 /** Fill in `model.headerHeight` and every row's `height` (max cell height in
@@ -153,11 +173,25 @@ export function measureTable(doc: PDFKit.PDFDocument, model: TableModel, fonts: 
 // ---------------------------------------------------------------------------
 
 const ZEBRA_FILL = '#f8fafc';
-const PLAIN_HEADER_FILL = '#f1f5f9';
-const HEADER_TEXT_ON_ACCENT = '#ffffff';
-const HEADER_TEXT_ON_PLAIN = '#111827';
-const BODY_TEXT_COLOR = '#1f2937';
-const BODY_FONT_SIZE_DRAW = 10;
+// Portal parity: an "accent" header is a 10% tint of the accent with dark
+// text, a "plain" header has no fill, and both sit on a 2px (1.5pt) rule.
+const HEADER_TINT = 0.1;
+const HEADER_TEXT = '#111827';
+const HEADER_RULE = '#d1d5db';
+const HEADER_RULE_WIDTH = 1.5;
+const BODY_TEXT_COLOR = '#374151';
+const CAPTION_COLOR = '#6b7280';
+const BODY_FONT_SIZE_DRAW = BODY_FONT_SIZE;
+
+function tint(hex: string, ratio: number): string {
+  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(hex.trim());
+  if (!m) return '#f1f5f9';
+  const h = m[1]!.length === 3 ? m[1]!.split('').map((c) => c + c).join('') : m[1]!;
+  return `#${[0, 2, 4].map((i) => {
+    const v = parseInt(h.slice(i, i + 2), 16);
+    return Math.round(v * ratio + 255 * (1 - ratio)).toString(16).padStart(2, '0');
+  }).join('')}`;
+}
 
 export interface RenderTableOpts {
   x: number;
@@ -189,10 +223,11 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
 
   const drawHeader = (atY: number): void => {
     doc.save();
-    const fill = model.headerStyle === 'accent' ? accent : PLAIN_HEADER_FILL;
-    doc.rect(x, atY, totalWidth, model.headerHeight).fill(fill);
+    if (model.headerStyle === 'accent') doc.rect(x, atY, totalWidth, model.headerHeight).fill(tint(accent, HEADER_TINT));
+    doc.moveTo(x, atY + model.headerHeight).lineTo(x + totalWidth, atY + model.headerHeight)
+      .lineWidth(HEADER_RULE_WIDTH).strokeColor(HEADER_RULE).stroke();
     doc.restore();
-    const textColor = model.headerStyle === 'accent' ? HEADER_TEXT_ON_ACCENT : HEADER_TEXT_ON_PLAIN;
+    const textColor = HEADER_TEXT;
     let cx = x;
     for (const col of model.columns) {
       // col.label is already-sanitized inline HTML (quoteService.ts's
@@ -206,11 +241,11 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
       renderInlineRunsIntoPdf(
         doc,
         col.label,
-        cx + CELL_PADDING,
+        cx + CELL_PADDING_X,
         atY + CELL_PADDING,
-        Math.max(0, col.width - 2 * CELL_PADDING),
+        Math.max(0, col.width - 2 * CELL_PADDING_X),
         BODY_FONT_SIZE_DRAW,
-        fonts.body,
+        headerFaces(fonts),
         col.align,
         textColor,
         true,
@@ -230,9 +265,9 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
       renderInlineRunsIntoPdf(
         doc,
         cells[i] ?? '',
-        cx + CELL_PADDING,
+        cx + CELL_PADDING_X,
         atY + CELL_PADDING,
-        Math.max(0, col.width - 2 * CELL_PADDING),
+        Math.max(0, col.width - 2 * CELL_PADDING_X),
         BODY_FONT_SIZE_DRAW,
         fonts.body,
         col.align,
@@ -257,7 +292,9 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
   // ensureRoom's decision — and its returned y — anchored to the position
   // THIS function actually tracks.
   doc.y = opts.startY;
-  const headerRoom = ensureRoom(model.headerHeight);
+  // Header and first row share one reservation (capped at a page), so a
+  // header can't be left at a page foot while its first row moves on.
+  const headerRoom = ensureRoom(Math.min(tableLeadHeight(model), usablePageHeight));
   let y = headerRoom.y;
   drawHeader(y);
   y += model.headerHeight;
@@ -293,5 +330,15 @@ export function renderTableIntoPdf(doc: PDFKit.PDFDocument, model: TableModel, o
     y += row.height;
   });
 
-  return y + 6;
+  // Caption under the table (portal: text-xs muted, mt-1).
+  if (model.caption?.trim()) {
+    doc.y = y;
+    const captionY = ensureRoom(CAPTION_GAP + 12).y;
+    const top = captionY === y ? y + CAPTION_GAP : captionY;
+    doc.font(fonts.body.regular).fontSize(CAPTION_FONT_SIZE).fillColor(CAPTION_COLOR)
+      .text(model.caption.trim(), x, top, { width: totalWidth });
+    y = doc.y;
+  }
+
+  return y;
 }

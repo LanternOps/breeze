@@ -19,6 +19,7 @@ import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPag
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { resolveInvoicePresentation, type InvoicePresentationSource } from './invoicePresentation';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 
 export interface QuoteBranding {
   /** Partner display name. Falls back to the document's frozen seller name when
@@ -28,6 +29,9 @@ export interface QuoteBranding {
   logoUrl: string | null;
   /** Partner brand accent (hex), or null to use the app's default accent. */
   primaryColor: string | null;
+  /** Partner secondary brand colour (hex) — quote PDFs set headings in it when
+   *  it is dark enough to read. Null for invoices and unbranded partners. */
+  secondaryColor: string | null;
   /** Footer / terms line. Precedence: quote.terms → partner footer → portal footer. */
   footer: string | null;
   /** What the footer would be with NO per-quote override (partner footer → portal
@@ -74,7 +78,7 @@ export async function resolveQuoteBranding(quote: QuoteBrandingSource): Promise<
   return resolveDocumentBranding(quote, (partner) => ({
     theme: resolveThemeId(snap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(snap?.pageSize ?? partner?.documentPageSize),
-  }));
+  }), { partnerBrandFallback: true });
 }
 
 /** Branding-relevant subset of an invoice row: the quote fields minus the
@@ -96,6 +100,11 @@ export async function resolveInvoiceBranding(invoice: InvoiceBrandingSource): Pr
 async function resolveDocumentBranding(
   doc: Omit<QuoteBrandingSource, 'presentationSnapshot'>,
   presentation: (partner: typeof partners.$inferSelect | undefined) => { theme: DocumentThemeId; pageSize: DocumentPageSize },
+  // Quotes fall back to the partner's own Branding settings (logo, colours)
+  // when the customer org's portal_branding row has none. Invoices don't yet —
+  // their customer views and PDF read portal_branding only, and the in-app
+  // preview must not diverge from them.
+  opts: { partnerBrandFallback?: boolean } = {},
 ): Promise<QuoteBranding> {
   const [partner] = await db
     .select()
@@ -113,6 +122,9 @@ async function resolveDocumentBranding(
     .limit(1);
 
   const seller = (doc.sellerSnapshot as SellerSnapshot | null) ?? (partner ? buildSellerSnapshot(partner) : null);
+  const docBrand = opts.partnerBrandFallback
+    ? resolveDocumentBrand(brand, partner?.settings)
+    : { logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null, secondaryColor: null };
 
   return {
     // Seller-snapshot fallback before the document-type literal (#2151). The
@@ -127,8 +139,9 @@ async function resolveDocumentBranding(
     // `||`, not `??`: neither column is constrained non-empty, and a blank
     // wordmark is a worse document than the generic word.
     partnerName: partner?.name || seller?.name || 'Proposal',
-    logoUrl: brand?.logoUrl ?? null,
-    primaryColor: brand?.primaryColor ?? null,
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
+    secondaryColor: docBrand.secondaryColor,
     footer: resolveDocumentFooter({
       documentTerms: doc.terms,
       partnerFooter: partner?.invoiceFooter ?? null,

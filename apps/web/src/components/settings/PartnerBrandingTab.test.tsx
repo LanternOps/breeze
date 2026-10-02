@@ -215,3 +215,65 @@ describe('PartnerBrandingTab — file upload', () => {
     expect(screen.queryByText(/too large/i)).not.toBeInTheDocument();
   });
 });
+
+describe('PartnerBrandingTab — logo resolution', () => {
+  // Quote and report PDFs print the logo ~2.5in wide; the old 256px cap
+  // printed soft (~100dpi). Uploads now keep up to 800px on the long side.
+  function mockSizedImage(width: number, height: number) {
+    class MockImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      width = width;
+      height = height;
+      set src(_: string) { setTimeout(() => this.onload?.(), 0); }
+    }
+    vi.stubGlobal('Image', MockImage);
+  }
+  // Records each canvas size tried; `encode` decides the data URL per width.
+  function mockCanvasBySize(encode: (w: number, h: number) => string) {
+    const tried: Array<[number, number]> = [];
+    const origCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string, ...args: any[]) => {
+      if (tag === 'canvas') {
+        const canvas = origCreate('canvas', ...args) as HTMLCanvasElement;
+        canvas.getContext = () => ({ drawImage: vi.fn() } as any);
+        canvas.toDataURL = () => { tried.push([canvas.width, canvas.height]); return encode(canvas.width, canvas.height); };
+        return canvas;
+      }
+      return origCreate(tag, ...args);
+    });
+    return tried;
+  }
+  const small = 'data:image/png;base64,AAAA';
+
+  it('keeps a wide logo at 800px on its long side instead of 256px', async () => {
+    mockSizedImage(1404, 322);
+    const tried = mockCanvasBySize(() => small);
+    const onChange = vi.fn();
+    render(<PartnerBrandingTab data={defaultData} onChange={onChange} />);
+    fireEvent.change(document.getElementById('logo-file-input') as HTMLInputElement, { target: { files: [makeFile()] } });
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ logoUrl: small })));
+    expect(tried).toEqual([[800, 183]]);
+  });
+
+  it('steps down when the 800px PNG would exceed the 400 KB cap', async () => {
+    mockSizedImage(2000, 2000);
+    const tried = mockCanvasBySize((w) => (w > 512 ? 'data:image/png;base64,' + 'A'.repeat(400_001) : small));
+    const onChange = vi.fn();
+    render(<PartnerBrandingTab data={defaultData} onChange={onChange} />);
+    fireEvent.change(document.getElementById('logo-file-input') as HTMLInputElement, { target: { files: [makeFile()] } });
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ logoUrl: small })));
+    expect(tried).toEqual([[800, 800], [512, 512]]);
+    expect(screen.queryByText(/too large/i)).not.toBeInTheDocument();
+  });
+
+  it('never upscales a logo already under 800px', async () => {
+    mockSizedImage(300, 90);
+    const tried = mockCanvasBySize(() => small);
+    const onChange = vi.fn();
+    render(<PartnerBrandingTab data={defaultData} onChange={onChange} />);
+    fireEvent.change(document.getElementById('logo-file-input') as HTMLInputElement, { target: { files: [makeFile()] } });
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(tried).toEqual([[300, 90]]);
+  });
+});

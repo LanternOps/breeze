@@ -203,6 +203,7 @@ describe('portal quotes GET /quotes/:id', () => {
       partnerName: 'Lantern IT',
       logoUrl: 'https://cdn.example.test/logo.png',
       primaryColor: '#123456',
+      secondaryColor: null,
       // Support contact rides along so the public proposal page can offer a
       // prospect a way to reach the company asking them to sign.
       supportEmail: 'help@lantern.test',
@@ -248,7 +249,25 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'a4' });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, secondaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'a4' });
+  });
+
+  it("falls back to the partner's own Branding settings (logo + colours) when the org has no portal branding", async () => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks SELECT
+    dbResults.push([]); // quoteLines SELECT
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT', settings: { branding: { logoUrl: 'data:image/png;base64,iVBORw0KGgo=', primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' } } }]); // partners SELECT (system ctx)
+    dbResults.push([]); // portalBranding SELECT → none
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.branding).toMatchObject({ logoUrl: 'data:image/png;base64,iVBORw0KGgo=', primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
   });
 
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {
