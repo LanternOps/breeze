@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { mockSchedulePeripheralPolicyDevice, mockDeleteDeviceGroup, isNotNullMock } = vi.hoisted(() => ({
   mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
@@ -787,6 +788,13 @@ describe('manage_patches handler', () => {
 
   it('list scopes to a single device when deviceId is given', async () => {
     const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-1' }]),
+        }),
+      }),
+    } as never);
     const result = JSON.parse(await tool.handler({ action: 'list', deviceId }, orgAuth));
     expect(result.scope).toEqual({ deviceId });
     expect(Array.isArray(result.patches)).toBe(true);
@@ -1255,7 +1263,7 @@ describe('user-owned release attribution (#6200)', () => {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null }]),
+          limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-1' }]),
         }),
       }),
     } as never);
@@ -1324,6 +1332,53 @@ describe('user-owned release attribution (#6200)', () => {
 // #6665: an AI chat had no way to see a scheduled patch job that removed an
 // app on a device, so it wrongly told a tech "not initiated by Breeze at
 // all". device_history closes that read gap.
+// #7827: partner-scope callers have orgId=null; the org must come from the
+// device row, never from accessibleOrgIds[0].
+describe('manage_patches device-scoped actions resolve the device org (#7827)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_patches')!;
+  const deviceId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  const partnerAuth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: null,
+    partnerId: 'partner-1',
+    scope: 'partner',
+    accessibleOrgIds: ['org-first', 'org-device'],
+    partnerOrgAccess: 'all',
+    canAccessOrg: () => true,
+    orgCondition: () => undefined,
+  } as any;
+  const dialect = new PgDialect();
+  const paramsOf = (cond: unknown) => dialect.sqlToQuery(cond as any).params;
+
+  it("device_history queries the device's own org, not accessibleOrgIds[0]", async () => {
+    const lookupWhere = vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue([{ id: deviceId, siteId: null, orgId: 'org-device' }]),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({ from: vi.fn().mockReturnValue({ where: lookupWhere }) } as never);
+    const historyWhere = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({ where: historyWhere }),
+        }),
+      }),
+    } as never);
+
+    const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, partnerAuth));
+
+    expect(result.error).toBeUndefined();
+    expect(result.deviceId).toBe(deviceId);
+    expect(paramsOf(lookupWhere.mock.calls[0]![0])).not.toContain('org-first');
+    const historyParams = paramsOf(historyWhere.mock.calls[0]![0]);
+    expect(historyParams).toContain('org-device');
+    expect(historyParams).not.toContain('org-first');
+  });
+});
+
 describe('manage_patches:device_history (#6665)', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);
@@ -1344,7 +1399,7 @@ describe('manage_patches:device_history (#6665)', () => {
     vi.mocked(db.select).mockClear();
   });
 
-  function mockDeviceLookup(rows: Array<{ id: string; siteId: string | null }>) {
+  function mockDeviceLookup(rows: Array<{ id: string; siteId: string | null; orgId?: string }>) {
     vi.mocked(db.select).mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
@@ -1397,13 +1452,13 @@ describe('manage_patches:device_history (#6665)', () => {
       allowedSiteIds: ['site-allowed'],
       canAccessSite: (id: string | null) => id === 'site-allowed',
     };
-    mockDeviceLookup([{ id: deviceId, siteId: 'site-other' }]);
+    mockDeviceLookup([{ id: deviceId, siteId: 'site-other', orgId: 'org-1' }]);
     const result = JSON.parse(await tool.handler({ action: 'device_history', deviceId }, siteRestrictedAuth));
     expect(result.error).toMatch(/not found or access denied/i);
   });
 
   it('returns per-device patch job history, distinguishing scheduled from user-initiated jobs', async () => {
-    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockDeviceLookup([{ id: deviceId, siteId: null, orgId: 'org-1' }]);
     mockHistoryQuery([
       {
         jobId: 'job-scheduled',
@@ -1456,7 +1511,7 @@ describe('manage_patches:device_history (#6665)', () => {
   });
 
   it('truncates a long errorMessage rather than returning it in full', async () => {
-    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockDeviceLookup([{ id: deviceId, siteId: null, orgId: 'org-1' }]);
     const longMessage = 'x'.repeat(500);
     mockHistoryQuery([
       {
@@ -1494,7 +1549,7 @@ describe('manage_patches:device_history (#6665)', () => {
     [101, 100],        // clamped down to the ceiling
     [40, 40],          // in-range value passed through unchanged
   ])('clamps limit=%s to %i', async (inputLimit, expected) => {
-    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockDeviceLookup([{ id: deviceId, siteId: null, orgId: 'org-1' }]);
     const { limitSpy } = mockHistoryQuery([]);
 
     const input: Record<string, unknown> = { action: 'device_history', deviceId };
@@ -1505,7 +1560,7 @@ describe('manage_patches:device_history (#6665)', () => {
   });
 
   it('defaults the window to the last 14 days when since/until are omitted', async () => {
-    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockDeviceLookup([{ id: deviceId, siteId: null, orgId: 'org-1' }]);
     mockHistoryQuery([]);
 
     const before = Date.now();
@@ -1521,7 +1576,7 @@ describe('manage_patches:device_history (#6665)', () => {
   });
 
   it('honors an explicit since/until window in the response', async () => {
-    mockDeviceLookup([{ id: deviceId, siteId: null }]);
+    mockDeviceLookup([{ id: deviceId, siteId: null, orgId: 'org-1' }]);
     mockHistoryQuery([]);
 
     const since = '2026-09-01T00:00:00.000Z';
