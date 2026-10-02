@@ -28,6 +28,8 @@ const GENERIC_NAME_COLUMNS = new Set([
   'partners.settings',
   'sites.settings',
   'tenant_variables.value',
+  // manage_backup_configs masks it with redactProviderConfig.
+  'backup_configs.provider_config',
 ]);
 
 /** Secret columns stored outside the registry that tools must still never show. */
