@@ -2344,7 +2344,8 @@
     "currencyWarning": "El perfil de facturación asignado usa {{currency}}. Después de este cambio se aplicará el perfil predeterminado del socio con la moneda correspondiente.",
     "loadError": "No se pudieron cargar los perfiles de facturación.",
     "saveError": "No se pudo guardar el perfil de facturación.",
-    "partialSave": "Se guardó el perfil de facturación, pero no los demás ajustes de facturación. Vuelve a guardar para terminar."
+    "partialSave": "Se guardó el perfil de facturación, pero no los demás ajustes de facturación. Vuelve a guardar para terminar.",
+    "aiUsage": "Uso de IA: {{summary}}"
   },
   "rates": {
     "title": "Tarifas",
@@ -2378,6 +2379,41 @@
     "minimumSummary": "Mínimo de {{minutes}} min",
     "roundingSummary": "Redondear a {{minutes}} min",
     "inherits": "Usa Todos los demás trabajos",
-    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear."
+    "currencyHelp": "No se puede cambiar la moneda de un perfil predeterminado o con tarifas. Deja el redondeo vacío para no redondear.",
+    "ai": {
+      "column": "Uso de IA",
+      "sectionTitle": "Uso de IA",
+      "sectionHelp": "Cómo se cobra el uso del asistente de IA de las organizaciones con este perfil de facturación. Cobre el costo de Breeze más un margen o fije un precio por modelo.",
+      "coverage": "Facturación del uso de IA",
+      "coverageBillable": "Facturable",
+      "coverageIncluded": "Incluido",
+      "coverageNotBilled": "No facturado",
+      "markup": "Margen sobre el costo (%)",
+      "markupHelp": "Se suma al costo en USD de Breeze por cada solicitud. 25 cobra el costo más 25 %. Déjelo vacío para facturar solo los modelos de la lista de precios.",
+      "markupInvalid": "Ingrese un porcentaje de 0 a 1000 con un máximo de dos decimales.",
+      "priceListTitle": "Lista de precios",
+      "priceListHelp": "Los precios están en {{currency}} por millón de tokens. Un modelo de la lista usa su precio en lugar del margen.",
+      "priceListEmpty": "Aún no hay precios por modelo.",
+      "addRate": "Agregar precio de modelo",
+      "removeRate": "Quitar",
+      "modelId": "Modelo",
+      "modelPlaceholder": "Elija o escriba un ID de modelo",
+      "inputPrice": "Entrada",
+      "outputPrice": "Salida",
+      "cacheReadPrice": "Lectura de caché",
+      "cacheWritePrice": "Escritura de caché",
+      "rowInvalid": "Ingrese un ID de modelo y los cuatro precios, por ejemplo 3.00 o 0.30.",
+      "rowDuplicate": "Este modelo ya está en la lista de precios.",
+      "choicesUnavailable": "Las sugerencias de modelos no están disponibles. Escriba un ID de modelo.",
+      "usdOnlyWarning": "El margen solo se aplica a perfiles en USD; agregue una lista de precios en {{currency}} o el uso se registrará sin precio.",
+      "summaryBillableMarkup": "Facturable · costo +{{percent}} %",
+      "summaryBillablePriceList_one": "Facturable · lista de precios ({{count}} modelo)",
+      "summaryBillablePriceList_other": "Facturable · lista de precios ({{count}} modelos)",
+      "summaryBillablePriceListMarkup_one": "Facturable · lista de precios ({{count}} modelo), el resto costo +{{percent}} %",
+      "summaryBillablePriceListMarkup_other": "Facturable · lista de precios ({{count}} modelos), el resto costo +{{percent}} %",
+      "summaryBillableUnpriced": "Facturable · sin precio",
+      "summaryIncluded": "Incluido",
+      "summaryNotBilled": "No facturado"
+    }
   }
 }

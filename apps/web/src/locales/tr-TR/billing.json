@@ -2344,7 +2344,8 @@
     "currencyWarning": "Atanan faturalandırma profili {{currency}} kullanıyor. Bu değişiklikten sonra eşleşen para birimindeki iş ortağı varsayılanı uygulanır.",
     "loadError": "Faturalandırma profilleri yüklenemedi.",
     "saveError": "Faturalandırma profili kaydedilemedi.",
-    "partialSave": "Faturalandırma profili kaydedildi, ancak diğer faturalandırma ayarları kaydedilmedi. Tamamlamak için yeniden kaydedin."
+    "partialSave": "Faturalandırma profili kaydedildi, ancak diğer faturalandırma ayarları kaydedilmedi. Tamamlamak için yeniden kaydedin.",
+    "aiUsage": "Yapay zeka kullanımı: {{summary}}"
   },
   "rates": {
     "title": "Ücretler",
@@ -2378,6 +2379,41 @@
     "minimumSummary": "En az {{minutes}} dk",
     "roundingSummary": "{{minutes}} dakikaya yuvarla",
     "inherits": "Diğer tüm işler kullanılır",
-    "currencyHelp": "Varsayılan veya ücret içeren bir profilin para birimi değiştirilemez. Yuvarlama alanı boşsa yuvarlama yapılmaz."
+    "currencyHelp": "Varsayılan veya ücret içeren bir profilin para birimi değiştirilemez. Yuvarlama alanı boşsa yuvarlama yapılmaz.",
+    "ai": {
+      "column": "Yapay zeka kullanımı",
+      "sectionTitle": "Yapay zeka kullanımı",
+      "sectionHelp": "Bu faturalandırma profilini kullanan kuruluşların yapay zeka asistanı kullanımının nasıl ücretlendirileceği. Breeze maliyetine bir marj ekleyin veya model başına fiyat belirleyin.",
+      "coverage": "Yapay zeka kullanımı faturalandırması",
+      "coverageBillable": "Faturalandırılabilir",
+      "coverageIncluded": "Dahil",
+      "coverageNotBilled": "Faturalandırılmaz",
+      "markup": "Maliyete marj (%)",
+      "markupHelp": "Her istek için Breeze'in USD maliyetine eklenir. 25, maliyet artı %25 faturalandırır. Yalnızca fiyat listesindeki modelleri faturalandırmak için boş bırakın.",
+      "markupInvalid": "En fazla iki ondalık basamakla 0 ile 1000 arasında bir yüzde girin.",
+      "priceListTitle": "Fiyat listesi",
+      "priceListHelp": "Fiyatlar milyon jeton başına {{currency}} cinsindendir. Listedeki bir model, marj yerine kendi fiyatını kullanır.",
+      "priceListEmpty": "Henüz model fiyatı yok.",
+      "addRate": "Model fiyatı ekle",
+      "removeRate": "Kaldır",
+      "modelId": "Model kimliği",
+      "modelPlaceholder": "Bir model kimliği seçin veya yazın",
+      "inputPrice": "Girdi",
+      "outputPrice": "Çıktı",
+      "cacheReadPrice": "Önbellek okuma",
+      "cacheWritePrice": "Önbellek yazma",
+      "rowInvalid": "Bir model kimliği ve dört fiyatın tümünü girin, örneğin 3.00 veya 0.30.",
+      "rowDuplicate": "Bu model zaten fiyat listesinde.",
+      "choicesUnavailable": "Model önerileri kullanılamıyor. Bunun yerine bir model kimliği yazın.",
+      "usdOnlyWarning": "Marj yalnızca USD profillerine uygulanır; {{currency}} için bir fiyat listesi ekleyin, aksi halde kullanım fiyatsız olarak kaydedilir.",
+      "summaryBillableMarkup": "Faturalandırılabilir · maliyet +%{{percent}}",
+      "summaryBillablePriceList_one": "Faturalandırılabilir · fiyat listesi ({{count}} model)",
+      "summaryBillablePriceList_other": "Faturalandırılabilir · fiyat listesi ({{count}} model)",
+      "summaryBillablePriceListMarkup_one": "Faturalandırılabilir · fiyat listesi ({{count}} model), diğerleri maliyet +%{{percent}}",
+      "summaryBillablePriceListMarkup_other": "Faturalandırılabilir · fiyat listesi ({{count}} model), diğerleri maliyet +%{{percent}}",
+      "summaryBillableUnpriced": "Faturalandırılabilir · fiyatsız",
+      "summaryIncluded": "Dahil",
+      "summaryNotBilled": "Faturalandırılmaz"
+    }
   }
 }
