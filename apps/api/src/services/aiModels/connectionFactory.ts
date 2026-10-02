@@ -30,7 +30,12 @@ import {
 } from './gateway';
 import { GATEWAY_TOTAL_TIMEOUT_MS, GRANT_SESSION_TTL_MS } from './gateway/limits';
 import { GATEWAY_PLACEHOLDER_KEY } from './gateway/openai/adapter';
-import { buildClaudeSdkChildEnv, buildGatewaySdkChildEnv } from './sdkChildEnv';
+import {
+  buildClaudeSdkChildEnv,
+  buildGatewaySdkChildEnv,
+  createIsolatedSdkCwd,
+  type IsolatedSdkCwd,
+} from './sdkChildEnv';
 // Type-only: a value import of llmConfigResolver closes a module-init cycle
 // (→ llmProviderCatalog → providerFidelityHarness → this file).
 import type { LlmClientCallerContext, UsableLlmConfig } from '../llm/llmConfigResolver';
@@ -502,7 +507,14 @@ export async function grantCatalogSdkEgress(
 
 export interface SdkChildDispatch {
   env: Record<string, string>;
-  /** Releases every grant the child was given. Idempotent; call it on EVERY exit path. */
+  /**
+   * Gateway kinds only: an empty, private working directory the child must be
+   * spawned in (the Agent SDK `cwd` option), so the environment context the
+   * CLI sends to the untrusted endpoint carries no repository or host path.
+   * Removed by `revoke`. Undefined for every other kind (spawn unchanged).
+   */
+  cwd?: string;
+  /** Releases every grant the child was given (and its `cwd`). Idempotent; call it on EVERY exit path. */
   revoke: () => void;
 }
 
@@ -510,7 +522,8 @@ export interface SdkChildDispatch {
  * THE seam for spawning an Agent SDK child for a resolved model (W06). Used by
  * both spawn sites (chat streamingSessionManager.getOrCreate, aiAgents/runLoop).
  *   gateway kinds → gateway grant (session TTL) + adapter env + a deny-all,
- *                   audited CONNECT grant; the child env carries no credential
+ *                   audited CONNECT grant; the child env carries no credential,
+ *                   and the child runs in an empty temp `cwd`
  *   catalog       → CONNECT grant + catalog env (unchanged)
  *   platform/BYOK → env (unchanged)
  * Throws, holding nothing, if any grant cannot be issued: never start an
@@ -535,13 +548,19 @@ export async function prepareSdkChild(
       });
     });
     let grant: GatewayGrant | null = null;
+    let isolatedCwd: IsolatedSdkCwd | null = null;
     let revoked = false;
     const revoke = (): void => {
       if (revoked) return;
       revoked = true;
-      try { grant?.revoke(); } finally { proxy.revoke(proxyKey); }
+      try {
+        try { grant?.revoke(); } finally { proxy.revoke(proxyKey); }
+      } finally {
+        isolatedCwd?.remove();
+      }
     };
     try {
+      isolatedCwd = await createIsolatedSdkCwd();
       grant = await openGatewayGrant(resolved, {
         orgId: input.orgId, aiSessionId: input.aiSessionId, purpose: 'dispatch', ttlMs: GRANT_SESSION_TTL_MS,
       });
@@ -553,7 +572,7 @@ export async function prepareSdkChild(
         ...provenance, surface: 'sdk_session_create',
         host: new URL(gatewayUpstreamUrl(conn.config)).hostname, resolvedIp: null, blocked: false,
       });
-      return { env, revoke };
+      return { env, cwd: isolatedCwd.cwd, revoke };
     } catch (error) {
       revoke();
       throw error;

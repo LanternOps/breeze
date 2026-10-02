@@ -14,6 +14,7 @@
  *  3. a session pinned to a catalog revision rotates when that revision moves,
  *     exactly as it already rotates on key rotation.
  */
+import { existsSync } from 'node:fs';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const {
@@ -592,6 +593,8 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     expect(getLlmEgressProxyMock).not.toHaveBeenCalled();
     expect(grantMock).not.toHaveBeenCalled();
     expect(recordLlmEgressEventMock).not.toHaveBeenCalled();
+    // No working-directory override outside gateway connections.
+    expect(capturedQueryArgs[0]!.options).not.toHaveProperty('cwd');
   });
 
   it('fails the session create loudly when the egress proxy cannot start', async () => {
@@ -1033,12 +1036,17 @@ describe('getOrCreate — gateway (openai_compatible) sessions (W06 Task 9)', ()
     expect(env).toEqual(expect.objectContaining({
       ANTHROPIC_API_KEY: 'breeze-gateway',
       HTTPS_PROXY: PROXY_URL,
-      NO_PROXY: '127.0.0.1,localhost',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'qwen2.5-coder:7b',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       ENABLE_TOOL_SEARCH: 'false',
     }));
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/g\/[A-Za-z0-9_-]{43}$/);
+    expect(env.NO_PROXY).toBe(`127.0.0.1:${new URL(env.ANTHROPIC_BASE_URL!).port}`);
+    // The child runs in its own empty temp directory, not the API's cwd.
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(typeof cwd).toBe('string');
+    expect(existsSync(cwd)).toBe(true);
+    expect(cwd.startsWith(process.cwd())).toBe(false);
     expect(JSON.stringify(env)).not.toContain('sk-fixture-upstream');
     expect(capturedQueryArgs[0]!.options.model).toBe('qwen2.5-coder:7b');
     expect(recordLlmEgressEventMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1062,10 +1070,14 @@ describe('getOrCreate — gateway (openai_compatible) sessions (W06 Task 9)', ()
     const proxyKey = grantMock.mock.calls[0]![0] as string;
     expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(200);
 
+    const cwd = capturedQueryArgs[0]!.options.cwd as string;
+    expect(existsSync(cwd)).toBe(true);
+
     manager.remove('sess-gw-remove');
 
     expect(revokeMock).toHaveBeenCalledWith(proxyKey);
     expect((await fetch(`${env.ANTHROPIC_BASE_URL}/v1/models`)).status).toBe(401);
+    expect(existsSync(cwd)).toBe(false);
 
     gate.resolve();
     await session.processorPromise;

@@ -1,3 +1,6 @@
+import { existsSync, realpathSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const TEST_API_KEY = 'sk-fidelity-secret-key';
@@ -148,6 +151,18 @@ describe('runFidelityCheck transport seam (W06 #7604)', () => {
       expect(options.fetch).toBeTypeOf('function');
     }
     expect(sdkEnvOf(0)).toEqual(buildFidelityChildEnv(INPUT));
+    // The catalog path's subprocess spawn is unchanged: no cwd override.
+    expect((sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options).not.toHaveProperty('cwd');
+  });
+
+  it('with a transport, the subprocess runs in its own empty temp directory, removed afterwards', async () => {
+    const { client } = fakeTransportClient();
+    await runFidelityCheck(INPUT, { client: client as never, childEnv: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/t' }, probeAdaptiveEffort: false });
+    const cwd = (sdkState.query.mock.calls[0]![0] as { options: { cwd?: string } }).options.cwd;
+    expect(typeof cwd).toBe('string');
+    expect(realpathSync(path.dirname(cwd!))).toBe(realpathSync(os.tmpdir()));
+    expect(cwd!.startsWith(process.cwd())).toBe(false);
+    expect(existsSync(cwd!)).toBe(false);
   });
 
   it('with a transport, uses its client and child env and never builds an endpoint client', async () => {

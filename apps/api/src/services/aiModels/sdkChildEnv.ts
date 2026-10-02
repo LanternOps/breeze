@@ -6,6 +6,10 @@
  * (platform, anthropic_byok, catalog); `buildGatewaySdkChildEnv` serves the
  * gateway kinds (W06 openai_compatible, W07 cloud kinds).
  */
+import { rmSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { isRecognizedSelfHostSignal } from '../../config/env';
 import type { ResolvedLlmEndpoint, UsableLlmConfig } from '../llm/llmConfigResolver';
 import { PLATFORM_LLM_CREDENTIAL_ENV_KEYS } from '../llm/llmAvailability';
@@ -152,6 +156,50 @@ export function buildClaudeSdkChildEnv(
 }
 
 /**
+ * The NO_PROXY entry for a gateway child: `127.0.0.1:<port>` of the loopback
+ * gateway base URL. Anything else (a missing, unparsable or non-loopback URL)
+ * exempts nothing, so the child fails closed onto the deny-all proxy rather
+ * than gaining a broad exemption.
+ */
+function gatewayNoProxyEntry(gatewayBaseUrl: string | undefined): string {
+  if (!gatewayBaseUrl) return '';
+  let url: URL;
+  try { url = new URL(gatewayBaseUrl); } catch { return ''; }
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.port === '') return '';
+  return `127.0.0.1:${url.port}`;
+}
+
+/** An empty, private working directory for one Agent SDK child. */
+export interface IsolatedSdkCwd {
+  cwd: string;
+  /** Deletes the directory. Idempotent and never throws. */
+  remove: () => void;
+}
+
+/**
+ * A fresh, empty working directory for an Agent SDK child bound to an
+ * untrusted endpoint. The CLI describes its working directory (path, git
+ * status) in the system prompt it sends upstream; running it in an empty
+ * temp directory keeps repository and host paths out of that context.
+ */
+export async function createIsolatedSdkCwd(): Promise<IsolatedSdkCwd> {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'breeze-sdk-'));
+  let removed = false;
+  return {
+    cwd,
+    remove: () => {
+      if (removed) return;
+      removed = true;
+      try {
+        rmSync(cwd, { recursive: true, force: true });
+      } catch (error) {
+        console.warn(`[sdkChildEnv] could not remove an SDK child working directory: ${(error as Error).message}`);
+      }
+    },
+  };
+}
+
+/**
  * W06: env for an Agent SDK child bound to a gateway connection. The adapter
  * supplies the base URL (loopback + grant token), the placeholder key and the
  * model pins. No credential env var is forwarded from the parent (platform key,
@@ -181,8 +229,11 @@ export function buildGatewaySdkChildEnv(input: {
   Object.assign(env, input.adapterEnv);
   env.HTTPS_PROXY = input.denyProxyUrl;
   env.HTTP_PROXY = input.denyProxyUrl;
-  // The gateway is on loopback: exempt it (and only it) from the deny-all proxy.
-  env.NO_PROXY = '127.0.0.1,localhost';
+  // The gateway is on loopback: exempt it, and only it, from the deny-all
+  // proxy — its exact host:port, so no other loopback listener on the host is
+  // reachable directly. The bundled CLI matches port-qualified entries
+  // (gatewaySdk.e2e.test.ts proves both directions).
+  env.NO_PROXY = gatewayNoProxyEntry(input.adapterEnv.ANTHROPIC_BASE_URL);
   // Host-context guards last: an adapter can never re-enable auto-memory / CLAUDE.md.
   Object.assign(env, SDK_CHILD_HOST_CONTEXT_GUARDS);
   return env;

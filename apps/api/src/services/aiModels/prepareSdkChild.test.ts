@@ -1,4 +1,7 @@
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rec = vi.hoisted(() => ({ events: [] as Array<Record<string, unknown>> }));
@@ -37,7 +40,7 @@ describe('prepareSdkChild', () => {
   beforeEach(async () => { rec.events.length = 0; await getModelGateway(); });
   afterEach(async () => { await closeModelGateway(); await (await getLlmEgressProxy()).close(); });
 
-  it('gateway: loopback base URL with a grant token, placeholder key, deny-all proxy, NO_PROXY loopback only', async () => {
+  it('gateway: loopback base URL with a grant token, placeholder key, deny-all proxy, NO_PROXY the gateway port only', async () => {
     const r = makeResolvedModel('openai_compatible');
     const { env, revoke } = await prepareSdkChild(r, { key: 'sess-1', orgId: 'org-1', aiSessionId: 'sess-1', source: PARENT });
     expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/g\/[A-Za-z0-9_-]{43}$/);
@@ -46,7 +49,8 @@ describe('prepareSdkChild', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(env.HTTPS_PROXY).toMatch(/^http:\/\/breeze:[^@]+@127\.0\.0\.1:\d+$/);
     expect(env.HTTP_PROXY).toBe(env.HTTPS_PROXY);
-    expect(env.NO_PROXY).toBe('127.0.0.1,localhost');
+    // Exactly the gateway's host:port — not every loopback port, not localhost.
+    expect(env.NO_PROXY).toBe(`127.0.0.1:${new URL(env.ANTHROPIC_BASE_URL!).port}`);
     expect(env.no_proxy).toBeUndefined();
     expect(env.https_proxy).toBeUndefined();
     expect(env.ANTHROPIC_MODEL).toBeUndefined();
@@ -55,6 +59,47 @@ describe('prepareSdkChild', () => {
     // Host-context guards survive (#7444).
     expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
     revoke();
+  });
+
+  it('gateway: the child gets its own empty temp working directory, removed on revoke', async () => {
+    const r = makeResolvedModel('openai_compatible');
+    const a = await prepareSdkChild(r, { key: 'sess-cwd', orgId: 'org-1', aiSessionId: null, source: PARENT });
+    const b = await prepareSdkChild(r, { key: 'sess-cwd', orgId: 'org-1', aiSessionId: null, source: PARENT });
+    expect(a.cwd).toBeDefined();
+    expect(path.isAbsolute(a.cwd!)).toBe(true);
+    expect(realpathSync(a.cwd!).startsWith(realpathSync(os.tmpdir()))).toBe(true);
+    expect(statSync(a.cwd!).isDirectory()).toBe(true);
+    expect(readdirSync(a.cwd!)).toEqual([]);
+    expect(a.cwd!.startsWith(process.cwd())).toBe(false);
+    // One per dispatch: never shared between children.
+    expect(b.cwd).not.toBe(a.cwd);
+    a.revoke();
+    expect(existsSync(a.cwd!)).toBe(false);
+    expect(existsSync(b.cwd!)).toBe(true);
+    // Idempotent.
+    expect(() => a.revoke()).not.toThrow();
+    b.revoke();
+    expect(existsSync(b.cwd!)).toBe(false);
+  });
+
+  it('gateway: a failed dispatch leaves no working directory behind', async () => {
+    const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-')));
+    // A kind with no registered adapter: the dispatch fails after the
+    // working directory and the grants exist, and must release all of them.
+    const base = makeResolvedModel('openai_compatible');
+    const broken = { ...base, connection: { ...base.connection, kind: 'no_such_kind' } } as unknown as typeof base;
+    await expect(prepareSdkChild(broken, { key: 'sess-x', orgId: 'org-1', aiSessionId: null, source: PARENT }))
+      .rejects.toThrow(/No gateway adapter/);
+    const after = readdirSync(os.tmpdir()).filter((n) => n.startsWith('breeze-sdk-') && !before.has(n));
+    expect(after).toEqual([]);
+  });
+
+  it('non-gateway kinds get no working directory (spawn unchanged)', async () => {
+    for (const kind of ['platform', 'anthropic_byok', 'catalog'] as const) {
+      const child = await prepareSdkChild(makeResolvedModel(kind), { key: `k-${kind}`, orgId: 'org-1', aiSessionId: null, source: PARENT });
+      expect(child.cwd).toBeUndefined();
+      child.revoke();
+    }
   });
 
   it('child env carries no credential: not the upstream key, not the platform key, not parent cloud creds', async () => {

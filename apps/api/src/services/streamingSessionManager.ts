@@ -166,8 +166,15 @@ const runOutsideDbContextSafe = runOutsideDbContext;
 // re-exported so existing importers (scripts, tests) keep working.
 export { buildClaudeSdkChildEnv } from './aiModels/sdkChildEnv';
 
+/**
+ * A model-gateway capability path: the grant token (32 random bytes,
+ * base64url) is the only credential a gateway child holds, and the CLI may
+ * echo its base URL in an error line.
+ */
+const GATEWAY_CAPABILITY_PATH = /\/g\/[A-Za-z0-9_-]{43,}/g;
+
 export function redactClaudeSdkStderr(data: string): string {
-  return redactAiToolOutputText(data).trim();
+  return redactAiToolOutputText(data.replace(GATEWAY_CAPABILITY_PATH, '/g/[redacted]')).trim();
 }
 
 // ============================================
@@ -1191,6 +1198,9 @@ export class StreamingSessionManager {
             includePartialMessages: true,
             abortController,
             env: { ...childEnv, ...toolSearchPolicy.env },
+            // Gateway connections only: an empty temp working directory, so
+            // the environment context sent upstream names no host path.
+            ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],

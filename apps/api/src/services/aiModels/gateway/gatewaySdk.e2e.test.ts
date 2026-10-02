@@ -8,6 +8,11 @@
  * start.
  */
 import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk';
+import { existsSync } from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -20,7 +25,7 @@ import { prepareSdkChild } from '../connectionFactory';
 import { makeResolvedModel } from '../__fixtures__/resolvedModel';
 import { getLlmEgressProxy } from '../../llm/llmEgressProxy';
 
-const upstreamCalls: Array<Record<string, unknown>> = [];
+const upstreamCalls: Array<{ model: string; messages: Array<{ role: string; content?: unknown }> }> = [];
 const upstreamAuth: Array<string | undefined> = [];
 const enc = new TextEncoder();
 function sseResponse(chunks: unknown[]): Response {
@@ -36,7 +41,7 @@ function sseResponse(chunks: unknown[]): Response {
 beforeAll(async () => {
   await getModelGateway();
   __setUpstreamFetchForTests((async (_url: string, init: { body: string; headers: Record<string, string> }) => {
-    const body = JSON.parse(init.body) as { model: string; messages: Array<{ role: string }>; tools?: unknown[]; stream: boolean };
+    const body = JSON.parse(init.body) as { model: string; messages: Array<{ role: string; content?: unknown }>; tools?: unknown[]; stream: boolean };
     upstreamCalls.push(body);
     upstreamAuth.push(init.headers.authorization);
     const sawToolResult = body.messages.some((m) => m.role === 'tool');
@@ -80,6 +85,8 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
           model: r.wireModel, maxTurns: 4, tools: [], allowedTools: ['mcp__fidelity__get_weather'],
           mcpServers: { fidelity: createSdkMcpServer({ name: 'fidelity', version: '1.0.0', tools: [weather] }) },
           settingSources: [], persistSession: false, env: child.env,
+          // Exactly what both spawn sites pass for a gateway connection.
+          ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
           stderr: (d: string) => { stderr.push(d); },
         },
       })) {
@@ -88,6 +95,9 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
     } finally {
       child.revoke();
     }
+    // The child ran in its own empty working directory, gone once revoked.
+    expect(child.cwd).toBeDefined();
+    expect(existsSync(child.cwd!)).toBe(false);
     expect(result, `no result; CLI stderr:\n${stderr.join('').slice(-4000)}`).not.toBeNull();
     expect(toolRuns).toBe(1);
     expect(result).toMatchObject({ subtype: 'success' });
@@ -109,5 +119,54 @@ describe('Agent SDK through the gateway (openai_compatible)', () => {
     const connects = egress.events.filter((e) => e.surface === 'sdk_proxy_connect');
     for (const e of connects) expect(e).toMatchObject({ blocked: true, resolvedIp: null, connectionId: 'conn-oai', orgId: 'org-1' });
     expect(connects.map((e) => e.host)).not.toContain('llm.example.com');
+    // The CLI's environment context reaches the untrusted endpoint: it must
+    // carry no repository or host path, and no git details.
+    const systemText = JSON.stringify(upstreamCalls.flatMap((c) => c.messages.filter((m) => m.role === 'system')));
+    expect(systemText).toContain('Primary working directory');
+    const repoRoot = path.resolve(process.cwd(), '..', '..');
+    for (const hostPath of [process.cwd(), repoRoot, os.homedir()]) {
+      expect(systemText).not.toContain(hostPath);
+    }
+    expect(systemText).not.toContain('Is a git repository: true');
+  }, 120_000);
+
+  it('only the gateway port is exempt from the deny-all proxy: another loopback port is never dialled directly', async () => {
+    // A trap on a second loopback port. Pointing the child at it (with the
+    // gateway env otherwise untouched) must route through the deny-all proxy,
+    // so the trap never sees a request. The control run, with every loopback
+    // port exempt, proves the trap is reachable when the exemption allows it.
+    let trapHits = 0;
+    const trap = http.createServer((req, res) => {
+      trapHits += 1;
+      req.resume();
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'trap' } }));
+    });
+    await new Promise<void>((resolve) => trap.listen(0, '127.0.0.1', resolve));
+    const trapUrl = `http://127.0.0.1:${(trap.address() as AddressInfo).port}`;
+    const r = makeResolvedModel('openai_compatible');
+    const runAgainstTrap = async (noProxyOverride?: string): Promise<void> => {
+      const child = await prepareSdkChild(r, { key: 'e2e-trap', orgId: 'org-1', aiSessionId: null });
+      const env = { ...child.env, ANTHROPIC_BASE_URL: trapUrl, ...(noProxyOverride !== undefined ? { NO_PROXY: noProxyOverride } : {}) };
+      try {
+        for await (const _m of query({
+          prompt: 'hi',
+          options: {
+            model: r.wireModel, maxTurns: 1, tools: [], settingSources: [], persistSession: false, env,
+            ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+          },
+        })) { /* drain */ }
+      } catch { /* the run is expected to fail either way */ } finally {
+        child.revoke();
+      }
+    };
+    try {
+      await runAgainstTrap();
+      expect(trapHits).toBe(0);
+      await runAgainstTrap('127.0.0.1,localhost');
+      expect(trapHits).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((resolve) => trap.close(() => resolve()));
+    }
   }, 120_000);
 });

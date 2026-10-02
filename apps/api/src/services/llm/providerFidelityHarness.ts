@@ -43,6 +43,7 @@ import { buildWireParams, toMessagesApiParams } from '../aiModels/wireParams';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { createAnthropicClient } from '../aiModels/connectionFactory';
+import { createIsolatedSdkCwd, type IsolatedSdkCwd } from '../aiModels/sdkChildEnv';
 import { SDK_CHILD_HOST_CONTEXT_GUARDS } from './sdkChildEnvGuards';
 
 /**
@@ -481,8 +482,13 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), SDK_STAGE_TIMEOUT_MS);
   timer.unref?.();
+  // A transport child (the loopback gateway) talks to an untrusted endpoint:
+  // spawn it in an empty temp directory so the environment context the CLI
+  // sends upstream names no host path. The catalog path is unchanged.
+  let isolatedCwd: IsolatedSdkCwd | null = null;
 
   try {
+    if (childEnv) isolatedCwd = await createIsolatedSdkCwd();
     const session = sdk.query({
       prompt: PROMPT,
       options: {
@@ -505,6 +511,7 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
         ...agentSdkWireOptions(input.providerModel),
         abortController,
         env: childEnv ?? buildFidelityChildEnv(input),
+        ...(isolatedCwd ? { cwd: isolatedCwd.cwd } : {}),
       },
     } as Parameters<typeof sdk.query>[0]);
 
@@ -536,6 +543,7 @@ async function runSdkSubprocessStage(input: FidelityCheckInput, childEnv?: Recor
     return { name, ok: false, detail: `subprocess session errored: ${describeError(error)}` };
   } finally {
     clearTimeout(timer);
+    isolatedCwd?.remove();
   }
 }
 

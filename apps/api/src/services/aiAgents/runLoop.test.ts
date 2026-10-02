@@ -383,7 +383,7 @@ vi.mock('../aiModels/promptVariants', async (orig) => ({
 // W06 Task 9: the run loop's SDK child env + grants come from the one seam,
 // connectionFactory.prepareSdkChild (its own behaviour: prepareSdkChild.test.ts).
 const prepareSdkChild = vi.hoisted(() =>
-  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; revoke: () => void }>>());
+  vi.fn<(...args: unknown[]) => Promise<{ env: Record<string, string>; cwd?: string; revoke: () => void }>>());
 vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/connectionFactory')>()),
   prepareSdkChild,
@@ -855,6 +855,8 @@ describe('executeAgentRun', () => {
       { key: `agent-run:${RUN_ID}`, orgId: ORG_ID, aiSessionId: 'session-1' },
     );
     expect(lastQueryOptions!.env).toEqual({ CI: 'true' });
+    // No working-directory override outside gateway connections.
+    expect(lastQueryOptions).not.toHaveProperty('cwd');
   });
 
   it('W06: a gateway (openai_compatible) run spawns on the prepareSdkChild env and revokes its grants when the run ends', async () => {
@@ -863,7 +865,7 @@ describe('executeAgentRun', () => {
     resolveModel.mockResolvedValue(gateway);
     const revoke = vi.fn();
     const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1/g/tok', ANTHROPIC_API_KEY: 'breeze-gateway' };
-    prepareSdkChild.mockResolvedValue({ env, revoke });
+    prepareSdkChild.mockResolvedValue({ env, cwd: '/tmp/breeze-sdk-run', revoke });
 
     await executeAgentRun(RUN_ID);
 
@@ -872,6 +874,8 @@ describe('executeAgentRun', () => {
     });
     expect(lastQueryOptions!.model).toBe('qwen2.5-coder:7b');
     expect(lastQueryOptions!.env).toEqual(env);
+    // The child runs in the isolated working directory the seam handed out.
+    expect(lastQueryOptions!.cwd).toBe('/tmp/breeze-sdk-run');
     expect(JSON.stringify(lastQueryOptions!.env)).not.toContain('sk-fixture-upstream');
     expect(revoke).toHaveBeenCalledTimes(1);
   });

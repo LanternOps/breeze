@@ -200,4 +200,17 @@ describe('Claude SDK process hardening', () => {
     expect(redacted).not.toContain('sk-ant-secret');
     expect(redacted).toContain('[REDACTED]');
   });
+
+  it('redacts gateway capability URLs (the grant token in /g/<token>) from SDK stderr', () => {
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde'; // 43 base64url chars
+    expect(token).toHaveLength(43);
+    const redacted = redactClaudeSdkStderr(
+      `API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token}/v1/messages; retry /g/${token}`,
+    );
+    expect(redacted).not.toContain(token);
+    expect(redacted).toContain('http://127.0.0.1:41234/g/[redacted]/v1/messages');
+    expect(redacted.match(/\/g\/\[redacted\]/g)).toHaveLength(2);
+    // An unrelated short path segment is left alone.
+    expect(redactClaudeSdkStderr('Error at /g/short/path')).toContain('/g/short/path');
+  });
 });
