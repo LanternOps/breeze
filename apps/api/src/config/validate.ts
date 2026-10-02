@@ -632,6 +632,24 @@ const envObjectSchema = z
         'APPROVER_ASSURANCE_DEFAULT_ENFORCE_FROM must be an ISO date (YYYY-MM-DD) or timestamp',
       ),
 
+    // Per-source-IP limit on POST /api/v1/agents/enroll (#7472). Read at
+    // runtime by getEnrollmentRateLimit() (blank = 10 per 60s). Validated here
+    // so a typo fails boot instead of silently keeping the default.
+    AGENT_ENROLL_RATE_LIMIT: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
+        'AGENT_ENROLL_RATE_LIMIT must be a positive integer below 1,000,000,000',
+      ),
+    AGENT_ENROLL_RATE_WINDOW_SECONDS: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v?.trim() || /^[1-9]\d{0,8}$/.test(v.trim()),
+        'AGENT_ENROLL_RATE_WINDOW_SECONDS must be a positive integer below 1,000,000,000',
+      ),
+
     // Controlled agent-fleet rollout (decouple registration from promotion).
     // When false, binarySync registers new binaries WITHOUT touching
     // agent_versions.isLatest — the fleet upgrade target only changes via

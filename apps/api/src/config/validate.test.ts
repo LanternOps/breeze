@@ -122,6 +122,22 @@ describe('validateConfig', () => {
     });
   });
 
+  describe.each(['AGENT_ENROLL_RATE_LIMIT', 'AGENT_ENROLL_RATE_WINDOW_SECONDS'])('%s (#7472)', (name) => {
+    it('is valid when unset, blank, or a positive integer', () => {
+      withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, [name]: '' }, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, [name]: '120' }, () => { expect(() => validateConfig()).not.toThrow(); });
+    });
+    it('accepts surrounding whitespace', () => {
+      withEnv({ ...validEnv, [name]: ' 10 ' }, () => { expect(() => validateConfig()).not.toThrow(); });
+    });
+    it.each(['0', '-1', 'ten', '1.5', '+5', '007', '99999999999999999999'])('refuses to boot on %s', (bad) => {
+      withEnv({ ...validEnv, [name]: bad }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(name));
+      });
+    });
+  });
+
   it('does not require IP classification provider configuration', () => {
     const previousProvider = process.env.IP_CLASSIFY_PROVIDER;
     const previousKey = process.env.IP_CLASSIFY_API_KEY;
