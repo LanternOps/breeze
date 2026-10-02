@@ -925,7 +925,7 @@
         "subtotal": "Subtotal",
         "tax": "Imposto",
         "taxRate": "Alíquota de imposto",
-        "taxRateHelp": "Aplica-se às linhas marcadas como tributáveis. Esta alíquota foi definida quando a proposta foi criada; para alterá-la em propostas futuras, atualize as configurações de imposto da organização.",
+        "taxRateHelp": "Aplica-se às linhas marcadas como tributáveis. Vem das configurações de impostos da organização ou, se a organização não tiver uma, da sua alíquota padrão. Acompanha essas configurações enquanto a proposta é um rascunho e é fixada quando a proposta é enviada.",
         "title": "Totais ao vivo",
         "total": "Total"
       },

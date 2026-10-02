@@ -15,6 +15,7 @@ import { portalBranding } from '../db/schema/portal';
 import {
   getQuote,
   quoteDeviceSetEstimate,
+  syncDraftQuoteTaxRate,
   toCustomerLines,
   type QuoteDeviceSetDrift,
 } from './quoteService';
@@ -520,11 +521,16 @@ export async function sendQuote(
   // matches the stored quote. Locking before the access check is harmless — an
   // inaccessible id 404s at getQuote and the lock dies with the transaction.
   await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, id)).limit(1).for('update');
-  const { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
+  let { quote, blocks, lines } = await getQuote(id, actor); // getQuote enforces org-access (404)
   if (quote.status !== 'draft') {
     // Phase 2 send is issue-once: a non-draft quote (already sent/viewed/etc.) cannot be re-sent.
     throw new QuoteServiceError(`Cannot send a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }
+  // Tax snapshot moment (#7507): resolve the rate NOW, under the row lock and
+  // before the gates, so the deposit gate, the frozen totals, the emailed PDF and
+  // every later render use the rate current at send — not whatever the draft
+  // carried since its last edit. Re-read only when it actually moved.
+  if (await syncDraftQuoteTaxRate(id)) ({ quote, blocks, lines } = await getQuote(id, actor));
 
   // ---- Revision supersede, part 1: lock + validate the parent -------------
   // Runs INSIDE the ambient request/system transaction so the parent flip and

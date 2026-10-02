@@ -5,6 +5,7 @@ vi.mock('../../services/quoteService', () => ({
   createQuote: vi.fn(),
   cloneQuote: vi.fn(),
   getQuote: vi.fn(),
+  refreshDraftQuoteTaxRate: vi.fn(async () => false),
   listQuotes: vi.fn(),
   updateQuote: vi.fn(),
   deleteDraftQuote: vi.fn(),

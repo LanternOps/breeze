@@ -12,7 +12,7 @@ import {
   changeCurrencySchema, buildStripeCurrencyWarning,
 } from '@breeze/shared';
 import {
-  createQuote, cloneQuote, reviseQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, reviseQuote, getQuote, refreshDraftQuoteTaxRate, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
   refreshQuoteDeviceCounts, quoteDeviceSetEstimate,
@@ -121,6 +121,10 @@ quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idPar
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
+    // A draft opens at the rate that applies if it were sent now (#7507) — the
+    // org's tax settings may have changed since its last edit. No-op (and no
+    // write) for a sent quote or a draft that is already current.
+    await refreshDraftQuoteTaxRate(id, quoteActorFrom(c));
     const detail = await getQuote(id, quoteActorFrom(c));
     // Branding lets the in-app Preview render the customer-facing document
     // (logo, accent, seller, footer) without a second round-trip — same object

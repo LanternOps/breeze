@@ -24,6 +24,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances } from '../../db/schema/quotes';
 import { invoices } from '../../db/schema/invoices';
 import { contracts } from '../../db/schema/contracts';
+import { organizations } from '../../db/schema/orgs';
 import { createPartner, createOrganization, createCatalogItemWithPrice } from './db-utils';
 import { createQuote, addManualLine, addCatalogLine, updateQuote, getQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
@@ -102,8 +103,9 @@ describe('quote deposits: accept → deposit → balance (breeze_app, real DB)',
       }, actor)
     );
 
-    // 10% tax.
-    await withDbAccessContext(ctx, () => updateQuote(created.id, { taxRate: 0.10 }, actor));
+    // 10% tax — the org's rate; the deposit patch below re-resolves it onto the
+    // draft (#7507: there is no per-quote rate to set).
+    await withSystemDbAccessContext(() => db.update(organizations).set({ taxRate: '0.10000' }).where(eq(organizations.id, org.id)));
 
     // --- Step 2: configure a selected_lines deposit — only the (deposit-eligible)
     // hardware line counts: 6200 + 10% tax = 6820.00. ---

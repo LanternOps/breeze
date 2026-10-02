@@ -899,7 +899,7 @@
         "srUpdatedWithTax": "Totali aggiornati. Una tantum {{oneTime}}, ricorrente mensile {{monthly}}, ricorrente annuale {{annual}}, imposta {{tax}}, dovuto all'accettazione {{due}}.",
         "tax": "Imposta",
         "taxRate": "Aliquota fiscale",
-        "taxRateHelp": "Si applica alle righe contrassegnate come imponibili. Questa aliquota è stata impostata alla creazione del preventivo; per modificarla nei preventivi futuri, aggiorna le impostazioni fiscali dell'organizzazione.",
+        "taxRateHelp": "Si applica alle righe contrassegnate come imponibili. Deriva dalle impostazioni fiscali dell'organizzazione oppure, se l'organizzazione non ne ha, dalla tua aliquota predefinita. Segue tali impostazioni finché il preventivo è una bozza e viene fissata all'invio del preventivo.",
         "title": "Totali in tempo reale",
         "firstPeriodSubtotal": "Subtotale primo periodo",
         "subtotal": "Subtotale",

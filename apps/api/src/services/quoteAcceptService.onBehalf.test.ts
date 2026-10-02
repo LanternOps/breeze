@@ -36,6 +36,13 @@ vi.mock('./quoteLifecycle', async (importActual) => {
   };
 });
 
+// #7507: send re-resolves a draft's tax rate; these suites are not about tax, so
+// the sync is a no-op (no extra db read queued into the mocked chain).
+vi.mock('./quoteService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quoteService')>();
+  return { ...actual, syncDraftQuoteTaxRate: vi.fn(async () => false) };
+});
+
 // Controllable Drizzle chain mock — same harness as quoteAcceptService.test.ts.
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }

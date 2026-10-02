@@ -776,9 +776,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     });
   }, [lines]);
 
-  // The tax rate is fixed at quote creation (org tax settings → partner default)
-  // and read-only in the editor, so the rail always computes with the committed
-  // server rate.
+  // The tax rate is read-only in the editor: the server re-resolves it (org tax
+  // settings → partner default) on every draft change and on open, and freezes
+  // it at send (#7507), so the rail always computes with the committed rate.
   const effectiveRate = quote.taxRate ? parseFloat(quote.taxRate) : null;
 
   // The figures the rail renders: optimistic recompute when any line is
@@ -2936,8 +2936,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 onMissingCostClick={missingCostLineIds.length > 0 ? revealFirstMissingCost : undefined}
               />
             )}
-            {/* Read-only: the rate is resolved at quote creation (org tax settings,
-                falling back to the partner default) and isn't editable per-quote. */}
+            {/* Read-only: the rate is the org's tax settings (falling back to the
+                partner default), followed while drafting and fixed at send (#7507);
+                it isn't editable per-quote. */}
             <div className="mt-2 border-t pt-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm text-muted-foreground">{t('quotes.editor.liveTotals.taxRate')}</span>

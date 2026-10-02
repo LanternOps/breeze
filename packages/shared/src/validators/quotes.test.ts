@@ -69,6 +69,17 @@ describe('quote validators', () => {
     expect('orgId' in parsed).toBe(false);
   });
 
+  it('update rejects taxRate (any value, incl. null) with a 400 instead of stripping it (#7507)', () => {
+    for (const taxRate of [0.1, 0, null]) {
+      const res = updateQuoteSchema.safeParse({ taxRate });
+      expect(res.success).toBe(false);
+      expect(res.error!.issues[0]!.path).toEqual(['taxRate']);
+      expect(res.error!.issues[0]!.message).toMatch(/organization's tax settings/);
+    }
+    // Omitted is fine — every other header field still patches.
+    expect(updateQuoteSchema.safeParse({ title: 'x' }).success).toBe(true);
+  });
+
   it('create/update accept a bounded title and reject an oversized one', () => {
     expect(createQuoteSchema.parse({ orgId: '11111111-1111-1111-1111-111111111111', title: 'Office refresh' }).title)
       .toBe('Office refresh');
