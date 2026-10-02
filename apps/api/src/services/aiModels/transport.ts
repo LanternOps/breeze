@@ -3,6 +3,8 @@
  * throw UnsupportedWireOptionError for thinkingDisplay 'updates', speed and
  * inferenceGeo until its spike (D1–D3) enables them; probing the adapters
  * themselves keeps this in lockstep with what dispatch will actually send.
+ * W05: the Agent SDK adapter accepts speed only once lab gate L1 has passed
+ * (`agentSdkCarriesFast()`), so `speed` here follows that gate through the probe.
  */
 import { TOOL_REQUIRING_SURFACES, type AiSurface } from '@breeze/shared';
 import { UnsupportedWireOptionError, toAgentSdkOptions, toMessagesApiParams, type WireParams } from './wireParams';
@@ -15,6 +17,9 @@ export function defaultTransport(surface: AiSurface): DispatchTransport {
 }
 
 const carriageCache = new Map<DispatchTransport, TransportCarriage>();
+
+/** Test seam: carriage is cached per process; tests that flip the L1 gate reset it. */
+export function __resetTransportCarriageForTests(): void { carriageCache.clear(); }
 
 export function transportCarries(transport: DispatchTransport): TransportCarriage {
   const cached = carriageCache.get(transport);

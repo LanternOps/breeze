@@ -73,7 +73,7 @@ describe('sdkTurnUsage — the provider never supplies a billing number', () => 
     expect(out.usage).toEqual([std(SONNET, T)]);
     expect(out.outcome).toEqual({
       stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-      servedModel: SONNET, providerModel: null, sdkReportedCostUsd: 9.99,
+      servedModel: SONNET, providerModel: null, sdkReportedCostUsd: 9.99, fastDowngraded: false,
     });
     expect(JSON.stringify(out.usage)).not.toMatch(/9\.99|7\.77|cost/i);
     expect(JSON.stringify(out)).not.toMatch(/cost(Cents|_cents)/i);

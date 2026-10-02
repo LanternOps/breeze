@@ -60,7 +60,7 @@ afterAll(() => {
 const T = { input: 120_000, output: 40_000, cacheRead: 500_000, cacheWrite: 2_000 };
 const OK = (model: string, sdk: number | null): TurnOutcome => ({
   stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-  servedModel: model, providerModel: null, sdkReportedCostUsd: sdk,
+  servedModel: model, providerModel: null, sdkReportedCostUsd: sdk, fastDowngraded: false,
 });
 
 async function sys<R>(fn: () => Promise<R>): Promise<R> {
