@@ -38,6 +38,6 @@ describe('autopay cross-wave vocabulary', () => {
     for (const values of tuples) {
       expect(new Set(values).size).toBe(values.length);
     }
-    expect(BILLING_NOTICE_KINDS).toEqual(['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'autopay_paused', 'autopay_resumed', 'card_expiring']);
+    expect(BILLING_NOTICE_KINDS).toEqual(['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring', 'autopay_paused', 'autopay_resumed']);
   });
 });
