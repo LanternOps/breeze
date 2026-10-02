@@ -104,10 +104,7 @@ func readWindowsAdapters(ctx context.Context) ([]Adapter, error) {
 			if a.OperStatus == 1 {
 				state = "up"
 			}
-			kind := map[uint32]string{6: "ethernet", 71: "wifi", 131: "tunnel", 243: "cellular", 244: "cellular"}[a.IfType]
-			if kind == "" {
-				kind = "other"
-			}
+			kind := windowsInterfaceKind(a.IfType, a.PhysicalAddressLength)
 			adapter.Row = InterfaceRow{RowKey: key, InterfaceKey: key, OSIndex: a.IfIndex, Name: name, Kind: kind, AdminState: "unknown", OperState: state, MTU: ptr(a.Mtu), Addresses: []AddressRow{}}
 			if a.PhysicalAddressLength == 6 {
 				adapter.Row.CurrentMAC = net.HardwareAddr(a.PhysicalAddress[:6]).String()

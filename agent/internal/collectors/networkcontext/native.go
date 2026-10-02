@@ -49,7 +49,10 @@ func StableEvidenceKey(epoch, evidence string) string {
 	s := sha256.Sum256([]byte(epoch + "\x00" + evidence))
 	return "adapter:" + hex.EncodeToString(s[:])
 }
-func interfaceRows(ctx context.Context, identities *InterfaceIdentities, interfaces func() ([]net.Interface, error), addrs func(net.Interface) ([]net.Addr, error)) ([]InterfaceRow, map[int]string, error) {
+
+// interfaceRows lists non-loopback interfaces; kind (nil = unknown) probes each
+// interface's kind (interfacekind.go) and is kept inside the wire enum.
+func interfaceRows(ctx context.Context, identities *InterfaceIdentities, interfaces func() ([]net.Interface, error), addrs func(net.Interface) ([]net.Addr, error), kind func(net.Interface) string) ([]InterfaceRow, map[int]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -75,7 +78,11 @@ func interfaceRows(ctx context.Context, identities *InterfaceIdentities, interfa
 		if item.Flags&net.FlagUp != 0 {
 			state = "up"
 		}
-		row := InterfaceRow{InterfaceKey: key, OSIndex: uint32(item.Index), Name: item.Name, Kind: "unknown", AdminState: state, OperState: "unknown", Addresses: []AddressRow{}}
+		reported := "unknown"
+		if kind != nil {
+			reported = reportableInterfaceKind(kind(item))
+		}
+		row := InterfaceRow{InterfaceKey: key, OSIndex: uint32(item.Index), Name: item.Name, Kind: reported, AdminState: state, OperState: "unknown", Addresses: []AddressRow{}}
 		if item.MTU >= 0 {
 			row.MTU = ptr(uint32(item.MTU))
 		}
