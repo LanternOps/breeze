@@ -26,7 +26,8 @@ test('bulk requests, unasked banner and skipped-recipient feedback', async ({ au
   await authedPage.route(/\/api\/v1\/billing\/autopay\/requests(\?.*)?$/, route => route.fulfill({ json: { requested: [], skipped: [{ orgId, reason: 'no_billing_contact' }] } }));
   const page = new AutopayEnrollmentPage(authedPage); await page.openList();
   await expect(page.unasked()).toBeVisible(); await page.sendNow().click();
-  await expect(page.bulkResult()).toContainText('no_billing_contact');
+  await expect(page.bulkResult()).toContainText('No billing contact email is available. Add an email or enter a recipient.');
+  await expect(page.bulkResult()).not.toContainText('no_billing_contact');
 });
 test('ACH-preferred is selected, fees visible, and explicit authorization required', async ({ cleanPage }) => {
   await cleanPage.route('**/api/v1/autopay/public/test-token', route => route.fulfill({ json: setup }));
