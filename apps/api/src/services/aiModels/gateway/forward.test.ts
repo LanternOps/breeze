@@ -43,6 +43,16 @@ describe('forwardUpstream', () => {
     })]);
   });
 
+  it('a caller may lower the response cap (discovery: 1 MiB) but never raise it past the gateway ceiling', async () => {
+    const caps: unknown[] = [];
+    __setUpstreamFetchForTests((async (_u: string, init: Record<string, unknown>) => { caps.push(init.maxBytes); return new Response('{}'); }) as never);
+    const get = (maxBytes?: number) => forwardUpstream(grant(), { url: 'https://llm.example.com/v1/models', method: 'GET', headers: {}, stream: false, maxBytes }, new AbortController().signal);
+    await get(1024 * 1024);
+    await get(1024 * 1024 * 1024);
+    await get();
+    expect(caps).toEqual([1024 * 1024, 32 * 1024 * 1024, 32 * 1024 * 1024]);
+  });
+
   it('refuses an off-origin URL before dialling (adapters cannot be tricked into another host)', async () => {
     const spy = vi.fn();
     __setUpstreamFetchForTests(spy as never);

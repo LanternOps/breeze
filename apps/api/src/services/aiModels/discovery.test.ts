@@ -1,10 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { listMock, constructorOptions, withSystemDbAccessContextMock, sendOpsAlertMock } = vi.hoisted(() => ({
+const { listMock, constructorOptions, withSystemDbAccessContextMock, sendOpsAlertMock, connMocks, dbWrites } = vi.hoisted(() => ({
   listMock: vi.fn(),
   constructorOptions: [] as Array<Record<string, unknown>>,
   withSystemDbAccessContextMock: vi.fn(),
   sendOpsAlertMock: vi.fn(),
+  connMocks: { getConnection: vi.fn(), getConnectionKeyMaterial: vi.fn(), decryptConnectionKey: vi.fn() },
+  dbWrites: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@anthropic-ai/sdk', () => {
@@ -17,12 +19,15 @@ vi.mock('@anthropic-ai/sdk', () => {
   return { default: MockAnthropic };
 });
 vi.mock('../../db', () => ({
-  db: {},
+  // Only the discovery_error write is reachable from the unit tests; any other
+  // statement (e.g. the lifecycle write transaction) throws here.
+  db: { update: () => ({ set: (values: Record<string, unknown>) => ({ where: async () => { dbWrites.push(values); } }) }) },
   withSystemDbAccessContext: withSystemDbAccessContextMock,
   runOutsideDbContext: (fn: () => unknown) => fn(),
 }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert: sendOpsAlertMock }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./connections', () => connMocks);
 vi.mock('./platformModels', () => ({
   upsertDiscoveredPlatformModel: vi.fn(),
   refreshPlatformModelSnapshot: vi.fn(async () => undefined),
@@ -32,8 +37,10 @@ import {
   ANTHROPIC_API_ORIGIN,
   computeLifecycleAfterSync,
   discoverAnthropicModels,
+  syncConnectionModels,
   syncPlatformModels,
 } from './discovery';
+import { DiscoveryTruncatedError } from './gateway/openai/discovery';
 import { captureException } from '../sentry';
 import { refreshPlatformModelSnapshot } from './platformModels';
 
@@ -150,5 +157,99 @@ describe('syncPlatformModels guards (no database touched)', () => {
     expect(await syncPlatformModels({ env: { ANTHROPIC_API_KEY: 'k' }, discover: vi.fn().mockResolvedValue([]) }))
       .toEqual({ status: 'failed', error: 'the Models API returned no models' });
     expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncConnectionModels — gateway kinds, before any row is written (W06)', () => {
+  const KEY = 'sk-live-partner-key-0123456789';
+  const gatewayConn = (over: Record<string, unknown> = {}) => ({
+    id: 'conn-1', partnerId: 'p-1', kind: 'openai_compatible', status: 'active', configVersion: 4,
+    baseUrl: 'https://llm.example.com/v1', catalogEntryId: null, providerConfig: null, ...over,
+  });
+  const material = (over: Record<string, unknown> = {}) => ({ id: 'conn-1', partnerId: 'p-1', status: 'active', apiKeyEncrypted: 'enc:v1:xx', ...over });
+  const discoverer = vi.fn();
+  const run = () => syncConnectionModels('conn-1', NOW, {
+    discoverAnthropicModels: vi.fn(),
+    connectionDiscoverers: { openai_compatible: discoverer },
+  });
+
+  beforeEach(() => {
+    dbWrites.length = 0;
+    discoverer.mockReset();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
+    connMocks.getConnection.mockResolvedValue(gatewayConn());
+    connMocks.getConnectionKeyMaterial.mockResolvedValue(material());
+    connMocks.decryptConnectionKey.mockReturnValue(KEY);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    withSystemDbAccessContextMock.mockReset();
+    vi.restoreAllMocks();
+  });
+
+  it('a disconnected connection is skipped before its key is read or its endpoint called', async () => {
+    connMocks.getConnection.mockResolvedValue(gatewayConn({ status: 'disconnected', baseUrl: 'https://llm.example.com/v1' }));
+    expect(await run()).toMatchObject({ status: 'skipped', error: 'connection disconnected' });
+    expect(connMocks.getConnectionKeyMaterial).not.toHaveBeenCalled();
+    expect(discoverer).not.toHaveBeenCalled();
+    expect(dbWrites).toEqual([]);
+  });
+
+  it('a gateway kind without a discoverer (manual entry only) is skipped without reading the key', async () => {
+    const report = await syncConnectionModels('conn-1', NOW, { discoverAnthropicModels: vi.fn(), connectionDiscoverers: {} });
+    expect(report).toMatchObject({ status: 'skipped' });
+    expect(connMocks.getConnectionKeyMaterial).not.toHaveBeenCalled();
+  });
+
+  it('a disconnect that lands between the connection read and the key read is a skip, never "keyless"', async () => {
+    connMocks.getConnectionKeyMaterial.mockResolvedValue(material({ status: 'disconnected', apiKeyEncrypted: null }));
+    expect(await run()).toMatchObject({ status: 'skipped', error: 'connection disconnected' });
+    expect(discoverer).not.toHaveBeenCalled();
+  });
+
+  it('passes the connection config and the decrypted key to the discoverer; a failure stores a scrubbed discovery_error and writes nothing else', async () => {
+    let received: unknown = null;
+    discoverer.mockImplementation(async (input: unknown) => {
+      received = structuredClone(input);
+      throw new Error(`HTTP 401 for /models: invalid key ${KEY} (${encodeURIComponent(KEY)})`);
+    });
+    const report = await run();
+    expect(received).toEqual({
+      config: { source: 'gateway', kind: 'openai_compatible', partnerId: 'p-1', connectionId: 'conn-1', configVersion: 4, baseUrl: 'https://llm.example.com/v1' },
+      credential: { secret: KEY },
+    });
+    expect(report).toMatchObject({ status: 'failed', discovered: 0, added: 0, markedMissing: 0, markedRetired: 0 });
+    expect(dbWrites).toHaveLength(1);
+    const stored = String(dbWrites[0]!.discoveryError);
+    expect(stored).toContain('401');
+    expect(stored).not.toContain(KEY);
+    expect(stored).not.toContain(KEY.slice(-12));
+    expect(stored.length).toBeLessThanOrEqual(600);
+    expect(JSON.stringify(report)).not.toContain(KEY);
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain(KEY);
+  });
+
+  it('a keyless active connection discovers with a null secret (no decrypt)', async () => {
+    connMocks.getConnectionKeyMaterial.mockResolvedValue(material({ apiKeyEncrypted: null }));
+    discoverer.mockRejectedValue(new Error('stop before the write'));
+    await run();
+    expect(discoverer).toHaveBeenCalledTimes(1);
+    expect(discoverer.mock.calls[0]![0]).toMatchObject({ credential: { secret: null } });
+    expect(connMocks.decryptConnectionKey).not.toHaveBeenCalled();
+  });
+
+  it('a key that cannot be decrypted fails the sync without calling the endpoint', async () => {
+    connMocks.decryptConnectionKey.mockImplementation(() => { throw new Error('bad ciphertext'); });
+    expect(await run()).toMatchObject({ status: 'failed' });
+    expect(discoverer).not.toHaveBeenCalled();
+    expect(String(dbWrites[0]!.discoveryError)).toMatch(/key/i);
+  });
+
+  it('an empty or over-long listing is a failed sync (never a mass "missing", never a truncated inventory)', async () => {
+    discoverer.mockResolvedValue([]);
+    expect(await run()).toMatchObject({ status: 'failed' });
+    discoverer.mockRejectedValue(new DiscoveryTruncatedError('The endpoint lists more than 500 models; add the ones you need by hand.'));
+    expect(await run()).toMatchObject({ status: 'failed', error: expect.stringMatching(/more than 500/) });
+    expect(dbWrites).toHaveLength(2);
   });
 });

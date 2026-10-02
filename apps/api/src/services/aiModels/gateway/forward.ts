@@ -17,6 +17,8 @@ export interface UpstreamRequest {
   headers: Record<string, string>;
   body?: string | Buffer;
   stream: boolean;
+  /** Lower response cap for this call (discovery: 1 MiB). Never above GATEWAY_MAX_RESPONSE_BYTES. */
+  maxBytes?: number;
 }
 
 /** Headers an adapter may never pass through to an upstream (credentials, routing, hop-by-hop). */
@@ -167,7 +169,9 @@ export async function forwardUpstream(
       timeoutMs: GATEWAY_IDLE_TIMEOUT_MS,
       allowPrivateNetwork: allow.allowPrivateNetwork,
       requirePrivateForCleartext: allow.requirePrivateForCleartext,
-      maxBytes: GATEWAY_MAX_RESPONSE_BYTES,
+      maxBytes: req.maxBytes !== undefined && Number.isFinite(req.maxBytes) && req.maxBytes > 0
+        ? Math.min(req.maxBytes, GATEWAY_MAX_RESPONSE_BYTES)
+        : GATEWAY_MAX_RESPONSE_BYTES,
       streamResponse: req.stream,
       onConnect: (ip: string) => { resolvedIp = ip; },
     });

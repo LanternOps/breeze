@@ -1,21 +1,26 @@
 /**
  * AI model registry (spec §6): Anthropic model discovery. W01 covers the
  * platform key (`syncPlatformModels`); W03 adds `syncConnectionModels` for
- * BYOK and catalog connections.
+ * BYOK and catalog connections; W06 routes gateway kinds (openai_compatible)
+ * through `CONNECTION_MODEL_DISCOVERERS` (connectionDiscovery.ts).
  *
  * Discovery NEVER enables, prices, deletes, or changes an assignment. New ids
  * land unpriced and unoffered, and the operator is alerted.
  */
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
-import type { ModelLifecycle } from '@breeze/shared';
+import { isGatewayConnectionKind, type GatewayConnectionKind, type ModelLifecycle } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiPlatformModels, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { sendOpsAlert } from '../opsAlerts';
 import { captureException } from '../sentry';
 import { createAnthropicClient, type AnthropicClientTarget } from './connectionFactory';
+import { CONNECTION_MODEL_DISCOVERERS, type ConnectionModelDiscoverer } from './connectionDiscovery';
 import { decryptConnectionKey, getConnection, getConnectionKeyMaterial, type PartnerAiConnection } from './connections';
 import { refreshPlatformModelSnapshot, upsertDiscoveredPlatformModel, type DiscoveredModelInput } from './platformModels';
 import { safeErrorMessage } from './safeDbError';
+import { scrubSecrets } from './gateway/scrub';
+import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
+import { gatewayConfigFor } from './gatewayCandidate';
 
 export const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 export type AnthropicModelInfo = DiscoveredModelInput;
@@ -270,9 +275,19 @@ export interface ConnectionSyncReport {
 
 export interface SyncConnectionModelsDeps {
   discoverAnthropicModels: typeof discoverAnthropicModels;
+  /** Gateway-kind listers (W06); defaults to CONNECTION_MODEL_DISCOVERERS. */
+  connectionDiscoverers?: Partial<Record<GatewayConnectionKind, ConnectionModelDiscoverer>>;
 }
 
-interface FoundModel { modelId: string; capabilities: unknown }
+/** displayName is only taken from gateway listings, and only on insert (an admin's name is never overwritten). */
+interface FoundModel { modelId: string; capabilities: unknown; displayName: string | null }
+
+/** Everything a gateway listing needs, read before the network call. */
+interface GatewayListing {
+  discoverer: ConnectionModelDiscoverer;
+  config: GatewayConnectionConfig;
+  credential: GatewayCredential;
+}
 
 /** Offerings discovery owns. Manual (and platform) rows are the admin's: never aged. */
 const DISCOVERY_OWNED_SOURCES = ['discovered', 'catalog'] as const;
@@ -280,18 +295,32 @@ const DISCOVERY_OWNED_SOURCES = ['discovered', 'catalog'] as const;
 const sysTx = <T>(fn: () => Promise<T>, label: string) =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
 
-/** Safe to store and log: SQL values scrubbed (safeDbError), the connection key never echoed. */
+/**
+ * Safe to store and log: SQL values scrubbed (safeDbError), the connection key
+ * (and its encodings/tail) and generic key shapes never echoed, capped.
+ */
 function connectionSyncError(error: unknown, apiKey: string | null): string {
-  let message = safeErrorMessage(error);
-  if (apiKey) message = message.split(apiKey).join('[redacted]');
-  return message.slice(0, 500);
+  return scrubSecrets(safeErrorMessage(error), [apiKey], 500);
 }
 
 async function listConnectionModels(
   conn: PartnerAiConnection,
   deps: SyncConnectionModelsDeps,
   keyRef: { key: string | null },
+  gateway: GatewayListing | null,
 ): Promise<FoundModel[]> {
+  if (gateway) {
+    keyRef.key = gateway.credential.secret;
+    // The partner's endpoint, through the gateway's guarded egress
+    // (forwardUpstream): never a direct client to base_url.
+    const models = await gateway.discoverer({ config: gateway.config, credential: gateway.credential });
+    // Same rule as W01: an empty listing is a failure, never a mass "missing".
+    if (models.length === 0) throw new Error('The endpoint listed no usable models.');
+    // capabilities null: discovery never writes capabilities for a gateway
+    // offering (only the verifier does), and the upsert's COALESCE keeps a
+    // verification record already on the row.
+    return models.map((model) => ({ modelId: model.modelId, capabilities: null, displayName: model.displayName }));
+  }
   if (conn.kind === 'anthropic_byok') {
     const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
     if (!material) throw new Error('The connection no longer exists.');
@@ -301,7 +330,7 @@ async function listConnectionModels(
     const models = await deps.discoverAnthropicModels(keyRef.key, { kind: 'anthropic' });
     // W01 rule: an empty listing is a failure, never a mass "missing".
     if (models.length === 0) throw new Error('the Models API returned no models');
-    return models.map((model) => ({ modelId: model.id, capabilities: model.capabilities ?? null }));
+    return models.map((model) => ({ modelId: model.id, capabilities: model.capabilities ?? null, displayName: null }));
   }
   // Catalog: mirror the entry's CURRENT listed revision, only models both
   // mapped and verified. The revision is the platform's vetted listing, so the
@@ -315,7 +344,47 @@ async function listConnectionModels(
   if (!provider) throw new Error('The catalog provider for this connection is not listed.');
   return [...new Set(provider.verifiedModels)]
     .filter((id) => Object.hasOwn(provider.modelMap, id))
-    .map((id) => ({ modelId: id, capabilities: null }));
+    .map((id) => ({ modelId: id, capabilities: null, displayName: null }));
+}
+
+async function recordDiscoveryError(connectionId: string, message: string): Promise<void> {
+  try {
+    await sysTx(() => db.update(partnerAiConnections)
+      .set({ discoveryError: message })
+      .where(eq(partnerAiConnections.id, connectionId)), 'aiModels.syncConnection.recordError');
+  } catch (writeError) {
+    console.warn(`[aiModels] could not record discovery_error on connection ${connectionId}: ${safeErrorMessage(writeError)}`);
+  }
+}
+
+type GatewayPreparation =
+  | { kind: 'ready'; listing: GatewayListing }
+  | { kind: 'skip'; error: string }
+  | { kind: 'fail'; error: string };
+
+/**
+ * The discoverer, config and credential for a gateway connection. Status is
+ * read in the SAME row read as the key: a disconnected row also has a NULL key,
+ * so it must never be taken for a keyless endpoint.
+ */
+async function prepareGatewayListing(
+  conn: PartnerAiConnection & { kind: GatewayConnectionKind },
+  deps: SyncConnectionModelsDeps,
+): Promise<GatewayPreparation> {
+  const discoverer = (deps.connectionDiscoverers ?? CONNECTION_MODEL_DISCOVERERS)[conn.kind];
+  if (!discoverer) return { kind: 'skip', error: `${conn.kind} models are entered by hand` };
+  const config = gatewayConfigFor(conn);
+  if (!config) return { kind: 'skip', error: 'connection has no endpoint' };
+  const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
+  if (!material || material.partnerId !== conn.partnerId) return { kind: 'skip', error: 'connection not found' };
+  if (material.status !== 'active') return { kind: 'skip', error: 'connection disconnected' };
+  if (material.apiKeyEncrypted === null) return { kind: 'ready', listing: { discoverer, config, credential: { secret: null } } };
+  try {
+    return { kind: 'ready', listing: { discoverer, config, credential: { secret: decryptConnectionKey(material) } } };
+  } catch {
+    // The decrypt error text is not stored: a fixed message is enough to act on.
+    return { kind: 'fail', error: 'The stored key for this connection could not be decrypted; re-enter it.' };
+  }
 }
 
 /**
@@ -334,27 +403,39 @@ export async function syncConnectionModels(
   const base = { connectionId, discovered: 0, added: 0, markedMissing: 0, markedRetired: 0 };
   const conn = await sysTx(() => getConnection(connectionId), 'aiModels.syncConnection.read');
   if (!conn) return { ...base, status: 'skipped', error: 'connection not found' };
-  if (conn.kind !== 'anthropic_byok' && conn.kind !== 'catalog') {
-    return { ...base, status: 'skipped', error: `${conn.kind} discovery arrives in a later wave` };
-  }
+  // Before any kind dispatch: a disconnected row is never listed (W06 alignment).
   if (conn.status === 'disconnected') return { ...base, status: 'skipped', error: 'connection disconnected' };
+  const gatewayKind = isGatewayConnectionKind(conn.kind);
+  if (conn.kind !== 'anthropic_byok' && conn.kind !== 'catalog' && !gatewayKind) {
+    return { ...base, status: 'skipped', error: `${conn.kind} discovery is not supported` };
+  }
+
+  let gateway: GatewayListing | null = null;
+  if (gatewayKind) {
+    const prepared = await prepareGatewayListing(conn as PartnerAiConnection & { kind: GatewayConnectionKind }, deps);
+    if (prepared.kind === 'skip') return { ...base, status: 'skipped', error: prepared.error };
+    if (prepared.kind === 'fail') {
+      console.warn(`[aiModels] connection ${conn.id} model discovery failed: ${prepared.error}`);
+      await recordDiscoveryError(conn.id, prepared.error);
+      return { ...base, status: 'failed', error: prepared.error };
+    }
+    gateway = prepared.listing;
+  }
 
   // Network call outside any DB context (#1105).
   const keyRef: { key: string | null } = { key: null };
   let found: FoundModel[];
   try {
-    found = await listConnectionModels(conn, deps, keyRef);
+    found = await listConnectionModels(conn, deps, keyRef, gateway);
   } catch (error) {
     const message = connectionSyncError(error, keyRef.key);
     console.warn(`[aiModels] connection ${conn.id} model discovery failed: ${message}`);
-    try {
-      await sysTx(() => db.update(partnerAiConnections)
-        .set({ discoveryError: message })
-        .where(eq(partnerAiConnections.id, conn.id)), 'aiModels.syncConnection.recordError');
-    } catch (writeError) {
-      console.warn(`[aiModels] could not record discovery_error on connection ${conn.id}: ${safeErrorMessage(writeError)}`);
-    }
+    await recordDiscoveryError(conn.id, message);
     return { ...base, status: 'failed', error: message };
+  } finally {
+    // Best effort: the plaintext is not needed past the listing.
+    if (gateway) gateway.credential.secret = null;
+    keyRef.key = null;
   }
 
   const seen = new Set(found.map((f) => f.modelId));
@@ -363,12 +444,21 @@ export async function syncConnectionModels(
     // counts never double-increment) and facade writes. A key or endpoint
     // change since the listing makes the listing stale.
     const [current] = await db
-      .select({ kind: partnerAiConnections.kind, configVersion: partnerAiConnections.configVersion, catalogEntryId: partnerAiConnections.catalogEntryId })
+      .select({
+        kind: partnerAiConnections.kind,
+        status: partnerAiConnections.status,
+        configVersion: partnerAiConnections.configVersion,
+        catalogEntryId: partnerAiConnections.catalogEntryId,
+        baseUrl: partnerAiConnections.baseUrl,
+      })
       .from(partnerAiConnections)
       .where(eq(partnerAiConnections.id, conn.id))
       .for('update');
     if (!current) return { kind: 'gone' as const };
-    if (current.kind !== conn.kind || current.configVersion !== conn.configVersion || current.catalogEntryId !== conn.catalogEntryId) {
+    // Disconnected while listing: never write offerings onto a dead connection.
+    if (current.status === 'disconnected') return { kind: 'disconnected' as const };
+    if (current.kind !== conn.kind || current.configVersion !== conn.configVersion
+      || current.catalogEntryId !== conn.catalogEntryId || current.baseUrl !== conn.baseUrl) {
       return { kind: 'superseded' as const };
     }
 
@@ -380,16 +470,17 @@ export async function syncConnectionModels(
         .where(inArray(aiPlatformModels.modelId, [...seen]));
       for (const row of platformRows) platformIds.set(row.modelId, row.id);
     }
-    const source = conn.kind === 'anthropic_byok' ? 'discovered' : 'catalog';
+    // Gateway kinds land 'discovered' too (catalog_shape_chk forbids prices on 'catalog').
+    const source = conn.kind === 'catalog' ? 'catalog' : 'discovered';
 
     let added = 0;
     for (const f of found) {
       const capabilities = f.capabilities === null ? null : JSON.stringify(f.capabilities);
       const rows = await db.execute<{ inserted: boolean }>(sql`
-        INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, model_id, source,
+        INSERT INTO partner_ai_models (partner_id, connection_id, platform_model_id, model_id, source, display_name,
           capabilities, enabled, lifecycle, last_seen_at, missed_sync_count)
         VALUES (${conn.partnerId}::uuid, ${conn.id}::uuid, ${platformIds.get(f.modelId) ?? null}::uuid, ${f.modelId}, ${source},
-          ${capabilities}::jsonb, false, 'available', ${now.toISOString()}::timestamptz, 0)
+          ${f.displayName}, ${capabilities}::jsonb, false, 'available', ${now.toISOString()}::timestamptz, 0)
         ON CONFLICT (connection_id, model_id) WHERE connection_id IS NOT NULL DO UPDATE SET
           lifecycle = 'available',
           last_seen_at = EXCLUDED.last_seen_at,
@@ -400,7 +491,8 @@ export async function syncConnectionModels(
                               ELSE partner_ai_models.capabilities END,
           updated_at = now()
         RETURNING (xmax = 0) AS inserted`);
-      // enabled is deliberately never written on conflict: discovery never enables (spec §6).
+      // enabled, prices and display_name are deliberately never written on
+      // conflict: discovery never enables or re-prices (spec §6).
       if (rows[0]?.inserted) added += 1;
     }
 
@@ -439,6 +531,7 @@ export async function syncConnectionModels(
   }, 'aiModels.syncConnection.write');
 
   if (outcome.kind === 'gone') return { ...base, status: 'skipped', error: 'connection not found' };
+  if (outcome.kind === 'disconnected') return { ...base, status: 'skipped', error: 'connection disconnected' };
   if (outcome.kind === 'superseded') {
     return { ...base, status: 'skipped', retry: true, error: 'connection changed during sync' };
   }

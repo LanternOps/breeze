@@ -15,6 +15,12 @@ export interface GatewayCredential {
   secret: string | null;
 }
 
+/** One model a gateway connection's provider listed, already sanitised (W06 Task 11). */
+export interface DiscoveredConnectionModel {
+  modelId: string;
+  displayName: string | null;
+}
+
 export type GatewayGrantPurpose = 'dispatch' | 'verification' | 'discovery';
 
 export interface GatewayGrantInput {

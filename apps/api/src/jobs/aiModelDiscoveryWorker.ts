@@ -4,10 +4,12 @@
  * manual "Refresh", and once shortly after boot). W03 (#7601) adds
  * `sync-connection` (one BYOK/catalog connection; on connect, on key or
  * endpoint rotation, and on demand) and the daily `sync-all-connections`
- * fan-out.
+ * fan-out. W06 (#7604) adds gateway kinds (openai_compatible) to the fan-out;
+ * a job payload carries only the connection id, never key material.
  */
 import { Queue, Worker, type Job } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
+import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../db';
 import { partnerAiConnections } from '../db/schema';
 import { enqueueOrReplaceStale } from '../services/bullmqUtils';
@@ -80,7 +82,8 @@ async function enqueueAllConnectionSyncs(): Promise<{ enqueued: number }> {
     .select({ id: partnerAiConnections.id })
     .from(partnerAiConnections)
     .where(and(
-      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
+      // W06: gateway kinds too; a kind without a discoverer is skipped by the sync itself.
+      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
       eq(partnerAiConnections.status, 'active'),
     ))).map((row) => row.id), 'aiModelDiscovery.listConnections');
   for (const id of ids) await enqueueConnectionSync(id);

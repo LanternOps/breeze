@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { GRANT_DEFAULT_TTL_MS, GRANT_SESSION_TTL_MS } from './limits';
-import type { GatewayGrantInput, GatewayGrantRecord } from './types';
+import type { GatewayConnectionConfig, GatewayCredential, GatewayGrantInput, GatewayGrantRecord } from './types';
 
 /**
  * Grants are keyed by the SHA-256 digest of the token: the raw token is never
@@ -80,5 +80,30 @@ export function createGrantStore(now: () => number = Date.now): GrantStore {
     },
     size: () => byDigest.size,
     __debugKeys: () => byDigest.keys(),
+  };
+}
+
+/** How long an in-process discovery record is good for (the call itself is capped far below this). */
+const DISCOVERY_RECORD_TTL_MS = 60_000;
+
+/**
+ * A grant record used IN-PROCESS for a partner-level discovery call. It is never
+ * registered in a GrantStore and no token exists for it, so it cannot be
+ * presented to the loopback gateway: it only feeds forwardUpstream (origin/path
+ * pin, SSRF guard, credential injection). Org-less by design — discovery is a
+ * partner-level action — so forwardUpstream writes no llm_egress_events row for
+ * it (that table is org-scoped). It binds no wire model.
+ */
+export function discoveryGrantRecord(config: GatewayConnectionConfig, credential: GatewayCredential): GatewayGrantRecord {
+  return {
+    id: randomUUID(),
+    config: { ...config },
+    credential: { secret: credential.secret },
+    wireModels: new Set<string>(),
+    orgId: null,
+    aiSessionId: null,
+    purpose: 'discovery',
+    expiresAt: Date.now() + DISCOVERY_RECORD_TTL_MS,
+    inFlight: new Set(),
   };
 }

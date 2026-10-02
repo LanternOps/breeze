@@ -55,6 +55,9 @@ vi.mock('../db', () => ({
   },
 }));
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
 import {
   AI_MODEL_DISCOVERY_QUEUE,
   SYNC_PLATFORM_JOB,
@@ -137,6 +140,18 @@ describe('ai-model-discovery queue', () => {
     await expect(processAiModelDiscoveryJob({ data: { type: 'sync-all-connections' } })).resolves.toEqual({ enqueued: 2 });
     expect(addMock.mock.calls.map((c) => c[2].jobId)).toEqual(['sync-connection-a', 'sync-connection-b']);
     expect(dbState.whereArg).toBeTruthy();
+  });
+
+  it('the daily fan-out covers gateway kinds (openai_compatible) as well as BYOK/catalog, active rows only', async () => {
+    await processAiModelDiscoveryJob({ data: { type: 'sync-all-connections' } });
+    const { sql: text, params } = new PgDialect().sqlToQuery(dbState.whereArg as SQL);
+    expect(text).toContain('"kind" in');
+    expect(params).toEqual(expect.arrayContaining(['anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS, 'active']));
+  });
+
+  it('a sync-connection job payload carries only the connection id (never key material)', async () => {
+    await enqueueConnectionSync('c9');
+    expect(addMock.mock.calls.at(-1)![1]).toEqual({ type: 'sync-connection', connectionId: 'c9' });
   });
 
   it('a manual refresh enqueues sync-platform under the manual job id and reuses a waiting one', async () => {
