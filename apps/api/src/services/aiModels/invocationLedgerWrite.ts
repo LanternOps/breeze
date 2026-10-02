@@ -8,6 +8,7 @@ import type { AiSurface, OfferingOptions, PromptProfile } from '@breeze/shared';
 import { db } from '../../db';
 import { aiInvocations } from '../../db/schema';
 import { NO_CARD_CHARGE, type InvocationCharge } from '../aiChargeback/chargeTerms';
+import type { FailoverCause } from './failover';
 import type { RateSnapshot, TokenComponents } from './pricing';
 
 export interface NewInvocation {
@@ -29,6 +30,12 @@ export interface NewInvocation {
   stopReason?: string | null;
   refusalCategory?: string | null;
   fallbackUsed?: boolean;
+  /** W09 (#7607): the offering routed to before failover (null on hop 0, or when it no longer exists). */
+  failoverFromOfferingId?: string | null;
+  /** W09: candidates passed over before the serving one (0 = no failover). */
+  failoverHop?: number;
+  /** W09: why the first candidate was passed over; null on hop 0. */
+  failoverCause?: FailoverCause | null;
   catalogRevisionId?: string | null;
   connectionConfigVersion?: number | null;
   tokens: TokenComponents;
@@ -74,6 +81,9 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     stopReason: row.stopReason ?? null,
     refusalCategory: row.refusalCategory ?? null,
     fallbackUsed: row.fallbackUsed ?? false,
+    failoverFromOfferingId: row.failoverFromOfferingId ?? null,
+    failoverHop: row.failoverHop ?? 0,
+    failoverCause: row.failoverCause ?? null,
     catalogRevisionId: row.catalogRevisionId ?? null,
     connectionConfigVersion: row.connectionConfigVersion ?? null,
     inputTokens: row.tokens.input,

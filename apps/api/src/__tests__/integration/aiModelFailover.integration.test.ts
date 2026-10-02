@@ -6,7 +6,9 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
+import { reserveAiBudget } from '../../services/aiBudgetReservations';
 import { resolveModel } from '../../services/aiModels/resolveModel';
+import { turnBindingFrom } from '../../services/aiModels/turnBinding';
 import { seedFailoverPartner, setPartnerFallbacks, type SeededFailoverPartner } from './helpers/aiModelFailoverSeed';
 import { seedPricedPlatformModel, seedRegistryPartner, type SeededRegistryPartner } from './helpers/aiModelRegistrySeed';
 
@@ -159,5 +161,50 @@ describe.runIf(RUN)('W09 resolution walk against real rows', () => {
     });
     expect(r).toMatchObject({ ok: true, offering: { id: f.platformOffering2Id },
       rateSnapshot: { standard: { inputCentsPerM: 400, outputCentsPerM: 2000 } } });
+  });
+});
+
+describe.runIf(RUN)('W09 session stamping (D6)', () => {
+  async function sessionOffering(id: string): Promise<string | null> {
+    const [row] = await fixtureSql`SELECT offering_id FROM ai_sessions WHERE id = ${id}`;
+    return (row?.offering_id as string | null) ?? null;
+  }
+
+  it('a transient failover hop does not replace the session\'s stored choice; an ineligible one does', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-w09-integration-placeholder';
+    const f = await seedFailoverPartner();
+    await setPartnerFallbacks(f, 'chat', [f.platformOffering2Id], false);
+    const hop = await resolveModel({
+      partnerId: f.partnerId, orgId: f.orgId, surface: 'chat',
+      excludeOfferingIds: [f.platformOfferingId], failoverCause: 'overloaded',
+    });
+    if (!hop.ok) throw new Error(hop.reason);
+    expect(hop.failover).toMatchObject({ cause: 'overloaded' });
+    await reserveAiBudget({ orgId: f.orgId, idempotencyKey: `w09:${randomUUID()}`, billingSource: hop.funding,
+      sessionId: f.chatSessionId, binding: turnBindingFrom(hop) });
+    expect(await sessionOffering(f.chatSessionId)).toBe(f.platformOfferingId);   // unchanged
+
+    await fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE id = ${f.platformOfferingId}`;
+    const moved = await resolveModel({ partnerId: f.partnerId, orgId: f.orgId, surface: 'chat',
+      requested: { offeringId: f.platformOfferingId, origin: 'session' } });
+    if (!moved.ok) throw new Error(moved.reason);
+    expect(moved.failover).toMatchObject({ cause: 'ineligible' });
+    await reserveAiBudget({ orgId: f.orgId, idempotencyKey: `w09:${randomUUID()}`, billingSource: moved.funding,
+      sessionId: f.chatSessionId, binding: turnBindingFrom(moved) });
+    expect(await sessionOffering(f.chatSessionId)).toBe(f.platformOffering2Id);  // the old choice is gone: sticky
+  });
+
+  it('a transient failover still refuses a session of another org', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-w09-integration-placeholder';
+    const f = await seedFailoverPartner();
+    const other = await seedFailoverPartner();
+    await setPartnerFallbacks(f, 'chat', [f.platformOffering2Id], false);
+    const hop = await resolveModel({
+      partnerId: f.partnerId, orgId: f.orgId, surface: 'chat',
+      excludeOfferingIds: [f.platformOfferingId], failoverCause: 'overloaded',
+    });
+    if (!hop.ok) throw new Error(hop.reason);
+    await expect(reserveAiBudget({ orgId: f.orgId, idempotencyKey: `w09:${randomUUID()}`, billingSource: hop.funding,
+      sessionId: other.chatSessionId, binding: turnBindingFrom(hop) })).rejects.toThrow(/not found/);
   });
 });

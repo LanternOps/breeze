@@ -183,3 +183,31 @@ describe('W11 promptProfile on the binding', () => {
     expect(parseTurnBinding(JSON.parse(JSON.stringify(b)))).toBeNull();
   });
 });
+
+describe('W09 failover on the binding', () => {
+  it('carries the resolver\'s failover facts and round-trips them', () => {
+    const b = turnBindingFrom(makeResolvedModel('anthropic_byok', {
+      failover: { fromOfferingId: 'off-0', hop: 1, cause: 'overloaded' },
+    }));
+    expect(b.failover).toEqual({ fromOfferingId: 'off-0', hop: 1, cause: 'overloaded' });
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(b)))?.failover).toEqual(b.failover);
+  });
+
+  it('a binding with no failover carries no key at all (byte-identical to W03/W05 for the stable-key re-bind)', () => {
+    const b = turnBindingFrom(makeResolvedModel('platform'));
+    expect('failover' in b).toBe(false);
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(b)))).not.toBeNull();
+  });
+
+  it('rejects a malformed failover (hop 0, unknown cause)', () => {
+    const b = turnBindingFrom(makeResolvedModel('platform'));
+    expect(parseTurnBinding({ ...b, failover: { fromOfferingId: null, hop: 0, cause: 'overloaded' } })).toBeNull();
+    expect(parseTurnBinding({ ...b, failover: { fromOfferingId: null, hop: 1, cause: 'flaky' } })).toBeNull();
+  });
+
+  it('failover is not part of the live-query key (the wire model already differs)', () => {
+    const a = turnBindingFrom(makeResolvedModel('platform'));
+    const b = turnBindingFrom(makeResolvedModel('platform', { failover: { fromOfferingId: 'x', hop: 1, cause: 'cooldown' } }));
+    expect(liveQueryKey(a)).toBe(liveQueryKey(b));
+  });
+});

@@ -6,6 +6,7 @@ import { captureException, captureMessage } from './sentry';
 import { tightenLockTimeout } from '../db/lockTimeout';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiBillingSource } from './aiCostTracker';
+import { TRANSIENT_FAILOVER_CAUSES } from './aiModels/failover';
 import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
 import { stampChargeback } from './aiChargeback/stampChargeback';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
@@ -542,6 +543,18 @@ function existingResult(row: ReservationRow): ReserveAiBudgetResult {
  */
 async function stampSessionBinding(sessionId: string, orgId: string, binding: TurnBinding): Promise<void> {
   if (!binding.offeringId) return;
+  // W09 (#7607, D6): a hop that served because the session's own choice was
+  // TRANSIENTLY failing (cooldown, 429/529/5xx, key/quota) does not replace
+  // that choice; the next turn retries it (the Agent SDK's own fallbackModel
+  // semantics). A failover because the choice is gone ('ineligible') stamps,
+  // like W03's bounded fallback. The existence check the UPDATE gave is kept.
+  if (binding.failover && TRANSIENT_FAILOVER_CAUSES.has(binding.failover.cause)) {
+    const exists = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
+      SELECT id FROM ai_sessions WHERE id = ${sessionId}::uuid AND org_id = ${orgId}::uuid
+    `))[0];
+    if (!exists) throw new Error('AI session not found in reservation organization');
+    return;
+  }
   const stamped = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
     UPDATE ai_sessions
     SET offering_id = ${binding.offeringId}::uuid,
