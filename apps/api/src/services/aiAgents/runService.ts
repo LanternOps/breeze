@@ -4,6 +4,7 @@ import type { SQL } from 'drizzle-orm';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import type {
   AgentRunVerdict,
+  AiAgentEscalationRole,
   AiAgentKind,
   AiAgentLimits,
   AiAgentPolicySnapshot,
@@ -14,6 +15,7 @@ import type {
   AiAgentTriggers,
 } from '@breeze/shared';
 import { envFlag, isHosted } from '../../config/env';
+import { agentRunModelRole } from './agentModelRole';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
@@ -1038,7 +1040,11 @@ type AdmissionModel =
  * having failed transiently): skipped, but never reported to an admin as "your
  * model is gone".
  */
-async function resolveAgentModelForAdmission(orgId: string, offeringId: string | null): Promise<AdmissionModel> {
+async function resolveAgentModelForAdmission(
+  orgId: string,
+  offeringId: string | null,
+  role: AiAgentEscalationRole,
+): Promise<AdmissionModel> {
   // Loaded lazily: the resolver's module graph (candidate loader, the schema
   // barrel, the registry cutover) is only needed on the admission path, and
   // runService is imported — via transitionRunStatus — by many modules that
@@ -1054,7 +1060,7 @@ async function resolveAgentModelForAdmission(orgId: string, offeringId: string |
     return { ok: false, message: 'No AI model is available for AI agents.', notify: false };
   }
   const result = await resolveModel({
-    partnerId, orgId, surface: 'ai_agents',
+    partnerId, orgId, surface: 'ai_agents', role,
     ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
   });
   if (result.ok) return { ok: true, resolved: result };
@@ -1295,7 +1301,8 @@ export async function createAndEnqueueAgentRun(
   //     reads on its own pooled connection (and may run the partner's one-time
   //     registry cutover), which must never happen while this admission holds
   //     a connection idle in transaction behind its advisory lock.
-  const agentModel = await resolveAgentModelForAdmission(orgId, effective.offeringId ?? null);
+  const modelRole = agentRunModelRole({ profile: input.profile ?? 'full', modeAtStart });
+  const agentModel = await resolveAgentModelForAdmission(orgId, effective.offeringId ?? null, modelRole);
   if (!agentModel.ok) {
     if (agentModel.notify) {
       await notifyAdmissionModelBlocked(orgId, resolved.agentId, effective.recipients, agentModel.message)

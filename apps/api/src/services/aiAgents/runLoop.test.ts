@@ -854,7 +854,7 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(resolveModel).toHaveBeenCalledWith({
-      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents',
+      partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis',
       requested: { offeringId: 'off-77', origin: 'policy' },
     });
   });
@@ -2699,13 +2699,21 @@ describe('executeAgentRun', () => {
     }));
   });
 
+  it('the run loop resolves the same role admission did (act-mode full -> remediation)', async () => {
+    seedRows({ effective: policy({ mode: 'act' }), modeAtStart: 'act' });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(resolveModel).toHaveBeenCalledWith(expect.objectContaining({ surface: 'ai_agents', role: 'remediation' }));
+  });
+
   it('a policy with no bound offering follows the ai_agents assignment default', async () => {
     seedRows({ effective: policy({ model: null }) });
     resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', logicalModel: 'claude-default-x' }));
 
     await executeAgentRun(RUN_ID);
 
-    expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents' });
+    expect(resolveModel).toHaveBeenCalledWith({ partnerId: PARTNER_ID, orgId: ORG_ID, surface: 'ai_agents', role: 'analysis' });
     expect(createAgentRunSession).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'claude-default-x' }),
     );

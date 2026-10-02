@@ -50,6 +50,7 @@ import type {
   FleetDesignOutcomeRefs,
 } from '@breeze/shared';
 import { AI_SWEEP_KINDS } from '@breeze/shared';
+import { agentRunModelRole } from './agentModelRole';
 import { envFlag } from '../../config/env';
 import {
   db,
@@ -1853,10 +1854,12 @@ async function driveSdkLoop(
   // A run admitted before W03 carries no admitted offering and resolves the
   // policy's bound offering (or the `ai_agents` assignment default).
   const requestedOfferingId = run.admittedOfferingId ?? effective.offeringId ?? null;
+  const modelRole = agentRunModelRole(run);
   const agentModel = await resolveModel({
     partnerId: ctx.orgPartnerId,
     orgId: run.orgId,
     surface: 'ai_agents',
+    role: modelRole,
     ...(requestedOfferingId ? { requested: { offeringId: requestedOfferingId, origin: 'policy' as const } } : {}),
   });
   if (!agentModel.ok) {
