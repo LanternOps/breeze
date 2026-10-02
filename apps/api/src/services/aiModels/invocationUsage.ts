@@ -99,12 +99,14 @@ export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): vo
   const fastState = (message as { fast_mode_state?: unknown }).fast_mode_state;
   if (fastState === 'cooldown' || fastState === 'off') obs.fastNotOnSeen = true;
 
-  // W09: a classified provider status failure (D8). Anything the classifier
-  // does not recognise (invalid request, unknown model, …) records nothing.
+  // W09: a classified provider status failure (D8). An error the classifier
+  // does not recognise (a timeout or reset after send, an invalid request, an
+  // unknown model, …) CLEARS any earlier cause: the latest failure decides,
+  // and a turn must never fail over on a stale 529 after an unknown outcome.
   const recordFailure = (error: unknown, status: unknown, attempt: unknown) => {
     const httpStatus = typeof status === 'number' ? status : null;
     const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
-    if (!cause) return;
+    if (!cause) { obs.providerFailure = null; return; }
     const retries = typeof attempt === 'number' ? attempt : (obs.providerFailure?.retries ?? 0);
     obs.providerFailure = { cause, status: httpStatus, retries };
   };

@@ -464,6 +464,20 @@ describe('W09: provider-failure observation', () => {
     expect(obs.providerFailure).toMatchObject({ cause: 'auth_failed', status: 401 });
   });
 
+  it('a later unclassified error clears an earlier cause (never fail over on a stale cause, D8)', () => {
+    for (const later of [
+      { type: 'system', subtype: 'api_retry', attempt: 2, error_status: null, error: 'unknown' },     // a timeout / reset after send
+      { type: 'system', subtype: 'api_retry', attempt: 2, error_status: 400, error: 'invalid_request' },
+      { type: 'assistant', error: 'invalid_request', message: { content: [] } },
+      { type: 'result', subtype: 'success', is_error: true, api_error_status: 400 },
+    ]) {
+      const obs = newSdkTurnObservation();
+      observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded' });
+      observeSdkMessage(obs, later);
+      expect(obs.providerFailure).toBeNull();
+    }
+  });
+
   it('a non-failover error (invalid_request) records nothing', () => {
     const obs = newSdkTurnObservation();
     observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' });
