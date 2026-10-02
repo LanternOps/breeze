@@ -1154,6 +1154,7 @@
     "clearCategory": "Auswahl aufheben",
     "columnPath": "Pfad",
     "columnSize": "Größe",
+    "selectionLimit": "Ein einzelner Bereinigungslauf kann höchstens {{max}} Elemente löschen. „Alle auswählen“ füllt die Auswahl bis zu diesem Limit auf, die größten zuerst. Löschen Sie diese und führen Sie die Bereinigungsvorschau erneut aus, um den Rest zu bearbeiten.",
     "selectionSummary": "{{count}} ausgewählt · {{size}}",
     "executeSelected": "Auswahl löschen ({{count}})",
     "confirmTitle": "Bereinigungsziele endgültig löschen",

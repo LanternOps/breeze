@@ -1154,6 +1154,7 @@
     "clearCategory": "Limpar seleção",
     "columnPath": "Caminho",
     "columnSize": "Tamanho",
+    "selectionLimit": "Uma única execução de limpeza pode excluir no máximo {{max}} itens. Selecionar tudo preenche a seleção até esse limite, começando pelos maiores. Exclua-os e execute a prévia da limpeza novamente para o que sobrar.",
     "selectionSummary": "{{count}} selecionados · {{size}}",
     "executeSelected": "Excluir selecionados ({{count}})",
     "confirmTitle": "Excluir permanentemente os alvos de limpeza",

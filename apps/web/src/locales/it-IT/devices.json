@@ -1154,6 +1154,7 @@
     "clearCategory": "Azzera selezione",
     "columnPath": "Percorso",
     "columnSize": "Dimensione",
+    "selectionLimit": "Una singola esecuzione di pulizia può eliminare al massimo {{max}} elementi. Seleziona tutto riempie la selezione fino a questo limite, partendo dai più grandi. Eliminali, quindi esegui di nuovo l’anteprima della pulizia per ciò che resta.",
     "selectionSummary": "{{count}} selezionati · {{size}}",
     "executeSelected": "Elimina selezionati ({{count}})",
     "confirmTitle": "Elimina definitivamente gli elementi di pulizia",
