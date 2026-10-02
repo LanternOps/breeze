@@ -344,6 +344,37 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     );
   });
 
+  it('W09: a failover candidate that would need a continuation is passed over for the next backup, which is what gets reserved', async () => {
+    const { resolveSessionTurn } = await import('../services/aiModels/sessionModel');
+    const f1 = makeResolvedModel('anthropic_byok', { offering: { id: 'off-f1', displayName: 'F1' }, wireModel: 'wire-f1',
+      failover: { fromOfferingId: 'off-sonnet', hop: 1, cause: 'cooldown' } });
+    const f2 = makeResolvedModel('anthropic_byok', { offering: { id: 'off-f2', displayName: 'F2' }, wireModel: 'wire-f2',
+      failover: { fromOfferingId: 'off-sonnet', hop: 2, cause: 'cooldown' } });
+    vi.mocked(runPreFlightChecks).mockResolvedValue({
+      ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1, openaiCompatible: false,
+    });
+    vi.mocked(resolveSessionTurn).mockResolvedValueOnce(f2);
+    tr.planModelTransition
+      .mockResolvedValueOnce({ kind: 'continuation_required', reason: 'transcript_too_large' })
+      .mockResolvedValueOnce({ kind: 'switch_resume', carriedRates: [], fit: { kind: 'fits', countedTokens: 10, limitTokens: 100 } });
+    const res = await postWithModel(app);
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(resolveSessionTurn).toHaveBeenCalledWith(expect.objectContaining({ sessionId: SESSION_ID, excludeOfferingIds: ['off-f1'] }));
+    expect(tr.planModelTransition.mock.calls.map((c) => (c[0] as { target: { offering: { id: string } } }).target.offering.id))
+      .toEqual(['off-f1', 'off-f2']);
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ binding: turnBindingFrom(f2) }));
+  });
+
+  it('W09: the user\'s own model is never re-resolved when it needs a continuation (W05 behaviour)', async () => {
+    const { resolveSessionTurn } = await import('../services/aiModels/sessionModel');
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'continuation_required', reason: 'transcript_too_large' });
+    const res = await postWithModel(app, { offeringId: OFF });
+    expect(res.status).toBe(409);
+    expect(resolveSessionTurn).not.toHaveBeenCalled();
+  });
+
   it('the planner gets the session offering re-read AFTER resolveModel (its lazy cutover stamps it), not the preflight snapshot (M2)', async () => {
     vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
       ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: null } as any,

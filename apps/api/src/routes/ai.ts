@@ -96,7 +96,7 @@ import { loadContinuationSummary, withContinuationContext } from '../services/ai
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
-import { continuationMessage, planModelTransition, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
+import { continuationMessage, planModelTransition, planTransitionWithFailover, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
 import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
@@ -1070,13 +1070,16 @@ aiRoutes.post(
 
     // Off the env OpenAI-compatible path preflight always resolves a model.
     if (!resolvedModel) throw new Error('chat preflight returned no resolved model on the Agent SDK path');
-    const model = resolvedModel;
+    let model = resolvedModel;
     // W05 (spec §9.2; spike constraints 1–3): every model change passes ONE
     // gate before anything is reserved. Same model → W03 reuse; another
     // connection or funding, a transcript too large for the target, or one
     // whose fit can't be proven → the client offers a continuation.
-    // #3127: both reads open their own system contexts; no request DB
-    // context is held here (between inRequestDb phases).
+    // W09 (#7607): a resolution-time failover candidate passes the same gate;
+    // one that would need a continuation is passed over for the next backup
+    // (or the cooling primary) before anything is reserved.
+    // #3127: every read opens its own system context; no request DB context
+    // is held here (between inRequestDb phases).
     let previous: Awaited<ReturnType<typeof readPreviousTurn>>;
     let transition: Awaited<ReturnType<typeof planModelTransition>>;
     try {
@@ -1085,15 +1088,22 @@ aiRoutes.post(
       // cutover, which stamps a pre-W03 session's offering_id: re-read it so a
       // plain same-offering message is not refused as fit_unverifiable.
       const freshOfferingId = await readSessionOfferingId({ orgId: dbSession.orgId, sessionId });
-      transition = await planModelTransition({
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
-        previous,
-        target: model,
-        systemPrompt: topology ? topology.systemPrompt : systemPrompt,
-        pendingUserTurn: topology ? topology.prompt : sanitizedContent,
-      });
+      const priorTurn = previous;
+      ({ model, transition } = await planTransitionWithFailover({
+        first: resolvedModel,
+        plan: (target) => planModelTransition({
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
+          previous: priorTurn,
+          target,
+          systemPrompt: topology ? topology.systemPrompt : systemPrompt,
+          pendingUserTurn: topology ? topology.prompt : sanitizedContent,
+        }),
+        reResolve: (excludeOfferingIds) => resolveSessionTurn({
+          sessionId, surface: resolvedModel.surface, userId: auth.user.id, transport: resolvedModel.transport, excludeOfferingIds,
+        }),
+      }));
     } catch (err) {
       // Nothing is reserved yet; release the topology lease like every other refusal.
       await abortTopology();
