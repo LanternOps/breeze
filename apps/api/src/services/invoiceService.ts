@@ -1325,12 +1325,14 @@ export async function assembleDraftFromOrg(
     const currencyCode = input.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });
-  // AI usage charges (#7608) are org-level, gathered by billing month; the
-  // ticket path (assembleDraftFromTicket) intentionally does not gather them.
+  // AI usage charges (#7608) are org-level and gathered through `to` with no
+  // lower bound (a closed month's charge only exists from the 1st of the next
+  // month; see gatherOrgAiUsageCharges). The ticket path
+  // (assembleDraftFromTicket) intentionally does not gather them.
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
     await gatherOrgParts(input.orgId, from, to, inv!.currencyCode),
-    await gatherOrgAiUsageCharges(input.orgId, from, to, inv!.currencyCode)
+    await gatherOrgAiUsageCharges(input.orgId, to, inv!.currencyCode)
   );
   return finishAssembly(inv!, gathered, 'No unbilled billable work in range', actor);
 }

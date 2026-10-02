@@ -282,13 +282,20 @@ export function aiUsageChargeToLineSpec(r: AiUsageChargeRow, currencyCode: strin
   };
 }
 
-/** Unbilled AI usage charges for an org whose billing period (period_start, a
- *  UTC month start) falls in [from, to] — the same UTC calendar dates
- *  assembleDraftFromOrg builds `from`/`to` from. Only 'not_billed' is gathered:
- *  'no_charge' (rounded to zero), 'unpriced' (no client price) and 'billed'
- *  never are. Other-currency charges come back under `blockedByCurrency`,
- *  never converted. Runs under the caller's RLS context. */
-export async function gatherOrgAiUsageCharges(orgId: string, from: Date, to: Date, headerCurrency: string): Promise<AssemblyResult> {
+/** Every unbilled AI usage charge for an org whose billing period
+ *  (period_start, a UTC month start) began on or before `through` — the UTC
+ *  calendar date of the draft's `to`. There is deliberately NO lower bound: a
+ *  charge for month P only exists after the close on the 1st of P+1, so a range
+ *  that starts after a month's 1st (a rolling "last 30 days", an anniversary
+ *  15th→14th cycle) would otherwise never reach it and the charge would sit
+ *  unbilled forever. An older unbilled charge therefore rides the next draft;
+ *  its line names the month it bills. Double-billing is prevented by
+ *  billing_status and issueInvoice's SOURCE_ALREADY_BILLED lock, not by the
+ *  range. Only 'not_billed' is gathered: 'no_charge' (rounded to zero),
+ *  'unpriced' (no client price) and 'billed' never are. Other-currency charges
+ *  come back under `blockedByCurrency`, never converted. Runs under the
+ *  caller's RLS context. */
+export async function gatherOrgAiUsageCharges(orgId: string, through: Date, headerCurrency: string): Promise<AssemblyResult> {
   const rows = await db.select({
     id: aiUsageCharges.id, servedModel: aiUsageCharges.servedModel, modelLabel: aiUsageCharges.modelLabel,
     periodStart: aiUsageCharges.periodStart, usagePeriodStart: aiUsageCharges.usagePeriodStart,
@@ -298,8 +305,7 @@ export async function gatherOrgAiUsageCharges(orgId: string, from: Date, to: Dat
   }).from(aiUsageCharges).where(and(
     eq(aiUsageCharges.orgId, orgId),
     eq(aiUsageCharges.billingStatus, 'not_billed'),
-    gte(aiUsageCharges.periodStart, from.toISOString().slice(0, 10)),
-    lte(aiUsageCharges.periodStart, to.toISOString().slice(0, 10)),
+    lte(aiUsageCharges.periodStart, through.toISOString().slice(0, 10)),
   )).orderBy(aiUsageCharges.periodStart, aiUsageCharges.usagePeriodStart, aiUsageCharges.servedModel, aiUsageCharges.id);
   return partitionByCurrency(rows, headerCurrency, aiUsageChargeToLineSpec);
 }

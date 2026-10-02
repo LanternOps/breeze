@@ -216,27 +216,44 @@ describe.runIf(RUN)('AI usage charges on invoices (#7608)', () => {
     });
   });
 
-  it('assembly picks charges by billing period inside [from, to] (UTC dates, like time entries)', async () => {
+  // A charge for month P only exists after the close on the 1st of P+1, so a
+  // range that starts after the 1st of the closed month (the web's default
+  // "last 30 days", an anniversary 15th→14th cycle) must still pick it up:
+  // the gather has no lower bound, only `to`.
+  it('a rolling 30-day range assembled mid-month gathers the closed month whose 1st it does not contain', async () => {
     const f = await seed();
     const nov = await charge(f, { period: '2026-11-01' });
+    const draft = await assemble(f, '2026-12-06', '2027-01-05');
+    expect(aiLines(draft).map((l) => l.sourceId)).toEqual([nov]);
+  });
+
+  it('an older unbilled charge is carried onto a later draft; a charge billed after the range end is not gathered', async () => {
+    const f = await seed();
     const oct = await charge(f, { period: '2026-10-01' });
+    const nov = await charge(f, { period: '2026-11-01' });
     const dec = await charge(f, { period: '2026-12-01' });
     const draft = await assemble(f, '2026-11-01', '2026-11-30');
-    expect(aiLines(draft).map((l) => l.sourceId)).toEqual([nov]);
-    // A draft flips nothing, so the November charge is still unbilled and a wider range takes all three.
-    const wide = await assemble(f, '2026-10-01', '2026-12-31');
+    expect(aiLines(draft).map((l) => l.sourceId).sort()).toEqual([oct, nov].sort());
+    // The line still names the month it bills, so the carried October charge reads as October.
+    expect(aiLines(draft).find((l) => l.sourceId === oct)).toMatchObject({ description: expect.stringMatching(/ — 2026-10 · /) });
+    // A draft flips nothing: a range reaching December takes all three.
+    const wide = await assemble(f, '2026-12-01', '2026-12-31');
     expect(aiLines(wide).map((l) => l.sourceId).sort()).toEqual([oct, nov, dec].sort());
-    const octOnly = await assemble(f, '2026-10-01', '2026-10-31');
-    expect(aiLines(octOnly).map((l) => l.sourceId)).toEqual([oct]);
+  });
+
+  it('a charge whose billing period starts after the range end is never gathered', async () => {
+    const f = await seed();
+    await charge(f, { period: '2026-12-01' });
+    await expect(assemble(f, '2026-11-01', '2026-11-30')).rejects.toMatchObject({ code: 'NOTHING_TO_INVOICE' });
   });
 
   it('the gather runs under the caller\'s RLS: another tenant\'s context sees none of this org\'s charges', async () => {
     const f = await seed(); const id = await charge(f);
     const other = await seed();
-    const from = new Date('2026-11-01T00:00:00Z'); const to = new Date('2026-11-30T23:59:59Z');
-    const mine = await withDbAccessContext(ctx(f), () => gatherOrgAiUsageCharges(f.orgId, from, to, 'USD'));
+    const through = new Date('2026-11-30T23:59:59Z');
+    const mine = await withDbAccessContext(ctx(f), () => gatherOrgAiUsageCharges(f.orgId, through, 'USD'));
     expect(mine.included.map((s) => s.sourceId)).toEqual([id]);
-    const theirs = await withDbAccessContext(ctx(other), () => gatherOrgAiUsageCharges(f.orgId, from, to, 'USD'));
+    const theirs = await withDbAccessContext(ctx(other), () => gatherOrgAiUsageCharges(f.orgId, through, 'USD'));
     expect(theirs).toEqual({ included: [], blockedByCurrency: {}, missingRate: [] });
   });
 
