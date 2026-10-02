@@ -6,7 +6,7 @@
 -- * surface 'gateway_forward': one row per request the gateway forwards (or
 --   refuses) to a gateway-kind connection's upstream.
 --
--- W05 (#7603) re-issues this CHECK at slot 2026-11-22 with
+-- W05 (#7603) re-issues this CHECK in 2026-11-29-100000-llm-egress-events-w05-surfaces.sql with
 -- 'one_shot_token_count' and 'one_shot_continuation_summary'. This re-issue
 -- unions those surfaces with the newest existing re-issue and gateway_forward,
 -- so whichever wave merges first, neither drops the other's surfaces.

@@ -24,7 +24,7 @@ export const LLM_EGRESS_SURFACES = [
   'one_shot_token_count',
   'one_shot_continuation_summary',
   // W06 (#7604): loopback model gateway forwards to a gateway-kind connection.
-  // CHECK re-issued in 2026-11-23-100000-ai-gateway-egress-events.sql.
+  // CHECK re-issued in 2026-11-30-100000-ai-gateway-egress-events.sql.
   'gateway_forward',
 ] as const;
 
