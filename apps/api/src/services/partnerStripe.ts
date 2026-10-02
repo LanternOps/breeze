@@ -8,6 +8,7 @@ import { encryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { stripeSessionRevocationMode } from '../config/env';
 import { archiveSupersededCredential } from './stripeCredentialArchive';
+import { probeAutopayCapabilities, type AutopayStripeCapability } from './autopay/stripeCapabilities';
 import {
   countUnresolvedSessionsForAccount,
   DISCONNECT_PROVIDER_BUDGET_MS,
@@ -16,8 +17,6 @@ import {
   revokeOpenSessionsForAccount,
 } from './stripeSessionRevocation';
 
-// Pinned API version — do not rely on the SDK default (it moves on upgrade).
-const API_VERSION = '2026-08-26.dahlia';
 
 export type PartnerStripeErrorCode =
   | 'NO_STRIPE_KEY'        // partner never configured a key / disconnected
@@ -114,6 +113,15 @@ export const STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS = 23 * 60 * 60 * 1000;
  * on the partner's account with this key (no platform, no Connect, no Stripe-Account
  * header). One row per partner (partner-axis RLS; unique on partner_id).
  */
+async function probeAutopayPermissions(stripe: Stripe): Promise<AutopayStripeCapability[]> {
+  try { return (await probeAutopayCapabilities(stripe)).missing; }
+  catch (error) {
+    throw isTransientStripeError(error)
+      ? new PartnerStripeError('Could not verify automatic-payment permissions — try again.', 'STRIPE_UNAVAILABLE')
+      : new PartnerStripeError('Could not verify automatic-payment permissions for this key.', 'STRIPE_ACCOUNT_UNKNOWN');
+  }
+}
+
 export async function savePartnerStripeKey(input: {
   partnerId: string;
   apiKey: string;
@@ -125,12 +133,14 @@ export async function savePartnerStripeKey(input: {
   defaultCurrency: string | null;
   accountCountry: string | null;
   accountRefreshedAt: Date;
+  autopayCapabilitiesCheckedAt: Date;
+  autopayMissingPermissions: AutopayStripeCapability[];
 }> {
   const apiKey = input.apiKey.trim();
 
   // Validate by retrieving the account the key belongs to. Any rejection (bad key,
   // revoked, insufficient scope) → INVALID_STRIPE_KEY rather than a 500.
-  const probe = new Stripe(apiKey, { apiVersion: API_VERSION });
+  const { stripe: probe } = await getPartnerStripeClient(input.partnerId, { candidateApiKey: apiKey });
   let account: Stripe.Account;
   try {
     // No-arg accounts.retrieve() hits GET /v1/account — the account the KEY belongs
@@ -220,6 +230,8 @@ export async function savePartnerStripeKey(input: {
       // resource_missing / invalid_request: the permission gate was passed.
     }
   }
+
+  const autopayMissingPermissions = await probeAutopayPermissions(probe);
 
   const accountId = account.id;
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
@@ -358,6 +370,8 @@ export async function savePartnerStripeKey(input: {
             defaultCurrency,
             accountCountry,
             accountRefreshedAt: now,
+            autopayCapabilitiesCheckedAt: now,
+            autopayMissingPermissions,
             financialEventCursorCreated,
             financialEventPageAfter: null,
             financialEventScanUpperCreated: null,
@@ -379,6 +393,8 @@ export async function savePartnerStripeKey(input: {
               defaultCurrency,
               accountCountry,
               accountRefreshedAt: now,
+              autopayCapabilitiesCheckedAt: now,
+              autopayMissingPermissions,
               financialEventCursorCreated,
               financialEventPageAfter: null,
               financialEventScanUpperCreated: null,
@@ -444,6 +460,8 @@ export async function savePartnerStripeKey(input: {
     defaultCurrency,
     accountCountry,
     accountRefreshedAt: now,
+    autopayCapabilitiesCheckedAt: now,
+    autopayMissingPermissions,
   };
 }
 
@@ -454,6 +472,8 @@ export interface StripeAccountRefreshResult {
   defaultCurrency: string | null;
   accountCountry: string | null;
   accountRefreshedAt: Date;
+  autopayCapabilitiesCheckedAt: Date;
+  autopayMissingPermissions: AutopayStripeCapability[];
 }
 
 /**
@@ -466,7 +486,14 @@ export interface StripeAccountRefreshResult {
  * surfaces NO_STRIPE_KEY). Review F9.
  */
 export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0): Promise<StripeAccountRefreshResult> {
-  const { stripe, stripeAccountId } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId));
+  const snapshot = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const [generation] = await db.select({ apiKey: stripeConnectAccounts.apiKey, connectedAt: stripeConnectAccounts.connectedAt })
+      .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, partnerId)).limit(1);
+    const client = await getPartnerStripeClient(partnerId);
+    if (!generation?.apiKey) throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
+    return { ...client, encryptedKey: generation.apiKey, connectedAt: generation.connectedAt };
+  }));
+  const { stripe, stripeAccountId } = snapshot;
 
   let account: Stripe.Account;
   try {
@@ -499,12 +526,13 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
 
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
   const accountCountry = account.country ?? null;
+  const autopayMissingPermissions = await probeAutopayPermissions(stripe);
   const now = new Date();
 
   const [updated] = await withSystemDbAccessContext(() =>
     db
       .update(stripeConnectAccounts)
-      .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, updatedAt: now })
+      .set({ defaultCurrency, accountCountry, accountRefreshedAt: now, autopayCapabilitiesCheckedAt: now, autopayMissingPermissions, updatedAt: now })
       // Guarded by the account id AND connected status read BEFORE the Stripe
       // round-trip: if an admin replaced the key (new account) or disconnected
       // while this refresh was in flight, the stale account's currency/country
@@ -513,6 +541,7 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
         eq(stripeConnectAccounts.partnerId, partnerId),
         eq(stripeConnectAccounts.stripeAccountId, stripeAccountId),
         eq(stripeConnectAccounts.status, 'connected'),
+        eq(stripeConnectAccounts.apiKey, snapshot.encryptedKey),
       ))
       .returning({
         stripeAccountId: stripeConnectAccounts.stripeAccountId,
@@ -521,6 +550,8 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
         defaultCurrency: stripeConnectAccounts.defaultCurrency,
         accountCountry: stripeConnectAccounts.accountCountry,
         accountRefreshedAt: stripeConnectAccounts.accountRefreshedAt,
+        autopayCapabilitiesCheckedAt: stripeConnectAccounts.autopayCapabilitiesCheckedAt,
+        autopayMissingPermissions: stripeConnectAccounts.autopayMissingPermissions,
       })
   );
 
@@ -532,6 +563,8 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
       defaultCurrency: updated.defaultCurrency,
       accountCountry: updated.accountCountry,
       accountRefreshedAt: updated.accountRefreshedAt ?? now,
+      autopayCapabilitiesCheckedAt: updated.autopayCapabilitiesCheckedAt ?? now,
+      autopayMissingPermissions: updated.autopayMissingPermissions as AutopayStripeCapability[],
     };
   }
 
@@ -600,7 +633,7 @@ export async function getPartnerStripeAccountSnapshot(partnerId: string): Promis
   if (!stale) return { ...status, cacheState: 'fresh', error: null };
 
   try {
-    const fresh = await refreshPartnerStripeAccount(partnerId);
+    const { autopayCapabilitiesCheckedAt: _autopayChecked, autopayMissingPermissions: _autopayMissing, ...fresh } = await refreshPartnerStripeAccount(partnerId);
     return {
       connected: true, ...fresh,
       financialEventLastPolledAt: status.financialEventLastPolledAt,
