@@ -113,6 +113,10 @@ const STRICT_PORTAL_FEATURES: Record<StrictPortalVisibilityFlag, { error: string
     error: 'Hardware lifecycle is not enabled for this portal',
     code: 'PORTAL_LIFECYCLE_DISABLED',
   },
+  enableHardwareHealth: {
+    error: 'Hardware health is not enabled for this portal',
+    code: 'PORTAL_HARDWARE_HEALTH_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: StrictPortalVisibilityFlag): MiddlewareHandler {
