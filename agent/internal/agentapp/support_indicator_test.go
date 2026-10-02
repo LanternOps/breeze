@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/breeze-rmm/agent/internal/userhelper"
 )
 
 // fakeIndicatorUI records what the Quick Support viewing indicator drew.
@@ -254,4 +257,53 @@ func TestSupportIndicatorSurvivesAPanickingReconcile(t *testing.T) {
 	f.setActive(true)
 	ind.poke()
 	waitFor(t, "shown after a panic", func() bool { s, _, _ := f.snapshot(); return len(s) == 1 })
+}
+
+// A long technician name is shortened, never the sentence: the pill always
+// ends "is viewing your screen" and fits the banner's label limit, and the
+// cut never splits a multi-byte character.
+func TestSupportIndicatorShortensALongViewerNameNotTheSentence(t *testing.T) {
+	f := &fakeIndicatorUI{active: true, viewer: strings.Repeat("Ä", 400) + " from Olive Technology"}
+	ind := newTestIndicator(f)
+	ind.reconcile()
+	shows, _, console := f.snapshot()
+	if len(shows) != 1 {
+		t.Fatalf("shows = %d, want 1", len(shows))
+	}
+	label := shows[0]
+	if !strings.HasSuffix(label, " is viewing your screen") {
+		t.Fatalf("label lost its sentence: %q", label)
+	}
+	if len(label) > userhelper.MaxBannerLabelBytes {
+		t.Fatalf("label is %d bytes, over the %d-byte banner limit", len(label), userhelper.MaxBannerLabelBytes)
+	}
+	if !utf8.ValidString(label) {
+		t.Fatalf("label is not valid UTF-8: %q", label)
+	}
+	if len(console) != 1 || !strings.Contains(console[0], label) {
+		t.Fatalf("console line should carry the same label, got %q", console)
+	}
+}
+
+// Control characters and bidirectional override/isolate characters in the
+// server-supplied name are removed from both the pill and the console line,
+// so the name cannot reorder or hide the rest of the text.
+func TestSupportIndicatorStripsControlAndBidiCharactersFromTheViewerName(t *testing.T) {
+	f := &fakeIndicatorUI{active: true, viewer: "Bil‮ly\x1b[31m⁦ from⁩ Olive\r\nTech"}
+	ind := newTestIndicator(f)
+	ind.reconcile()
+	shows, _, console := f.snapshot()
+	if len(shows) != 1 || len(console) != 1 {
+		t.Fatalf("shows=%q console=%q", shows, console)
+	}
+	for _, out := range []string{shows[0], console[0]} {
+		for _, r := range out {
+			if (r < 0x20 && r != '\n') || r == 0x7f || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
+				t.Fatalf("output %q still contains %U", out, r)
+			}
+		}
+	}
+	if want := "Billy[31m from Olive" + "Tech is viewing your screen"; shows[0] != want {
+		t.Fatalf("pill = %q, want %q", shows[0], want)
+	}
 }

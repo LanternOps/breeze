@@ -68,11 +68,23 @@ func (i *supportIndicator) poke() {
 	}
 }
 
+// supportViewingSuffix ends every indicator label.
+const supportViewingSuffix = " is viewing your screen"
+
 func supportViewerName(viewer string) string {
 	if viewer == "" {
 		return "A technician"
 	}
 	return viewer
+}
+
+// supportViewingLabel is the pill and console text for viewer. The name comes
+// from the server: control and bidirectional formatting characters are
+// removed, and a long name is shortened (on a character boundary) so the
+// sentence always fits the banner's label limit whole.
+func supportViewingLabel(viewer string) string {
+	name := userhelper.DisplayNameWithin(viewer, userhelper.MaxBannerLabelBytes-len(supportViewingSuffix))
+	return supportViewerName(name) + supportViewingSuffix
 }
 
 // reconcile makes the indicator match the current facts. The console line
@@ -93,7 +105,7 @@ func (i *supportIndicator) reconcile() {
 		}
 		return
 	}
-	label := supportViewerName(i.viewer()) + " is viewing your screen"
+	label := supportViewingLabel(i.viewer())
 	if !i.announced {
 		i.startedMs = i.now().UnixMilli()
 		i.announced = true
