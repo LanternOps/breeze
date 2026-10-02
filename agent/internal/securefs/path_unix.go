@@ -332,6 +332,9 @@ func installFile(base, relative, source string, mode os.FileMode, modTime time.T
 	// publication, like everything above.
 	if sec != nil && sec.Apply != nil {
 		if err := sec.Apply(uintptr(tempFD)); err != nil {
+			if sec.Required {
+				return nil, fmt.Errorf("apply security descriptor: %w", err)
+			}
 			warnings = append(warnings, fmt.Errorf("apply security descriptor: %w", err))
 		}
 	}

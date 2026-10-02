@@ -321,7 +321,7 @@ describe('aiToolsDR handlers', () => {
         snapshotSelection: 'latest_restorable',
         rebuildHostDeviceId: HOST_ID,
         outputDir: '/var/lib/breeze/rebuild/out',
-        waitTimeoutMinutes: 240,
+        waitTimeoutMinutes: 1440,
       });
     });
 

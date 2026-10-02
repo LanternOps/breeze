@@ -1,0 +1,57 @@
+// AI model registry W02 (#7600, spec §5.5): the append-only invocation ledger.
+// APPEND-ONLY: breeze_app holds SELECT/INSERT + column UPDATE (org_id) only;
+// the trigger admits nothing but an org-merge re-point. Registered in
+// AUDIT_ADMIN_REQUIRED_TABLES. No FKs on provenance ids (see the migration).
+import { sql } from 'drizzle-orm';
+import { bigint, boolean, index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import type { AiSurface } from '@breeze/shared';
+import { organizations } from './orgs';
+
+export const AI_INVOCATION_LEDGER_MODES = ['shadow', 'authoritative'] as const;
+export type AiInvocationLedgerMode = (typeof AI_INVOCATION_LEDGER_MODES)[number];
+
+const cents = (name: string) => numeric(name, { precision: 20, scale: 6, mode: 'number' });
+const tokens = (name: string) => bigint(name, { mode: 'number' }).notNull().default(0);
+
+export const aiInvocations = pgTable('ai_invocations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id),
+  surface: text('surface').$type<AiSurface>().notNull(),
+  role: text('role').notNull().default('default'),
+  userId: uuid('user_id'),
+  sessionId: uuid('session_id'),
+  agentRunId: uuid('agent_run_id'),
+  sourceRef: text('source_ref'),
+  offeringId: uuid('offering_id'),
+  connectionId: uuid('connection_id'),
+  fundingSource: text('funding_source', { enum: ['platform', 'partner_key'] }).notNull(),
+  requestedModel: text('requested_model').notNull(),
+  servedModel: text('served_model').notNull(),
+  optionsSent: jsonb('options_sent').$type<Record<string, unknown>>().notNull().default({}),
+  thinkingModeSent: text('thinking_mode_sent'),
+  inferenceGeoSent: text('inference_geo_sent'),
+  stopReason: text('stop_reason'),
+  refusalCategory: text('refusal_category'),
+  fallbackUsed: boolean('fallback_used').notNull().default(false),
+  catalogRevisionId: uuid('catalog_revision_id'),
+  connectionConfigVersion: integer('connection_config_version'),
+  inputTokens: tokens('input_tokens'),
+  outputTokens: tokens('output_tokens'),
+  cacheReadTokens: tokens('cache_read_tokens'),
+  cacheWriteTokens: tokens('cache_write_tokens'),
+  rateSnapshot: jsonb('rate_snapshot').$type<Record<string, unknown>>(),
+  costCents: cents('cost_cents'),
+  chargeable: boolean('chargeable').notNull().default(false),
+  sdkReportedCostUsd: cents('sdk_reported_cost_usd'),
+  ledgerMode: text('ledger_mode').$type<AiInvocationLedgerMode>().notNull().default('shadow'),
+  legacyCostCents: cents('legacy_cost_cents'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('ai_invocations_org_created_idx').on(t.orgId, t.createdAt.desc()),
+  index('ai_invocations_created_idx').on(t.createdAt),
+  index('ai_invocations_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
+  index('ai_invocations_agent_run_idx').on(t.agentRunId).where(sql`${t.agentRunId} IS NOT NULL`),
+  index('ai_invocations_offering_idx').on(t.offeringId, t.createdAt).where(sql`${t.offeringId} IS NOT NULL`),
+]);
+
+export type AiInvocationRow = typeof aiInvocations.$inferSelect;

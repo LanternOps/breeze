@@ -183,3 +183,6 @@ export * from './timeSync';
 
 // Software-install time budgets, mirrored from the Go agent (#3578)
 export * from './softwareInstallTimeouts';
+
+// AI model registry W01 (#7599): AI surfaces and roles. Leaf module.
+export * from './aiSurfaces';

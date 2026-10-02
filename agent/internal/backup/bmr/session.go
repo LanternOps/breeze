@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/httputil"
 )
@@ -103,6 +104,20 @@ func RunRecoveryWithTokenContext(ctx context.Context, cfg RecoveryConfig) (*Reco
 		effectiveCfg.ExpectSystemState = SnapshotExpectsSystemState(bootstrap.Snapshot)
 		effectiveCfg.FileIndex = bootstrap.Snapshot.FileIndex
 	}
+	// The integrity expectation is resolved before anything is downloaded:
+	// a block this helper cannot understand, two blocks that disagree, or a
+	// block for another snapshot fails the recovery here.
+	bootstrapIntegrity, err := BootstrapIntegrity(bootstrap)
+	if err == nil {
+		effectiveCfg.Integrity, err = ResolveIntegrity(cfg.Integrity, bootstrapIntegrity)
+	}
+	if err == nil {
+		err = effectiveCfg.Integrity.CheckSnapshot(effectiveCfg.SnapshotID)
+	}
+	if err != nil {
+		result.Error = fmt.Sprintf("snapshot integrity expectation refused: %s", err.Error())
+		return completeAndReturn(err)
+	}
 
 	runResult, runErr := runRecovery(ctx, effectiveCfg, provider)
 	if runResult != nil {
@@ -163,10 +178,15 @@ type exchangeCodeRequest struct {
 	// 409 helper_version_too_old BEFORE it claims the one-time code
 	// (#5629). Omitted when empty; older servers ignore it.
 	HelperVersion string `json:"helperVersion,omitempty"`
+	// IntegrityProtocolVersion is the snapshot integrity protocol this
+	// helper implements (integrity.ProtocolVersion), so the server can tell
+	// a helper that checks snapshot attestations on restore from one that
+	// does not. Older servers ignore it.
+	IntegrityProtocolVersion int `json:"integrityProtocolVersion"`
 }
 
 func ExchangeRecoveryCode(ctx context.Context, serverURL, code, helperVersion string) (string, *BootstrapResponse, error) {
-	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities(), HelperVersion: helperVersion})
+	payload, err := json.Marshal(exchangeCodeRequest{Code: code, Capabilities: ClientCapabilities(), HelperVersion: helperVersion, IntegrityProtocolVersion: integrity.ProtocolVersion})
 	if err != nil {
 		return "", nil, fmt.Errorf("bmr: marshal exchange request: %w", err)
 	}
@@ -275,10 +295,12 @@ func (e *authenticateStatusError) Error() string {
 type authenticateRequest struct {
 	Token        string   `json:"token"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// IntegrityProtocolVersion: see exchangeCodeRequest.
+	IntegrityProtocolVersion int `json:"integrityProtocolVersion"`
 }
 
 func authenticateRecoverySessionContext(ctx context.Context, serverURL, token string) (*BootstrapResponse, error) {
-	payload, err := json.Marshal(authenticateRequest{Token: token, Capabilities: ClientCapabilities()})
+	payload, err := json.Marshal(authenticateRequest{Token: token, Capabilities: ClientCapabilities(), IntegrityProtocolVersion: integrity.ProtocolVersion})
 	if err != nil {
 		return nil, fmt.Errorf("bmr: marshal authenticate request: %w", err)
 	}

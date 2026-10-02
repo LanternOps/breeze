@@ -376,6 +376,26 @@
       "convert": "Impossibile convertire la regola"
     }
   },
+  "builtInRules": {
+    "title": "Avvisi integrati",
+    "description": "Avvisi che Breeze genera autonomamente. Disattivane uno per interrompere quell'avviso per la sua organizzazione; gli avvisi già aperti restano aperti finché non li risolvi.",
+    "columns": {
+      "name": "Nome",
+      "organization": "Organizzazione",
+      "active": "Attivo"
+    },
+    "kinds": {
+      "policyViolation": "Violazioni dei criteri: {{subject}}",
+      "configCompliance": "Conformità della configurazione: {{subject}}"
+    },
+    "toggle": "Attiva o disattiva {{name}}",
+    "switchedOn": "{{name}} attivato",
+    "switchedOff": "{{name}} disattivato",
+    "errors": {
+      "fetch": "Impossibile caricare gli avvisi integrati",
+      "toggle": "Impossibile aggiornare l'avviso integrato"
+    }
+  },
   "devices": {
     "title": "Dispositivi",
     "columns": {

@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { vpnPresenceIngestSchema } from '@breeze/shared';
+import { vpnPresenceIngestSchema, ERROR_CODES } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import {
@@ -152,7 +152,7 @@ inventoryRoutes.put('/:id/software', bodyLimit({ maxSize: 5 * 1024 * 1024, onErr
       c.header('Retry-After', '5');
       return c.json({
         error: 'Software inventory ingest is contended; retry this report later',
-        code: 'software_inventory_lock_timeout',
+        code: ERROR_CODES.SOFTWARE_INVENTORY_LOCK_TIMEOUT,
       }, 503);
     }
     throw error;

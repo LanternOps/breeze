@@ -53,7 +53,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 });
 
 import {
+  FIDELITY_HARNESS_MAX_TOKENS,
   FIDELITY_HARNESS_VERSION,
+  FIDELITY_PROBE_NAMES,
   FIDELITY_STEP_NAMES,
   buildFidelityChildEnv,
   runFidelityCheck,
@@ -342,6 +344,50 @@ describe('runFidelityCheck', () => {
     expect(anthropicState.create.mock.calls[0]![0].model).toBe(INPUT.providerModel);
     const queryOptions = (sdkState.query.mock.calls[0]![0] as { options: Record<string, unknown> }).options;
     expect(queryOptions.model).toBe(INPUT.providerModel);
+  });
+
+  it('every direct request asks for at least 2048 output tokens (manual thinking needs >= 1024)', async () => {
+    stageOkAnthropic();
+    anthropicState.create.mockResolvedValueOnce(finalReply('FIDELITY-OK'));
+    await runFidelityCheck(INPUT);
+    expect(anthropicState.create.mock.calls.length).toBe(3);
+    for (const [params] of anthropicState.create.mock.calls) {
+      expect((params as { max_tokens: number }).max_tokens).toBeGreaterThanOrEqual(2048);
+    }
+    expect(FIDELITY_HARNESS_MAX_TOKENS).toBe(2048);
+  });
+
+  it('probes adaptive thinking + effort with the wire-param builder and records success', async () => {
+    stageOkAnthropic();
+    anthropicState.create.mockResolvedValueOnce(finalReply('FIDELITY-OK'));
+    const result = await runFidelityCheck(INPUT);
+    const probeParams = anthropicState.create.mock.calls[2]![0] as Record<string, unknown>;
+    expect(probeParams.thinking).toEqual({ type: 'adaptive' });
+    expect(probeParams.output_config).toEqual({ effort: 'low' });
+    expect(result.probes).toEqual([{ name: FIDELITY_PROBE_NAMES.adaptiveEffort, ok: true, detail: expect.any(String) }]);
+    expect(result.verifiedCapabilities).toEqual({ adaptiveEffort: true });
+    expect(result.passed).toBe(true);
+  });
+
+  it('a provider that rejects adaptive thinking still passes verification; the probe records false', async () => {
+    stageOkAnthropic();
+    anthropicState.create.mockRejectedValueOnce(new Error(`400 thinking.type adaptive not supported ${TEST_API_KEY}`));
+    const result = await runFidelityCheck(INPUT);
+    expect(result.passed).toBe(true);
+    expect(result.verifiedCapabilities).toEqual({ adaptiveEffort: false });
+    expect(result.probes[0]!.detail).not.toContain(TEST_API_KEY);
+  });
+
+  it('skips the probe when the direct stage fails', async () => {
+    anthropicState.create.mockResolvedValueOnce(finalReply('It is sunny in Berlin.'));
+    const result = await runFidelityCheck(INPUT);
+    expect(anthropicState.create).toHaveBeenCalledTimes(1);
+    expect(result.probes[0]).toMatchObject({ ok: false, detail: expect.stringMatching(/^skipped/) });
+  });
+
+  // A bump would invalidate every listed revision's verifications on deploy.
+  it('keeps FIDELITY_HARNESS_VERSION at 1 (the probe is recorded, never gating)', () => {
+    expect(FIDELITY_HARNESS_VERSION).toBe('1');
   });
 
   // Last in the file on purpose: it swaps the agent-SDK mock for a throwing one

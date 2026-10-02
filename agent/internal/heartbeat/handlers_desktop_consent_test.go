@@ -1,24 +1,13 @@
 package heartbeat
 
-// Consent gate smoke tests for handleStartDesktop (Task 10).
+// Consent gate smoke tests for handleStartDesktop (Task 10), updated for the
+// v2 consent exchange (the helper confirms the prompt is on screen, then
+// reports one outcome) and the occupancy rule (a prompt that cannot be shown
+// follows the policy only when nobody is signed in).
 //
-// Approach: end-to-end through handleStartDesktop for deny/no-helper cases,
-// and through requestConsent (the gate seam) for allow and timeout cases.
-//
-// Why the split: the non-service "allow → proceed" path calls
-// desktopMgr.StartSession which requires a real WebRTC/capture pipeline not
-// available in unit tests. For those cases we test requestConsent directly
-// (verifying the returned verdict that handleStartDesktop acts on) and also
-// verify the gate doesn't short-circuit in handleStartDesktop for the "allow"
-// verdict by confirming the result is NOT "consent_denied".
-//
-// All four branches of the gate are exercised:
-//   1. no helper (nil broker, block)  → consent_denied / helper_absent
-//   2. no helper (nil broker, proceed)→ gate passes, proceeds to capture (non-denied)
-//   3. user allows                     → gate passes (requestConsent), verified via seam
-//   4. user denies                     → consent_denied / user (end-to-end)
-//   5. timeout + block                 → consent_denied / timeout (end-to-end)
-//   6. timeout + proceed               → gate passes (requestConsent), verified via seam
+// Why some cases go through runConsentGate instead of handleStartDesktop: the
+// non-service "allow → proceed" path calls desktopMgr.StartSession, which
+// needs a real WebRTC/capture pipeline not available in unit tests.
 
 import (
 	"encoding/json"
@@ -101,27 +90,26 @@ func assertNotConsentDenied(t *testing.T, result tools.CommandResult) {
 	}
 }
 
-// TestConsentGate_NoHelper_Block verifies that when no helper is connected
-// (nil sessionBroker) and the unavailable-behavior is "block", handleStartDesktop
-// returns a consent_denied result with reason helper_absent.
+// TestConsentGate_NoHelper_Block: no helper can show the prompt, nobody is
+// signed in, and the policy says block → denied with no_user_session.
 func TestConsentGate_NoHelper_Block(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	h := &Heartbeat{
-		// No sessionBroker → requestConsent returns ("", false, false)
+		// No sessionBroker → no helper can show the prompt.
 		desktopMgr: desktop.NewSessionManager(),
 	}
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-nohelper-block",
 		consentModePrompt("block", 5000)))
 
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "no_user_session")
 }
 
-// TestConsentGate_NoHelper_Proceed verifies that when no helper is connected
-// and the unavailable-behavior is "proceed", the gate allows the session to
-// continue (desktopMgr.StartSession is reached; in a unit test it will fail
-// because there is no real WebRTC pipeline, but the result must NOT be
-// consent_denied).
+// TestConsentGate_NoHelper_Proceed: nobody is signed in and the policy says
+// proceed → the gate lets the start continue (desktopMgr.StartSession is
+// reached; in a unit test it fails, but the result must NOT be consent_denied).
 func TestConsentGate_NoHelper_Proceed(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	h := &Heartbeat{
 		desktopMgr: desktop.NewSessionManager(),
 	}
@@ -132,10 +120,24 @@ func TestConsentGate_NoHelper_Proceed(t *testing.T) {
 	assertNotConsentDenied(t, result)
 }
 
+// TestConsentGate_NoHelper_SignedInUserBlocksDespiteProceed is the fail-open
+// this protocol closes: a user is signed in, no helper can show them the
+// prompt, and "proceed" must NOT start the session.
+func TestConsentGate_NoHelper_SignedInUserBlocksDespiteProceed(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
+	h := &Heartbeat{desktopMgr: desktop.NewSessionManager()}
+
+	result := handleStartDesktop(h, startDesktopCmd("sess-nohelper-occupied",
+		consentModePrompt("proceed", 5000)))
+
+	assertConsentDenied(t, result, "helper_unreachable")
+}
+
 // TestConsentGate_UserDenies_EndToEnd verifies that when a helper is connected
 // and the user replies "deny", handleStartDesktop returns consent_denied with
 // reason "user".
 func TestConsentGate_UserDenies_EndToEnd(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -171,7 +173,7 @@ func TestConsentGate_UserDenies_EndToEnd(t *testing.T) {
 	broker := newTestBrokerWithSessions(t, session)
 	h := &Heartbeat{
 		sessionBroker: broker,
-		desktopMgr:   desktop.NewSessionManager(),
+		desktopMgr:    desktop.NewSessionManager(),
 	}
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-deny", consentModePrompt("block", 5000)))
@@ -183,10 +185,12 @@ func TestConsentGate_UserDenies_EndToEnd(t *testing.T) {
 	assertConsentDenied(t, result, "user")
 }
 
-// TestConsentGate_Timeout_Block verifies that when the helper disconnects
-// mid-flight (IPC error) and the unavailable-behavior is "block",
-// handleStartDesktop returns consent_denied with reason "timeout".
-func TestConsentGate_Timeout_Block(t *testing.T) {
+// TestConsentGate_LegacyHelperSilence_Blocks: a version 1 Assist that goes
+// away (or says nothing) cannot prove its prompt was shown, so even under
+// "proceed" the start is refused (reason no_user, outcome unknown) — before v2
+// this was reported as a timeout and let through.
+func TestConsentGate_LegacyHelperSilence_Blocks(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -194,23 +198,20 @@ func TestConsentGate_Timeout_Block(t *testing.T) {
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-block", []string{"consent_ui"})
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
 
-	// Close the client side immediately — the service sees an IPC error which
-	// requestConsent treats as (verdict="", helperPresent=true, timedOut=true).
+	// Close the client side immediately — the service sees an IPC error.
 	_ = clientIPC.Close()
 
 	broker := newTestBrokerWithSessions(t, session)
 	h := &Heartbeat{
 		sessionBroker: broker,
-		desktopMgr:   desktop.NewSessionManager(),
+		desktopMgr:    desktop.NewSessionManager(),
 	}
 
-	// ConsentTimeoutMs must be very short so SendCommand's timeout fires quickly.
-	prompt := consentModePrompt("block", 100)
-	result := handleStartDesktop(h, startDesktopCmd("sess-timeout-block", prompt))
+	result := handleStartDesktop(h, startDesktopCmd("sess-timeout-block", consentModePrompt("proceed", 100)))
 
 	_ = session.Close()
 
-	assertConsentDenied(t, result, "timeout")
+	assertConsentDenied(t, result, "no_user")
 }
 
 // TestConsentGate_HelperErrorReply_FailsClosed_Proceed is the regression guard
@@ -220,6 +221,7 @@ func TestConsentGate_Timeout_Block(t *testing.T) {
 // session MUST be denied (reason "no_user") — a broken/garbled helper reply must
 // never silently grant a session.
 func TestConsentGate_HelperErrorReply_FailsClosed_Proceed(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -266,10 +268,11 @@ func TestConsentGate_HelperErrorReply_FailsClosed_Proceed(t *testing.T) {
 // TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed is the sibling
 // regression guard to the error-envelope case: a PRESENT helper that replies
 // with a payload that does not decode into ipc.ConsentResult (here a JSON array
-// instead of the expected object) yielded no usable decision. requestConsent
+// instead of the expected object) yielded no usable decision. The gate
 // swallows the unmarshal error and leaves the verdict empty, so even under the
 // "proceed" unavailable-behavior the session MUST be denied (reason "no_user").
 func TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -287,7 +290,7 @@ func TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed(t *testing.T) 
 			return
 		}
 		// A JSON array can't unmarshal into the ConsentResult struct, forcing the
-		// json.Unmarshal failure branch in requestConsent.
+		// json.Unmarshal failure branch in the gate.
 		if err := clientIPC.Send(&ipc.Envelope{
 			ID:      env.ID,
 			Type:    ipc.TypeConsentResult,
@@ -312,11 +315,10 @@ func TestConsentGate_HelperUndecodablePayload_FailsClosed_Proceed(t *testing.T) 
 	assertConsentDenied(t, result, "no_user")
 }
 
-// TestConsentGate_RequestConsent_Allow verifies that requestConsent returns
-// verdict "allow" when the helper responds with an allow decision, and that
-// decideConsent maps that to proceed=true. This exercises the seam for the
-// allow→proceed branch.
-func TestConsentGate_RequestConsent_Allow(t *testing.T) {
+// TestConsentGate_LegacyAssistAllow: a version 1 Assist click is still a user
+// grant.
+func TestConsentGate_LegacyAssistAllow(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
 	clientIPC := ipc.NewConn(clientConn)
@@ -333,84 +335,21 @@ func TestConsentGate_RequestConsent_Allow(t *testing.T) {
 			t.Errorf("helper recv: %v", err)
 			return
 		}
-		result := ipc.ConsentResult{Decision: "allow"}
-		payload, _ := json.Marshal(result)
-		if err := clientIPC.Send(&ipc.Envelope{
-			ID:      env.ID,
-			Type:    ipc.TypeConsentResult,
-			Payload: payload,
-		}); err != nil {
+		payload, _ := json.Marshal(ipc.ConsentResult{Decision: "allow"})
+		if err := clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeConsentResult, Payload: payload}); err != nil {
 			t.Errorf("helper send: %v", err)
 		}
 	}()
 
-	broker := newTestBrokerWithSessions(t, session)
-	h := &Heartbeat{sessionBroker: broker}
-
-	prompt := consentModePrompt("block", 5000)
-	verdict, helperPresent, timedOut := h.requestConsent("sess-allow", prompt, "")
+	h := &Heartbeat{sessionBroker: newTestBrokerWithSessions(t, session)}
+	v := h.runConsentGate("sess-allow", consentModePrompt("block", 5000), "")
 
 	<-done
 	_ = session.Close()
 	_ = clientIPC.Close()
 
-	if verdict != "allow" {
-		t.Fatalf("verdict = %q, want %q", verdict, "allow")
-	}
-	if !helperPresent {
-		t.Fatal("helperPresent should be true")
-	}
-	if timedOut {
-		t.Fatal("timedOut should be false")
-	}
-
-	proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
-	if !proceed {
-		t.Fatalf("decideConsent returned proceed=false for allow verdict (reason=%q)", reason)
-	}
-	if reason != "user" {
-		t.Fatalf("decideConsent reason = %q, want %q", reason, "user")
-	}
-}
-
-// TestConsentGate_RequestConsent_Timeout_Proceed verifies that a timeout with
-// unavailableBehavior="proceed" results in proceed=true / reason="timeout".
-func TestConsentGate_RequestConsent_Timeout_Proceed(t *testing.T) {
-	serverConn, clientConn := createTestSocketPair(t)
-	serverIPC := ipc.NewConn(serverConn)
-	clientIPC := ipc.NewConn(clientConn)
-
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-timeout-proceed", []string{"consent_ui"})
-	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
-
-	// Close the client side immediately to simulate IPC failure / timeout.
-	_ = clientIPC.Close()
-
-	broker := newTestBrokerWithSessions(t, session)
-	h := &Heartbeat{sessionBroker: broker}
-
-	prompt := consentModePrompt("proceed", 100)
-	verdict, helperPresent, timedOut := h.requestConsent("sess-timeout-proceed", prompt, "")
-
-	_ = session.Close()
-
-	// IPC error → requestConsent returns ("", true, true)
-	if verdict != "" {
-		t.Fatalf("verdict = %q, want empty string on timeout", verdict)
-	}
-	if !helperPresent {
-		t.Fatal("helperPresent should be true (helper was connected before IPC error)")
-	}
-	if !timedOut {
-		t.Fatal("timedOut should be true on IPC error")
-	}
-
-	proceed, reason := decideConsent(verdict, helperPresent, timedOut, prompt.ConsentUnavailableBehavior)
-	if !proceed {
-		t.Fatalf("decideConsent returned proceed=false for timeout+proceed (reason=%q)", reason)
-	}
-	if reason != "timeout" {
-		t.Fatalf("decideConsent reason = %q, want %q", reason, "timeout")
+	if !v.proceed || v.reason != "user" || v.outcome != ipc.ConsentOutcomeGranted {
+		t.Fatalf("verdict = %+v, want a user grant", v)
 	}
 }
 
@@ -470,7 +409,7 @@ func TestConsentGate_NilPrompt_Skips(t *testing.T) {
 // TestConsentGate_ConsentDeniedResult_Shape verifies the consentDeniedResult
 // helper produces a well-formed "completed" result with the expected JSON shape.
 func TestConsentGate_ConsentDeniedResult_Shape(t *testing.T) {
-	result := consentDeniedResult("my-session", "user", 42)
+	result := consentDeniedResult("my-session", consentVerdict{reason: "helper_unreachable", outcome: ipc.ConsentOutcomeUnavailable, occupancy: occupancyOccupied}, 42)
 	if result.Status != "completed" {
 		t.Fatalf("status = %q, want 'completed'", result.Status)
 	}
@@ -481,8 +420,8 @@ func TestConsentGate_ConsentDeniedResult_Shape(t *testing.T) {
 	if payload["event"] != "consent_denied" {
 		t.Fatalf("event = %v, want 'consent_denied'", payload["event"])
 	}
-	if payload["reason"] != "user" {
-		t.Fatalf("reason = %v, want 'user'", payload["reason"])
+	if payload["reason"] != "helper_unreachable" || payload["consentOutcome"] != "unavailable" || payload["consentOccupancy"] != "occupied" {
+		t.Fatalf("unexpected marker %v", payload)
 	}
 	if payload["sessionId"] != "my-session" {
 		t.Fatalf("sessionId = %v, want 'my-session'", payload["sessionId"])
@@ -501,7 +440,7 @@ func TestConsentGate_WithConsentGranted_AddsMarker(t *testing.T) {
 		"answer":    "sdp-answer",
 	}, 10)
 
-	annotated := withConsentGranted(base, prompt, "user")
+	annotated := withConsentGranted(base, prompt, consentVerdict{reason: "user", outcome: ipc.ConsentOutcomeGranted})
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(annotated.Stdout), &payload); err != nil {
@@ -519,7 +458,7 @@ func TestConsentGate_WithConsentGranted_NotifyModeNoMarker(t *testing.T) {
 	prompt := &ipc.DesktopPrompt{Mode: "notify"}
 	base := tools.NewSuccessResult(map[string]any{"sessionId": "s2", "answer": "sdp"}, 5)
 
-	result := withConsentGranted(base, prompt, "user")
+	result := withConsentGranted(base, prompt, consentVerdict{reason: "user", outcome: ipc.ConsentOutcomeGranted})
 
 	if result.Stdout != base.Stdout {
 		t.Fatalf("notify mode should not modify the result")
@@ -530,46 +469,23 @@ func TestConsentGate_WithConsentGranted_NotifyModeNoMarker(t *testing.T) {
 	}
 }
 
-// TestConsentGate_FallbackScope_EndToEnd: a user-helper holding ONLY the
-// consent_ui_fallback scope answers the consent prompt when no assist helper
-// is connected. Clone TestConsentGate_UserDenies_EndToEnd wholesale, with two
-// changes: the session's scopes are []string{"consent_ui_fallback"}, and the
-// helper goroutine replies {"decision":"allow"} — then assert the session
-// STARTS (assertNotConsentDenied) instead of denying.
+// TestConsentGate_FallbackScope_EndToEnd: a native user-helper holding ONLY
+// the consent_ui_fallback scope and speaking the v2 exchange answers the
+// prompt when no assist helper is connected; its grant starts the session.
 func TestConsentGate_FallbackScope_EndToEnd(t *testing.T) {
-	serverConn, clientConn := createTestSocketPair(t)
-	serverIPC := ipc.NewConn(serverConn)
-	clientIPC := ipc.NewConn(clientConn)
+	withConsentSeams(t, occupancyOccupied, true)
+	c := newConsentTestHelper(t, "helper-fallback", []string{ipc.ScopeConsentUIFallback}, ipc.ConsentProtocolVersion)
 
-	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "alice", "quartz", "helper-fallback", []string{ipc.ScopeConsentUIFallback})
-	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
-
-	done := make(chan struct{})
 	go func() {
-		defer close(done)
-		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
-		env, err := clientIPC.Recv()
-		if err != nil {
-			t.Errorf("helper recv: %v", err)
-			return
-		}
-		if env.Type != ipc.TypeConsentRequest {
-			t.Errorf("expected %q envelope, got %q", ipc.TypeConsentRequest, env.Type)
-		}
-		payload, _ := json.Marshal(ipc.ConsentResult{Decision: "allow"})
-		if err := clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeConsentResult, Payload: payload}); err != nil {
-			t.Errorf("helper send: %v", err)
+		if env, req := c.recvRequest(t); env != nil {
+			c.ack(t, env.ID, req.Nonce)
+			c.result(t, env.ID, ipc.ConsentResult{Nonce: req.Nonce, Outcome: ipc.ConsentOutcomeGranted})
 		}
 	}()
 
-	broker := newTestBrokerWithSessions(t, session)
-	h := &Heartbeat{sessionBroker: broker, desktopMgr: desktop.NewSessionManager()}
+	h := &Heartbeat{sessionBroker: newTestBrokerWithSessions(t, c.session), desktopMgr: desktop.NewSessionManager()}
 
 	result := handleStartDesktop(h, startDesktopCmd("sess-fallback", consentModePrompt("block", 5000)))
-
-	<-done
-	_ = session.Close()
-	_ = clientIPC.Close()
 
 	assertNotConsentDenied(t, result)
 }
@@ -579,6 +495,7 @@ func TestConsentGate_FallbackScope_EndToEnd(t *testing.T) {
 // connected, the consent request goes to the assist helper. The fallback
 // client never receives an envelope (its Recv sees only the socket closing).
 func TestConsentGate_AssistHelperPreferredOverFallback(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	assistServer, assistClient := createTestSocketPair(t)
 	fallbackServer, fallbackClient := createTestSocketPair(t)
 	assistIPC, fallbackIPC := ipc.NewConn(assistServer), ipc.NewConn(fallbackServer)

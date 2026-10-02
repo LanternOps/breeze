@@ -2,16 +2,15 @@
 
 package config
 
-// On Windows, helper_auth_token still ships inside agent.yaml
-// (secretKeyAllowedInAgentYAML) rather than in a separate file: there is no
-// Windows equivalent yet of the Unix "breeze" group that
-// helpertoken_unix.go uses to scope the file to console/GUI users without
-// granting BUILTIN\Users. Splitting it out on Windows needs either a
-// dynamically-resolved per-console-session ACL or completing the IPC-based
-// delivery the Tauri Helper already prefers when available (see
-// apps/helper/src-tauri/src/lib.rs) — tracked as follow-up work, not done
-// here. These are no-ops so the cross-platform call sites in config.go don't
-// need a build-tag switch of their own.
+// Windows has no helper token file. The Breeze Helper ("Breeze Assist") runs
+// as the logged-in user, and there is no Windows equivalent of the Unix
+// "breeze" group that helpertoken_unix.go uses to scope a file to console/GUI
+// users. Instead the agent delivers the token over its named-pipe IPC channel,
+// only to an Assist the broker has authenticated in the active console session
+// (Heartbeat.handleHelperSessionAuthenticated / sendHelperTokenUpdate). On disk
+// the token lives only in SYSTEM/Administrators-only secrets.yaml. These are
+// no-ops so the cross-platform call sites in config.go don't need a build-tag
+// switch of their own.
 
 func helperTokenFilePathFor(string) string { return "" }
 

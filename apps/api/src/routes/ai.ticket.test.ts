@@ -382,6 +382,8 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       'partner_key',
       undefined,
       '66666666-6666-4666-8666-666666666666',
+      0,
+      { surface: 'chat', sourceRef: 'ticket_draft', userId: 'user-1' },
     );
   });
 
@@ -425,7 +427,8 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     // ledger keeps the platform-logical id.
     expect(recordUsage).toHaveBeenCalledWith(
       's1', 'org1', 'claude-sonnet-4-6', 10, 5, false, 'partner_key', CATALOG_PRICING,
-      '66666666-6666-4666-8666-666666666666',
+      '66666666-6666-4666-8666-666666666666', 0,
+      { surface: 'chat', sourceRef: 'ticket_draft', userId: 'user-1' },
     );
   });
 

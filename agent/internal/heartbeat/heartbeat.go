@@ -126,18 +126,22 @@ type HeartbeatPayload struct {
 	RollbackComponentVersions map[string]string `json:"rollbackComponentVersions,omitempty"`
 	// BackupReadProtocolVersion is the brokered storage-read protocol the
 	// INSTALLED backup helper reports (breeze-backup --protocol-info), never
-	// inferred from this agent's own version. Omitted when the helper is
-	// absent, predates the flag, or reports 0. The server treats omission as
-	// 0 on every heartbeat (non-sticky), so a helper downgrade is reflected
-	// on the next beat.
-	BackupReadProtocolVersion int `json:"backupReadProtocolVersion,omitempty"`
+	// inferred from this agent's own version. Always present, set through
+	// setBackupProtocols:
+	//   - a number (including 0) when the helper answered. A helper that
+	//     predates the flag answers 0.
+	//   - JSON null when the probe got no answer (helper not installed yet,
+	//     crashed, timed out, unreadable output). The server then keeps what
+	//     it last stored instead of reading a drop to 0.
+	// An agent older than this contract omits the fields entirely, which the
+	// server reads as 0. A server older than this contract reads null as
+	// absent, i.e. 0, which is what this agent used to send.
+	BackupReadProtocolVersion *int `json:"backupReadProtocolVersion"`
 	// BackupIntegrityProtocolVersion and BackupWriteProtocolVersion are the
 	// snapshot integrity and brokered storage-write protocols the same
-	// installed helper reports, under the same rules: never inferred,
-	// omitted at 0, and read by the server as 0 on every heartbeat that
-	// omits them.
-	BackupIntegrityProtocolVersion int `json:"backupIntegrityProtocolVersion,omitempty"`
-	BackupWriteProtocolVersion     int `json:"backupWriteProtocolVersion,omitempty"`
+	// installed helper reports, under the same rules.
+	BackupIntegrityProtocolVersion *int `json:"backupIntegrityProtocolVersion"`
+	BackupWriteProtocolVersion     *int `json:"backupWriteProtocolVersion"`
 	// ServerURL is the control-plane base URL this heartbeat is POSTed to
 	// (#2288). Set per-attempt in postHeartbeat, so a backup probe reports
 	// the backup URL and the device row shows real fleet position.
@@ -253,6 +257,13 @@ type SecurityCapabilities struct {
 	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
 	// against an agent reporting 0, same shape as the revocation-lease gate.
 	DesktopFenceProtocolVersion int `json:"desktopFenceProtocolVersion,omitempty"`
+	// DesktopWsFenceProtocolVersion declares that the WebSocket desktop
+	// fallback (desktop_stream_start) honours the same start fence, revocation
+	// lease and stop tombstone as start_desktop. Builds that only report
+	// DesktopFenceProtocolVersion ignore the generation on that path. The API
+	// accepts it without acting on it yet, so it can later require it there
+	// without another agent release.
+	DesktopWsFenceProtocolVersion int `json:"desktopWsFenceProtocolVersion,omitempty"`
 	// ConsentPromptProtocolVersion declares that this build parses the
 	// `prompt` block on a desktop-stream-start command (parseDesktopPrompt,
 	// handlers_desktop.go) and gates capture on it: a consent dialog or
@@ -260,7 +271,12 @@ type SecurityCapabilities struct {
 	// silently drops an unfamiliar `prompt` key (JSON unmarshal into a known
 	// struct ignores unrecognized fields) and streams unconditionally, so the
 	// API refuses to start a session that requires consent or notification
-	// against an agent reporting 0.
+	// against an agent reporting 0. Version 2 also reports, on every
+	// consent-mode start, whether the prompt was shown and answered and
+	// whether anyone is signed in to the captured session (consent_gate.go),
+	// and never proceeds when a signed-in user could not be asked. An API that
+	// only knows version 1 treats 2 as 0 and refuses consent/notify starts, so
+	// the API must ship before (or with) this agent.
 	ConsentPromptProtocolVersion int                      `json:"consentPromptProtocolVersion,omitempty"`
 	PamReconciliation            *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
@@ -528,8 +544,11 @@ type Heartbeat struct {
 	pamRecoveryMaxAttempts       int
 	pamGateProofTimeout          time.Duration
 	pamGateStuckReassertInterval time.Duration
-	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error)
-	desktopOwners                sync.Map // desktop session ID -> helper session ID
+	wsDesktopStart               func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error)
+	// wsStreamStopNotify reports a lease-driven stream stop to the control
+	// plane; nil means sendDesktopDisconnectNotification (tests override it).
+	wsStreamStopNotify func(sessionID, reason string)
+	desktopOwners      sync.Map // desktop session ID -> helper session ID
 	// leaseRenewRequester asks the control plane to renew a desktop session's
 	// revocation lease. Indirected through a field (rather than calling the
 	// method directly) so the helper-hosted bridge is observable in tests.
@@ -613,6 +632,11 @@ type Heartbeat struct {
 	// Guard against concurrent cert renewals from successive heartbeats
 	certRenewing  atomic.Bool
 	tokenRotating atomic.Bool
+	// Retry schedule for a rotation owed because an older agent kept the
+	// helper token in agent.yaml (maybeStartOwedHelperTokenRotation).
+	owedRotationMu          sync.Mutex
+	owedRotationNextAttempt time.Time
+	owedRotationBackoff     time.Duration
 	// Issue #2621 — a staged credential rotation is sitting on disk unconfirmed.
 	// Drives the per-tick retry so recovery does not depend on a process restart.
 	pendingRotationOnDisk atomic.Bool
@@ -868,10 +892,26 @@ type Heartbeat struct {
 	// (readInstalledBackupProtocols); nil in production. The cache fields
 	// below are guarded by backupVersionMu and cleared by
 	// invalidateBackupVersionCache, exactly like the version cache.
-	backupProtocolReader   func() (backupipc.ProtocolInfo, backupProbeOutcome)
-	backupProtocolValue    backupipc.ProtocolInfo
-	backupProtocolRead     bool
-	backupProtocolFailedAt time.Time
+	backupProtocolReader func() backupProtocolProbe
+	backupProtocolValue  backupipc.ProtocolInfo
+	backupProtocolRead   bool
+	// backupProtocolRetryAt and backupProtocolFailures drive the short
+	// backoff after a probe that ran but got no answer; see backupProtocols.
+	backupProtocolRetryAt  time.Time
+	backupProtocolFailures int
+	// backupProtocolGen is bumped by invalidateBackupVersionCache; a probe
+	// that started before a helper swap does not cache its answer.
+	backupProtocolGen uint64
+	// backupProtocolLogState is the last reported/unknown state logged, so
+	// the log fires once per state change rather than once per heartbeat.
+	// Cleared by invalidateBackupVersionCache so a new helper's first answer
+	// is always logged.
+	backupProtocolLogState string
+	// backupProtocolStateLogger and backupProtocolTimeout are test seams (nil
+	// / zero in production: log via the package logger, and
+	// backupVersionReadTimeout).
+	backupProtocolStateLogger func(state string, probe backupProtocolProbe)
+	backupProtocolTimeout     time.Duration
 
 	// backupHelperDownloader is an optional test seam: when non-nil,
 	// prefetchBackupHelper / reconcileBackupHelper call this instead of
@@ -1226,6 +1266,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// unconditionally (not only in direct mode): the service process runs the
 	// renewals for helper-hosted sessions too.
 	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// The WebSocket fallback stream renews the same lease over the same
+	// socket, and a lease-driven stop is reported like a WebRTC peer drop and
+	// ends the on-screen indicator and notice (handlers_desktop_stream.go).
+	h.wireWsDesktopStreamHooks()
 	// Same outbound renew, reached from the IPC side: a helper-hosted session's
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
@@ -1295,6 +1339,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// otherwise the silence the grace window budgets for.
 	if msg.Unavailable {
 		h.desktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		}
 		go h.forwardRevocationLeaseToHelper(msg)
 		return
 	}
@@ -1317,6 +1364,12 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 		h.desktopMgr.ApplyRevocationLease(msg.SessionID,
 			desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
 			desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		// A WebSocket fallback stream keeps the same lease (desktop/ws_lease.go).
+		if h.wsDesktopMgr != nil {
+			h.wsDesktopMgr.ApplyRevocationLease(msg.SessionID,
+				desktop.MonotonicDeadline(msg.ExpiresAtUnixMs),
+				desktop.MonotonicDeadline(msg.HardDeadlineUnixMs))
+		}
 		return
 	}
 
@@ -1325,6 +1378,9 @@ func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMess
 	// Mark it revoked first — synchronously, so the local watchdog is already
 	// authoritative before anything below can fail or stall.
 	h.desktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	if h.wsDesktopMgr != nil {
+		h.wsDesktopMgr.RevokeSession(msg.SessionID, msg.Reason)
+	}
 	// The stop itself runs OFF the read pump: handleStopDesktop does a 10s
 	// synchronous IPC SendCommand and StopSession -> wg.Wait(), and
 	// websocket/client.go documents that this callback must not block. With the
@@ -4684,11 +4740,9 @@ func (h *Heartbeat) sendHeartbeat() {
 		SecurityCapabilities: compiledSecurityCapabilities(),
 	}
 	// Read from the installed helper at startup and again after any helper
-	// install (invalidateBackupVersionCache).
-	backupProtocols := h.backupProtocols()
-	payload.BackupReadProtocolVersion = backupProtocols.BackupReadProtocolVersion
-	payload.BackupIntegrityProtocolVersion = backupProtocols.BackupIntegrityProtocolVersion
-	payload.BackupWriteProtocolVersion = backupProtocols.BackupWriteProtocolVersion
+	// install (invalidateBackupVersionCache); unknown while the probe gets
+	// no answer.
+	payload.setBackupProtocols(h.backupProtocols())
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation
@@ -5228,6 +5282,11 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 
 	// Handle proactive bearer-token rotation before the token becomes stale.
 	if response.RotateToken {
+		go h.handleTokenRotation()
+	} else if !response.ConfirmTokenRotation && h.maybeStartOwedHelperTokenRotation(time.Now()) {
+		// An older agent kept the helper token in agent.yaml. The startup scrub
+		// moved it to secrets.yaml; one rotation replaces it as well.
+		log.Info("rotating credentials once after moving the helper token out of agent.yaml")
 		go h.handleTokenRotation()
 	}
 
@@ -7932,6 +7991,7 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
 		DesktopFenceProtocolVersion:     1,
-		ConsentPromptProtocolVersion:    1,
+		DesktopWsFenceProtocolVersion:   1,
+		ConsentPromptProtocolVersion:    2,
 	}
 }

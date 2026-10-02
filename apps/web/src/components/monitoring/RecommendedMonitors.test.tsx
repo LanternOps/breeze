@@ -2,6 +2,7 @@ import '@/lib/i18n';
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { addFeatureLinkSchema } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -71,6 +72,26 @@ it('keeps existing attachments and creates the monitors link when the policy has
     featureType: 'monitors',
     inlineSettings: { inheritance: 'cumulative', items: [{ monitorId: monitor.id, enabled: true, sortOrder: 0 }] },
   });
+});
+
+it('sends a create body the server accepts: featurePolicyId omitted, never null (#7627)', async () => {
+  fetchMock
+    .mockResolvedValueOnce(json({ data: [{ id: policyId, name: 'Servers' }], pagination: { total: 1 } }))
+    .mockResolvedValueOnce(json({ data: [] }))
+    .mockResolvedValueOnce(json({ data: { id: 'new-link' } }, 201));
+  const onAttached = vi.fn();
+  render(<RecommendedMonitors rows={[monitor]} onAttached={onAttached} />);
+  fireEvent.click(screen.getByTestId('recommended-open'));
+  await screen.findByText('Servers');
+  fireEvent.change(screen.getByTestId('recommended-policy'), { target: { value: policyId } });
+  fireEvent.click(screen.getByTestId('recommended-attach'));
+  await waitFor(() => expect(onAttached).toHaveBeenCalled());
+  const write = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')!;
+  const body = JSON.parse(String(write[1]!.body));
+  expect(body).not.toHaveProperty('featurePolicyId');
+  // The route validates with this exact schema; a null here was the 400 in #7627.
+  const parsed = addFeatureLinkSchema.safeParse(body);
+  expect(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues)).toBe(true);
 });
 
 it('preserves existing items (and does not duplicate an already-attached recommendation)', async () => {

@@ -978,6 +978,7 @@ describe('POST /tickets/draft', () => {
       'platform',
       undefined,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.calculateCostCents).toHaveBeenCalledWith('claude-x', 100, 50);
     expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
@@ -1009,6 +1010,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.recordUsage).toHaveBeenCalledWith(
       null, ORG_A, 'claude-x', 100, 50, false, 'platform', CATALOG_PRICING,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.calculateCatalogCostCents).toHaveBeenCalledWith(CATALOG_PRICING, 100, 50);
     expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 7.25);
@@ -1165,6 +1167,7 @@ describe('POST /tickets/draft', () => {
       'platform',
       undefined,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
     errSpy.mockRestore();
@@ -1201,6 +1204,7 @@ describe('POST /tickets/draft', () => {
       'partner_key',
       undefined,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
     errSpy.mockRestore();
@@ -1296,6 +1300,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.recordUsage).toHaveBeenCalledWith(
       null, ORG_A, 'claude-x', 0, 0, false, 'platform', undefined,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
     vi.useRealTimers();
@@ -1319,6 +1324,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.recordUsage).toHaveBeenCalledWith(
       null, ORG_A, 'claude-x', 80, 20, false, 'platform', undefined,
       '12121212-1212-4121-8121-121212121212',
+      0, { surface: 'office_ticket', userId: USER_ID },
     );
     expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
     vi.useRealTimers();

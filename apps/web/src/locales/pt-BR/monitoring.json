@@ -376,6 +376,26 @@
       "convert": "Falha ao converter a regra"
     }
   },
+  "builtInRules": {
+    "title": "Alertas integrados",
+    "description": "Alertas que o Breeze gera por conta própria. Desative um para interromper esse alerta na organização dele; os alertas já abertos continuam abertos até você resolvê-los.",
+    "columns": {
+      "name": "Nome",
+      "organization": "Organização",
+      "active": "Ativo"
+    },
+    "kinds": {
+      "policyViolation": "Violações de política: {{subject}}",
+      "configCompliance": "Conformidade de configuração: {{subject}}"
+    },
+    "toggle": "Ativar ou desativar {{name}}",
+    "switchedOn": "{{name}} ativado",
+    "switchedOff": "{{name}} desativado",
+    "errors": {
+      "fetch": "Falha ao carregar os alertas integrados",
+      "toggle": "Falha ao atualizar o alerta integrado"
+    }
+  },
   "devices": {
     "title": "Dispositivos",
     "columns": {

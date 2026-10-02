@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 
 vi.mock('../../db', () => ({
   db: {
@@ -108,7 +109,7 @@ describe('agent software inventory observation route', () => {
     expect(Number(retryAfter)).toBeLessThanOrEqual(10);
     expect(await res.json()).toEqual({
       error: 'Software inventory ingest is contended; retry this report later',
-      code: 'software_inventory_lock_timeout',
+      code: ERROR_CODES.SOFTWARE_INVENTORY_LOCK_TIMEOUT,
     });
   });
 

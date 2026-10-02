@@ -109,6 +109,43 @@ func TestInstallFileWithSecurityApplyErrorIsAWarning(t *testing.T) {
 	}
 }
 
+// TestInstallFileWithRequiredSecurityApplyErrorFailsTheInstall (Windows): a
+// Required applier that fails fails the install and publishes nothing.
+func TestInstallFileWithRequiredSecurityApplyErrorFailsTheInstall(t *testing.T) {
+	base := t.TempDir()
+	sec := &SecurityApplier{Required: true, Apply: func(uintptr) error { return errors.New("boom") }}
+	_, err := InstallFileWithSecurity(base, "f.txt", writeSource(t, "data"), 0o644, time.Time{}, nil, 0, sec)
+	if err == nil || !strings.Contains(err.Error(), "apply security descriptor: boom") {
+		t.Fatalf("install error = %v, want the required apply failure", err)
+	}
+	entries, _ := os.ReadDir(base)
+	if len(entries) != 0 {
+		t.Fatalf("entries left under the target: %v", entries)
+	}
+}
+
+// TestInstallFileWithRequiredSecurityCreateRefusalFailsTheInstall (Windows):
+// a Required applier whose security access is refused on the create is not
+// dropped for a warning — the install fails and nothing is published.
+func TestInstallFileWithRequiredSecurityCreateRefusalFailsTheInstall(t *testing.T) {
+	base := t.TempDir()
+	orig := createTemporary
+	t.Cleanup(func() { createTemporary = orig })
+	createTemporary = func(parent windows.Handle, name string, access uint32) (windows.Handle, error) {
+		if access&windows.WRITE_OWNER != 0 {
+			return windows.InvalidHandle, windows.STATUS_ACCESS_DENIED
+		}
+		return orig(parent, name, access)
+	}
+	sec := &SecurityApplier{Required: true, Access: windows.WRITE_DAC | windows.WRITE_OWNER, Apply: func(uintptr) error { return nil }}
+	if _, err := InstallFileWithSecurity(base, "f.txt", writeSource(t, "data"), 0o644, time.Time{}, nil, 0, sec); err == nil {
+		t.Fatal("install succeeded although the required security access was refused")
+	}
+	if _, statErr := os.Stat(filepath.Join(base, "f.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("destination published: %v", statErr)
+	}
+}
+
 // TestApplyDirSecurityRefusesJunction (Windows): positive control (the
 // applier gets the directory's own handle, with the requested Access), a
 // junction at an intermediate component is refused before the applier runs,

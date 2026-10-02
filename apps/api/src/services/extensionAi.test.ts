@@ -223,6 +223,8 @@ describe('buildExtensionAiContext', () => {
       'partner_key',
       pricing,
       '44444444-4444-4444-8444-444444444444',
+      0,
+      { surface: 'extension_content' },
     );
   });
 
@@ -278,6 +280,8 @@ describe('buildExtensionAiContext', () => {
       'partner_key',
       undefined,
       '44444444-4444-4444-8444-444444444444',
+      0,
+      { surface: 'extension_content' },
     );
     // A partner-funded call must never touch the org's prepaid platform credits.
     expect(deductBillingCredits).not.toHaveBeenCalled();
@@ -322,6 +326,8 @@ describe('buildExtensionAiContext', () => {
       'platform',
       undefined,
       '44444444-4444-4444-8444-444444444444',
+      0,
+      { surface: 'extension_content' },
     );
     expect(calculateCostCents).toHaveBeenCalledWith('claude-haiku-4-5', 17, 9);
     expect(deductBillingCredits).toHaveBeenCalledWith(ORG_ID, 7);

@@ -93,9 +93,10 @@ func TestHandleStartDesktopOnDemandNotifySkipsConsentWaitWhenNoUser(t *testing.T
 }
 
 // Consent mode with consentUnavailableBehavior "block": nobody can consent, so
-// the connect is denied at once with the helper_absent reason — it must never
+// the connect is denied at once with the no_user_session reason — it must never
 // fall through to an allow, and must not sit out the wait first.
 func TestHandleStartDesktopOnDemandConsentBlockDeniesFastWhenNoUser(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	f := loggedOffConsoleLifecycle()
 	h := &Heartbeat{
 		helperLifecycle: f,
@@ -104,7 +105,7 @@ func TestHandleStartDesktopOnDemandConsentBlockDeniesFastWhenNoUser(t *testing.T
 	}
 
 	result := runStartDesktopWithin(t, h, noUserStartCmd("sess-consent-block-nouser", consentModePrompt("block", 30000)), 5*time.Second)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "no_user_session")
 	assertNoUserRoleLeaseOrWait(t, f)
 
 	_, released, _, _ := f.snapshot()
@@ -122,6 +123,7 @@ func TestHandleStartDesktopOnDemandConsentBlockDeniesFastWhenNoUser(t *testing.T
 // Consent mode with "proceed": the configured fallback still governs; the fix
 // only removes the pointless wait before it applies.
 func TestHandleStartDesktopOnDemandConsentProceedAppliesPolicyWhenNoUser(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	f := loggedOffConsoleLifecycle()
 	h := &Heartbeat{
 		helperLifecycle: f,
@@ -137,6 +139,7 @@ func TestHandleStartDesktopOnDemandConsentProceedAppliesPolicyWhenNoUser(t *test
 // A signed-in session keeps today's behavior: user-role lease plus the bounded
 // head start for the consent helper.
 func TestHandleStartDesktopOnDemandWaitsForConsentHelperWhenUserSignedIn(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
 	f := &fakeLifecycle{mode: "on-demand"}
 	h := &Heartbeat{
 		helperLifecycle: f,
@@ -145,7 +148,7 @@ func TestHandleStartDesktopOnDemandWaitsForConsentHelperWhenUserSignedIn(t *test
 	}
 
 	result := runStartDesktopWithin(t, h, noUserStartCmd("sess-signed-in", consentModePrompt("block", 10)), 5*time.Second)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 
 	acquired, _, waited, _ := f.snapshot()
 	if len(acquired) != 2 || acquired[0] != noUserSystemKey || acquired[1] != noUserUserKey {
@@ -159,6 +162,7 @@ func TestHandleStartDesktopOnDemandWaitsForConsentHelperWhenUserSignedIn(t *test
 // If the availability check itself fails, fall back to the previous behavior
 // (lease + bounded wait) rather than guessing that nobody is signed in.
 func TestHandleStartDesktopOnDemandAvailabilityErrorKeepsWait(t *testing.T) {
+	withConsentSeams(t, occupancyUnknown, true)
 	f := &fakeLifecycle{mode: "on-demand", availableErr: errors.New("WTSEnumerateSessions failed")}
 	h := &Heartbeat{
 		helperLifecycle: f,
@@ -167,7 +171,7 @@ func TestHandleStartDesktopOnDemandAvailabilityErrorKeepsWait(t *testing.T) {
 	}
 
 	result := runStartDesktopWithin(t, h, noUserStartCmd("sess-check-err", consentModePrompt("block", 10)), 5*time.Second)
-	assertConsentDenied(t, result, "helper_absent")
+	assertConsentDenied(t, result, "helper_unreachable")
 
 	acquired, _, waited, _ := f.snapshot()
 	if len(acquired) != 2 {

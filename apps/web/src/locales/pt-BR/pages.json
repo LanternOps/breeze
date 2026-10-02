@@ -171,7 +171,8 @@
     "signedAgreements": "Acordos assinados",
     "settingsTicketing": "Configurações de tickets",
     "securityScans": "Varreduras de IOC",
-    "devicesTime": "Sincronização de horário"
+    "devicesTime": "Sincronização de horário",
+    "adminAiModels": "Modelos de IA"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

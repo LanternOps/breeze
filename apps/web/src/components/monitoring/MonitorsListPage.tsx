@@ -4,6 +4,7 @@ import ConversionLedger from './conversion/ConversionLedger';
 import ConversionPendingBanner from './conversion/ConversionPendingBanner';
 import PendingPoliciesList from './conversion/PendingPoliciesList';
 import LegacyRulesTable from './LegacyRulesTable';
+import BuiltInAlertRules from './BuiltInAlertRules';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, Trash2 } from 'lucide-react';
@@ -276,6 +277,8 @@ export default function MonitorsListPage() {
             />
           )}
 
+          {/* #7626: Breeze-raised alerts (patch failures, reboot pending, policy violations) — on/off only. */}
+          <BuiltInAlertRules orgId={currentOrgId} />
         </>
       )}
 

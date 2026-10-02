@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 
 // #3257 W04: PATCH /devices/:id validates a `customFields` payload against
 // its definition too, sharing services/customFields/validateValueMap.ts with
@@ -177,7 +178,7 @@ describe('PATCH /devices/:id — custom field value validation (#3257 W04)', () 
 
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe('invalid-custom-field-value');
+    expect(body.code).toBe(ERROR_CODES.INVALID_CUSTOM_FIELD_VALUE);
     expect(body.fields).toEqual([{ fieldKey: 'purchase_date', reason: 'invalid_date' }]);
     expect(updateSpy.set).not.toHaveBeenCalled();
     expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();

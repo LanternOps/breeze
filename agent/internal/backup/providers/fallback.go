@@ -87,15 +87,48 @@ func (f *FallbackProvider) Download(remotePath, localPath string) error {
 // instead of moving on to the next provider: a cancelled or timed-out
 // download is not a reason to try the secondary.
 func (f *FallbackProvider) DownloadContext(ctx context.Context, remotePath, localPath string) error {
+	return f.DownloadSkipping(ctx, remotePath, localPath, 0)
+}
+
+// SourceCount is the number of sources a download may be served from.
+func (f *FallbackProvider) SourceCount() int { return len(f.providers) }
+
+// DownloadOnly implements SourceSkipper: download from source idx alone.
+func (f *FallbackProvider) DownloadOnly(ctx context.Context, remotePath, localPath string, idx int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if idx < 0 || idx >= len(f.providers) {
+		return fmt.Errorf("fallback provider has %d sources, no source %d", len(f.providers), idx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p := f.providers[idx]
+	if d, ok := p.(ContextDownloader); ok {
+		return d.DownloadContext(ctx, remotePath, localPath)
+	}
+	return p.Download(remotePath, localPath)
+}
+
+// DownloadSkipping implements SourceSkipper: DownloadContext over every
+// source after the first skip. A restore that finds a vault copy which does
+// not match the snapshot's checks calls it with skip = 1 to read the same
+// object from primary storage instead.
+func (f *FallbackProvider) DownloadSkipping(ctx context.Context, remotePath, localPath string, skip int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if len(f.providers) == 0 {
 		return errors.New("fallback provider has no configured providers")
 	}
+	if skip < 0 || skip >= len(f.providers) {
+		return fmt.Errorf("fallback provider has %d sources, cannot skip %d", len(f.providers), skip)
+	}
 
 	var lastErr error
-	for i, p := range f.providers {
+	for i := skip; i < len(f.providers); i++ {
+		p := f.providers[i]
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
 				return fmt.Errorf("download of %s stopped: %w (last provider error: %v)", remotePath, err, lastErr)
@@ -120,7 +153,7 @@ func (f *FallbackProvider) DownloadContext(ctx context.Context, remotePath, loca
 			"providerIndex", i, "error", err.Error())
 	}
 	return fmt.Errorf("all %d providers failed to download %s: %w",
-		len(f.providers), remotePath, lastErr)
+		len(f.providers)-skip, remotePath, lastErr)
 }
 
 // List returns results from the FIRST (primary) provider.

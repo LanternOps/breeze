@@ -10,10 +10,9 @@ import (
 	"unicode"
 
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
-	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-var log = logging.L("config")
+var log = newConfigLogger()
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 var hexIDRegex = regexp.MustCompile(`^[0-9a-fA-F]{32,128}$`)

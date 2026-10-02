@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGENT_CONSENT_HELPER_WAIT_MS,
   AGENT_CONSENT_IPC_GRACE_MS,
+  AGENT_CONSENT_PRESENT_BUDGET_MS,
   DESKTOP_CONSENT_TIMEOUT_MS,
   VIEWER_BASE_ANSWER_TIMEOUT_MS,
   consentDeniedMessage,
@@ -22,10 +23,13 @@ describe('viewerAnswerTimeoutMs', () => {
     expect(viewerAnswerTimeoutMs('notify')).toBe(VIEWER_BASE_ANSWER_TIMEOUT_MS + AGENT_CONSENT_HELPER_WAIT_MS);
   });
 
-  it('covers the helper spawn, the whole consent dialog and the agent IPC grace in consent mode', () => {
+  it('covers the helper spawn, the prompt coming up, the whole consent dialog and the agent IPC grace in consent mode', () => {
+    // The dialog's countdown starts only once the prompt is on screen, so the
+    // budget also covers the time the agent allows for the prompt to appear.
     expect(viewerAnswerTimeoutMs('consent')).toBe(
       VIEWER_BASE_ANSWER_TIMEOUT_MS
         + AGENT_CONSENT_HELPER_WAIT_MS
+        + AGENT_CONSENT_PRESENT_BUDGET_MS
         + DESKTOP_CONSENT_TIMEOUT_MS
         + AGENT_CONSENT_IPC_GRACE_MS,
     );
@@ -59,6 +63,26 @@ describe('consentDeniedMessage', () => {
     expect(consentDeniedMessage('helper_unreachable', 'no_helper')).toMatch(/no way to show/);
   });
 
+  it('does not name Breeze Assist for a prompt that could not be shown (native dialogs show it too)', () => {
+    for (const detail of [undefined, 'no_presentation', 'failed_after_presentation', 'helper_error']) {
+      const msg = consentDeniedMessage('helper_unreachable', detail);
+      expect(msg).toMatch(/could not be shown/);
+      expect(msg).not.toMatch(/Assist/);
+    }
+  });
+
+  it.each([
+    ['consent_helper_gone', /signed out|no longer/i],
+    ['capture_target_changed', /different|another/i],
+    ['capture_target_unknown', /could not confirm/i],
+    ['capture_target_ambiguous', /more than one/i],
+    ['user_signed_in', /signed in/i],
+  ])('explains a consent that no longer held once capture started (%s)', (detail, pattern) => {
+    const msg = consentDeniedMessage('no_user', detail);
+    expect(msg).toMatch(pattern);
+    expect(msg).toMatch(/not started/);
+  });
+
   it('says another request is waiting when the prompt was refused because one is already on screen', () => {
     expect(consentDeniedMessage('helper_unreachable', 'prompt_in_progress')).toMatch(/already waiting/);
     // Any other detail keeps the reason's message.
@@ -78,6 +102,12 @@ describe('agent constant mirrors', () => {
     const match = goSource('consent_gate.go').match(/const consentTimeoutGraceMs = (\d+)/);
     expect(match, 'consentTimeoutGraceMs not found in consent_gate.go').not.toBeNull();
     expect(Number(match![1])).toBe(AGENT_CONSENT_IPC_GRACE_MS);
+  });
+
+  it('AGENT_CONSENT_PRESENT_BUDGET_MS matches consentPresentBudgetMs in consent_gate.go', () => {
+    const match = goSource('consent_gate.go').match(/const consentPresentBudgetMs = (\d+)/);
+    expect(match, 'consentPresentBudgetMs not found in consent_gate.go').not.toBeNull();
+    expect(Number(match![1])).toBe(AGENT_CONSENT_PRESENT_BUDGET_MS);
   });
 
   it('AGENT_CONSENT_HELPER_WAIT_MS matches consentHelperWait in handlers_desktop_lease.go', () => {

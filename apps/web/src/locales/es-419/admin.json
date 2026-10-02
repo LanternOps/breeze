@@ -400,6 +400,7 @@
       "addEntry": "Agregar proveedor",
       "loading": "Cargando catálogo…",
       "empty": "Aún no hay entradas en el catálogo.",
+      "noRevisions": "Todavía no hay revisiones.",
       "dismiss": "Descartar",
       "platformAdmin": {
         "title": "Se requiere acceso de administrador de plataforma",
@@ -616,6 +617,93 @@
           "security-abuse": "Seguridad y abuso",
           "integrations": "Integraciones"
         }
+      }
+    },
+    "aiModels": {
+      "title": "Modelos de IA",
+      "subtitle": "Modelos que la plataforma conoce por el descubrimiento de Anthropic. Los modelos nuevos llegan sin precio y no se ofrecen a nadie hasta que les pongas precio y los ofrezcas.",
+      "refresh": "Actualizar modelos",
+      "requiresPlatformAdmin": "Se requiere acceso de administrador de la plataforma para gestionar los modelos de IA.",
+      "empty": "Aún no hay modelos. Actualiza para descubrir modelos con la clave de la plataforma.",
+      "newBadge": "Nuevo",
+      "notSeen": "Aún no visto por el descubrimiento",
+      "unpriced": "Sin precio",
+      "yes": "Sí",
+      "no": "No",
+      "edit": "Editar",
+      "columns": {
+        "model": "Modelo",
+        "status": "Estado",
+        "thinking": "Razonamiento",
+        "price": "Entrada / salida por MTok",
+        "offered": "Ofrecido",
+        "default": "Predeterminado de la plataforma",
+        "actions": "Acciones"
+      },
+      "lifecycle": {
+        "available": "Disponible",
+        "missing": "Ausente",
+        "retired": "Retirado"
+      },
+      "thinkingMode": {
+        "adaptive": "Adaptativo",
+        "budget": "Presupuesto",
+        "none": "Ninguno",
+        "unknown": "Sin verificar"
+      },
+      "thinkingDisplay": {
+        "omitted": "Omitido",
+        "summarized": "Resumido",
+        "updates": "Actualizaciones de progreso"
+      },
+      "promptProfile": {
+        "claude-frontier": "Frontera",
+        "claude-standard": "Estándar",
+        "claude-small": "Pequeño",
+        "generic": "Genérico"
+      },
+      "drawer": {
+        "title": "Editar {{name}}",
+        "prices": "Precios (dólares por millón de tokens)",
+        "storedPrice": "Guardado: {{value}}",
+        "priceChangeTitle": "Confirmar cambio grande de precio",
+        "priceChangeIntro": "Estos precios difieren de los guardados en más de 10×. Revisa la unidad: estás ingresando dólares por millón de tokens.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Confirmar y guardar",
+        "priceChangeBack": "Volver",
+        "priceGroupStandard": "Estándar",
+        "priceGroupFast": "Modo rápido",
+        "fastPrices": "Precios del modo rápido (opcional)",
+        "fastPricesHint": "El modo rápido no se puede seleccionar hasta que se definan los cuatro precios rápidos.",
+        "inputCentsPerM": "Entrada",
+        "outputCentsPerM": "Salida",
+        "cacheReadCentsPerM": "Lectura de caché",
+        "cacheWriteCentsPerM": "Escritura de caché",
+        "effort": "Niveles de esfuerzo",
+        "thinkingDisplay": "Visualización del razonamiento",
+        "fast": "Modo rápido compatible",
+        "inferenceGeo": "Geografías de inferencia",
+        "inferenceGeoHint": "Valores separados por comas confirmados con la API de Anthropic, por ejemplo us, global.",
+        "minPlan": "Plan mínimo",
+        "allPlans": "Todos los planes",
+        "promptProfile": "Perfil de prompt",
+        "offered": "Ofrecido en la clave de la plataforma",
+        "offeredHint": "Requiere los cuatro precios.",
+        "isDefault": "Predeterminado de la plataforma",
+        "defaultHint": "Registrado para el futuro resolvedor de modelos por función. Hasta que se lance, el valor predeterminado de la implementación proviene de ANTHROPIC_MODEL o del valor integrado.",
+        "defaultLocked": "Este es el predeterminado de la plataforma. Haz que otro modelo sea el predeterminado para cambiarlo.",
+        "save": "Guardar",
+        "cancel": "Cancelar"
+      },
+      "notice": {
+        "saved": "Modelo guardado.",
+        "refreshQueued": "Actualización de modelos en cola."
+      },
+      "errors": {
+        "load": "No se pudieron cargar los modelos de IA.",
+        "save": "No se pudo guardar el modelo.",
+        "refresh": "No se pudo poner en cola la actualización de modelos.",
+        "invalidRates": "Ingresa los cuatro precios como números no negativos, o deja los cuatro en blanco."
       }
     }
   },

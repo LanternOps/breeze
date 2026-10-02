@@ -581,6 +581,47 @@ describe('AddDeviceModal', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
+  // #7628: after #7035 the tab no longer mints on open, so the command used to
+  // render with a literal "<TOKEN>" and the copy button copied it — the agent
+  // then failed enrollment with enrollment_key_not_found (exit 11).
+  it.each([
+    ['Windows'],
+    ['Linux/macOS'],
+  ])('shows no runnable %s command and no copy button until a token is generated (#7628)', (platform) => {
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+    fireEvent.click(screen.getByRole('button', { name: platform }));
+
+    expect(screen.queryByText(/<TOKEN>/)).toBeNull();
+    expect(screen.queryByTestId('cli-command')).toBeNull();
+    expect(screen.queryByTestId('cli-copy-command')).toBeNull();
+    expect(screen.getByTestId('cli-command-needs-token').textContent).toContain(
+      'Generate a token first'
+    );
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it('shows and copies the real command once a token is generated (#7628)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ token: 'real-token-123', enrollmentSecret: 'secret-abc' })
+    );
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('tab-cli'));
+    fireEvent.click(screen.getByTestId('cli-regenerate-token'));
+
+    const command = await screen.findByTestId('cli-command');
+    expect(command.textContent).toContain('real-token-123');
+    expect(command.textContent).not.toContain('<TOKEN>');
+    expect(screen.queryByTestId('cli-command-needs-token')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('cli-copy-command'));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(command.textContent);
+    });
+    expect(vi.mocked(navigator.clipboard.writeText).mock.calls[0]![0]).toContain('real-token-123');
+  });
+
   it('shows the no-sites notice on the CLI tab and cannot mint without a site (#7035)', () => {
     setOrgStore({ sites: [] });
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);

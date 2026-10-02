@@ -35,8 +35,12 @@ type Session struct {
 	HelperRole     ipc.HelperRole // "system" or "user" — determines scopes and capabilities
 	BinaryKind     string
 	DesktopContext string
-	ConnectedAt    time.Time
-	LastSeen       time.Time
+	// ConsentProtocolVersion is the consent prompt exchange this helper
+	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
+	// once at auth by consentProtocolFromAuth, never changed afterwards.
+	ConsentProtocolVersion int
+	ConnectedAt            time.Time
+	LastSeen               time.Time
 
 	conn    *ipc.Conn
 	mu      sync.Mutex
@@ -272,6 +276,68 @@ func deliveredResponse(ch <-chan *ipc.Envelope) *ipc.Envelope {
 	default:
 		return nil
 	}
+}
+
+// CommandStream is an in-flight command whose helper may answer its ID more
+// than once (the consent prompt's presentation acknowledgement, then its
+// terminal result). Unlike SendCommand, the registration survives the first
+// reply and stays until Close; replies arriving after Close are not routed.
+type CommandStream struct {
+	session *Session
+	id      string
+	ch      chan *ipc.Envelope
+	done    <-chan struct{}
+	once    sync.Once
+}
+
+// Envelopes delivers every reply correlated to the stream's ID, in arrival
+// order. It is never closed; select on Done to observe the helper going away
+// (and drain Envelopes first — a reply can land just before the close).
+func (cs *CommandStream) Envelopes() <-chan *ipc.Envelope { return cs.ch }
+
+// Done is closed when the helper session is closed.
+func (cs *CommandStream) Done() <-chan struct{} { return cs.done }
+
+// Close drops the registration. Safe to call more than once.
+func (cs *CommandStream) Close() {
+	cs.once.Do(func() {
+		cs.session.mu.Lock()
+		if current, ok := cs.session.pending[cs.id]; ok && current.ch == cs.ch {
+			delete(cs.session.pending, cs.id)
+		}
+		cs.session.mu.Unlock()
+	})
+}
+
+// commandStreamBuffer bounds the replies a stream holds before the reader
+// drains them. The consent exchange needs two; extras are dropped (and
+// logged) by HandleResponse rather than blocking the receive loop.
+const commandStreamBuffer = 4
+
+// OpenCommandStream sends cmdType with the given id and keeps the id
+// registered for replies until the returned stream is closed. The caller owns
+// all timing: nothing here times out.
+func (s *Session) OpenCommandStream(id, cmdType string, payload any) (*CommandStream, error) {
+	ch := make(chan *ipc.Envelope, commandStreamBuffer)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session closed")
+	}
+	if _, exists := s.pending[id]; exists {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: %q (session %q)", ErrDuplicateCommand, id, s.SessionID)
+	}
+	s.pending[id] = pendingResponse{ch: ch}
+	done := s.done
+	s.mu.Unlock()
+
+	cs := &CommandStream{session: s, id: id, ch: ch, done: done}
+	if err := s.conn.SendTyped(id, cmdType, payload); err != nil {
+		cs.Close()
+		return nil, err
+	}
+	return cs, nil
 }
 
 // SendNotify sends a fire-and-forget message (no response expected).

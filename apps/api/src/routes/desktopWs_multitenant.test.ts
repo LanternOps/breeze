@@ -68,6 +68,7 @@ vi.mock('../services/rate-limit', () => ({
 }));
 
 vi.mock('./remote/helpers', () => ({
+  createDesktopStartCommandId: vi.fn((id: string) => `desk-start-${id}-${crypto.randomUUID()}`),
   logSessionAudit: vi.fn(async () => undefined),
   getIceServers: vi.fn(() => []),
   buildRemoteSessionPromptPayload: vi.fn(async () => undefined),

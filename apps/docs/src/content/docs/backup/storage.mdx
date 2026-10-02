@@ -99,6 +99,10 @@ Click the **Edit** action on any configuration to reopen the wizard. Changes are
 
 Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.
 
+<Aside type="caution" title="Known issue: destinations with job history">
+  In v0.120.0, deleting a configuration that has any backup job history fails with a server error. Disable it instead — reassign its policies, then set `"enabled": false` with `PATCH /backup/configs/:id` — rather than deleting it.
+</Aside>
+
 <Aside type="caution">
   Deleting a storage configuration does not delete the backup data already stored at that target. The data remains in S3 or your local path until you remove it manually.
 </Aside>

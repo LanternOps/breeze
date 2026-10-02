@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { and, eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -370,7 +371,7 @@ actuateElevationRoutes.post(
         details: { deviceId, outcome: 'race_lost' },
       });
       return c.json(
-        { error: 'Elevation request already being actuated', code: 'race_lost' },
+        { error: 'Elevation request already being actuated', code: ERROR_CODES.RACE_LOST },
         409,
       );
     }

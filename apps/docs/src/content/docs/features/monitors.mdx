@@ -123,6 +123,19 @@ See [conversion details](/features/network-monitors/#converting-existing-checks)
 The retired legacy write endpoints, including `POST /alerts/rules/:id/test`, return `410 Gone`; historical reads remain available.
 Test monitors with `POST /monitor-definitions/:id/test`.
 
+### Built-in alerts
+
+Breeze raises some alerts itself rather than through a monitor: **Patch job failures**,
+**Reboot pending too long**, and policy-violation alerts. Each rule belongs to one
+organization (policy violations get one per policy), is created the first time its
+alert fires, and is never offered for conversion. **Alerts → Monitors** lists them under **Built-in alerts** with an
+**Active** switch per organization. Switching one off stops new alerts of that kind
+for that organization and stays off; alerts that are already open stay open until
+you resolve them. The switch needs `alerts:write` and MFA, and is recorded in the
+audit log as `alert_rule.update`. Through the API, send
+`PATCH /alerts/rules/:id/active` with `{ "isActive": false }`. Any other legacy rule
+returns `410 Gone`.
+
 ## Device Monitoring and recurrence
 
 Open a device's **Monitoring** tab (`#monitoring`) to see effective monitor, kind,

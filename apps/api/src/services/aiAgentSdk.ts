@@ -82,8 +82,9 @@ import { resolveLlmConfigForOrg, type UsableLlmConfig } from './llm/llmConfigRes
 import { llmUnusableCode } from './llm/llmAvailability';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
 
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
+import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
+
+export { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS };
 
 /**
  * Total time a single assistant cycle (one assistant message's batch of tool

@@ -20,3 +20,12 @@ import { alertRules } from '../../db/schema';
 export function notSystemManagedRule(): SQL {
   return sql`NOT EXISTS (SELECT 1 FROM alert_templates sm_t WHERE sm_t.id = ${alertRules.templateId} AND sm_t.is_built_in)`;
 }
+
+/**
+ * The complement of `notSystemManagedRule`: only built-in system anchor rules.
+ * Backs the Monitors "Built-in alerts" list (#7626), the one place an operator
+ * can switch one of these rules off.
+ */
+export function systemManagedRule(): SQL {
+  return sql`EXISTS (SELECT 1 FROM alert_templates sm_t WHERE sm_t.id = ${alertRules.templateId} AND sm_t.is_built_in)`;
+}

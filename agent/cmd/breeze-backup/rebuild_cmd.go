@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/bmr"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/spf13/cobra"
@@ -119,15 +121,7 @@ func newRebuildCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				opts.Provider, opts.Identity, opts.Marker, opts.SnapshotID = tokenOpts.Provider, tokenOpts.Identity, tokenOpts.Marker, tokenOpts.SnapshotID
-				// #5412: in token mode the server's word stands. An explicit
-				// "true" may strengthen it, "false" never weakens it.
-				opts.ExpectSystemState = tokenOpts.ExpectSystemState
-				if !expectStateAuto && expectState {
-					opts.ExpectSystemState = true
-				} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
-				}
+				opts = tokenModeRebuildOptions(tokenOpts, opts, expectState, expectStateAuto, cmd.ErrOrStderr())
 				report = tokenReport
 			} else {
 				provider, err := providerFromConfigFile(providerConfig)
@@ -202,7 +196,51 @@ const progressPostTimeout = 2 * time.Minute
 // and NEVER fails the rebuild: a lost console update is recoverable, a
 // completed recovery discarded because of one would not be — errors go to
 // stderr (the helper's log) and the run continues.
+// tokenModeRebuildOptions builds the engine options for token mode: it starts
+// from the options the server's bootstrap produced (snapshot, provider,
+// identity, marker, layout, integrity expectation, …) and lays only the
+// command-line owned fields of cli on top, so no bootstrap field can be
+// dropped on the way to the engine.
+//
+// #5412: the server's ExpectSystemState stands. An explicit "true" may
+// strengthen it, "false" never weakens it.
+func tokenModeRebuildOptions(fromToken, cli rebuild.Options, expectState, expectStateAuto bool, stderr io.Writer) rebuild.Options {
+	opts := fromToken
+	opts.Target = cli.Target
+	opts.StateDir = cli.StateDir
+	opts.StagingRoot = cli.StagingRoot
+	opts.DryRun = cli.DryRun
+	opts.ForceReprovision = cli.ForceReprovision
+	opts.AllowPartialRestore = cli.AllowPartialRestore
+	opts.RegenerateInitramfs = cli.RegenerateInitramfs
+	opts.SkipBoot = cli.SkipBoot
+	opts.System = cli.System
+	opts.Progress = cli.Progress
+	opts.WinSystem = cli.WinSystem
+	opts.WorkRoot = cli.WorkRoot
+	opts.DriverDirs = cli.DriverDirs
+	opts.ForceDisk = cli.ForceDisk
+	opts.AllowDomainController = cli.AllowDomainController
+	if !expectStateAuto && expectState {
+		opts.ExpectSystemState = true
+	} else if !expectStateAuto && !expectState && opts.ExpectSystemState {
+		_, _ = fmt.Fprintln(stderr, "--expect-system-state false ignored: the server marks this snapshot as carrying system state")
+	}
+	return opts
+}
+
 func buildTokenModeOptions(ctx context.Context, server, token string, target rebuild.Target, identityOverride string) (rebuild.Options, func(bmr.ProgressUpdate), error) {
+	return buildTokenModeOptionsWithIntegrity(ctx, server, token, target, identityOverride, nil)
+}
+
+// buildTokenModeOptionsWithIntegrity is buildTokenModeOptions for a caller
+// that also holds the device command's own integrity expectation
+// (bare_metal_rebuild's payload `integrity`; nil for the CLI). It is
+// resolved with the bootstrap's (bmr.ResolveIntegrity), checked against the
+// snapshot, used to verify the manifest before the scope check, and handed
+// to the engine as Options.Integrity. Any integrity refusal is posted as
+// "refused" and returned before anything is written.
+func buildTokenModeOptionsWithIntegrity(ctx context.Context, server, token string, target rebuild.Target, identityOverride string, cmdIntegrity *integrity.Expectation) (rebuild.Options, func(bmr.ProgressUpdate), error) {
 	opts := rebuild.Options{Target: target}
 	bs, err := bmr.AuthenticateRecoverySession(ctx, server, token)
 	if err != nil {
@@ -236,10 +274,36 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 			_, _ = fmt.Fprintf(os.Stderr, "progress %s not recorded: %v\n", u.Status, err)
 		}
 	}
-	if err := bmr.WidenScopeFromManifest(ctx, provider, bs); err != nil {
+	// bs.SnapshotID (the top-level bootstrap field) is not reliably
+	// populated by every server version — bs.Snapshot's own SnapshotID (the
+	// provider-facing id the download descriptor's path prefix is scoped
+	// to) always is, and is the one fetchLayout/fetchManifest/
+	// DownloadSystemState actually need to match that prefix. Prefer it.
+	snapshotID := bs.SnapshotID
+	if snapshotID == "" && bs.Snapshot != nil {
+		snapshotID = bs.Snapshot.SnapshotID
+	}
+	opts.SnapshotID = snapshotID
+
+	bootstrapIntegrity, err := bmr.BootstrapIntegrity(bs)
+	if err == nil {
+		opts.Integrity, err = bmr.ResolveIntegrity(cmdIntegrity, bootstrapIntegrity)
+	}
+	if err == nil {
+		err = opts.Integrity.CheckSnapshot(snapshotID)
+	}
+	if err != nil {
+		reason := "snapshot integrity expectation refused: " + err.Error()
+		report(bmr.ProgressUpdate{Status: "refused", Reason: reason})
+		return opts, nil, errors.New(reason)
+	}
+
+	if err := bmr.WidenScopeFromManifestVerified(ctx, provider, bs, opts.Integrity); err != nil {
 		var refusal *bmr.ScopeRefusalError
 		if errors.As(err, &refusal) {
 			report(bmr.ProgressUpdate{Status: "refused", Reason: refusal.Reason})
+		} else if code := integrity.FailureCode(err); code != "" {
+			report(bmr.ProgressUpdate{Status: "refused", Reason: fmt.Sprintf("snapshot manifest failed its integrity check (%s)", code)})
 		}
 		return opts, nil, err
 	}
@@ -255,17 +319,6 @@ func buildTokenModeOptions(ctx context.Context, server, token string, target reb
 		}
 		opts.Marker = &rebuild.Marker{RecoveryID: bs.Recovery.ID, Nonce: bs.Recovery.Nonce}
 	}
-
-	// bs.SnapshotID (the top-level bootstrap field) is not reliably
-	// populated by every server version — bs.Snapshot's own SnapshotID (the
-	// provider-facing id the download descriptor's path prefix is scoped
-	// to) always is, and is the one fetchLayout/fetchManifest/
-	// DownloadSystemState actually need to match that prefix. Prefer it.
-	snapshotID := bs.SnapshotID
-	if snapshotID == "" && bs.Snapshot != nil {
-		snapshotID = bs.Snapshot.SnapshotID
-	}
-	opts.SnapshotID = snapshotID
 
 	// #5412: the bootstrap knows what kind of snapshot this is; a
 	// system_image backup (or one advertising a state manifest) must apply

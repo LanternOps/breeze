@@ -85,13 +85,9 @@ vi.mock('./urlSafety', () => ({
   SsrfBlockedError: class SsrfBlockedError extends Error {},
 }));
 
-vi.mock('./aiCostTracker', () => ({
-  OFFERABLE_AI_MODELS: Object.freeze([
-    'claude-opus-4-8',
-    'claude-sonnet-4-6',
-    'claude-haiku-4-5',
-    'claude-fable-5',
-  ]),
+const { listCatalogMappableModelIdsMock } = vi.hoisted(() => ({ listCatalogMappableModelIdsMock: vi.fn() }));
+vi.mock('./aiModels/platformModels', () => ({
+  listCatalogMappableModelIds: (...args: unknown[]) => listCatalogMappableModelIdsMock(...args),
 }));
 
 import { db, withSystemDbAccessContext } from '../db';
@@ -148,6 +144,7 @@ function queueListedRead() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  listCatalogMappableModelIdsMock.mockResolvedValue(['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-fable-5']);
   dbState.selectResults.length = 0;
   dbState.insertResults.length = 0;
   dbState.updateResults.length = 0;
@@ -456,7 +453,7 @@ describe('LLM provider catalog service', () => {
     expect(assertSafeUrlMock).toHaveBeenCalledWith('https://metadata.internal/v1');
   });
 
-  it('rejects model-map keys outside OFFERABLE_AI_MODELS before writing', async () => {
+  it('rejects model-map keys that are not registry models before writing', async () => {
     await expect(createRevision({
       entryId: ENTRY_ID,
       baseUrl: 'https://llm.example.test/v1',
@@ -467,6 +464,18 @@ describe('LLM provider catalog service', () => {
       },
       createdBy: ADMIN_ID,
     })).rejects.toThrow(/not-an-offerable-model/);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rejects a model id the registry has retired (spec §6, W01 #7599)', async () => {
+    listCatalogMappableModelIdsMock.mockResolvedValue(['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-fable-5']);
+    await expect(createRevision({
+      entryId: ENTRY_ID,
+      baseUrl: 'https://llm.example.test/v1',
+      authMode: 'x-api-key',
+      modelMap,
+      createdBy: ADMIN_ID,
+    })).rejects.toThrow(/claude-haiku-4-5/);
     expect(db.insert).not.toHaveBeenCalled();
   });
 

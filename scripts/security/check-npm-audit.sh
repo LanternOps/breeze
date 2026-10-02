@@ -11,14 +11,33 @@ set -euo pipefail
 #
 # Gate: fail on HIGH and CRITICAL (raised from CRITICAL-only on 2026-09-03 for
 # SOC 2 CC7.1; the tree was clean at every severity at the time). MODERATE and
-# below are reported but do not block. Override with AUDIT_THRESHOLD=CRITICAL
-# only for an emergency hotfix, and record the exception.
+# below are reported but do not block.
+#
+# Exceptions: an advisory that cannot be fixed by upgrading is suppressed ONLY
+# through a reviewed entry in scripts/security/npm-audit-exceptions.json. Its
+# header states the bar (no fixed release exists, the package is unreachable
+# from every production artifact, a tracking issue exists). The rules this
+# script enforces on that file:
+#   - an entry suppresses one exact advisory id on one exact package name;
+#     the same id on another package, or another id on the same package,
+#     still blocks;
+#   - every entry is printed on every run, with its status;
+#   - an entry is honoured through its `expires` date (UTC, inclusive); from
+#     the next day it fails the run, even when the advisory no longer appears
+#     in the scan;
+#   - an entry may not expire more than MAX_EXCEPTION_DAYS days out, so each
+#     one is re-reviewed at least that often;
+#   - a missing or malformed file fails the run (it never means "no rules").
+# Do not lower AUDIT_THRESHOLD to get past a single advisory; add a reviewed
+# entry instead. AUDIT_THRESHOLD=CRITICAL remains for a declared emergency only.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 THRESHOLD="${AUDIT_THRESHOLD:-HIGH}"
 LOCKFILE="pnpm-lock.yaml"
+EXCEPTIONS_FILE="scripts/security/npm-audit-exceptions.json"
+MAX_EXCEPTION_DAYS=30
 
 fail() {
   echo "ERROR: $*" >&2
@@ -28,6 +47,66 @@ fail() {
 command -v osv-scanner >/dev/null 2>&1 || fail "osv-scanner not found on PATH"
 command -v jq >/dev/null 2>&1 || fail "jq not found on PATH"
 [ -f "$LOCKFILE" ] || fail "$LOCKFILE not found in $ROOT_DIR"
+
+# --- reviewed exceptions -----------------------------------------------------
+
+[ -f "$EXCEPTIONS_FILE" ] || fail "$EXCEPTIONS_FILE not found — the audit reads its reviewed exceptions from it (an empty \"exceptions\": [] is valid)"
+jq -e 'type == "object"' "$EXCEPTIONS_FILE" >/dev/null 2>&1 || fail "$EXCEPTIONS_FILE is not a valid JSON object"
+
+today="$(jq -nr 'now | strftime("%Y-%m-%d")')"
+latest_allowed="$(jq -nr --argjson d "$MAX_EXCEPTION_DAYS" '(now + $d * 86400) | strftime("%Y-%m-%d")')"
+
+# Structural validation. Every problem is reported, then the run fails closed.
+problems="$(jq -r '
+  def nonblank: type == "string" and test("\\S");
+  def token: type == "string" and test("^\\S+$");
+  def isdate:
+    type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    and ((try (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) catch "") == .);
+  if (.exceptions | type) != "array" then "\"exceptions\" must be an array"
+  else
+    (.exceptions | to_entries[] | .key as $i | .value as $e
+      | if ($e | type) != "object" then "entry \($i): must be an object"
+        else
+          (if ($e.id | token) then empty else "entry \($i): \"id\" must be a non-empty advisory id with no whitespace" end),
+          (if ($e.package | token) then empty else "entry \($i): \"package\" must be a non-empty package name with no whitespace" end),
+          (if ($e.reason | nonblank) then
+             (if ($e.reason | test("#[0-9]+")) then empty else "entry \($i): \"reason\" must cite the tracking issue as #<number>" end)
+           else "entry \($i): \"reason\" must be a non-empty string" end),
+          (if ($e.expires | isdate) then empty else "entry \($i): \"expires\" must be a real YYYY-MM-DD date" end)
+        end),
+    (.exceptions | map(select(type == "object")) | group_by([.id, .package])[]
+      | select(length > 1) | "duplicate entry for \(.[0].id) on \(.[0].package)")
+  end
+' "$EXCEPTIONS_FILE")"
+
+if [ -n "$problems" ]; then
+  while IFS= read -r line; do echo "  $line" >&2; done <<<"$problems"
+  fail "$EXCEPTIONS_FILE is malformed — see above"
+fi
+
+# Classify every entry. Only ACTIVE entries suppress findings.
+exceptions_status="$(jq -c --arg today "$today" --arg max "$latest_allowed" '
+  [.exceptions[] | . + {status: (
+      if .expires < $today then "EXPIRED"
+      elif .expires > $max then "TOO_FAR"
+      else "ACTIVE" end)}]
+' "$EXCEPTIONS_FILE")"
+active_json="$(jq -c '[.[] | select(.status == "ACTIVE") | {id, package}]' <<<"$exceptions_status")"
+
+echo "--- reviewed exceptions ($EXCEPTIONS_FILE, today $today UTC) ---"
+if [ "$(jq 'length' <<<"$exceptions_status")" -eq 0 ]; then
+  echo "  (none)"
+else
+  jq -r --arg file "$EXCEPTIONS_FILE" --arg max "$latest_allowed" --argjson days "$MAX_EXCEPTION_DAYS" '.[]
+    | if .status == "ACTIVE" then "  ACTIVE \(.id) on \(.package), expires \(.expires): \(.reason)"
+      elif .status == "EXPIRED" then "  EXPIRED \(.id) on \(.package) on \(.expires) — fix the advisory or re-review and renew the entry in \($file)"
+      else "  REFUSED \(.id) on \(.package): expires \(.expires), more than \($days) days out (latest allowed \($max))" end' \
+    <<<"$exceptions_status"
+fi
+exceptions_failed="$(jq '[.[] | select(.status != "ACTIVE")] | length' <<<"$exceptions_status")"
+
+# --- scan ----------------------------------------------------------------------
 
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
@@ -51,16 +130,36 @@ total_vulns="$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' "$repo
 
 echo "osv-scanner: scanned $LOCKFILE, ${total_vulns} advisories across ${pkg_count} affected package(s)"
 
+# Every finding as {package, version, id, severity, excepted}. `excepted` is an
+# exact match of BOTH the advisory id and the package name against an ACTIVE
+# entry — never a prefix, alias, or package-only match.
+findings="$(jq -c --argjson active "$active_json" '
+  [.results[]?.packages[]? as $p
+   | $p.vulnerabilities[]?
+   | {package: $p.package.name, version: $p.package.version, id: .id,
+      severity: (.database_specific.severity // "UNSPECIFIED")}
+   | . as $f
+   | . + {excepted: any($active[]; .id == $f.id and .package == $f.package)}]
+' "$report")"
+
 if [ "$total_vulns" -gt 0 ]; then
   echo "--- advisories by severity ---"
-  jq -r '[.results[]?.packages[]?.vulnerabilities[]? | .database_specific.severity // "UNSPECIFIED"]
-         | group_by(.) | map("  \(.[0]): \(length)") | .[]' "$report"
+  jq -r 'map(.severity) | group_by(.) | map("  \(.[0]): \(length)") | .[]' <<<"$findings"
   echo "--- detail ---"
-  jq -r '.results[]?.packages[]? as $p
-         | $p.vulnerabilities[]?
-         | "  [\(.database_specific.severity // "UNSPECIFIED")] \($p.package.name)@\($p.package.version) \(.id)"' \
-        "$report" | sort -u
+  jq -r '.[] | "  [\(.severity)] \(.package)@\(.version) \(.id)\(if .excepted then " (excepted)" else "" end)"' \
+    <<<"$findings" | sort -u
 fi
+
+# An active entry that matched nothing is noise that erodes trust in the list —
+# surface it (non-fatal) so it gets removed once the advisory is fixed.
+# (Findings go on stdin, not --argjson: a large report would overflow the
+# per-argument size limit.)
+jq -r --argjson active "$active_json" --arg file "$EXCEPTIONS_FILE" '
+  . as $findings
+  | $active[] | . as $e
+  | select(any($findings[]; .id == $e.id and .package == $e.package) | not)
+  | "WARN exception \(.id) on \(.package) matched no advisory in this scan — remove it from \($file) once its tracking issue confirms the fix"
+' <<<"$findings"
 
 # Severities at or above the threshold block. Ranks: CRITICAL=4 HIGH=3
 # MODERATE=2 LOW=1 UNSPECIFIED=0.
@@ -76,14 +175,26 @@ rank_of() {
 threshold_rank="$(rank_of "$THRESHOLD")"
 [ "$threshold_rank" -gt 0 ] || fail "unknown AUDIT_THRESHOLD '$THRESHOLD' (use CRITICAL, HIGH, MODERATE, or LOW)"
 
-blocking="$(jq --argjson min "$threshold_rank" \
-  '[.results[]?.packages[]?.vulnerabilities[]?
-    | (.database_specific.severity // "" | ascii_upcase) as $s
-    | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"MEDIUM":2,"LOW":1}[$s] // 0) as $r
-    | select($r >= $min)] | length' "$report")"
+read -r blocking suppressed < <(jq -r --argjson min "$threshold_rank" '
+  [.[]
+   | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"MEDIUM":2,"LOW":1}[.severity | ascii_upcase] // 0) as $r
+   | select($r >= $min)]
+  | "\(map(select(.excepted | not)) | length) \(map(select(.excepted)) | length)"
+' <<<"$findings") || true
+[ -n "$blocking" ] && [ -n "$suppressed" ] || fail "could not compute the blocking advisory count — treating as audit failure"
 
+if [ "$exceptions_failed" -gt 0 ] && [ "$blocking" -gt 0 ]; then
+  fail "${exceptions_failed} exception(s) in $EXCEPTIONS_FILE expired or out of policy, and found ${blocking} unexcepted advisory/advisories at or above ${THRESHOLD} — see above"
+fi
+if [ "$exceptions_failed" -gt 0 ]; then
+  fail "${exceptions_failed} exception(s) in $EXCEPTIONS_FILE expired or out of policy — see above"
+fi
 if [ "$blocking" -gt 0 ]; then
   fail "found ${blocking} advisory/advisories at or above ${THRESHOLD} — see detail above"
 fi
 
-echo "OK: no advisories at or above ${THRESHOLD} in $LOCKFILE"
+if [ "$suppressed" -gt 0 ]; then
+  echo "OK: no unexcepted advisories at or above ${THRESHOLD} in $LOCKFILE (${suppressed} suppressed by reviewed exceptions listed above)"
+else
+  echo "OK: no advisories at or above ${THRESHOLD} in $LOCKFILE"
+fi

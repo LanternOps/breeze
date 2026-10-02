@@ -208,9 +208,9 @@ func TestHandleRefreshInventoryDispatchesSendInventory(t *testing.T) {
 func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 	var gotDisplayIndex int
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			gotDisplayIndex = displayIndex
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -218,8 +218,9 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 		ID:   "desktop-stream-1",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId":    "ws-1",
-			"displayIndex": float64(2),
+			"sessionId":       "ws-1",
+			"displayIndex":    float64(2),
+			"revocationLease": testRevocationLeasePayload(),
 		},
 	})
 
@@ -235,16 +236,18 @@ func TestHandleDesktopStreamStartPassesDisplayIndex(t *testing.T) {
 // no consent/notify gate at all, unlike handleStartDesktop's WebRTC path,
 // which asks the end user (or applies consentUnavailableBehavior) before
 // ever starting the capture. These pin the same gate on this path, using the
-// no-session-broker branch (h.sessionBroker == nil -> requestConsent reports
-// "helper_absent", and consentUnavailableBehavior decides) since that needs
-// no session-broker/helper fixture to exercise both outcomes deterministically.
+// no-session-broker branch (h.sessionBroker == nil -> no helper can show the
+// prompt; with nobody signed in consentUnavailableBehavior decides, with
+// someone signed in the start is always refused) since that needs no
+// session-broker/helper fixture to exercise the outcomes deterministically.
 
 func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehaviorBlocks(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -252,7 +255,8 @@ func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehavior
 		ID:   "desktop-stream-consent-block",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-consent-block",
+			"sessionId":       "ws-consent-block",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode":                       "consent",
 				"consentUnavailableBehavior": "block",
@@ -273,17 +277,55 @@ func TestHandleDesktopStreamStartDeniesWhenConsentRequiredAndUnavailableBehavior
 	if data["event"] != "consent_denied" {
 		t.Fatalf("event = %v, want consent_denied", data["event"])
 	}
-	if data["reason"] != "helper_absent" {
-		t.Fatalf("reason = %v, want helper_absent (no session broker => no consent-capable helper)", data["reason"])
+	if data["reason"] != "no_user_session" {
+		t.Fatalf("reason = %v, want no_user_session (no helper, nobody signed in)", data["reason"])
+	}
+}
+
+// With someone signed in and no helper able to show them the prompt, the
+// stream never starts — whatever the policy says.
+func TestHandleDesktopStreamStartRefusesSignedInUserWhoCannotBeAsked(t *testing.T) {
+	withConsentSeams(t, occupancyOccupied, true)
+	started := false
+	h := &Heartbeat{
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
+			started = true
+			return 1920, 1080, nil, nil
+		},
+	}
+
+	result := handleDesktopStreamStart(h, Command{
+		ID:   "desktop-stream-consent-occupied",
+		Type: tools.CmdDesktopStreamStart,
+		Payload: map[string]any{
+			"sessionId":       "ws-consent-occupied",
+			"revocationLease": testRevocationLeasePayload(),
+			"prompt": map[string]any{
+				"mode":                       "consent",
+				"consentUnavailableBehavior": "proceed",
+			},
+		},
+	})
+
+	if started {
+		t.Fatalf("capture must not start when a signed-in user cannot be asked")
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(result.Stdout), &data); err != nil {
+		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
+	}
+	if data["event"] != "consent_denied" || data["reason"] != "helper_unreachable" {
+		t.Fatalf("result = %v, want consent_denied/helper_unreachable", data)
 	}
 }
 
 func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t *testing.T) {
+	withConsentSeams(t, occupancyUnoccupied, true)
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -291,7 +333,8 @@ func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t 
 		ID:   "desktop-stream-consent-proceed",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-consent-proceed",
+			"sessionId":       "ws-consent-proceed",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode":                       "consent",
 				"consentUnavailableBehavior": "proceed",
@@ -309,10 +352,10 @@ func TestHandleDesktopStreamStartProceedsWhenConsentUnavailableBehaviorAllows(t 
 	if err := json.Unmarshal([]byte(result.Stdout), &data); err != nil {
 		t.Fatalf("result.Stdout not valid JSON: %v (stdout=%q)", err, result.Stdout)
 	}
-	// consentReason must be reported as "helper_absent", never "user" — the
-	// API audits "user" specifically as the end user granting the session.
-	if data["consentReason"] != "helper_absent" {
-		t.Fatalf("consentReason = %v, want helper_absent", data["consentReason"])
+	// consentReason must be reported as "no_user_session", never "user" —
+	// the API audits "user" specifically as the end user granting the session.
+	if data["consentReason"] != "no_user_session" || data["consentOccupancy"] != "unoccupied" {
+		t.Fatalf("consentReason = %v / occupancy %v, want no_user_session / unoccupied", data["consentReason"], data["consentOccupancy"])
 	}
 }
 
@@ -321,16 +364,16 @@ func TestHandleDesktopStreamStartStartsImmediatelyWhenNoPromptBlockSent(t *testi
 	// exactly as before this change (regression control).
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
 	result := handleDesktopStreamStart(h, Command{
 		ID:      "desktop-stream-no-prompt",
 		Type:    tools.CmdDesktopStreamStart,
-		Payload: map[string]any{"sessionId": "ws-no-prompt"},
+		Payload: map[string]any{"sessionId": "ws-no-prompt", "revocationLease": testRevocationLeasePayload()},
 	})
 
 	if !started {
@@ -346,9 +389,9 @@ func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
 	// not block the start.
 	started := false
 	h := &Heartbeat{
-		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, sendFrame desktop.SendFrameFunc) (int, int, error) {
+		wsDesktopStart: func(sessionID string, displayIndex int, config desktop.StreamConfig, lease *desktop.RevocationLease, sendFrame desktop.SendFrameFunc) (int, int, *desktop.WsStreamSession, error) {
 			started = true
-			return 1920, 1080, nil
+			return 1920, 1080, nil, nil
 		},
 	}
 
@@ -356,7 +399,8 @@ func TestHandleDesktopStreamStartStartsImmediatelyForNotifyMode(t *testing.T) {
 		ID:   "desktop-stream-notify",
 		Type: tools.CmdDesktopStreamStart,
 		Payload: map[string]any{
-			"sessionId": "ws-notify",
+			"sessionId":       "ws-notify",
+			"revocationLease": testRevocationLeasePayload(),
 			"prompt": map[string]any{
 				"mode": "notify",
 			},

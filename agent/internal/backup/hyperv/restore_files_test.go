@@ -63,6 +63,7 @@ func TestVMRestoreRelativePath(t *testing.T) {
 		original string
 		want     string
 		wantErr  bool
+		wantCode string // substring the error must carry
 	}{
 		{name: "vss shadow source with original path", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\brzlab\markers\m1.txt`, original: `C:\brzlab\markers\m1.txt`, want: "brzlab/markers/m1.txt"},
 		{name: "vss shadow source, two-digit shadow id", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy12\Users\labadmin\Documents\q3.xlsx`, original: `C:\Users\labadmin\Documents\q3.xlsx`, want: "Users/labadmin/Documents/q3.xlsx"},
@@ -89,6 +90,20 @@ func TestVMRestoreRelativePath(t *testing.T) {
 		{name: "unc without share", source: `\\fileserver`, wantErr: true},
 		{name: "empty", source: "", wantErr: true},
 		{name: "nul byte", source: "C:\\a\x00b.txt", wantErr: true},
+		{name: "trailing dot name", source: `C:\a\name.`, wantErr: true},
+		{name: "trailing space directory", source: `C:\a \b.txt`, wantErr: true},
+
+		{name: "device name file", source: `C:\a\CON`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "device name with extension", source: `C:\a\nul.txt`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "device name directory", source: `C:\a\com1\b.txt`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "superscript printer port", source: "C:\\a\\LPT\u00b9.log", wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "console input device", source: `C:\CONIN$`, wantErr: true, wantCode: "invalid_windows_name"},
+		{name: "short name directory", source: `C:\PROGRA~1\app\x.dll`, want: "PROGRA~1/app/x.dll"},
+		{name: "short name file", source: `C:\data\REPORT~2.TXT`, want: "data/REPORT~2.TXT"},
+		{name: "short name in original path", source: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\ok.txt`, original: `C:\DOCUME~1\ok.txt`, want: "DOCUME~1/ok.txt"},
+		{name: "name starting with a device name", source: `C:\a\console.log`, want: "a/console.log"},
+		{name: "tilde not followed by a digit", source: `C:\a\~$budget.xlsx`, want: "a/~$budget.xlsx"},
+		{name: "four-digit port name", source: `C:\a\COM10.txt`, want: "a/COM10.txt"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +111,9 @@ func TestVMRestoreRelativePath(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %q", got)
+				}
+				if tt.wantCode != "" && !strings.Contains(err.Error(), tt.wantCode) {
+					t.Fatalf("error %q does not carry %q", err, tt.wantCode)
 				}
 				return
 			}
@@ -125,7 +143,7 @@ func TestRestoreManifestFiles_PlacesVSSSnapshotUnderRoot(t *testing.T) {
 		files = append(files, vssEntry(1, orig, key, data))
 	}
 
-	tally := restoreManifestFiles(context.Background(), files, store, root)
+	tally := restoreManifestFiles(context.Background(), files, store, root, t.TempDir(), nil)
 
 	if err := tally.err(); err != nil {
 		t.Fatalf("unexpected failure: %v (warnings %v)", err, tally.Warnings)
@@ -212,7 +230,7 @@ func TestRestoreManifestFiles_OutcomeRules(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
 			store := &fakeObjectStore{objects: map[string][]byte{"k1": good, "k2": good}, errs: tt.errs}
-			tally := restoreManifestFiles(context.Background(), tt.files, store, root)
+			tally := restoreManifestFiles(context.Background(), tt.files, store, root, t.TempDir(), nil)
 			if tally.Restored != tt.wantRestored || tally.Failed != tt.wantFailed {
 				t.Fatalf("tally = %+v, want restored %d failed %d", tally, tt.wantRestored, tt.wantFailed)
 			}
@@ -238,7 +256,7 @@ func TestRestoreManifestFiles_NeverWritesOutsideRoot(t *testing.T) {
 		{SourcePath: "../outside2.txt", BackupPath: "k", Size: 1},
 		{SourcePath: `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\..\outside3.txt`, BackupPath: "k", Size: 1},
 	}
-	tally := restoreManifestFiles(context.Background(), files, store, root)
+	tally := restoreManifestFiles(context.Background(), files, store, root, t.TempDir(), nil)
 	if tally.Failed != 3 || tally.err() == nil {
 		t.Fatalf("tally = %+v, want all 3 refused and a failed outcome", tally)
 	}
@@ -256,7 +274,7 @@ func TestRestoreManifestFiles_BoundsReportedFiles(t *testing.T) {
 	for i := 0; i < maxReportedFiles+50; i++ {
 		files = append(files, vmRestoreManifFile{SourcePath: `C:\..\x`, BackupPath: "k", Size: 1})
 	}
-	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir())
+	tally := restoreManifestFiles(context.Background(), files, &fakeObjectStore{}, t.TempDir(), t.TempDir(), nil)
 	if tally.Failed != maxReportedFiles+50 {
 		t.Fatalf("failed = %d", tally.Failed)
 	}
@@ -279,7 +297,7 @@ func TestRunBackgroundSync_CompletesBeforeReturning(t *testing.T) {
 	result := &InstantBootResult{Status: "completed"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runBackgroundSync(ctx, result, syncDir, files, store)
+	runBackgroundSync(ctx, result, syncDir, files, store, nil)
 	cancel() // what execInstantBoot's deferred cancel does on return
 
 	if result.SyncProgress == nil || result.SyncProgress.Synced != 3 || result.SyncProgress.Failed != 0 || result.SyncProgress.Total != 3 {
@@ -318,7 +336,7 @@ func TestRunBackgroundSync_FailureDegradesAndCleansUp(t *testing.T) {
 			files := []vmRestoreManifFile{vssEntry(1, `C:\d\1.bin`, "k1", data), vssEntry(1, `C:\d\2.bin`, "k2", data)}
 			result := &InstantBootResult{Status: "completed"}
 
-			runBackgroundSync(tt.ctx(), result, syncDir, files, store)
+			runBackgroundSync(tt.ctx(), result, syncDir, files, store, nil)
 
 			if result.SyncProgress == nil || result.SyncProgress.Synced != tt.wantSynced || result.SyncProgress.Failed != tt.wantFailed {
 				t.Fatalf("sync progress = %+v, want synced %d failed %d", result.SyncProgress, tt.wantSynced, tt.wantFailed)
@@ -335,7 +353,7 @@ func TestRunBackgroundSync_FailureDegradesAndCleansUp(t *testing.T) {
 
 func TestRunBackgroundSync_NothingToSync(t *testing.T) {
 	result := &InstantBootResult{Status: "completed"}
-	runBackgroundSync(context.Background(), result, filepath.Join(t.TempDir(), "s"), nil, &fakeObjectStore{})
+	runBackgroundSync(context.Background(), result, filepath.Join(t.TempDir(), "s"), nil, &fakeObjectStore{}, nil)
 	if result.Status != "completed" || result.BackgroundSyncActive {
 		t.Fatalf("result = %+v", result)
 	}
@@ -385,7 +403,7 @@ func TestRestoreManifestFiles_PlansOnlyPlaceableFiles(t *testing.T) {
 		vssEntry(1, `C:\a\3.txt`, "k3", data),
 		{SourcePath: `C:\a\nokey.txt`},
 	}
-	restoreManifestFiles(context.Background(), files, store, t.TempDir())
+	restoreManifestFiles(context.Background(), files, store, t.TempDir(), t.TempDir(), nil)
 	if len(store.plans) != 1 || strings.Join(store.plans[0], ",") != "k1,k3" {
 		t.Fatalf("plans = %v, want one plan [k1 k3]", store.plans)
 	}

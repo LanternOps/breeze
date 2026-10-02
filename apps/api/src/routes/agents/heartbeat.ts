@@ -19,9 +19,14 @@ import {
 } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
+import { ERROR_CODES } from '@breeze/shared';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { recordBackupCapabilityRegressed, type BackupHelperCapability } from '../../services/backupMetrics';
 import {
+  BACKUP_HELPER_PROTOCOL_MIN_VERSION,
+  backupHelperProtocolColumnWrite,
+  backupHelperProtocolForDelivery,
+  backupHelperVersionPredates,
   normalizeBackupIntegrityProtocolVersion,
   normalizeBackupWriteProtocolVersion,
 } from '../../services/backupHelperProtocols';
@@ -660,7 +665,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     });
     return c.json({
       error: 'Agent credential role mismatch',
-      code: 're_enrollment_required',
+      code: ERROR_CODES.RE_ENROLLMENT_REQUIRED,
       expected: agent.role,
       declared: data.role,
     }, 401);
@@ -978,14 +983,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     consentPromptProtocolVersion: normalizeConsentPromptProtocolVersion(
       data.securityCapabilities?.consentPromptProtocolVersion,
     ),
-    // Backup helper brokered-read protocol, same non-sticky contract: a helper
-    // downgrade (or an agent that stops reporting it) reads as 0 on the next
-    // beat, so restore commands stop receiving storage sessions.
-    backupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
-    // Snapshot integrity and storage write protocols of the same installed
-    // helper: same non-sticky contract, only versions this server implements.
-    backupIntegrityProtocolVersion: normalizeBackupIntegrityProtocolVersion(data.backupIntegrityProtocolVersion),
-    backupWriteProtocolVersion: normalizeBackupWriteProtocolVersion(data.backupWriteProtocolVersion),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -1002,6 +999,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     uninstallIntentAt: null,
     updatedAt: new Date()
   };
+  // Backup helper protocols (brokered read, snapshot integrity, brokered
+  // write), same non-sticky contract when the agent reports a value: a helper
+  // downgrade (or an agent that stops reporting them) reads as 0 on the next
+  // beat, so restore commands stop receiving storage sessions. An explicit
+  // null (the agent's probe of its helper got no answer) keeps a positive
+  // last-known value unless this beat's helper version predates that
+  // protocol, and otherwise leaves the device unreported; it is never written
+  // as 0 (services/backupHelperProtocols.ts).
+  for (const [field, normalize] of [
+    ['backupReadProtocolVersion', normalizeBackupReadProtocolVersion],
+    ['backupIntegrityProtocolVersion', normalizeBackupIntegrityProtocolVersion],
+    ['backupWriteProtocolVersion', normalizeBackupWriteProtocolVersion],
+  ] as const) {
+    const value = backupHelperProtocolColumnWrite(data[field], device[field], normalize, {
+      helperPredatesProtocol: backupHelperVersionPredates(data.backupVersion, BACKUP_HELPER_PROTOCOL_MIN_VERSION[field]),
+    });
+    if (value !== undefined) deviceUpdates[field] = value;
+  }
 
   // #6449 — persist the edition-gate withhold on the device row so stranded
   // devices are visible in the UI (the log/Sentry above are once per process
@@ -1398,6 +1413,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // rewritten by this same guarded write, so a steady report afterwards is
     // not a drop and is not audited again.
     for (const [capability, field] of BACKUP_HELPER_CAPABILITY_FIELDS) {
+      // An unknown report (explicit null) is never a drop: the column was
+      // kept, or a stored 0 moved to "not reported yet", which is recorded
+      // as a state change (backups for the device now wait for a report).
+      if (data[field] === null) {
+        const stored = device[field] ?? null;
+        if (field in deviceUpdates && deviceUpdates[field] === null && stored !== null) {
+          changes.push({ field, before: stored, after: null });
+        }
+        continue;
+      }
       const before = Number(device[field] ?? 0);
       const after = Number(deviceUpdates[field] ?? 0);
       if (!(after < before)) continue;
@@ -1981,9 +2006,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     ),
     // Same reasoning for the backup helper's protocols: this beat's report
     // is authoritative over the (guarded) device write.
-    reportedBackupReadProtocolVersion: normalizeBackupReadProtocolVersion(data.backupReadProtocolVersion),
-    reportedBackupIntegrityProtocolVersion: normalizeBackupIntegrityProtocolVersion(data.backupIntegrityProtocolVersion),
-    reportedBackupWriteProtocolVersion: normalizeBackupWriteProtocolVersion(data.backupWriteProtocolVersion),
+    // An unknown report (explicit null) leaves the decision to the stored
+    // column this beat kept or left unreported.
+    reportedBackupReadProtocolVersion: backupHelperProtocolForDelivery(data.backupReadProtocolVersion, normalizeBackupReadProtocolVersion),
+    reportedBackupIntegrityProtocolVersion: backupHelperProtocolForDelivery(data.backupIntegrityProtocolVersion, normalizeBackupIntegrityProtocolVersion),
+    reportedBackupWriteProtocolVersion: backupHelperProtocolForDelivery(data.backupWriteProtocolVersion, normalizeBackupWriteProtocolVersion),
   });
 
   let networkContextReceipt;

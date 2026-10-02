@@ -8,17 +8,25 @@ export interface ConsentRequest {
   orgName: string | null;
   timeoutMs: number;
   onTimeout: "proceed" | "block";
+  /** Present for a v2 prompt (see ConsentWindow.tsx); null/absent for v1. */
+  nonce?: string | null;
 }
 
 export function ConsentDialog({
-  req, onDecision,
-}: { req: ConsentRequest; onDecision: (allow: boolean, reason: "user" | "timeout") => void }) {
+  req, onDecision, countdownRunning = true,
+}: {
+  req: ConsentRequest;
+  onDecision: (allow: boolean, reason: "user" | "timeout") => void;
+  /** False until the prompt is confirmed on screen (v2); the countdown starts then. */
+  countdownRunning?: boolean;
+}) {
   const [remainingMs, setRemainingMs] = useState(req.timeoutMs);
   const denyRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => denyRef.current?.focus(), []);
 
   useEffect(() => {
+    if (!countdownRunning) return;
     const started = performance.now();
     const id = window.setInterval(() => {
       const left = req.timeoutMs - (performance.now() - started);
@@ -26,7 +34,7 @@ export function ConsentDialog({
       else setRemainingMs(left);
     }, 200);
     return () => window.clearInterval(id);
-  }, [req, onDecision]);
+  }, [req, onDecision, countdownRunning]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onDecision(false, "user"); };

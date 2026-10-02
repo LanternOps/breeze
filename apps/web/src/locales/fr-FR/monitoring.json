@@ -376,6 +376,26 @@
       "convert": "Impossible de convertir la règle"
     }
   },
+  "builtInRules": {
+    "title": "Alertes intégrées",
+    "description": "Alertes que Breeze déclenche lui-même. Désactivez-en une pour arrêter cette alerte pour son organisation ; les alertes déjà ouvertes le restent jusqu'à ce que vous les résolviez.",
+    "columns": {
+      "name": "Nom",
+      "organization": "Organisation",
+      "active": "Activée"
+    },
+    "kinds": {
+      "policyViolation": "Violations de stratégie : {{subject}}",
+      "configCompliance": "Conformité de configuration : {{subject}}"
+    },
+    "toggle": "Activer ou désactiver {{name}}",
+    "switchedOn": "{{name}} activée",
+    "switchedOff": "{{name}} désactivée",
+    "errors": {
+      "fetch": "Impossible de charger les alertes intégrées",
+      "toggle": "Impossible de mettre à jour l'alerte intégrée"
+    }
+  },
   "devices": {
     "title": "Appareils",
     "columns": {

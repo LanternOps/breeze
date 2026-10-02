@@ -220,41 +220,44 @@ func TestTokenRotationPromotesImmediatelyAgainstLegacyServer(t *testing.T) {
 	}
 }
 
-// The Helper runs as the logged-in user, cannot read the root-only secrets.yaml,
-// and reads helper_auth_token from agent.yaml. A promotion that only rewrote
-// secrets.yaml would leave it on the superseded token.
-func TestTokenRotationUpdatesHelperTokenInAgentYAML(t *testing.T) {
+// A rotation must reach the Helper without ever putting the helper token in
+// agent.yaml, which every local user can read. The rotated token lands in
+// secrets.yaml (and, on Unix, the group-scoped helper_token.yaml); Windows
+// pushes it to the console-session Assist over IPC (sendHelperTokenUpdate).
+func TestTokenRotationKeepsHelperTokenOutOfAgentYAML(t *testing.T) {
 	srv := newRotationServer(t)
 	h, cfgPath := newRotationTestHeartbeat(t, srv.URL)
 
 	h.handleTokenRotation()
 
-	// On Windows the Helper still reads agent.yaml directly (no narrower
-	// delivery exists there yet — see agent/internal/config/helpertoken_windows.go);
-	// on Unix the rotated token instead lands in the sibling, group-scoped
-	// helper_token.yaml (agent/internal/config/helpertoken_unix.go).
-	readPath := cfgPath
-	if runtime.GOOS != "windows" {
-		readPath = filepath.Join(filepath.Dir(cfgPath), "helper_token.yaml")
-	}
-	helperYAML, err := os.ReadFile(readPath)
+	agentYAML, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("read %s: %v", readPath, err)
+		t.Fatalf("read agent.yaml: %v", err)
 	}
-	if !strings.Contains(string(helperYAML), "brz_staged_helper") {
-		t.Errorf("%s does not carry the rotated helper token — the Breeze Helper "+
-			"reads it from here and would 401 after the grace window:\n%s", readPath, helperYAML)
-	}
-	if strings.Contains(string(helperYAML), "brz_current_helper") {
-		t.Errorf("%s still carries the superseded helper token:\n%s", readPath, helperYAML)
-	}
-	if runtime.GOOS != "windows" {
-		agentYAML, err := os.ReadFile(cfgPath)
-		if err != nil {
-			t.Fatalf("read agent.yaml: %v", err)
+	for _, forbidden := range []string{"helper_auth_token", "brz_staged_helper", "brz_current_helper"} {
+		if strings.Contains(string(agentYAML), forbidden) {
+			t.Errorf("agent.yaml carries %q after rotation:\n%s", forbidden, agentYAML)
 		}
-		if strings.Contains(string(agentYAML), "helper_auth_token") {
-			t.Errorf("agent.yaml must not carry the helper token on this platform:\n%s", agentYAML)
+	}
+
+	persisted, err := config.ReadPersistedCredentials()
+	if err != nil {
+		t.Fatalf("ReadPersistedCredentials: %v", err)
+	}
+	if persisted.HelperAuthToken != "brz_staged_helper" {
+		t.Errorf("secrets.yaml helper token = %q, want brz_staged_helper", persisted.HelperAuthToken)
+	}
+	if got := h.currentHelperToken(); got != "brz_staged_helper" {
+		t.Errorf("token retained for IPC pushes = %q, want brz_staged_helper", got)
+	}
+
+	if runtime.GOOS != "windows" {
+		helperYAML, err := os.ReadFile(filepath.Join(filepath.Dir(cfgPath), "helper_token.yaml"))
+		if err != nil {
+			t.Fatalf("read helper_token.yaml: %v", err)
+		}
+		if !strings.Contains(string(helperYAML), "brz_staged_helper") {
+			t.Errorf("helper_token.yaml does not carry the rotated helper token:\n%s", helperYAML)
 		}
 	}
 }

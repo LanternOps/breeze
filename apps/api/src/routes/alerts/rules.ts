@@ -6,9 +6,12 @@ import { db } from '../../db';
 import { alertRules, alertTemplates, devices, deviceGroups, organizations, sites } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope, siteAccessCheck } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { notSystemManagedRule } from '../../services/monitors/systemManagedRules';
+import { notSystemManagedRule, systemManagedRule } from '../../services/monitors/systemManagedRules';
+import { writeRouteAudit } from '../../services/auditEvents';
+import { LEGACY_ALERTING_GONE } from '../legacyAlertingGone';
 import {
   listAlertRulesSchema,
+  setBuiltInRuleActiveSchema,
 } from './schemas';
 import {
   getPagination,
@@ -170,6 +173,9 @@ rulesRoutes.get(
     if (query.needsConversion === 'true') {
       conditions.push(isNull(alertRules.managedByMonitorId), notSystemManagedRule());
     }
+    if (query.systemManaged === 'true') {
+      conditions.push(isNull(alertRules.managedByMonitorId), systemManagedRule());
+    }
 
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -276,6 +282,79 @@ rulesRoutes.put(
   requireAlertWrite,
   requireMfa(),
   legacyAlertingGone
+);
+
+// PATCH /alerts/rules/:id/active - Switch a built-in system anchor rule on/off (#7626)
+//
+// The consolidation retired every legacy rule write (410 below), but built-in
+// anchor rules (patch job failures, reboot pending, policy violations —
+// services/monitors/systemManagedRules.ts) are never converted to monitors and
+// Breeze raises their alerts itself, so this on/off switch is the only control
+// an operator has over them. `createAlert` honours `is_active` for every
+// producer, and the producers' ensure-rule lookups return an inactive row
+// rather than re-creating it, so "off" stays off.
+rulesRoutes.patch(
+  '/rules/:id/active',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  requireMfa(),
+  zValidator('json', setBuiltInRuleActiveSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const ruleId = c.req.param('id')!;
+    const { isActive } = c.req.valid('json');
+
+    const rule = await getAlertRuleWithOrgCheck(ruleId, auth);
+    if (!rule) {
+      return c.json({ error: 'Alert rule not found' }, 404);
+    }
+    // Built-in anchor rules are always org-owned. A partner-wide rule is an
+    // ordinary legacy rule, and its writes stay retired.
+    const orgId = rule.orgId;
+    if (orgId === null) {
+      return c.json(LEGACY_ALERTING_GONE, 410);
+    }
+    // Same visibility as GET /alerts/rules/:id: a site-restricted caller does
+    // not see (and so cannot switch) an org-wide rule.
+    const targets = persistedRuleTargets(rule);
+    if (!await canAccessRuleTargets(auth, orgId, targets.targetType, targets.targetIds, false)) {
+      return c.json({ error: 'Alert rule not found' }, 404);
+    }
+
+    const [template] = await db
+      .select()
+      .from(alertTemplates)
+      .where(eq(alertTemplates.id, rule.templateId))
+      .limit(1);
+    if (template?.isBuiltIn !== true || rule.managedByMonitorId !== null || rule.retiredAt !== null) {
+      return c.json(LEGACY_ALERTING_GONE, 410);
+    }
+
+    // `org_id = <rule org>` can never match a partner-wide (org_id NULL) row.
+    const [updated] = await db
+      .update(alertRules)
+      .set({ isActive })
+      .where(and(eq(alertRules.id, rule.id), eq(alertRules.orgId, orgId)))
+      .returning();
+    if (!updated) {
+      return c.json({ error: 'Alert rule not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'alert_rule.update',
+      resourceType: 'alert_rule',
+      resourceId: updated.id,
+      resourceName: updated.name,
+      details: {
+        isActive,
+        previousIsActive: rule.isActive,
+        systemManaged: true,
+      },
+    });
+
+    return c.json(formatAlertRuleResponse(updated, template));
+  }
 );
 
 rulesRoutes.delete(

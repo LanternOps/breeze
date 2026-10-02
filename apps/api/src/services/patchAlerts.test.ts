@@ -27,6 +27,7 @@ vi.mock('../db/schema', () => ({
   },
   alertRules: {
     retiredAt: 'retired_at',
+    isActive: 'is_active',
     id: 'id',
     orgId: 'org_id',
     name: 'name',
@@ -168,6 +169,26 @@ describe.each([ensurePatchJobFailureRule, ensureRebootPendingRule])('patch rule 
     expect(lookup?.params).toContain(ORG_ID);
     expect(lookup?.params).toContain('retired_at');
     expect(insertCalls.filter((call) => call.table === alertRules)).toHaveLength(retired ? 1 : 0);
+  });
+
+  // #7626: an operator switched the built-in rule off. The lookup must find
+  // that inactive row and hand it back (createAlert then raises nothing),
+  // never filter it out and provision a fresh active rule in its place.
+  it('reuses a switched-off rule instead of re-creating it active', async () => {
+    let lookup: ReturnType<PgDialect['sqlToQuery']> | undefined;
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn((condition: SQL) => {
+          lookup = new PgDialect().sqlToQuery(condition);
+          return { limit: vi.fn().mockResolvedValue([{ id: 'inactive-rule', isActive: false, retiredAt: null }]) };
+        }),
+      }),
+    } as any);
+    primeInserts(new Map([[alertRules, { id: 'fresh-rule' }]]));
+
+    expect(await ensureRule(ORG_ID)).toBe('inactive-rule');
+    expect(lookup?.params).not.toContain('is_active');
+    expect(insertCalls).toHaveLength(0);
   });
 });
 

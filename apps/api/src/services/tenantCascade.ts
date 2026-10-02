@@ -291,6 +291,17 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_invocations (AI model registry W02, #7600): shape 1, APPEND-ONLY
+  // (REVOKE UPDATE/DELETE from breeze_app + ai_invocations_append_only), so it
+  // is ALSO in AUDIT_ADMIN_REQUIRED_TABLES. Leaf: FK out to organizations only,
+  // no FKs in (provenance ids are snapshots).
+  'ai_invocations',
+  // ai_model_assignments (AI model registry W02, #7600): org_id XOR partner_id.
+  // Only ORG override rows are cascade participants; partner-wide rows have
+  // org_id NULL and go with the partner. FKs out only: organizations
+  // (cascade + a deferrable composite), partner_ai_models (partner axis, not in
+  // this list), partners. Nothing references it.
+  'ai_model_assignments',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
   // NOT NULL org_id, so all three are required here.
   //   - ai_operator_operations references action_intents and ai_agent_runs,
@@ -1220,6 +1231,10 @@ const AUDIT_ADMIN_REQUIRED_TABLES: ReadonlySet<string> = new Set<string>([
   // (2026-10-26-160000), so erasure has to run as breeze_audit_admin with
   // breeze.allow_audit_retention=1.
   'ai_operator_task_events',
+  // Append-only AI invocation ledger: REVOKE UPDATE/DELETE from breeze_app plus
+  // ai_invocations_append_only() (2026-11-14-100300, #7600 W02), so erasure has
+  // to run as breeze_audit_admin with breeze.allow_audit_retention=1.
+  'ai_invocations',
 ]);
 
 interface FkEdge {

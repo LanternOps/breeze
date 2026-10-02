@@ -376,6 +376,26 @@
       "convert": "Kural dönüştürülemedi"
     }
   },
+  "builtInRules": {
+    "title": "Yerleşik uyarılar",
+    "description": "Breeze'in kendisinin oluşturduğu uyarılar. Bir uyarıyı kendi kuruluşu için durdurmak üzere kapatın; zaten açık olan uyarılar siz çözene kadar açık kalır.",
+    "columns": {
+      "name": "Ad",
+      "organization": "Kuruluş",
+      "active": "Etkin"
+    },
+    "kinds": {
+      "policyViolation": "İlke ihlalleri: {{subject}}",
+      "configCompliance": "Yapılandırma uyumluluğu: {{subject}}"
+    },
+    "toggle": "{{name}} uyarısını aç veya kapat",
+    "switchedOn": "{{name}} açıldı",
+    "switchedOff": "{{name}} kapatıldı",
+    "errors": {
+      "fetch": "Yerleşik uyarılar yüklenemedi",
+      "toggle": "Yerleşik uyarı güncellenemedi"
+    }
+  },
   "devices": {
     "title": "Cihazlar",
     "columns": {

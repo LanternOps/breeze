@@ -6,10 +6,13 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 )
+
+// logindSessionProperties is the property list asked of `loginctl
+// show-session`; applyLogindSessionProperties (logind_props.go) parses it.
+const logindSessionProperties = "--property=Type,Remote,Display,Seat,State,Class,LockedHint,IdleHint,IdleSinceHint"
 
 type linuxDetector struct{}
 
@@ -20,87 +23,51 @@ func NewSessionDetector() SessionDetector {
 }
 
 func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
+	sessions, _, err := d.listSessionsCounted()
+	return sessions, err
+}
+
+// listSessionsCounted also reports how many rows it skipped (unparseable
+// list rows, unsafe field values); see ListSessionsComplete.
+func (d *linuxDetector) listSessionsCounted() ([]DetectedSession, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
 	if err != nil {
-		return nil, fmt.Errorf("loginctl list-sessions: %w", err)
+		return nil, 0, fmt.Errorf("loginctl list-sessions: %w", err)
 	}
 
 	var sessions []DetectedSession
+	skipped := 0
 	scanner := newDetectorScanner(string(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		sess, ok := parseLoginctlListLine(line)
+		if !ok {
+			skipped++
 			continue
 		}
+		sessionID := sess.Session
 
-		sessionID := fields[0]
-		uid, err := strconv.ParseUint(fields[1], 10, 32)
-		if err != nil {
-			continue // skip sessions with unparseable UID
-		}
-		username := fields[2]
-
-		// Get session details
-		sess := DetectedSession{
-			UID:      uint32(uid),
-			Username: username,
-			Session:  sessionID,
-			State:    "active",
-		}
-
-		// Query session properties
+		// Query session properties. A failed query leaves State/Display/Seat
+		// at their defaults; flag it so callers never read those defaults as
+		// "nobody is at a desktop" (the consent gate's occupancy check).
 		propCtx, propCancel := context.WithTimeout(context.Background(), detectorCommandTimeout)
 		propOut, propErr := exec.CommandContext(propCtx, "loginctl", "show-session", sessionID,
-			"--property=Type,Remote,Display,Seat,State,IdleHint,IdleSinceHint").Output()
+			logindSessionProperties).Output()
 		propCancel()
-		if propErr == nil {
-			var idleHint bool
-			var idleSinceRaw string
-			propScanner := newDetectorScanner(string(propOut))
-			for propScanner.Scan() {
-				parts := strings.SplitN(strings.TrimSpace(propScanner.Text()), "=", 2)
-				if len(parts) != 2 {
-					continue
-				}
-				switch parts[0] {
-				case "Type":
-					if parts[1] == "x11" || parts[1] == "wayland" || parts[1] == "mir" {
-						sess.Display = parts[1]
-					}
-				case "Remote":
-					sess.IsRemote = parts[1] == "yes"
-				case "Seat":
-					sess.Seat = parts[1]
-				case "State":
-					sess.State = parts[1]
-				case "IdleHint":
-					idleHint = parts[1] == "yes"
-				case "IdleSinceHint":
-					idleSinceRaw = parts[1]
-				}
-			}
-			if err := propScanner.Err(); err != nil {
-				return nil, fmt.Errorf("parse loginctl show-session output for %s: %w", sessionID, err)
-			}
-			// Idle is only reported when the DE actively asserts IdleHint=yes.
-			// IdleHint=no must stay unknown, not "active": most DEs and all
-			// headless sessions never call SetIdleHint, so "no" is
-			// indistinguishable from "nobody reports it".
-			if idleHint {
-				if since, ok := parseIdleSinceHint(idleSinceRaw); ok {
-					sess.IdleFor, sess.IdleKnown = idleSince(time.Now(), since)
-				}
-			}
+		if propErr != nil {
+			sess.PropertiesUnknown = true
+		} else if err := applyLogindSessionProperties(&sess, string(propOut), time.Now()); err != nil {
+			return nil, skipped, err
 		}
 
 		sess, err = sanitizeDetectedSession(sess)
 		if err != nil {
+			skipped++
 			continue
 		}
 
@@ -110,10 +77,10 @@ func (d *linuxDetector) ListSessions() ([]DetectedSession, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("parse loginctl list-sessions output: %w", err)
+		return nil, skipped, fmt.Errorf("parse loginctl list-sessions output: %w", err)
 	}
 
-	return sessions, nil
+	return sessions, skipped, nil
 }
 
 func (d *linuxDetector) WatchSessions(ctx context.Context) <-chan SessionEvent {

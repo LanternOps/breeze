@@ -148,6 +148,8 @@ describe('admin LLM provider catalog routes', () => {
     runFidelityCheckMock.mockResolvedValue({
       passed: true,
       steps: [{ name: 'messages', ok: true }],
+      probes: [{ name: 'direct_adaptive_effort', ok: true }],
+      verifiedCapabilities: { adaptiveEffort: true },
       harnessVersion: '1',
     });
   });
@@ -288,6 +290,8 @@ describe('admin LLM provider catalog routes', () => {
     expect(body).toEqual({
       passed: true,
       steps: [{ name: 'messages', ok: true }],
+      probes: [{ name: 'direct_adaptive_effort', ok: true }],
+      verifiedCapabilities: { adaptiveEffort: true },
       harnessVersion: '1',
     });
     expect(JSON.stringify(body)).not.toContain(TEST_API_KEY);
@@ -303,10 +307,18 @@ describe('admin LLM provider catalog routes', () => {
       passed: true,
       detail: {
         steps: [{ name: 'messages', ok: true }],
+        probes: [{ name: 'direct_adaptive_effort', ok: true }],
+        verifiedCapabilities: { adaptiveEffort: true },
         harnessVersion: '1',
       },
       verifiedBy: ADMIN_ID,
     });
+    expect(serviceMocks.recordVerification).toHaveBeenCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({
+        probes: [{ name: 'direct_adaptive_effort', ok: true }],
+        verifiedCapabilities: { adaptiveEffort: true },
+      }),
+    }));
   });
 
   it('never leaks the transient API key when the harness throws', async () => {

@@ -60,6 +60,22 @@ A patch whose source published no severity is shown as a muted **Unrated** badge
 | **`skipped`** | Patch was not applied during a job run (e.g., device was rebooting or a dependency was missing) |
 | **`missing`** | Patch is approved and should be present but is not detected on the device |
 
+### Approval on a device's Patches tab
+
+The **Approval** column on a device's **Patches** tab shows what the next scheduled patch run would do with each pending patch. Breeze works this out with the same rules the scheduled run uses, against the update ring the device's patch policy links to:
+
+| Badge | Meaning |
+|-------|---------|
+| **Approved** | A technician approved the patch, either for all rings or for this device's ring. |
+| **Auto-approved** | The device's update ring approves the patch, through a category rule or the ring's auto-approve settings. The next scheduled run installs it. |
+| **Auto-approves *date*** | The ring will approve the patch once its deferral window ends on that date. The window is measured from the patch's release date. A third-party app with no release date is measured from when the device first reported it. If neither date is usable, the badge reads **Deferred** and the patch stays held until you approve it by hand. |
+| **Pending Approval** | Nothing approves the patch. The ring does not cover it, or no valid ring applies to the device. Approve it by hand to install it. |
+| **Excluded by policy** | The patch policy's sources, the ring's category filter, or an app block or pin rule keeps the patch out of scheduled runs. |
+
+Hover over a badge to see which ring made the decision. The line under **Patch Controls** names the ring for the whole device, or says that none is linked.
+
+The **Install** button on a row still needs a manual approval. A patch that the ring auto-approves is installed by the next scheduled run, not by **Install**. To install it straight away, approve it on the [Patches](#reviewing-and-approving-patches) page first.
+
 ---
 
 ## Third-Party Application Patching
@@ -387,9 +403,6 @@ Content-Type: application/json
   "featureType": "patch",
   "inlineSettings": {
     "sources": ["os", "third_party"],
-    "autoApprove": true,
-    "autoApproveSeverities": ["critical", "important"],
-    "autoApproveDeferralDays": 7,
     "apps": [
       { "source": "third_party", "packageId": "Mozilla.Firefox", "action": "block" },
       { "source": "third_party", "packageId": "Google.Chrome", "action": "pin", "pinnedVersion": "120.0.1" }
@@ -407,9 +420,7 @@ Content-Type: application/json
 | Field | Type | Description |
 |-------|------|-------------|
 | `sources` | string[] | Which patch sources this policy covers — **at least one is required**. See [Patch Sources](#patch-sources-1) below |
-| `autoApprove` | boolean | Automatically approve patches matching the configured severities |
-| `autoApproveSeverities` | string[] | Severities eligible for auto-approval: `critical`, `important`, `moderate`, `low`. An empty list means nothing is auto-approved |
-| `autoApproveDeferralDays` | integer | A deferral window (0–60 days) applied before an auto-approved patch is released. A patch is held this many days after it becomes available, giving newly published updates time to soak before they reach devices. `0` approves immediately |
+| `autoApprove`, `autoApproveSeverities`, `autoApproveDeferralDays` | | **Not used for approval.** These policy-level fields are still accepted and stored, but Breeze does not read them when it decides what to install. Set auto-approval, severities and deferral on the [update ring](/features/update-rings/) instead. The device **Config** tab leaves them out and shows where approval comes from |
 | `apps` | object[] | Per-application **block** and **pin** rules. See [Application Rules](#application-rules) below |
 | `scheduleFrequency` | string | How often to run patching: `daily`, `weekly`, or `monthly` |
 | `scheduleTime` | string | Time of day in `HH:MM` format (24-hour, UTC unless timezone configured at site level) |
@@ -425,7 +436,7 @@ Content-Type: application/json
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
-When a device is assigned to an [update ring](#patch-scheduling-via-configuration-policies), the ring's approval rules take precedence over the policy-level auto-approve settings — the ring decides which severities and categories are approved (and after what deferral) for the devices it covers.
+Approval comes from the [update ring](/features/update-rings/) linked to the patch feature. The ring decides which severities and categories are approved, and after what deferral, for the devices it covers. With no ring linked, only manual approvals apply. A device's **Patches** tab shows the result for each patch (see [Approval on a device's Patches tab](#approval-on-a-devices-patches-tab)).
 
 #### End-user restart prompts
 

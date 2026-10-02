@@ -876,6 +876,7 @@ export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
+export * from './devicePatchApproval';
 export * from './deviceFunction';
 export * from './sendingDomains';
 export * from './ticketTriage';

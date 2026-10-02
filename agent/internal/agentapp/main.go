@@ -410,6 +410,19 @@ func Main(v string) {
 	}
 }
 
+// repairConfigThenInitLogging runs the startup config repair, then sets up
+// logging. The repair stays first: opening the log file creates files under
+// the config directory, which should not happen before that directory's
+// permissions are repaired. What the config package logs during the repair is
+// held in memory and written once the logger exists, so it reaches the agent
+// log file instead of a service's discarded stdout.
+func repairConfigThenInitLogging(cfg *config.Config, repair func()) {
+	config.HoldStartupLogs()
+	defer config.FlushStartupLogs()
+	repair()
+	initLogging(cfg)
+}
+
 // initLogging sets up structured logging from config. Call after config.Load().
 func initLogging(cfg *config.Config) {
 	var output io.Writer = os.Stdout
@@ -725,11 +738,11 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Loosen config directory (0755) and agent.yaml (0644) so the Helper can read
 	// them. secrets.yaml stays root-only (0600). Skipped in support mode: this
 	// operates on the REAL config dir, which a support client does not own.
-	if !cfg.SupportMode {
-		config.FixConfigPermissions()
-	}
-
-	initLogging(cfg)
+	repairConfigThenInitLogging(cfg, func() {
+		if !cfg.SupportMode {
+			config.FixConfigPermissions()
+		}
+	})
 
 	// Record this process's live PID immediately, before any startup step that
 	// can wedge (e.g. the mTLS renewal network call below). Otherwise a wedge
@@ -2081,9 +2094,11 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	//
 	// This block is reachable in BOTH user- and SYSTEM-context helpers: the
 	// LoadHelperConfig above reads agent.yaml (world-readable) and skips
-	// root-only secrets.yaml, so the AgentID/ServerURL/HelperAuthToken this gate
-	// needs are populated in a user session too (#2483). Everything the gate
-	// checks lives in agent.yaml by design (see secretKeyAllowedInAgentYAML).
+	// root-only secrets.yaml, so AgentID/ServerURL are populated in a user
+	// session too (#2483). HelperAuthToken comes from the group-scoped helper
+	// token file on Unix; on Windows no user-readable file carries it (it is
+	// delivered to the console-session Breeze Assist over IPC), so this gate
+	// stays closed there.
 	if cfg.AgentID != "" && cfg.ServerURL != "" && cfg.HelperAuthToken != "" {
 		helperToken := secmem.NewSecureString(cfg.HelperAuthToken)
 		cfg.AuthToken = ""

@@ -13,8 +13,17 @@ export const listAlertRulesSchema = z.object({
   includeRetired: z.enum(['true', 'false']).optional(),
   // #7206: the Monitors "Needs conversion" list. Excludes monitor-managed rules
   // and built-in system anchor rules (see services/monitors/systemManagedRules.ts).
-  needsConversion: z.enum(['true', 'false']).optional()
+  needsConversion: z.enum(['true', 'false']).optional(),
+  // #7626: only built-in system anchor rules — the Monitors "Built-in alerts"
+  // list, where each can be switched on or off.
+  systemManaged: z.enum(['true', 'false']).optional()
 });
+
+// #7626: the one write left on legacy alert_rules. Strict: on/off is all a
+// built-in rule exposes; everything else about it is owned by Breeze.
+export const setBuiltInRuleActiveSchema = z.object({
+  isActive: z.boolean()
+}).strict();
 
 export const bulkAlertActionSchema = z.object({
   action: z.enum(['acknowledge', 'resolve', 'suppress', 'dismiss']),

@@ -88,6 +88,9 @@ const namespaceDuplicateBaselines = {
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
     // AGENT_COMMAND_REJECTED) translated too — still 0 cognates.
+    // Wave E2c (SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE, RACE_LOST,
+    // RE_ENROLLMENT_REQUIRED, SOFTWARE_INVENTORY_LOCK_TIMEOUT) translated too — still
+    // 0 cognates.
     'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
@@ -246,7 +249,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -322,7 +328,8 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 34,
+    // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
+    'admin.json': 37,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
@@ -400,7 +407,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -499,7 +509,8 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 34,
+    // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
+    'admin.json': 37,
     'ai.json': 9,
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
@@ -571,7 +582,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -672,7 +686,8 @@ const namespaceDuplicateBaselines = {
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 31,
+    // W01 #7599 admin.aiModels.*: +4 identical cognates (Status, Budget, Frontier, Standard).
+    'admin.json': 35,
     'ai.json': 5,
     // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
     // "chat" and waitReason "information" are identical cognates in de-DE.
@@ -760,7 +775,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -841,7 +859,9 @@ const namespaceDuplicateBaselines = {
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
     // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 38,
+    // W01 #7599 admin.aiModels.*: +5 identical cognates (Budget, Standard, Input, Output,
+    // "Input / output per MTok"; "No" duplicates an existing counted string).
+    'admin.json': 43,
     'ai.json': 12,
     // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
     // identical cognates in it-IT.
@@ -897,7 +917,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -1017,7 +1040,10 @@ const namespaceDuplicateBaselines = {
     // added as English placeholders, same as the rest of this namespace.
     // +5 (Part of #3859, Wave E2b): DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND,
     // PATH_CONFLICT and AGENT_COMMAND_REJECTED added as English placeholders too.
-    'errors.json': 16,
+    // +5 (Part of #3859, Wave E2c): SCHEME_NOT_ALLOWED, INVALID_CUSTOM_FIELD_VALUE,
+    // RACE_LOST, RE_ENROLLMENT_REQUIRED and SOFTWARE_INVENTORY_LOCK_TIMEOUT added as
+    // English placeholders too.
+    'errors.json': 21,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder

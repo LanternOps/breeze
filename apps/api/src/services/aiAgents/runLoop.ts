@@ -38,6 +38,7 @@
  * DB touch here self-contexts, and the SDK loop itself runs under
  * `runOutsideDbContext` so the SDK's tool handlers never inherit one.
  */
+import { agentSdkWireOptions } from '../aiModels/modelWireOptions';
 import { and, eq } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -147,6 +148,7 @@ import {
   type PatchPlanToolRefs,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
+import { legacyAgentModel } from '../aiModels/legacySurfaceModels';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
@@ -1861,7 +1863,7 @@ async function driveSdkLoop(
   }
   const usableLlm: UsableLlmConfig = llm;
   const billingSource: AiBillingSource = llm.source === 'partner' ? 'partner_key' : 'platform';
-  const model = effective.model ?? llm.model;
+  const model = legacyAgentModel(effective.model, llm.model);
 
   // #5870 — the only log line between admission and termination. Without it
   // a run that is legitimately still thinking (a design run may now run up
@@ -2128,7 +2130,8 @@ async function driveSdkLoop(
           // and `summary`/`outcome` carry what a reviewer needs (wave 6).
           persistSession: false,
           settingSources: [],
-          thinking: { type: 'disabled' },
+          // #7587, #7599: per-model thinking/effort from the model registry — see agentSdkWireOptions.
+          ...agentSdkWireOptions(model),
         },
       });
 
@@ -2243,6 +2246,7 @@ async function driveSdkLoop(
         },
         billingSource,
         reservationId,
+        { surface: 'ai_agents', agentRunId: run.id },
       );
     } else {
       await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });

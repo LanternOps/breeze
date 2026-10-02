@@ -7,7 +7,10 @@ import { runCli } from './tool-eval';
 vi.mock('node:fs/promises', () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../../db', () => ({ closeDb: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'prompt' }));
-vi.mock('../../aiModel', () => ({ resolveDefaultModel: () => 'default-model' }));
+vi.mock('../../aiModel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../aiModel')>()),
+  resolveDefaultModel: () => 'default-model',
+}));
 vi.mock('../../streamingSessionManager', () => ({
   buildClaudeSdkChildEnv: () => ({ ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'inherited' }),
 }));

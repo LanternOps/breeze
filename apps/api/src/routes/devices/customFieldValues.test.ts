@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { ERROR_CODES } from '@breeze/shared';
 import { HTTPException } from 'hono/http-exception';
 
 // Tests for the API-key-authenticated device custom-field VALUE endpoints
@@ -547,7 +548,7 @@ describe('device custom-field value routes (#2066)', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({
-        code: 'invalid-custom-field-value',
+        code: ERROR_CODES.INVALID_CUSTOM_FIELD_VALUE,
         fields: [{ fieldKey: 'rack_units', reason: 'invalid_type' }],
       });
       expect(vi.mocked(persistDeviceCustomFieldValues)).not.toHaveBeenCalled();

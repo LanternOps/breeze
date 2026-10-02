@@ -520,6 +520,14 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   sso_verified_domains: { kind: 'repoint-dedupe', key: ['domain'] }, // verified: sso_verified_domains_org_domain_idx (org_id, domain)
   alert_correlation_groups: { kind: 'repoint-dedupe', key: ['group_key'] }, // verified: alert_correlation_groups_org_key_uq (org_id, group_key)
   ai_cost_usage: { kind: 'repoint-dedupe', key: ['period', 'period_key'] }, // verified: ai_cost_usage_org_period_idx (org_id, period, period_key)
+  // AI model registry W02 (#7600, quorum #12): one org override per
+  // (surface, role) — verified: ai_model_assignments_org_uq (org_id, surface,
+  // role) WHERE org_id IS NOT NULL. Two merged orgs can't both keep one; the
+  // survivor's wins. Partner-wide rows have org_id NULL and are not merge
+  // participants (keyWhere mirrors the index's partial predicate, as
+  // deliverable_template_sets below). Merges are same-partner, so the
+  // deferrable (org_id, offering_partner_id) composite FK holds after the repoint.
+  ai_model_assignments: { kind: 'repoint-dedupe', key: ['surface', 'role'], keyWhere: '{org_id} IS NOT NULL' },
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
   ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
@@ -707,6 +715,12 @@ const REPOINT_TABLES: readonly string[] = [
   // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
   // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
   "ai_action_plans",
+  // ai_invocations (#7600 W02) is append-only, but its trigger admits exactly
+  // the org_id-only UPDATE this policy issues while the loser org is fenced
+  // 'merging' (same partner), and breeze_app holds a column-level UPDATE
+  // (org_id) grant for it — so usage history follows the merged client
+  // (spec §5.5; chargeback W10).
+  "ai_invocations",
   "ai_screenshots",
   "ai_sessions",
   "alert_correlation_members",
