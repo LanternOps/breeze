@@ -4163,6 +4163,8 @@
     "lastUsed": "Last used",
     "actions": "Actions",
     "requestFailed": "Request failed ({{status}})",
+    "notEnabledTitle": "Connected apps are not enabled on this server",
+    "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
     "networkError": "Network error",

@@ -4163,6 +4163,8 @@
     "lastUsed": "Son kullanılan",
     "actions": "Eylemler",
     "requestFailed": "İstek başarısız oldu ({{status}})",
+    "notEnabledTitle": "Bağlı uygulamalar bu sunucuda etkin değil",
+    "notEnabledBody": "MCP OAuth bu sunucuda devre dışı. Bağlı uygulamalara izin vermek için MCP_OAUTH_ENABLED=true ayarlayın ve API'yi yeniden başlatın.",
     "revokeConfirm": "{{name}} erişimi iptal edilsin mi? Erişim jetonları 10 dakika içinde çalışmayı durduracaktır.",
     "revokeFailed": "İptal başarısız oldu ({{status}})",
     "networkError": "Ağ hatası",

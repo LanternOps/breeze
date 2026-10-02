@@ -15,7 +15,7 @@ const locale = Astro.locals.locale;
         {tServer(locale, 'settingsConnectedAppsPage.description')}
       </p>
     </div>
-    <McpUrlCard client:only="react" />
+    <McpUrlCard client:only="react" requireOAuth />
     <ConnectedAppsList client:only="react" />
   </div>
 </DashboardLayout>
