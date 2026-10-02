@@ -86,7 +86,7 @@ func TestSupportViewingEndsOnEveryStreamStopPath(t *testing.T) {
 		},
 		"support_end / window close teardown": func(t *testing.T, h *Heartbeat) {
 			orig := supportSelfDeleteFn
-			supportSelfDeleteFn = func() {}
+			supportSelfDeleteFn = func(string) {}
 			t.Cleanup(func() { supportSelfDeleteFn = orig })
 			supportCleanup(h)
 		},

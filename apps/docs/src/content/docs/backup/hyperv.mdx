@@ -49,7 +49,7 @@ Use the search box and state filter to find specific VMs. There's no VM pick-lis
 2. Click the **Backup** button on the VM row.
 3. Select the consistency type:
    - **Application-consistent** (default) — uses Hyper-V's own VSS integration. Because the running VM's memory state is captured as part of the export, a VM restored from an application-consistent backup comes back in **Saved** state, not Off.
-   - **Crash-consistent** — the agent saves the VM (`Save-VM`), exports it, then resumes it (`Start-VM`), minimizing how long the source VM is paused.
+   - **Crash-consistent** — the agent saves the VM (`Save-VM`), exports it, then resumes it (`Start-VM`), minimizing how long the source VM is paused. Known issue in v0.120.0: this fails for a VM that is **Off**, because it cannot be saved; back up powered-off VMs with **Application-consistent**.
 4. Confirm to start the export.
 </Steps>
 

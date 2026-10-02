@@ -31,12 +31,12 @@ const createNoWindow = 0x08000000
 // path containing a space (C:\Users\John Smith\Downloads\...) needs those
 // inner quotes, so the escaped form is not an option: build the command line
 // verbatim.
-func startSupportSelfDelete(exePath string) error {
+func startSupportSelfDelete(exePath, workDir string) error {
 	cmd := exec.Command("cmd")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | createNoWindow,
 		HideWindow:    true,
-		CmdLine:       buildSupportSelfDeleteCmdLine(exePath),
+		CmdLine:       buildSupportSelfDeleteCmdLine(exePath, workDir),
 	}
 	if err := cmd.Start(); err != nil {
 		return err

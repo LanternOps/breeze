@@ -431,6 +431,9 @@ func initLogging(cfg *config.Config) {
 
 	if cfg.LogFile != "" {
 		rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+		if err == nil {
+			trackLogFile(rw)
+		}
 		if err != nil {
 			logFileFallbackReason = describeLogFileError(err)
 			fmt.Fprintf(os.Stderr, "Failed to open log file %s: %s (logging to stdout)\n", cfg.LogFile, logFileFallbackReason)
@@ -1231,6 +1234,19 @@ func runAgent() {
 	serviceMode := isWindowsService()
 	startup := currentProcessStartup("run", "", serviceMode)
 	cacheMainProcessStartup(startup)
+	// Before anything reads the config, and before the instance guard
+	// (which hardens the folder and so would hide that another account had
+	// it): the agent re-secures its config folder if another account created
+	// it (e.g. through an older Quick Support client run by a standard user),
+	// and refuses one that is a link. Covers the service and console paths.
+	if err := reclaimConfigDirFn(false); err != nil {
+		// The instance-guard marker (the Windows Event Log; stderr), so a
+		// service that stops here is not just an SCM start error.
+		writeInstanceGuardMarkerFn(startup, fmt.Errorf("agent config folder: %w", err))
+		mainAgentExitFn(exitConfigDirUntrusted)
+		return
+	}
+
 	guard, err := acquireMainAgentGuardFn(startup)
 	if err != nil {
 		writeInstanceGuardMarkerFn(startup, err)
@@ -1472,6 +1488,18 @@ func enrollDevice(enrollmentKey string) {
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
 	)
+
+	// Before reading the existing config: take the config folder back if
+	// another account created it, and remove an agent.yaml / secrets.yaml it
+	// could have written rather than carry their contents into this
+	// enrollment. Only for the machine-wide folder; a --config elsewhere is
+	// the caller's own.
+	if configFileInMachineDir(cfgFile) {
+		if err := reclaimConfigDirFn(true); err != nil {
+			enrollError(catConfig, "the agent config folder "+config.ConfigDir()+" cannot be used", err)
+			return
+		}
+	}
 
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
@@ -1893,6 +1921,9 @@ func initEnrollLogging(cfg *config.Config, quiet bool) {
 	}
 
 	rw, err := logging.NewRotatingWriter(cfg.LogFile, cfg.LogMaxSizeMB, cfg.LogMaxBackups)
+	if err == nil {
+		trackLogFile(rw)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not open log file %s: %s — structured logs will go to stdout\n", cfg.LogFile, describeLogFileError(err))
 		logging.Init(cfg.LogFormat, cfg.LogLevel, os.Stdout)

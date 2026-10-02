@@ -162,6 +162,15 @@ func Init(format, level string, output io.Writer) {
 	slog.SetDefault(defaultLogger)
 }
 
+// DiscardOutput sends every later log line nowhere. Unlike Init it only swaps
+// the root handler (an atomic store), so it is safe while other goroutines
+// are logging. A support session calls it before closing its log file and
+// removing its folder (#7629).
+func DiscardOutput() {
+	// Same concrete type as Init stores: the root handler is an atomic.Value.
+	rootHandler.set(&shippingHandler{base: slog.NewTextHandler(io.Discard, nil)})
+}
+
 // InitShipper initializes the log shipper (call after enrollment).
 func InitShipper(cfg ShipperConfig) {
 	shipperMu.Lock()

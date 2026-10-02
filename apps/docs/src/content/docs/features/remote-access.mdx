@@ -191,7 +191,9 @@ The consent dialog asks the user to allow or deny the remote session, with **Den
   **Upgrade behavior:** Because the default prompt mode is **Notify**, devices with the Breeze Helper installed begin showing a start notice for remote sessions after upgrade. To restore silent behavior, set the **Remote Access** feature on a Configuration Policy to prompt mode **Off**.
 </Aside>
 
-Every consent outcome is audit logged — granted, denied, blocked, or bypassed — with the reason (for example `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked) and, from current agents, whether the prompt was shown (`consentOutcome`) and whether anyone was signed in (`consentOccupancy`).
+Every consent outcome is audit logged — granted, denied, blocked, or bypassed — with the reason (for example `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked) and, from current agents, whether the prompt was shown (`consentOutcome`) and whether anyone was signed in (`consentOccupancy`). Each consent audit entry also records `consentProtocol`: `2` for current agents, `1` for older agents that do not report these fields.
+
+When a session is refused, the technician sees a message naming the specific cause: nobody is signed in, the prompt could not be shown, the user could not see it, or another consent request is already waiting on that device. If the device's answer to the session start cannot be read (typically an agent and server on mismatched releases), the session fails with a message saying so instead of waiting for a timeout.
 
 The same prompt, notice and indicator apply when the viewer falls back to the WebSocket (JPEG) transport. The technician's view stays on *connecting* until the agent reports that the stream started, so in Consent mode nothing is shown or sent before the user allows it; a denial or an unanswered prompt ends the session with the reason, just as on WebRTC.
 

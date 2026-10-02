@@ -84,6 +84,11 @@ func normalizeOS(goos string) string {
 }
 
 func defaultDataDir() string {
+	// A support session keeps all files (a quarantine included) in its
+	// private folder, never the installed agent's machine-wide one (#7629).
+	if config.UserWorkspaceActive() {
+		return config.GetDataDir()
+	}
 	switch runtime.GOOS {
 	case "windows":
 		programData := os.Getenv("ProgramData")

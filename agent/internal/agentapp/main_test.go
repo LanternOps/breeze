@@ -162,7 +162,9 @@ func testRunAgentGuardFailureStopsBeforeInitialization(t *testing.T, guardErr er
 	origWriteEvent := writeInstanceGuardEventFn
 	origReconcile := reconcileServiceUnitIfNeededFn
 	origStart := startAgentFn
+	origReclaim := reclaimConfigDirFn
 	t.Cleanup(func() {
+		reclaimConfigDirFn = origReclaim
 		acquireMainAgentGuardFn = origAcquire
 		mainAgentExitFn = origExit
 		writeInstanceGuardMarkerFn = origMarker
@@ -172,6 +174,7 @@ func testRunAgentGuardFailureStopsBeforeInitialization(t *testing.T, guardErr er
 	})
 
 	reconciled, started, markerWritten, exitCode := false, false, false, 0
+	reclaimConfigDirFn = func(bool) error { return nil }
 	acquireMainAgentGuardFn = func(ProcessStartup) (mainAgentGuard, error) {
 		return nil, guardErr
 	}
