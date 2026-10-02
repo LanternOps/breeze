@@ -682,6 +682,22 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       })]);
       expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('sk-new-abcdef12');
     });
+    it('W09: a key rotation or endpoint change clears the connection\'s failover cooldowns, after the write', async () => {
+      await call('PATCH', `/connections/${G}/gateway`, { apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3 });
+      expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, G);
+      expect(vi.mocked(updateGatewayConnection).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(clearConnectionCooldowns).mock.invocationCallOrder[0]!);
+      vi.mocked(clearConnectionCooldowns).mockClear();
+      vi.mocked(updateGatewayConnection).mockResolvedValueOnce(gatewayConn({ baseUrl: 'https://other.example.org/v1', configVersion: 4 }) as any);
+      await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'https://other.example.org/v1', apiKey: null, expectedConfigVersion: 3 });
+      expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, G);
+    });
+    it('W09: a cooldown clear failure never fails the gateway update (cooldowns fail open)', async () => {
+      vi.mocked(clearConnectionCooldowns).mockRejectedValueOnce(new Error('redis down'));
+      const res = await call('PATCH', `/connections/${G}/gateway`, { apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3 });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: G, configVersion: 4 });
+    });
     it('a URL change audits the new host only; a null key audits key cleared', async () => {
       vi.mocked(updateGatewayConnection).mockResolvedValueOnce(gatewayConn({ baseUrl: 'https://other.example.org/tenant-42/v1', configVersion: 4 }) as any);
       await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'https://other.example.org/tenant-42/v1', apiKey: null, expectedConfigVersion: 3 });
@@ -712,6 +728,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(res.status).toBe(err.status);
       expect((await res.json()).code).toBe(code);
       expect(enqueueConnectionSync).not.toHaveBeenCalled();
+      expect(clearConnectionCooldowns).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
     it('rejects an empty patch and a missing expectedConfigVersion (400, no write)', async () => {

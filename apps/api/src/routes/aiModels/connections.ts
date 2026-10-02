@@ -142,6 +142,14 @@ aiModelConnectionRoutes.patch('/:id/gateway', ...partnerWrite, zValidator('param
       key: body.apiKey === undefined ? 'unchanged' : body.apiKey === null ? 'cleared' : 'rotated',
       configVersion: updated.configVersion,
     });
+    // W09 (#7607): every successful PATCH changes the key or the URL, either of
+    // which may fix auth_failed / quota_exhausted at once — forget this
+    // connection's failover cooldowns, as POST /:id/key does. Fails open.
+    try {
+      await clearConnectionCooldowns(partnerId, conn.id);
+    } catch (error) {
+      console.warn('[aiModels] cooldown clear after gateway update failed', { connectionId: conn.id, error: error instanceof Error ? error.message : String(error) });
+    }
     // Spec §6: discovery runs on create AND on every endpoint/key change (a new
     // key can see different models). Best-effort, as on create.
     await queueConnectionSync(c, conn.id);
