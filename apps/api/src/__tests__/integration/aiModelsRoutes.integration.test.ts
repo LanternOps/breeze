@@ -25,13 +25,14 @@
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { sql } from 'drizzle-orm';
 import type { OrgAssignmentInput, PartnerAssignmentInput } from '@breeze/shared';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { aiModelsRoutes } from '../../routes/aiModels';
 import { createAccessToken } from '../../services/jwt';
+import { __setLookupForTests } from '../../services/urlSafety';
 import {
   conditionalDeleteOrgRow,
   conditionalUpsert,
@@ -44,7 +45,7 @@ import { updateConnectionSettings } from '../../services/aiModels/connectionSett
 import { disconnectCompat } from '../../services/aiModels/compatRemap';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { queryAiUsageBreakdown } from '../../services/aiModels/usageQueries';
-import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
+import { assignUserToOrganization, assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import {
   closeRegistryFixtures,
   fixtureSql,
@@ -906,5 +907,87 @@ describe.skipIf(!RUN)('W09 (#7607): role rows, fallback lists and cross-funding 
     const view = await (await req('GET', `/api/v1/ai/models/orgs/${w.orgA}/assignments`)).json() as { surfaces: Array<{ surface: string; role: string; inherited: { fallbackOfferingIds: string[] }; effective: { fallbackOfferingIds: string[] } }> };
     const ext = view.surfaces.find((s) => s.surface === 'extension_content' && s.role === 'default')!;
     expect([ext.inherited.fallbackOfferingIds, ext.effective.fallbackOfferingIds]).toEqual([[w.offA2], []]);
+  });
+});
+
+describe.skipIf(!RUN)('W06 openai_compatible routes: tenant isolation (#7604)', () => {
+  // Base-URL validation does a real DNS lookup; resolve every host to a public IP.
+  beforeEach(() => __setLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }]));
+  afterEach(() => __setLookupForTests(null));
+
+  const BASE = 'https://llm.example.com/v1';
+
+  /** Partner B's gateway connection + manual offering, created through B's own routes. */
+  async function seedGatewayB(w: World) {
+    const reqB = await partnerAdmin(w.pB);
+    const created = await reqB('POST', '/api/v1/ai/models/connections', { kind: 'openai_compatible', name: 'B gateway', baseUrl: BASE, apiKey: 'sk-b-secret-0001' });
+    expect(created.status).toBe(201);
+    const connB = (await created.json() as { id: string }).id;
+    const off = await reqB('POST', `/api/v1/ai/models/connections/${connB}/offerings`, { modelId: 'qwen2.5-coder:7b' });
+    expect(off.status).toBe(201);
+    const offB = (await off.json() as { id: string }).id;
+    return { reqB, connB, offB };
+  }
+
+  const snapshotRows = async (connB: string, offB: string) => ({
+    conn: await fixtureSql`SELECT name, status, base_url, config_version, updated_at::text AS u FROM partner_ai_connections WHERE id = ${connB}`,
+    off: await fixtureSql`SELECT enabled, display_name, capabilities, updated_at::text AS u FROM partner_ai_models WHERE id = ${offB}`,
+  });
+
+  it('control: partner B can patch, refresh and verify its own gateway connection; snapshot carries no key material', async () => {
+    const w = await seedWorld();
+    const { reqB, connB, offB } = await seedGatewayB(w);
+    expect((await reqB('PATCH', `/api/v1/ai/models/connections/${connB}`, { name: 'Renamed' })).status).toBe(200);
+    expect((await reqB('PATCH', `/api/v1/ai/models/connections/${connB}/gateway`, { baseUrl: 'https://llm2.example.com/v1', expectedConfigVersion: 1 })).status).toBe(200);
+    expect((await reqB('POST', `/api/v1/ai/models/connections/${connB}/refresh`)).status).toBe(202);
+    expect((await reqB('POST', `/api/v1/ai/models/offerings/${offB}/verify`)).status).toBe(202);
+    const snap = await (await reqB('GET', '/api/v1/ai/models')).json() as { connections: Array<{ id: string; kind: string; baseUrl: string | null }> };
+    expect(snap.connections.find((c) => c.id === connB)).toMatchObject({ kind: 'openai_compatible', baseUrl: 'https://llm2.example.com/v1' });
+    expect(JSON.stringify(snap)).not.toContain('sk-b-secret-0001');
+  });
+
+  it('partner A cannot edit, add models to, verify, refresh or delete partner B’s gateway connection or offering (404 every route)', async () => {
+    const w = await seedWorld();
+    const { connB, offB } = await seedGatewayB(w);
+    const before = await snapshotRows(connB, offB);
+    const reqA = await partnerAdmin(w.pA);
+    const base = '/api/v1/ai/models';
+    const attempts: Array<[string, string, unknown?]> = [
+      ['PATCH', `${base}/connections/${connB}/gateway`, { baseUrl: 'https://evil.example.com/v1', apiKey: null, expectedConfigVersion: 1 }],
+      ['PATCH', `${base}/connections/${connB}`, { name: 'forged' }],
+      ['POST', `${base}/connections/${connB}/offerings`, { modelId: 'forged-model' }],
+      ['POST', `${base}/connections/${connB}/refresh`],
+      ['DELETE', `${base}/connections/${connB}`],
+      ['POST', `${base}/offerings/${offB}/verify`],
+    ];
+    for (const [method, path, body] of attempts) {
+      const res = await reqA(method, path, body);
+      expect({ method, path, status: res.status }).toEqual({ method, path, status: 404 });
+    }
+    // B's rows are unchanged, and no forged offering landed.
+    expect(await snapshotRows(connB, offB)).toEqual(before);
+    expect(await fixtureSql`SELECT 1 FROM partner_ai_models WHERE connection_id = ${connB}`).toHaveLength(1);
+
+    // A's own snapshot never lists B's connection or offering.
+    const snap = await (await reqA('GET', base)).json() as { connections: Array<{ id: string }>; offerings: Array<{ id: string }> };
+    expect(snap.connections.map((c) => c.id)).not.toContain(connB);
+    expect(snap.offerings.map((o) => o.id)).not.toContain(offB);
+  });
+
+  it('an org-scoped token gets 403 on the snapshot and on gateway writes', async () => {
+    const w = await seedWorld();
+    const { connB } = await seedGatewayB(w);
+    const user = await createUser({ partnerId: w.pA, orgId: w.orgA, email: `w06-org-${randomUUID()}@example.com` });
+    const role = await createRole({ scope: 'organization', orgId: w.orgA, partnerId: w.pA });
+    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+    await assignUserToOrganization(user.id, w.orgA, role.id);
+    const reqOrg = client(await createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, orgId: w.orgA, partnerId: w.pA, scope: 'organization',
+      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    }));
+    expect((await reqOrg('GET', '/api/v1/ai/models')).status).toBe(403);
+    expect((await reqOrg('POST', '/api/v1/ai/models/connections', { kind: 'openai_compatible', name: 'org gw', baseUrl: BASE })).status).toBe(403);
+    expect((await reqOrg('PATCH', `/api/v1/ai/models/connections/${connB}`, { name: 'forged' })).status).toBe(403);
+    expect(await fixtureSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${w.pA} AND kind = 'openai_compatible'`).toHaveLength(0);
   });
 });
