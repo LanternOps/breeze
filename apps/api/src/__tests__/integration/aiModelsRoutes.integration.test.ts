@@ -16,7 +16,7 @@
  *    model that served it;
  *  - the partner snapshot sees org-level assignment rows (defaultFor,
  *    orgOverrideCount);
- *  - a connection W03 soft-disconnected (disconnectCompat) and its offerings
+ *  - a connection soft-disconnected (W03 shape, disconnectAnthropicConnection) and its offerings
  *    are never listed, re-enabled, edited, newly permitted, verified or
  *    refreshed, and usage by model labels the calls it served.
  *
@@ -42,7 +42,7 @@ import {
 import { setOfferingEnabled, updateOfferingDetails } from '../../services/aiModels/offeringWrites';
 import { setResidencyRequired } from '../../services/aiModels/residency';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
-import { disconnectCompat } from '../../services/aiModels/compatRemap';
+import { disconnectAnthropicConnection } from '../../services/aiModels/connectionRemap';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { queryAiUsageBreakdown } from '../../services/aiModels/usageQueries';
 import { assignUserToOrganization, assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
@@ -730,7 +730,7 @@ describe.skipIf(!RUN)('a W03 soft-disconnected connection (#7602 W04 × #7601)',
   /**
    * Partner A with a live BYOK connection and one enabled, priced (linked
    * platform rate) offering on it, then disconnected by W03's own
-   * disconnectCompat: the row stays (status 'disconnected', keyless) and the
+   * disconnectAnthropicConnection: the row stays (status 'disconnected', keyless) and the
    * offering stays, disabled.
    */
   async function seedDisconnected() {
@@ -739,7 +739,7 @@ describe.skipIf(!RUN)('a W03 soft-disconnected connection (#7602 W04 × #7601)',
     const pm = await seedPricedPlatformModel(modelId);
     const conn = await seedByokConnection(w.pA);
     const offConn = await seedOffering({ partnerId: w.pA, connectionId: conn, platformModelId: pm, modelId, source: 'discovered', enabled: true });
-    expect(await inSystem(() => disconnectCompat(w.pA))).toBe(true);
+    expect(await inSystem(() => disconnectAnthropicConnection(w.pA, conn))).toBe(true);
     const [c] = await fixtureSql`SELECT status, api_key_encrypted FROM partner_ai_connections WHERE id = ${conn}`;
     expect(c).toEqual({ status: 'disconnected', api_key_encrypted: null });
     const [o] = await fixtureSql`SELECT enabled, connection_id FROM partner_ai_models WHERE id = ${offConn}`;

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
+// SQL-shape unit coverage ported from the deleted compatRemap.test.ts (W03
+// #7601 Task 6B), now id-keyed (W08 #7606). Real-Postgres behaviour is pinned
+// by aiModelConnectionLifecycle.integration.test.ts.
+
 const P = '11111111-1111-4111-8111-111111111111';
 const CONN = '22222222-2222-4222-8222-222222222222';
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -11,7 +15,7 @@ const m = vi.hoisted(() => ({
   statements: [] as Array<{ text: string; params: unknown[] }>,
   respond: (_text: string, _params: unknown[]): unknown[] => [],
   createConnection: vi.fn(),
-  ensureLegacyPlatformModel: vi.fn(),
+  ensurePlatformModelRow: vi.fn(),
 }));
 
 const dialect = new PgDialect();
@@ -26,35 +30,38 @@ vi.mock('../../db', () => ({
     }),
   },
 }));
-vi.mock('../aiModel', () => ({ resolveDefaultModel: () => 'env-default' }));
-vi.mock('./legacySurfaceModels', () => ({
-  getLegacyModelRates: () => ({ rates: { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 3, cacheWriteCentsPerM: 4 }, source: 'priced' }),
-}));
 vi.mock('./connections', () => ({
   createConnection: m.createConnection,
   encryptConnectionKey: (id: string, key: string) => `sealed:${id}:${key.length}`,
 }));
-vi.mock('./legacyReconcile', () => ({ ensureLegacyPlatformModel: m.ensureLegacyPlatformModel }));
+vi.mock('./registryBootstrap', () => ({
+  ensurePlatformModelRow: m.ensurePlatformModelRow,
+  resolveBootstrapDefaultModelId: async () => 'bootstrap-default',
+}));
 vi.mock('../secretCrypto', () => ({ hmacFingerprint: () => 'fp' }));
 
 import {
-  connectCompat,
-  disconnectCompat,
+  connectAnthropicConnection,
+  disconnectAnthropicConnection,
+  lockAnthropicConnection,
+  lockAnthropicConnectionIds,
   remapPartnerOfferings,
   RegistryNotCutOverError,
-  rotateCompatKey,
-} from './compatRemap';
+  rotateAnthropicConnectionKey,
+  switchAnthropicConnectionKind,
+} from './connectionRemap';
 
 const writes = () => m.statements.filter((s) => /^(WITH .*?\) )?(UPDATE|INSERT|DELETE)/.test(s.text) || /^(UPDATE|INSERT|DELETE)/.test(s.text));
 const deletes = () => m.statements.filter((s) => /\bDELETE FROM\b/.test(s.text));
+const LOCKED = { id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, config_version: 3, connected_by: null, verified_at: null };
 
-/** A cut-over partner with no special rows unless a test overrides `respond`. */
+/** A partner with registry rows, and (unless overridden) a legacy table that still exists. */
 function baseRespond(extra: (text: string, params: unknown[]) => unknown[] | undefined = () => undefined) {
   return (text: string, params: unknown[]): unknown[] => {
     const hit = extra(text, params);
     if (hit) return hit;
     if (text.includes('FROM ai_model_registry_partner_cutover')) return [{ ok: 1 }];
-    if (text.startsWith('UPDATE') || text.startsWith('INSERT') || text.startsWith('DELETE') || text.startsWith('WITH')) return [];
+    if (text.includes("to_regclass('public.partner_llm_configs')")) return [{ present: true }];
     return [];
   };
 }
@@ -66,7 +73,7 @@ beforeEach(() => {
   m.respond = baseRespond();
 });
 
-describe('remapPartnerOfferings (Task 6B: registry-native id remaps, never a re-projection)', () => {
+describe('remapPartnerOfferings (registry-native id remaps, never a re-projection)', () => {
   it('touches exactly the four reference sites, by array_replace, and only live sessions', async () => {
     m.respond = () => [{ id: 'x' }];
     const counts = await remapPartnerOfferings(P, new Map([[A, B]]));
@@ -110,10 +117,12 @@ describe('remapPartnerOfferings (Task 6B: registry-native id remaps, never a re-
   });
 });
 
-describe('the gate: no registry-native write before the partner is cut over', () => {
+describe('the gate: no registry-native write before the partner has its registry rows', () => {
   it.each([
-    ['connectCompat', () => connectCompat(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, defaultModel: null })],
-    ['disconnectCompat', () => disconnectCompat(P)],
+    ['connectAnthropicConnection', () => connectAnthropicConnection(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, movePlatformReferences: true })],
+    ['disconnectAnthropicConnection', () => disconnectAnthropicConnection(P, CONN)],
+    ['rotateAnthropicConnectionKey', () => rotateAnthropicConnectionKey(P, CONN, { apiKey: 'sk-ant-x', connectedBy: null, verifiedAt: new Date() })],
+    ['switchAnthropicConnectionKind', () => switchAnthropicConnectionKind(P, CONN, { kind: 'catalog', catalogEntryId: 'e1' })],
   ])('%s throws RegistryNotCutOverError and writes nothing', async (_name, run) => {
     m.respond = (text) => (text.includes('FROM ai_model_registry_partner_cutover') ? [] : [{ id: 'x' }]);
     await expect(run()).rejects.toBeInstanceOf(RegistryNotCutOverError);
@@ -122,18 +131,29 @@ describe('the gate: no registry-native write before the partner is cut over', ()
   });
 });
 
-describe('connectCompat', () => {
+describe('locks never see a soft-disconnected connection (#7700 finding 1)', () => {
+  it('lockAnthropicConnection and lockAnthropicConnectionIds exclude disconnected rows and pin the partner', async () => {
+    await lockAnthropicConnection(P, CONN);
+    await lockAnthropicConnectionIds(P);
+    for (const s of m.statements) {
+      expect(s.text).toContain("status <> 'disconnected'");
+      expect(s.text).toContain('FOR UPDATE');
+      expect(s.params).toContain(P);
+    }
+  });
+});
+
+describe('connectAnthropicConnection', () => {
   it('creates the connection, moves platform references onto it (patch_test stays), and disables what no longer routes', async () => {
     m.createConnection.mockResolvedValue({ id: CONN });
     m.respond = baseRespond((text) => {
       if (text.includes('FROM partner_ai_connections') && text.includes('SELECT kind')) return [{ kind: 'anthropic_byok' }];
-      // the referenced platform offerings
       if (text.startsWith('WITH') && text.includes('SELECT m.id, COALESCE(m.model_id, pm.model_id) AS model_id')) return [{ id: A, model_id: 'm1' }];
-      if (text.startsWith('SELECT id, input_cents_per_m')) return [{ id: 'pm1', input_cents_per_m: 1, output_cents_per_m: 1, cache_read_cents_per_m: 1, cache_write_cents_per_m: 1 }];
+      if (text.startsWith('SELECT id FROM ai_platform_models')) return [{ id: 'pm1' }];
       if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: B }];
       return undefined;
     });
-    const id = await connectCompat(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, defaultModel: null });
+    const id = await connectAnthropicConnection(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, movePlatformReferences: true });
     expect(id).toBe(CONN);
     expect(m.createConnection).toHaveBeenCalledWith(expect.objectContaining({ partnerId: P, kind: 'anthropic_byok', apiKey: 'sk-ant-x' }));
 
@@ -143,8 +163,9 @@ describe('connectCompat', () => {
     expect(referenced.text).toContain('m.connection_id IS NULL');
 
     const insert = m.statements.find((s) => s.text.startsWith('INSERT INTO partner_ai_models'))!;
-    expect(insert.params).toEqual(expect.arrayContaining([P, CONN, 'm1', 'discovered', 'pm1']));
-    expect(insert.text).toContain('ON CONFLICT (connection_id, model_id) WHERE connection_id IS NOT NULL DO UPDATE SET enabled = true');
+    expect(insert.params).toEqual(expect.arrayContaining([P, CONN, 'm1', 'discovered', 'pm1', true]));
+    // spec §8: a BYOK offering never carries a guessed (legacy) price.
+    expect(insert.text).not.toContain('price_');
 
     const remap = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id = CASE'))!;
     expect(remap.params).toEqual(expect.arrayContaining([A, B]));
@@ -155,26 +176,32 @@ describe('connectCompat', () => {
     expect(disable.text).toContain('NOT IN (SELECT id FROM refs');
     expect(deletes()).toEqual([]);
   });
+
+  it('a non-first connection moves nothing', async () => {
+    m.createConnection.mockResolvedValue({ id: CONN });
+    await connectAnthropicConnection(P, { kind: 'anthropic_byok', apiKey: 'sk-ant-x', catalogEntryId: null, connectedBy: null, movePlatformReferences: false });
+    expect(m.statements.some((s) => s.text.startsWith('UPDATE ai_model_assignments'))).toBe(false);
+  });
 });
 
-describe('disconnectCompat', () => {
-  it('returns references to platform offerings on every surface, then SOFT-disconnects the connection (#7700 finding 1)', async () => {
+describe('disconnectAnthropicConnection', () => {
+  it('returns only that connection\'s references to platform offerings, then SOFT-disconnects it and purges the legacy key copy', async () => {
     m.respond = baseRespond((text) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: null, config_version: 3, connected_by: null, verified_at: null }];
+      if (text.includes('FOR UPDATE')) return [LOCKED];
       if (text.startsWith('WITH') && text.includes('AS model_id')) return [{ id: B, model_id: 'm1' }];
       if (text.startsWith('SELECT id FROM ai_platform_models')) return [{ id: 'pm1' }];
       if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: A }];
       return undefined;
     });
-    expect(await disconnectCompat(P)).toBe(true);
+    expect(await disconnectAnthropicConnection(P, CONN)).toBe(true);
+    const lock = m.statements.find((s) => s.text.includes('FOR UPDATE'))!;
+    expect(lock.params).toEqual(expect.arrayContaining([CONN, P]));
     const referenced = m.statements.find((s) => s.text.includes('AS model_id'))!;
     expect(referenced.text).not.toContain('surface NOT IN (');
     expect(referenced.params).toContain(CONN);
     const insert = m.statements.find((s) => s.text.startsWith('INSERT INTO partner_ai_models'))!;
     expect(insert.text).toContain("'platform'");
     expect(insert.text).toContain('ON CONFLICT (partner_id, platform_model_id) WHERE connection_id IS NULL DO UPDATE SET enabled = true');
-    const remap = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id = CASE'))!;
-    expect(remap.text).not.toContain('surface NOT IN (');
     // Never deleted: a delete cascades to offerings in-flight turns are bound to.
     // The only delete is the frozen legacy row holding the revoked key (finding 4).
     expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
@@ -186,54 +213,88 @@ describe('disconnectCompat', () => {
     expect(soft.params).toContain(CONN);
     const disable = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_models SET enabled = false'))!;
     expect(disable.params).toContain(CONN);
-    // after every remap
     const order = m.statements.map((s) => s.text);
     expect(order.indexOf(soft.text)).toBeGreaterThan(order.findIndex((t) => t.startsWith('UPDATE ai_model_assignments')));
   });
 
-  it('is a no-op (false) when there is no compat connection', async () => {
-    expect(await disconnectCompat(P)).toBe(false);
+  it('is a no-op (false) when the id is not a live Anthropic connection of the partner', async () => {
+    expect(await disconnectAnthropicConnection(P, CONN)).toBe(false);
     expect(writes()).toEqual([]);
   });
 
-  it('a pinned default goes back to tracking the deployment default on the platform (legacy: no row = env default)', async () => {
-    m.respond = baseRespond((text, params) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: 'm-pinned', config_version: 3, connected_by: null, verified_at: null }];
-      if (text.startsWith('SELECT m.id FROM partner_ai_models m JOIN ai_platform_models')) return params.includes('m-pinned') ? [{ id: 'old-platform' }] : [];
-      if (text.startsWith('SELECT id FROM ai_platform_models')) return [{ id: 'pm-env' }];
-      if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: 'env-platform' }];
+  it('a model with no platform row falls back to the bootstrap default; none available is an actionable 409', async () => {
+    m.respond = baseRespond((text) => {
+      if (text.includes('FOR UPDATE')) return [LOCKED];
+      if (text.startsWith('WITH') && text.includes('AS model_id')) return [{ id: B, model_id: 'tenant-typed' }];
+      if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: A }];
       return undefined;
     });
-    await disconnectCompat(P);
-    const repoint = m.statements.find((s) => s.text.startsWith('UPDATE ai_model_assignments SET default_offering_id =') && !s.text.includes('CASE'))!;
-    expect(repoint.params).toEqual(expect.arrayContaining(['env-platform', 'old-platform', P]));
+    m.ensurePlatformModelRow.mockResolvedValueOnce({ id: 'pm-boot', created: false });
+    await disconnectAnthropicConnection(P, CONN);
+    expect(m.ensurePlatformModelRow).toHaveBeenCalledWith('bootstrap-default');
+    expect(m.statements.find((s) => s.text.startsWith('INSERT INTO partner_ai_models'))!.params).toContain('pm-boot');
+
+    m.statements = [];
+    m.ensurePlatformModelRow.mockResolvedValueOnce(null);
+    await expect(disconnectAnthropicConnection(P, CONN)).rejects.toMatchObject({ status: 409, message: expect.stringContaining('No platform AI model') });
   });
 
-  it('a deployment default with no platform row is bootstrapped at its legacy rates (#7601 gap A)', async () => {
-    m.ensureLegacyPlatformModel.mockResolvedValue('pm-boot');
-    m.respond = baseRespond((text, params) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: 'm-pinned', config_version: 3, connected_by: null, verified_at: null }];
-      if (text.startsWith('SELECT m.id FROM partner_ai_models m JOIN ai_platform_models')) return params.includes('m-pinned') ? [{ id: 'old-platform' }] : [];
-      if (text.startsWith('SELECT id FROM ai_platform_models')) return [];
-      if (text.startsWith('INSERT INTO partner_ai_models')) return [{ id: 'env-platform' }];
+  it('skips the legacy purge once W08b has dropped the table (rollback-safe)', async () => {
+    m.respond = baseRespond((text) => {
+      if (text.includes('FOR UPDATE')) return [LOCKED];
+      if (text.includes("to_regclass('public.partner_llm_configs')")) return [{ present: false }];
       return undefined;
     });
-    await disconnectCompat(P);
-    expect(m.ensureLegacyPlatformModel).toHaveBeenCalledWith('env-default',
-      { inputCentsPerM: 1, outputCentsPerM: 2, cacheReadCentsPerM: 3, cacheWriteCentsPerM: 4 });
+    expect(await disconnectAnthropicConnection(P, CONN)).toBe(true);
+    expect(deletes()).toEqual([]);
   });
 });
 
-describe('rotateCompatKey', () => {
-  it('rotates in place and drops the legacy partner_llm_configs copy of the revoked key (#7700 finding 4)', async () => {
+describe('rotateAnthropicConnectionKey', () => {
+  it('rotates in place by id and drops the legacy partner_llm_configs copy of the revoked key (#7700 finding 4)', async () => {
     m.respond = baseRespond((text) => {
-      if (text.includes('FOR UPDATE')) return [{ id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, legacy_default_model: null, config_version: 3, connected_by: null, verified_at: null }];
+      if (text.includes('FOR UPDATE')) return [LOCKED];
       if (text.startsWith('UPDATE partner_ai_connections SET')) return [{ config_version: 4 }];
       return undefined;
     });
-    expect(await rotateCompatKey(P, { apiKey: 'sk-new-key-0001', connectedBy: null, verifiedAt: new Date() }))
-      .toEqual({ configVersion: 4, defaultModel: null });
+    expect(await rotateAnthropicConnectionKey(P, CONN, { apiKey: 'sk-new-key-0001', connectedBy: null, verifiedAt: new Date() }))
+      .toEqual({ configVersion: 4 });
+    const update = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
+    expect(update.params).toEqual(expect.arrayContaining([CONN, P, '0001']));
     expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
     expect(deletes()[0]!.params).toEqual([P]);
+  });
+
+  it('a disconnected (or foreign) id is refused before any write', async () => {
+    await expect(rotateAnthropicConnectionKey(P, CONN, { apiKey: 'sk-new-key-0001', connectedBy: null, verifiedAt: new Date() }))
+      .rejects.toMatchObject({ name: 'AnthropicConnectionMissingError' });
+    expect(writes()).toEqual([]);
+  });
+});
+
+describe('switchAnthropicConnectionKind (in place)', () => {
+  it('BYOK → catalog converts the offerings to the catalog shape and keeps the connection id; no remap, no delete', async () => {
+    m.respond = baseRespond((text) => {
+      if (text.includes('FOR UPDATE')) return [LOCKED];
+      if (text.startsWith('SELECT name FROM llm_provider_catalog')) return [{ name: 'Gateway' }];
+      if (text.startsWith('UPDATE partner_ai_connections SET')) return [{ config_version: 4 }];
+      return undefined;
+    });
+    expect(await switchAnthropicConnectionKind(P, CONN, { kind: 'catalog', catalogEntryId: 'e1' })).toEqual({ connectionId: CONN, configVersion: 4 });
+    const offerings = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_models SET'))!;
+    expect(offerings.text).toContain("source = 'catalog', platform_model_id = NULL, capabilities = NULL");
+    expect(offerings.params).toEqual(expect.arrayContaining([P, CONN]));
+    const conn = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
+    expect(conn.params).toEqual(expect.arrayContaining(['catalog', 'e1', 'Gateway', CONN, P]));
+    expect(m.statements.some((s) => s.text.startsWith('UPDATE ai_model_assignments'))).toBe(false);
+    expect(deletes()).toEqual([]);
+    expect(m.createConnection).not.toHaveBeenCalled();
+  });
+
+  it('a switch to the kind it already has is refused (stale)', async () => {
+    m.respond = baseRespond((text) => (text.includes('FOR UPDATE') ? [LOCKED] : undefined));
+    await expect(switchAnthropicConnectionKind(P, CONN, { kind: 'anthropic_byok', catalogEntryId: null }))
+      .rejects.toMatchObject({ name: 'AnthropicConnectionMissingError' });
+    expect(writes()).toEqual([]);
   });
 });

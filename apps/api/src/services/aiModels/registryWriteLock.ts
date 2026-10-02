@@ -2,8 +2,9 @@
  * The per-partner AI model registry lock (W03 cutover, W04 writes, W08 #7606).
  *
  * One transaction-scoped advisory lock per partner serialises every registry
- * writer: the bootstrap (registryCutover.ts), the compat connection writes, the
- * W06 env bootstrap and W04's /ai/models writes. W03/W06/W08 writers BLOCK on
+ * writer: the bootstrap (registryCutover.ts), the Anthropic connection writes
+ * (anthropicConnectionWrites.ts), the W06 env bootstrap and W04's /ai/models
+ * writes. W03/W06/W08 writers BLOCK on
  * it; W04 writes TRY it and answer 503 registry_busy, because a W04 write
  * already holds the request connection and blocking there could park pooled
  * connections behind a holder that needs another one.

@@ -1,7 +1,14 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
+
+// The key probe is the only network call; the discovery queue needs Redis.
+vi.mock('../../services/aiModels/connectionProbe', async (orig) => ({
+  ...(await orig<typeof import('../../services/aiModels/connectionProbe')>()),
+  probeAnthropicKey: vi.fn(async () => undefined),
+}));
+vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn(async () => undefined) }));
 import {
   db,
   withDbAccessContext,
@@ -9,6 +16,8 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { llmProviderCatalog, partnerAiConnections, partnerLlmConfigs } from '../../db/schema';
+import { changeAnthropicEndpoint } from '../../services/aiModels/anthropicConnectionWrites';
+import { probeAnthropicKey } from '../../services/aiModels/connectionProbe';
 import { createConnection } from '../../services/aiModels/connections';
 import { resolveLlmConfig } from '../../services/llm/llmConfigResolver';
 import {
@@ -20,6 +29,9 @@ import {
 } from '../../services/llmProviderCatalog';
 import { __setLookupForTests } from '../../services/urlSafety';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { fixtureSql } from './aiModelRegistryFixtures';
+import { seedListedCatalogEntry, seedPricedPlatformModel as seedW03PlatformModel, seedRegistryPartner } from './helpers/aiModelRegistrySeed';
+import { resolveModel } from '../../services/aiModels/resolveModel';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -169,6 +181,91 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
       partnerId: partner.id,
       reason: 'provider_delisted',
     });
+  });
+
+  // =========================================================================
+  // W08 (#7606): endpoint selection is id-keyed and validates the partner's
+  // chat default model (the per-connection pinned model is gone); a BYOK <->
+  // catalog switch converts the connection IN PLACE.
+  // =========================================================================
+  const connectionState = async (id: string) => (await fixtureSql`
+    SELECT kind, catalog_entry_id, api_key_encrypted, config_version, status FROM partner_ai_connections WHERE id = ${id}`)[0]!;
+  const offeringsOn = (connectionId: string) => fixtureSql`
+    SELECT id, model_id, source, platform_model_id, enabled,
+           num_nonnulls(price_input_cents_per_m, price_output_cents_per_m, price_cache_read_cents_per_m, price_cache_write_cents_per_m) AS priced,
+           capabilities
+      FROM partner_ai_models WHERE connection_id = ${connectionId} ORDER BY id`;
+  const assignmentDefaults = (partnerId: string) => fixtureSql`
+    SELECT id, default_offering_id, fallback_offering_ids FROM ai_model_assignments WHERE offering_partner_id = ${partnerId} ORDER BY id`;
+
+  runDb('a catalog switch validates the partner chat default model: unmapped on the revision → 409, nothing written or probed', async () => {
+    const s = await seedRegistryPartner('byok');
+    // The revision maps (and verifies) a different platform model only.
+    const otherModel = `not-the-chat-model-${randomUUID()}`;
+    await seedW03PlatformModel(otherModel);
+    const entryId = await seedListedCatalogEntry([otherModel], s.userId);
+    const before = await connectionState(s.connectionId!);
+    const offeringsBefore = await offeringsOn(s.connectionId!);
+    vi.mocked(probeAnthropicKey).mockClear();
+
+    await expect(changeAnthropicEndpoint({
+      partnerId: s.partnerId, connectionId: s.connectionId!, catalogEntryId: entryId, acknowledgeDataNote: true, userId: s.userId,
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('does not currently support your configured AI model') });
+
+    expect(probeAnthropicKey).not.toHaveBeenCalled();
+    expect(await connectionState(s.connectionId!)).toEqual(before);
+    expect(await offeringsOn(s.connectionId!)).toEqual(offeringsBefore);
+  });
+
+  runDb('a BYOK → catalog switch is in place: same id, same key ciphertext, every assignment unchanged; offerings take the catalog shape; config_version + 1', async () => {
+    const s = await seedRegistryPartner('byok');
+    const entryId = await seedListedCatalogEntry([s.modelId], s.userId);
+    const before = await connectionState(s.connectionId!);
+    const assignmentsBefore = await assignmentDefaults(s.partnerId);
+
+    const result = await changeAnthropicEndpoint({
+      partnerId: s.partnerId, connectionId: s.connectionId!, catalogEntryId: entryId, acknowledgeDataNote: true, userId: s.userId,
+    });
+
+    expect(result).toMatchObject({ connectionId: s.connectionId, catalogEntryId: entryId, configVersion: before.config_version + 1 });
+    expect(await connectionState(s.connectionId!)).toEqual({
+      kind: 'catalog', catalog_entry_id: entryId, api_key_encrypted: before.api_key_encrypted,
+      config_version: before.config_version + 1, status: 'active',
+    });
+    expect(await assignmentDefaults(s.partnerId)).toEqual(assignmentsBefore);
+    const offerings = await offeringsOn(s.connectionId!);
+    expect(offerings.map((o) => o.id)).toEqual([s.offeringId]);
+    expect(offerings[0]).toMatchObject({ source: 'catalog', platform_model_id: null, priced: 0, capabilities: null, enabled: true });
+    // Only one Anthropic connection row exists: nothing was created next to it.
+    expect(await fixtureSql`SELECT 1 FROM partner_ai_connections WHERE partner_id = ${s.partnerId}`).toHaveLength(1);
+    // The registry routes chat through the same connection, now the catalog endpoint, on the partner's key.
+    expect(await resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' })).toMatchObject({
+      ok: true, funding: 'partner_key', logicalModel: s.modelId,
+    });
+  });
+
+  runDb('catalog → direct relinks each offering to its platform row (discovered) and disables one whose model has no platform row', async () => {
+    const s = await seedRegistryPartner('catalog');
+    const orphanModel = `gw-only-${randomUUID()}`;
+    const [orphan] = await fixtureSql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, enabled)
+      VALUES (${s.partnerId}, ${s.connectionId}, ${orphanModel}, 'catalog', true) RETURNING id`;
+    const before = await connectionState(s.connectionId!);
+    const assignmentsBefore = await assignmentDefaults(s.partnerId);
+
+    const result = await changeAnthropicEndpoint({
+      partnerId: s.partnerId, connectionId: s.connectionId!, catalogEntryId: null, acknowledgeDataNote: false, userId: s.userId,
+    });
+
+    expect(result).toEqual({ connectionId: s.connectionId, catalogEntryId: null, configVersion: before.config_version + 1, slug: null, revision: null });
+    expect(await connectionState(s.connectionId!)).toEqual({
+      kind: 'anthropic_byok', catalog_entry_id: null, api_key_encrypted: before.api_key_encrypted,
+      config_version: before.config_version + 1, status: 'active',
+    });
+    expect(await assignmentDefaults(s.partnerId)).toEqual(assignmentsBefore);
+    const byId = new Map((await offeringsOn(s.connectionId!)).map((o) => [o.id, o]));
+    expect(byId.get(s.offeringId)).toMatchObject({ source: 'discovered', platform_model_id: s.platformModelId, enabled: true, priced: 0 });
+    expect(byId.get(String(orphan!.id))).toMatchObject({ source: 'manual', platform_model_id: null, enabled: false, priced: 0 });
   });
 
   // =========================================================================

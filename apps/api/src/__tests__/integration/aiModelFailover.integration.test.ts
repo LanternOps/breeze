@@ -8,7 +8,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeRegistryFixtures, fixtureSql, seedOffering } from './aiModelRegistryFixtures';
 import { withSystemDbAccessContext } from '../../db';
 import { reserveAiBudget } from '../../services/aiBudgetReservations';
-import { disconnectCompat } from '../../services/aiModels/compatRemap';
+import { disconnectAnthropicConnection } from '../../services/aiModels/connectionRemap';
 import { recordServedHop, startHopFor } from '../../services/aiAgents/agentRunFailover';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { turnBindingFrom } from '../../services/aiModels/turnBinding';
@@ -248,7 +248,7 @@ describe.runIf(RUN)('W09: compat remaps keep a registry-native fallback list ver
     const f = await seedFailoverPartner();
     await setPartnerDefault(f, 'script_reviewer', f.byokOfferingId);
     await setPartnerFallbacks(f, 'script_reviewer', [f.platformOfferingId], true);
-    expect(await withSystemDbAccessContext(() => disconnectCompat(f.partnerId))).toBe(true);
+    expect(await withSystemDbAccessContext(() => disconnectAnthropicConnection(f.partnerId, f.byokConnectionId))).toBe(true);
     const row = await assignmentOf(f.partnerId, 'script_reviewer');
     expect(row.default_offering_id).toBe(f.platformOfferingId);
     expect(row.fallback_offering_ids).toEqual([f.platformOfferingId]);

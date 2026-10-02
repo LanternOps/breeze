@@ -2,7 +2,7 @@
  * Database side of the MCP_LLM_* env bootstrap (W06 #7604, D6).
  *
  * Every write runs inside `inPartnerEnvLock`: ONE system transaction holding
- * the per-partner registry lock — the same key W03's cutover/compatRemap and
+ * the per-partner registry lock — the same key W03's cutover, connectionRemap and
  * W04/W06's /ai/models writes use (registryWriteLock.lockPartnerRegistry),
  * so the bootstrap serialises with all of them and with itself on another
  * replica. It WAITS for the lock (bounded by lock_timeout) instead of W04's
