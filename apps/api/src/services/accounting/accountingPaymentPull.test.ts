@@ -1961,3 +1961,9 @@ describe('Breeze-origin messages are provider-labelled (Xero W01)', () => {
     expect(breezeOriginRemovedMessage('Xero')).toBe('Deleted in Xero');
   });
 });
+
+it('imports an unreserved overpayment instead of poisoning reconciliation', async () => {
+  collectionAvailable.mockRejectedValueOnce(new InvoiceServiceError('Payment exceeds balance', 400, 'OVERPAYMENT'));
+  await expect(applyAccountingPayment(conn(), LINE, runCtx, REALM_FP)).resolves.toMatchObject({ outcome: 'applied' });
+  expect(currentPayments).toHaveLength(1);
+});

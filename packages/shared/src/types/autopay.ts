@@ -11,10 +11,11 @@ export const AUTOPAY_SCHEDULE_STATES = ['awaiting_notice', 'scheduled', 'collect
 export const AUTOPAY_INELIGIBLE_REASONS = ['not_enrolled', 'enrolled_after_issue', 'method_not_usable', 'over_cap', 'cap_currency_mismatch', 'ach_currency_unsupported', 'excluded_contract', 'excluded_invoice', 'charging_disabled', 'stripe_unavailable'] as const;
 export const COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'succeeded', 'failed', 'requires_action', 'canceled', 'unapplied'] as const;
 export const ACTIVE_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing'] as const;
+export const RESERVING_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'requires_action'] as const;
 export const COLLECTION_FAILURE_CLASSES = ['soft', 'hard', 'auth_required', 'nsf', 'revoked'] as const;
 export const COLLECTION_ATTEMPT_INITIATORS = ['scheduler', 'msp_charge_now', 'client_on_session'] as const;
 export const BILLING_NOTICE_KINDS = ['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring'] as const;
-export const BILLING_NOTICE_STATUSES = ['pending', 'sending', 'sent', 'failed', 'cancelled'] as const;
+export const BILLING_NOTICE_STATUSES = ['pending', 'sending', 'sent', 'failed', 'cancelled', 'handler_failed'] as const;
 export const BILLING_LINK_PURPOSES = ['enroll', 'skip_invoice', 'stop_autopay', 'confirm_payment'] as const;
 export const CONSENT_SOURCES = ['setup_page', 'pay_and_save', 'portal'] as const;
 

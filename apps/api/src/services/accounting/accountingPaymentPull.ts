@@ -1,3 +1,4 @@
+import { InvoiceServiceError } from '../invoiceTypes';
 import { assertCollectionAmountAvailable } from '../autopay/reservation';
 /**
  * The QuickBooks -> Breeze payment applier (Phase D, Task 3 —
@@ -565,7 +566,7 @@ async function applyInsideTransaction(
     // hands back a live row rather than a snapshot.
     const replacedSyncToken = existing.remoteSyncToken;
 
-    await assertCollectionAmountAvailable(db, inv.id, normalized.amount, existing.breezeEntityId);
+    await assertImportedAmountAvailable(inv.id, normalized.amount, existing.breezeEntityId);
     const updatedPayments = await db
       .update(invoicePayments)
       .set({ amount: normalized.amount, method, reference, receivedAt: normalized.txnDate })
@@ -629,7 +630,7 @@ async function applyInsideTransaction(
   }
 
   // (f) First delivery for this (payment, invoice) pair.
-  await assertCollectionAmountAvailable(db, inv.id, normalized.amount);
+  await assertImportedAmountAvailable(inv.id, normalized.amount);
   const insertedPayments = await db
     .insert(invoicePayments)
     .values({
@@ -1509,4 +1510,13 @@ export async function markInvoiceDeletedRemotely(
     await markInvoiceMappingError(conn, mapping.id, invoiceRemoteDeletedMarker(conn.provider));
     return 'marked';
   });
+}
+
+/** External money already moved: preserve historical overpayment import, while
+ * reservations remain a transient refusal so reconciliation retries safely. */
+async function assertImportedAmountAvailable(invoiceId: string, amount: string, replacingPaymentId?: string): Promise<void> {
+  try { await assertCollectionAmountAvailable(db, invoiceId, amount, replacingPaymentId); }
+  catch (error) {
+    if (!(error instanceof InvoiceServiceError) || error.code !== 'OVERPAYMENT') throw error;
+  }
 }

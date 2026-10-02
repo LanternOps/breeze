@@ -2010,7 +2010,7 @@ async function bootstrap(): Promise<void> {
   installSignalHandlers();
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (!process.env.VITEST) {
   void bootstrap().catch((error) => {
     console.error('[CRITICAL] API startup failed:', error);
     process.exit(1);

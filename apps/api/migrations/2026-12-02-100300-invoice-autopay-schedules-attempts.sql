@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS invoice_autopay_schedules (
  client_skipped_at timestamptz,
  msp_excluded_by uuid,
  msp_excluded_at timestamptz,
+ CONSTRAINT invoice_autopay_schedules_eligible_chk CHECK (eligible = (ineligible_reason IS NULL)),
+ CONSTRAINT invoice_autopay_schedules_collect_on_chk CHECK (state NOT IN ('scheduled','retry_scheduled') OR collect_on IS NOT NULL),
  CONSTRAINT invoice_autopay_schedules_invoice_id_unique UNIQUE (invoice_id), CONSTRAINT invoice_autopay_schedules_id_org_id_unique UNIQUE (id,org_id),
  CONSTRAINT invoice_autopay_schedules_authority_chk CHECK (enrollment_id IS NOT NULL OR state IN ('succeeded','failed','skipped_by_client','excluded_by_msp','cancelled','not_needed')),
  CONSTRAINT invoice_autopay_schedules_invoice_org_fk FOREIGN KEY (invoice_id,org_id) REFERENCES invoices(id,org_id) DEFERRABLE INITIALLY IMMEDIATE,
@@ -36,7 +38,7 @@ CREATE TABLE IF NOT EXISTS invoice_collection_attempts (
  idempotency_key text NOT NULL,
  principal_amount numeric(12,2) NOT NULL CHECK (principal_amount > 0),
  fee_amount numeric(12,2) NOT NULL DEFAULT 0 CHECK (fee_amount >= 0),
- currency char(3) NOT NULL,
+ currency char(3) NOT NULL CONSTRAINT invoice_collection_attempts_currency_chk CHECK (currency ~ '^[A-Z]{3}$'),
  state collection_attempt_state NOT NULL DEFAULT 'reserved',
  failure_code text,
  decline_code text,
@@ -53,7 +55,7 @@ CREATE TABLE IF NOT EXISTS invoice_collection_attempts (
  CONSTRAINT invoice_collection_attempts_method_org_fk FOREIGN KEY (payment_method_id,org_id) REFERENCES org_payment_methods(id,org_id) DEFERRABLE INITIALLY IMMEDIATE,
  CONSTRAINT invoice_collection_attempts_mapping_org_fk FOREIGN KEY (invoice_stripe_payment_id,org_id) REFERENCES invoice_stripe_payments(id,org_id) DEFERRABLE INITIALLY IMMEDIATE
 );
-CREATE INDEX IF NOT EXISTS invoice_collection_attempts_active_idx ON invoice_collection_attempts(invoice_id,state) WHERE state IN ('reserved','created','confirming','processing');
+CREATE INDEX IF NOT EXISTS invoice_collection_attempts_active_idx ON invoice_collection_attempts(invoice_id,state) WHERE state IN ('reserved','created','confirming','processing','requires_action');
 ALTER TABLE invoice_autopay_schedules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_autopay_schedules FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS breeze_autopay_tenant ON invoice_autopay_schedules;

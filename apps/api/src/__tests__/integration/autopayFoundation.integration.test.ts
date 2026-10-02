@@ -39,7 +39,7 @@ async function state(work: () => Promise<unknown>) {
 }
 describe('autopay foundation PostgreSQL contracts', () => {
   run('replays the five creating migrations without changing their schema', async()=>{
-    for (const name of ['2026-11-20-100000-autopay-enums.sql','2026-11-20-100100-billing-payment-settings.sql','2026-11-20-100200-org-autopay-enrollments-methods-consents.sql','2026-11-20-100300-invoice-autopay-schedules-attempts.sql','2026-11-20-100400-billing-notice-outbox-link-tokens.sql']) {
+    for (const name of ['2026-12-02-100000-autopay-enums.sql','2026-12-02-100100-billing-payment-settings.sql','2026-12-02-100200-org-autopay-enrollments-methods-consents.sql','2026-12-02-100300-invoice-autopay-schedules-attempts.sql','2026-12-02-100400-billing-notice-outbox-link-tokens.sql']) {
       const body=readFileSync(join(__dirname,'../../../migrations',name),'utf8');
       for(let n=0;n<2;n++) await admin.begin(async tx=>{ await tx.unsafe(body); });
     }
@@ -160,4 +160,55 @@ describe('autopay foundation PostgreSQL contracts', () => {
       expect(removed).toHaveLength(1);
     });
   });
+});
+
+describe('autopay authority and lifecycle CHECK constraints', () => {
+  run('B1 prevents duplicate provider methods and removed methods without a timestamp', async () => {
+    const f = await fixture();
+    expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`INSERT INTO org_payment_methods(org_id,enrollment_id,stripe_payment_method_id,type) VALUES (${f.b.id}::uuid,${f.enrollment}::uuid,${'pm_'+f.method},'card')`)))).toBe('23505');
+    expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`UPDATE org_payment_methods SET status='removed' WHERE id=${f.method}::uuid`)))).toBe('23514');
+  });
+  run('B2 requires cancellation provenance and active effective date', async () => {
+    const f = await fixture();
+    for (const patch of [sql`status='cancelled'`, sql`status='cancelled',cancelled_at=now()`, sql`status='cancelled',cancel_source='system'`, sql`status='active'`]) {
+      expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`UPDATE org_autopay_enrollments SET ${patch} WHERE id=${f.enrollment}::uuid`)))).toBe('23514');
+    }
+  });
+  run('B3 ties eligibility to reason and scheduled states to collection date', async () => {
+    const f = await fixture();
+    for (const patch of [sql`eligible=false`, sql`ineligible_reason='over_cap'`, sql`state='scheduled'`, sql`state='retry_scheduled'`]) {
+      expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`UPDATE invoice_autopay_schedules SET ${patch} WHERE id=${f.schedule}::uuid`)))).toBe('23514');
+    }
+  });
+  run('B4 rejects lowercase and malformed collection currencies', async () => {
+    const f = await fixture();
+    for (const currency of ['usd', 'US', '12X']) {
+      expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`INSERT INTO invoice_collection_attempts(org_id,invoice_id,attempt_no,payment_method_id,idempotency_key,principal_amount,currency,initiated_by) VALUES (${f.b.id}::uuid,${f.invoice}::uuid,1,${f.method}::uuid,${randomUUID()},1,${currency},'client_on_session')`)))).toBe('23514');
+    }
+  });
+  run('B5 requires the purpose-specific token authority', async () => {
+    const f = await fixture();
+    for (const purpose of vocabulary.BILLING_LINK_PURPOSES) {
+      expect(await state(() => withSystemDbAccessContext(() => db.execute(sql`INSERT INTO billing_link_tokens(org_id,purpose,token_hash,token_ct,expires_at) VALUES (${f.b.id}::uuid,${purpose}::billing_link_purpose,${randomUUID()},'ct',now()+interval '1 day')`)))).toBe('23514');
+    }
+  });
+});
+
+run('C5 RLS hides every authority/history row across orgs while same-partner scope reads it', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.execute(sql`INSERT INTO invoice_collection_attempts(org_id,invoice_id,attempt_no,payment_method_id,idempotency_key,principal_amount,currency,initiated_by) VALUES (${f.b.id}::uuid,${f.invoice}::uuid,1,${f.method}::uuid,${randomUUID()},1,'USD','client_on_session')`);
+    await db.execute(sql`INSERT INTO billing_notice_outbox(org_id,kind,seq,dedupe_key,to_email,rendered) VALUES (${f.b.id}::uuid,'autopay_request',1,${randomUUID()},'client@example.test','{}')`);
+    await db.execute(sql`INSERT INTO billing_link_tokens(org_id,enrollment_id,purpose,token_hash,token_ct,expires_at) VALUES (${f.b.id}::uuid,${f.enrollment}::uuid,'enroll',${randomUUID()},'ct',now()+interval '1 day')`);
+    await db.execute(sql`INSERT INTO org_autopay_consents(org_id,enrollment_id,generation,payment_method_id,consent_text_version,consent_text_hash,fee_terms,schedule_terms,contact_email,source) VALUES (${f.b.id}::uuid,${f.enrollment}::uuid,1,${f.method}::uuid,'v1','hash','{}','{}','client@example.test','setup_page')`);
+  });
+  for (const name of tables.filter(t => t !== 'billing_payment_settings')) {
+    const table = sql.identifier(name);
+    expect(await withDbAccessContext({ scope: 'partner', orgId: null, currentPartnerId: f.partner.id, accessiblePartnerIds: [f.partner.id], accessibleOrgIds: [f.a.id, f.b.id] }, () => db.execute(sql`SELECT id FROM ${table} WHERE org_id=${f.b.id}::uuid`))).toHaveLength(1);
+    expect(await withDbAccessContext(f.ctx, () => db.execute(sql`SELECT id FROM ${table} WHERE org_id=${f.b.id}::uuid`))).toHaveLength(0);
+    for (const query of [sql`UPDATE ${table} SET org_id=org_id WHERE org_id=${f.b.id}::uuid RETURNING id`, sql`DELETE FROM ${table} WHERE org_id=${f.b.id}::uuid RETURNING id`]) {
+      if (name === 'org_autopay_consents') expect(await state(() => withDbAccessContext(f.ctx, () => db.execute(query)))).toBe('42501');
+      else expect(await withDbAccessContext(f.ctx, () => db.execute(query))).toHaveLength(0);
+    }
+  }
 });

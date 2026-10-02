@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS org_autopay_enrollments (
  cancel_source text CHECK (cancel_source IN ('client','msp','system')),
  cancel_reason text,
  needs_attention_reason text CHECK (needs_attention_reason IN ('method_unusable','stripe_account_changed','key_missing_permissions','verification_failed')),
+ CONSTRAINT org_autopay_enrollments_cancelled_chk CHECK (status <> 'cancelled' OR (cancelled_at IS NOT NULL AND cancel_source IS NOT NULL)),
+ CONSTRAINT org_autopay_enrollments_active_chk CHECK (status <> 'active' OR effective_from IS NOT NULL),
  CONSTRAINT org_autopay_enrollments_org_id_unique UNIQUE (org_id), CONSTRAINT org_autopay_enrollments_id_org_id_unique UNIQUE (id,org_id),
  CONSTRAINT org_autopay_enrollments_org_partner_fk FOREIGN KEY (org_id,partner_id) REFERENCES organizations(id,partner_id) DEFERRABLE INITIALLY IMMEDIATE,
  CONSTRAINT org_autopay_enrollments_connection_partner_fk FOREIGN KEY (stripe_connection_id,partner_id) REFERENCES stripe_connect_accounts(id,partner_id) DEFERRABLE INITIALLY IMMEDIATE
@@ -44,12 +46,16 @@ CREATE TABLE IF NOT EXISTS org_payment_methods (
  is_autopay_method boolean NOT NULL DEFAULT false,
  created_at timestamptz NOT NULL DEFAULT now(),
  removed_at timestamptz,
+ detach_failed_at timestamptz,
  detach_attempts integer NOT NULL DEFAULT 0,
  detach_next_attempt_at timestamptz NOT NULL DEFAULT now(),
+ CONSTRAINT org_payment_methods_org_id_stripe_payment_method_id_unique UNIQUE (org_id,stripe_payment_method_id),
+ CONSTRAINT org_payment_methods_removed_chk CHECK (status <> 'removed' OR removed_at IS NOT NULL),
  CONSTRAINT org_payment_methods_id_org_id_unique UNIQUE (id,org_id),
  CONSTRAINT org_payment_methods_enrollment_org_fk FOREIGN KEY (enrollment_id,org_id) REFERENCES org_autopay_enrollments(id,org_id) DEFERRABLE INITIALLY IMMEDIATE
 );
 -- Also support replay against an earlier version of this unmerged foundation.
+ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_failed_at timestamptz;
 ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE org_payment_methods ADD COLUMN IF NOT EXISTS detach_next_attempt_at timestamptz NOT NULL DEFAULT now();
 CREATE UNIQUE INDEX IF NOT EXISTS org_payment_methods_autopay_uq ON org_payment_methods(org_id) WHERE is_autopay_method AND status IN ('active','pending_verification');

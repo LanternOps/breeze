@@ -113,12 +113,12 @@ export const STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS = 23 * 60 * 60 * 1000;
  * on the partner's account with this key (no platform, no Connect, no Stripe-Account
  * header). One row per partner (partner-axis RLS; unique on partner_id).
  */
-async function probeAutopayPermissions(stripe: Stripe): Promise<AutopayStripeCapability[]> {
+async function probeAutopayPermissions(stripe: Stripe, partnerId: string): Promise<AutopayStripeCapability[]> {
   try { return (await probeAutopayCapabilities(stripe)).missing; }
   catch (error) {
-    throw isTransientStripeError(error)
-      ? new PartnerStripeError('Could not verify automatic-payment permissions — try again.', 'STRIPE_UNAVAILABLE')
-      : new PartnerStripeError('Could not verify automatic-payment permissions for this key.', 'STRIPE_ACCOUNT_UNKNOWN');
+    console.error('[partnerStripe] autopay capability probe unavailable', { partnerId, phase: 'autopay_capabilities' });
+    // Fail closed for autopay without breaking existing Checkout connection flows.
+    return ['customers_write', 'setup_intents_write', 'payment_intents_write', 'payment_methods_write', 'mandates_read'];
   }
 }
 
@@ -231,7 +231,7 @@ export async function savePartnerStripeKey(input: {
     }
   }
 
-  const autopayMissingPermissions = await probeAutopayPermissions(probe);
+  const autopayMissingPermissions = await probeAutopayPermissions(probe, input.partnerId);
 
   const accountId = account.id;
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
@@ -526,7 +526,7 @@ export async function refreshPartnerStripeAccount(partnerId: string, attempt = 0
 
   const defaultCurrency = account.default_currency ? account.default_currency.toUpperCase() : null;
   const accountCountry = account.country ?? null;
-  const autopayMissingPermissions = await probeAutopayPermissions(stripe);
+  const autopayMissingPermissions = await probeAutopayPermissions(stripe, partnerId);
   const now = new Date();
 
   const [updated] = await withSystemDbAccessContext(() =>

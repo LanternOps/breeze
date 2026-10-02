@@ -1910,7 +1910,8 @@
       "check": "Überprüfen",
       "bank_transfer": "Banküberweisung",
       "card": "Karte",
-      "other": "Andere"
+      "other": "Andere",
+      "ach_debit": "ACH debit"
     },
     "payments": {
       "amount": "Betrag",

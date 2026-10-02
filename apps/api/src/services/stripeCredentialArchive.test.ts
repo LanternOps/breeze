@@ -15,7 +15,10 @@ beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.updates.length = 0; 
 describe('credential retention for active collection', () => {
   it('an active attempt overrides even the historical 400-day erase cap', async () => {
     h.rows.push([expired], [{ id: 'active-attempt' }]);
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
     expect(await eraseExpiredStripeCredentials(now)).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ skipped: 1 }));
+    log.mockRestore();
     expect(h.updates).toHaveLength(0);
   });
   it('erases after the hard cap once no active attempt remains', async () => {

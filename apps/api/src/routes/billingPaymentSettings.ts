@@ -6,7 +6,7 @@ import { partnerPaymentSettingsPatchSchema, orgPaymentSettingsPatchSchema } from
 import { db } from '../db';
 import { organizations } from '../db/schema';
 import { zValidator } from '../lib/validation';
-import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
+import { authMiddleware, requireMfa, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -55,12 +55,13 @@ billingPaymentSettingsRoutes.put('/partner/billing/payment-settings', authMiddle
     return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId }),
       autopayEnabled: await isAutopayEnabledForPartner(db, partnerId) });
   });
-billingPaymentSettingsRoutes.get('/orgs/:orgId/billing/payment-settings', authMiddleware,
+billingPaymentSettingsRoutes.get('/orgs/:orgId/billing/payment-settings', authMiddleware, requireScope('partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('param', z.object({ orgId: z.string().guid() })), async c => {
     const { orgId } = c.req.valid('param'); const partnerId = await orgPartner(c, orgId);
     return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId, orgId }) });
   });
-billingPaymentSettingsRoutes.put('/orgs/:orgId/billing/payment-settings', authMiddleware, writePermission,
+billingPaymentSettingsRoutes.put('/orgs/:orgId/billing/payment-settings', authMiddleware, requireScope('partner', 'system'), writePermission, requireMfa(),
   zValidator('param', z.object({ orgId: z.string().guid() })), zValidator('json', orgPaymentSettingsPatchSchema), async c => {
     const { orgId } = c.req.valid('param'); const partnerId = await orgPartner(c, orgId); const patch = c.req.valid('json');
     const refusal = await refuseDisabledAutopay(c, partnerId, patch); if (refusal) return refusal;

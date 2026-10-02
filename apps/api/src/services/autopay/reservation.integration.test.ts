@@ -1,4 +1,5 @@
 import { getTestDb } from '../../__tests__/integration/setup';
+import { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
@@ -14,12 +15,41 @@ import { __test__ as sdk } from '../aiAgentSdkTools';
 import type { AuthContext } from '../../middleware/auth';
 import type { ChangeSetPaymentLine } from '../accounting/types';
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), client: vi.fn() }));
+const mocks = vi.hoisted(() => ({ create: vi.fn(), client: vi.fn(), key: {} as any, audit: vi.fn() }));
 vi.mock('../partnerStripe', async (original) => ({
   ...(await original<typeof import('../partnerStripe')>()), getPartnerStripeClient: mocks.client,
 }));
 vi.mock('../invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
+
+vi.mock('../../middleware/apiKeyAuth', async original => ({
+  ...(await original<typeof import('../../middleware/apiKeyAuth')>()),
+  apiKeyAuthMiddleware: async (c: any, next: any) => {
+    c.set('apiKey', mocks.key); c.set('apiKeyOrgId', mocks.key.orgId);
+    const { withDbAccessContext } = await import('../../db');
+    // Model the real auth middleware's transaction boundary. The MCP route
+    // itself must set its opt-out before authentication is invoked.
+    if (c.get('mcpSkipAmbientDbContext')) return next();
+    return withDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: mocks.key.accessibleOrgIds, accessiblePartnerIds: [mocks.key.partnerId], currentPartnerId: mocks.key.partnerId }, next);
+  },
+}));
+vi.mock('../../middleware/bearerTokenAuth', async original => ({
+  ...(await original<typeof import('../../middleware/bearerTokenAuth')>()), resolvePartnerAccessibleOrgIds: async () => mocks.key.accessibleOrgIds,
+}));
+vi.mock('../permissions', async original => ({
+  ...(await original<typeof import('../permissions')>()), getUserPermissions: async () => ({ permissions: new Set(), allowedSiteIds: null }),
+}));
+vi.mock('../apiKeyAuthorization', async original => ({
+  ...(await original<typeof import('../apiKeyAuthorization')>()),
+  authorizeHumanApiKeyCreator: async () => ({ ok: true, allowedSiteIds: null, clampedScopes: ['ai:read', 'ai:write'] }),
+}));
+vi.mock('../aiGuardrails', async original => ({
+  ...(await original<typeof import('../aiGuardrails')>()), checkToolPermission: async () => null, checkToolRateLimit: async () => null,
+}));
+vi.mock('../auditEvents', async original => ({
+  ...(await original<typeof import('../auditEvents')>()), writeAuditEvent: mocks.audit,
+}));
+import { mcpServerRoutes } from '../../routes/mcpServer';
 
 async function fixture() {
   return withSystemDbAccessContext(async () => {
@@ -39,7 +69,7 @@ async function fixture() {
 
 beforeEach(() => { vi.clearAllMocks(); });
 describe('reservation with real PostgreSQL', () => {
-  it.each(['manage_invoices', 'manage_quotes'])('%s creates a pay link without holding the invoice lock at Stripe', async (toolName) => {
+  it.each([['manage_invoices', 'sdk'], ['manage_quotes', 'sdk'], ['manage_invoices', 'mcp'], ['manage_quotes', 'mcp']])('%s over %s creates a pay link without holding the invoice lock at Stripe', async (toolName, dispatcher) => {
     const f = await fixture();
     const [quote] = await withSystemDbAccessContext(() => db.insert(quotes).values({
       partnerId: f.invoice.partnerId, orgId: f.invoice.orgId, currencyCode: 'USD',
@@ -60,12 +90,27 @@ describe('reservation with real PostgreSQL', () => {
       });
       return { id: `cs_${f.invoice.id}`, url: 'https://checkout.stripe.com/c/pay/synthetic', payment_intent: null };
     });
-    const result = await sdk.makeHandler(toolName, () => auth)({
-      action: 'create_pay_link', ...(toolName === 'manage_invoices' ? { invoiceId: f.invoice.id } : { quoteId: quote!.id }),
-    });
+    const input = { action: 'create_pay_link', ...(toolName === 'manage_invoices' ? { invoiceId: f.invoice.id } : { quoteId: quote!.id }) };
+    let result: any;
+    if (dispatcher === 'sdk') result = await sdk.makeHandler(toolName!, () => auth)(input);
+    else {
+      mocks.key = { id: randomUUID(), orgId: null, accessibleOrgIds: [f.invoice.orgId], partnerId: f.invoice.partnerId, createdBy: auth.user.id, name: 'Synthetic key', scopes: ['ai:read', 'ai:write'], rateLimit: 1000 };
+      const response = await new Hono().route('/mcp', mcpServerRoutes).request('/mcp/message', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'brz_synthetic' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: toolName, arguments: input } }),
+      });
+      const body = await response.json() as any;
+      expect(body.error).toBeUndefined(); result = body.result;
+      expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: `mcp.tool.${toolName}`, orgId: f.invoice.orgId, result: 'success' }));
+    }
     expect(result.isError).not.toBe(true);
     expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('https://checkout.stripe.com/c/pay/synthetic') })]);
     expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
+  it('reserves principal for requires_action PaymentIntents', async () => {
+    const f = await fixture();
+    await withSystemDbAccessContext(() => db.insert(invoiceCollectionAttempts).values({ ...f.attempt, state: 'requires_action' }));
+    expect(await withSystemDbAccessContext(() => lockInvoiceForCollection(db, f.invoice.id))).toMatchObject({ reservedAmount: '60.00', unreservedBalance: '40.00' });
   });
   it('rejects a caller holding a DB context before contacting Stripe', async () => {
     const f = await fixture();
@@ -134,7 +179,7 @@ describe('reservation with real PostgreSQL', () => {
     const state = await withSystemDbAccessContext(() => lockInvoiceForCollection(db, f.invoice.id));
     expect(state).toMatchObject({ reservedAmount: '60.00', unreservedBalance: '0.00' });
   });
-  it('applies an accounting import only within the real locked unreserved balance', async () => {
+  it('holds an overpayment while reserved and imports it after the reservation clears', async () => {
     const f = await fixture();
     const connection = await withSystemDbAccessContext(async () => {
       await db.insert(invoiceCollectionAttempts).values(f.attempt);
@@ -150,6 +195,10 @@ describe('reservation with real PostgreSQL', () => {
     await expect(applyAccountingPayment(connection, { ...line, amountMinor: 4000 }, fn => withSystemDbAccessContext(fn), null)).resolves.toMatchObject({ outcome: 'applied' });
     const state = await withSystemDbAccessContext(() => lockInvoiceForCollection(db, f.invoice.id));
     expect(state).toMatchObject({ reservedAmount: '60.00', unreservedBalance: '0.00' });
+    await withSystemDbAccessContext(() => db.delete(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceId, f.invoice.id)));
+    await expect(applyAccountingPayment(connection, { ...line, amountMinor: 15000, remotePaymentVersion: '2' }, fn => withSystemDbAccessContext(fn), null)).resolves.toMatchObject({ outcome: 'updated' });
+    const [overpaid] = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoice.id)));
+    expect(overpaid!.amount).toBe('150.00');
   });
   it('blocks link and void while allowing a customer-link reset', async () => {
     const f = await fixture();

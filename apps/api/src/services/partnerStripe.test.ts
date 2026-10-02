@@ -186,10 +186,11 @@ describe('savePartnerStripeKey', () => {
     expect(dbMocks.insertedValues[0]).toMatchObject({ autopayMissingPermissions: ['setup_intents_write', 'mandates_read'], autopayCapabilitiesCheckedAt: expect.any(Date) });
     expect(dbMocks.upsertConfigs[0]).toMatchObject({ set: expect.objectContaining({ autopayMissingPermissions: ['setup_intents_write', 'mandates_read'] }) });
   });
-  it('does not overwrite a saved capability snapshot on a probe outage', async () => {
+  it('saves a key with autopay unavailable on a probe outage', async () => {
     capabilityProbeMock.mockRejectedValue(Object.assign(new Error('temporary'), { type: 'StripeAPIError' }));
-    await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID })).rejects.toMatchObject({ code: 'STRIPE_UNAVAILABLE' });
-    expect(dbMocks.insertedValues).toHaveLength(0);
+    dbMocks.selectResults.push([]);
+    await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID })).resolves.toMatchObject({ stripeAccountId: 'acct_unit' });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['customers_write', 'mandates_read']) });
   });
 
   it('rejects a restricted key that cannot read events before enabling payment collection', async () => {
@@ -393,6 +394,14 @@ describe('refreshPartnerStripeAccount', () => {
     autopayCapabilitiesCheckedAt: new Date('2026-10-01T00:00:00Z'),
     autopayMissingPermissions: [],
     ...over,
+  });
+
+  it('refreshes account fields even when autopay capability probing fails', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    dbMocks.updateReturning.push([returnedRow()]);
+    capabilityProbeMock.mockRejectedValueOnce(new Error('probe outage'));
+    await expect(refreshPartnerStripeAccount(PARTNER_A)).resolves.toMatchObject({ stripeAccountId: 'acct_unit' });
+    expect(dbMocks.updatedValues.at(-1)).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['customers_write', 'mandates_read']) });
   });
 
   it('retrieves fresh account fields, updates the cache via RETURNING, and returns the persisted row', async () => {

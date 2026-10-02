@@ -65,3 +65,18 @@ describe('autopay worker registration', () => {
     await expect(processNoticeDispatch()).rejects.toThrow('database down');
   });
 });
+
+it('retains dispatch counts when detach drain fails', async () => {
+  mocks.drain.mockRejectedValueOnce(new Error('detach database down'));
+  await expect(processNoticeDispatch()).resolves.toEqual({ sent: 1, failed: 0 });
+});
+it('still drains when dispatch fails and surfaces failed counts', async () => {
+  mocks.dispatch.mockRejectedValueOnce(new Error('dispatch database down'));
+  await expect(processNoticeDispatch()).rejects.toThrow('dispatch database down');
+  expect(mocks.drain).toHaveBeenCalledOnce();
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  mocks.dispatch.mockResolvedValueOnce({ sent: 0, failed: 2 });
+  expect(await processNoticeDispatch()).toEqual({ sent: 0, failed: 2 });
+  expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ failed: 2 }));
+  log.mockRestore();
+});

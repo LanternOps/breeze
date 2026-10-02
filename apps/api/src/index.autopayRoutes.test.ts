@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const m = vi.hoisted(() => ({
   auth: null as any, allowed: true, enabled: false,
@@ -84,11 +85,11 @@ describe('autopay routes through exported API application', () => {
     expect((await request(orgPath)).status).toBe(200);
     expect(m.read).toHaveBeenLastCalledWith(expect.anything(), { partnerId, orgId });
   });
-  it('keeps reminders writable with rollout off, including organization scope', async () => {
+  it('keeps reminders writable with rollout off for partner administrators', async () => {
     expect((await request(partnerPath, 'PUT', { remindersEnabled: true })).status).toBe(200);
-    m.auth.scope = 'organization'; m.auth.orgId = orgId;
     expect((await request(orgPath, 'PUT', { reminderRepeatDays: null })).status).toBe(200);
     expect(m.partnerWrite).toHaveBeenCalledOnce(); expect(m.orgWrite).toHaveBeenCalledOnce();
+    m.auth.scope = 'organization';
     expect((await request(partnerPath)).status).toBe(403);
   });
   it('rejects mixed autopay/reminder writes atomically until enabled', async () => {
@@ -133,4 +134,30 @@ describe('autopay routes through exported API application', () => {
     m.partnerWrite.mockRejectedValueOnce(new Error('unavailable'));
     expect((await request(partnerPath, 'PUT', { remindersEnabled: true })).status).toBe(500);
   });
+});
+
+it('starts a real NODE_ENV=test API unless running under Vitest', () => {
+  const source = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
+  expect(source).toContain('if (!process.env.VITEST) {');
+});
+it('org settings reject mixed writes atomically and return enabled updates', async () => {
+  const response = await request(orgPath, 'PUT', { remindersEnabled: true, autopayOffsetDays: 0 });
+  expect(response.status).toBe(404);
+  expect(m.orgWrite).not.toHaveBeenCalled();
+  m.enabled = true;
+  const updated = await request(orgPath, 'PUT', { autopayOffsetDays: 0 });
+  expect(updated.status).toBe(200);
+  expect(await updated.json()).toEqual({ data: await m.read() });
+  expect(m.orgWrite).toHaveBeenCalledOnce();
+});
+it('org settings enforce scope, permission and MFA before writing', async () => {
+  m.auth.token.mfa = false;
+  expect((await request(orgPath, 'PUT', { remindersEnabled: true })).status).toBe(403);
+  m.auth.token.mfa = true; m.allowed = false;
+  expect((await request(orgPath)).status).toBe(403);
+  expect((await request(orgPath, 'PUT', { remindersEnabled: true })).status).toBe(403);
+  m.allowed = true; m.auth.scope = 'organization';
+  expect((await request(orgPath)).status).toBe(403);
+  expect((await request(orgPath, 'PUT', { remindersEnabled: true })).status).toBe(403);
+  expect(m.orgWrite).not.toHaveBeenCalled();
 });

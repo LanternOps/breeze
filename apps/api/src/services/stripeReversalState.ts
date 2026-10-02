@@ -183,9 +183,9 @@ function disputeEventIsNewer(mapping: typeof invoiceStripePayments.$inferSelect,
   return event.disputeFundsWithdrawn === false && mapping.disputeFundsWithdrawn;
 }
 
-function remainingPrincipalMinor(principalMinor: number, feeMinor: number, reversedGrossMinor: number): number {
+export function remainingPrincipalMinor(principalMinor: number, feeMinor: number | null, reversedGrossMinor: number): number {
   const principal = BigInt(principalMinor);
-  const gross = principal + BigInt(feeMinor);
+  const gross = principal + BigInt(feeMinor ?? 0);
   if (gross <= 0n) throw new Error('Stripe mapping has a non-positive gross amount');
   const reversed = BigInt(reversedGrossMinor);
   const bounded = reversed < 0n ? 0n : reversed > gross ? gross : reversed;

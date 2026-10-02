@@ -1910,7 +1910,8 @@
       "check": "Check",
       "bank_transfer": "Bank transfer",
       "card": "Card",
-      "other": "Other"
+      "other": "Other",
+      "ach_debit": "ACH debit"
     },
     "payments": {
       "amount": "Amount",

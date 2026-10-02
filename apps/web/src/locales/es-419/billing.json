@@ -1910,7 +1910,8 @@
       "check": "Cheque",
       "bank_transfer": "transferencia bancaria",
       "card": "Tarjeta",
-      "other": "Otro"
+      "other": "Otro",
+      "ach_debit": "ACH debit"
     },
     "payments": {
       "amount": "Cantidad",

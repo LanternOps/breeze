@@ -1910,7 +1910,8 @@
       "check": "Kontrol et",
       "bank_transfer": "Banka havalesi",
       "card": "Kart",
-      "other": "Diğer"
+      "other": "Diğer",
+      "ach_debit": "ACH debit"
     },
     "payments": {
       "amount": "Tutar",

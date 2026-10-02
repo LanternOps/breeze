@@ -1,4 +1,4 @@
-import { autopayMergeBlockerCount, drainAutopayMethodDetaches } from './autopay/merge';
+import { autopayMergeBlockerCount } from './autopay/merge';
 /**
  * Org merge engine (org-lifecycle Wave 2, Task 3).
  *
@@ -1203,11 +1203,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
   // Phase B is committed and irreversible from here — never unfence past this
   // point, whatever the stamp does.
   await self.stampTerminalShell(input, loser);
-  try {
-    await drainAutopayMethodDetaches();
-  } catch (error) {
-    console.error('[orgMerge] autopay method detach queue will retry', error);
-  }
+
 
   return result;
 }

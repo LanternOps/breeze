@@ -1,3 +1,5 @@
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { captureException } from '../sentry';
 import { findLatestArchivedCredentialForAccount } from '../stripeCredentialArchive';
 import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -7,7 +9,7 @@ import { getPartnerStripeClient, PartnerStripeError } from '../partnerStripe';
 
 export function autopayMergeBlockerCount(loser: string): SQL {
   return sql`SELECT count(*)::int AS n FROM invoice_collection_attempts
-    WHERE org_id=${loser}::uuid AND state IN ('reserved','created','confirming','processing')`;
+    WHERE org_id=${loser}::uuid AND state IN (${sql.join(RESERVING_COLLECTION_ATTEMPT_STATES.map(state => sql`${state}`), sql`, `)})`;
 }
 const outcome=(moved=0,notes:string[]=[]):MergeTableOutcome=>({moved,dropped:0,notes});
 async function update(q:SQL) { return extractRowCount(await db.execute(q)); }
@@ -26,9 +28,7 @@ export const autopayMergeExecutors: Readonly<Record<string,CustomMergeExecutor>>
     return outcome(await update(sql`UPDATE invoice_autopay_schedules SET enrollment_id=NULL,org_id=${survivor}::uuid WHERE org_id=${loser}::uuid`));
   },
   invoice_collection_attempts: async(loser,survivor)=>{
-    // requires_action is not reserved, but its client authority must die before history moves.
-    await update(sql`UPDATE invoice_collection_attempts SET state='canceled',updated_at=now() WHERE org_id=${loser}::uuid AND state='requires_action'`);
-    return outcome(await update(sql`UPDATE invoice_collection_attempts SET payment_method_id=NULL,org_id=${survivor}::uuid WHERE org_id=${loser}::uuid AND state NOT IN ('reserved','created','confirming','processing')`));
+    return outcome(await update(sql`UPDATE invoice_collection_attempts SET payment_method_id=NULL,org_id=${survivor}::uuid WHERE org_id=${loser}::uuid AND state NOT IN (${sql.join(RESERVING_COLLECTION_ATTEMPT_STATES.map(state => sql`${state}`), sql`, `)})`));
   },
   billing_notice_outbox: async(loser,survivor)=>{
     await update(sql`UPDATE billing_notice_outbox SET status='cancelled',last_error='org_merged' WHERE org_id=${loser}::uuid AND status IN ('pending','sending','failed')`);
@@ -36,6 +36,9 @@ export const autopayMergeExecutors: Readonly<Record<string,CustomMergeExecutor>>
   },
   billing_link_tokens: async(loser,survivor)=>{
     await update(sql`UPDATE billing_link_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE org_id=${loser}::uuid`);
+    // Enrollment links stay with their cancelled source authority. Drop their
+    // optional invoice reference before the invoice moves to the survivor.
+    await update(sql`UPDATE billing_link_tokens SET invoice_id=NULL WHERE org_id=${loser}::uuid AND purpose IN ('enroll','stop_autopay')`);
     return outcome(await update(sql`UPDATE billing_link_tokens SET enrollment_id=NULL,org_id=${survivor}::uuid WHERE org_id=${loser}::uuid AND invoice_id IS NOT NULL`));
   },
 };
@@ -45,11 +48,11 @@ export const autopayMergeExecutors: Readonly<Record<string,CustomMergeExecutor>>
 export async function drainAutopayMethodDetaches(): Promise<void> {
   await runOutsideDbContext(async()=>{
     const rows=await withSystemDbAccessContext(()=>db.execute(sql`
-      SELECT m.id,m.stripe_payment_method_id,e.partner_id,e.stripe_account_id,e.stripe_customer_id
+      SELECT m.id,m.org_id,m.detach_attempts,m.stripe_payment_method_id,e.partner_id,e.stripe_account_id,e.stripe_customer_id
       FROM org_payment_methods m JOIN org_autopay_enrollments e ON e.id=m.enrollment_id AND e.org_id=m.org_id
-      WHERE m.status='removed' AND m.unusable_reason='org_merged' AND m.detach_next_attempt_at<=now()
+      WHERE m.status='removed' AND m.unusable_reason='org_merged' AND m.detach_failed_at IS NULL AND m.detach_next_attempt_at<=now()
       ORDER BY m.detach_next_attempt_at,m.removed_at,m.id LIMIT 100`));
-    for (const row of rows as unknown as Array<{id:string;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {
+    for (const row of rows as unknown as Array<{id:string;org_id:string;detach_attempts:number;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {
       try {
         const client = await withSystemDbAccessContext(async () => {
           let live: Awaited<ReturnType<typeof getPartnerStripeClient>> | null = null;
@@ -62,20 +65,31 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
           if (original.stripeAccountId !== row.stripe_account_id) throw new Error('archived Stripe credential account mismatch');
           return original;
         });
-        const method=await client.stripe.paymentMethods.retrieve(row.stripe_payment_method_id);
-        const customer=typeof method.customer==='string'?method.customer:method.customer?.id;
-        if(customer && customer!==row.stripe_customer_id) throw new Error('payment method customer changed');
-        if(customer) await client.stripe.paymentMethods.detach(row.stripe_payment_method_id);
+        try {
+          const method=await client.stripe.paymentMethods.retrieve(row.stripe_payment_method_id);
+          const customer=typeof method.customer==='string'?method.customer:method.customer?.id;
+          if(customer && customer!==row.stripe_customer_id) throw new Error('payment method customer changed');
+          if(customer) await client.stripe.paymentMethods.detach(row.stripe_payment_method_id);
+        } catch (error) {
+          if ((error as { code?: string })?.code !== 'resource_missing') throw error;
+        }
         await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods SET unusable_reason='org_merged:detached' WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged'`));
       } catch(error) {
-        // Persist backoff before the next batch: a broken credential/customer must
-        // not keep older rows ahead of all other pending methods forever.
-        await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods
-          SET detach_attempts=detach_attempts+1,
-              detach_next_attempt_at=now()+LEAST(60*power(2,LEAST(detach_attempts,9)),21600)*interval '1 second'
-          WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged'`));
-
-        console.error('[autopay] method detach remains queued',{methodId:row.id,error:error instanceof Error?error.message:'unknown'});
+        const terminal = (row.detach_attempts ?? 0) + 1 >= 8;
+        const tags = { service: 'autopayMethodDetach', autopay_method_id: row.id, org_id: row.org_id, autopay_phase: terminal ? 'detach_failed' : 'retry' };
+        console.error('[autopay] method detach failed', tags);
+        captureException(new Error(`Autopay method detach ${tags.autopay_phase}`), undefined, tags);
+        // A persistence failure must not prevent later rows from draining.
+        try {
+          await withSystemDbAccessContext(()=>db.execute(sql`UPDATE org_payment_methods
+            SET detach_attempts=detach_attempts+1,
+                detach_failed_at=CASE WHEN detach_attempts+1>=8 THEN now() ELSE NULL END,
+                detach_next_attempt_at=now()+LEAST(60*power(2,LEAST(detach_attempts,9)),21600)*interval '1 second'
+            WHERE id=${row.id}::uuid AND status='removed' AND unusable_reason='org_merged' AND detach_failed_at IS NULL`));
+        } catch (persistError) {
+          console.error('[autopay] method detach backoff persistence failed', tags);
+          captureException(new Error('Autopay detach backoff persistence failed'), undefined, { ...tags, autopay_phase: 'persistence' });
+        }
       }
     }
   });

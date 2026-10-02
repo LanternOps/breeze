@@ -21,12 +21,12 @@ describe('W1 public foundation contract', () => {
   });
   it('has all six ordered migration slots and no migration-level transaction wrapper', () => {
     const names = [
-      '2026-11-20-100000-autopay-enums.sql',
-      '2026-11-20-100100-billing-payment-settings.sql',
-      '2026-11-20-100200-org-autopay-enrollments-methods-consents.sql',
-      '2026-11-20-100300-invoice-autopay-schedules-attempts.sql',
-      '2026-11-20-100400-billing-notice-outbox-link-tokens.sql',
-      '2026-11-20-100500-autopay-column-additions.sql',
+      '2026-12-02-100000-autopay-enums.sql',
+      '2026-12-02-100100-billing-payment-settings.sql',
+      '2026-12-02-100200-org-autopay-enrollments-methods-consents.sql',
+      '2026-12-02-100300-invoice-autopay-schedules-attempts.sql',
+      '2026-12-02-100400-billing-notice-outbox-link-tokens.sql',
+      '2026-12-02-100500-autopay-column-additions.sql',
     ];
     for (const name of names) {
       const file = new URL(`../../../migrations/${name}`, import.meta.url);
@@ -36,4 +36,11 @@ describe('W1 public foundation contract', () => {
       expect(sql).toMatch(/set_config\('breeze.scope',\s*'system',\s*true\)/);
     }
   });
+});
+
+it('keeps autopay integration matching out of coverage include/exclude lists', () => {
+  for (const name of ['vitest.config.ts', 'vitest.integration.config.ts']) {
+    const config = readFileSync(new URL(`../../../${name}`, import.meta.url), 'utf8');
+    expect(config.slice(config.indexOf('coverage:'))).not.toContain('src/services/autopay/**/*.integration.test.ts');
+  }
 });

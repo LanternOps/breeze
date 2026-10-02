@@ -237,7 +237,6 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
       include: ['src/**/*.ts'],
       exclude: [
-      'src/services/autopay/**/*.integration.test.ts',
         'src/**/*.test.ts',
         'src/__tests__/**',
         'src/db/schema/**',

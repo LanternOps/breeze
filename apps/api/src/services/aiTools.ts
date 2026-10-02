@@ -182,9 +182,9 @@ export interface AiTool {
    * i.e. chat and agent runs), which then opens no transaction around
    * `executeTool`; `executeTool` runs its own DB-touching phases (the
    * `deviceArgs` gate, result capture) in a short caller-scoped context when
-   * none is held. A caller that holds a request-wide transaction anyway (the
-   * MCP route's auth middleware) still holds it — the handler must check
-   * `hasDbAccessContext()` and not wait under it.
+   * none is held. MCP auth uses the same predicate before opening its ambient
+   * context. Other callers must likewise avoid a held request transaction;
+   * handlers still check that boundary before external I/O.
    */
   // An action list opts out only those actions (e.g. Stripe pay-link creation).
   selfManagedDbContext?: true | readonly string[];

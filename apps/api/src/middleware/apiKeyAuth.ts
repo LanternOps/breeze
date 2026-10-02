@@ -305,7 +305,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
 
   // See MCP_SKIP_AMBIENT_DB_CONTEXT_KEY's doc comment: set only by
   // mcpAuthMiddleware, only for an MCP tools/call request already known to
-  // target a tenant (BYO MCP) tool. Every DB read/write on that path manages
+  // target a tenant (BYO MCP) tool or a self-managed core action. Every DB read/write on that path manages
   // its own short context, so the ambient wrap below is skipped rather than
   // pinning a pooled connection across the tool's outbound call.
   if (c.get(MCP_SKIP_AMBIENT_DB_CONTEXT_KEY) === true) {

@@ -1,5 +1,5 @@
 import { eq, inArray, sql } from 'drizzle-orm';
-import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoicePayments, invoiceCollectionAttempts } from '../../db/schema';
 import { InvoiceServiceError } from '../invoiceTypes';
 import type { Tx } from './types';
@@ -24,7 +24,7 @@ export async function lockInvoiceForCollection(tx: Tx, invoiceId: string): Promi
   if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const reserved = sql`coalesce((select sum(${invoiceCollectionAttempts.principalAmount}) from ${invoiceCollectionAttempts}
     where ${invoiceCollectionAttempts.invoiceId} = ${invoiceId}
-    and ${inArray(invoiceCollectionAttempts.state, [...ACTIVE_COLLECTION_ATTEMPT_STATES])}), 0)`;
+    and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}), 0)`;
   const balance = sql`${invoice.total}::numeric - coalesce((select sum(${invoicePayments.amount}) from ${invoicePayments}
     where ${invoicePayments.invoiceId} = ${invoiceId}), 0)`;
   const [amounts] = await tx.select({

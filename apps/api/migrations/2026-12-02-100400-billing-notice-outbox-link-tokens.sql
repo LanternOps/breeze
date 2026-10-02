@@ -1,4 +1,5 @@
 SELECT set_config('breeze.scope','system',true);
+ALTER TYPE billing_notice_status ADD VALUE IF NOT EXISTS 'handler_failed';
 CREATE TABLE IF NOT EXISTS billing_notice_outbox (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  org_id uuid NOT NULL REFERENCES organizations(id),
@@ -32,6 +33,8 @@ CREATE TABLE IF NOT EXISTS billing_link_tokens (
  expires_at timestamptz NOT NULL,
  consumed_at timestamptz,
  revoked_at timestamptz,
+ CONSTRAINT billing_link_tokens_invoice_chk CHECK (purpose NOT IN ('skip_invoice','confirm_payment') OR invoice_id IS NOT NULL),
+ CONSTRAINT billing_link_tokens_enrollment_chk CHECK (purpose NOT IN ('enroll','stop_autopay') OR enrollment_id IS NOT NULL),
  CONSTRAINT billing_link_tokens_token_hash_unique UNIQUE (token_hash),
  CONSTRAINT billing_link_tokens_invoice_org_fk FOREIGN KEY (invoice_id,org_id) REFERENCES invoices(id,org_id) DEFERRABLE INITIALLY IMMEDIATE,
  CONSTRAINT billing_link_tokens_enrollment_org_fk FOREIGN KEY (enrollment_id,org_id) REFERENCES org_autopay_enrollments(id,org_id) DEFERRABLE INITIALLY IMMEDIATE

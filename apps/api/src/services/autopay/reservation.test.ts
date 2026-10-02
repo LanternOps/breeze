@@ -26,7 +26,7 @@ describe('invoice collection reservation', () => {
     const projection = calls.filter(c => c.op === 'select')[1]!.value as Record<string, SQL>;
     const q = new PgDialect().sqlToQuery(projection.reservedAmount!);
     expect(q.params).toEqual(expect.arrayContaining(['reserved', 'created', 'confirming', 'processing']));
-    expect(q.params).not.toContain('requires_action');
+    expect(q.params).toContain('requires_action');
   });
   it('returns a typed 404 for an invisible invoice', async () => {
     const { tx } = executor([[]]);

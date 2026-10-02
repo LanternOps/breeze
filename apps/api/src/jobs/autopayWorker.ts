@@ -1,3 +1,4 @@
+import { captureException } from '../services/sentry';
 import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchPendingBillingNotices } from '../services/autopay/noticeOutbox';
@@ -10,9 +11,23 @@ let queue: Queue<AutopayJobData> | null = null;
 let worker: Worker<AutopayJobData> | null = null;
 
 export async function processNoticeDispatch(): Promise<{ sent: number; failed: number }> {
-  const result = await dispatchPendingBillingNotices();
-  // Removed method rows form the durable detach queue; retry post-commit failures.
-  await drainAutopayMethodDetaches();
+  let result: { sent: number; failed: number } | undefined;
+  let dispatchError: unknown;
+  try {
+    result = await dispatchPendingBillingNotices();
+    if (result.failed) console.error('[autopayWorker] notice dispatch failures', result);
+  } catch (error) {
+    dispatchError = error;
+    console.error('[autopayWorker] dispatch failed', { phase: 'dispatch' });
+    captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'dispatch' });
+  }
+  // Merge only queues removed methods. Worker ticks own all network drains.
+  try { await drainAutopayMethodDetaches(); }
+  catch (error) {
+    console.error('[autopayWorker] detach drain failed', { phase: 'detach' });
+    captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'detach' });
+  }
+  if (!result) throw dispatchError;
   return result;
 }
 

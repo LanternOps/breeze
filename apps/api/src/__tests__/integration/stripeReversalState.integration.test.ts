@@ -413,3 +413,24 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
     expect(mapping).toMatchObject({ status: 'partially_refunded', refundedAmountMinor: '4000' });
   });
 });
+
+
+describe('C3 cumulative gross refunds allocate principal without drift', () => {
+  const cases = [
+    { name: 'fractional cent rounds half up', fee: '3.00', gross: 10300, refunds: [18], balances: ['0.17'] },
+    { name: 'successive cumulative refunds', fee: '3.00', gross: 10300, refunds: [18, 36, 103, 10299, 10300], balances: ['0.17', '0.35', '1.00', '99.99', '100.00'] },
+    { name: 'refund smaller than fee', fee: '3.00', gross: 10300, refunds: [100, 300], balances: ['0.97', '2.91'] },
+    { name: 'combined refund and dispute clamp to gross', fee: '3.00', gross: 10300, refunds: [4000], balances: ['100.00'], dispute: 10000 },
+    { name: 'zero fee compatibility', fee: null, gross: 10000, refunds: [1, 10000], balances: ['0.01', '100.00'] },
+  ];
+  for (const c of cases) runDb(c.name, async () => {
+    const f = await seed(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ feeAmount: c.fee ?? '0.00' }).where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+    await recordStripePayment({ stripeObjectId: `cs_${f.invoiceId}`, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: c.fee ? '103.00' : '100.00', currency: 'USD' });
+    for (const [i, refund] of c.refunds.entries()) {
+      await ingestStripeFinancialEvent(financialEvent(f, { chargeAmountMinor: c.gross, refundedAmountMinor: refund, providerCreated: 1788690000 + i, ...('dispute' in c ? { eventType: 'charge.dispute.funds_withdrawn', disputeFundsWithdrawn: true, disputeAmountMinor: c.dispute } : {}) }));
+      const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
+      expect(invoice!.balance).toBe(c.balances[i]);
+    }
+  });
+});

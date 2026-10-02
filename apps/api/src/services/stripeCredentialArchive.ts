@@ -1,4 +1,4 @@
-import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoiceCollectionAttempts, orgPaymentMethods, orgAutopayEnrollments } from '../db/schema/autopay';
 import Stripe from 'stripe';
 import { and, eq, inArray, isNull, isNotNull, lte, or, sql } from 'drizzle-orm';
@@ -118,7 +118,7 @@ export async function archiveSupersededCredential(
     sql`exists (select 1 from ${invoiceCollectionAttempts}
       where (${invoiceCollectionAttempts.invoiceStripePaymentId} = ${invoiceStripePayments.id}
         or ${invoiceCollectionAttempts.stripePaymentIntentId} = ${invoiceStripePayments.stripeObjectId})
-      and ${inArray(invoiceCollectionAttempts.state, [...ACTIVE_COLLECTION_ATTEMPT_STATES])})`,
+      and ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])})`,
   ));
 
   return archived.id;
@@ -244,6 +244,7 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
     .limit(500);
 
   let erased = 0;
+  let skipped = 0;
   for (const candidate of candidates) {
     const [activeAttempt] = await db.select({ id: invoiceCollectionAttempts.id })
       .from(invoiceCollectionAttempts)
@@ -252,9 +253,9 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
       .where(and(
         eq(orgAutopayEnrollments.partnerId, candidate.partnerId),
         eq(orgAutopayEnrollments.stripeAccountId, candidate.stripeAccountId),
-        inArray(invoiceCollectionAttempts.state, [...ACTIVE_COLLECTION_ATTEMPT_STATES]),
+        inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]),
       )).limit(1);
-    if (activeAttempt) continue;
+    if (activeAttempt) { skipped++; continue; }
     const pastHardCap = candidate.eraseHardCapAt.getTime() <= now.getTime();
     if (!pastHardCap) {
       const [dependent] = await db.select({ id: invoiceStripePayments.id })
@@ -266,7 +267,7 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
         .limit(1);
       // A session that can still be paid keeps its key alive: destroying it now
       // would convert a retryable revocation into a permanent `revocation_blocked`.
-      if (dependent) continue;
+      if (dependent) { skipped++; continue; }
     }
 
     await db.update(stripeConnectCredentials)
@@ -299,6 +300,7 @@ export async function eraseExpiredStripeCredentials(now: Date = new Date()): Pro
       });
     }
   }
+  if (skipped) console.info('[stripeCredentialArchive] credential erasure deferred', { skipped, erased });
   return erased;
 }
 

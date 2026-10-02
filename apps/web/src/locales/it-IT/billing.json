@@ -1910,7 +1910,8 @@
       "check": "Assegno",
       "bank_transfer": "Bonifico bancario",
       "card": "Carta",
-      "other": "Altro"
+      "other": "Altro",
+      "ach_debit": "ACH debit"
     },
     "payments": {
       "amount": "Importo",

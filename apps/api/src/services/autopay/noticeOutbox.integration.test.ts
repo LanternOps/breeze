@@ -133,3 +133,19 @@ describe('billing outbox on real PostgreSQL', () => {
   });
 
 });
+
+it('C6 concurrent enqueue creates one row and exactly one winner', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => db.delete(billingNoticeOutbox).where(eq(billingNoticeOutbox.id, f.id)));
+  const results = await Promise.all([1, 2].map(() => withSystemDbAccessContext(() => enqueueBillingNotice(db, f.input))));
+  ids.push(results[0]!.id);
+  expect(new Set(results.map(r => r.id)).size).toBe(1);
+  expect(results.filter(r => r.created)).toHaveLength(1);
+  expect(await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.dedupeKey, f.input.dedupeKey)))).toHaveLength(1);
+});
+it('A7 lease expiry never blindly resends a notice awaiting acceptance acknowledgement', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(() => db.update(billingNoticeOutbox).set({ status: 'sending', attempts: 1, nextAttemptAt: new Date(0), lastError: 'Delivery acknowledgement pending' }).where(eq(billingNoticeOutbox.id, f.id)));
+  expect(await dispatchPendingBillingNotices()).toEqual({ sent: 0, failed: 0 });
+  expect(send).not.toHaveBeenCalled();
+});
