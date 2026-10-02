@@ -20,8 +20,20 @@ describe('requestReviewerNotification', () => {
     }
   );
 
-  it('maps a non-OK response to request_failed', async () => {
-    const fetcher = vi.fn().mockResolvedValue(res(false, { error: 'x' }, 404));
+  it('maps a 5xx response to request_failed', async () => {
+    const fetcher = vi.fn().mockResolvedValue(res(false, { error: 'x' }, 502));
+    expect(await requestReviewerNotification(fetcher, 'r-1')).toEqual({ emailed: false, reason: 'request_failed' });
+  });
+
+  it.each([400, 403, 404])('surfaces a %i rejection instead of a fallback', async (status) => {
+    const fetcher = vi.fn().mockResolvedValue(res(false, { error: 'nope' }, status));
+    expect(await requestReviewerNotification(fetcher, 'r-1')).toEqual({
+      emailed: false, reason: 'rejected', status, message: 'nope'
+    });
+  });
+
+  it('maps an unknown server reason to request_failed', async () => {
+    const fetcher = vi.fn().mockResolvedValue(res(true, { emailed: false, reason: 'weird' }));
     expect(await requestReviewerNotification(fetcher, 'r-1')).toEqual({ emailed: false, reason: 'request_failed' });
   });
 

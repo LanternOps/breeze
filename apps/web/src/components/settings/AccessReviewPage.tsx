@@ -251,8 +251,17 @@ export default function AccessReviewPage() {
         const outcome = await requestReviewerNotification(fetchWithAuth, context.id);
 
         if (outcome.emailed) {
-          showToast({ type: 'success', message: t('accessReviewPage.reviewersEmailed') });
+          // Reviews persist a single assigned reviewer; only that user is emailed.
+          const extra = (context.reviewerIds?.length ?? 0) > 1;
+          showToast({
+            type: extra ? 'warning' : 'success',
+            message: t(extra ? 'accessReviewPage.assignedReviewerEmailedOnly' : 'accessReviewPage.reviewersEmailed')
+          });
           return true;
+        }
+
+        if (outcome.reason === 'rejected') {
+          throw new Error(outcome.message);
         }
 
         const fallbackReasonKeys: Record<NotifyFallbackReason, string> = {
@@ -267,7 +276,9 @@ export default function AccessReviewPage() {
           .filter((email): email is string => Boolean(email));
 
         if (reviewerEmails.length === 0) {
-          throw new Error(t('accessReviewPage.noReviewerEmailsAvailableForNotifications'));
+          throw new Error(
+            `${t(fallbackReasonKeys[outcome.reason])} ${t('accessReviewPage.noReviewerEmailsAvailableForNotifications')}`
+          );
         }
 
         if (typeof window !== 'undefined') {

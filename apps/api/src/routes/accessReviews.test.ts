@@ -404,6 +404,18 @@ describe('access review routes', () => {
       expect(await res.json()).toEqual({ emailed: false, reason: 'send_failed' });
     });
 
+    it('reports no_reviewer_email when the reviewer has no address (and never sends)', async () => {
+      const sendEmail = vi.fn();
+      vi.mocked(getEmailService).mockReturnValue({ sendEmail } as any);
+      selectOnce([review]);
+      selectOnce([]);
+
+      const res = await notify();
+
+      expect(await res.json()).toEqual({ emailed: false, reason: 'no_reviewer_email' });
+      expect(sendEmail).not.toHaveBeenCalled();
+    });
+
     it('returns 404 for a review outside the caller scope', async () => {
       selectOnce([]);
       const res = await notify();
