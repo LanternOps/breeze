@@ -246,8 +246,10 @@ func TestSupportCleanupWithEmptyWorkDirIsSafe(t *testing.T) {
 //   - the paths are never written into the line: cmd.exe expands %NAME% in
 //     its command line (quoted or not) and there is no escape for it there,
 //     so a profile or file name containing % would make the cleanup act on a
-//     different path. The paths travel in the child's environment instead,
-//     and cmd.exe expands each variable once, without re-reading the value;
+//     different path. The paths travel in the child's environment and are
+//     read with delayed expansion (!NAME!), which happens after the FOR
+//     variable is substituted, so a %i in a path is not replaced by the loop
+//     counter either;
 //   - every reference stays quoted as one argument (a profile may contain a
 //     space);
 //   - there are no backslash-escaped quotes, which cmd.exe does not
@@ -258,8 +260,8 @@ func TestSupportCleanupWithEmptyWorkDirIsSafe(t *testing.T) {
 //     and files the process still holds keep the folder in place, so it
 //     retries until both are gone or about a minute has passed.
 func TestBuildSupportSelfDeleteCmdLine(t *testing.T) {
-	const exe = `C:\Users\Jo%USERNAME%Smith\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app.exe`
-	const ws = `C:\Users\Jo%USERNAME%Smith\AppData\Local\Temp\breeze-support-4242`
+	const exe = `C:\Users\Jo%USERNAME%Smith\Downloads\breeze-support-KTM4H7P2X-us.2breeze.app-%i.exe`
+	const ws = `C:\Users\Jo%USERNAME%Smith\AppData\Local\Temp\breeze-support-%~i4242`
 	cases := []struct {
 		name    string
 		workDir string
@@ -269,14 +271,14 @@ func TestBuildSupportSelfDeleteCmdLine(t *testing.T) {
 		{
 			name:    "executable and private folder",
 			workDir: ws,
-			want: `cmd /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "%BREEZE_SUPPORT_CLEANUP_EXE%" 2>NUL & ` +
-				`rmdir /s /q "%BREEZE_SUPPORT_CLEANUP_DIR%" 2>NUL & ` +
-				`if not exist "%BREEZE_SUPPORT_CLEANUP_EXE%" if not exist "%BREEZE_SUPPORT_CLEANUP_DIR%" exit)`,
+			want: `cmd /V:ON /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" 2>NUL & ` +
+				`rmdir /s /q "!BREEZE_SUPPORT_CLEANUP_DIR!" 2>NUL & ` +
+				`if not exist "!BREEZE_SUPPORT_CLEANUP_EXE!" if not exist "!BREEZE_SUPPORT_CLEANUP_DIR!" exit)`,
 			wantEnv: []string{"BREEZE_SUPPORT_CLEANUP_EXE=" + exe, "BREEZE_SUPPORT_CLEANUP_DIR=" + ws},
 		},
 		{
 			name:    "executable only",
-			want:    `cmd /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "%BREEZE_SUPPORT_CLEANUP_EXE%" 2>NUL & if not exist "%BREEZE_SUPPORT_CLEANUP_EXE%" exit)`,
+			want:    `cmd /V:ON /C for /L %i in (1,1,60) do (ping 127.0.0.1 -n 2 >NUL & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" 2>NUL & if not exist "!BREEZE_SUPPORT_CLEANUP_EXE!" exit)`,
 			wantEnv: []string{"BREEZE_SUPPORT_CLEANUP_EXE=" + exe},
 		},
 	}
@@ -290,13 +292,16 @@ func TestBuildSupportSelfDeleteCmdLine(t *testing.T) {
 			if !reflect.DeepEqual(env, tc.wantEnv) {
 				t.Fatalf("env = %q, want %q", env, tc.wantEnv)
 			}
+			if strings.Contains(got, "%BREEZE") {
+				t.Errorf("a path variable is read with %%NAME%%, which is expanded before the FOR variable and lets a %%i in its value be replaced: %s", got)
+			}
 			if strings.Contains(got, "USERNAME") || strings.Contains(got, `C:\Users`) {
 				t.Errorf("command line carries a path, which cmd.exe would expand: %s", got)
 			}
 			if strings.Contains(got, `\"`) {
 				t.Errorf("command line contains a backslash-escaped quote, which cmd.exe does not understand: %s", got)
 			}
-			if strings.HasPrefix(strings.TrimPrefix(got, "cmd /C "), `"`) {
+			if strings.HasPrefix(strings.TrimPrefix(got, "cmd /V:ON /C "), `"`) {
 				t.Errorf("the line after cmd /C must not start with a quote, or cmd.exe strips quote characters: %s", got)
 			}
 		})
