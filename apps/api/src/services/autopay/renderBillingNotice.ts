@@ -1,7 +1,7 @@
 import type { BillingNoticeKind } from '@breeze/shared';
 import { escapeHtml } from '../emailLayout';
 import { renderPartnerEmail, type RenderPartnerEmailArgs } from '../emailTemplates/renderPartnerEmail';
-import type { RenderedNotice } from './types';
+import type { Tx, RenderedNotice } from './types';
 import { renderAutopayNotice, type AutopayNoticeContext } from './enrollmentNotices';
 
 interface RegisteredBillingNoticeContext {
@@ -26,11 +26,11 @@ export function registerBillingNoticeRenderer(kind: BillingNoticeKind, renderer:
   renderers.set(kind, renderer);
 }
 
-const enrollmentRenderers: Partial<Record<BillingNoticeKind, (ctx: AutopayNoticeContext) => Promise<RenderedNotice>>> = {
-  autopay_request: ctx => renderAutopayNotice('autopay_request', ctx),
-  autopay_enrolled: ctx => renderAutopayNotice('autopay_enrolled', ctx),
-  autopay_stopped: ctx => renderAutopayNotice('autopay_stopped', ctx),
-  card_expiring: ctx => renderAutopayNotice('card_expiring', ctx),
+const enrollmentRenderers: Partial<Record<BillingNoticeKind, (ctx: AutopayNoticeContext, executor?: Tx) => Promise<RenderedNotice>>> = {
+  autopay_request: (ctx, executor) => renderAutopayNotice('autopay_request', ctx, executor),
+  autopay_enrolled: (ctx, executor) => renderAutopayNotice('autopay_enrolled', ctx, executor),
+  autopay_stopped: (ctx, executor) => renderAutopayNotice('autopay_stopped', ctx, executor),
+  card_expiring: (ctx, executor) => renderAutopayNotice('card_expiring', ctx, executor),
 };
 
 function checkedUrl(value: string): string {
@@ -41,11 +41,11 @@ function checkedUrl(value: string): string {
   return value;
 }
 
-export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext): Promise<RenderedNotice> {
+export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext, executor?: Tx): Promise<RenderedNotice> {
   if ('autopay' in ctx) {
     const render = enrollmentRenderers[kind];
     if (!render) throw new Error(`Wrong enrollment notice context for ${kind}`);
-    return render(ctx.autopay);
+    return render(ctx.autopay, executor);
   }
   const renderer = renderers.get(kind);
   if (!renderer) throw new Error(`No billing renderer: ${kind}`);
