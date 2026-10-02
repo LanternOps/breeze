@@ -24,15 +24,16 @@ Last release: **v0.120.0** (2026-10-01).
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
 - **Breeze Viewer auto-update on Windows works again (#7681).** The Windows
-  update bundle (`breeze-viewer-windows.msi.zip`) was Deflate-compressed in
-  every release from at least v0.110.0 to v0.120.0, and the viewer's updater
-  cannot unpack Deflate. Windows viewers downloaded and verified each update,
-  then showed "Update X failed — will retry on next launch" and stayed on their
-  installed version. The bundle is now stored uncompressed. The fix is in the
+  update bundle (`breeze-viewer-windows.msi.zip`) was Deflate-compressed
+  (v0.110.0, v0.119.0 and v0.120.0 checked; releases in between were built by
+  the same release step), and the viewer's updater cannot unpack Deflate.
+  Windows viewers downloaded and verified each update, then showed "Update X
+  failed — will retry on next launch" and stayed on their installed version. The bundle is now stored uncompressed. The fix is in the
   bundle, not the viewer, so installed Windows viewers pick up this release on
-  their next launch without a manual reinstall. A failed viewer update now names the stage (downloading,
-  verifying its signature, unpacking the installer, installing) and shows the
-  updater's error, and every viewer logs update activity to `updater.log` in
-  its log directory: `%LOCALAPPDATA%\com.breeze.viewer\logs\` (Windows),
+  their next launch without a manual reinstall. From this release on, a failed
+  viewer update names the stage (downloading, verifying its signature,
+  unpacking the installer, installing) and shows the updater's error, and the
+  viewer logs update activity to `updater.log` in its log directory:
+  `%LOCALAPPDATA%\com.breeze.viewer\logs\` (Windows),
   `~/Library/Logs/com.breeze.viewer/` (macOS),
   `~/.local/share/com.breeze.viewer/logs/` (Linux).

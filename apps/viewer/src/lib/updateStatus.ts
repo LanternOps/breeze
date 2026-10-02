@@ -29,7 +29,8 @@ export type UpdateStatus =
   | {
       phase: 'failed';
       version: string;
-      stage: UpdateFailureStage;
+      /** null when Rust sent a stage this build does not know (drift). */
+      stage: UpdateFailureStage | null;
       /** The updater's own error text, e.g. "unsupported Zip archive: …". */
       error: string;
       /** Updater log with the full attempt; null when Rust has no log dir. */
@@ -65,38 +66,43 @@ const FAILURE_STAGE_LABELS: Record<UpdateFailureStage, string> = {
   install: 'installing',
 };
 
+const hasOwn = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
+
 function isFailureStage(value: unknown): value is UpdateFailureStage {
-  return (
-    typeof value === 'string' && Object.prototype.hasOwnProperty.call(FAILURE_STAGE_LABELS, value)
-  );
+  return typeof value === 'string' && hasOwn(FAILURE_STAGE_LABELS, value);
 }
 
 /**
- * Validate an inbound `update-status` payload at the IPC trust boundary.
+ * Validate an inbound `update-status` payload at the IPC trust boundary and
+ * return it typed, or null to drop it.
  *
  * Tauri's `listen` payload is `any`, so a drifted/renamed Rust variant would
- * otherwise flow straight into the UI. Rejecting an unrecognized payload here
- * degrades gracefully (the banner just doesn't show) rather than crashing the
- * render on an unhandled phase.
+ * otherwise flow straight into the UI. An unrecognized phase is dropped (the
+ * banner just doesn't show) rather than crashing the render. A `failed`
+ * payload is never dropped for its detail fields: dropping it would leave the
+ * banner pinned on "Downloading…"/"Installing…", the silent look #7681 was
+ * about. Unknown detail degrades instead (stage null → generic message).
  */
-export function isUpdateStatus(value: unknown): value is UpdateStatus {
-  if (typeof value !== 'object' || value === null) return false;
+export function parseUpdateStatus(value: unknown): UpdateStatus | null {
+  if (typeof value !== 'object' || value === null) return null;
   const record = value as Record<string, unknown>;
   if (
     typeof record.phase !== 'string' ||
-    !(record.phase in KNOWN_PHASES) ||
+    !hasOwn(KNOWN_PHASES, record.phase) ||
     typeof record.version !== 'string'
   ) {
-    return false;
+    return null;
   }
   if (record.phase === 'failed') {
-    return (
-      isFailureStage(record.stage) &&
-      typeof record.error === 'string' &&
-      (record.logPath === null || typeof record.logPath === 'string')
-    );
+    return {
+      phase: 'failed',
+      version: record.version,
+      stage: isFailureStage(record.stage) ? record.stage : null,
+      error: typeof record.error === 'string' ? record.error : '',
+      logPath: typeof record.logPath === 'string' ? record.logPath : null,
+    };
   }
-  return true;
+  return value as UpdateStatus;
 }
 
 /**
@@ -130,7 +136,9 @@ export function updateStatusMessage(status: UpdateStatus): string {
     case 'deferred':
       return `Update ${status.version} ready — applies when this session ends.`;
     case 'failed':
-      return `Update ${status.version} failed while ${FAILURE_STAGE_LABELS[status.stage]} — will retry on next launch.`;
+      return status.stage == null
+        ? `Update ${status.version} failed — will retry on next launch.`
+        : `Update ${status.version} failed while ${FAILURE_STAGE_LABELS[status.stage]} — will retry on next launch.`;
     case 'ready':
       // Rust emits `ready` only after download() returned, and download()
       // returns only once the signature verified.

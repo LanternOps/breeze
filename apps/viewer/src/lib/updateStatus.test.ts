@@ -3,7 +3,7 @@ import {
   updateProgressPercent,
   updateStatusMessage,
   isUpdateActive,
-  isUpdateStatus,
+  parseUpdateStatus,
   autoDismissMs,
   statusAfterApplyRejected,
   type UpdateStatus,
@@ -191,11 +191,11 @@ describe('ready phase', () => {
   });
 
   it('is accepted by the IPC-boundary guard', () => {
-    expect(isUpdateStatus({ phase: 'ready', version: '1.2.3' })).toBe(true);
+    expect(parseUpdateStatus({ phase: 'ready', version: '1.2.3' })).toEqual(ready);
   });
 });
 
-describe('isUpdateStatus', () => {
+describe('parseUpdateStatus', () => {
   it('accepts every well-formed phase payload', () => {
     const valid: UpdateStatus[] = [
       { phase: 'available', version: '1.0.0' },
@@ -208,29 +208,39 @@ describe('isUpdateStatus', () => {
       { phase: 'ready', version: '1.2.3' },
     ];
     for (const v of valid) {
-      expect(isUpdateStatus(v)).toBe(true);
+      expect(parseUpdateStatus(v)).toEqual(v);
     }
   });
 
   it('rejects unknown, malformed, or non-object payloads (boundary guard)', () => {
-    expect(isUpdateStatus({ phase: 'paused', version: '1.0.0' })).toBe(false); // drifted Rust variant
-    expect(isUpdateStatus({ phase: 'available' })).toBe(false); // missing version
-    expect(isUpdateStatus({ version: '1.0.0' })).toBe(false); // missing phase
-    expect(isUpdateStatus({ phase: 7, version: '1.0.0' })).toBe(false); // non-string phase
-    expect(isUpdateStatus(null)).toBe(false);
-    expect(isUpdateStatus('downloading')).toBe(false);
-    expect(isUpdateStatus(undefined)).toBe(false);
+    expect(parseUpdateStatus({ phase: 'paused', version: '1.0.0' })).toBeNull(); // drifted Rust variant
+    expect(parseUpdateStatus({ phase: 'available' })).toBeNull(); // missing version
+    expect(parseUpdateStatus({ version: '1.0.0' })).toBeNull(); // missing phase
+    expect(parseUpdateStatus({ phase: 7, version: '1.0.0' })).toBeNull(); // non-string phase
+    expect(parseUpdateStatus({ phase: 'toString', version: '1.0.0' })).toBeNull(); // prototype key
+    expect(parseUpdateStatus(null)).toBeNull();
+    expect(parseUpdateStatus('downloading')).toBeNull();
+    expect(parseUpdateStatus(undefined)).toBeNull();
   });
 
-  it('rejects a failed payload without a known stage, error text, and log path', () => {
+  // A failure must always reach the banner: dropping it would leave the
+  // banner pinned on "Downloading…"/"Installing…", the very symptom of #7681.
+  // So a failed payload with drifted detail fields degrades instead.
+  it('keeps a failed payload whose detail fields drifted, degrading them', () => {
     const base = { phase: 'failed', version: '1.0.0', stage: 'download', error: 'x', logPath: null };
-    expect(isUpdateStatus(base)).toBe(true);
-    expect(isUpdateStatus({ ...base, stage: 'unpack' })).toBe(false); // drifted stage
-    expect(isUpdateStatus({ ...base, stage: 'toString' })).toBe(false); // prototype key
-    expect(isUpdateStatus({ phase: 'failed', version: '1.0.0' })).toBe(false); // pre-#7681 shape
-    expect(isUpdateStatus({ ...base, error: 42 })).toBe(false);
-    expect(isUpdateStatus({ ...base, logPath: 7 })).toBe(false);
-    const { logPath: _omitted, ...noLogPath } = base;
-    expect(isUpdateStatus(noLogPath)).toBe(false);
+    expect(parseUpdateStatus(base)).toEqual(base);
+
+    const drifted = parseUpdateStatus({ ...base, stage: 'unpack', error: 42, logPath: 7 });
+    expect(drifted).toEqual({ ...base, stage: null, error: '', logPath: null });
+    expect(updateStatusMessage(drifted!)).toBe('Update 1.0.0 failed — will retry on next launch.');
+
+    // Prototype keys are not stages.
+    expect(parseUpdateStatus({ ...base, stage: 'toString' })).toMatchObject({ stage: null });
+    // Pre-#7681 shape (no detail at all) still shows a failure.
+    expect(parseUpdateStatus({ phase: 'failed', version: '1.0.0' })).toEqual({
+      ...base,
+      stage: null,
+      error: '',
+    });
   });
 });

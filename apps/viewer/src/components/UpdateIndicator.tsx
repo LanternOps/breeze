@@ -5,7 +5,7 @@ import {
   updateStatusMessage,
   updateProgressPercent,
   isUpdateActive,
-  isUpdateStatus,
+  parseUpdateStatus,
   autoDismissMs,
   statusAfterApplyRejected,
   type UpdateStatus,
@@ -29,8 +29,9 @@ export default function UpdateIndicator() {
     const unlisten = listen<unknown>('update-status', (event) => {
       // Validate at the IPC boundary: a drifted/renamed Rust variant is dropped
       // (banner just doesn't show) rather than crashing the render.
-      if (isUpdateStatus(event.payload)) {
-        setStatus(event.payload);
+      const parsed = parseUpdateStatus(event.payload);
+      if (parsed) {
+        setStatus(parsed);
       } else {
         console.warn('Ignoring malformed update-status payload', event.payload);
       }
@@ -85,11 +86,11 @@ export default function UpdateIndicator() {
           {message}
         </span>
       </div>
-      {status.phase === 'failed' && (
+      {status.phase === 'failed' && (status.error || status.logPath) && (
         // What the updater actually reported, and where the full attempt is
         // logged — "failed" alone left no way to diagnose #7681.
         <div data-testid="update-failure-detail" className="text-[11px] leading-snug text-gray-400">
-          <div className="break-words">{status.error}</div>
+          {status.error && <div className="break-words">{status.error}</div>}
           {status.logPath && <div className="break-all">Log: {status.logPath}</div>}
         </div>
       )}

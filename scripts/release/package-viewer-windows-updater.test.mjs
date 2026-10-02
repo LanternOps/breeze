@@ -101,7 +101,21 @@ test('refuses a missing or empty MSI', () => {
 
 test('release.yml builds the Windows updater bundle through this script', () => {
   const workflow = readFileSync(RELEASE_WORKFLOW, 'utf8');
-  assert.match(workflow, /scripts\/release\/package-viewer-windows-updater\.sh/);
-  // No other step may (re)create the bundle with a compressing `zip`.
+  // The job that zips and minisigns the bundle, up to the next job.
+  const start = workflow.indexOf('\n  package-windows-updater:\n');
+  assert.notEqual(start, -1, 'package-windows-updater job not found');
+  const next = workflow.slice(start + 1).search(/\n {2}[a-z0-9-]+:\n/);
+  const job = next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+
+  // Invoked with the signed MSI in and the bundle that gets minisigned out
+  // (not just mentioned in a comment).
+  assert.match(
+    job,
+    /^\s*bash scripts\/release\/package-viewer-windows-updater\.sh \\\n\s*staging\/breeze-viewer-windows\.msi \\\n\s*staging\/breeze-viewer-windows\.msi\.zip\s*$/m,
+  );
+  assert.match(job, /tauri signer sign .*staging\/breeze-viewer-windows\.msi\.zip/);
+  // Nothing else in the job archives the MSI itself.
+  assert.doesNotMatch(job, /^\s*(zip|7z|python3? -m zipfile)\s/m);
+  // And no other job builds the bundle with a compressing `zip`.
   assert.doesNotMatch(workflow, /^\s*zip\b.*breeze-viewer-windows\.msi\.zip/m);
 });

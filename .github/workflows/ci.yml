@@ -306,7 +306,7 @@ jobs:
 
       # The Windows viewer update bundle must be a STORED zip — the updater
       # cannot decompress Deflate, so a compressed one never installs (#7681).
-      # release.yml only runs on tags, so this is the PR-time check.
+      # release.yml only runs for releases, so this is the PR-time check.
       - name: Test viewer Windows updater packaging
         run: node --test scripts/release/package-viewer-windows-updater.test.mjs
 

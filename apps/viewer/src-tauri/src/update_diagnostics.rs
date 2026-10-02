@@ -4,8 +4,9 @@
 //! The release Windows build is a GUI-subsystem binary with no console, so the
 //! updater's `eprintln!` output went nowhere. A failed update left only
 //! "failed — will retry on next launch" in the UI and no trace on disk, which
-//! hid that every Windows update bundle from v0.110.0 to v0.120.0 was a
-//! Deflate zip the updater cannot unpack. Each updater event now also goes to
+//! hid that the Windows update bundle was a Deflate zip the updater cannot
+//! unpack (v0.110.0, v0.119.0 and v0.120.0 checked). Each updater event now
+//! also goes to
 //! `<app log dir>/updater.log`, and a failure carries its stage and the
 //! plugin's error text to the UI.
 
@@ -14,7 +15,8 @@ use std::path::Path;
 
 /// File name of the updater log inside the app log directory
 /// (`%LOCALAPPDATA%\com.breeze.viewer\logs\` on Windows,
-/// `~/Library/Logs/com.breeze.viewer/` on macOS).
+/// `~/Library/Logs/com.breeze.viewer/` on macOS,
+/// `~/.local/share/com.breeze.viewer/logs/` on Linux).
 pub(crate) const UPDATER_LOG_FILE: &str = "updater.log";
 
 /// Size at which the log rotates to `updater.log.1` (one generation kept), so
@@ -41,9 +43,13 @@ pub(crate) enum UpdateFailStage {
     Download,
     /// The bundle was fetched but its signature did not verify.
     Verify,
-    /// The verified bundle could not be unpacked into an installer.
+    /// The verified bundle could not be unpacked into an installer: the
+    /// archive itself is bad (undecodable zip, no installer inside).
     Extract,
-    /// The installer could not be launched, or the binary could not be swapped.
+    /// The installer could not be launched or the binary could not be swapped.
+    /// Also any I/O error inside `install()` — including temp-dir or file
+    /// writes while unpacking — since the plugin reports those as plain `Io`;
+    /// the error text tells them apart.
     Install,
 }
 
@@ -99,7 +105,12 @@ pub(crate) fn append_log_line(path: &Path, unix_secs: u64, message: &str) -> std
     if std::fs::metadata(path).is_ok_and(|m| m.len() >= UPDATER_LOG_MAX_BYTES) {
         let mut rotated = path.as_os_str().to_owned();
         rotated.push(".1");
-        std::fs::rename(path, rotated)?;
+        if std::fs::rename(path, rotated).is_err() {
+            // Can't rotate (on Windows: the file held open by AV or another
+            // viewer). Start the log over rather than drop this line — the
+            // log stays over the cap, so every later line would drop too.
+            std::fs::File::create(path)?;
+        }
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -257,6 +268,29 @@ mod tests {
             std::fs::metadata(&rotated).unwrap().len(),
             UPDATER_LOG_MAX_BYTES,
             "the full log becomes .1, replacing the older generation"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rotation that cannot rename (on Windows: the file held open by AV or
+    /// a second viewer) must not drop the event being logged — and since the
+    /// log stays over the cap, it would otherwise drop every later one too.
+    #[test]
+    fn append_log_line_still_writes_when_rotation_cannot_rename() {
+        let dir = scratch_dir("rotate-blocked");
+        let path = dir.join(UPDATER_LOG_FILE);
+        // A non-empty directory at the rotation target makes rename() fail.
+        let rotated = dir.join(format!("{UPDATER_LOG_FILE}.1"));
+        std::fs::create_dir_all(&rotated).unwrap();
+        std::fs::write(rotated.join("keep"), "x").unwrap();
+        std::fs::write(&path, vec![b'x'; UPDATER_LOG_MAX_BYTES as usize]).unwrap();
+
+        append_log_line(&path, 0, "must not be lost").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "1970-01-01T00:00:00Z must not be lost\n",
+            "starts over instead of growing past the cap"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

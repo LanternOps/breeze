@@ -8,8 +8,8 @@
 # the Deflate decoder. A deflated bundle downloads and passes its signature
 # check, then fails to unpack with "unsupported Zip archive: Compression method
 # not supported". The installed viewer stays on its old version and retries
-# every launch. Every release from at least v0.110.0 to v0.120.0 shipped a
-# deflated bundle (#7681).
+# every launch (#7681; the v0.110.0, v0.119.0 and v0.120.0 bundles were
+# checked and all deflated).
 #
 # Usage: package-viewer-windows-updater.sh <signed.msi> <out.zip>
 

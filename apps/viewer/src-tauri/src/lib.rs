@@ -922,20 +922,23 @@ fn updater_log_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         .map(|dir| dir.join(UPDATER_LOG_FILE))
 }
 
-/// Record an updater event on stderr and in the updater log. The release
-/// Windows build has no console, so the log file is the only durable trace
-/// (#7681). Best-effort: a log write failure never affects the update.
-fn log_update(app: &tauri::AppHandle, message: &str) {
+/// Record an updater event on stderr and in the updater log, returning the
+/// log path when the line reached it. The release Windows build has no
+/// console, so the log file is the only durable trace (#7681). Best-effort: a
+/// log write failure never affects the update.
+fn log_update(app: &tauri::AppHandle, message: &str) -> Option<std::path::PathBuf> {
     eprintln!("{message}");
-    let Some(path) = updater_log_path(app) else {
-        return;
-    };
+    let path = updater_log_path(app)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    if let Err(e) = update_diagnostics::append_log_line(&path, now, message) {
-        eprintln!("Failed to write {}: {e}", path.display());
+    match update_diagnostics::append_log_line(&path, now, message) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!("Failed to write {}: {e}", path.display());
+            None
+        }
     }
 }
 
@@ -947,7 +950,8 @@ fn report_update_failure(
     stage: UpdateFailStage,
     error: String,
 ) {
-    log_update(
+    // Only point the user at the log if this failure actually reached it.
+    let logged = log_update(
         app,
         &format!(
             "Update {version} failed at the {} stage: {error}",
@@ -960,7 +964,7 @@ fn report_update_failure(
             version: version.to_string(),
             stage,
             error,
-            log_path: updater_log_path(app).map(|p| p.display().to_string()),
+            log_path: logged.map(|p| p.display().to_string()),
         },
     );
 }
@@ -993,6 +997,9 @@ async fn auto_update(app: tauri::AppHandle) {
     // the WebRTC handshake complete on typical connections.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
+    // Check-time failures (no network, bad endpoint) go to the log only: no
+    // banner is showing yet, and a launch with no reachable update server is
+    // not something to interrupt the user about.
     let current = app.package_info().version.to_string();
     let updater = match app.updater() {
         Ok(u) => u,
@@ -1101,14 +1108,11 @@ async fn auto_update(app: tauri::AppHandle) {
         #[cfg(not(target_os = "windows"))]
         {
             if let Err(e) = update.install(bytes) {
+                // Nothing was staged, so "applies when this session ends"
+                // would be false — report the failure instead.
                 let stage = classify_update_error(UpdateStep::Install, &e);
-                log_update(
-                    &app,
-                    &format!(
-                        "Deferred update {version} disk-swap failed at the {} stage: {e}",
-                        stage.as_str()
-                    ),
-                );
+                report_update_failure(&app, &version, stage, e.to_string());
+                return;
             }
         }
         #[cfg(target_os = "windows")]
