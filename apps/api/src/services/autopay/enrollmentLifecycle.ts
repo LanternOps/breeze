@@ -13,7 +13,7 @@ import {mintBillingLinkToken,revokeBillingLinkTokens,buildBillingLinkUrl,resolve
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
 import {getAutopayMethod,detachPaymentMethodPostCommit} from './paymentMethods';
-import {notifyAutopayStaff} from './staffNotifications';
+import {enqueueAutopayStaffNotifications,sendAutopayStaffEmail,type AutopayStaffNotice} from './staffNotifications';
 import {buildAutopayDisclosure} from './consentText';
 import type {AutopayNoticeContext} from './enrollmentNotices';
 import type { Tx } from './types';
@@ -57,13 +57,11 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
  if(!org||!partner)throw new Error('Autopay notice tenant disappeared');
- const settings=await resolveBillingPaymentSettings(db,{partnerId:partner.id,orgId:org.id});
- const methods=settings.achMode.value==='ach_only'?['us_bank_account'] as const:
-  ['card','us_bank_account'] as const;
- const disclosures=[];
- for(const method of methods)disclosures.push(await buildAutopayDisclosure(db,org.id,method));
- const scheduleText=disclosures[0]!.scheduleText;
- const feeText=[...new Set(disclosures.map(disclosure=>disclosure.feeText))].join(' ');
+ const card=await buildAutopayDisclosure(db,org.id,'card');
+ const disclosures=card.achMode==='ach_only'?[]:[{label:'Card',disclosure:card}];
+ if(card.achMode!=='card_only')disclosures.push({label:'Bank account (ACH)',disclosure:await buildAutopayDisclosure(db,org.id,'us_bank_account')});
+ const scheduleText=disclosures[0]!.disclosure.scheduleText;
+ const feeText=disclosures.map(({label,disclosure})=>`${label}: ${disclosure.feeText}`).join(' ');
  let stopUrl:string|undefined;
  if(enrollment.status!=='cancelled'){
   const stopToken=await mintBillingLinkToken(db,{orgId:org.id,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:30});
@@ -153,11 +151,13 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  const lines=links.map(link=>`${link.number}: ${link.currency} ${link.amount} — ${link.url}`);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links);
+ const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
+  dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
+ await enqueueAutopayStaffNotifications(db,staffNotice);
  for(const method of removed)runAfterDbContextExit('autopay.detach',()=>detachPaymentMethodPostCommit(enrollment.partnerId,method.id));
  runAfterDbContextExit('autopay.stopped',async()=>{
   const [committed]=await withSystemDbAccessContext(()=>database.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,enrollment.id)).limit(1));
-  if(committed?.status==='cancelled'&&committed.generation===enrollment.generation)await notifyAutopayStaff({orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
-   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`});
+  if(committed?.status==='cancelled'&&committed.generation===enrollment.generation)await sendAutopayStaffEmail(staffNotice);
  });
 }
 export async function turnOffAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promise<void>{await stop(db,orgId,'msp',actor);}

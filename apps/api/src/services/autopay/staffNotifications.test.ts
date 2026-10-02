@@ -38,3 +38,18 @@ describe('autopay staff notifications', () => {
       .rejects.toThrow('provider unavailable');
   });
 });
+
+import { db } from '../../db';
+import { enqueueAutopayStaffNotifications, sendAutopayStaffEmail } from './staffNotifications';
+it('separates transactional in-app inserts from staff email', async () => {
+  vi.clearAllMocks(); h.rows.length = 0; h.send.mockResolvedValue({});
+  const input = { orgId: '33333333-3333-4333-8333-333333333333', partnerId: '44444444-4444-4444-8444-444444444444', event: 'autopay.stopped' as const, dedupeKey: 'stopped:1', message: 'Stopped.' };
+  h.rows.push([{ userId: '11111111-1111-4111-8111-111111111111' }], []);
+  await enqueueAutopayStaffNotifications(db, input);
+  expect(h.inserts).toHaveBeenCalledTimes(1);
+  expect(h.send).not.toHaveBeenCalled();
+  h.rows.push([{ billingEmail: 'billing@example.test' }]);
+  await sendAutopayStaffEmail(input);
+  expect(h.inserts).toHaveBeenCalledTimes(1);
+  expect(h.send).toHaveBeenCalledTimes(1);
+});

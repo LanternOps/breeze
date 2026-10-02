@@ -21,7 +21,7 @@ describe('enrollment lifecycle',()=>{
  });
 });
 
-const h = vi.hoisted(() => ({ rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn() }));
+const h = vi.hoisted(() => ({ rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only' }));
 vi.mock('../../db', () => {
  const chain: Record<string, unknown> = {};
  for (const op of ['select','from','where','limit','for','update','set','returning','insert','values']) {
@@ -40,10 +40,10 @@ vi.mock('./linkTokens',()=>({mintBillingLinkToken:h.mint,revokeBillingLinkTokens
  buildBillingLinkUrl:(purpose:string,token:string)=>`https://portal.example.test/autopay/${token}/${purpose}`,
  resolveBillingLinkToken:h.resolve}));
 vi.mock('./paymentMethods',()=>({getAutopayMethod:h.method,detachPaymentMethodPostCommit:vi.fn()}));
-vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
+vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn(),enqueueAutopayStaffNotifications:h.staff,sendAutopayStaffEmail:h.staffEmail}));
 vi.mock('./billingPaymentSettings',()=>({resolveBillingPaymentSettings:async()=>({
  autopayOffsetDays:{value:0},autopayOffsetRule:{value:'later'},achMode:{value:'ach_preferred'}})}));
-vi.mock('./consentText',()=>({buildAutopayDisclosure:async()=>({scheduleText:'Server schedule.',feeText:'No processing fee applies.'})}));
+vi.mock('./consentText',()=>({buildAutopayDisclosure:async(_db:unknown,_org:unknown,method:string)=>({achMode:h.achMode,scheduleText:'Server schedule.',feeText:method==='card'?'A credit-card processing fee of up to 3% applies.':'No processing fee applies.'})}));
 vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:vi.fn(async()=>({token:'invoice-token'})),
  buildPublicInvoiceUrl:(token:string)=>`https://portal.example.test/invoice/${token}`}));
 import { db } from '../../db';
@@ -58,7 +58,7 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.rows=[];h.calls=[];h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
   h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}],[]);
@@ -139,5 +139,42 @@ describe('client stop authority',()=>{
   h.rows.push([org],[{...enrollment,status:'cancelled'}]);h.resolve.mockResolvedValue({orgId,enrollmentId:enrollment.id,generation:9});
   await withAutopayStopToken('current-token',()=>stopAutopayByClient(db,{orgId,source:'link'}));
   expect(h.calls.some(c=>c.op==='update')).toBe(false);
+ });
+});
+
+describe('review regressions',()=>{
+ it.each(['ach_preferred','ach_only','card_only'] as const)('labels only available fees for %s',async mode=>{
+  h.achMode=mode;
+  h.rows.push([org],[{...enrollment,status:'requested'}],[{id:'connection',stripeAccountId:'acct_test'}],[{...enrollment,status:'requested',generation:10}]);
+  noticeRows('autopay_request');
+  await requestAutopay(db,actor,{orgIds:[orgId]});
+  for(const content of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
+   if(mode==='ach_only')expect(content).not.toContain('credit-card processing');
+   else expect(content).toContain('Card: A credit-card processing fee of up to 3% applies.');
+   if(mode==='card_only')expect(content).not.toContain('No processing fee applies.');
+   else expect(content).toContain('Bank account (ACH): No processing fee applies.');
+  }
+ });
+ it('enqueues staff notifications on the caller executor before post-context callbacks',async()=>{
+  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[],[]);
+  await turnOffAutopay(db,actor,orgId);
+  expect(h.staff).toHaveBeenCalledWith(db,expect.objectContaining({event:'autopay.stopped',orgId}));
+  expect(h.staffEmail).not.toHaveBeenCalled();
+ });
+});
+
+describe('staff email committed-state guard',()=>{
+ it.each([
+  {status:'cancelled',generation:9,send:true},
+  {status:'active',generation:9,send:false},
+  {status:'cancelled',generation:10,send:false},
+ ])('checks committed state %j before emailing',async committed=>{
+  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[],[]);
+  await turnOffAutopay(db,actor,orgId);
+  const callback=h.after.mock.calls.find(call=>call[0]==='autopay.stopped')![1];
+  h.rows.push([committed]);
+  await callback();
+  expect(h.staffEmail).toHaveBeenCalledTimes(committed.send?1:0);
+  expect(h.staff).toHaveBeenCalledTimes(1);
  });
 });
