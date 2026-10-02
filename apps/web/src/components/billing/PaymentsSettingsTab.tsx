@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
@@ -19,36 +19,60 @@ type Resolved = {
 export interface PaymentSettingsView { autopayEnabled: boolean; values: PaymentValues; inherited: Resolved; effective: Resolved }
 export function usePaymentSettings(orgId?: string) {
   const { t } = useTranslation('billing');
-  const [view, setView] = useState<PaymentSettingsView | null>(null);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';
+  // Each identity owns its requests, including save-triggered reloads.
+  const scope = useMemo(() => ({ path, active: false, request: 0 }), [path]);
+  const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null,
+    error: false, loading: true, saving: false });
+  const { view, error, loading, saving } = state.scope === scope
+    ? state : { view: null, error: false, loading: true, saving: false };
   const load = useCallback(async () => {
-    setLoading(true); setError(false);
+    if (!scope.active) return;
+    const request = ++scope.request;
+    const isCurrent = () => scope.active && scope.request === request;
+    setState(current => ({ ...current, scope, view: null, loading: true, error: false }));
     try {
-      const response = await fetchWithAuth(path);
+      const response = await fetchWithAuth(scope.path);
       if (!response.ok) throw new Error('load');
-      setView(await response.json());
-    } catch { setView(null); setError(true); } finally { setLoading(false); }
-  }, [path]);
-  useEffect(() => { void load(); }, [load]);
+      const nextView: PaymentSettingsView = await response.json();
+      if (isCurrent()) setState(current => ({ ...current, view: nextView }));
+    } catch {
+      if (isCurrent()) setState(current => ({ ...current, view: null, error: true }));
+    } finally {
+      if (isCurrent()) setState(current => ({ ...current, loading: false }));
+    }
+  }, [scope]);
+  useEffect(() => {
+    scope.active = true;
+    setState({ scope, view: null, error: false, loading: true, saving: false });
+    void load();
+    return () => { scope.active = false; ++scope.request; };
+  }, [scope, load]);
   const values = view?.values;
   const invalid = !!values && ((values.autopayOffsetDays !== null &&
     (!Number.isInteger(values.autopayOffsetDays) || values.autopayOffsetDays < 0 || values.autopayOffsetDays > 60)) ||
     (values.autopayCapEnabled === true && (!/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(values.autopayCapAmount ?? '') ||
       !/[1-9]/.test(values.autopayCapAmount ?? '') || !/^[A-Z]{3}$/.test(values.autopayCapCurrency ?? ''))));
   const save = async () => {
-    if (!view?.autopayEnabled || invalid || saving) return;
-    setSaving(true);
+    if (!scope.active || !view?.autopayEnabled || invalid || loading || saving) return;
+    const payload = { ...view.values };
+    if (payload.autopayCapEnabled === true && payload.autopayCapAmount !== null) {
+      const [whole, fraction = ''] = payload.autopayCapAmount.split('.');
+      payload.autopayCapAmount = `${whole}.${fraction.padEnd(2, '0')}`;
+    }
+    setState(current => ({ ...current, saving: true }));
     try {
-      await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', body: JSON.stringify(view.values) }),
+      await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', body: JSON.stringify(payload) }),
         errorFallback: t('autopay.error'), successMessage: t('autopay.saved') });
       await load();
-    } finally { setSaving(false); }
+    } finally {
+      if (scope.active) setState(current => ({ ...current, saving: false }));
+    }
   };
   return { view, loading, saving, invalid, error, load, save,
-    setValues: (patch: Partial<PaymentValues>) => setView(current => current ? { ...current, values: { ...current.values, ...patch } } : current) };
+    setValues: (patch: Partial<PaymentValues>) => setState(current =>
+      scope.active && current.scope === scope && current.view
+        ? { ...current, view: { ...current.view, values: { ...current.view.values, ...patch } } } : current) };
 }
 export function PaymentFields({ view, setValues, disabled = false }: {
   view: PaymentSettingsView; setValues: (patch: Partial<PaymentValues>) => void; disabled?: boolean;
