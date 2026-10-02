@@ -18,6 +18,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'routes/updateRingsHelpers.ts': { guards: 2, reason: 'update-ring partner assignment device resolution' },
   'services/networkExecutorSelection.ts': { guards: 1, reason: 'network monitor executor candidates' },
   'services/automationRuntime.ts': { guards: 2, reason: 'automation owner orgs and target devices' },
+  'services/automationWebhookContext.ts': { guards: 1, reason: 'partner-wide automation webhook: owner-context org allowlist the run targets' },
   // --- workers and schedulers ---------------------------------------------
   'jobs/alertWorker.ts': { guards: 2, reason: 'scheduled alert rule evaluation over orgs and devices' },
   'services/monitors/networkCheckAlertSweep.ts': { guards: 2, reason: 'network-check alert sweep org enumeration' },
