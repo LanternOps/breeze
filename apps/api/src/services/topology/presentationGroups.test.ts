@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { presentationEdgeSchema, presentationNodeSchema, type PresentationEdge, type PresentationNode } from '@breeze/shared';
 import { buildPresentationGroups, cidrContains, type PresentationGroupInput } from './presentationGroups';
+import { topologyOsContextKey, type NeighborObserverBaseline, type NeighborRowInput } from './neighborEvidence';
 
 const id = (prefix: string, n: number) => `${prefix}000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const E = (n: number) => id('e1', n); // endpoints
@@ -27,13 +28,14 @@ function lan(observers: Observer[], extra: Partial<PresentationGroupInput> = {})
     routes: [...input.routes, ...(extra.routes ?? [])], unplaced: [...input.unplaced, ...(extra.unplaced ?? [])] };
 }
 const SCOPE = 'abcdefabcdefabcdefabcdef';
-function build(input: PresentationGroupInput, options: { visible?: string[]; maxNodes?: number; maxEdges?: number } = {}) {
+function build(input: PresentationGroupInput, options: { visible?: string[]; maxNodes?: number; maxEdges?: number; now?: Date } = {}) {
   const visible = options.visible ?? [
     ...input.networks.map((n) => n.id), ...input.memberships.map((m) => m.endpointId), ...input.routes.map((r) => r.gatewayId),
     ...input.unplaced.map((u) => u.endpointId),
   ];
   return buildPresentationGroups(input, { view: 'overview', scopeHash: SCOPE, visibleNodeIds: new Set(visible), tokenFor: (focus) => `token:${focus}`,
-    ...(options.maxNodes !== undefined ? { maxNodes: options.maxNodes } : {}), ...(options.maxEdges !== undefined ? { maxEdges: options.maxEdges } : {}) });
+    ...(options.maxNodes !== undefined ? { maxNodes: options.maxNodes } : {}), ...(options.maxEdges !== undefined ? { maxEdges: options.maxEdges } : {}),
+    ...(options.now ? { now: options.now } : {}) });
 }
 const networks = (nodes: PresentationNode[]) => nodes.filter((node) => node.group?.kind === 'network');
 const gateways = (nodes: PresentationNode[]) => nodes.filter((node) => node.group?.kind === 'gateway');
@@ -297,6 +299,143 @@ describe('buildPresentationGroups', () => {
     const ids = new Set(nodes.map((node) => node.id));
     expect(edges.every((edge) => ids.has(edge.sourceNodeId) && ids.has(edge.targetNodeId))).toBe(true);
     expect(build(input, { maxEdges: 2 }).edges).toHaveLength(2);
+  });
+});
+
+describe('neighbour-cache corroboration (#7816, #7817)', () => {
+  const NOW = new Date('2026-10-02T12:00:00.000Z');
+  const PHONE_MAC = '00:11:22:33:44:55';
+  const context = (endpointId: string) => topologyOsContextKey(endpointId, 'default');
+  /** Observer n's published caches: interface `if:n` (= canonical interface I(n)) at 10.1.2.(200+n)/24. */
+  const cache = (n: number, entries: Partial<NeighborRowInput>[], overrides: Partial<NeighborObserverBaseline> = {}): NeighborObserverBaseline => ({
+    sourceId: id('5a', n), observerNodeId: E(n), observerLabel: `obs-${n}`, producerId: E(n), contextKey: 'default', addressFamily: 'any',
+    outcome: 'complete', omittedRowCount: 0, rowsTruncated: false, confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z',
+    rows: entries.map((entry, index) => ({ rowKey: `n:${n}:${index}`, address: '10.1.2.50', family: 'ipv4', zone: null, interfaceKey: `if:${n}`,
+      mac: PHONE_MAC, state: 'reachable', isRouter: null, ...entry })),
+    interfaces: { expiresAt: '2026-10-02T12:10:00.000Z', rows: [{ interfaceKey: `if:${n}`, name: 'eth0', kind: 'ethernet', adminState: 'up', operState: 'up',
+      currentMac: `02:00:00:00:00:${n.toString(16).padStart(2, '0')}`,
+      addresses: [{ address: `10.1.2.${200 + n}`, prefixLength: 24, family: 'ipv4', zone: null, state: 'preferred' }] }] },
+    interfaceIds: { [`if:${n}`]: I(n) },
+    ...overrides,
+  });
+  /** lan() plus OS contexts on every membership/route, inventory pairs and neighbour caches. */
+  function corroborated(observers: Observer[], extra: Partial<PresentationGroupInput> & { caches?: NeighborObserverBaseline[]; limited?: boolean } = {}): PresentationGroupInput {
+    const base = lan(observers, extra);
+    return { ...base,
+      memberships: base.memberships.map((m) => ({ ...m, context: context(m.endpointId) })),
+      routes: base.routes.map((r) => ({ ...r, context: context(r.endpointId) })),
+      inventoryPairs: extra.inventoryPairs ?? [],
+      neighbors: { baselines: extra.caches ?? [], limited: extra.limited ?? false } };
+  }
+  const phone = { unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }], inventoryPairs: [{ endpointId: E(40), ip: '10.1.2.50', mac: '00-11-22-33-44-55' }] };
+  const memberOf = (nodes: PresentationNode[], endpointId: string) => networks(nodes).flatMap((node) => node.group!.members.map((m) => ({ node, m })))
+    .find(({ m }) => m.nodeId === endpointId);
+
+  it('upgrades an unplaced endpoint to neighbor_seen from an exact same-row IP+MAC pair in an in-range observer cache', () => {
+    const { nodes } = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { ...phone, caches: [cache(1, [{}])] }), { now: NOW });
+    const found = memberOf(nodes, E(40))!;
+    expect(found.m).toEqual({ nodeId: E(40), placement: 'neighbor_seen', primary: true, stale: false, neighbor: {
+      method: 'neighbor_cache', evidenceClass: 'inferred', confidence: 'low', observerNodeId: E(1), observerLabel: 'obs-1', sourceId: id('5a', 1),
+      rowKey: 'n:1:0', interfaceName: 'eth0', address: '10.1.2.50', mac: PHONE_MAC, state: 'reachable',
+      confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z' } });
+    // Counted as a member, never as an observer.
+    expect(found.node.memberCount).toBe(2);
+    expect(found.node.group!.observerCount).toBe(1);
+    expect(found.node.group!.neighborCoverage).toBe('complete');
+    for (const node of nodes) expect(presentationNodeSchema.safeParse(node).success).toBe(true);
+    expect(unidentified(nodes)).toHaveLength(0);
+  });
+
+  it('keeps address_match for an IP-only match, an expired cache or a pair shared by two endpoints', () => {
+    const observers = [{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }];
+    const ipOnly = build(corroborated(observers, { ...phone, caches: [cache(1, [{ mac: '66:77:88:99:aa:bb' }])] }), { now: NOW });
+    expect(memberOf(ipOnly.nodes, E(40))!.m).toMatchObject({ placement: 'address_match' });
+    expect(memberOf(ipOnly.nodes, E(40))!.m.neighbor).toBeUndefined();
+    const noPair = build(corroborated(observers, { unplaced: phone.unplaced, caches: [cache(1, [{}])] }), { now: NOW });
+    expect(memberOf(noPair.nodes, E(40))!.m.placement).toBe('address_match');
+    const expired = build(corroborated(observers, { ...phone, caches: [cache(1, [{}], { expiresAt: '2026-10-02T11:59:00.000Z' })] }), { now: NOW });
+    expect(memberOf(expired.nodes, E(40))!.m.placement).toBe('address_match');
+    const shared = build(corroborated(observers, { unplaced: [...phone.unplaced, { endpointId: E(41), addresses: ['10.1.2.50'] }],
+      inventoryPairs: [...phone.inventoryPairs, { endpointId: E(41), ip: '10.1.2.50', mac: PHONE_MAC }], caches: [cache(1, [{}])] }), { now: NOW });
+    expect(memberOf(shared.nodes, E(40))!.m.placement).toBe('address_match');
+    expect(memberOf(shared.nodes, E(41))!.m.placement).toBe('address_match');
+    // Another context of the same observer is not the membership's context.
+    const otherContext = build(corroborated(observers, { ...phone, caches: [cache(1, [{}], { contextKey: 'netns-b' })] }), { now: NOW });
+    expect(memberOf(otherContext.nodes, E(40))!.m.placement).toBe('address_match');
+  });
+
+  it('never pairs an IP with a MAC from a different inventory row', () => {
+    const { nodes } = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], {
+      unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50', '10.1.2.60'] }],
+      inventoryPairs: [{ endpointId: E(40), ip: '10.1.2.50', mac: 'aa:aa:aa:aa:aa:aa' }, { endpointId: E(40), ip: '10.1.2.60', mac: PHONE_MAC }],
+      caches: [cache(1, [{ address: '10.1.2.50', mac: PHONE_MAC }])] }), { now: NOW });
+    expect(memberOf(nodes, E(40))!.m.placement).toBe('address_match');
+  });
+
+  it('corroborates the matching observer candidate rather than the largest one, and stays ambiguous on conflicting observers', () => {
+    const split: Observer[] = [{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' },
+      { n: 3, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }];
+    const minority = build(corroborated(split, { ...phone, caches: [cache(3, [{}])] }), { now: NOW });
+    const found = memberOf(minority.nodes, E(40))!;
+    expect(found.m.placement).toBe('neighbor_seen');
+    expect(found.node.group!.gatewayAddresses).toEqual(['10.1.2.254']);
+    expect(found.node.group!.observerCount).toBe(1);
+
+    const both = build(corroborated(split, { ...phone, caches: [cache(1, [{}]), cache(3, [{}])] }), { now: NOW });
+    const ambiguous = memberOf(both.nodes, E(40))!;
+    expect(ambiguous.m.placement).toBe('address_match');
+    expect(ambiguous.node.group!.gatewayAddresses).toEqual(['10.1.2.1']);
+    // The same IP mapped to another MAC in any in-range cache is a conflict too.
+    const disagree = build(corroborated(split, { ...phone, caches: [cache(3, [{}]), cache(1, [{ mac: '66:77:88:99:aa:bb' }])] }), { now: NOW });
+    expect(memberOf(disagree.nodes, E(40))!.m.placement).toBe('address_match');
+  });
+
+  it('splits one gateway address into separate candidates on fresh conflicting gateway MACs, with an explanation', () => {
+    const observers: Observer[] = [1, 2, 3].map((n) => ({ n, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }));
+    const gatewayRow = (mac: string) => ({ address: '10.1.2.1', mac, isRouter: true });
+    const { nodes, edges } = build(corroborated(observers, { caches: [cache(1, [gatewayRow('00:00:5e:00:01:01')]), cache(2, [gatewayRow('00:00:5e:00:01:01')]),
+      cache(3, [gatewayRow('00:00:5e:00:01:02')])] }), { now: NOW });
+    expect(networks(nodes)).toHaveLength(2);
+    expect(networks(nodes).every((node) => node.group!.conflict && node.group!.conflictBasis?.includes('gateway_mac'))).toBe(true);
+    expect(networks(nodes).map((node) => node.group!.observerCount).sort()).toEqual([1, 2]);
+    expect(gateways(nodes)).toHaveLength(2);
+    expect(gateways(nodes).map((node) => node.group!.gatewayMacs!.map((g) => `${g.mac}x${g.observerCount}`)).flat().sort())
+      .toEqual(['00:00:5e:00:01:01x2', '00:00:5e:00:01:02x1']);
+    expect(role(edges, 'routes_via')).toHaveLength(2);
+    for (const node of nodes) expect(presentationNodeSchema.safeParse(node).success).toBe(true);
+  });
+
+  it('never splits or bridges on missing or expired MAC evidence, and equal MACs alone prove nothing', () => {
+    const observers: Observer[] = [1, 2].map((n) => ({ n, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }));
+    const one = build(corroborated(observers, { caches: [cache(1, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01' }])] }), { now: NOW });
+    expect(networks(one.nodes)).toHaveLength(1);
+    expect(networks(one.nodes)[0]!.group).toMatchObject({ conflict: false });
+    expect(networks(one.nodes)[0]!.group!.conflictBasis).toBeUndefined();
+    expect(gateways(one.nodes)[0]!.group!.gatewayMacs).toEqual([{ address: '10.1.2.1', mac: '00:00:5e:00:01:01', observerCount: 1,
+      confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z' }]);
+
+    const stale = build(corroborated(observers, { caches: [cache(1, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01' }]),
+      cache(2, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:02' }], { expiresAt: '2026-10-02T11:00:00.000Z' })] }), { now: NOW });
+    expect(networks(stale.nodes)).toHaveLength(1);
+    expect(networks(stale.nodes)[0]!.group!.conflict).toBe(false);
+
+    // Different prefixes with the same gateway MAC stay separate cards.
+    const twoLans = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.3.0/24', gateway: '10.1.3.1' }], {
+      caches: [cache(1, [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01' }]),
+        cache(2, [{ address: '10.1.3.1', mac: '00:00:5e:00:01:01' }], { interfaces: { expiresAt: '2026-10-02T12:10:00.000Z', rows: [{ interfaceKey: 'if:2', name: 'eth0', kind: 'ethernet',
+          adminState: 'up', operState: 'up', addresses: [{ address: '10.1.3.202', prefixLength: 24, family: 'ipv4', zone: null, state: 'preferred' }] }] } })] }), { now: NOW });
+    expect(networks(twoLans.nodes)).toHaveLength(2);
+    expect(networks(twoLans.nodes).every((node) => !node.group!.conflict)).toBe(true);
+  });
+
+  it('reports limited neighbour coverage and keeps the #7762 output unchanged without neighbour input', () => {
+    const limited = build(corroborated([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { ...phone, caches: [cache(1, [{}], { omittedRowCount: 9, outcome: 'partial' })] }), { now: NOW });
+    expect(networks(limited.nodes)[0]!.group!.neighborCoverage).toBe('limited');
+    expect(memberOf(limited.nodes, E(40))!.m.placement).toBe('neighbor_seen');
+    const plain = build(lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], { unplaced: phone.unplaced }));
+    expect(networks(plain.nodes)[0]!.group!.neighborCoverage).toBeUndefined();
+    expect(gateways(plain.nodes)[0]!.group!.gatewayMacs).toBeUndefined();
+    expect(memberOf(plain.nodes, E(40))!.m.placement).toBe('address_match');
   });
 });
 

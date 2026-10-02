@@ -148,9 +148,10 @@ export function qualifyNeighborRow(row: NeighborRowInput, context: { addressFami
     // Zones are interface scope: a link-local neighbour matches only its own zone.
     if (local && (address.zone ?? null) !== (row.zone ?? null)) continue;
     const prefix = topologyCidrSchema.safeParse(`${address.address}/${address.prefixLength}`);
-    const network = prefix.success ? parsePrefix(prefix.data) : null;
-    if (!network || !inRange(parsed.value, network.value, network.length, parsed.family === 4 ? 32 : 128)) continue;
-    if (!best || network.length > best.length) best = { prefix: prefix.data, length: network.length };
+    const canonical = prefix.success ? prefix.data : undefined;
+    const network = canonical ? parsePrefix(canonical) : null;
+    if (!canonical || !network || !inRange(parsed.value, network.value, network.length, parsed.family === 4 ? 32 : 128)) continue;
+    if (!best || network.length > best.length) best = { prefix: canonical, length: network.length };
   }
   if (!best) return { ok: false, reason: 'not_in_prefix' };
   if (parsed.family === 4 && best.length <= 30) {
