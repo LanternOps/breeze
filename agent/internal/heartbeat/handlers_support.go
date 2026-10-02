@@ -215,8 +215,9 @@ const (
 // The paths are passed in the environment, never written into the line:
 // cmd.exe expands %NAME% anywhere in its command line, quoted or not, with no
 // escape, so a user or file name containing % would otherwise make it delete
-// a different path. cmd.exe expands each variable once and does not re-read
-// the value it substitutes.
+// a different path. They are read with delayed expansion (cmd /V:ON,
+// !NAME!), which happens after the FOR loop variable is substituted and does
+// not re-read the value, so neither a %NAME% nor a %i in a path is replaced.
 //
 // It polls about once a second for up to a minute: the executable cannot be
 // deleted while this process is still running, and a file it still holds
@@ -224,17 +225,17 @@ const (
 // after exit. It stops as soon as both are gone. workDir "" deletes only the
 // executable.
 func buildSupportSelfDeleteCmdLine(exePath, workDir string) (string, []string) {
-	exeRef := `"%` + supportCleanupExeEnv + `%"`
+	exeRef := `"!` + supportCleanupExeEnv + `!"`
 	env := []string{supportCleanupExeEnv + "=" + exePath}
 	steps := `ping 127.0.0.1 -n 2 >NUL & del /f /q ` + exeRef + ` 2>NUL`
 	done := `if not exist ` + exeRef
 	if workDir != "" {
-		dirRef := `"%` + supportCleanupDirEnv + `%"`
+		dirRef := `"!` + supportCleanupDirEnv + `!"`
 		env = append(env, supportCleanupDirEnv+"="+workDir)
 		steps += ` & rmdir /s /q ` + dirRef + ` 2>NUL`
 		done += ` if not exist ` + dirRef
 	}
-	return fmt.Sprintf(`cmd /C for /L %%i in (1,1,60) do (%s & %s exit)`, steps, done), env
+	return fmt.Sprintf(`cmd /V:ON /C for /L %%i in (1,1,60) do (%s & %s exit)`, steps, done), env
 }
 
 // scheduleSupportSelfDelete deletes this executable, and removes workDir

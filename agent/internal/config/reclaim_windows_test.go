@@ -298,6 +298,48 @@ func TestReclaimConfigDirDoesNotCarryAHardLinkedConfig(t *testing.T) {
 	}
 }
 
+// TestReclaimConfigDirReplacesAFolderWhoseConfigItCannotOpen: a config entry
+// in a folder another account controlled that the agent cannot open as a
+// file (a folder named agent.yaml, or a file whose DACL lets the agent only
+// read its permissions) is not carried, and the folder is still replaced,
+// rather than every start failing on it.
+func TestReclaimConfigDirReplacesAFolderWhoseConfigItCannotOpen(t *testing.T) {
+	requireElevatedRunner(t)
+	for name, plant := range map[string]func(t *testing.T, root string){
+		"agent.yaml is a folder": func(t *testing.T, root string) {
+			reclaimAsStandardUser(t, func() {
+				_ = os.Remove(filepath.Join(root, "agent.yaml"))
+				if err := os.Mkdir(filepath.Join(root, "agent.yaml"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			})
+		},
+		"agent.yaml cannot be read": func(t *testing.T, root string) {
+			reclaimAsStandardUser(t, func() {
+				if err := applyWindowsDACL(filepath.Join(root, "agent.yaml"), "D:P(A;;RC;;;SY)(A;;RC;;;BA)(A;;RC;;;OW)"); err != nil {
+					t.Fatal(err)
+				}
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "Breeze")
+			plantFolderAsStandardUser(t, root)
+			plant(t, root)
+			if err := reclaimConfigDir(root, false); err != nil {
+				t.Fatalf("reclaimConfigDir: %v", err)
+			}
+			assertTrustedObject(t, root)
+			if exists(filepath.Join(root, "agent.yaml")) {
+				t.Error("the other account's agent.yaml is in the agent's folder")
+			}
+			if !exists(filepath.Join(setAsideDir(t, root), "agent.yaml")) {
+				t.Error("the other account's agent.yaml was not kept aside")
+			}
+		})
+	}
+}
+
 // TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote: before an
 // enrollment, the other account's config files are not carried over either;
 // enrollment writes new ones.

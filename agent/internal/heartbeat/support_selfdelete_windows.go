@@ -16,7 +16,7 @@ const createNoWindow = 0x08000000
 
 // startSupportSelfDelete launches the detached self-delete trampoline:
 //
-//	cmd /C for /L %i in (1,1,60) do (ping ... & del /f /q "%BREEZE_SUPPORT_CLEANUP_EXE%" ...)
+//	cmd /V:ON /C for /L %i in (1,1,60) do (ping ... & del /f /q "!BREEZE_SUPPORT_CLEANUP_EXE!" ...)
 //
 // with the paths in the child's environment (see
 // buildSupportSelfDeleteCmdLine).

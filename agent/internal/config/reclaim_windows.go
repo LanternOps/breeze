@@ -473,9 +473,10 @@ func replaceConfigRoot(root string, forEnroll bool) error {
 // carryConfigFile copies src to dst with sddl when src passes the trust
 // check through the handle it is read from (openTrustedConfigFile: owner,
 // DACL, not a link, one hard link). It reports whether it copied, and if not,
-// why ("" when src does not exist). An owner that cannot be checked returns
-// an error, so the whole replace waits for the next start rather than drop a
-// config that may be the agent's.
+// why ("" when src does not exist); an entry it cannot open or check is not
+// carried. An owner that cannot be checked returns an error, so the whole
+// replace waits for the next start rather than drop a config that may be the
+// agent's.
 func carryConfigFile(src, dst, sddl string) (bool, string, error) {
 	f, err := openTrustedConfigFile(src)
 	switch {
@@ -483,10 +484,11 @@ func carryConfigFile(src, dst, sddl string) (bool, string, error) {
 		return false, "", nil
 	case errors.Is(err, errConfigOwnerUnverified):
 		return false, "", err
-	case errors.Is(err, ErrConfigDirUntrusted):
-		return false, err.Error(), nil
 	case err != nil:
-		return false, "", err
+		// Untrusted, or not openable as a file at all (a folder by that
+		// name, a DACL that denies the agent): not carried. It stays in the
+		// set-aside folder; failing here would fail every start on it.
+		return false, err.Error(), nil
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(f)
