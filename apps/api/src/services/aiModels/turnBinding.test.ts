@@ -147,3 +147,39 @@ describe('carriedRates (W05)', () => {
     expect(liveQueryKey(withCarriedRates(base, [{ wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE }]))).toBe(liveQueryKey(base));
   });
 });
+
+describe('W11 promptProfile and W05 carriedRates together', () => {
+  it('a switched binding keeps both fields through the persisted JSON round trip', () => {
+    const HAIKU = { source: 'linked_platform' as const, standard: { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 } };
+    const b = withCarriedRates(turnBindingFrom(makeResolvedModel('anthropic_byok', { promptProfile: 'claude-small' })), [
+      { wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU },
+    ]);
+    const parsed = parseTurnBinding(JSON.parse(JSON.stringify(b)));
+    expect(parsed).toMatchObject({ promptProfile: 'claude-small', carriedRates: [{ wireModel: 'claude-haiku-4-5' }] });
+    expect(stableJson(parsed)).toBe(stableJson(b));
+  });
+});
+
+describe('W11 promptProfile on the binding', () => {
+  it('turnBindingFrom carries the resolved prompt profile', () => {
+    expect(turnBindingFrom(makeResolvedModel('platform', { promptProfile: 'claude-frontier' })).promptProfile).toBe('claude-frontier');
+  });
+  it('keeps promptProfile through the persisted JSON round trip (W11)', () => {
+    // aiBudgetReservations re-binds a reservation when stableJson(parsed stored
+    // binding) !== stableJson(new binding). A schema that stripped the field
+    // would re-bind every stable-key retry and 409 a settled one.
+    const b = turnBindingFrom(makeResolvedModel('anthropic_byok', { promptProfile: 'claude-small' }));
+    const parsed = parseTurnBinding(JSON.parse(JSON.stringify(b)));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.promptProfile).toBe('claude-small');
+    expect(stableJson(parsed)).toBe(stableJson(b));
+  });
+  it('a binding persisted before W11 (no promptProfile) still parses', () => {
+    const { promptProfile: _p, ...legacy } = turnBindingFrom(makeResolvedModel('platform'));
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(legacy)))).toMatchObject({ v: 1, wireModel: 'claude-sonnet-5-5' });
+  });
+  it('rejects a promptProfile outside PROMPT_PROFILES', () => {
+    const b = { ...turnBindingFrom(makeResolvedModel('platform')), promptProfile: 'claude-huge' };
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(b)))).toBeNull();
+  });
+});

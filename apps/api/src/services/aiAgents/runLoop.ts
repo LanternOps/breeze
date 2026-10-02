@@ -98,7 +98,7 @@ import {
   type SdkUsageSnapshot,
   type TurnOutcome,
 } from '../aiModels/invocationUsage';
-import { applyPromptProfile } from '../aiModels/promptProfiles';
+import { promptProvenanceFor, renderSystemPrompt } from '../aiModels/promptProfiles';
 import { refusalHeadline } from '../aiModels/refusals';
 import { reportIfPlatformKeyMissing } from '../aiModels/oneShotUnavailable';
 import { resolveModel } from '../aiModels/resolveModel';
@@ -2156,6 +2156,8 @@ async function driveSdkLoop(
   let lastResult: SdkResultLike | null = null;
   let turnOutcome: TurnOutcome | null = null;
   let usageConfirmed = true;
+  // W11: one prompt per run; the canary is sticky per run id.
+  const promptProvenance = promptProvenanceFor({ surface: 'ai_agents', profile: agentModel.promptProfile, subjectId: run.id });
 
   try {
     await runOutsideDbContext(async () => {
@@ -2165,7 +2167,7 @@ async function driveSdkLoop(
           // model (the resolver's wire id — a catalog endpoint's own id),
           // fallbackModel (the refusal fallback) and thinking/effort.
           ...sdkModelOptions(agentModel),
-          systemPrompt: applyPromptProfile('ai_agents', agentModel.promptProfile, buildAgentRunSystemPrompt(prompt)),
+          systemPrompt: renderSystemPrompt(buildAgentRunSystemPrompt(prompt), promptProvenance),
           maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
@@ -2309,6 +2311,7 @@ async function driveSdkLoop(
         reservationId,
         messageCount: Math.max(1, turnCount),
         toolExecutionCount: outcome.toolExecutionCount,
+        prompt: promptProvenance,
       });
       // The run row carries the billed number (which also prices any model
       // the CLI switched to on its own at its platform rate).

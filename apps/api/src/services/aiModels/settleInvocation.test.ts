@@ -29,10 +29,12 @@ import type { BilledUsage, SdkUsageSnapshot, TurnOutcome } from './invocationUsa
 import { priceInvocation } from './pricing';
 import {
   WEB_SEARCH_COST_CENTS,
+  consistentPromptVariant,
   costEstimator,
   debitSettledCredits,
   priceUsage,
   settleInvocation,
+  toNewInvocations,
   __resetSettleInvocationReportsForTests,
   type SettleInvocationInput,
 } from './settleInvocation';
@@ -456,5 +458,69 @@ describe('priceUsage: carried rates across a switch (W05 spike constraint 4)', (
     expect(row!.rate).toBe(HAIKU_RATE);
     expect(row!.costCents).toBe(100);
     expect(row!.unboundModel).toBe(false);   // a carried model is not a fallback
+  });
+});
+
+describe('W11 prompt provenance', () => {
+  const input = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
+    binding: { ...B, promptProfile: 'claude-standard' }, orgId: 'org-1', userId: null, sessionId: 's1', agentRunId: null,
+    sourceRef: null, usage: [use('claude-sonnet-5-5')], outcome: OK, ...over,
+  });
+  const rowsOf = (i: SettleInvocationInput) => toNewInvocations(i, priceUsage(i.binding, i.usage));
+
+  it('a one-shot surface records the binding profile and no variant', () => {
+    expect(rowsOf(input())[0]).toMatchObject({ promptProfile: 'claude-standard', promptVariant: null });
+  });
+  it('the live query provenance wins over the binding (a reused query keeps its prompt)', () => {
+    const rows = rowsOf(input({ binding: { ...B, promptProfile: 'claude-standard' }, prompt: { profile: 'claude-frontier', variant: 'chat/claude-frontier@1' } }));
+    expect(rows[0]).toMatchObject({ promptProfile: 'claude-frontier', promptVariant: 'chat/claude-frontier@1' });
+  });
+  it('every leg of a refusal-fallback turn carries the same provenance', () => {
+    const rows = rowsOf(input({
+      usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')],
+      outcome: { ...OK, fallbackUsed: true, refused: true, stopReason: 'end_turn', refusalCategory: 'cyber' },
+      prompt: { profile: 'claude-standard', variant: null },
+    }));
+    expect(rows.map((r) => [r.promptProfile, r.promptVariant])).toEqual([['claude-standard', null], ['claude-standard', null]]);
+  });
+  it('drops a variant that does not match the bound surface (never hands the CHECK a row it rejects)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rows = rowsOf(input({ binding: { ...B, surface: 'helper' }, prompt: { profile: 'claude-frontier', variant: 'chat/claude-frontier@1' } }));
+    expect(rows[0]).toMatchObject({ promptProfile: 'claude-frontier', promptVariant: null });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('prompt variant does not match'), expect.anything());
+    warn.mockRestore();
+  });
+  it.each([
+    ['another profile', 'chat/claude-small@1', 'chat', 'claude-frontier'],
+    ['generic', 'chat/claude-small@1', 'chat', 'generic'],
+    ['no profile', 'chat/claude-small@1', 'chat', null],
+    ['a malformed id', 'claude-small', 'chat', 'claude-small'],
+  ] as const)('consistentPromptVariant drops %s', (_n, variant, surface, profile) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(consistentPromptVariant(variant, surface, profile)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+  it('consistentPromptVariant keeps a variant that matches its surface and profile', () => {
+    expect(consistentPromptVariant('chat/claude-small@1', 'chat', 'claude-small')).toBe('chat/claude-small@1');
+    expect(consistentPromptVariant(null, 'chat', 'claude-small')).toBeNull();
+  });
+  it('stamps one occurredAt on every leg of a settlement (the turn time a deferred replay keeps)', () => {
+    const at = new Date('2026-09-15T12:00:00Z');
+    const rows = rowsOf(input({ usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')], occurredAt: at }));
+    expect(rows.map((r) => r.occurredAt)).toEqual([at, at]);
+    const stamped = rowsOf(input({ usage: [use('claude-sonnet-5-5'), use('claude-haiku-4-5')] }));
+    expect(stamped[0]!.occurredAt).toBeInstanceOf(Date);
+    expect(stamped[1]!.occurredAt).toBe(stamped[0]!.occurredAt);
+  });
+  it('a binding persisted before W11 (no promptProfile) records NULL', () => {
+    const { promptProfile: _p, ...legacy } = { ...B, promptProfile: undefined };
+    expect(rowsOf(input({ binding: legacy as typeof B }))[0]).toMatchObject({ promptProfile: null, promptVariant: null });
+  });
+  it('settleInvocation hands the reservation settlement rows carrying the provenance', async () => {
+    await settleInvocation(base({ binding: { ...B, promptProfile: 'claude-small' }, prompt: { profile: 'claude-small', variant: 'chat/claude-small@1' } }));
+    expect(m.settleDurably.mock.calls[0]![0].invocations).toEqual([expect.objectContaining({
+      promptProfile: 'claude-small', promptVariant: 'chat/claude-small@1', occurredAt: expect.any(Date),
+    })]);
   });
 });

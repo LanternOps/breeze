@@ -37,7 +37,7 @@ import {
   type SdkTurnUsageResult,
   type TurnOutcome,
 } from './aiModels/invocationUsage';
-import { applyPromptProfile } from './aiModels/promptProfiles';
+import { promptProvenanceFor, renderSystemPrompt, type PromptProvenance } from './aiModels/promptProfiles';
 import type { ResolvedModel } from './aiModels/resolveModel';
 import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
@@ -516,6 +516,13 @@ export interface ActiveSession {
    * (not the processor) so the turn timeout can close it too.
    */
   thinkingBlockIndex?: number | null;
+  /**
+   * W11 (#7609): the prompt profile and variant this live query's system
+   * prompt was built with. Fixed for the query's life, as the system prompt
+   * is; every settlement of a turn on this query records it (the per-turn
+   * `turnBinding` may carry a newer profile — liveQueryKey ignores it).
+   */
+  readonly promptProvenance: PromptProvenance;
   /** The Breeze users.id the ledger attributes turns to; null for helper / Office / system. */
   readonly ledgerUserId: string | null;
   /** Refusal-fallback system messages seen during the current turn (W03 Task 5). */
@@ -1113,6 +1120,11 @@ export class StreamingSessionManager {
     // query and processorPromise are filled in after creation.
     const now = Date.now();
     const resumeSdkSessionId = dbSession.sdkSessionId ?? undefined;
+    // W11: the canary is sticky per breeze session — the same session keeps
+    // its variant across query re-creations while the registry is unchanged.
+    const promptProvenance = promptProvenanceFor({
+      surface: binding.surface, profile: resolved.promptProfile, subjectId: breezeSessionId,
+    });
     const session: ActiveSession = {
       breezeSessionId,
       orgId: dbSession.orgId,
@@ -1120,6 +1132,7 @@ export class StreamingSessionManager {
       liveKey: key,
       turnBinding: binding,
       turnDisplay: turnDisplayFrom(resolved),
+      promptProvenance,
       ledgerUserId: options?.ledgerUserId ?? null,
       refusalObservation: newSdkTurnObservation(),
       forceRecreate: false,
@@ -1296,7 +1309,7 @@ export class StreamingSessionManager {
         const sdkQuery = query({
           prompt: inputController.getInputStream(),
           options: {
-            systemPrompt: applyPromptProfile(binding.surface, resolved.promptProfile, effectiveSystemPrompt),
+            systemPrompt: renderSystemPrompt(effectiveSystemPrompt, session.promptProvenance),
             // model (the resolver's wire id — a catalog endpoint's own id),
             // fallbackModel (the refusal fallback) and thinking/effort: all
             // from the resolved model, nothing derived here.
@@ -2081,6 +2094,9 @@ export class StreamingSessionManager {
         usage: turn.usage,
         outcome: turn.outcome,
         reservationId,
+        // W11: the live query's prompt, not the claimed binding's profile (a
+        // reused query keeps the system prompt it was created with).
+        prompt: session.promptProvenance,
         toolExecutionCount,
         turnCount: result ? (result.num_turns ?? 0) : 1,
         sdkUsage: {

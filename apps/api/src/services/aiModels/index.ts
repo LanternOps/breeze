@@ -37,3 +37,5 @@ export { defaultTransport, transportCarries, type DispatchTransport, type Transp
 export type { ResolveFailureReason } from './eligibility';
 export * from './modelChoices';
 export * from './permissionRoles';
+export { promptProvenanceFor, renderSystemPrompt, toPromptProfile, type PromptProvenance } from './promptProfiles';
+export { PROMPT_VARIANTS, PROMPT_VARIANT_SURFACES, selectPromptVariant, type PromptVariant } from './promptVariants';
