@@ -257,6 +257,8 @@ function readMacosPublisher(
         minimumRelease: FIRST_RELEASE_WITH_MACOS_PUBLISHER,
       });
     }
+    // Otherwise (a release that should carry the identity, or a tag that
+    // cannot be ordered): fall through to the generic invalid-identity refusal.
   }
   if (
     typeof identity !== "string" ||
@@ -563,8 +565,13 @@ function readIntendedUse(entry: { intendedUse?: unknown }, assetName: string): s
 /**
  * Called only when the entry's edition differs from the caller's expectation.
  * Returns (accepts) in exactly one case: the entry has NO edition, the caller
- * expects "self-host", and the manifest's release predates the edition field
- * (#7830). Every official release before v0.105.0 was the public self-host
+ * expects "self-host", the manifest's release predates the edition field, AND
+ * the caller pinned exactly that release (#7830). The pin requirement keeps
+ * the old incidental downgrade guard for everyone else: an unpinned ("latest")
+ * or local-volume fetch never pins a release, so a replayed — genuinely signed
+ * — pre-v0.105.0 manifest is still refused there rather than silently rolling
+ * the fleet back to an old build. Every official release before v0.105.0 was
+ * the public self-host
  * build — the hosted edition did not exist until the field did — so for those
  * manifests the absence carries no information and refusing it made every
  * installer unreachable for a self-hoster pinning BINARY_VERSION below
@@ -578,13 +585,20 @@ function assertEditionAbsenceIsLegacySelfHost(args: {
   release: string;
   edition: unknown;
   expectedEdition: string;
+  pinnedRelease: string | null;
 }): void {
   const mismatch = `Release artifact manifest edition mismatch for ${args.assetName}: expected ${args.expectedEdition}, got ${String(args.edition)}`;
   if (args.edition !== undefined) {
     throw new ReleaseAssetNotDistributableError(mismatch);
   }
   if (args.expectedEdition === EDITION_SELF_HOST) {
-    if (releasePredates(args.release, FIRST_RELEASE_WITH_EDITION)) return;
+    if (releasePredates(args.release, FIRST_RELEASE_WITH_EDITION)) {
+      if (args.pinnedRelease === args.release) return;
+      throw new ReleaseAssetNotDistributableError(
+        `${mismatch} — the signed manifest for ${args.release} predates the edition field (first recorded in ${FIRST_RELEASE_WITH_EDITION}). ` +
+          `A release that old is served only when BINARY_VERSION pins it explicitly; otherwise use ${FIRST_RELEASE_WITH_EDITION} or later.`,
+      );
+    }
     throw new ReleaseAssetNotDistributableError(
       `${mismatch} — the signed manifest for ${args.release} records no edition, but every official release since ${FIRST_RELEASE_WITH_EDITION} does, ` +
         `so its absence here is refused rather than assumed`,
@@ -688,6 +702,9 @@ function selectManifestAsset(args: {
       release: manifest.release as string,
       edition: entry.edition,
       expectedEdition: args.expectedEdition,
+      // Asserted equal to manifest.release above, so this is "the operator
+      // explicitly pinned exactly this signed release".
+      pinnedRelease: args.expectedRelease ?? null,
     });
   }
 

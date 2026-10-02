@@ -1478,6 +1478,24 @@ describe('installers for a BINARY_VERSION pinned before the edition field (#7830
     expect(seen.every((u) => u.includes('/download/v0.104.0/'))).toBe(true);
   });
 
+  it('unpinned (latest): refuses a replayed pre-v0.105.0 manifest instead of downgrading', async () => {
+    const os = 'linux';
+    const assetName = HELPER_FILENAMES[os]!;
+    const asset = Buffer.from('v0.104.0 helper appimage');
+    const signed = signedReleaseManifest(
+      assetName,
+      asset,
+      { platformTrust: 'release-workflow-produced' },
+      { release: 'v0.104.0' },
+    );
+    delete process.env.BINARY_VERSION;
+    serveRelease('/latest/download/', signed, { [assetName]: asset });
+
+    await expect(fetchVerifiedHelperInstaller(os)).rejects.toThrow(
+      /edition mismatch.*only when BINARY_VERSION pins it explicitly/,
+    );
+  });
+
   it('pinned: refuses the macOS pkg with an operator-actionable reason, not an edition mismatch', async () => {
     const packages = {
       'breeze-agent-darwin-amd64.pkg': Buffer.from('v0.104.0 amd64 pkg'),

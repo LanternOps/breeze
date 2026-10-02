@@ -118,6 +118,11 @@ vi.mock("../services/permissions", () => ({
     userPerms.permissions.includes("*:*"),
 }));
 
+vi.mock("../services/sentry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/sentry")>()),
+  captureException: vi.fn(),
+}));
+
 vi.mock("../services/auditService", () => ({
   createAuditLogAsync: vi.fn(),
 }));
@@ -205,6 +210,7 @@ import { db, withSystemDbAccessContext } from "../db";
 import { createAuditLogAsync } from "../services/auditService";
 import { assertMacosInstallerPkgsReachable, fetchMacosInstallerAppZip } from "../services/installerBuilder";
 import { ReleaseManifestTooOldError } from "../services/releaseArtifactManifest";
+import { captureException } from "../services/sentry";
 import { renameAppInZip } from "../services/installerAppZip";
 import * as installerBootstrapTokenIssuance from "../services/installerBootstrapTokenIssuance";
 
@@ -517,6 +523,8 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
       expect(body.error).toMatch(/^macOS PKG not reachable: /);
       expect(body.error).toContain("Set BINARY_VERSION to v0.112.0 or later");
       expect(db.insert).not.toHaveBeenCalled();
+      // Operator configuration, not an outage: no Sentry event per click.
+      expect(captureException).not.toHaveBeenCalled();
     });
 
     it("keeps the generic message for any other verification failure", async () => {
@@ -531,6 +539,7 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
 
       expect(res.status).toBe(503);
       await expect(res.json()).resolves.toEqual({ error: "macOS PKG not reachable" });
+      expect(captureException).toHaveBeenCalledTimes(1);
     });
   });
 
