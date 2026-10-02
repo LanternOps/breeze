@@ -1445,10 +1445,12 @@ describe('installers for a BINARY_VERSION pinned before the edition field (#7830
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       seen.push(url);
       if (!url.includes(tagPath)) return new Response('not found', { status: 404 });
-      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
-      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(new Uint8Array(signed.manifest));
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) {
+        return new Response(new Uint8Array(signed.signature));
+      }
       for (const [name, bytes] of Object.entries(assets)) {
-        if (url.endsWith(`/${name}`)) return new Response(bytes);
+        if (url.endsWith(`/${name}`)) return new Response(new Uint8Array(bytes));
       }
       return new Response('not found', { status: 404 });
     }));
