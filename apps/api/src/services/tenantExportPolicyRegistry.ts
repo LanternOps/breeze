@@ -42,7 +42,8 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
 "autopay_setup_attempts": tablePolicy("org_id", {
  included:["id","ordinal","org_id","partner_id","enrollment_id","generation","source","method_type",
    "stripe_connection_id","stripe_account_id","stripe_customer_id","checkout_session_id",
-   "setup_intent_id","payment_intent_id","created_at","completed_at","outcome"],
+   "setup_intent_id","payment_intent_id","created_at","completed_at","outcome",
+   "capture_next_attempt_at","discovery_next_attempt_at"],
  reviewedIncluded:["token_id"],excludedSensitive:[],excludedOpen:["consent_snapshot"]
 }),
 

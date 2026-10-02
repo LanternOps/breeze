@@ -87,13 +87,32 @@ describe('durable replay retries',()=>{
  });
 });
 describe('abandoned setup recovery',()=>{
+ it.each(['unbound','pending_verification','failure'])('persists discovery priority before examining %s attempts',async state=>{
+  const row=attempt({checkoutSessionId:state==='unbound'?null:'cs_one'});
+  m.rows.push([row],[{id:row.id}],[]);
+  const examine=async()=>{
+   expect((m.updates[0]!.discoveryNextAttemptAt as Date).getTime()).toBeGreaterThan(Date.now()+590000);
+   if(state==='failure')throw new Error('temporary provider failure');
+   return {outcome:'pending_verification'};
+  };
+  m.complete.mockImplementation(examine);
+  m.list.mockImplementation(async()=>{await examine();return {data:[],has_more:false};});
+  expect(await reconcileAutopaySetups()).toBe(0);
+  expect(state==='unbound'?m.list:m.complete).toHaveBeenCalledTimes(1);
+  expect(m.updates[0]).toHaveProperty('discoveryNextAttemptAt');
+ });
+ it('skips an attempt already claimed by another sweep',async()=>{
+  m.rows.push([attempt({checkoutSessionId:null})],[],[]);
+  expect(await reconcileAutopaySetups()).toBe(0);
+  expect(m.client).not.toHaveBeenCalled();expect(m.complete).not.toHaveBeenCalled();
+ });
  it('completes a setup even with no invoice payment mappings',async()=>{
-  m.rows.push([attempt()],[]);expect(await reconcileAutopaySetups()).toBe(1);
+  m.rows.push([attempt()],[{id:attempt().id}],[]);expect(await reconcileAutopaySetups()).toBe(1);
   expect(m.complete).toHaveBeenCalledWith(partnerId,{checkoutSessionId:'cs_one'});
   const q=query(m.queries[0]!);expect(q.sql).toContain("interval '24 hours'");expect(q.sql).not.toContain(' OR ');
  });
  it('discovers a missing session across pages and persists the binding',async()=>{
-  m.rows.push([attempt({checkoutSessionId:null})],[],[]);
+  m.rows.push([attempt({checkoutSessionId:null})],[{id:attempt().id}],[],[]);
   m.list.mockResolvedValueOnce({data:[{id:'cs_unrelated',metadata:{}}],has_more:true})
    .mockResolvedValueOnce({data:[{id:'cs_found',metadata:{setup_attempt_id:attempt().id}}],has_more:false});
   expect(await reconcileAutopaySetups()).toBe(1);
@@ -102,7 +121,7 @@ describe('abandoned setup recovery',()=>{
   expect(m.complete).toHaveBeenCalledWith(partnerId,{checkoutSessionId:'cs_found'});
  });
  it('refuses replacement-account discovery',async()=>{
-  m.rows.push([attempt({stripeAccountId:'acct_old',checkoutSessionId:null})],[]);
+  m.rows.push([attempt({stripeAccountId:'acct_old',checkoutSessionId:null})],[{id:attempt().id}],[]);
   expect(await reconcileAutopaySetups()).toBe(0);expect(m.list).not.toHaveBeenCalled();
  });
  it.each(['activated','not_saved','stale_generation'])('counts only saved late captures (%s)',async outcome=>{
@@ -114,7 +133,7 @@ describe('abandoned setup recovery',()=>{
   expect(query(m.queries[1]!).sql).toContain('"capture_next_attempt_at" <= NOW()');
  });
  it('does not count pending verification',async()=>{
-  m.rows.push([attempt()],[]);m.complete.mockResolvedValue({outcome:'pending_verification'});
+  m.rows.push([attempt()],[{id:attempt().id}],[]);m.complete.mockResolvedValue({outcome:'pending_verification'});
   expect(await reconcileAutopaySetups()).toBe(0);
  });
  it('rejects a held context before any Stripe work',async()=>{

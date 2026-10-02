@@ -14,11 +14,13 @@ export const autopaySetupAttempts=pgTable('autopay_setup_attempts',{
  consentSnapshot:jsonb('consent_snapshot').notNull(),
  createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
  captureNextAttemptAt:timestamp('capture_next_attempt_at',{withTimezone:true}).notNull().defaultNow(),
+ discoveryNextAttemptAt:timestamp('discovery_next_attempt_at',{withTimezone:true}).notNull().defaultNow(),
  completedAt:timestamp('completed_at',{withTimezone:true}),outcome:text('outcome')
 },t=>[
  uniqueIndex('autopay_setup_attempts_checkout_uq').on(t.stripeAccountId,t.checkoutSessionId),
  uniqueIndex('autopay_setup_attempts_setup_intent_uq').on(t.stripeAccountId,t.setupIntentId),
  index('autopay_setup_attempts_capture_due_idx').on(t.captureNextAttemptAt,t.id).where(sql`${t.completedAt} IS NULL AND ${t.source} = 'pay_and_save' AND ${t.checkoutSessionId} IS NOT NULL`),
+ index('autopay_setup_attempts_discovery_due_idx').on(t.discoveryNextAttemptAt,t.createdAt,t.id).where(sql`${t.completedAt} IS NULL`),
  index('autopay_setup_attempts_unfinished_idx').on(t.createdAt).where(sql`${t.completedAt} IS NULL`),
  foreignKey({name:'autopay_setup_attempts_enrollment_org_fk',columns:[t.enrollmentId,t.orgId],
    foreignColumns:[orgAutopayEnrollments.id,orgAutopayEnrollments.orgId]}).onDelete('cascade'),

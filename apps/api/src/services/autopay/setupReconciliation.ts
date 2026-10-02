@@ -77,11 +77,20 @@ export async function replayAutopayStripeEvents():Promise<number>{
 export async function reconcileAutopaySetups():Promise<number>{
  assertNoHeldDbContextForStripe('reconcileAutopaySetups');
  const attempts=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(and(isNull(autopaySetupAttempts.completedAt),
+  sql`${autopaySetupAttempts.discoveryNextAttemptAt} <= NOW()`,
   sql`${autopaySetupAttempts.createdAt}>now()-interval '24 hours'`))
-  .orderBy(asc(autopaySetupAttempts.createdAt)).limit(200));
+  .orderBy(asc(autopaySetupAttempts.discoveryNextAttemptAt),asc(autopaySetupAttempts.createdAt),asc(autopaySetupAttempts.id)).limit(200));
  let completed=0;
  for(const attempt of attempts){
   try{
+   // Advance before provider work so unresolved sessions, verification waits,
+   // failures and crashes all yield their place to unexamined attempts.
+   const claimed=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts)
+    .set({discoveryNextAttemptAt:new Date(Date.now()+10*60_000)})
+    .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt),
+     sql`${autopaySetupAttempts.discoveryNextAttemptAt} <= NOW()`,
+     sql`${autopaySetupAttempts.createdAt}>now()-interval '24 hours'`)).returning({id:autopaySetupAttempts.id}));
+   if(!claimed.length)continue;
    let sessionId=attempt.checkoutSessionId;
    if(!sessionId&&attempt.stripeCustomerId){
     const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));

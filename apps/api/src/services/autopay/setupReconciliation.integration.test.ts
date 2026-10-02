@@ -1,7 +1,7 @@
 import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type Stripe from 'stripe';
 import { db, withSystemDbAccessContext } from '../../db';
 import { orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts, stripeFinancialEvents } from '../../db/schema';
@@ -67,6 +67,41 @@ describe('real reconciliation selection and durability', () => {
     m.finish.mockClear();
     expect(await reconcileAutopaySetups()).toBe(0);
     expect(m.finish).toHaveBeenCalledExactlyOnceWith(f.partnerId, rows[200]!.checkoutSessionId);
+  });
+
+  it.each([false, true])('discovers an unbound capture behind 200 unresolved attempts (retry deadlines elapsed: %s)', async deadlinesElapsed => {
+    const f = await fixture();
+    const older = new Date(Date.now() - 2 * 60 * 60_000);
+    const unresolved = Array.from({ length: 200 }, () => setup(f, {
+      createdAt: older, checkoutSessionId: null,
+    }));
+    const recoverable = setup(f, { source: 'pay_and_save', checkoutSessionId: null });
+    await withSystemDbAccessContext(() => db.insert(autopaySetupAttempts).values([...unresolved, recoverable]));
+    m.list.mockResolvedValue({ data: [], has_more: false });
+    expect(await reconcileAutopaySetups()).toBe(0);
+    expect(m.list).toHaveBeenCalledTimes(200);
+    expect(m.finish).not.toHaveBeenCalled();
+    const examined = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts));
+
+    if (deadlinesElapsed) {
+      // Simulate a later sweep without sleeping: keep relative priority, but
+      // make both the examined and unexamined rows due again.
+      await withSystemDbAccessContext(() => db.update(autopaySetupAttempts).set({
+        discoveryNextAttemptAt: sql`${autopaySetupAttempts.discoveryNextAttemptAt} - interval '11 minutes'`,
+      }));
+    }
+
+    m.list.mockClear().mockResolvedValueOnce({ data: [{ id: 'cs_recovered', metadata: {
+      autopay_setup_attempt_id: recoverable.id,
+    } }], has_more: false });
+    m.finish.mockResolvedValue({ outcome: 'activated' });
+    expect(await reconcileAutopaySetups()).toBe(1);
+    expect(examined.filter(row => row.discoveryNextAttemptAt.getTime() > Date.now())).toHaveLength(200);
+    expect(m.list).toHaveBeenCalledTimes(deadlinesElapsed ? 200 : 1);
+    expect(m.finish).toHaveBeenCalledExactlyOnceWith(f.partnerId, 'cs_recovered');
+    const saved = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts));
+    expect(saved.find(row => row.id === recoverable.id)!.checkoutSessionId).toBe('cs_recovered');
+    expect(saved.find(row => row.id === recoverable.id)!.discoveryNextAttemptAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('moves 200 failed events out of the next batch so newer verification can complete', async () => {
