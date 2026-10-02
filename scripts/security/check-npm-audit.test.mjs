@@ -35,8 +35,18 @@ const finding = (name, id, severity = 'HIGH', version = '1.4.0') => ({
   vulnerabilities: [{ id, database_specific: { severity } }],
 });
 
+// The gate runs the scanner with --all-packages, so a real report lists every
+// scanned package. LOCK_PKGS is how many package entries the fixture lockfile
+// has; report() pads with clean packages up to that count.
+const LOCK_PKGS = 3;
+const clean = (i) => ({ package: { name: `clean-${i}`, version: '1.0.0', ecosystem: 'npm' } });
 const report = (...packages) => ({
-  results: [{ source: { path: 'pnpm-lock.yaml', type: 'lockfile' }, packages }],
+  results: [
+    {
+      source: { path: 'pnpm-lock.yaml', type: 'lockfile' },
+      packages: [...packages, ...Array.from({ length: Math.max(0, LOCK_PKGS - packages.length) }, (_, i) => clean(i))],
+    },
+  ],
 });
 
 const CLEAN = report();
@@ -53,7 +63,7 @@ let caseNo = 0;
 
 // Runs a copy of the gate against `osvReport`. `exceptions` is an object
 // (serialised), a raw string (written verbatim), or undefined (no file).
-function runGate({ osvReport, exceptions }) {
+function runGate({ osvReport, exceptions, scannerExit, scannerStderr, lockfile, threshold }) {
   const root = join(tmp, `case-${caseNo++}`);
   const sec = join(root, 'scripts', 'security');
   const bin = join(root, 'bin');
@@ -61,7 +71,11 @@ function runGate({ osvReport, exceptions }) {
   mkdirSync(bin, { recursive: true });
 
   copyFileSync(GATE, join(sec, 'check-npm-audit.sh'));
-  writeFileSync(join(root, 'pnpm-lock.yaml'), "lockfileVersion: '9.0'\n");
+  writeFileSync(
+    join(root, 'pnpm-lock.yaml'),
+    lockfile ??
+      `lockfileVersion: '9.0'\n\npackages:\n\n${Array.from({ length: LOCK_PKGS }, (_, i) => `  pkg-${i}@1.0.0:\n    resolution: {integrity: sha512-x}\n`).join('\n')}\nsnapshots:\n\n  pkg-0@1.0.0: {}\n`,
+  );
   if (exceptions !== undefined) {
     writeFileSync(
       join(sec, 'npm-audit-exceptions.json'),
@@ -71,16 +85,22 @@ function runGate({ osvReport, exceptions }) {
 
   const reportPath = join(root, 'osv-report.json');
   writeFileSync(reportPath, JSON.stringify(osvReport));
-  // Like the real scanner: print the JSON report, exit non-zero on any finding.
+  // Like the real scanner: print the JSON report, exit 1 on any finding (0
+  // when clean). scannerExit forces a specific status instead.
   const fake = join(bin, 'osv-scanner');
+  const exitLine =
+    scannerExit !== undefined
+      ? `exit ${scannerExit}`
+      : `[ "$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' '${reportPath}')" -eq 0 ]`;
   writeFileSync(
     fake,
-    `#!/usr/bin/env bash\ncat '${reportPath}'\n[ "$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' '${reportPath}')" -eq 0 ]\n`,
+    `#!/usr/bin/env bash\n${scannerStderr ? `echo '${scannerStderr}' >&2\n` : ''}cat '${reportPath}'\n${exitLine}\n`,
   );
   chmodSync(fake, 0o755);
 
   const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` };
   delete env.AUDIT_THRESHOLD;
+  if (threshold) env.AUDIT_THRESHOLD = threshold;
   return spawnSync('bash', [join(sec, 'check-npm-audit.sh')], { cwd: root, env, encoding: 'utf8' });
 }
 
@@ -249,4 +269,118 @@ test('a missing exceptions file fails closed', () => {
   const res = runGate({ osvReport: CLEAN, exceptions: undefined });
   assert.equal(res.status, 1, out(res));
   assert.match(res.stderr, /npm-audit-exceptions\.json not found/, out(res));
+});
+
+// --- fail-closed severity (#7704) --------------------------------------------
+
+const noSeverity = (name, id, extra = {}) => ({
+  package: { name, version: '1.0.0', ecosystem: 'npm' },
+  vulnerabilities: [{ id }],
+  ...extra,
+});
+
+test('an advisory with no severity at all blocks, at every threshold', () => {
+  for (const threshold of ['CRITICAL', 'HIGH', 'MODERATE', 'LOW']) {
+    const res = runGate({
+      osvReport: report(noSeverity('left-pad', 'GHSA-aaaa-bbbb-cccc')),
+      exceptions: { exceptions: [] },
+      threshold,
+    });
+    assert.equal(res.status, 1, `threshold ${threshold}\n${out(res)}`);
+    assert.match(res.stdout, /\[UNSPECIFIED\] left-pad@1\.0\.0/, out(res));
+  }
+});
+
+test('a MAL- (malicious package) id blocks even when it claims LOW severity', () => {
+  const res = runGate({
+    osvReport: report(finding('evil-pkg', 'MAL-2026-0001', 'LOW')),
+    exceptions: { exceptions: [] },
+    threshold: 'CRITICAL',
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stdout, /\[MALICIOUS\] evil-pkg@1\.4\.0 MAL-2026-0001/, out(res));
+});
+
+test('a severity-less advisory can still be suppressed by a reviewed exception', () => {
+  const res = runGate({
+    osvReport: report(noSeverity('node-forge', FORGE_ID)),
+    exceptions: { exceptions: [entry()] },
+  });
+  assert.equal(res.status, 0, out(res));
+});
+
+test('with no database_specific.severity the rank comes from groups[].max_severity', () => {
+  const withScore = (score) => {
+    const p = noSeverity('some-pkg', 'GHSA-xxxx-yyyy-zzzz');
+    p.groups = [{ ids: ['GHSA-xxxx-yyyy-zzzz'], aliases: [], max_severity: score }];
+    return p;
+  };
+  for (const [score, label, blocks] of [
+    ['9.8', 'CRITICAL', true],
+    ['7.5', 'HIGH', true],
+    ['5.3', 'MODERATE', false],
+    ['2.3', 'LOW', false],
+  ]) {
+    const res = runGate({ osvReport: report(withScore(score)), exceptions: { exceptions: [] } });
+    assert.equal(res.status, blocks ? 1 : 0, `${score}\n${out(res)}`);
+    assert.match(res.stdout, new RegExp(`\\[${label}\\] some-pkg@1\\.0\\.0`), out(res));
+  }
+});
+
+// --- scan integrity (#7705) --------------------------------------------------
+
+test('a scanner that reports no results at all fails the gate (vacuous pass)', () => {
+  const res = runGate({ osvReport: { results: [] }, exceptions: { exceptions: [] } });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /covered only 0 package/, out(res));
+});
+
+test('a scanner that covered fewer packages than the lockfile lists fails the gate', () => {
+  const short = { results: [{ source: { path: 'pnpm-lock.yaml' }, packages: [clean(0)] }] };
+  const res = runGate({ osvReport: short, exceptions: { exceptions: [] } });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /covered only 1 package\(s\) but pnpm-lock\.yaml lists 3/, out(res));
+});
+
+test('a lockfile with no package entries fails the gate', () => {
+  const res = runGate({ osvReport: report(), exceptions: { exceptions: [] }, lockfile: "lockfileVersion: '9.0'\n" });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /no package entries/, out(res));
+});
+
+test('a clean full-coverage scan passes', () => {
+  const res = runGate({ osvReport: report(), exceptions: { exceptions: [] } });
+  assert.equal(res.status, 0, out(res));
+  assert.match(res.stdout, /scanned 3 package\(s\)/, out(res));
+});
+
+test('a scanner exit status above 1 fails even with a valid clean report', () => {
+  for (const status of [2, 127, 128]) {
+    const res = runGate({
+      osvReport: report(),
+      exceptions: { exceptions: [] },
+      scannerExit: status,
+      scannerStderr: 'boom: registry unreachable',
+    });
+    assert.equal(res.status, 1, `exit ${status}\n${out(res)}`);
+    assert.match(res.stderr, new RegExp(`exited ${status}`), out(res));
+    assert.match(res.stderr, /boom: registry unreachable/, `stderr tail must be surfaced\n${out(res)}`);
+  }
+});
+
+test('an unparseable report fails and surfaces the scanner stderr', () => {
+  const res = runGate({
+    osvReport: 'not json',
+    exceptions: { exceptions: [] },
+    scannerExit: 1,
+    scannerStderr: 'parse failure detail',
+  });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /parse failure detail/, out(res));
+});
+
+test('scanner exit 1 with a report that lists no vulnerabilities fails (reshaped report)', () => {
+  const res = runGate({ osvReport: report(), exceptions: { exceptions: [] }, scannerExit: 1 });
+  assert.equal(res.status, 1, out(res));
+  assert.match(res.stderr, /report lists no vulnerabilities/, out(res));
 });

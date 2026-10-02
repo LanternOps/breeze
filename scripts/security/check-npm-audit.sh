@@ -13,6 +13,18 @@ set -euo pipefail
 # SOC 2 CC7.1; the tree was clean at every severity at the time). MODERATE and
 # below are reported but do not block.
 #
+# Severity is fail-closed. An advisory's rank comes from
+# database_specific.severity, else from the numeric CVSS score osv-scanner
+# reports in groups[].max_severity (>=9 CRITICAL, >=7 HIGH, >=4 MODERATE,
+# else LOW). A record with neither (UNSPECIFIED) blocks at every threshold, and
+# so does any MAL-* (malicious package) id: an unrankable advisory is never a
+# pass. If one cannot be fixed it goes through the exceptions file below.
+#
+# Scan integrity: the scan runs with --all-packages and the number of packages
+# osv-scanner covered must be at least the number of package entries in
+# pnpm-lock.yaml (counted independently of the scanner), and the scanner's own
+# exit status must be 0 (clean) or 1 (findings). Anything else fails the run.
+#
 # Exceptions: an advisory that cannot be fixed by upgrading is suppressed ONLY
 # through a reviewed entry in scripts/security/npm-audit-exceptions.json. Its
 # header states the bar (no fixed release exists, the package is unreachable
@@ -109,26 +121,51 @@ exceptions_failed="$(jq '[.[] | select(.status != "ACTIVE")] | length' <<<"$exce
 # --- scan ----------------------------------------------------------------------
 
 report="$(mktemp)"
-trap 'rm -f "$report"' EXIT
 
-# osv-scanner exits non-zero when it finds ANY vulnerability at any severity.
-# We do our own severity gating below, so tolerate that exit code here and fail
-# only if it produced no parseable report (a real tool/network failure).
+# osv-scanner exits 0 when clean and 1 when it found ANY vulnerability at any
+# severity. We do our own severity gating below, so exit 1 is tolerated; any
+# other status (127 not found, 128 no packages, >1 tool/network failure) is a
+# failed scan even if it happened to print a parseable report. --all-packages
+# makes the report list every scanned package, not only the affected ones, so
+# coverage can be checked below. stderr is kept so a failure says why.
+errlog="$(mktemp)"
+trap 'rm -f "$report" "$errlog"' EXIT
+
 set +e
-osv-scanner --lockfile="$LOCKFILE" --format=json >"$report" 2>/dev/null
+osv-scanner --lockfile="$LOCKFILE" --all-packages --format=json >"$report" 2>"$errlog"
 scan_status=$?
 set -e
 
-if ! jq -e '.results' "$report" >/dev/null 2>&1; then
-  fail "osv-scanner produced no parseable report (exit ${scan_status}) — treating as audit failure rather than a pass"
-fi
+scan_failed() {
+  echo "ERROR: $*" >&2
+  echo "--- osv-scanner stderr (last 20 lines) ---" >&2
+  tail -n 20 "$errlog" >&2
+  exit 1
+}
 
-# Guard against a vacuous pass: if the scanner matched no packages at all, the
-# lockfile parser has broken and a clean result means nothing.
-pkg_count="$(jq '[.results[]?.packages[]?] | length' "$report")"
+[ "$scan_status" -le 1 ] || scan_failed "osv-scanner exited ${scan_status} (expected 0 or 1) — treating as audit failure rather than a pass"
+jq -e '.results | type == "array"' "$report" >/dev/null 2>&1 || scan_failed "osv-scanner produced no parseable report (exit ${scan_status}) — treating as audit failure rather than a pass"
+
+# Guard against a vacuous pass. The lockfile's package count is taken straight
+# from pnpm-lock.yaml (keys of the top-level `packages:` map, one per
+# name@version); the scanner must have covered at least that many. A broken
+# lockfile parse that reads zero or too few packages looks identical to a clean
+# tree otherwise.
+lock_count="$(awk '/^packages:/{f=1;next} /^[^ #]/{f=0} f && /^  [^ ].*:$/{n++} END{print n+0}' "$LOCKFILE")"
+[ "$lock_count" -gt 0 ] || fail "found no package entries in $LOCKFILE — cannot verify the scan covered it"
+scanned_count="$(jq '[.results[]?.packages[]?] | length' "$report")"
+[ "$scanned_count" -ge "$lock_count" ] || fail "osv-scanner covered only ${scanned_count} package(s) but $LOCKFILE lists ${lock_count} — the lockfile parse is incomplete, so a clean result means nothing"
+
+pkg_count="$(jq '[.results[]?.packages[]? | select((.vulnerabilities // []) | length > 0)] | length' "$report")"
 total_vulns="$(jq '[.results[]?.packages[]?.vulnerabilities[]?] | length' "$report")"
 
-echo "osv-scanner: scanned $LOCKFILE, ${total_vulns} advisories across ${pkg_count} affected package(s)"
+# Exit 1 means the scanner found something; a report that shows none means the
+# report shape changed under us (the selectors above tolerate missing keys).
+if [ "$scan_status" -eq 1 ] && [ "$total_vulns" -eq 0 ]; then
+  fail "osv-scanner exited 1 (findings) but the report lists no vulnerabilities — report shape unrecognised, treating as audit failure"
+fi
+
+echo "osv-scanner: scanned ${scanned_count} package(s) from $LOCKFILE (lockfile lists ${lock_count}): ${total_vulns} advisories across ${pkg_count} affected package(s)"
 
 # Every finding as {package, version, id, severity, excepted}. `excepted` is an
 # exact match of BOTH the advisory id and the package name against an ACTIVE
@@ -137,7 +174,15 @@ findings="$(jq -c --argjson active "$active_json" '
   [.results[]?.packages[]? as $p
    | $p.vulnerabilities[]?
    | {package: $p.package.name, version: $p.package.version, id: .id,
-      severity: (.database_specific.severity // "UNSPECIFIED")}
+      severity: (
+        def known: ["CRITICAL","HIGH","MODERATE","LOW"];
+        def band: (tonumber? // 0) | if . >= 9 then "CRITICAL" elif . >= 7 then "HIGH" elif . >= 4 then "MODERATE" elif . > 0 then "LOW" else "UNSPECIFIED" end;
+        . as $v
+        | if ($v.id | startswith("MAL-")) then "MALICIOUS"
+          else (($v.database_specific.severity // "" | tostring | ascii_upcase | if . == "MEDIUM" then "MODERATE" else . end) as $s
+            | if (known | index($s)) then $s
+              else ([$p.groups[]? | select(.ids | index($v.id)) | .max_severity | band] | first // "UNSPECIFIED") end)
+          end)}
    | . as $f
    | . + {excepted: any($active[]; .id == $f.id and .package == $f.package)}]
 ' "$report")"
@@ -162,7 +207,8 @@ jq -r --argjson active "$active_json" --arg file "$EXCEPTIONS_FILE" '
 ' <<<"$findings"
 
 # Severities at or above the threshold block. Ranks: CRITICAL=4 HIGH=3
-# MODERATE=2 LOW=1 UNSPECIFIED=0.
+# MODERATE=2 LOW=1. MALICIOUS and UNSPECIFIED (see header) block regardless of
+# the threshold.
 rank_of() {
   case "$(echo "$1" | tr '[:lower:]' '[:upper:]')" in
     CRITICAL) echo 4 ;;
@@ -177,8 +223,8 @@ threshold_rank="$(rank_of "$THRESHOLD")"
 
 read -r blocking suppressed < <(jq -r --argjson min "$threshold_rank" '
   [.[]
-   | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"MEDIUM":2,"LOW":1}[.severity | ascii_upcase] // 0) as $r
-   | select($r >= $min)]
+   | ({"CRITICAL":4,"HIGH":3,"MODERATE":2,"LOW":1}[.severity] // 0) as $r
+   | select($r >= $min or .severity == "UNSPECIFIED" or .severity == "MALICIOUS")]
   | "\(map(select(.excepted | not)) | length) \(map(select(.excepted)) | length)"
 ' <<<"$findings") || true
 [ -n "$blocking" ] && [ -n "$suppressed" ] || fail "could not compute the blocking advisory count — treating as audit failure"
