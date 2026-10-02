@@ -27,6 +27,8 @@ import {
   type ResolvedConnection,
 } from './candidateLoader';
 import { checkEligibility, type EligibilityContext, type ResolveFailureReason } from './eligibility';
+import { MAX_FAILOVER_HOP, type FailoverCause, type ProviderFailureCause } from './failover';
+import { coolingOfferings } from './offeringHealth';
 import { ensurePartnerCutover } from './registryCutover';
 import type { RateSnapshot } from './pricing';
 import type { PromptProfile } from './promptProfiles';
@@ -45,7 +47,26 @@ export interface ResolveModelInput {
   requested?: { offeringId?: string; options?: Partial<OfferingOptions>; origin?: RequestOrigin };
   maxTokens?: number;
   transport?: DispatchTransport;
+  /** W09 (#7607): offerings already attempted in this call (dispatch failover). Never chosen again. */
+  excludeOfferingIds?: readonly string[];
+  /** W09: why the excluded primary failed; recorded as the ledger's failover_cause. */
+  failoverCause?: ProviderFailureCause;
+  /** W09 (D5): a session with history may fail over only within its connection. */
+  sameConnectionOnly?: boolean;
+  /**
+   * W09 (Codex review 4): the dispatch's FIRST hop. On a re-resolution every
+   * candidate — including a primary that changed since the first hop — is
+   * judged against this origin's funding and connection, never against a
+   * primary that moved mid-dispatch.
+   */
+  failoverOrigin?: FailoverOrigin;
 }
+
+/** W09: the first hop of one dispatch (offering, funding, connection). */
+export interface FailoverOrigin { offeringId: string | null; funding: AiBillingSource; connectionId: string | null }
+
+/** W09: set when a candidate other than the primary serves. */
+export interface ResolvedFailover { fromOfferingId: string | null; hop: number; cause: FailoverCause }
 
 export interface ResolvedOffering { id: string | null; displayName: string }
 
@@ -82,6 +103,10 @@ export interface ResolvedModel {
   catalogRevisionId?: string;
   configVersion?: number;
   fellBack: boolean;
+  /** W09: non-null when a candidate other than the primary serves. */
+  failover: ResolvedFailover | null;
+  /** W09: fallback ids a dispatch could still try (unfiltered for eligibility; the re-resolution filters). */
+  failoverRemaining: readonly string[];
 }
 
 export interface ModelUnavailable {
@@ -233,6 +258,8 @@ async function finalize(
   ctx: EligibilityContext,
   fellBack: boolean,
   transport: DispatchTransport,
+  failover: ResolvedFailover | null,
+  failoverRemaining: readonly string[],
 ): Promise<ResolveModelResult> {
   const carriage = transportCarries(transport);
   // Eligibility guarantees both; restated so the types narrow without `!` and
@@ -271,6 +298,8 @@ async function finalize(
     ...(c.catalogRevisionId ? { catalogRevisionId: c.catalogRevisionId } : {}),
     ...(c.configVersion !== undefined ? { configVersion: c.configVersion } : {}),
     fellBack,
+    failover,
+    failoverRemaining,
   };
 }
 
@@ -354,7 +383,7 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
     if (!c) return unavailable('no_eligible_model', null);
     const reason = checkEligibility(c.facts, ctx);
     if (reason) return unavailable(reason, null, c.displayName);
-    return finalize(c, { ...input, partnerId: null }, role, undefined, ctx, false, transport);
+    return finalize(c, { ...input, partnerId: null }, role, undefined, ctx, false, transport, null, []);
   }
   if (!input.partnerId) throw new Error(`${input.surface} requires a partner to resolve a model`);
   const partnerId = input.partnerId;
@@ -393,29 +422,104 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   const requestedId = input.requested?.offeringId;
   const defaultId = assignment.defaultOfferingId;
   const permitted = (id: string) => isPermitted(assignment.permitted, id);
+  const excluded = new Set(input.excludeOfferingIds ?? []);
+  const fallbackList = assignment.fallbackOfferingIds;
+  const dispatchOrigin = input.failoverOrigin ?? null;
+  /** F1 + D5 against the dispatch origin (Codex review 4); always true outside a re-resolution. */
+  const allowedFromOrigin = (c: LoadedCandidate) => dispatchOrigin === null || (
+    (c.funding === dispatchOrigin.funding || assignment.fallbackMayCrossFunding)
+    && (!input.sameConnectionOnly || c.connectionId === dispatchOrigin.connectionId));
+  // One MGET for every id this call could serve, and none without a list: a
+  // cooldown only matters when there is something healthier to prefer.
+  const cooling = fallbackList.length > 0
+    ? await coolingOfferings([requestedId, defaultId, ...fallbackList].filter((id): id is string => typeof id === 'string'))
+    : new Set<string>();
 
-  const tryDefault = async (
+  const serve = (c: LoadedCandidate, fellBack: boolean, failover: ResolvedFailover | null, primaryId: string | null) => {
+    // A re-resolution that serves anything but the origin always records where it came from.
+    const recorded = failover ?? (dispatchOrigin && c.offeringId !== dispatchOrigin.offeringId
+      ? {
+          fromOfferingId: dispatchOrigin.offeringId,
+          hop: Math.min(Math.max(1, excluded.size), MAX_FAILOVER_HOP),
+          cause: input.failoverCause ?? 'server_error',
+        }
+      : null);
+    return finalize(c, effective, role, assignment.options, ctx, fellBack || recorded !== null, transport, recorded,
+      fallbackList.filter((id) => id !== c.offeringId && id !== primaryId && !excluded.has(id)));
+  };
+
+  /**
+   * W09 (spec §9.1): the ordered walk. Every candidate is re-checked LIVE
+   * (permitted set, eligibility), stays on the reference funding unless the
+   * effective assignment allows crossing (F1; an unknown primary counts as
+   * crossing), stays on the reference connection for a session with history
+   * (D5), and is skipped while cooling unless nothing healthy remains. The
+   * reference is the dispatch origin on a re-resolution, else the primary.
+   */
+  const walk = async (
+    primaryId: string | null,
+    primary: LoadedCandidate | null,
+    cause: FailoverCause,
+    passedOver: number,
+    tried: ReadonlySet<string>,
+  ): Promise<ResolveModelResult | null> => {
+    let skipped = passedOver;
+    let firstCooling: { c: LoadedCandidate; hop: number } | null = null;
+    const reference = dispatchOrigin ?? (primary ? { funding: primary.funding, connectionId: primary.connectionId } : null);
+    // The source is recorded only when it still exists: the ledger's provenance
+    // guard rejects an id that no longer names an offering of the partner.
+    const fromOfferingId = dispatchOrigin ? dispatchOrigin.offeringId : primary ? primaryId : null;
+    for (const id of fallbackList) {
+      if (id === primaryId || tried.has(id)) continue;
+      if (excluded.has(id) || !permitted(id)) { skipped++; continue; }
+      const c = await loadOfferingCandidate(id, partnerId);
+      if (!c || checkEligibility(c.facts, ctx) !== null) { skipped++; continue; }
+      const crossesFunding = reference === null || c.funding !== reference.funding;
+      if (crossesFunding && !assignment.fallbackMayCrossFunding) { skipped++; continue; }
+      if (input.sameConnectionOnly && (reference === null || c.connectionId !== reference.connectionId)) { skipped++; continue; }
+      const hop = Math.min(skipped, MAX_FAILOVER_HOP);
+      if (cooling.has(id)) {
+        if (!firstCooling) firstCooling = { c, hop };
+        skipped++;
+        continue;
+      }
+      return serve(c, true, { fromOfferingId, hop, cause }, primaryId);
+    }
+    return firstCooling
+      ? serve(firstCooling.c, true, { fromOfferingId, hop: firstCooling.hop, cause }, primaryId)
+      : null;
+  };
+
+  /**
+   * A stored choice (session / policy) that cannot serve. With no fallback
+   * list: W03's one same-route default (§9.1 bounded fallback), now with
+   * failover provenance. With a list: the walk REPLACES that rule (spec §9.1,
+   * Codex review 9). A missing stored offering cannot prove its route, so the
+   * no-list default is never guessed for it (W03).
+   */
+  const storedFallback = async (
     stored: LoadedCandidate | null,
     storedReason: ResolveFailureReason,
+    cause: FailoverCause,
   ): Promise<ResolveModelResult> => {
-    const storedName = stored?.displayName;
-    // A missing stored offering cannot prove its connection: never guess.
-    if (!stored || !defaultId || defaultId === requestedId) return unavailable(storedReason, requestedId ?? null, storedName);
-    const fallback = await loadOfferingCandidate(defaultId, partnerId);
-    const sameRoute = fallback !== null
-      && fallback.connectionId === stored.connectionId
-      && fallback.funding === stored.funding;
-    if (!fallback || !sameRoute || checkEligibility(fallback.facts, ctx) !== null) {
-      return unavailable(storedReason, requestedId ?? null, storedName);
+    const tried = new Set<string>();
+    if (fallbackList.length === 0 && stored && defaultId && defaultId !== requestedId && !excluded.has(defaultId)) {
+      tried.add(defaultId);
+      const fb = await loadOfferingCandidate(defaultId, partnerId);
+      const sameRoute = fb !== null && fb.connectionId === stored.connectionId && fb.funding === stored.funding;
+      if (fb && sameRoute && allowedFromOrigin(fb) && checkEligibility(fb.facts, ctx) === null) {
+        return serve(fb, true, { fromOfferingId: requestedId ?? null, hop: 1, cause }, requestedId ?? null);
+      }
     }
-    return finalize(fallback, effective, role, assignment.options, ctx, true, transport);
+    return (await walk(requestedId ?? null, stored, cause, 1 + tried.size, tried))
+      ?? unavailable(storedReason, requestedId ?? null, stored?.displayName);
   };
 
   if (requestedId && requestedId !== defaultId) {
     const choiceAllowed = origin === 'policy' || assignment.allowUserChoice;
     if (!choiceAllowed || !permitted(requestedId)) {
       if (origin === 'user') return unavailable('not_permitted', requestedId);
-      return tryDefault(await loadOfferingCandidate(requestedId, partnerId), 'not_permitted');
+      return storedFallback(await loadOfferingCandidate(requestedId, partnerId), 'not_permitted', 'ineligible');
     }
   }
 
@@ -423,9 +527,20 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   if (!primaryId) return unavailable('no_eligible_model', null);
   const primary = await loadOfferingCandidate(primaryId, partnerId);
   const reason: ResolveFailureReason | null = primary ? checkEligibility(primary.facts, ctx) : 'not_permitted';
-  if (primary && reason === null) return finalize(primary, effective, role, assignment.options, ctx, false, transport);
-  if (!requestedId || origin === 'user' || requestedId === defaultId) {
-    return unavailable(reason!, primaryId, primary?.displayName);
+  // A fresh user pick never fails over (W03's strict session creation, W05's composer choice).
+  const freshUserPick = origin === 'user' && requestedId !== undefined;
+  // A primary the dispatch origin does not allow (Codex review 4) is passed over like an excluded one.
+  const isExcluded = excluded.has(primaryId) || (primary !== null && reason === null && !allowedFromOrigin(primary));
+
+  if (primary && reason === null && !isExcluded) {
+    if (freshUserPick || !cooling.has(primaryId)) return serve(primary, false, null, primaryId);
+    // Cooling: prefer a healthy fallback; a cooldown never becomes an outage.
+    return (await walk(primaryId, primary, 'cooldown', 1, new Set())) ?? serve(primary, false, null, primaryId);
   }
-  return tryDefault(primary, reason!);
+  const failReason: ResolveFailureReason = reason ?? 'model_unavailable';
+  if (freshUserPick) return unavailable(failReason, primaryId, primary?.displayName);
+  const cause: FailoverCause = isExcluded ? (input.failoverCause ?? 'server_error') : 'ineligible';
+  if (requestedId && requestedId !== defaultId) return storedFallback(primary, failReason, cause);
+  return (await walk(primaryId, primary, cause, 1, new Set()))
+    ?? unavailable(failReason, primaryId, primary?.displayName);
 }

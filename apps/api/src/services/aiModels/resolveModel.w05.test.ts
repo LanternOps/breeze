@@ -73,7 +73,7 @@ function assignment(over: Record<string, unknown> = {}) {
   return {
     surface: 'chat', role: 'default', defaultOfferingId: 'def', defaultSource: 'partner',
     permitted: { kind: 'list', offeringIds: ['def', 'alt', 'haiku'] }, allowUserChoice: true,
-    options: { effort: 'medium' }, fallbackOfferingIds: null, ...over,
+    options: { effort: 'medium' }, fallbackOfferingIds: [], ...over,
   };
 }
 

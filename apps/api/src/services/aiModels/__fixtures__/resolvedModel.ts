@@ -58,6 +58,8 @@ export function makeResolvedModel(
     ...(kind === 'platform' ? {} : { configVersion: 2 }),
     ...(kind === 'catalog' ? { catalogRevisionId: 'rev-1' } : {}),
     fellBack: false,
+    failover: null,
+    failoverRemaining: [],
   };
   return { ...base, ...over };
 }
