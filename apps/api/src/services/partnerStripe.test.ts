@@ -121,6 +121,7 @@ vi.mock('../db', () => ({
 import {
   STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS,
   getPartnerStripeStatus,
+  isPartnerOnlinePaymentAvailable,
   getPartnerStripeAccountSnapshot,
   PartnerStripeError,
   listPartnersNeedingStripeAccountBootstrap,
@@ -784,5 +785,31 @@ describe('listPartnersNeedingStripeAccountBootstrap', () => {
     // ...and not so short that the same row is re-hammered within one sweep period.
     expect(cutoff!.getTime()).toBe(now.getTime() - STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS);
     expect(STRIPE_ACCOUNT_BOOTSTRAP_RECHECK_MS).toBeLessThan(DAILY_CRON_MS);
+  });
+});
+
+describe('isPartnerOnlinePaymentAvailable (#7509)', () => {
+  beforeEach(() => { dbMocks.selectResults.length = 0; });
+
+  it('reads under a system context (partner-axis table, caller may be org-scoped)', async () => {
+    const before = systemContextCalls.count;
+    dbMocks.selectResults.push([{ status: 'connected', apiKey: 'enc(sk_live_x)' }]);
+    await isPartnerOnlinePaymentAvailable(PARTNER_A);
+    expect(systemContextCalls.count).toBe(before + 1);
+  });
+
+  it('is true only for a connected row holding a key', async () => {
+    dbMocks.selectResults.push([{ status: 'connected', apiKey: 'enc(sk_live_x)' }]);
+    expect(await isPartnerOnlinePaymentAvailable(PARTNER_A)).toBe(true);
+  });
+
+  it.each([
+    ['no row at all', []],
+    ['a disconnected row', [{ status: 'disconnected', apiKey: null }]],
+    ['a connected row with a wiped key', [{ status: 'connected', apiKey: null }]],
+    ['a key on a non-connected row', [{ status: 'disconnected', apiKey: 'enc(sk_live_x)' }]],
+  ])('is false for %s', async (_label, rows) => {
+    dbMocks.selectResults.push(rows as unknown[]);
+    expect(await isPartnerOnlinePaymentAvailable(PARTNER_A)).toBe(false);
   });
 });

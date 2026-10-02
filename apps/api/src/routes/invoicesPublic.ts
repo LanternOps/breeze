@@ -11,6 +11,7 @@ import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl 
 import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
+import { isPartnerOnlinePaymentAvailable } from '../services/partnerStripe';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
@@ -159,7 +160,9 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       invoice: { ...toCustomerInvoiceHeader(inv), paidAt: inv.paidAt },
       lines: rows.map(toCustomerInvoiceLine),
       chargeNow,
-      payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0,
+      // #7509: no Pay CTA unless the partner can actually take online payment.
+      payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
+        && await isPartnerOnlinePaymentAvailable(inv.partnerId),
       branding: brandingBlock(inv, partner, brand),
     };
   }));

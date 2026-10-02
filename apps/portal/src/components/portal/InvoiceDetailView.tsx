@@ -146,7 +146,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
 
   const { invoice, lines } = detail;
   const currency = invoice.currencyCode;
-  const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0;
+  const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0
+    && detail.onlinePaymentAvailable !== false; // #7509
   // Deposit-aware charge amount — matches what the server's pay route charges (Task 8),
   // so the button label and the deposit strip never diverge from the actual charge.
   const hasDeposit = invoice.depositDue != null;

@@ -528,6 +528,10 @@ export interface InvoiceDetail {
    *  older API responses and fixtures predate it, in which case the view falls
    *  back to GET /portal/branding. */
   branding?: QuoteBranding;
+  /** #7509: whether the partner can take online payment. `false` hides the Pay
+   *  CTA; absent (older API / fixtures) is treated as available — the pay route
+   *  still 409s as the backstop. */
+  onlinePaymentAvailable?: boolean;
 }
 
 export type QuoteStatus =

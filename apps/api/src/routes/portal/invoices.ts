@@ -19,7 +19,7 @@ import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
-import { getPartnerStripeClient, PartnerStripeError } from '../../services/partnerStripe';
+import { getPartnerStripeClient, isPartnerOnlinePaymentAvailable, PartnerStripeError } from '../../services/partnerStripe';
 import { assertNoHeldDbContextForStripe, HeldDbContextForStripeError, settleCheckoutSession } from '../../services/stripeSettle';
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
@@ -152,9 +152,20 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal/invoices] branding lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
   }
 
+  // #7509: partner-axis read (invisible to this org scope) via the shared
+  // resolver. On a lookup failure report "unavailable" — hiding a Pay button is
+  // safer than showing one that 409s — and log it.
+  let onlinePaymentAvailable = false;
+  try {
+    onlinePaymentAvailable = await isPartnerOnlinePaymentAvailable(result.partnerId);
+  } catch (err) {
+    console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
+  }
+
   return c.json({
     invoice: result.invoice,
     lines: result.lines.map(toCustomerInvoiceLine),
+    onlinePaymentAvailable,
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,

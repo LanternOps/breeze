@@ -465,6 +465,28 @@ export async function savePartnerStripeKey(input: {
   };
 }
 
+/**
+ * THE answer to "can a customer pay this partner's invoices online?" — a
+ * connected row that still holds a key, exactly the precondition
+ * getPartnerStripeClient enforces (without decrypting). Every customer-facing
+ * pay affordance (public page, portal, invoice PDF line, send-email CTA) must
+ * ask this instead of re-deriving it, or a CTA appears that 409s on click (#7509).
+ *
+ * stripe_connect_accounts is partner-axis, so an org-scoped (portal) read would be
+ * silently RLS-filtered to "not available". The read therefore elects system
+ * scope itself on a short-lived connection (runOutsideDbContext — a bare nested
+ * system context would stay inside the caller's scoped transaction), making the
+ * answer independent of the caller's context.
+ */
+export async function isPartnerOnlinePaymentAvailable(partnerId: string): Promise<boolean> {
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({ status: stripeConnectAccounts.status, apiKey: stripeConnectAccounts.apiKey })
+    .from(stripeConnectAccounts)
+    .where(eq(stripeConnectAccounts.partnerId, partnerId))
+    .limit(1)));
+  return row != null && row.status === 'connected' && !!row.apiKey;
+}
+
 export interface StripeAccountRefreshResult {
   stripeAccountId: string;
   last4: string | null;

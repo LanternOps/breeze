@@ -19,7 +19,7 @@ import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
-import { stripeConnectAccounts } from '../db/schema/stripePayments';
+import { isPartnerOnlinePaymentAvailable } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
@@ -839,7 +839,14 @@ export async function renderInvoicePdf(invoiceId: string): Promise<{ documentId:
   // link should exist for a document that hasn't been issued). Mint-or-reproduce
   // is idempotent, so re-renders keep the same url; a mint failure only drops
   // the line, never the render.
-  if (loaded.invoice.status !== 'draft') {
+  // #7509: and only when the partner can actually take online payment — the
+  // line is a "Pay online" call to action, so without it the printed link is a
+  // dead end. 
+  // A lookup error propagates: the issued PDF is persisted and frozen, so a
+  // transient fault must fail the render (retryable), not bake in a line-less copy.
+  const payOnline = loaded.invoice.status !== 'draft'
+    && await isPartnerOnlinePaymentAvailable(loaded.invoice.partnerId);
+  if (payOnline) {
     try {
       const link = await getOrMintInvoiceLink({
         id: loaded.invoice.id, dueDate: loaded.invoice.dueDate,
@@ -1051,10 +1058,8 @@ async function deliverInvoiceEmail(
   let payEnabled = false;
   if (publicLinked && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && Number(invoice.balance) > 0) {
     try {
-      const [stripeRow] = await db.select({ id: stripeConnectAccounts.id })
-        .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId, invoice.partnerId)).limit(1);
-      payEnabled = stripeRow != null;
-    } catch { /* label-only — never fail the send over it */ }
+      payEnabled = await isPartnerOnlinePaymentAvailable(invoice.partnerId);
+    } catch (err) { console.error('[invoicePdf] online-payment availability lookup failed — sending with the View label', err); /* label-only — never fail the send over it */ }
   }
   // This IS the "Request balance payment" action for deposit invoices: the money
   // fields reflect the deposit-vs-balance split so the email states what's owed
