@@ -150,6 +150,9 @@ func configOwnerVerdictFor(sid string) configOwnerVerdict {
 // ErrConfigDirUntrusted, and also errConfigOwnerUnverified when the only
 // problem is an owner that could not be checked.
 func checkConfigObjectTrust(p string, sec programDataPathSecurity) error {
+	if sec.Unreadable {
+		return fmt.Errorf("%w: %s cannot be inspected by the agent (its permissions deny SYSTEM and Administrators)", ErrConfigDirUntrusted, p)
+	}
 	if sec.NameSurrogate {
 		return fmt.Errorf("%w: %s is a link to another location", ErrConfigDirUntrusted, p)
 	}
@@ -204,6 +207,9 @@ var reclaimAgentEntries = map[string]bool{
 // caller changes nothing and decides on the next start. Such an owner on any
 // other entry leaves that entry alone.
 func replaceEvidence(root programDataPathSecurity, entries map[string]programDataPathSecurity) (string, []string, error) {
+	if root.Unreadable {
+		return "the folder cannot be inspected by the agent", nil, nil
+	}
 	switch configOwnerVerdictFor(root.OwnerSID) {
 	case configOwnerUntrusted:
 		return "folder owner " + root.OwnerSID, nil, nil
@@ -222,6 +228,13 @@ func replaceEvidence(root programDataPathSecurity, entries map[string]programDat
 			continue
 		}
 		own := reclaimAgentEntries[strings.ToLower(name)]
+		if sec.Unreadable {
+			if own {
+				return name + " cannot be inspected by the agent", nil, nil
+			}
+			foreign = append(foreign, name)
+			continue
+		}
 		if sec.NameSurrogate {
 			if own {
 				return name + " is a link", nil, nil

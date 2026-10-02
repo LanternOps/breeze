@@ -68,11 +68,12 @@ func indexOf(order []string, name string) int {
 }
 
 // TestAgentStartReclaimsConfigDirBeforeReadingIt pins where runAgent takes
-// the config folder back: before the instance guard (which hardens the folder
-// and so would hide that another account had it, and holds it open, which
-// would keep a replaced folder from being set aside) and before anything
-// reads config, on both the service path (runAsService) and the console path
-// (config.Load).
+// the config folder back: the Windows service registers with the service
+// manager first (runAsService; it takes the folder back itself, retrying,
+// in prepareServiceStart), and the console path takes it back before the
+// instance guard (which hardens the folder and so would hide that another
+// account had it, and holds it open, which would keep a replaced folder from
+// being set aside) and before config.Load.
 func TestAgentStartReclaimsConfigDirBeforeReadingIt(t *testing.T) {
 	order := callOrder(t, "runAgent")
 	guard, reclaim := indexOf(order, "acquireMainAgentGuardFn"), indexOf(order, "reclaimConfigDirFn")
@@ -80,8 +81,16 @@ func TestAgentStartReclaimsConfigDirBeforeReadingIt(t *testing.T) {
 	if guard < 0 || reclaim < 0 || service < 0 || load < 0 {
 		t.Fatalf("calls missing: guard=%d reclaim=%d runAsService=%d config.Load=%d", guard, reclaim, service, load)
 	}
-	if reclaim >= guard || reclaim >= service || reclaim >= load {
-		t.Errorf("order guard=%d reclaim=%d runAsService=%d config.Load=%d; want the reclaim before all three", guard, reclaim, service, load)
+	if service >= reclaim || reclaim >= guard || reclaim >= load {
+		t.Errorf("order runAsService=%d reclaim=%d guard=%d config.Load=%d; want the service to register first, then the reclaim before the guard and the load", service, reclaim, guard, load)
+	}
+	prep := callOrderIn(t, "service_start.go", "prepareServiceStart")
+	if r, g := indexOf(prep, "reclaimConfigDirFn"), indexOf(prep, "acquireMainAgentGuardFn"); r < 0 || g < 0 || r > g {
+		t.Errorf("prepareServiceStart: reclaim at %d, guard at %d; want the reclaim first", r, g)
+	}
+	exec := callOrderIn(t, "service_windows.go", "")
+	if p, l := indexOf(exec, "s.prepare"), indexOf(exec, "config.Load"); p < 0 || l < 0 || p > l {
+		t.Errorf("service Execute: prepare at %d, config.Load at %d; want prepare first", p, l)
 	}
 }
 

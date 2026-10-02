@@ -340,6 +340,145 @@ func TestReclaimConfigDirReplacesAFolderWhoseConfigItCannotOpen(t *testing.T) {
 	}
 }
 
+// lockOutAgentSDDL denies SYSTEM, Administrators and the owner's implicit
+// rights everything: what another account can set on an entry it owns to
+// keep the agent from inspecting or moving it.
+const lockOutAgentSDDL = "D:P(D;;FA;;;OW)(D;;FA;;;SY)(D;;FA;;;BA)"
+
+// lockOutAgent sets lockOutAgentSDDL on path and makes sure everything under
+// dir can still be removed when the test ends.
+func lockOutAgent(t *testing.T, dir, path string) {
+	t.Helper()
+	// Through a handle, so nothing is propagated to (or required of) the
+	// entry's children.
+	sd, err := windows.SecurityDescriptorFromString(lockOutAgentSDDL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p16, _ := windows.UTF16PtrFromString(path)
+	h, err := windows.CreateFile(p16, windows.WRITE_DAC, shareAll, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatalf("open %s to lock it: %v", path, err)
+	}
+	err = windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+	_ = windows.CloseHandle(h)
+	if err != nil {
+		t.Fatalf("lock %s: %v", path, err)
+	}
+	if _, err := readProgramDataPathSecurity(path); !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("%s is still inspectable after locking it (err %v): the test plants nothing", path, err)
+	}
+	t.Cleanup(func() { releaseLockedEntries(dir) })
+}
+
+// releaseLockedEntries takes over every entry under dir that denies this
+// process, so the test's temp dir can be removed.
+func releaseLockedEntries(dir string) {
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if _, serr := readProgramDataPathSecurity(p); errors.Is(serr, windows.ERROR_ACCESS_DENIED) || err != nil {
+			_ = takeOverEntry(p)
+		}
+		return nil
+	})
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			_ = takeOverEntry(p)
+		}
+		return nil
+	})
+}
+
+// TestReclaimConfigDirTakesBackWhatTheAgentCannotInspect: an entry another
+// account set to deny SYSTEM and Administrators (the folder itself,
+// agent.yaml, or some other entry) does not stop the take-back: the folder
+// is replaced (or the other entry set aside) and the agent's config folder
+// ends up trusted, so the install can proceed.
+func TestReclaimConfigDirTakesBackWhatTheAgentCannotInspect(t *testing.T) {
+	requireElevatedRunner(t)
+	t.Run("the folder", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "Breeze")
+		plantFolderAsStandardUser(t, root)
+		lockOutAgent(t, filepath.Dir(root), root)
+		if err := reclaimConfigDir(root, true); err != nil {
+			t.Fatalf("reclaimConfigDir: %v", err)
+		}
+		assertTrustedObject(t, root)
+		setAsideDir(t, root)
+	})
+	t.Run("agent.yaml in the agent's folder", func(t *testing.T) {
+		root := agentConfigFolder(t)
+		p := filepath.Join(root, "agent.yaml")
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		moveInAsStandardUsersFile(t, root, "agent.yaml", "agent_id: 0123456789abcdef0123456789abcdef\n")
+		lockOutAgent(t, filepath.Dir(root), p)
+		if err := reclaimConfigDir(root, true); err != nil {
+			t.Fatalf("reclaimConfigDir: %v", err)
+		}
+		assertTrustedObject(t, root)
+		if exists(p) {
+			t.Error("the locked agent.yaml is still in the agent's folder")
+		}
+		if !exists(filepath.Join(setAsideDir(t, root), "agent.yaml")) {
+			t.Error("the locked agent.yaml was not kept aside")
+		}
+		if b, err := os.ReadFile(filepath.Join(root, "secrets.yaml")); err != nil || len(b) == 0 {
+			t.Errorf("the agent's own secrets.yaml was not carried over: %v", err)
+		}
+	})
+	t.Run("another entry in the agent's folder", func(t *testing.T) {
+		root := agentConfigFolder(t)
+		cfgBefore, err := os.Stat(filepath.Join(root, "agent.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		moveInAsStandardUsersFile(t, root, "notes.txt", "x")
+		lockOutAgent(t, filepath.Dir(root), filepath.Join(root, "notes.txt"))
+		if err := reclaimConfigDir(root, false); err != nil {
+			t.Fatalf("reclaimConfigDir: %v", err)
+		}
+		if cfgAfter, err := os.Stat(filepath.Join(root, "agent.yaml")); err != nil || !os.SameFile(cfgBefore, cfgAfter) {
+			t.Errorf("the agent's folder was replaced for another entry (err %v)", err)
+		}
+		if exists(filepath.Join(root, "notes.txt")) {
+			t.Error("the locked entry is still in the agent's folder")
+		}
+	})
+}
+
+// TestReclaimConfigDirTakesOverAnEntryItMayNotMove: an entry whose DACL
+// denies the move, in a folder that does not grant delete-child, is taken
+// over (Administrators owner, SYSTEM and Administrators only) and moved.
+func TestReclaimConfigDirTakesOverAnEntryItMayNotMove(t *testing.T) {
+	requireElevatedRunner(t)
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "parent")
+	// List, traverse and add entries; no delete-child.
+	if err := createMainAgentDirectory(parent, "O:BAD:P(A;;0x1200af;;;BA)(A;;0x1200af;;;SY)"); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(parent, "locked")
+	if err := os.Mkdir(entry, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockOutAgent(t, dir, entry)
+	t.Cleanup(func() { _ = takeOverEntry(parent) })
+	if err := os.Rename(entry, filepath.Join(parent, "moved-plain")); err == nil {
+		t.Fatal("the plain move succeeded: the test plants nothing")
+	}
+	if err := renameEntry(entry, filepath.Join(parent, "moved")); err != nil {
+		t.Fatalf("renameEntry: %v", err)
+	}
+	assertTrustedObject(t, filepath.Join(parent, "moved"))
+}
+
 // TestReclaimConfigDirForEnrollSetsAsideConfigAnotherAccountWrote: before an
 // enrollment, the other account's config files are not carried over either;
 // enrollment writes new ones.
@@ -705,6 +844,9 @@ func TestMachineConfigTrustLoadRefusesWhatAnotherAccountCouldHaveWritten(t *test
 			if err := applyWindowsDACL(root, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x100116;;;BU)"); err != nil {
 				t.Fatal(err)
 			}
+		},
+		"agent.yaml the agent cannot inspect": func(t *testing.T, root string) {
+			lockOutAgent(t, filepath.Dir(root), filepath.Join(root, "agent.yaml"))
 		},
 		"agent.yaml has another hard link": func(t *testing.T, root string) {
 			if err := os.Link(filepath.Join(root, "agent.yaml"), filepath.Join(t.TempDir(), "link.yaml")); err != nil {
