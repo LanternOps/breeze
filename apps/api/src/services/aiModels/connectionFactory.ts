@@ -24,6 +24,7 @@ import { getLlmEgressProxy } from '../llm/llmEgressProxy';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
 import { PLATFORM_KEY_MISSING_MESSAGE, reportPlatformKeyMissing } from '../llm/platformKeyAlert';
+import type { ResolvedConnection } from './candidateLoader';
 import type { ResolvedModel } from './resolveModel';
 import { toAgentSdkOptions, toMessagesApiParams, type WireParams } from './wireParams';
 
@@ -133,8 +134,23 @@ export function clientForConnection(config: UsableLlmConfig, caller: LlmClientCa
   });
 }
 
+/**
+ * W06 Task 8 → Task 9 INTERIM GUARD. The resolver now returns gateway
+ * connections (openai_compatible), whose `config` is a GatewayConnectionConfig
+ * and whose credential is held separately. Every site that still assumes an
+ * Anthropic-dialect UsableLlmConfig goes through this and refuses a gateway
+ * connection (fail closed, no credential in the message) until Task 9 wires
+ * gateway dispatch. Task 9 replaces every caller of this function.
+ */
+export function anthropicDialectConfig(connection: ResolvedConnection): UsableLlmConfig {
+  if (connection.config.source === 'gateway') {
+    throw new LlmUnavailableError('This AI model cannot be used on this surface yet.');
+  }
+  return connection.config;
+}
+
 export function anthropicClientFor(resolved: ResolvedModel, caller: LlmClientCallerContext | null): Anthropic {
-  return clientForConnection(resolved.connection.config, caller);
+  return clientForConnection(anthropicDialectConfig(resolved.connection), caller);
 }
 
 /** Agent SDK `query()` model options. `fallbackModel` carries the refusal fallback. */
@@ -264,7 +280,7 @@ export async function createMessage(
 }
 
 export interface DispatchFacts {
-  destinationKind: 'platform' | 'anthropic_byok' | 'catalog';
+  destinationKind: ResolvedConnection['kind'];
   baseUrl: string | null;
   connectionId: string | null;
   funding: AiBillingSource;
@@ -273,9 +289,11 @@ export interface DispatchFacts {
 
 export function describeDispatch(resolved: ResolvedModel): DispatchFacts {
   const cfg = resolved.connection.config;
-  const baseUrl = cfg.source !== 'partner'
-    ? null
-    : cfg.endpoint.kind === 'catalog' ? cfg.endpoint.baseUrl : ANTHROPIC_PUBLIC_BASE_URL;
+  const baseUrl = cfg.source === 'gateway'
+    ? cfg.baseUrl
+    : cfg.source !== 'partner'
+      ? null
+      : cfg.endpoint.kind === 'catalog' ? cfg.endpoint.baseUrl : ANTHROPIC_PUBLIC_BASE_URL;
   return {
     destinationKind: resolved.connection.kind,
     baseUrl,

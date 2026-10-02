@@ -4,7 +4,13 @@
  * reason a caller sees is deterministic. Ownership is checked first so a
  * foreign offering is never described by any other reason.
  */
-import { TOOL_REQUIRING_SURFACES, type AiSurface, type OfferingEnableBlocker } from '@breeze/shared';
+import {
+  GATEWAY_CONNECTION_KINDS,
+  TOOL_REQUIRING_SURFACES,
+  type AiSurface,
+  type GatewayConnectionKind,
+  type OfferingEnableBlocker,
+} from '@breeze/shared';
 import type { RateSnapshot } from './pricing';
 
 /** Ascending. Pinned to planTypeEnum by eligibility.test.ts. */
@@ -29,10 +35,16 @@ export type ResolveFailureReason =
   /** Task 6A: the partner has not been cut over to the registry yet and could not be now. */
   | 'registry_unavailable';
 
-export type ConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
+export type ConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | GatewayConnectionKind;
 
-/** v1 dispatches these. openai_compatible arrives in W06, cloud kinds in W07. */
-const DISPATCHABLE_KINDS: ReadonlySet<ConnectionKind> = new Set(['platform', 'anthropic_byok', 'catalog']);
+/**
+ * Dispatchable kinds. W06 added the gateway kinds (openai_compatible), whose
+ * capabilities come only from a current verification (gatewayCapabilities.ts);
+ * W07 widens GATEWAY_CONNECTION_KINDS with the cloud kinds.
+ */
+const DISPATCHABLE_KINDS: ReadonlySet<ConnectionKind> = new Set<ConnectionKind>([
+  'platform', 'anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS,
+]);
 
 export interface CandidateFacts {
   ownerPartnerId: string | null;
@@ -183,7 +195,8 @@ export function checkEnableEligibility(c: CandidateFacts, ctx: EnableEligibility
     default:
       if (reason === 'connection_unavailable' && onDisconnectedConnection(c)) return 'connection_unavailable';
       // Otherwise connection_unavailable can only come from a non-dispatchable
-      // kind (openai_compatible before W06). Treat it as unavailable for enabling.
+      // kind (none since W06; kept fail-closed for a future kind). Treat it as
+      // unavailable for enabling.
       return 'model_unavailable';
   }
 }

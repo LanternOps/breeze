@@ -38,9 +38,12 @@ import { LlmUnavailableError } from '../llm/llmConfigResolver';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
 import { __resetPlatformKeyAlertForTests } from '../llm/platformKeyAlert';
 import { captureMessage } from '../sentry';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import {
   ANTHROPIC_PUBLIC_BASE_URL,
   SERVER_SIDE_FALLBACK_BETA,
+  anthropicClientFor,
+  anthropicDialectConfig,
   clientForConnection,
   createAnthropicClient,
   createMessage,
@@ -93,22 +96,22 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('clientForConnection — credential pinning moved verbatim from llmConfigResolver', () => {
   it('platform: SDK defaults, apiKey only', () => {
-    clientForConnection(r('platform').connection.config, null);
+    clientForConnection(anthropicDialectConfig(r('platform').connection), null);
     expect(m.ctor).toHaveBeenCalledWith({ apiKey: 'sk-platform' });
   });
   it('BYOK: pinned to the public API with ambient bearer cleared', () => {
-    clientForConnection(r('anthropic_byok').connection.config, null);
+    clientForConnection(anthropicDialectConfig(r('anthropic_byok').connection), null);
     expect(m.ctor).toHaveBeenCalledWith({ apiKey: 'sk-partner', authToken: null, baseURL: ANTHROPIC_PUBLIC_BASE_URL });
   });
   it('catalog: exactly one credential header + guarded fetch pinned to the revision origin', () => {
-    clientForConnection(r('catalog').connection.config, { surface: 'one_shot_ticket_draft', orgId: 'o1' });
+    clientForConnection(anthropicDialectConfig(r('catalog').connection), { surface: 'one_shot_ticket_draft', orgId: 'o1' });
     expect(m.ctor).toHaveBeenCalledWith({
       baseURL: 'https://gw.example.com', authToken: 'sk-partner', apiKey: null, fetch: 'guarded-fetch',
     });
     expect(m.guarded).toHaveBeenCalledWith(expect.objectContaining({ allowedOrigin: 'https://gw.example.com' }));
   });
   it('catalog: the egress recorder stamps caller surface, org and catalog provenance', () => {
-    clientForConnection(r('catalog').connection.config, { surface: 'one_shot_ticket_draft', orgId: 'o1' });
+    clientForConnection(anthropicDialectConfig(r('catalog').connection), { surface: 'one_shot_ticket_draft', orgId: 'o1' });
     const { recordEgress } = m.guarded.mock.calls[0]![0] as { recordEgress: (a: unknown) => void };
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
     expect(recordLlmEgressEvent).toHaveBeenCalledWith({
@@ -118,7 +121,7 @@ describe('clientForConnection — credential pinning moved verbatim from llmConf
   });
   it('catalog with no org in context: not audited, warns once, request proceeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    clientForConnection(r('catalog').connection.config, null);
+    clientForConnection(anthropicDialectConfig(r('catalog').connection), null);
     const { recordEgress } = m.guarded.mock.calls[0]![0] as { recordEgress: (a: unknown) => void };
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
@@ -331,5 +334,33 @@ describe('grantCatalogSdkEgress (moved from the session manager, W03 Task 12)', 
     }));
     got!.revoke();
     expect(egress.revoke).toHaveBeenCalledWith('agent-run:run-1');
+  });
+});
+
+describe('W06 Task 8 interim: gateway connections are refused by Anthropic-dialect dispatch (Task 9 wires them)', () => {
+  it('anthropicClientFor refuses a gateway connection with a clear, credential-free error and builds no client', () => {
+    const resolved = makeResolvedModel('openai_compatible');
+    let thrown: unknown;
+    try { anthropicClientFor(resolved, null); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(LlmUnavailableError);
+    expect((thrown as Error).message).toBe('This AI model cannot be used on this surface yet.');
+    expect((thrown as Error).message).not.toContain('sk-fixture-upstream');
+    expect(m.ctor).not.toHaveBeenCalled();
+    expect(() => anthropicDialectConfig(resolved.connection)).toThrow(LlmUnavailableError);
+    expect(anthropicDialectConfig(makeResolvedModel('anthropic_byok').connection)).toMatchObject({ source: 'partner' });
+  });
+
+  it('describeDispatch reports the gateway kind and its base URL', () => {
+    expect(describeDispatch(makeResolvedModel('openai_compatible'))).toEqual({
+      destinationKind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', connectionId: 'conn-oai',
+      funding: 'partner_key', wireModel: 'qwen2.5-coder:7b',
+    });
+  });
+
+  it('grantCatalogSdkEgress grants nothing for a gateway connection (the gateway, not the CONNECT proxy, carries it)', async () => {
+    egress.grant.mockClear();
+    await expect(grantCatalogSdkEgress(makeResolvedModel('openai_compatible'), { key: 'k', orgId: 'org-1', aiSessionId: null }))
+      .resolves.toBeNull();
+    expect(egress.grant).not.toHaveBeenCalled();
   });
 });

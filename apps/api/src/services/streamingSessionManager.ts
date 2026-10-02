@@ -26,7 +26,7 @@ import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
 // real runtime cycle. TypeScript erases this one.
 import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
-import { grantCatalogSdkEgress, sdkModelOptions } from './aiModels/connectionFactory';
+import { anthropicDialectConfig, grantCatalogSdkEgress, sdkModelOptions } from './aiModels/connectionFactory';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -1070,7 +1070,8 @@ export class StreamingSessionManager {
       loadApprovalWaitBudgetMs(dbSession.orgId),
     ]);
 
-    const connectionConfig = resolved.connection.config;
+    // W06 Task 8 interim: refuses a gateway connection until Task 9 wires the model gateway here.
+    const connectionConfig = anthropicDialectConfig(resolved.connection);
     const catalogEndpoint = catalogEndpointOf(connectionConfig);
 
     // Device-bound sessions execute tools under the DEVICE's org, not the

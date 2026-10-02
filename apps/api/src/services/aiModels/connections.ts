@@ -88,11 +88,21 @@ export async function getCompatConnection(partnerId: string): Promise<PartnerAiC
   return row ?? null;
 }
 
+/**
+ * `status` is read in the SAME row read as the key (W06): a gateway kind may be
+ * legitimately keyless, so a NULL key is only "keyless" while the row is
+ * active — a disconnected row also has a NULL key (disconnected_keyless_chk).
+ */
 export async function getConnectionKeyMaterial(
   id: string,
-): Promise<{ id: string; partnerId: string; apiKeyEncrypted: string | null } | null> {
+): Promise<{ id: string; partnerId: string; status: string; apiKeyEncrypted: string | null } | null> {
   const [row] = await db
-    .select({ id: partnerAiConnections.id, partnerId: partnerAiConnections.partnerId, apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted })
+    .select({
+      id: partnerAiConnections.id,
+      partnerId: partnerAiConnections.partnerId,
+      status: partnerAiConnections.status,
+      apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted,
+    })
     .from(partnerAiConnections)
     .where(eq(partnerAiConnections.id, id))
     .limit(1);

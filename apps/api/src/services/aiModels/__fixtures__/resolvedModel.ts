@@ -12,12 +12,48 @@ export const FIXTURE_STD_RATES: ModelRates = {
   inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250,
 };
 
-export type FixtureConnectionKind = 'platform' | 'anthropic_byok' | 'catalog';
+export type FixtureConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
+
+/** W06: a verified openai_compatible offering reached through the loopback model gateway. */
+function gatewayResolvedModel(over: Partial<ResolvedModel>): ResolvedModel {
+  const base: ResolvedModel = {
+    ok: true,
+    surface: 'chat',
+    role: 'default',
+    transport: 'agent_sdk',
+    partnerId: 'partner-1',
+    orgId: 'org-1',
+    offering: { id: 'off-oai', displayName: 'Qwen Coder' },
+    connection: {
+      id: 'conn-oai', kind: 'openai_compatible',
+      config: {
+        source: 'gateway', kind: 'openai_compatible', partnerId: 'partner-1', connectionId: 'conn-oai',
+        configVersion: 3, baseUrl: 'https://llm.example.com/v1',
+      },
+      credential: { secret: 'sk-fixture-upstream' },
+    },
+    funding: 'partner_key',
+    logicalModel: 'qwen2.5-coder:7b',
+    wireModel: 'qwen2.5-coder:7b',
+    thinking: 'none',
+    wireParams: { betas: [], applied: {} },
+    options: {},
+    inferenceGeo: null,
+    promptProfile: 'generic',
+    rateSnapshot: { source: 'offering', standard: FIXTURE_STD_RATES },
+    capabilities: { thinkingMode: 'none', effortLevels: [], supportsTools: true, supportsVision: false },
+    limits: { maxInputTokens: null, maxOutputTokens: null },
+    configVersion: 3,
+    fellBack: false,
+  };
+  return { ...base, ...over };
+}
 
 export function makeResolvedModel(
   kind: FixtureConnectionKind = 'platform',
   over: Partial<ResolvedModel> = {},
 ): ResolvedModel {
+  if (kind === 'openai_compatible') return gatewayResolvedModel(over);
   const config: UsableLlmConfig = kind === 'platform'
     ? { source: 'platform', apiKey: 'sk-platform', model: 'claude-sonnet-5-5' }
     : {
