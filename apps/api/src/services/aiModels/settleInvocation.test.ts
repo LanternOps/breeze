@@ -175,9 +175,13 @@ describe('settleInvocation', () => {
     expect(call.invocations).toEqual([expect.objectContaining({
       costCents: 300, sdkReportedCostUsd: 9.99, fundingSource: 'platform', offeringId: 'off-1',
       requestedModel: 'claude-sonnet-5-5', servedModel: 'claude-sonnet-5-5', userId: 'u1',
-      tokens: T, chargeable: false, fallbackUsed: false,
+      tokens: T, fallbackUsed: false,
       rateSnapshot: { source: 'platform', standard: STD }, ledgerMode: 'authoritative',
     })]);
+    // W10 (#7608): the rows reach the settlement UNSTAMPED; the settlement
+    // transaction stamps them (the snapshot moment is the ledger write).
+    expect(call.invocations[0]).not.toHaveProperty('charge');
+    expect(call.invocations[0]).not.toHaveProperty('chargeable');
     expect(call).not.toHaveProperty('actualCostCents');
     expect(m.debit).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-settlement:r1' });
     expect(m.markDebited).toHaveBeenCalledWith('r1');
@@ -305,6 +309,9 @@ describe('credits are debited exactly once per reservation (finding 1)', () => {
     error.mockRestore();
     expect(out).toMatchObject({ deferred: true, unrecorded: true, invocationIds: [] });
     expect(m.debit).not.toHaveBeenCalled();
+    // W10 (#7608): never falls back to the no-reservation ledger write, which
+    // would stamp (and so charge back) a turn whose spend is recorded nowhere.
+    expect(m.recordWithRollups).not.toHaveBeenCalled();
     expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       eventCode: 'ai_settlement_unrecorded',
       tags: expect.objectContaining({ org_id: 'o1', ai_reservation_id: 'r1' }),

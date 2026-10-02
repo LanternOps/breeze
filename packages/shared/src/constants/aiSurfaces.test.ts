@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AI_SURFACES, AI_SURFACE_ROLES, TOOL_REQUIRING_SURFACES } from '../index';
+import { AI_CHARGEBACK_ELIGIBLE_SURFACES, AI_SURFACES, AI_SURFACE_ROLES, TOOL_REQUIRING_SURFACES } from '../index';
 
 describe('AI surfaces (index contract)', () => {
   it('pins the surface list', () => {
@@ -16,5 +16,21 @@ describe('AI surfaces (index contract)', () => {
   it('tool-requiring surfaces are a subset of the surfaces', () => {
     expect(TOOL_REQUIRING_SURFACES).toEqual(['chat', 'helper', 'script_builder', 'ai_agents', 'office_chat']);
     for (const surface of TOOL_REQUIRING_SURFACES) expect(AI_SURFACES).toContain(surface);
+  });
+});
+
+describe('AI_CHARGEBACK_ELIGIBLE_SURFACES (#7608)', () => {
+  it('is a subset of AI_SURFACES', () => {
+    for (const s of AI_CHARGEBACK_ELIGIBLE_SURFACES) expect(AI_SURFACES).toContain(s);
+  });
+  it('excludes the MSP-internal tooling surfaces', () => {
+    expect(AI_CHARGEBACK_ELIGIBLE_SURFACES).not.toContain('catalog_enrichment');
+    expect(AI_CHARGEBACK_ELIGIBLE_SURFACES).not.toContain('extension_content');
+    expect(AI_CHARGEBACK_ELIGIBLE_SURFACES).not.toContain('patch_test');
+  });
+  it('includes every client-work surface', () => {
+    expect([...AI_CHARGEBACK_ELIGIBLE_SURFACES].sort()).toEqual(
+      ['ai_agents', 'chat', 'helper', 'office_chat', 'office_ticket', 'script_builder', 'script_reviewer'],
+    );
   });
 });

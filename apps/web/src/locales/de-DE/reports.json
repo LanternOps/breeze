@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Ticket-SLA-Erfüllung",
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
+        "ai_usage_by_client": "KI-Nutzung nach Kunde",
         "backup_status": "Sicherungsstatus"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "Offene Forderungen (Fälligkeitsanalyse)",
           "description": "Unbezahlte Rechnungssalden gruppiert nach aktuell / 1–30 / 31–60 / 61–90 / über 90 Tage überfällig, jeweils eine Summe pro Währung ohne Umrechnung. Rechnungen ohne Fälligkeitsdatum erhalten eine eigene Gruppe, niemals „aktuell“."
+        },
+        "ai_usage_by_client": {
+          "name": "KI-Nutzung nach Kunde",
+          "description": "KI-Nutzung der Plattform pro Kunde im Zeitraum: Anfragen, Token, Breeze-Kosten, der laut Abrechnungsprofil des Kunden zu berechnende Betrag und was bereits in Rechnung gestellt wurde. Inkludierte Nutzung und Modelle ohne Preis werden getrennt ausgewiesen, nie eingerechnet."
         },
         "backup_status": {
           "name": "Sicherungsstatusbericht",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Jede Währung erhält eigene Summen. Beträge werden nicht zwischen Währungen umgerechnet.",
       "includePaidInPeriod": "Im laufenden Monat bezahlte Rechnungen auflisten",
       "includePaidInPeriodHelp": "Fügt einen Hinweis mit den Rechnungen hinzu, die vom Monatsersten bis zum Stichtag vollständig bezahlt wurden. Die Altersklassen ändern sich dadurch nie.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByAutomatic": "Automatisch: nach Organisation für alle Organisationen, nach Modell für eine Organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "model": "Modell"
+      },
+      "periodNote": "Die Abrechnung erfolgt nach UTC-Kalendermonat. Ein Zeitraum in einer anderen Zeitzone kann bei Nutzung nahe der Monatsgrenzen von der Rechnung abweichen.",
+      "unpricedNote": "Nutzung eines Modells ohne Preis im Abrechnungsprofil des Kunden wird als „ohne Preis“ gezählt. Sie gilt nie als kostenlos.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },

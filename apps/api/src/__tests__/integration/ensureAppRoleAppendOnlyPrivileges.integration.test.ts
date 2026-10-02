@@ -24,6 +24,8 @@ import './setup';
 import { describe, it, expect } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { ensureAppRole } from '../../db/ensureAppRole';
+import { getAppDb, getTestDb } from './setup';
 
 interface PrivilegeRow {
   can_select: boolean;
@@ -102,4 +104,52 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
       expect(p.can_select).toBe(true);
     },
   );
+});
+
+// AI chargeback (#7608). These drive ensureAppRole() itself (as the superuser
+// test connection, like boot does) after deliberately drifting a privilege, so
+// they prove the per-boot re-application, not just the post-setup state.
+describe('ensureAppRole re-applies the AI chargeback privileges on every boot (#7608)', () => {
+  async function one<T>(query: ReturnType<typeof sql>): Promise<T> {
+    const rows = (await getTestDb().execute(query)) as unknown as T[];
+    return rows[0]!;
+  }
+  const quotedDb = async () => {
+    const { name } = await one<{ name: string }>(sql`SELECT current_database() AS name`);
+    return '"' + name.replace(/"/g, '""') + '"';
+  };
+  const appHasTemp = async () =>
+    (await one<{ ok: boolean }>(sql`SELECT has_database_privilege('breeze_app', current_database(), 'TEMP') AS ok`)).ok;
+  const appCanUpdateClaimColumn = async (column: string) =>
+    (await one<{ ok: boolean }>(sql`SELECT has_column_privilege('breeze_app', 'ai_usage_charge_claims', ${column}, 'UPDATE') AS ok`)).ok;
+
+  it('grants breeze_app TEMP explicitly, so the monthly close\'s temp table never rests on PUBLIC\'s default grant', async () => {
+    const database = await quotedDb();
+    try {
+      await getTestDb().execute(sql.raw(`REVOKE TEMPORARY ON DATABASE ${database} FROM PUBLIC`));
+      await getTestDb().execute(sql.raw(`REVOKE TEMPORARY ON DATABASE ${database} FROM breeze_app`));
+      expect(await appHasTemp()).toBe(false); // control: the drift landed
+      await ensureAppRole();
+      expect(await appHasTemp()).toBe(true);
+    } finally {
+      await getTestDb().execute(sql.raw(`GRANT TEMPORARY ON DATABASE ${database} TO PUBLIC`));
+    }
+  });
+
+  it('a drifted full UPDATE grant on ai_usage_charge_claims is revoked again: rewriting a claim is 42501, the org_id repoint stays', async () => {
+    try {
+      await getTestDb().execute(sql`GRANT UPDATE ON TABLE ai_usage_charge_claims TO breeze_app`);
+      expect(await appCanUpdateClaimColumn('charge_id')).toBe(true); // control: the drift landed
+      await ensureAppRole();
+      expect(await appCanUpdateClaimColumn('charge_id')).toBe(false);
+      expect(await appCanUpdateClaimColumn('run_id')).toBe(false);
+      expect(await appCanUpdateClaimColumn('org_id')).toBe(true);
+      // The privilege check runs before any row is read, so WHERE false still proves it.
+      const err = await getAppDb().execute(sql`UPDATE ai_usage_charge_claims SET charge_id = charge_id WHERE false`)
+        .then(() => null, (e: unknown) => e as { code?: string; cause?: { code?: string } });
+      expect(err?.cause?.code ?? err?.code).toBe('42501');
+    } finally {
+      await ensureAppRole();
+    }
+  });
 });

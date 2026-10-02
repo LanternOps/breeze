@@ -21,6 +21,10 @@ const { dbMock, hoisted } = vi.hoisted(() => ({
     captureMessage: vi.fn(),
     recordInvocation: vi.fn(),
     getPlatformModelByModelId: vi.fn(),
+    // W10 (#7608): the real stamp reads the card through the ambient db; at
+    // this SQL-shape level it is a pass-through no-card stamp (its own suite
+    // and aiChargebackStamping.integration.test.ts cover the read).
+    stampChargeback: vi.fn(),
   },
 }));
 
@@ -34,6 +38,7 @@ vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: hoisted.getEffecti
 vi.mock('./sentry', () => ({ captureException: hoisted.captureException, captureMessage: hoisted.captureMessage }));
 vi.mock('./aiModels/invocationLedgerWrite', () => ({ recordInvocation: hoisted.recordInvocation }));
 vi.mock('./aiModels/platformModels', () => ({ getPlatformModelByModelId: hoisted.getPlatformModelByModelId }));
+vi.mock('./aiChargeback/stampChargeback', () => ({ stampChargeback: hoisted.stampChargeback }));
 
 import {
   AiBudgetBindingConflictError,
@@ -57,6 +62,7 @@ function allSql(): string[] {
   return dbMock.execute.mock.calls.map((c) => dialect.sqlToQuery(c[0] as SQL).sql);
 }
 
+const NO_CARD = { chargeable: false, billingProfileId: null, coverage: null, basis: null, currency: null, amount: null };
 const ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PARTNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const SESSION_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -106,6 +112,8 @@ beforeEach(() => {
   hoisted.getEffectiveAiBudget.mockResolvedValue({ enabled: true, dailyBudgetCents: null, monthlyBudgetCents: null });
   let n = 0;
   hoisted.recordInvocation.mockImplementation(async () => `inv-${++n}`);
+  hoisted.stampChargeback.mockImplementation(async (_orgId: string, rows: NewInvocation[]) =>
+    rows.map((r) => (r.ledgerMode === 'authoritative' ? { ...r, charge: { ...NO_CARD } } : r)));
 });
 
 describe('reserveAiBudget with a turn binding (spec §9.2 bullet 1)', () => {
@@ -216,6 +224,21 @@ describe('settleAiBudgetReservation with ledger rows', () => {
     const settle = q(4);
     expect(settle.sql).toMatch(/pending_settlement = NULL/);
     expect(settle.sql).toMatch(/credits_debit_due_at/);
+  });
+
+  it('stamps the chargeback snapshot BEFORE the org lock, in the same transaction, and inserts the STAMPED rows (W10 #7608, P3)', async () => {
+    primeSettle();
+    const rows = [invocation()];
+    await settleAiBudgetReservation({ orgId: ORG_ID, reservationId: RESERVATION_ID, invocations: rows });
+    expect(hoisted.stampChargeback).toHaveBeenCalledTimes(1);
+    expect(hoisted.stampChargeback).toHaveBeenCalledWith(ORG_ID, rows);
+    // The card read never lengthens the org-lock hold: it runs before the lock statement.
+    expect(q(0).sql).toMatch(/FROM organizations[\s\S]*FOR UPDATE/);
+    expect(hoisted.stampChargeback.mock.invocationCallOrder[0]!).toBeLessThan(dbMock.execute.mock.invocationCallOrder[0]!);
+    expect(hoisted.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(hoisted.recordInvocation).toHaveBeenCalledWith(expect.objectContaining({ charge: NO_CARD }));
+    // The input itself stays unstamped (it is what the fingerprint hashes).
+    expect(rows[0]).not.toHaveProperty('charge');
   });
 
   it('no billing service configured (self-hosted): platform spend is never marked due, so enabling billing later cannot debit a backlog', async () => {
@@ -439,8 +462,10 @@ describe('settleAiBudgetReservationDurably persists a contended settlement (find
     const persist = q(2);
     expect(persist.sql).toMatch(/UPDATE ai_budget_reservations SET pending_settlement/);
     expect(persist.sql).not.toMatch(/organizations/);
-    expect(JSON.parse(persist.params.find((p) => typeof p === 'string' && p.startsWith('{')) as string))
-      .toMatchObject({ reservationId: RESERVATION_ID, invocations: [expect.objectContaining({ costCents: 0.5 })] });
+    const pending = JSON.parse(persist.params.find((p) => typeof p === 'string' && p.startsWith('{')) as string);
+    expect(pending).toMatchObject({ reservationId: RESERVATION_ID, invocations: [expect.objectContaining({ costCents: 0.5 })] });
+    // W10 (#7608): what is persisted is UNSTAMPED, so the replay stamps with the card in force at replay.
+    expect(pending.invocations[0]).not.toHaveProperty('charge');
     error.mockRestore();
   });
 });

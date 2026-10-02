@@ -69,13 +69,17 @@ export async function ensureAppRole(): Promise<boolean> {
 
     // 3. Grant CONNECT on whichever database we are currently attached to
     //    (don't hardcode "breeze" — the compose file allows POSTGRES_DB to be
-    //    overridden).
+    //    overridden). TEMPORARY too, explicitly: the AI chargeback monthly
+    //    close (services/aiChargeback/chargeRun.ts, #7608) freezes its
+    //    candidate set in a CREATE TEMP TABLE, and PostgreSQL's default PUBLIC
+    //    TEMP grant is commonly revoked by hardened or managed databases.
     const dbRow = await client`SELECT current_database() AS db`;
     const dbName = dbRow[0]?.db as string | undefined;
     if (dbName) {
       // Quote the identifier to be safe against unusual db names.
       const quoted = '"' + dbName.replace(/"/g, '""') + '"';
       await client.unsafe(`GRANT CONNECT ON DATABASE ${quoted} TO breeze_app`);
+      await client.unsafe(`GRANT TEMPORARY ON DATABASE ${quoted} TO breeze_app`);
     }
 
     // 4. Table/sequence privileges + default privileges so future migrations
@@ -337,6 +341,14 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_invocations') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ai_invocations FROM breeze_app;
           GRANT UPDATE (org_id) ON TABLE ai_invocations TO breeze_app;
+        END IF;
+        -- ai_usage_charge_claims (AI chargeback W10, #7608, 2026-11-26-100200):
+        -- write-once claims. The blanket GRANT in step 4 re-permits table
+        -- UPDATE; keep it column-scoped to org_id (the org-merge repoint).
+        -- DELETE stays granted: org erasure deletes claims as breeze_app.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ai_usage_charge_claims') THEN
+          REVOKE UPDATE ON TABLE ai_usage_charge_claims FROM breeze_app;
+          GRANT UPDATE (org_id) ON TABLE ai_usage_charge_claims TO breeze_app;
         END IF;
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
           REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;

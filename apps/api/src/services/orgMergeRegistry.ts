@@ -402,6 +402,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // FK to organizations, so a bare org_id UPDATE breaks the moment the two
   // orgs' partners differ. No writer exists yet in this PR either way.
   ai_unattended_exposure: { kind: 'leave-for-erasure', note: 'unattended-exposure history is per-org (like llm_egress_events); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  // AI chargeback (#7608): a run is only "this org closed this month". The
+  // survivor may legitimately close the same month itself, and the unique
+  // (org_id, period_start) would collide on a repoint, so the loser's runs stay
+  // with the loser shell and die with its erasure. Its charges and claims move
+  // (REPOINT_TABLES); their run_id is a snapshot id with no FK, so nothing
+  // references a run that stays behind.
+  ai_usage_charge_runs: { kind: 'leave-for-erasure', note: 'per-(org, month) close marker; unique (org_id, period_start)' },
 
   // Durable PAM actuation evidence (Track E org-merge contract,
   // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
@@ -723,6 +730,12 @@ const REPOINT_TABLES: readonly string[] = [
   "ai_invocations",
   "ai_screenshots",
   "ai_sessions",
+  // AI chargeback (#7608): billed history and unbilled charges follow the
+  // merged client; claims follow so a merged invocation is never re-claimed.
+  // Claims are write-once: breeze_app holds only a column-level UPDATE (org_id)
+  // grant, which is all this plain repoint statement needs.
+  "ai_usage_charge_claims",
+  "ai_usage_charges",
   "alert_correlation_members",
   "alert_rules",
   "alert_templates",

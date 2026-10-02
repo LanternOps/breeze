@@ -2344,7 +2344,8 @@
     "currencyWarning": "Das zugewiesene Abrechnungsprofil verwendet {{currency}}. Nach dieser Änderung gilt der passende Partnerstandard.",
     "loadError": "Abrechnungsprofile konnten nicht geladen werden.",
     "saveError": "Das Abrechnungsprofil konnte nicht gespeichert werden.",
-    "partialSave": "Das Abrechnungsprofil wurde gespeichert, die übrigen Abrechnungseinstellungen jedoch nicht. Klicken Sie erneut auf Speichern."
+    "partialSave": "Das Abrechnungsprofil wurde gespeichert, die übrigen Abrechnungseinstellungen jedoch nicht. Klicken Sie erneut auf Speichern.",
+    "aiUsage": "KI-Nutzung: {{summary}}"
   },
   "rates": {
     "title": "Tarife",
@@ -2378,6 +2379,41 @@
     "minimumSummary": "Mindestens {{minutes}} Min.",
     "roundingSummary": "Auf {{minutes}} Min. runden",
     "inherits": "Verwendet Alle sonstigen Arbeiten",
-    "currencyHelp": "Die Währung eines Standardprofils oder eines Profils mit Tarifen kann nicht geändert werden. Leere Rundung bedeutet keine Rundung."
+    "currencyHelp": "Die Währung eines Standardprofils oder eines Profils mit Tarifen kann nicht geändert werden. Leere Rundung bedeutet keine Rundung.",
+    "ai": {
+      "column": "KI-Nutzung",
+      "sectionTitle": "KI-Nutzung",
+      "sectionHelp": "Wie die Nutzung des KI-Assistenten durch Organisationen mit diesem Abrechnungsprofil berechnet wird. Berechnen Sie die Kosten von Breeze plus Aufschlag oder legen Sie einen Preis pro Modell fest.",
+      "coverage": "Abrechnung der KI-Nutzung",
+      "coverageBillable": "Abrechenbar",
+      "coverageIncluded": "Inklusive",
+      "coverageNotBilled": "Nicht abgerechnet",
+      "markup": "Aufschlag auf die Kosten (%)",
+      "markupHelp": "Wird auf die Kosten von Breeze in USD je Anfrage aufgeschlagen. 25 berechnet Kosten plus 25 %. Leer lassen, um nur die Modelle der Preisliste abzurechnen.",
+      "markupInvalid": "Geben Sie einen Prozentsatz von 0 bis 1000 mit höchstens zwei Nachkommastellen ein.",
+      "priceListTitle": "Preisliste",
+      "priceListHelp": "Preise in {{currency}} pro Million Token. Ein gelistetes Modell verwendet seinen Preis statt des Aufschlags.",
+      "priceListEmpty": "Noch keine Modellpreise.",
+      "addRate": "Modellpreis hinzufügen",
+      "removeRate": "Entfernen",
+      "modelId": "Modell",
+      "modelPlaceholder": "Modell-ID wählen oder eingeben",
+      "inputPrice": "Eingabe",
+      "outputPrice": "Ausgabe",
+      "cacheReadPrice": "Cache-Lesen",
+      "cacheWritePrice": "Cache-Schreiben",
+      "rowInvalid": "Geben Sie eine Modell-ID und alle vier Preise ein, zum Beispiel 3.00 oder 0.30.",
+      "rowDuplicate": "Dieses Modell steht bereits in der Preisliste.",
+      "choicesUnavailable": "Modellvorschläge sind nicht verfügbar. Geben Sie stattdessen eine Modell-ID ein.",
+      "usdOnlyWarning": "Der Aufschlag gilt nur für Abrechnungsprofile in USD; fügen Sie eine Preisliste in {{currency}} hinzu, sonst wird die Nutzung ohne Preis erfasst.",
+      "summaryBillableMarkup": "Abrechenbar · Kosten +{{percent}} %",
+      "summaryBillablePriceList_one": "Abrechenbar · Preisliste ({{count}} Modell)",
+      "summaryBillablePriceList_other": "Abrechenbar · Preisliste ({{count}} Modelle)",
+      "summaryBillablePriceListMarkup_one": "Abrechenbar · Preisliste ({{count}} Modell), übrige Kosten +{{percent}} %",
+      "summaryBillablePriceListMarkup_other": "Abrechenbar · Preisliste ({{count}} Modelle), übrige Kosten +{{percent}} %",
+      "summaryBillableUnpriced": "Abrechenbar · ohne Preis",
+      "summaryIncluded": "Inklusive",
+      "summaryNotBilled": "Nicht abgerechnet"
+    }
   }
 }

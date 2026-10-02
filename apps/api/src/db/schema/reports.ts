@@ -61,6 +61,9 @@ export const reportTypeEnum = pgEnum('report_type', [
   // both first-party backups and connected provider devices; see
   // services/backupStatusReport.ts.
   'backup_status',
+  // AI chargeback W10 (#7608): per-client AI usage by org / model with
+  // chargeable amounts; see services/businessReports/aiUsageByClientReport.ts.
+  'ai_usage_by_client',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

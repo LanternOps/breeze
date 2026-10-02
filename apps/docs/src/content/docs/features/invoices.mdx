@@ -60,6 +60,10 @@ Line items can come from several sources: catalog items, bundles, tracked time e
   If your catalog is empty, the editor links straight to **Product Catalog** so you can add the items you sell.
 </Aside>
 
+### AI usage lines
+
+When you assemble from work, every unbilled AI usage charge for a month that has already closed and started on or before the invoice's end date is added as one line per model, for example "AI usage — (model) — (month)". A month closes shortly after it ends (UTC), so this month's usage appears on the next invoice. Charges that round to zero and usage older than 92 days are never invoiced; they show in the report's unbilled column. These lines are non-taxable by default, and you can edit them on a draft. See [AI usage chargeback](/features/ai-usage-chargeback/).
+
 ### Time-entry line quantities
 
 A line pulled in from a time entry bills the entry's **billed** quantity, not necessarily the time actually worked -- the entry's [billing profile](/features/rates/) can apply a minimum or round up to a billing increment first. When the two differ, the line's description states both, for example "On-site -- 0.50 h worked, 1.00 h billed." There is still exactly one invoice line per time entry.

@@ -100,6 +100,7 @@ vi.mock('./invoiceAssembly', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./invoiceAssembly')>()),
   gatherOrgTimeEntries: vi.fn(),
   gatherOrgParts: vi.fn(),
+  gatherOrgAiUsageCharges: vi.fn(),
   gatherTicketBillables: vi.fn(),
 }));
 
@@ -162,7 +163,7 @@ const enqueuePaymentDeleteMock = vi.mocked(enqueueAccountingPaymentDelete);
 
 const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
 const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
-import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherOrgAiUsageCharges, gatherTicketBillables, type DraftLineSpec } from './invoiceAssembly';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 const bundleEconMock = vi.mocked(computeBundleEconomics);
@@ -1574,7 +1575,11 @@ describe('changeInvoiceCurrency (draft currency immutability, #3774)', () => {
 });
 
 describe('assembly consumers — currency override + blocked-by-currency groups (#3776)', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => {
+    results.length = 0; vi.clearAllMocks();
+    // AI chargeback (#7608): no AI usage charges unless a test says otherwise.
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({ included: [], blockedByCurrency: {}, missingRate: [] });
+  });
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
   const spec = (lineTotal: string, sourceId = 'te1'): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId, catalogItemId: null, ticketId: null, description: 'Work',
@@ -1672,6 +1677,31 @@ describe('assembly consumers — currency override + blocked-by-currency groups 
     const valuesMock = (db as unknown as { values: Mock }).values;
     expect(valuesMock.mock.calls[0]![0]).toEqual(expect.objectContaining({ currencyCode: 'GBP' }));
     expect(gatherOrgTimeEntries).toHaveBeenCalledWith('org1', expect.any(Date), expect.any(Date), 'GBP');
+  });
+
+  it('(c\'\') org: AI usage charges (#7608) are gathered in the header currency through the range end and materialize with the rest', async () => {
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([draftRow('USD')]);
+    queueTail('USD');
+    (gatherOrgTimeEntries as Mock).mockResolvedValue({ included: [spec('50.00', 'te-usd')], blockedByCurrency: {}, missingRate: [] });
+    (gatherOrgParts as Mock).mockResolvedValue(empty());
+    (gatherOrgAiUsageCharges as Mock).mockResolvedValue({
+      included: [{ ...spec('41.27', 'ch-usd'), sourceType: 'ai_usage', description: 'AI usage' }],
+      blockedByCurrency: { EUR: [{ ...spec('9.00', 'ch-eur'), sourceType: 'ai_usage' }] }, missingRate: [],
+    });
+    const out = await svc.assembleDraftFromOrg({ orgId: 'org1', from: '2026-11-01', to: '2026-11-30' }, actor);
+    // No lower bound: a closed month's charge exists only from the 1st of the
+    // next month, so any unbilled charge billed on or before `to` is gathered.
+    const aiCall = (gatherOrgAiUsageCharges as Mock).mock.calls[0]!;
+    expect(aiCall).toHaveLength(3);
+    const [, through, header] = aiCall;
+    expect([(through as Date).toISOString(), header]).toEqual(['2026-11-30T23:59:59.000Z', 'USD']);
+    const [, from, to] = (gatherOrgTimeEntries as Mock).mock.calls[0]!;
+    expect([(from as Date).toISOString(), to]).toEqual(['2026-11-01T00:00:00.000Z', through]);
+    const valuesMock = (db as unknown as { values: Mock }).values;
+    const lines = valuesMock.mock.calls[1]![0] as Array<{ sourceId: string; sourceType: string }>;
+    expect(lines.map((l) => [l.sourceType, l.sourceId])).toEqual([['time_entry', 'te-usd'], ['ai_usage', 'ch-usd']]);
+    expect(out.blockedByCurrency).toEqual([{ currencyCode: 'EUR', count: 1, amount: '9.00' }]);
   });
 
   it('(d) org: mixed → only included specs materialize; blocked groups come back summarized, never as lines', async () => {

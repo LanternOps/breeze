@@ -18,7 +18,7 @@ describe('billing enum tuples (canonical source)', () => {
   });
   it('invoice line source types match the shipped pgEnum values and order', () => {
     expect([...INVOICE_LINE_SOURCE_TYPES]).toEqual([
-      'time_entry', 'part', 'catalog', 'bundle', 'manual', 'contract',
+      'time_entry', 'part', 'catalog', 'bundle', 'manual', 'contract', 'ai_usage',
     ]);
   });
 });

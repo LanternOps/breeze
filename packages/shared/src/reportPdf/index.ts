@@ -14,4 +14,6 @@ export { renderTechnicianTimeReport } from './technicianTimePdf';
 export type { TechnicianTimePdfOpts } from './technicianTimePdf';
 export { renderArAgingReport } from './arAgingPdf';
 export type { ArAgingPdfOpts } from './arAgingPdf';
+export { renderAiUsageByClientReport } from './aiUsageByClientPdf';
+export type { AiUsageByClientPdfOpts } from './aiUsageByClientPdf';
 export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';

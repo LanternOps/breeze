@@ -5,7 +5,7 @@ import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
-  accountingEntityMappings, accountingConnections, portalBranding
+  accountingEntityMappings, accountingConnections, portalBranding, aiUsageCharges
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
 import { computeLineTotal, computeInvoiceTotals, resolveEffectiveTaxRate, deriveInvoiceStatus, toCents, fromCents } from './invoiceMath';
@@ -33,7 +33,7 @@ import { captureException } from './sentry';
 import type { DbContextRunner } from './accounting/dbContextGuard';
 import { isInvoiceRemoteDeletedMarker, type AccountingProviderId } from './accounting/types';
 import { accountingProviderDisplayName, LEGACY_UNTARGETED_JOB_PROVIDER } from './accounting/providerRegistry';
-import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
+import { gatherOrgTimeEntries, gatherOrgParts, gatherOrgAiUsageCharges, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
 import {
@@ -1325,9 +1325,14 @@ export async function assembleDraftFromOrg(
     const currencyCode = input.currencyCode ?? org.currencyCode;
     return tx.insert(invoices).values({ partnerId, orgId: input.orgId, siteId: input.siteId ?? null, status: 'draft', currencyCode, createdBy: actor.userId }).returning();
   });
+  // AI usage charges (#7608) are org-level and gathered through `to` with no
+  // lower bound (a closed month's charge only exists from the 1st of the next
+  // month; see gatherOrgAiUsageCharges). The ticket path
+  // (assembleDraftFromTicket) intentionally does not gather them.
   const gathered = mergeAssembly(
     await gatherOrgTimeEntries(input.orgId, from, to, inv!.currencyCode),
-    await gatherOrgParts(input.orgId, from, to, inv!.currencyCode)
+    await gatherOrgParts(input.orgId, from, to, inv!.currencyCode),
+    await gatherOrgAiUsageCharges(input.orgId, to, inv!.currencyCode)
   );
   return finishAssembly(inv!, gathered, 'No unbilled billable work in range', actor);
 }
@@ -1370,7 +1375,10 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   // wraps its callback in baseDb.transaction — db/index.ts). Lock order is the
   // repo-wide invoice contract (see lockDraftInvoice): invoices row → invoice
   // lines → source rows (contracts before contract_lines, then time_entries,
-  // then ticket_parts, each deduplicated + ORDER BY id). ALL validation happens
+  // then ticket_parts, then ai_usage_charges (#7608), each deduplicated +
+  // ORDER BY id; a later source type appends after ai_usage_charges). The AI
+  // monthly close never locks an existing charge (it only inserts new ones),
+  // so it cannot wait on or deadlock with this chain. ALL validation happens
   // on the locked rows; the gapless counter upsert, the number/snapshot write,
   // and the source-row flips are atomic with it — a failed issue rolls the
   // counter back too (no committed gap). We inline the counter upsert rather
@@ -1396,6 +1404,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     )].sort();
     const timeIds = sourceIds('time_entry');
     const partIds = sourceIds('part');
+    const aiChargeIds = sourceIds('ai_usage');
     const contractLineIds = sourceIds('contract');
 
     // 3. Lock ALL referenced source rows with NO billing-status filter (the old
@@ -1462,6 +1471,12 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       validateBillable('Parts', partIds, await db
         .select({ id: ticketParts.id, orgId: ticketParts.orgId, billingStatus: ticketParts.billingStatus, currencyCode: ticketParts.currencyCode })
         .from(ticketParts).where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update'));
+    }
+    // AI usage charges (#7608) lock LAST in the source order (after ticket_parts).
+    if (aiChargeIds.length) {
+      validateBillable('AI usage charges', aiChargeIds, await db
+        .select({ id: aiUsageCharges.id, orgId: aiUsageCharges.orgId, billingStatus: aiUsageCharges.billingStatus, currencyCode: aiUsageCharges.currencyCode })
+        .from(aiUsageCharges).where(inArray(aiUsageCharges.id, aiChargeIds)).orderBy(aiUsageCharges.id).for('update'));
     }
     // Source-vs-header currency is asserted in validateBillable on the LOCKED rows (wave 4, #3776).
 
@@ -1590,6 +1605,14 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
         .returning({ id: ticketParts.id });
       if (flipped.length !== partIds.length) {
         throw new InvoiceServiceError('Parts changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
+      }
+    }
+    if (aiChargeIds.length) {
+      const flipped = await db.update(aiUsageCharges).set({ billingStatus: 'billed', updatedAt: issueDate })
+        .where(and(inArray(aiUsageCharges.id, aiChargeIds), eq(aiUsageCharges.orgId, inv.orgId), eq(aiUsageCharges.billingStatus, 'not_billed')))
+        .returning({ id: aiUsageCharges.id });
+      if (flipped.length !== aiChargeIds.length) {
+        throw new InvoiceServiceError('AI usage charges changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
       }
     }
     return inv;
@@ -2183,7 +2206,7 @@ function chunksOf<T>(items: readonly T[], size: number): T[][] {
  * the established chain in order:
  *
  *     invoices -> invoice_lines -> contracts -> contract_lines
- *              -> time_entries -> ticket_parts
+ *              -> time_entries -> ticket_parts -> ai_usage_charges (#7608)
  *
  * HISTORICAL REISSUE EDGE. After an ACTIVE-contract restamp, cloning an old
  * contract-sourced invoice would carry the HISTORICAL currency while issue
@@ -2266,6 +2289,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       .where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id).for('update');
     const timeIds = [...new Set(srcLines.filter((l) => l.sourceType === 'time_entry' && l.sourceId).map((l) => l.sourceId!))].sort();
     const partIds = [...new Set(srcLines.filter((l) => l.sourceType === 'part' && l.sourceId).map((l) => l.sourceId!))].sort();
+    const aiChargeIds = [...new Set(srcLines.filter((l) => l.sourceType === 'ai_usage' && l.sourceId).map((l) => l.sourceId!))].sort();
     const contractLineIds = [...new Set(srcLines.filter((l) => l.sourceType === 'contract' && l.sourceId).map((l) => l.sourceId!))].sort();
 
     // 3. Contracts, then contract_lines (parents before children, repo order).
@@ -2297,6 +2321,11 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       await db.select({ id: ticketParts.id }).from(ticketParts)
         .where(inArray(ticketParts.id, partIds)).orderBy(ticketParts.id).for('update');
     }
+    if (aiChargeIds.length) {
+      // AI usage charges (#7608) lock LAST, after ticket_parts (same order as issue).
+      await db.select({ id: aiUsageCharges.id }).from(aiUsageCharges)
+        .where(inArray(aiUsageCharges.id, aiChargeIds)).orderBy(aiUsageCharges.id).for('update');
+    }
 
     // 5. Historical-reissue guard, on the LOCKED contract rows.
     if (opts.reissue) {
@@ -2318,6 +2347,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // release source rows so they can be re-invoiced
     if (timeIds.length) await db.update(timeEntries).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(timeEntries.id, timeIds));
     if (partIds.length) await db.update(ticketParts).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(ticketParts.id, partIds));
+    if (aiChargeIds.length) await db.update(aiUsageCharges).set({ billingStatus: 'not_billed', updatedAt: now }).where(inArray(aiUsageCharges.id, aiChargeIds));
 
     if (!opts.reissue) return;
     // Clone source-backed lines into a fresh draft (released rows are not_billed

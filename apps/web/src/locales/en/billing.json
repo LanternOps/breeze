@@ -2344,7 +2344,8 @@
     "currencyWarning": "The assigned billing profile uses {{currency}}. After this change, the matching partner default will apply.",
     "loadError": "Billing profiles could not be loaded.",
     "saveError": "The billing profile could not be saved.",
-    "partialSave": "The billing profile was saved, but the other billing settings were not. Retry Save to finish."
+    "partialSave": "The billing profile was saved, but the other billing settings were not. Retry Save to finish.",
+    "aiUsage": "AI usage: {{summary}}"
   },
   "rates": {
     "title": "Rates",
@@ -2378,6 +2379,41 @@
     "minimumSummary": "{{minutes}} min minimum",
     "roundingSummary": "Round to {{minutes}} min",
     "inherits": "Uses All other work",
-    "currencyHelp": "A default profile or a profile with rates cannot change currency. Blank rounding means no rounding."
+    "currencyHelp": "A default profile or a profile with rates cannot change currency. Blank rounding means no rounding.",
+    "ai": {
+      "column": "AI usage",
+      "sectionTitle": "AI usage",
+      "sectionHelp": "How AI assistant usage by organizations on this billing profile is charged. Bill Breeze's cost plus a markup, or set a price per model.",
+      "coverage": "AI usage billing",
+      "coverageBillable": "Billable",
+      "coverageIncluded": "Included",
+      "coverageNotBilled": "Not billed",
+      "markup": "Markup on cost (%)",
+      "markupHelp": "Added to Breeze's USD cost for each request. 25 bills cost plus 25%. Leave blank to bill only the models on the price list.",
+      "markupInvalid": "Enter a percentage from 0 to 1000 with at most two decimals.",
+      "priceListTitle": "Price list",
+      "priceListHelp": "Prices are in {{currency}} per million tokens. A listed model uses its price instead of the markup.",
+      "priceListEmpty": "No model prices yet.",
+      "addRate": "Add model price",
+      "removeRate": "Remove",
+      "modelId": "Model",
+      "modelPlaceholder": "Pick or type a model id",
+      "inputPrice": "Input",
+      "outputPrice": "Output",
+      "cacheReadPrice": "Cache read",
+      "cacheWritePrice": "Cache write",
+      "rowInvalid": "Enter a model id and all four prices, for example 3.00 or 0.30.",
+      "rowDuplicate": "This model is already on the price list.",
+      "choicesUnavailable": "Model suggestions are unavailable. Type a model id instead.",
+      "usdOnlyWarning": "Markup applies only to USD cards; add a price list for {{currency}} or usage will be recorded unpriced.",
+      "summaryBillableMarkup": "Billable · cost +{{percent}}%",
+      "summaryBillablePriceList_one": "Billable · price list ({{count}} model)",
+      "summaryBillablePriceList_other": "Billable · price list ({{count}} models)",
+      "summaryBillablePriceListMarkup_one": "Billable · price list ({{count}} model), others cost +{{percent}}%",
+      "summaryBillablePriceListMarkup_other": "Billable · price list ({{count}} models), others cost +{{percent}}%",
+      "summaryBillableUnpriced": "Billable · no pricing set",
+      "summaryIncluded": "Included",
+      "summaryNotBilled": "Not billed"
+    }
   }
 }

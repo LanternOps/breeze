@@ -255,6 +255,7 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
  */
 const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
   ai_invocations: 'append-only invocation ledger (2026-11-14-100300, #7600 W02); usage history follows the merged client, everything but org_id is immutable',
+  ai_usage_charge_claims: 'write-once chargeback claims (2026-11-26-100200, #7608 W10); a claim follows its merged invocation so it is never re-claimed, everything but org_id is immutable',
 };
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */

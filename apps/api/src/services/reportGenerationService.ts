@@ -21,6 +21,7 @@ import {
 } from '@breeze/shared';
 import {
   BUSINESS_REPORT_TYPES,
+  emptyAiUsageByClientSummary,
   emptyArAgingSummary,
   emptyTechnicianTimeSummary,
   emptyTicketSlaSummary,
@@ -1100,6 +1101,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
       return { rows: [], rowCount: 0, summary: emptyTechnicianTimeSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     case 'ar_aging':
       return { rows: [], rowCount: 0, summary: emptyArAgingSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
+    // AI chargeback W10 (#7608): the AI ledger has no site axis either.
+    case 'ai_usage_by_client':
+      return { rows: [], rowCount: 0, summary: emptyAiUsageByClientSummary(SITE_RESTRICTED_NOTE) as unknown as Record<string, unknown> };
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);

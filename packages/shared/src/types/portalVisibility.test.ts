@@ -70,7 +70,7 @@ describe('portal visibility DTOs', () => {
     // never become assignable here (spec §2, §3.5).
     expectTypeOf<PortalRunDto['type']>().not.toEqualTypeOf<'ticket_sla_attainment'>();
     type Listable = PortalRunDto['type'];
-    type BusinessTypes = 'ticket_sla_attainment' | 'technician_time_billability' | 'ar_aging';
+    type BusinessTypes = 'ticket_sla_attainment' | 'technician_time_billability' | 'ar_aging' | 'ai_usage_by_client';
     type Leak = Extract<Listable, BusinessTypes>;
     expectTypeOf<Leak>().toEqualTypeOf<never>();
   });

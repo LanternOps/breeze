@@ -252,10 +252,12 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // whose supportedScopes include 'partner' — none of which the freeform
   // builder (org-scoped device/alert/patch/compliance sources) can represent.
   // Mapped to the closest data source purely to keep this Record exhaustive;
-  // `reportTypeSurvivesBuilder` is false for all three.
+  // `reportTypeSurvivesBuilder` is false for all four.
   ticket_sla_attainment: 'alerts',
   technician_time_billability: 'activity',
   ar_aging: 'compliance',
+  // #7608 W10: AI usage by client — curated, own options form, partner capable.
+  ai_usage_by_client: 'activity',
   // Backup Status Report (#6013 W05) — same reasoning as Hardware Lifecycle:
   // delivered only via its own curated template and options form
   // (BackupStatusOptionsForm.tsx). Mapping to the devices source keeps this

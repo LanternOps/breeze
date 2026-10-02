@@ -367,8 +367,8 @@ describe('ReportRunList', () => {
     expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
   });
 
-  // #3198 W03. These three types are internal by construction: they are absent
-  // from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
+  // #3198 W03, plus ai_usage_by_client (#7608 W10). These types are internal
+  // by construction: they are absent from PORTAL_REPORT_TYPES, never portal_self_service, and their definitions
   // are org- or partner-owned MSP reports. If a row of one ever reaches this
   // component, something upstream has leaked — so the component must not be the
   // thing that renders it, and must certainly never offer to generate one.
@@ -376,6 +376,7 @@ describe('ReportRunList', () => {
     { type: 'ticket_sla_attainment', name: 'Ticket SLA attainment' },
     { type: 'technician_time_billability', name: 'Technician time & billability' },
     { type: 'ar_aging', name: 'AR aging' },
+    { type: 'ai_usage_by_client', name: 'AI usage by client' },
   ] as const;
   const leakedRun = (type: string, name: string) =>
     ({ ...run, id: `run-${type}`, name, type }) as unknown as PortalRunDto;
@@ -390,7 +391,7 @@ describe('ReportRunList', () => {
     expect(screen.queryByTestId(`portal-reports-generate-${type.replace(/_/g, '-')}`)).toBeNull();
   });
 
-  it('keeps all three business types out after the post-generate re-fetch', async () => {
+  it('keeps every business type out after the post-generate re-fetch', async () => {
     const fresh: PortalRunDto = { ...run, id: 'run-new' };
     generateMock.mockResolvedValue({ data: fresh });
     listMock.mockResolvedValue({

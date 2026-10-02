@@ -64,12 +64,17 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
       { resource: 'reports', action: '*' },
       { resource: 'tickets', action: 'read' },
       { resource: 'time_entries', action: 'read' },
+      { resource: 'ai_sessions', action: 'read_all' },
     ],
   };
   const all = { permissions: [{ resource: '*', action: '*' }] };
+  /** Every type that needs invoices:read. ai_usage_by_client (#7608) needs it
+   *  too (plus ai_sessions:read_all, which `noInvoices` holds), so a caller
+   *  without invoices:read sees neither money report. */
+  const invoiceGated = ['ar_aging', 'ai_usage_by_client'];
 
   it('hides exactly the types whose required permissions are missing', () => {
-    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noInvoices))).toEqual(['ar_aging']);
+    expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, noInvoices))).toEqual(invoiceGated);
     expect(REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, all))).toEqual([]);
   });
 
@@ -78,6 +83,16 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
       const hidden = REPORT_TYPES.filter((t) => reportTypeHiddenByPermission(t, granted));
       expect([...hidden].sort()).toEqual([...BUSINESS_REPORT_TYPES].sort());
     }
+  });
+
+  it('ai_usage_by_client needs BOTH invoices:read and ai_sessions:read_all', () => {
+    const invoicesOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }] };
+    const sessionsOnly = { permissions: [{ resource: 'reports', action: '*' }, { resource: 'ai_sessions', action: 'read_all' }] };
+    expect(reportTypeHiddenByPermission('ai_usage_by_client', invoicesOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('ai_usage_by_client', sessionsOnly)).toBe(true);
+    expect(reportTypeHiddenByPermission('ai_usage_by_client', {
+      permissions: [...invoicesOnly.permissions, { resource: 'ai_sessions', action: 'read_all' }],
+    })).toBe(false);
   });
 
   it('an unknown type is not hidden and never throws', () => {
@@ -89,7 +104,7 @@ describe('reportTypeHiddenByPermission / reportTypePermissionCondition (ruling P
     expect(condition).toBeDefined();
     const { sql, params } = dialect.sqlToQuery(condition as SQL);
     expect(sql).toMatch(/"reports"\."type" not in \(/);
-    expect(params).toEqual(['ar_aging']);
+    expect(params).toEqual(invoiceGated);
     expect(reportTypePermissionCondition(all, reports.type)).toBeUndefined();
   });
 });

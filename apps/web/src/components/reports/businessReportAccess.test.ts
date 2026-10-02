@@ -27,4 +27,18 @@ describe('business report card gate (#3198)', () => {
     expect(all.current('technician_time_billability')).toBe(true);
     expect(all.current('ar_aging')).toBe(true);
   });
+
+  it('gates ai_usage_by_client on BOTH invoices:read and ai_sessions:read_all (#7608)', () => {
+    granted = new Set(['invoices:read']);
+    const { result: invoicesOnly } = renderHook(() => useCanUseBusinessReportType());
+    expect(invoicesOnly.current('ai_usage_by_client')).toBe(false);
+
+    granted = new Set(['ai_sessions:read_all']);
+    const { result: sessionsOnly } = renderHook(() => useCanUseBusinessReportType());
+    expect(sessionsOnly.current('ai_usage_by_client')).toBe(false);
+
+    granted = new Set(['invoices:read', 'ai_sessions:read_all']);
+    const { result: both } = renderHook(() => useCanUseBusinessReportType());
+    expect(both.current('ai_usage_by_client')).toBe(true);
+  });
 });

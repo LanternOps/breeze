@@ -38,3 +38,20 @@ export const TOOL_REQUIRING_SURFACES = [
   'ai_agents',
   'office_chat',
 ] as const satisfies readonly AiSurface[];
+
+/**
+ * AI chargeback (#7608, spec §8): surfaces whose usage an MSP may rebill to the
+ * client org. The rest is the MSP's own tooling (catalog enrichment,
+ * extension content, patch tests) and is never chargeable. The script reviewer is
+ * chargeable (client work; decided by Todd 2026-10-02, #7598). Changing this
+ * list changes only future stamps (snapshot rule).
+ */
+export const AI_CHARGEBACK_ELIGIBLE_SURFACES = [
+  'chat',
+  'helper',
+  'script_builder',
+  'script_reviewer',
+  'office_chat',
+  'office_ticket',
+  'ai_agents',
+] as const satisfies readonly AiSurface[];

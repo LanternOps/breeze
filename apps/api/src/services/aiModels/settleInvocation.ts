@@ -213,7 +213,8 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
         ? { ...p.rate, serverToolFees: { webSearchRequests: p.webSearchRequests, centsEach: WEB_SEARCH_COST_CENTS } }
         : p.rate) as RateSnapshot,
       costCents: p.costCents,
-      chargeable: false, // W10 sets the chargeback snapshot
+      // No `charge` here: the settlement transaction stamps it (stampChargeback,
+      // W10 #7608), so the snapshot moment is the ledger write, never this call.
       sdkReportedCostUsd: index === 0 ? input.outcome.sdkReportedCostUsd : null,
       // W02 wrote 'shadow' rows beside the legacy path; from W03 the ledger is the
       // billing record, and rollups are derived from these rows only.

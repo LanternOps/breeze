@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveBillingRule, type ResolvedCard } from './billingRuleResolver';
+import { resolveBillingRule, selectCard, type ResolvedCard } from './billingRuleResolver';
 
 const card = (o: Partial<ResolvedCard> = {}): ResolvedCard => ({
   id: 'card-1', currencyCode: 'USD', roundingIncrementMinutes: null,
@@ -153,5 +153,20 @@ describe('what gets stamped (spec §3.4)', () => {
     const r = resolveBillingRule({ orgCurrency: 'USD', workTypeId: null, assignedCard: null,
       partnerDefaultCard: card({ baseCoverage: 'billable', baseHourlyRate: null }) });
     expect(r).toMatchObject({ isBillable: true, hourlyRate: null, fellBackToNoCard: false });
+  });
+});
+
+describe('selectCard: the one card resolver (#7608)', () => {
+  const usd = { id: 'assigned', currencyCode: 'USD' };
+  const usdDefault = { id: 'default', currencyCode: 'USD' };
+  const eur = { id: 'assigned-eur', currencyCode: 'EUR' };
+  it.each([
+    ['assigned card in the org currency wins', 'USD', usd, usdDefault, 'assigned'],
+    ['wrong-currency assignment falls to the partner default', 'USD', eur, usdDefault, 'default'],
+    ['no assignment uses the partner default', 'USD', null, usdDefault, 'default'],
+    ['no card in the org currency is no card (match-or-skip)', 'GBP', eur, usdDefault, null],
+    ['an org with no currency has no card', null, usd, usdDefault, null],
+  ] as const)('%s', (_label, orgCurrency, assignedCard, partnerDefaultCard, expected) => {
+    expect(selectCard({ orgCurrency, assignedCard, partnerDefaultCard })?.id ?? null).toBe(expected);
   });
 });

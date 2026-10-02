@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, char, integer, boolean, numeric, timestamp } from 'drizzle-orm/pg-core';
+import type { AiCoverage } from '@breeze/shared';
 import { partners, organizations } from './orgs';
 import { users } from './users';
 import { supportedCurrencies } from './currency';
@@ -19,6 +20,9 @@ export const billingProfiles = pgTable('billing_profiles', {
   baseCoverage: text('base_coverage').$type<'billable' | 'included' | 'non_billable'>().notNull(),
   baseHourlyRate: numeric('base_hourly_rate', { precision: 10, scale: 2 }),
   baseMinimumMinutes: integer('base_minimum_minutes'),
+  // AI chargeback (#7608). SQL owns the coverage / markup CHECKs (2026-11-26-100000).
+  aiCoverage: text('ai_coverage').$type<AiCoverage>().notNull().default('non_billable'),
+  aiMarkupPercent: numeric('ai_markup_percent', { precision: 7, scale: 2 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -32,6 +36,22 @@ export const billingProfileRules = pgTable('billing_profile_rules', {
   hourlyRate: numeric('hourly_rate', { precision: 10, scale: 2 }),
   minimumMinutes: integer('minimum_minutes'),
   notes: text('notes'),
+});
+
+/** Per-model client AI price list on a card (#7608). Partner-axis; SQL owns the
+ *  composite (billing_profile_id, partner_id) FK, the unique key and the CHECKs
+ *  (2026-11-26-100000), matching billingProfileRules. */
+export const billingProfileAiRates = pgTable('billing_profile_ai_rates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  billingProfileId: uuid('billing_profile_id').notNull().references(() => billingProfiles.id, { onDelete: 'cascade' }),
+  modelId: text('model_id').notNull(),
+  inputPricePerM: numeric('input_price_per_m', { precision: 14, scale: 6 }).notNull(),
+  outputPricePerM: numeric('output_price_per_m', { precision: 14, scale: 6 }).notNull(),
+  cacheReadPricePerM: numeric('cache_read_price_per_m', { precision: 14, scale: 6 }).notNull(),
+  cacheWritePricePerM: numeric('cache_write_price_per_m', { precision: 14, scale: 6 }).notNull(),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const orgBillingProfileAssignments = pgTable('org_billing_profile_assignments', {

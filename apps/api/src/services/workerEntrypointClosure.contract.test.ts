@@ -319,6 +319,8 @@ const EXPECTED_NAMES = [
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention',
+  // AI chargeback W10 (#7608) — daily monthly-close sweep.
+  'aiChargebackWorker',
   'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',

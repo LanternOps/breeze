@@ -5,6 +5,8 @@ import { usePermissions } from '../../lib/permissions';
 import { navigateTo } from '@/lib/navigation';
 import { loginPathWithNext } from '../../lib/authScope';
 import { formatMoney } from './shared/format';
+import { normalizeAiUsage, type AiRateDraft } from './aiUsagePricing';
+import { useAiUsageSummary } from './useAiUsageSummary';
 
 type Coverage = 'billable' | 'included' | 'non_billable';
 type Rule = { workTypeId: string; coverage: Coverage; hourlyRate: string | null; minimumMinutes: number | null };
@@ -12,6 +14,7 @@ type Profile = {
   id: string; name: string; currencyCode: string; isActive: boolean; isDefault: boolean;
   baseCoverage: Coverage; baseHourlyRate: string | null; baseMinimumMinutes: number | null;
   roundingIncrementMinutes: number | null; rules: Rule[];
+  aiCoverage?: Coverage; aiMarkupPercent?: string | null; aiRates?: AiRateDraft[];
 };
 
 /** Loads assignment and catalog resources; stages changes for the parent's
@@ -19,6 +22,7 @@ type Profile = {
 export function useOrgBillingProfile(orgId: string, currency: string, busy = false) {
   const { t } = useTranslation('billing');
   const { can } = usePermissions();
+  const aiSummary = useAiUsageSummary();
   const canRead = can('billing_profiles', 'read');
   const canWrite = can('billing_profiles', 'write');
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -93,6 +97,7 @@ export function useOrgBillingProfile(orgId: string, currency: string, busy = fal
           {resolved.rules.map(rule => <div key={rule.workTypeId} className="flex flex-wrap justify-between gap-2"><dt>{workTypes.find(type => type.id === rule.workTypeId)?.name ?? t('orgBillingProfile.archivedWorkType')}</dt><dd>{outcome(rule.coverage, rule.hourlyRate, rule.minimumMinutes)}</dd></div>)}
         </dl>
         {resolved.roundingIncrementMinutes !== null && <p className="mt-2 text-muted-foreground">{t('orgBillingProfile.rounding', { minutes: resolved.roundingIncrementMinutes })}</p>}
+        <p className="mt-2" data-testid="org-billing-profile-ai">{t('orgBillingProfile.aiUsage', { summary: aiSummary(normalizeAiUsage(resolved)) })}</p>
       </div>}
     </div>
   );
