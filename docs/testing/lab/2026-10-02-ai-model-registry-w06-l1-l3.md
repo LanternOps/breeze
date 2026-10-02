@@ -26,7 +26,7 @@ Feature #7598, wave W06 (#7604, PR #7771). These are release gates for v0.121.
 | L1 | LiteLLM → llama.cpp: chat turn executes a tool; usage recorded | **PASS** |
 | L1 | LiteLLM → llama.cpp: AI agent run executes tools | **PASS** |
 | L1 | LiteLLM → llama.cpp: two-turn chat recalls turn 1 | **PASS** |
-| L1 | LiteLLM → **Ollama**: chat / agent tool calls | **FAIL**: Ollama drops `mcp__…` tool calls (#7795). The 3b model still verified. |
+| L1 | LiteLLM → **Ollama**: chat / agent tool calls | **FAIL**: tool calls through Ollama were mostly dropped; the parser cause is not established (#7795). The 3b model still verified. |
 | L1 | Slow first token (> 30 s) on Breeze-sized prompts | **FAIL**: the gateway's 30 s header deadline aborts and retries (#7794) |
 | L1 | vLLM | **Not run**: no CUDA GPU. vLLM's server images are CUDA-only, and Apple-silicon support is experimental. |
 | L1 | OpenRouter | **Not run**: no key |
@@ -89,7 +89,7 @@ Feature #7598, wave W06 (#7604, PR #7771). These are release gates for v0.121.
   - the upstream's `prompt_tokens_details.cached_tokens` was carried through LiteLLM as cache-read.
 - **Behind Ollama** (both the 3b and the 7b), every chat turn came back as `message_start` / `message_end` (output 16 tokens) twice, then `done`. There was no text, no tool and no error.
   - Captured upstream: Ollama returned `content:""` with no `tool_calls` and `eval_count` 16–25. The CLI then retried with "[Your previous response had no visible output…]" and got the same reply.
-  - Replaying the captured request showed the model emits a correct `<tool_call>{"name":"mcp__…"}` that Ollama's parser drops. Renamed tools parse (table in #7795).
+  - Replaying the captured request showed the model emits a well-formed `<tool_call>{"name":"mcp__…"}` that Ollama mostly did not return as a tool call; renamed tools parsed more often (table in #7795). The exact parser cause is not established.
   - **The harness passed for the 3b model and failed for the 7b one**, so "Verified" does not guarantee chat tool use on Ollama.
 
 ### AI agent run with tool calls: PASS (LiteLLM → llama.cpp)
