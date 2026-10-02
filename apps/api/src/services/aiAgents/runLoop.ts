@@ -88,8 +88,7 @@ import {
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
-import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
-import { grantCatalogSdkEgress, sdkModelOptions } from '../aiModels/connectionFactory';
+import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
 import {
   newSdkTurnObservation,
   observeSdkMessage,
@@ -2322,13 +2321,18 @@ async function driveSdkLoop(
       }
       reservationId = reservation.reservationId;
       const hopReservationId = reservationId;
-      // A catalog connection's SDK child may open exactly one destination, through
-      // the audited CONNECT proxy (shared with chat, connectionFactory.ts). Null for
-      // platform / direct Anthropic. Nothing is dispatched yet, so a grant failure
-      // releases the reservation it never used. Each hop has its own grant key.
-      let egress: Awaited<ReturnType<typeof grantCatalogSdkEgress>>;
+      // This hop's SDK child env and grants, for THIS hop's model (a failover
+      // may cross to or from a gateway connection), from the one seam shared
+      // with chat (connectionFactory.prepareSdkChild): a catalog connection
+      // gets an audited CONNECT grant to exactly one destination; a gateway
+      // connection a gateway grant plus a deny-all proxy grant; platform /
+      // direct Anthropic nothing. Nothing is dispatched yet, so a failure here
+      // releases the reservation it never used (prepareSdkChild holds nothing
+      // when it throws). Each hop has its own grant key, so a late revoke of
+      // one hop can never revoke the next hop's grants.
+      let child: SdkChildDispatch;
       try {
-        egress = await grantCatalogSdkEgress(hopModelNow, {
+        child = await prepareSdkChild(hopModelNow, {
           key: hopIndex === 0 ? `agent-run:${run.id}` : `agent-run:${run.id}:${hopIndex}`,
           orgId: run.orgId,
           aiSessionId: ctx.sessionId ?? null,
@@ -2338,7 +2342,7 @@ async function driveSdkLoop(
           .catch((releaseError: unknown) => console.error('[aiAgentRunLoop] failed to release an unused AI reservation', {
             runId: run.id, error: safeErrorMessage(releaseError),
           }));
-        throw new AgentRunError('llm_unavailable', `AI egress for the agent's catalog connection is unavailable: ${safeErrorMessage(error)}`);
+        throw new AgentRunError('llm_unavailable', `AI egress for the agent's model connection is unavailable: ${safeErrorMessage(error)}`);
       }
       // The per-run ceiling spans every hop: a later hop gets what is left of it.
       const runBudgetLeftCents = Math.max(0, runLimits.maxBudgetCentsPerRun - priorHopsCostCents);
@@ -2363,8 +2367,14 @@ async function driveSdkLoop(
               allowedTools: [...new Set(exposedNames)],
               mcpServers: { breeze: mcpServer },
               abortController,
-              env: buildClaudeSdkChildEnv(hopModelNow.connection.config, process.env,
-                egress ? { egressProxyUrl: egress.proxyUrl } : {}),
+              env: child.env,
+              // Gateway connections only: an empty temp working directory, so
+              // the environment context sent upstream names no host path.
+              ...(child.cwd !== undefined ? { cwd: child.cwd } : {}),
+              // Gateway connections only, after maxBudgetUsd: the registry price
+              // of the bound models, so the SDK's budget cap is not a guess (or
+              // no SDK cap at all when a price cannot be expressed to the CLI).
+              ...(child.queryOptions ?? {}),
               // No transcript persistence in wave 3 — `run.session_id` stays NULL
               // and `summary`/`outcome` carry what a reviewer needs (wave 6).
               persistSession: false,
@@ -2476,8 +2486,10 @@ async function driveSdkLoop(
           };
         }
       } finally {
-        // The SDK child is gone (query closed above): this hop's egress grant goes too.
-        try { egress?.revoke(); } catch (error) {
+        // The SDK child is gone (query closed above): this hop's grants go too —
+        // on every exit (result, ceiling abort, wall clock, SDK error, a
+        // failover to the next hop, a query() throw).
+        try { child.revoke(); } catch (error) {
           console.warn('[aiAgentRunLoop] egress grant revoke failed (non-fatal)', { runId: run.id, error });
         }
       }

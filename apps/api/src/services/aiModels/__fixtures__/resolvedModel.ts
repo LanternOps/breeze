@@ -45,6 +45,8 @@ function gatewayResolvedModel(over: Partial<ResolvedModel>): ResolvedModel {
     limits: { maxInputTokens: null, maxOutputTokens: null },
     configVersion: 3,
     fellBack: false,
+    failover: null,
+    failoverRemaining: [],
   };
   return { ...base, ...over };
 }

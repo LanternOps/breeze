@@ -335,7 +335,7 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
       failover: { fromOfferingId: 'off-sonnet', hop: 2, cause: 'cooldown' } });
     vi.mocked(runPreFlightChecks).mockResolvedValue({
       ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1,
     });
     vi.mocked(resolveSessionTurn).mockResolvedValueOnce(f2);
     tr.planModelTransition

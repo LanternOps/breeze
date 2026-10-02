@@ -17,7 +17,8 @@ import {
   checkBudgetDetailed,
   checkSystemAiRateLimit,
 } from './aiCostTracker';
-import { markPartnerLlmError, type UsableLlmConfig } from './llm/llmConfigResolver';
+import { markPartnerLlmError } from './llm/llmConfigResolver';
+import { LlmUnavailableError } from './llm/llmUnavailableError';
 import { captureException, captureMessage } from './sentry';
 import {
   markAiBudgetReservationIndeterminate,
@@ -27,7 +28,7 @@ import {
 } from './aiBudgetReservations';
 import { isPlatformLlmConfigured } from './llm/llmAvailability';
 import { reportPlatformKeyMissing } from './llm/platformKeyAlert';
-import { findOfferingIdByModel, readOrgPartnerId } from './aiModels/candidateLoader';
+import { findOfferingIdByModel, readOrgPartnerId, type ResolvedConnection } from './aiModels/candidateLoader';
 import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageOutcome } from './aiModels/connectionFactory';
 import {
   FailoverExhaustedError,
@@ -81,14 +82,27 @@ function httpStatusOf(error: unknown): number | null {
  * including a rejected partner credential: the partner must keep seeing a loud,
  * visible failure until they reconnect the key, never a feature that has
  * quietly degraded itself.
+ *
+ * Gateway connections: a 401/403 comes from the loopback model gateway, and
+ * the same status means an expired/revoked grant, a model the grant does not
+ * bind, or the endpoint rejecting the key — indistinguishable here. None of
+ * them may mark the connection broken from this path (an expired grant says
+ * nothing about the partner's key); the connection's health is owned by
+ * discovery and verification, which talk to the endpoint directly. The
+ * failover classification (failover.ts) still treats every gateway status
+ * like any provider's: a 401/403/429/5xx fails over and cools the offering,
+ * which is a TTL'd routing preference, never a connection status.
  */
 async function classifyProviderFailure(
   error: unknown,
-  resolved: UsableLlmConfig,
+  connection: ResolvedConnection,
 ): Promise<unknown> {
   const status = httpStatusOf(error);
 
   if (status === 401 || status === 403) {
+    const resolved = connection.config;
+    // Only a direct partner credential (source 'partner') is ever stamped;
+    // a gateway connection (source 'gateway') and the platform key never are.
     if (resolved.source === 'partner') {
       try {
         const stamped = await markPartnerLlmError({
@@ -210,6 +224,21 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         });
       }
 
+      // The first hop's client is built before anything is reserved: a
+      // connection that cannot be dispatched (no usable key; a gateway
+      // dispatch without an org) is refused here and never strands a
+      // reservation. Transient and loud, like a broken partner connection.
+      // (A failover hop's client is built after its reservation, which
+      // runWithFailover takes; a refusal there releases that reservation —
+      // HopNotDispatchedError below.)
+      let client: ReturnType<typeof anthropicClientFor>;
+      try {
+        client = anthropicClientFor(resolved, { surface: 'workspace_enrichment', orgId: input.orgId });
+      } catch (error) {
+        if (error instanceof LlmUnavailableError) throw new ExtensionAiError('ai_unavailable', error.message);
+        throw error;
+      }
+
       // S8: no stable request identity on this surface (no client-supplied
       // request id), so the key is random per dispatch — the unique index is a
       // structural guarantee, not a replay guard. Contrast
@@ -256,7 +285,6 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
       }
 
-      const client = anthropicClientFor(resolved, { surface: 'workspace_enrichment', orgId: input.orgId });
       const settleFailedHopAtZero = settleZeroUsageHop({
         orgId: input.orgId, userId: ledgerUserId, sessionId: null, agentRunId: null, sourceRef,
       });
@@ -312,7 +340,7 @@ export function buildExtensionAiContext(): ExtensionAiContext {
             // A rejected partner credential is still recorded when a backup serves.
             const cause = dispatchCause(error);
             const status = httpStatusOf(cause);
-            if (status === 401 || status === 403) await classifyProviderFailure(cause, hop.resolved.connection.config);
+            if (status === 401 || status === 403) await classifyProviderFailure(cause, hop.resolved.connection);
           },
           isPreOutput: isPreOutputMessagesFailure,
         }));
@@ -357,7 +385,7 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
             .catch((markError) => captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`)));
         }
-        throw await classifyProviderFailure(dispatchCause(error), current.resolved.connection.config);
+        throw await classifyProviderFailure(dispatchCause(error), current.resolved.connection);
       }
 
       const text = outcome.message.content
