@@ -788,22 +788,8 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
 // (org_id AND partner_id together via the composite FK
 // deployment_invites_org_partner_fk — a row carries BOTH, not one or the
 // other), and `software_policy_audit` / `software_remediation_requests`
-// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` IS
-// included below even though it has no DB-level CHECK: its own migration
-// (2026-05-29-access-reviews-dual-axis-rls.sql) documents the axes as
-// "mutually exclusive, so no composite FK applies", and it is app-enforced
-// only. As of #3257 W02 it is the LAST such example — the two tables this
-// comment used to group it with are both DB-enforced and were verified
-// against pg_constraint on a live database:
-//   - client_ai_prompt_templates_scope_check CHECK (num_nonnulls(org_id,
-//     partner_id) = 1), shipped 2026-06-12-b, never dropped. (This half of
-//     the comment was wrong before this wave touched it.)
-//   - custom_field_definitions_one_owner_chk, added by
-//     2026-10-10-100300 (#3257 W02).
-// Membership in this set has never depended on having a CHECK — it only
-// drives the partner-wide SELECT-branch assertions below — so nothing else
-// changes. If access_reviews ever gains a CHECK, this note has no examples
-// left and should be deleted rather than patched.
+// (dual-owned, explicitly documented above as NOT XOR). `access_reviews` is
+// org XOR partner by access_reviews_one_owner_chk (2026-11-19-101100).
 //
 // … and `reports` (#3198 W01): org XOR partner by CHECK, but NOT a config
 // table — a partner-owned report is a partner-PRIVATE cross-org aggregate
@@ -970,6 +956,13 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // nc.partner_id), deliberately without the partner-wide read branch —
   // functional proof: notificationChannelConfigsRls.integration.test.ts.
   ['notification_channel_configs', ['notification_channels']],
+  // access_review_items: tenancy is the parent access review (org XOR
+  // partner owner). Until 2026-11-19-101100 its policies were Phase 6
+  // user-keyed and never consulted the parent; they now require the parent
+  // review's owner, spelled out on the joined row (not inherited from the
+  // parent's SELECT-only partner-wide branch). Functional proof:
+  // accessReviewItemsParentReviewRls.integration.test.ts.
+  ['access_review_items', ['access_reviews']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
   // reach their tenant only through a parent FK. role_permissions' parent
   // `roles` is dual-axis (org_id/partner_id) — its policy ORs in
@@ -1082,7 +1075,6 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // through tickets is #1016-safe: tickets.org_id is NOT NULL and the
   // tickets policy has no OR branches.
   'ticket_comments',
-  'access_review_items',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
