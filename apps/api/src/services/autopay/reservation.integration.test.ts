@@ -2,14 +2,16 @@ import { getTestDb } from '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnrollments, orgPaymentMethods, invoiceCollectionAttempts, invoiceStripePayments, invoicePayments, accountingConnections, accountingEntityMappings } from '../../db/schema';
+import { db, hasDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { partners, organizations, quotes, invoices, stripeConnectAccounts, orgAutopayEnrollments, orgPaymentMethods, invoiceCollectionAttempts, invoiceStripePayments, invoicePayments, accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { lockInvoiceForCollection } from './reservation';
 import { createInvoicePayLink } from '../invoiceCheckout';
 import { recordPayment, voidInvoice } from '../invoiceService';
 import { resetInvoiceLink } from '../invoiceLinkToken';
 import { applyAccountingPayment } from '../accounting/accountingPaymentPull';
 import { getConnection } from '../accounting/accountingConnectionService';
+import { __test__ as sdk } from '../aiAgentSdkTools';
+import type { AuthContext } from '../../middleware/auth';
 import type { ChangeSetPaymentLine } from '../accounting/types';
 
 const mocks = vi.hoisted(() => ({ create: vi.fn(), client: vi.fn() }));
@@ -37,6 +39,34 @@ async function fixture() {
 
 beforeEach(() => { vi.clearAllMocks(); });
 describe('reservation with real PostgreSQL', () => {
+  it.each(['manage_invoices', 'manage_quotes'])('%s creates a pay link without holding the invoice lock at Stripe', async (toolName) => {
+    const f = await fixture();
+    const [quote] = await withSystemDbAccessContext(() => db.insert(quotes).values({
+      partnerId: f.invoice.partnerId, orgId: f.invoice.orgId, currencyCode: 'USD',
+      status: 'converted', convertedInvoiceId: f.invoice.id,
+    }).returning());
+    const auth: AuthContext = {
+      principal: { kind: 'user_session' }, token: null,
+      user: { id: randomUUID(), email: 'synthetic@example.com', name: 'Synthetic caller', isPlatformAdmin: false }, scope: 'partner', partnerId: f.invoice.partnerId,
+      orgId: null, accessibleOrgIds: [f.invoice.orgId],
+      orgCondition: column => eq(column, f.invoice.orgId),
+      canAccessOrg: orgId => orgId === f.invoice.orgId,
+    };
+    mocks.create.mockImplementation(async () => {
+      expect(hasDbAccessContext()).toBe(false);
+      // A different connection must be able to lock the invoice during Stripe HTTP.
+      await withSystemDbAccessContext(async () => {
+        expect(await db.execute(sql`select id from invoices where id = ${f.invoice.id} for update nowait`)).toHaveLength(1);
+      });
+      return { id: `cs_${f.invoice.id}`, url: 'https://checkout.stripe.com/c/pay/synthetic', payment_intent: null };
+    });
+    const result = await sdk.makeHandler(toolName, () => auth)({
+      action: 'create_pay_link', ...(toolName === 'manage_invoices' ? { invoiceId: f.invoice.id } : { quoteId: quote!.id }),
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining('https://checkout.stripe.com/c/pay/synthetic') })]);
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
   it('rejects a caller holding a DB context before contacting Stripe', async () => {
     const f = await fixture();
     mocks.create.mockResolvedValue({ id: `cs_${f.invoice.id}`, url: 'https://checkout.stripe.com/c/pay/synthetic', payment_intent: null });

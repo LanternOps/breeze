@@ -79,6 +79,32 @@ describe('makeHandler — self-managed DB context tools (#7128)', () => {
     expect(withDbAccessContextMock).not.toHaveBeenCalled();
   });
 
+  it.each(['manage_invoices', 'manage_quotes'])('%s pay links open no outer transaction', async (name) => {
+    await makeHandler(name, () => fakeAuth)({ action: 'create_pay_link' });
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    expect(withDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['manage_invoices', 'manage_quotes'])('%s other actions retain their transaction', async (name) => {
+    await makeHandler(name, () => fakeAuth)({ action: 'create_draft' });
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    expect(withDbAccessContextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['manage_invoices', 'manage_quotes'])('%s pay links still honor denial and audit callbacks', async (name) => {
+    const pre = vi.fn().mockResolvedValue({ allowed: false, error: 'Approval required' });
+    const post = vi.fn().mockResolvedValue(undefined);
+    const result = await makeHandler(name, () => fakeAuth, pre, post)({ action: 'create_pay_link' });
+    expect(result.isError).toBe(true);
+    expect(mockExecuteTool).not.toHaveBeenCalled();
+    expect(post).toHaveBeenCalledTimes(1);
+    pre.mockResolvedValue({ allowed: true });
+    await makeHandler(name, () => fakeAuth, pre, post)({ action: 'create_pay_link' });
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(withDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
   it('still wraps every other tool in its per-call transaction', async () => {
     const handler = makeHandler('get_script_proposal', () => fakeAuth);
 

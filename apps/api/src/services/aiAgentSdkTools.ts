@@ -14,7 +14,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
+import { executeTool, aiTools, toolManagesDbContext, getAllRegisteredToolNames, getToolAlwaysLoad, getToolSearchHint, type ExecuteToolOptions } from './aiTools';
 import { isTopologyAiToolName, loadTopologyAiPreconditions, withTopologyAiPreconditions, type TopologyToolBinding } from './topology/aiToolGate';
 import { WORKSPACE_MCP_SHAPES } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
@@ -758,7 +758,7 @@ function makeToolHandler(
       // This whole handler already runs under `runOutsideDbContext`, so there
       // is no ambient context for the tool to join by accident.
       const runInToolContext = () =>
-        aiTools.get(toolName)?.selfManagedDbContext
+        toolManagesDbContext(aiTools.get(toolName), args)
           ? runTool()
           : withDbAccessContext(dbContext, runTool);
       // Review R1 (#6671 shape): a topology tool's gate needs the org's
