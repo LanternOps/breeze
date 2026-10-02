@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { createHmac } from 'crypto';
 
 const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
@@ -977,6 +977,20 @@ describe('fetchRealmSettings', () => {
 
 // --- reconcileChanges (CDC) fixture helpers --------------------------------
 
+/**
+ * The CDC fixtures are dated 2026-09-02, but the provider computes QBO's 30-day
+ * lookback floor from the real clock, so they aged out on 2026-10-02 and every
+ * cursor started tripping the "older than the lookback floor" path. Pin only
+ * `Date` to the fixture day; real timers keep the async fetch mocks working.
+ */
+function pinClockToCdcFixtures() {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-02T20:10:00.000Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+}
+
 function cdcResponse(entityBlocks: Record<string, unknown>[], time = '2026-09-02T20:10:00.000Z') {
   return { CDCResponse: [{ QueryResponse: entityBlocks }], time };
 }
@@ -995,6 +1009,7 @@ function qboPayment(overrides: Record<string, unknown> = {}) {
 }
 
 describe('reconcileChanges (CDC)', () => {
+  pinClockToCdcFixtures();
   it('requests entities=Payment,Invoice with changedSince 5 minutes behind the cursor', async () => {
     const spy = mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 1 }]));
     const since = new Date('2026-09-02T20:00:00.000Z');
@@ -1724,6 +1739,7 @@ describe('rate limiting (Xero W01)', () => {
 });
 
 describe('rate limiting — slot coverage, refusal pass-through and catch audit (Xero W01, Task 13)', () => {
+  pinClockToCdcFixtures();
   const refusal = () => new AccountingProviderError({
     kind: 'rate_limited', provider: 'quickbooks', operation: 'accounting call slot (concurrency)',
     message: 'Accounting provider rate limit reached (concurrency); retrying automatically', retryAfterMs: 2_000,

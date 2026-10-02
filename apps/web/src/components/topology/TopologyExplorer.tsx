@@ -7,6 +7,7 @@ import { TopologyLayoutController } from './layoutController';
 import { TopologyLayoutDraft, saveTopologyLayout } from './layoutPersistence';
 import { LAYOUT_VERSION, type LayoutBox, type LayoutPosition } from './layoutTypes';
 import { useTopologyGraph } from './useTopologyGraph';
+import { compileTopologyRender, type RenderNode } from './renderProjection';
 import { parseTopologyHash, writeTopologyHash, type TopologyNavigation } from './topologyHash';
 import { isPresentation, selectedTopologyEntity, type TopologySelection } from './topologyPresentation';
 import { topologyApi, topologyRead, topologyNodeListSchema, type HiddenConnection, type TopologySettings } from './topologyApi';
@@ -22,8 +23,12 @@ import RecentChangesPanel from './RecentChangesPanel';
 
 const sameBoxes = (a: LayoutBox[], b: LayoutBox[]) => a.length === b.length && a.every((box, index) => {
   const other = b[index]!;
-  return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height;
+  return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height && box.groupId === other.groupId;
 });
+const isCard = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified';
+/** Inside a card: infrastructure first, then servers, workstations, printers, phones, the rest; unverified placements last. */
+const GLYPH_RANK: Record<string, number> = { router: 0, firewall: 0, switch: 1, access_point: 1, server: 2, nas: 2, workstation: 3, laptop: 3, printer: 4, phone: 5, camera: 6, iot: 6 };
+const memberRank = (node: RenderNode) => (GLYPH_RANK[node.glyph] ?? 7) + (node.unverified && (GLYPH_RANK[node.glyph] ?? 7) > 1 ? 10 : 0);
 
 export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');
@@ -31,6 +36,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     const value = parseTopologyHash(hash); return value && (!value.siteId || value.siteId === siteId) ? value : undefined;
   });
   const [searchFocus, setSearchFocus] = useState<string>(), [searchNodes, setSearchNodes] = useState<GraphNode[]>([]), [searchError, setSearchError] = useState<string>();
+  const [showAllNetworks, setShowAllNetworks] = useState(false);
   const [fullSite, setFullSite] = useState(false), [list, setList] = useState(false), [diagnostic, setDiagnostic] = useState<TopologySelection>(), [configuration, setConfiguration] = useState(false);
   const view = navigation.view === 'physical' && !settings.capabilities.physical.available ? 'overview' : navigation.view;
   const { graph, loading, error, refreshGraph, expand } = useTopologyGraph({ siteId }, { view, focusNodeId: searchFocus ?? (fullSite ? undefined : focusNodeId) }, settings.capabilities.ui.available);
@@ -62,8 +68,9 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   };
   // A bounded expansion can change the visible projection without changing the
   // site's structural revision. Health-only updates keep this key unchanged.
-  const measurementKey = JSON.stringify(graph ? [...graph.nodes, ...graph.presentation.nodes].map(node => [node.id, node.label, 'kind' in node ? node.kind : node.role]) : []);
-  const nodes = useMemo(() => graph ? [...graph.nodes, ...graph.presentation.nodes] : [], [measurementKey, graph?.view]);
+  const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks }) : undefined, [graph, showAllNetworks]);
+  const measurementKey = JSON.stringify(render ? render.nodes.map((node) => [node.id, node.label, node.detail, node.kind, node.parent]) : []);
+  const nodes = useMemo(() => render?.nodes ?? [], [measurementKey, graph?.view]);
   useEffect(() => {
     if (!navigation.search.trim()) { setSearchNodes([]); return; }
     const abort = new AbortController(); setSearchError(undefined);
@@ -90,9 +97,13 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       if (!alive || !measured.current) return;
       // One pass over the measurement cards, not a scan per node (O(n²) at V1000).
       const elements = new Map([...measured.current.children].map((child) => [child.getAttribute('data-node-id'), child]));
-      const next = nodes.map((node) => {
+      // Tiles have a fixed width (labels ellipsize); cards are sized by the layout from their members.
+      const next: LayoutBox[] = nodes.map((node) => {
+        if (isCard(node)) return { id: node.id, role: node.kind, width: 0, height: 0 };
         const rect = elements.get(node.id)?.getBoundingClientRect();
-        return { id: node.id, role: 'kind' in node ? node.kind : node.role, width: Math.min(360, Math.max(220, rect?.width || 220)), height: Math.min(240, Math.max(88, rect?.height || 88)) };
+        const width = node.kind === 'gateway' || node.kind === 'internet' ? 236 : 208;
+        return { id: node.id, role: node.kind, width, height: Math.min(96, Math.max(60, rect?.height || 60)),
+          ...(node.parent ? { groupId: node.parent, rank: memberRank(node), name: node.label } : {}) };
       });
       // Within one run of this effect, a repeat measurement with unchanged sizes
       // (fonts.ready plus the ResizeObserver's initial callback) is dropped. A new
@@ -111,13 +122,22 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     if (!graph || !boxes.length) return;
     const result = await controller.run({ requestId: crypto.randomUUID(), graphRevision: graph.revisions.graph, layoutRevision: draft.revision,
       measurementRevision: JSON.stringify(boxes), algorithmVersion: LAYOUT_VERSION, nodes: boxes,
-      edges: [...graph.relationships, ...graph.presentation.edges].map((edge) => ({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId,
-        ...('sourceInterfaceId' in edge && edge.sourceInterfaceId ? { sourcePort: edge.sourceInterfaceId } : {}),
-        ...('targetInterfaceId' in edge && edge.targetInterfaceId ? { targetPort: edge.targetInterfaceId } : {}) })),
+      edges: (render?.edges ?? []).map((edge) => {
+        const canonical = graph.relationships.find((relationship) => relationship.id === edge.id);
+        return { id: edge.id, source: edge.layoutSource, target: edge.layoutTarget,
+          ...(canonical?.sourceInterfaceId && edge.layoutSource === canonical.sourceNodeId ? { sourcePort: canonical.sourceInterfaceId } : {}),
+          ...(canonical?.targetInterfaceId && edge.layoutTarget === canonical.targetNodeId ? { targetPort: canonical.targetInterfaceId } : {}) };
+      }),
       positions: [...draft.positions.values()], mode });
     if (!result) return;
     draft.preview(result.positions); setPositions(result.positions); setWarning(result.warning); setAnnouncement(t('arranged'));
-  }, [graph?.revisions.graph, boxes, controller, draft, t]);
+  }, [graph?.revisions.graph, boxes, controller, draft, t, render]);
+  /** Discards saved and pinned coordinates in this draft and lays the map out fresh; nothing persists until Save. */
+  const useGroupedLayout = () => {
+    for (const [nodeId, point] of draft.positions) draft.positions.set(nodeId, { ...point, pinned: false });
+    void arrange('reflow');
+  };
+  const hasPins = [...draft.positions.values()].some((point) => point.pinned);
   useEffect(() => { if (boxes.length) void arrange('incremental'); }, [boxes, controller]);
   const changePosition = (position: LayoutPosition) => {
     if (!graph?.permissions.canEdit) return;
@@ -174,6 +194,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         <button data-testid="topology-arrange" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('incremental')}>{t('arrange')}</button>
         <button data-testid="topology-reflow" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('reflow')}>{t('reflow')}</button>
         {graph.permissions.canEdit && <button data-testid="topology-layout-save" className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" disabled={!draft.dirty || saving || conflict} onClick={() => void save()}>{saving ? t('saving') : t('saveLayout')}</button>}
+        {render?.grouped && (hasPins || warning === 'pinned_overlap') && <button data-testid="topology-grouped-layout" className="rounded border px-3 py-2 text-sm" onClick={useGroupedLayout}>{t('grouped.useLayout')}</button>}
+        {render && (render.hiddenNetworkCount > 0 || showAllNetworks) && <label className="flex items-center gap-2 text-sm"><input data-testid="topology-show-all-networks" type="checkbox" checked={showAllNetworks} onChange={(event) => setShowAllNetworks(event.target.checked)} />{t('grouped.showAllNetworks', { count: render.hiddenNetworkCount })}</label>}
         {draft.dirty && <span data-testid="topology-unsaved-layout" className="text-sm text-muted-foreground">{graph.permissions.canEdit ? t('unsaved') : t('localLayout')}</span>}
       </div>
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
@@ -183,7 +205,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
           <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
         : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
-          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas graph={graph} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} />}</div>
+          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} fitKey={`${view}:${showAllNetworks}:${render?.grouped}`} />}</div>
         {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
           historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
       </div>}
@@ -192,6 +214,6 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       {diagnostic && <TopologyDiagnosticsPanel siteId={siteId} graphRevision={graph.revisions.graph} subject={{ kind: diagnostic.kind === 'edge' ? 'relationship' : 'node', id: diagnostic.id }} onClose={() => setDiagnostic(undefined)} />}
     </>}
     <div aria-live="polite" className="sr-only">{announcement}</div>
-    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-64 opacity-0">{nodes.map((node) => <div data-node-id={node.id} key={node.id} className="w-64 break-words rounded border px-4 py-5 text-sm">{node.label}</div>)}</div>
+    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-14 pr-3 text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}</div>)}</div>
   </section>;
 }

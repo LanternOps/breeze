@@ -66,7 +66,7 @@ beforeEach(() => {
 describe('buildTopologyAiEvidence (M4 Task 2)', () => {
   it('builds a bounded, cited snapshot around the selected link from scoped reads only', async () => {
     const snapshot = await buildTopologyAiEvidence(ctx, selection(), NOW, { investigationId: 'inv-1', repository: repository() });
-    expect(mocks.graph).toHaveBeenCalledWith(ctx, { view: 'physical', focusNodeId: id('30000000', 0), hops: 1, includeHealth: true, limit: AI_EVIDENCE_LIMITS.nodes });
+    expect(mocks.graph).toHaveBeenCalledWith(ctx, { view: 'physical', focusNodeId: id('30000000', 0), hops: 1, includeHealth: true, limit: AI_EVIDENCE_LIMITS.nodes }, { presentationGroups: false });
     expect(mocks.evidence).toHaveBeenCalledWith(ctx, REL, { limit: AI_EVIDENCE_LIMITS.observations });
     expect(mocks.changes).toHaveBeenCalledWith(ctx, { since: '2026-09-25T12:00:00.000Z', until: NOW.toISOString(), limit: AI_EVIDENCE_LIMITS.changes });
     expect(snapshot.revisions).toEqual({ graph: '7', health: '3' });

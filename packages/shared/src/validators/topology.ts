@@ -121,6 +121,26 @@ export const graphNodeSchema = z.object({
   evidence: evidenceSummarySchema,
   health: healthSummarySchema,
   availableActions: z.array(actionSchema).max(50),
+  /**
+   * Live inventory facts through the node's binding (grouped overview, 2026-10-02).
+   * `presence` is agent/scan reachability, never health (DC:203, O:62).
+   */
+  inventory: z.object({
+    source: z.enum(['device', 'discovered_asset']),
+    name: z.string().max(255).nullable(),
+    addresses: z.array(z.string().min(1).max(64)).max(8),
+    mac: z.string().max(64).nullable(),
+    vendor: z.string().max(255).nullable(),
+    model: z.string().max(255).nullable(),
+    os: z.string().max(255).nullable(),
+    type: z.string().max(64).nullable(),
+    presence: z.object({
+      state: z.enum(['online', 'offline', 'unknown']),
+      source: z.enum(['agent', 'scan']),
+      agentStatus: z.string().max(32).nullable(),
+      lastSeenAt: utcTimestampSchema.nullable(),
+    }).strict(),
+  }).strict().optional(),
 }).strict();
 
 export const graphRelationshipSchema = z.object({
@@ -142,6 +162,37 @@ export const graphRelationshipSchema = z.object({
   availableActions: z.array(actionSchema).max(50),
 }).strict();
 
+export const TOPOLOGY_NETWORK_CLASSES = ['lan', 'link_local', 'host', 'overlay', 'other'] as const;
+export type TopologyNetworkClass = typeof TOPOLOGY_NETWORK_CLASSES[number];
+function ipv4Number(address: string): number | null {
+  const parts = address.split('.');
+  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
+  return parts.reduce((value, part) => value * 256 + Number(part), 0);
+}
+/**
+ * Display class of a CIDR for the grouped overview. Only `lan` prefixes form visible
+ * network cards by default; the rest are real but rarely what an operator means by
+ * "the network" (link-local, single-host, overlay/VPN ranges, over-broad prefixes).
+ * Overlay detection is a CIDR heuristic (Tailscale/CGNAT) until interface-kind evidence lands.
+ */
+export function topologyNetworkClass(prefix: string): TopologyNetworkClass {
+  const [address = '', lengthText = ''] = prefix.split('/');
+  const length = Number(lengthText);
+  if (address.includes(':')) {
+    const head = address.toLowerCase();
+    if (/^fe[89ab]/.test(head)) return 'link_local';
+    if (length === 128) return 'host';
+    if (head.startsWith('fd7a:115c:a1e0')) return 'overlay';
+    return length < 16 ? 'other' : 'lan';
+  }
+  const value = ipv4Number(address);
+  if (value === null) return 'other';
+  if (Math.floor(value / 65_536) === 169 * 256 + 254) return 'link_local';
+  if (length === 32) return 'host';
+  if (Math.floor(value / 4_194_304) === (100 * 256 + 64) / 64) return 'overlay';
+  return length < 8 ? 'other' : 'lan';
+}
+
 export const presentationIdSchema = z.string().regex(
   /^presentation:(overview|physical|logical):[A-Za-z0-9_-]{1,128}:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
 );
@@ -156,6 +207,29 @@ export const presentationNodeSchema = z.object({
   memberCount: boundedCountSchema,
   frontierToken: boundedTokenSchema,
   authority: z.literal(false),
+  /**
+   * Inferred display grouping (collection spec C:184, DC:41). Canonical per-observer
+   * nodes stay in `nodes`; `canonicalNodeIds` are the ones this card folds and
+   * `members` the visible endpoints drawn inside it. `address_match` members are an
+   * unverified address-range placement, never a membership claim.
+   */
+  group: z.object({
+    kind: z.enum(['network', 'gateway', 'unidentified']),
+    basis: z.enum(['inferred_site_prefix', 'reported_gateway', 'unidentified']),
+    networkClass: z.enum(TOPOLOGY_NETWORK_CLASSES).nullable(),
+    prefix: z.string().max(64).nullable(),
+    address: z.string().max(64).nullable(),
+    gatewayAddresses: z.array(z.string().max(64)).max(16),
+    conflict: z.boolean(),
+    observerCount: boundedCountSchema,
+    members: z.array(z.object({
+      nodeId: canonicalIdSchema,
+      placement: z.enum(['observed', 'address_match']),
+      primary: z.boolean(),
+      stale: z.boolean(),
+    }).strict()).max(1_000),
+    canonicalNodeIds: z.array(canonicalIdSchema).max(1_000),
+  }).strict().optional(),
 }).strict();
 
 const presentationEdgeBase = z.object({
@@ -174,6 +248,8 @@ const schematicPresentationEdgeSchema = presentationEdgeBase.extend({
 
 const aggregatePresentationEdgeSchema = presentationEdgeBase.extend({
   meaning: z.literal('aggregate'),
+  /** Display role: a LAN reaching its reported gateway, or devices shared by two groups. */
+  role: z.enum(['routes_via', 'shared_devices']).optional(),
   contributingRelationshipIds: z.array(canonicalIdSchema).min(1).max(2_000),
   memberCount: boundedCountSchema,
   frontierToken: boundedTokenSchema,
