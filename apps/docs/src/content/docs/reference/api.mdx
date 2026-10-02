@@ -242,6 +242,25 @@ lifetime as one created in the UI (30 days unless
 `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` says otherwise), clamped by
 `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` and by the organization's own cap.
 
+### Schema versioning and compatibility
+
+Every export response carries a `schemaVersion` (currently `"1"`). Within one
+`schemaVersion`, Breeze makes **additive changes only**:
+
+- **May change without a version bump:** new fields on a record or on a nested
+  object, new arrays, new keys under `collections`, and new optional envelope
+  keys. Existing fields keep their names, types, and nullability.
+- **Bumps `schemaVersion`:** removing or renaming a field, changing its type,
+  making a nullable field non-null or a non-null field nullable, or changing what
+  an existing field means.
+
+**Consumers must ignore keys they do not recognize.** A client that rejects a
+whole page on an unknown key breaks on the next Breeze release that adds a field.
+If you validate responses strictly, validate the fields you read and strip the
+rest, rather than failing the page. The authoritative record shapes are the Zod
+schemas in
+[`apps/api/src/routes/partnerApi/schemas.ts`](https://github.com/LanternOps/breeze/blob/main/apps/api/src/routes/partnerApi/schemas.ts).
+
 ## Alerts
 
 | Method | Path | Description |
