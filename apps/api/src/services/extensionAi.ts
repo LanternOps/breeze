@@ -29,6 +29,14 @@ import { isPlatformLlmConfigured } from './llm/llmAvailability';
 import { reportPlatformKeyMissing } from './llm/platformKeyAlert';
 import { findOfferingIdByModel, readOrgPartnerId } from './aiModels/candidateLoader';
 import { anthropicClientFor, attemptsOf, createMessage, dispatchCause, type MessageOutcome } from './aiModels/connectionFactory';
+import {
+  FailoverExhaustedError,
+  isPreOutputMessagesFailure,
+  reserveFailoverHop,
+  runWithFailover,
+  settleZeroUsageHop,
+  type FailoverHop,
+} from './aiModels/failoverDispatch';
 import { messagesUsage, messagesUsageAfterDispatchError } from './aiModels/invocationUsage';
 import { safeErrorMessage } from './aiModels/safeDbError';
 import { ensurePartnerCutover } from './aiModels/registryCutover';
@@ -39,6 +47,14 @@ import { turnBindingFrom } from './aiModels/turnBinding';
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A failover hop that was reserved but never dispatched (its budget or client was unusable). */
+class HopNotDispatchedError extends Error {
+  constructor(readonly reason: 'budget' | 'client', cause?: unknown) {
+    super(reason === 'budget' ? 'The AI request exceeds the backup model budget.' : 'The backup model client is unavailable.', { cause });
+    this.name = 'HopNotDispatchedError';
+  }
 }
 
 /** Anthropic APIError carries the HTTP status; anything else is a transport error. */
@@ -198,9 +214,11 @@ export function buildExtensionAiContext(): ExtensionAiContext {
       // request id), so the key is random per dispatch — the unique index is a
       // structural guarantee, not a replay guard. Contrast
       // `ai-agent-run:${run.id}` in services/aiAgents/runLoop.ts, which has one.
+      // Hop 0's key; a failover hop n reserves `<key>:hop:<n>` (W09).
+      const reservationKey = `extension-ai:${crypto.randomUUID()}`;
       const reservation = await reserveAiBudget({
         orgId: input.orgId,
-        idempotencyKey: `extension-ai:${crypto.randomUUID()}`,
+        idempotencyKey: reservationKey,
         billingSource,
         binding,
       });
@@ -209,35 +227,110 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           permanent: reservation.reason === 'ai_disabled',
         });
       }
-      const reservationId = reservation.reservationId;
-      const maxTokens = maxOutputTokensForAiBudget({
-        prompt: JSON.stringify({ system: input.system, messages: input.messages }),
+      const sourceRef = `extension:${input.surface}`;
+      const prompt = JSON.stringify({ system: input.system, messages: input.messages });
+      // Each hop's output cap comes from ITS OWN reservation and rate (Codex review 6).
+      const maxTokensFor = (hop: FailoverHop) => maxOutputTokensForAiBudget({
+        prompt,
         requestedMaxOutputTokens: input.maxTokens,
-        budgetCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : undefined,
-        calculateCostCents: costEstimator(resolved),
+        budgetCents: hop.reservedCostCents ?? undefined,
+        calculateCostCents: costEstimator(hop.resolved),
       });
-      if (maxTokens === null) {
-        // Nothing was sent. A failing release must not replace the budget
-        // answer (S8): the hold just expires on its TTL.
-        await releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId }).catch((releaseError) => {
+      // Nothing was sent. A failing release must not replace the budget
+      // answer (S8): the hold just expires on its TTL.
+      const releaseUnsent = (reservationId: string) => releaseUnusedAiBudgetReservation({ orgId: input.orgId, reservationId })
+        .then(() => undefined, (releaseError) => {
           const scrubbed = safeErrorMessage(releaseError);
           console.error('[extension-ai] releasing an unused reservation failed', { reservationId, error: scrubbed });
           captureException(new Error(`extension AI reservation release failed: ${scrubbed}`), undefined, {
             org_id: input.orgId, ai_reservation_id: reservationId,
           });
         });
+      const firstHop: FailoverHop = {
+        index: 0, resolved, binding, reservationId: reservation.reservationId, idempotencyKey: reservationKey,
+        reservedCostCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : null,
+      };
+      const maxTokens = maxTokensFor(firstHop);
+      if (maxTokens === null) {
+        await releaseUnsent(firstHop.reservationId);
         throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
       }
 
       const client = anthropicClientFor(resolved, { surface: 'workspace_enrichment', orgId: input.orgId });
+      const settleFailedHopAtZero = settleZeroUsageHop({
+        orgId: input.orgId, userId: ledgerUserId, sessionId: null, agentRunId: null, sourceRef,
+      });
       let outcome: MessageOutcome;
+      let served: FailoverHop;
+      // The hop in flight: failure handling settles THIS hop, never another's.
+      let current = firstHop;
       try {
-        outcome = await createMessage(client, resolved, {
-          max_tokens: maxTokens,
-          system: input.system,
-          messages: input.messages,
-        });
+        // W09 (#7607): a pre-output 429/529/5xx/key/quota failure fails over
+        // along the extension_content assignment's fallback list; each hop is
+        // admitted, reserved and settled on its own (failoverDispatch.ts).
+        // With no list the original error comes straight back (W03 behaviour).
+        ({ value: outcome, hop: served } = await runWithFailover({
+          first: firstHop,
+          reResolve: ({ excludeOfferingIds, cause, origin }) => resolveModel({
+            partnerId,
+            orgId: input.orgId,
+            userId: ledgerUserId,
+            surface: 'extension_content',
+            maxTokens: input.maxTokens,
+            ...(offeringId ? { requested: { offeringId, origin: 'policy' as const } } : {}),
+            excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
+          }),
+          reserveHop: reserveFailoverHop({ orgId: input.orgId }),
+          attempt: (hop) => {
+            current = hop;
+            if (hop.index === 0) {
+              return createMessage(client, resolved, { max_tokens: maxTokens, system: input.system, messages: input.messages });
+            }
+            const hopMaxTokens = maxTokensFor(hop);
+            if (hopMaxTokens === null) return Promise.reject(new HopNotDispatchedError('budget'));
+            let hopClient: ReturnType<typeof anthropicClientFor>;
+            try {
+              hopClient = anthropicClientFor(hop.resolved, { surface: 'workspace_enrichment', orgId: input.orgId });
+            } catch (clientError) {
+              return Promise.reject(new HopNotDispatchedError('client', clientError));
+            }
+            return createMessage(hopClient, hop.resolved, { max_tokens: hopMaxTokens, system: input.system, messages: input.messages });
+          },
+          settleFailedHop: async (hop, error) => {
+            try {
+              await settleFailedHopAtZero(hop);
+            } catch (settleError) {
+              // Scrubbed (S8); the failed hop's capacity is retained, never released.
+              const scrubbed = safeErrorMessage(settleError);
+              console.error('[extension-ai] settling a failed-over hop failed', { reservationId: hop.reservationId, error: scrubbed });
+              captureException(new Error(`extension AI settlement failed: ${scrubbed}`), undefined, {
+                org_id: input.orgId, ai_reservation_id: hop.reservationId,
+              });
+              await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId: hop.reservationId })
+                .catch((markError) => captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`)));
+            }
+            // A rejected partner credential is still recorded when a backup serves.
+            const cause = dispatchCause(error);
+            const status = httpStatusOf(cause);
+            if (status === 401 || status === 403) await classifyProviderFailure(cause, hop.resolved.connection.config);
+          },
+          isPreOutput: isPreOutputMessagesFailure,
+        }));
       } catch (error) {
+        if (error instanceof FailoverExhaustedError) {
+          // Every hop runWithFailover tried is already settled on its own reservation.
+          throw new ExtensionAiError('ai_unavailable', error.stop === 'admission_denied' && error.admissionMessage
+            ? error.admissionMessage
+            : errorMessage(dispatchCause(error.lastError)));
+        }
+        if (error instanceof HopNotDispatchedError) {
+          await releaseUnsent(current.reservationId);
+          if (error.reason === 'budget') {
+            throw new ExtensionAiError('budget_exceeded', 'The AI request exceeds the remaining budget.');
+          }
+          throw new ExtensionAiError('ai_unavailable', errorMessage(error.cause));
+        }
+        const { binding: failedBinding, reservationId } = current;
         // A refused attempt that completed before its fallback threw was
         // billed by the provider: settle it. Nothing completed → the outcome
         // is unknown and the reservation stays indeterminate.
@@ -246,9 +339,9 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         if (completed.length > 0) {
           try {
             await settleInvocation({
-              binding, orgId: input.orgId, userId: ledgerUserId,
-              sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
-              ...messagesUsageAfterDispatchError(binding, completed), reservationId, toolExecutionCount: 1,
+              binding: failedBinding, orgId: input.orgId, userId: ledgerUserId,
+              sessionId: null, agentRunId: null, sourceRef,
+              ...messagesUsageAfterDispatchError(failedBinding, completed), reservationId, toolExecutionCount: 1,
             });
             settled = true;
           } catch (settleError) {
@@ -264,14 +357,16 @@ export function buildExtensionAiContext(): ExtensionAiContext {
           await markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
             .catch((markError) => captureException(new Error(`extension AI reservation not retained as indeterminate: ${safeErrorMessage(markError)}`)));
         }
-        throw await classifyProviderFailure(dispatchCause(error), resolved.connection.config);
+        throw await classifyProviderFailure(dispatchCause(error), current.resolved.connection.config);
       }
 
       const text = outcome.message.content
         .filter((block) => block.type === 'text')
         .map((block) => (block as { text: string }).text)
         .join('');
-      const billed = messagesUsage(binding, outcome.attempts);
+      // Billed, reported and settled on the hop that SERVED (W09 F5).
+      const { reservationId } = served;
+      const billed = messagesUsage(served.binding, outcome.attempts);
 
       const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: input.orgId, reservationId })
         .catch((markError) => {
@@ -283,8 +378,8 @@ export function buildExtensionAiContext(): ExtensionAiContext {
         // The one billing path: priced from the bound registry rate, written to
         // the ledger, and (platform funding) drawn down from prepaid credits.
         const settled = await settleInvocation({
-          binding, orgId: input.orgId, userId: ledgerUserId,
-          sessionId: null, agentRunId: null, sourceRef: `extension:${input.surface}`,
+          binding: served.binding, orgId: input.orgId, userId: ledgerUserId,
+          sessionId: null, agentRunId: null, sourceRef,
           ...billed, reservationId, toolExecutionCount: 1,
         });
         // S1: deferred but not persisted (already reported): keep the hold.
@@ -304,7 +399,7 @@ export function buildExtensionAiContext(): ExtensionAiContext {
       return {
         text,
         model: billed.outcome.servedModel,
-        billingSource,
+        billingSource: served.resolved.funding,
         usage: {
           inputTokens: billed.usage.reduce((n, u) => n + u.tokens.input + u.tokens.cacheRead + u.tokens.cacheWrite, 0),
           outputTokens: billed.usage.reduce((n, u) => n + u.tokens.output, 0),

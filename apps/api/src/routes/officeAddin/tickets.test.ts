@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -102,8 +102,15 @@ vi.mock('../../services/aiModels/resolveModel', () => ({
   resolveModel: hoisted.resolveModel,
 }));
 
-vi.mock('../../services/aiModels/connectionFactory', () => ({
+vi.mock('../../services/aiModels/connectionFactory', async (importOriginal) => ({
+  // Real MessageDispatchError: failoverDispatch's pre-output check reads it.
+  MessageDispatchError: (await importOriginal<typeof import('../../services/aiModels/connectionFactory')>()).MessageDispatchError,
   anthropicClientFor: hoisted.anthropicClientFor,
+}));
+
+// W09 failover cools a failed offering down in Redis: never touched here.
+vi.mock('../../services/aiModels/offeringHealth', () => ({
+  noteProviderFailure: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../services/aiModels/settleInvocation', () => ({
@@ -1209,5 +1216,181 @@ describe('POST /tickets/draft', () => {
   it('400s on an invalid body', async () => {
     const res = await postDraft({ ...draftBody, orgId: 'not-a-uuid' });
     expect(res.status).toBe(400);
+  });
+
+  describe('W09 failover (#7607)', () => {
+    const HOP0_RESERVATION = '13131313-1313-4131-8131-131313131313';
+    const HOP1_RESERVATION = '14141414-1414-4141-8141-141414141414';
+    const reserved = (reservationId: string, reservedCostCents: number) => ({
+      kind: 'reserved', reservationId, reservedCostCents,
+      dailyPeriodKey: '2026-09-06', monthlyPeriodKey: '2026-09-01', status: 'active',
+    });
+    const overloaded = () => Object.assign(new Error('Overloaded'), {
+      status: 529, error: { type: 'error', error: { type: 'overloaded_error' } },
+    });
+    // What draftTicketFromEmail throws when createMessage rejects: the provider
+    // error as `cause`, every completed attempt carried.
+    const providerFailure = (attempts: unknown[]) => new EmailDraftFailedError(
+      'Failed to draft ticket from email: attempt 1: Overloaded', attempts as never, true, { cause: overloaded() },
+    );
+    const primary = () => makeResolvedModel('platform', {
+      surface: 'office_ticket', offering: { id: 'p', displayName: 'P' }, failoverRemaining: ['k'],
+    });
+    const backup = () => makeResolvedModel('anthropic_byok', {
+      surface: 'office_ticket', offering: { id: 'k', displayName: 'K' }, wireModel: 'claude-haiku-4-5',
+      failover: { fromOfferingId: 'p', hop: 1, cause: 'overloaded' }, failoverRemaining: [],
+    });
+    const draftOutcome = (wireModel: string) => ({
+      subject: 'Fix Outlook crash', summary: 'Crashes on launch.', suggestedTimeMinutes: 15,
+      attempts: [{ wireModel, message: msgFixture }],
+    });
+    const settledRows = () => hoisted.settleInvocation.mock.calls.map((c) => {
+      const arg = c[0] as { binding: { offeringId: string }; usage: unknown[]; reservationId: string };
+      return [arg.binding.offeringId, arg.reservationId, arg.usage.length];
+    });
+
+    beforeEach(() => {
+      // clearAllMocks keeps queued *Once values: reset what these cases script.
+      hoisted.resolveModel.mockReset();
+      hoisted.reserveAiBudget.mockReset();
+      hoisted.draftTicketFromEmail.mockReset();
+      hoisted.checkBudgetDetailed.mockReset();
+      hoisted.checkBudgetDetailed.mockResolvedValue(null);
+      hoisted.resolveModel.mockResolvedValueOnce(primary()).mockResolvedValueOnce(backup());
+      hoisted.reserveAiBudget
+        .mockResolvedValueOnce(reserved(HOP0_RESERVATION, 80))
+        .mockResolvedValueOnce(reserved(HOP1_RESERVATION, 20));
+      consoleSpies = [
+        vi.spyOn(console, 'error').mockImplementation(() => {}),
+        vi.spyOn(console, 'warn').mockImplementation(() => {}),
+      ];
+    });
+    let consoleSpies: Array<{ mockRestore: () => void }> = [];
+
+    afterEach(() => {
+      vi.useRealTimers();
+      for (const spy of consoleSpies) spy.mockRestore();
+    });
+
+    it('a 529 before any attempt fails over; each hop is reserved and settled on its own', async () => {
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockResolvedValueOnce(draftOutcome('claude-haiku-4-5'));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).draft).toEqual({ subject: 'Fix Outlook crash', summary: 'Crashes on launch.', suggestedTimeMinutes: 15 });
+      expect(hoisted.resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        partnerId: PARTNER_ID, orgId: ORG_A, userId: USER_ID, surface: 'office_ticket', maxTokens: 1024,
+        excludeOfferingIds: ['p'], failoverCause: 'overloaded',
+        failoverOrigin: { offeringId: 'p', funding: 'platform', connectionId: null },
+      }));
+      // The backup hop is admitted for ITS funding before it is reserved.
+      expect(hoisted.checkBudgetDetailed).toHaveBeenLastCalledWith(ORG_A, 'partner_key');
+      const keys = hoisted.reserveAiBudget.mock.calls.map((c) => (c[0] as { idempotencyKey: string }).idempotencyKey);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(/^office-email-draft:/);
+      expect(keys[1]).toBe(`${keys[0]}:hop:1`);
+      expect(hoisted.reserveAiBudget.mock.calls[1]![0]).toMatchObject({ billingSource: 'partner_key', binding: turnBindingFrom(backup()) });
+      expect(hoisted.anthropicClientFor).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offering: { id: 'k', displayName: 'K' } }), { surface: 'one_shot_email_draft', orgId: ORG_A },
+      );
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(hoisted.settleInvocation.mock.calls.every(([arg]) =>
+        (arg as { sourceRef: string }).sourceRef === 'office_email_draft' && (arg as { sessionId: unknown }).sessionId === null,
+      )).toBe(true);
+      expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    it("the backup hop drafts within ITS OWN reservation, never hop 0's", async () => {
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockResolvedValueOnce(draftOutcome('claude-haiku-4-5'));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(200);
+      const calls = hoisted.draftTicketFromEmail.mock.calls.map((c) => c[0] as { budgetCents?: number; resolved: { offering: { id: string } } });
+      expect(calls.map((c) => [c.resolved.offering.id, c.budgetCents])).toEqual([['p', 80], ['k', 20]]);
+    });
+
+    it('attempt 2 failing after attempt 1 returned a message never fails over (burned tokens bill on hop 0)', async () => {
+      // Attempt 1 answered (no usable text), attempt 2 then hit a 529.
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([{ wireModel: 'claude-sonnet-5-5', message: msgFixture }]));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(hoisted.resolveModel).toHaveBeenCalledTimes(1);
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 1]]);
+    });
+
+    it('with no fallback list configured, a 529 keeps the W03 single-reservation behaviour', async () => {
+      hoisted.resolveModel.mockReset();
+      hoisted.resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'office_ticket', offering: { id: 'p', displayName: 'P' } }));
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([]));
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(hoisted.resolveModel).toHaveBeenCalledTimes(1);
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+      expect(hoisted.settleInvocation).not.toHaveBeenCalled();
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP0_RESERVATION });
+    });
+
+    it('a backup refused at admission answers 503 with hop 0 already settled and nothing else touched', async () => {
+      hoisted.draftTicketFromEmail.mockRejectedValueOnce(providerFailure([]));
+      hoisted.checkBudgetDetailed
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ reason: 'daily_budget', permanent: false, message: 'Daily AI budget exhausted' });
+
+      const res = await postDraft(draftBody);
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
+      expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    it('a timeout marks the IN-FLIGHT hop indeterminate and late-settles on the hop that served', async () => {
+      vi.useFakeTimers();
+      hoisted.draftTicketFromEmail
+        .mockRejectedValueOnce(providerFailure([]))
+        .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(draftOutcome('claude-haiku-4-5')), 30_000)));
+
+      const resPromise = postDraft(draftBody);
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect((await resPromise).status).toBe(503);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledTimes(1);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP1_RESERVATION });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.runAllTicks();
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+    });
+
+    it('a hop that fails after the response timed out never fails over to a further hop', async () => {
+      vi.useFakeTimers();
+      hoisted.draftTicketFromEmail.mockImplementationOnce(
+        () => new Promise((_resolve, reject) => setTimeout(() => reject(providerFailure([])), 30_000)),
+      );
+
+      const resPromise = postDraft(draftBody);
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect((await resPromise).status).toBe(503);
+      expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({ orgId: ORG_A, reservationId: HOP0_RESERVATION });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.runAllTicks();
+      // Nobody is waiting for the draft any more: no backup is reserved or dispatched.
+      expect(hoisted.reserveAiBudget).toHaveBeenCalledTimes(1);
+      expect(hoisted.draftTicketFromEmail).toHaveBeenCalledTimes(1);
+    });
   });
 });

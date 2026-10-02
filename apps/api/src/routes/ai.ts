@@ -80,6 +80,14 @@ import {
 } from '../services/aiTicketDraft';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { anthropicClientFor, type MessageAttempt } from '../services/aiModels/connectionFactory';
+import {
+  FailoverExhaustedError,
+  isPreOutputMessagesFailure,
+  reserveFailoverHop,
+  runWithFailover,
+  settleZeroUsageHop,
+  type FailoverHop,
+} from '../services/aiModels/failoverDispatch';
 import { messagesUsage, messagesUsageAfterDispatchError } from '../services/aiModels/invocationUsage';
 import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailable';
 import { settleInvocation } from '../services/aiModels/settleInvocation';
@@ -561,11 +569,13 @@ aiRoutes.post(
     // settlement below then refuses (session-bound reservations require a
     // session settlement). Authorization against the session already happened
     // in getSessionMessages above.
+    // Hop 0's key; a failover hop n reserves `<key>:hop:<n>` (W09).
+    const reservationKey = `ticket-draft:${sessionId}:${crypto.randomUUID()}`;
     let reservation;
     try {
       reservation = await reserveAiBudget({
         orgId: session.orgId,
-        idempotencyKey: `ticket-draft:${sessionId}:${crypto.randomUUID()}`,
+        idempotencyKey: reservationKey,
         billingSource: turn.funding,
         binding,
       });
@@ -576,13 +586,22 @@ aiRoutes.post(
       throw err;
     }
     if (reservation.kind === 'denied') return c.json({ error: reservation.message }, 429);
-    const reservationId = reservation.reservationId;
+
+    // W09 (#7607): a pre-output provider failure fails over along the session
+    // offering's fallback list; each hop is admitted, reserved and settled on
+    // its own (failoverDispatch.ts). `current` is the hop in flight: failure
+    // handling settles THAT hop. With no list the original error comes
+    // straight back and the W03 handling below is unchanged.
+    let current: FailoverHop = {
+      index: 0, resolved: turn, binding, reservationId: reservation.reservationId, idempotencyKey: reservationKey,
+      reservedCostCents: reservation.kind === 'reserved' ? reservation.reservedCostCents : null,
+    };
 
     // Ledger rows carry sessionId null deliberately: a ticket draft is not a
     // chat turn, and its cost in the chat session's total_cost_cents would
     // double-attribute it in the session list. The ledger keeps it as
     // surface 'chat', source_ref 'ticket_draft'.
-    const holdIndeterminate = () => markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId })
+    const holdIndeterminate = (reservationId: string) => markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId })
       .catch((markError) => {
         captureException(new Error(`ticket draft reservation not retained as indeterminate: ${safeErrorMessage(markError)}`), undefined, {
           org_id: session.orgId, ai_reservation_id: reservationId,
@@ -590,38 +609,66 @@ aiRoutes.post(
       });
     // Best effort, never throws: a settlement failure (or an unrecorded
     // deferral, S1) holds the reservation indeterminate and is reported
-    // scrubbed (S7) — it is never released.
-    const settle = async (attempts: MessageAttempt[], dispatchFailed = false): Promise<void> => {
+    // scrubbed (S7) — it is never released. Always on THAT hop's binding and
+    // reservation (W09 F5).
+    const settleOn = async (hop: FailoverHop, attempts: MessageAttempt[], dispatchFailed = false): Promise<void> => {
+      const reservationId = hop.reservationId;
       try {
         const { usage, outcome } = dispatchFailed
-          ? messagesUsageAfterDispatchError(binding, attempts)
-          : messagesUsage(binding, attempts);
+          ? messagesUsageAfterDispatchError(hop.binding, attempts)
+          : messagesUsage(hop.binding, attempts);
         const settled = await settleInvocation({
-          binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
+          binding: hop.binding, orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null,
           sourceRef: 'ticket_draft', usage, outcome, reservationId,
         });
-        if (settled.unrecorded) await holdIndeterminate();
+        if (settled.unrecorded) await holdIndeterminate(reservationId);
       } catch (settleError) {
         const message = safeErrorMessage(settleError);
         console.error('[AI] ticket draft settlement failed', { reservationId, error: message });
         captureException(new Error(`ticket draft settlement failed: ${message}`), undefined, {
           org_id: session.orgId, ai_reservation_id: reservationId,
         });
-        await holdIndeterminate();
+        await holdIndeterminate(reservationId);
       }
     };
 
     let draft;
+    let served: FailoverHop;
     try {
-      draft = await draftTicketFromTranscript({
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
-        contextSnapshot: session.contextSnapshot,
-        elapsedMinutes,
-        resolved: turn,
-        client,
-        ...(reservation.kind === 'reserved' ? { budgetCents: reservation.reservedCostCents } : {}),
-      });
+      ({ value: draft, hop: served } = await runWithFailover({
+        first: current,
+        reResolve: ({ excludeOfferingIds, cause, origin }) => resolveSessionTurn({
+          sessionId, surface: 'chat', userId: auth.user.id, maxTokens: 1024, transport: 'messages_api',
+          excludeOfferingIds, failoverCause: cause, failoverOrigin: origin,
+        }),
+        // Sessionless, like hop 0: settled with sessionId null.
+        reserveHop: reserveFailoverHop({ orgId: session.orgId }),
+        attempt: (hop) => {
+          current = hop;
+          return draftTicketFromTranscript({
+            messages: messages.map((m) => ({ role: m.role, content: m.content })),
+            contextSnapshot: session.contextSnapshot,
+            elapsedMinutes,
+            resolved: hop.resolved,
+            client: hop.index === 0 ? client : anthropicClientFor(hop.resolved, { surface: 'one_shot_ticket_draft', orgId: session.orgId }),
+            // This hop's OWN allowance (Codex review 6), never hop 0's.
+            ...(hop.reservedCostCents !== null ? { budgetCents: hop.reservedCostCents } : {}),
+          });
+        },
+        settleFailedHop: settleZeroUsageHop({
+          orgId: session.orgId, userId: auth.user.id, sessionId: null, agentRunId: null, sourceRef: 'ticket_draft',
+        }),
+        // A draft error carrying a completed attempt never fails over: those tokens bill on this hop.
+        isPreOutput: isPreOutputMessagesFailure,
+      }));
     } catch (err) {
+      if (err instanceof FailoverExhaustedError) {
+        // Every hop runWithFailover tried is already settled on its own reservation.
+        console.error('[AI] Ticket draft failed on every configured model:', safeErrorMessage(err.lastError));
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      const reservationId = current.reservationId;
+      const settle = (attempts: MessageAttempt[], dispatchFailed = false) => settleOn(current, attempts, dispatchFailed);
       try {
         if (err instanceof TicketDraftFailedError && err.attempts.length > 0) {
           // The provider answered (at least once): the burned tokens bill —
@@ -645,8 +692,8 @@ aiRoutes.post(
       return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);
     }
 
-    // Best-effort cost accounting; never fails the request.
-    await settle(draft.attempts);
+    // Best-effort cost accounting on the hop that served; never fails the request.
+    await settleOn(served, draft.attempts);
 
     let deviceHostname: string | null = null;
     if (session.deviceId) {
