@@ -70,14 +70,38 @@ describe('public domain errors and validation',()=>{
   it('rejects a return without an owned token/session binding',async()=>{
     h.returnIdentity.mockResolvedValueOnce(null);h.complete.mockClear();
     const res=await app.request('/autopay/public/setup-return',{method:'POST',headers,body:JSON.stringify({token:'token',checkoutSessionId:'cs_other'})});
-    expect(res.status).toBe(404);expect(h.complete).not.toHaveBeenCalled();
+    expect(res.status).toBe(401);expect(h.complete).not.toHaveBeenCalled();
   });
   it('rejects malformed JSON and extra identity fields',async()=>{
     h.create.mockClear();h.complete.mockClear();
     for(const body of ['{',JSON.stringify({methodType:'card',consentAccepted:true,disclosureHash:'a'.repeat(64),orgId:identity.orgId})]){
       expect((await app.request('/autopay/public/token/setup-session',{method:'POST',headers,body})).status).toBe(400);
     }
-    expect((await app.request('/autopay/public/setup-return',{method:'POST',headers,body:'{'})).status).toBe(400);
+    expect((await app.request('/autopay/public/setup-return',{method:'POST',headers,body:'{'})).status).toBe(401);
     expect(h.create).not.toHaveBeenCalled();expect(h.complete).not.toHaveBeenCalled();
+  });
+});
+
+describe('public mutation authentication precedes validation',()=>{
+  it.each([undefined,'{','null','[]','{}','{"token":42}','{"token":""}'])('rejects missing or malformed return credentials: %s',async body=>{
+    const res=await app.request('/autopay/public/setup-return',{method:'POST',headers,body});
+    expect(res.status).toBe(401);
+    expect(h.returnIdentity).not.toHaveBeenCalled();
+    expect(h.complete).not.toHaveBeenCalled();
+  });
+  it.each(['/token/setup-session','/token/stop'])('rejects invalid path tokens before body validation: %s',async path=>{
+    h.identity.mockResolvedValue(null);
+    expect((await app.request('/autopay/public'+path,{method:'POST',headers,body:'{'})).status).toBe(401);
+    expect(h.create).not.toHaveBeenCalled();expect(h.stop).not.toHaveBeenCalled();
+  });
+  it('rejects an invalid return token before validating other fields',async()=>{
+    h.returnIdentity.mockResolvedValue(null);
+    expect((await app.request('/autopay/public/setup-return',{method:'POST',headers,body:JSON.stringify({token:'invalid',checkoutSessionId:42})})).status).toBe(401);
+    expect(h.complete).not.toHaveBeenCalled();
+  });
+  it('still validates the body after authenticating the owned return',async()=>{
+    expect((await app.request('/autopay/public/setup-return',{method:'POST',headers,body:JSON.stringify({token:'token',checkoutSessionId:'cs_test',orgId:identity.orgId})})).status).toBe(400);
+    expect(h.returnIdentity).toHaveBeenCalledWith('token','cs_test');
+    expect(h.complete).not.toHaveBeenCalled();
   });
 });

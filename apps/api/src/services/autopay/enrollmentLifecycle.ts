@@ -4,6 +4,7 @@ import {db as database,runAfterDbContextExit,withSystemDbAccessContext} from '..
 import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts} from '../../db/schema';
 import {InvoiceServiceError,type InvoiceActor} from '../invoiceTypes';
 import {requireOrgAccess} from '../invoiceService';
+import {isHiddenOrgType} from '../unassignedPool/visibility';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import {getOrMintInvoiceLink,buildPublicInvoiceUrl} from '../invoiceLinkToken';
 import {isAutopayEnabledForPartner} from './autopayGate';
@@ -29,7 +30,7 @@ async function lockOrg(db:Tx,orgId:string,actor?:InvoiceActor){
  const [org]=await db.select().from(organizations).where(and(eq(organizations.id,orgId),
   actor?eq(organizations.partnerId,actor.partnerId!):undefined)).limit(1).for('update');
  if(!org)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
- if(org.deletedAt||!['active','trial'].includes(org.status)||['quick_support','unassigned_pool'].includes(org.type))
+ if(org.deletedAt||!['active','trial'].includes(org.status)||isHiddenOrgType(org.type))
   throw new InvoiceServiceError('Organization is not available for automatic payments',409,'INVALID_STATE');
  return org;
 }

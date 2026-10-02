@@ -14,16 +14,23 @@ publicAutopayRoutes.onError(autopayErrorHandler);
 const setup=z.object({methodType:z.enum(['card','us_bank_account']),consentAccepted:z.literal(true),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 const returning=z.object({token:z.string().min(1).max(512),checkoutSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255)}).strict();
 const boundary=(purpose:'enroll'|'stop_autopay',fromBody=false):MiddlewareHandler=>async(c,next)=>{
-  const body=fromBody?await c.req.json<z.infer<typeof returning>>():null;
-  const token=body?body.token:c.req.param('token');
-  if(!token)return c.json({error:'Automatic payments not found'},404);
-  const identity=body?await resolveAutopayReturnIdentity(token,body.checkoutSessionId):await resolveAutopayLinkIdentity(token,purpose);
-  if(!identity)return c.json({error:'Automatic payments not found'},404);
+  // Extract credentials before validating mutation payloads. Return authority
+  // includes the owned session, allowing an already-consumed enrollment token.
+  const body:unknown=fromBody?await c.req.json().catch(()=>null):null;
+  const credentials=body&&typeof body==='object'&&!Array.isArray(body)
+    ?body as Record<string,unknown>:null;
+  const token=fromBody?credentials?.token:c.req.param('token');
+  const deniedStatus=c.req.method==='GET'?404:401;
+  if(typeof token!=='string'||!token||token.length>512)
+    return c.json({error:'Automatic payments not found'},deniedStatus);
+  const sessionId=typeof credentials?.checkoutSessionId==='string'?credentials.checkoutSessionId:'';
+  const identity=fromBody?await resolveAutopayReturnIdentity(token,sessionId):await resolveAutopayLinkIdentity(token,purpose);
+  if(!identity)return c.json({error:'Automatic payments not found'},deniedStatus);
   c.set('autopayIdentity',identity);c.set('autopayPartnerId',identity.partnerId);
   c.header('Cache-Control','no-store');return next();
 };
 const gate=requireAutopayEnabled();
-publicAutopayRoutes.post('/setup-return',zValidator('json',returning),boundary('enroll',true),gate,async c=>{
+publicAutopayRoutes.post('/setup-return',boundary('enroll',true),gate,zValidator('json',returning),async c=>{
   return c.json(await completeOwnedAutopaySetup(c.get('autopayIdentity'),c.req.valid('json').checkoutSessionId));
 });
 publicAutopayRoutes.get('/:token',boundary('enroll'),gate,async c=>c.json(await getAutopayCustomerPage(c.get('autopayIdentity').orgId)));
