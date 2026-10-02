@@ -35,7 +35,6 @@ vi.mock('../db/schema', () => ({
   delegantM365Connections: { id: 'delegantM365Connections.id', orgId: 'delegantM365Connections.orgId', status: 'delegantM365Connections.status' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
-  partnerLlmConfigs: { partnerId: 'partnerLlmConfigs.partnerId' },
 }));
 
 vi.mock('../config/validate', async (importOriginal) => ({

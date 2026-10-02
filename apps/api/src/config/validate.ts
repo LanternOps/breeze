@@ -1003,7 +1003,7 @@ const envObjectSchema = z
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
-    // routing (partner_llm_configs.catalog_entry_id). Off by default so a
+    // routing (partner_ai_connections.catalog_entry_id). Off by default so a
     // rolling deploy or rollback never exposes catalog selection ahead of
     // the resolver/route wiring that consumes it (Tasks 3.2+). When false,
     // selection-write routes 404 and existing catalog configs resolve as

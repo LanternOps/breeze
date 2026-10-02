@@ -15,7 +15,7 @@ import {
   withSystemDbAccessContext,
   type DbAccessContext,
 } from '../../db';
-import { llmProviderCatalog, partnerLlmConfigs } from '../../db/schema';
+import { llmProviderCatalog, partnerAiConnections } from '../../db/schema';
 import { changeAnthropicEndpoint } from '../../services/aiModels/anthropicConnectionWrites';
 import { probeAnthropicKey } from '../../services/aiModels/connectionProbe';
 import {
@@ -109,7 +109,7 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
 
   // =========================================================================
   // Cross-partner forge: even with the catalog_entry_id column in play, the
-  // existing partner-axis RLS policy on partner_llm_configs must still reject
+  // partner-axis RLS policy on partner_ai_connections must still reject
   // a write that names another partner's id.
   // =========================================================================
   runDb('rejects a forged cross-partner endpoint selection with 42501', async () => {
@@ -123,8 +123,10 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
 
     await expect(
       withDbAccessContext(partnerContext(partnerA.id), () =>
-        db.insert(partnerLlmConfigs).values({
+        db.insert(partnerAiConnections).values({
           partnerId: partnerB.id,
+          kind: 'catalog',
+          name: 'forge-test',
           catalogEntryId: entry.entryId,
           apiKeyEncrypted: 'enc:forge-test',
           keyLast4: 'test',

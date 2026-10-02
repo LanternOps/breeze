@@ -8,7 +8,7 @@ import { decryptSecret, encryptSecret } from '../secretCrypto';
 /**
  * `backup_provider_connections.credentials_encrypted` is registered with
  * `aadBinding: 'row'` (see `encryptedColumnRegistry.ts`), exactly like
- * `tool_sources.auth_config_encrypted` and `partner_llm_configs.api_key_encrypted`.
+ * `tool_sources.auth_config_encrypted` and `partner_ai_connections.api_key_encrypted`.
  *
  * A backup-vendor console password is a live capability one MSP supplied for
  * ONE console tenant. A plain `table.column` AAD only stops a blob moving

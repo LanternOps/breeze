@@ -68,7 +68,7 @@ const T = new Date('2026-10-01T00:00:00.000Z');
 const conn = (o: Record<string, unknown>) => ({
   partnerId: P, name: 'x', inferenceGeo: null, providerConfig: null, keyLast4: '1234', catalogEntryId: null,
   baseUrl: null, status: 'active', lastError: null, verifiedAt: T, configVersion: 1, connectedBy: null,
-  lastDiscoveredAt: null, discoveryError: null, legacyDefaultModel: null, createdAt: T, updatedAt: T,
+  lastDiscoveredAt: null, discoveryError: null, createdAt: T, updatedAt: T,
   // Never read by the view: present to prove the DTO does not copy it through.
   apiKeyEncrypted: 'cipher', keyFingerprint: 'fp',
   ...o,

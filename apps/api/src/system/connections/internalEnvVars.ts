@@ -501,8 +501,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // WIN_*
   WIN_TEST_VM_SSH_KEY: 'AI patch-test lab VM',
   WIN_TEST_VM_TARGET: 'AI patch-test lab VM',
-  // WORKSPACE_*
-  WORKSPACE_CONTENT_LLM_MODEL: 'model override (deprecated: the extension_content assignment decides)',
   // WS_*
   WS_TICKETS_REQUIRE_REDIS: 'remote access strictness flag',
   WS_TICKET_BIND_IP: 'remote access ticket binding flag',

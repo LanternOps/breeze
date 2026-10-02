@@ -331,7 +331,7 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
       await createOrganization({ partnerId: partner.id });
       const user = await createUser({ partnerId: partner.id });
       const legacyId = randomUUID();
-      const sealed = encryptSecret(`sk-ant-api03-legacy-${suffix}`, { aad: columnAad(keySpec('partner_llm_configs'), legacyId) })!;
+      const sealed = encryptSecret(`sk-ant-api03-legacy-${suffix}`, { aad: columnAad(keySpec('partner_ai_connections'), legacyId) })!;
       await fixtureSql`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, connected_by)
                        VALUES (${legacyId}, ${partner.id}, ${sealed}, ${suffix}, 'fp', ${user.id})`;
       await seedByokConnection(partner.id, legacyId);

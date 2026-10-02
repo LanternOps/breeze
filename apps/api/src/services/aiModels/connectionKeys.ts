@@ -1,9 +1,9 @@
 /**
  * Connection key sealing (#7600 W02; split out as a leaf in #7601 Task 6B so
- * the legacy resolver can decrypt a connection key without importing the
+ * a connection key can be decrypted without importing the
  * connection service and its schema graph). Row-bound AAD under the legacy
- * partner_llm_configs tag: W02 copied legacy rows with the same id, so every
- * stored ciphertext decrypts unchanged.
+ * tag 'partner_llm_configs.api_key_encrypted': W02 copied the retired legacy
+ * table's rows with the same id, so every stored ciphertext decrypts unchanged.
  */
 import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from '../encryptedColumnRegistry';
 import { decryptSecret, encryptSecret } from '../secretCrypto';

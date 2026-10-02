@@ -3,8 +3,7 @@
  * reached. Reads never select key material; only `getConnectionKeyMaterial`
  * (W03's connection factory) and `decryptConnectionKey` touch it.
  *
- * Writers: the one-time per-partner cutover (legacyReconcile.ts byte-copy of
- * partner_llm_configs), the id-keyed Anthropic connection writes
+ * Writers: the id-keyed Anthropic connection writes
  * (anthropicConnectionWrites.ts → connectionRemap.ts, which uses
  * `createConnection`; W03 Task 6B, id-keyed since W08), and
  * since W06 the gateway-kind write service (gatewayConnections.ts, which uses
@@ -58,7 +57,6 @@ export const CONNECTION_PUBLIC_COLUMNS = {
   connectedBy: partnerAiConnections.connectedBy,
   lastDiscoveredAt: partnerAiConnections.lastDiscoveredAt,
   discoveryError: partnerAiConnections.discoveryError,
-  legacyDefaultModel: partnerAiConnections.legacyDefaultModel,
   createdAt: partnerAiConnections.createdAt,
   updatedAt: partnerAiConnections.updatedAt,
 } as const;

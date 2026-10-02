@@ -43,11 +43,9 @@ type Rule = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 const MODEL_LITERAL_ALLOWLIST: Record<string, string> = {
   'apps/api/src/services/aiModel.ts': 'Bootstrap fallback for a fresh self-host before the first platform sync (index invariant #1).',
   'apps/api/src/db/schema/ai.ts': 'Stale ai_budgets.allowed_models column default; W08 (#7606) drops it with the column. (The ai_sessions.model default is dropped in Task 9.)',
-  'apps/api/src/services/aiModels/legacySurfaceModels.ts': 'W02 legacy projection inputs (frozen legacy defaults + LEGACY_MODEL_RATES) for the per-partner cutover; W08 deletes them.',
 };
 /** Directory prefixes whose files may carry model literals. */
 const MODEL_LITERAL_ALLOWLIST_PREFIXES: Record<string, string> = {
-  'apps/api/src/services/aiModels/parity/': 'W02/W03 parity fixtures are test-support data describing legacy configs; W08 deletes the harness.',
 };
 /** Files that may construct an Anthropic client. */
 const ANTHROPIC_CTOR_ALLOWED: Record<string, string> = {

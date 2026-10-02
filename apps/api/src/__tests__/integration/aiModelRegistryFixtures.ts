@@ -24,7 +24,7 @@ export function orgContext(orgId: string, partnerId: string): DbAccessContext {
   return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: partnerId, userId: null };
 }
 
-export function keySpec(table: 'partner_llm_configs' | 'partner_ai_connections'): EncryptedColumnSpec {
+export function keySpec(table: 'partner_ai_connections'): EncryptedColumnSpec {
   const found = encryptedColumnRegistry.find((s) => s.table === table && s.column === 'api_key_encrypted');
   if (!found) throw new Error(`${table}.api_key_encrypted is not registered`);
   return found;

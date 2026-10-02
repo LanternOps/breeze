@@ -20,8 +20,6 @@ export const COMPOSE_INTENTIONALLY_UNMAPPED: Readonly<Record<ComposeFileKey, Rea
       'local-development escape hatch that is ignored when NODE_ENV=production, which the x-api-env anchor pins',
     DEV_PUSH_WORK_DIR:
       'dev-push staging dir; dev-push is off on a compose stack (NODE_ENV=production pinned, DEV_PUSH_ENABLED not mapped)',
-    WORKSPACE_CONTENT_LLM_MODEL:
-      'deprecated (#7601): only seeds a partner\'s first extension_content assignment in the legacy projection; the consumer uses ?? so a mapped empty string would become the model id; the registry assignment decides',
   },
   prod: {
     REDIS_PASSWORD:
@@ -31,8 +29,6 @@ export const COMPOSE_INTENTIONALLY_UNMAPPED: Readonly<Record<ComposeFileKey, Rea
       'local-development escape hatch that is ignored when NODE_ENV=production, which the x-api-env anchor pins',
     DEV_PUSH_WORK_DIR:
       'dev-push staging dir; dev-push is off on a compose stack (NODE_ENV=production pinned, DEV_PUSH_ENABLED not mapped)',
-    WORKSPACE_CONTENT_LLM_MODEL:
-      'deprecated (#7601): only seeds a partner\'s first extension_content assignment in the legacy projection; the consumer uses ?? so a mapped empty string would become the model id; the registry assignment decides',
   },
 };
 
