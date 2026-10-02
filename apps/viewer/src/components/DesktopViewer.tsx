@@ -22,6 +22,7 @@ import { sendPasteText, pasteFailureMessage } from '../lib/pasteText';
 import { createInputCapabilitiesGate } from '../lib/inputCapabilities';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '../lib/wheel';
 import { handleCtrlVPaste } from '../lib/clipboardPaste';
+import { isServiceModeRefusal, serviceModeRefusalMessage } from '../lib/serviceModeRefusal';
 import { shouldAutoHandoffToVnc, shouldAutoHandoffToWebRTC } from '../lib/autoHandoff';
 import { startFrameCounter } from '../lib/frameCounter';
 import { createStatsReporter } from '../lib/statsReporter';
@@ -685,8 +686,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setStatus('disconnected');
         }
       },
-      onError: (message) => {
+      onError: (rawMessage) => {
         if (isStale()) return;
+        // A service-mode agent always refuses the WebSocket relay (#7415) —
+        // replace the agent's terse refusal with what to do about it.
+        const message = isServiceModeRefusal(rawMessage)
+          ? serviceModeRefusalMessage(webrtcUsableRef.current)
+          : rawMessage;
         setStatus('error');
         setConnectedAt(null);
         setErrorMessage(message);
