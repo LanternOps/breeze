@@ -42,8 +42,9 @@ export const TOOL_REQUIRING_SURFACES = [
 /**
  * AI chargeback (#7608, spec §8): surfaces whose usage an MSP may rebill to the
  * client org. The rest is the MSP's own tooling (catalog copy, workspace
- * enrichment, patch tests) and is never chargeable. Open question 2 in the W10
- * plan; changing this list changes only future stamps (snapshot rule).
+ * enrichment, patch tests) and is never chargeable. The script reviewer is
+ * chargeable (client work; decided by Todd 2026-10-02, #7598). Changing this
+ * list changes only future stamps (snapshot rule).
  */
 export const AI_CHARGEBACK_ELIGIBLE_SURFACES = [
   'chat',
