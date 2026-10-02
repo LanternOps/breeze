@@ -193,6 +193,34 @@ export function topologyNetworkClass(prefix: string): TopologyNetworkClass {
   return length < 8 ? 'other' : 'lan';
 }
 
+/**
+ * Neighbour-cache states that still map an address to a MAC (#7816, collection C:136).
+ * `incomplete`/`failed` carry no usable mapping and never corroborate anything.
+ */
+export const TOPOLOGY_NEIGHBOR_MAPPING_STATES = ['reachable', 'stale', 'delay', 'probe', 'permanent', 'unknown'] as const;
+export type TopologyNeighborMappingState = typeof TOPOLOGY_NEIGHBOR_MAPPING_STATES[number];
+/**
+ * Bounded provenance of a `neighbor_seen` placement: one observer's published ARP/NDP
+ * row held the endpoint's exact inventory IP+MAC pair. Inferred/low presentation
+ * evidence only — never a membership claim, a reachability fact or a verified identity.
+ */
+export const presentationNeighborEvidenceSchema = z.object({
+  method: z.literal('neighbor_cache'),
+  evidenceClass: z.literal('inferred'),
+  confidence: z.literal('low'),
+  observerNodeId: canonicalIdSchema,
+  observerLabel: z.string().max(255),
+  sourceId: canonicalIdSchema,
+  rowKey: z.string().max(255),
+  interfaceName: z.string().max(255).nullable(),
+  address: z.string().max(64),
+  mac: z.string().max(64),
+  state: z.enum(TOPOLOGY_NEIGHBOR_MAPPING_STATES),
+  /** Collection confirmation time of the cache read; ARP/NDP rows carry no per-peer last-seen. */
+  confirmedAt: utcTimestampSchema,
+  expiresAt: utcTimestampSchema,
+}).strict();
+
 export const presentationIdSchema = z.string().regex(
   /^presentation:(overview|physical|logical):[A-Za-z0-9_-]{1,128}:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
 );
@@ -224,11 +252,25 @@ export const presentationNodeSchema = z.object({
     observerCount: boundedCountSchema,
     members: z.array(z.object({
       nodeId: canonicalIdSchema,
-      placement: z.enum(['observed', 'address_match']),
+      placement: z.enum(['observed', 'address_match', 'neighbor_seen']),
       primary: z.boolean(),
       stale: z.boolean(),
-    }).strict()).max(1_000),
+      /** Present exactly when `placement` is `neighbor_seen` (#7816). */
+      neighbor: presentationNeighborEvidenceSchema.optional(),
+    }).strict().refine((member) => (member.placement === 'neighbor_seen') === !!member.neighbor, 'neighbor_seen requires neighbour provenance')).max(1_000),
     canonicalNodeIds: z.array(canonicalIdSchema).max(1_000),
+    /** Why a split card is split: different gateway addresses, or one address with conflicting fresh gateway MACs (#7817). */
+    conflictBasis: z.array(z.enum(['gateway_address', 'gateway_mac'])).max(2).optional(),
+    /** `limited` when neighbour evidence was truncated or bounded: a missing cache row never means absence. */
+    neighborCoverage: z.enum(['complete', 'limited']).optional(),
+    /** Gateway MACs corroborated by observers' published neighbour caches (gateway groups only, #7817). */
+    gatewayMacs: z.array(z.object({
+      address: z.string().max(64),
+      mac: z.string().max(64),
+      observerCount: boundedCountSchema,
+      confirmedAt: utcTimestampSchema,
+      expiresAt: utcTimestampSchema,
+    }).strict()).max(16).optional(),
   }).strict().optional(),
 }).strict();
 

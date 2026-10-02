@@ -1,4 +1,4 @@
-import { canonicalFactValue, halfDefaultRoutePairs, topologyFactKey } from './collectionFactKeys';
+import { canonicalFactValue, halfDefaultRoutePairs, topologyFactKey, topologyOsContextKey } from './collectionFactKeys';
 import { createHash } from 'node:crypto';
 import { topologyCidrSchema, type NodeKind, type RelationshipKind } from '@breeze/shared';
 import { canonicalIdentityKey } from './identity';
@@ -12,7 +12,7 @@ export function projectBaselineTopology(input:BaselineProjectionInput):TopologyP
   const delta=emptyProjection();
   const {scope,source,run,snapshot,originNodeId}=input;
   if (!outcomeHasPositives(snapshot.section.outcome)) return delta;
-  const context=opaque([source.producerId,source.contextKey]);
+  const context=topologyOsContextKey(source.producerId,source.contextKey);
   const node=(kind:NodeKind,material:unknown,label:string,prefix?:string)=>{
     const sourceKey=`os:${context}:${opaque(material)}`;
     const identityKey=canonicalIdentityKey(scope,kind,sourceKey);

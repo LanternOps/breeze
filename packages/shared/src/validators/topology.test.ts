@@ -455,6 +455,34 @@ describe('grouped overview contract (2026-10-02)', () => {
     expect(presentationEdgeSchema.safeParse({ ...edge, role: 'shared_devices', contributingRelationshipIds: [] }).success).toBe(false);
   });
 
+  it('accepts neighbour-cache corroboration only with its bounded provenance (#7816)', () => {
+    const neighbor = { method: 'neighbor_cache', evidenceClass: 'inferred', confidence: 'low', observerNodeId: NODE_ID, observerLabel: 'DRT-HYG3',
+      sourceId: NODE_2_ID, rowKey: 'n:10.1.2.80', interfaceName: 'Ethernet', address: '10.1.2.80', mac: '00:11:22:33:44:55', state: 'stale',
+      confirmedAt: '2026-10-02T10:00:00.000Z', expiresAt: '2026-10-02T10:15:00.000Z' };
+    const seen = { nodeId: NODE_2_ID, placement: 'neighbor_seen', primary: true, stale: false, neighbor };
+    const withSeen = (member: unknown, extra: Record<string, unknown> = {}) => ({ ...groupNode, group: { ...group, members: [member], ...extra } });
+    expect(presentationNodeSchema.safeParse(withSeen(seen)).success).toBe(true);
+    // neighbor_seen needs provenance; other placements never carry it.
+    expect(presentationNodeSchema.safeParse(withSeen({ ...seen, neighbor: undefined })).success).toBe(false);
+    expect(presentationNodeSchema.safeParse(withSeen({ ...group.members[1], neighbor })).success).toBe(false);
+    // Never "verified", never a canonical method or confidence upgrade.
+    expect(presentationNodeSchema.safeParse(withSeen({ ...seen, neighbor: { ...neighbor, confidence: 'high' } })).success).toBe(false);
+    expect(presentationNodeSchema.safeParse(withSeen({ ...seen, neighbor: { ...neighbor, state: 'failed' } })).success).toBe(false);
+    expect(presentationNodeSchema.safeParse(withSeen({ ...seen, neighbor: { ...neighbor, observerLabel: 'x'.repeat(256) } })).success).toBe(false);
+    expect(presentationNodeSchema.safeParse(withSeen({ ...seen, neighbor: { ...neighbor, producerEpoch: 'e' } })).success).toBe(false);
+    expect(presentationNodeSchema.safeParse(withSeen(seen, { neighborCoverage: 'limited', conflictBasis: ['gateway_mac'] })).success).toBe(true);
+    expect(presentationNodeSchema.safeParse(withSeen(seen, { conflictBasis: ['gateway_vendor'] })).success).toBe(false);
+  });
+
+  it('accepts corroborated gateway MACs on a gateway group (#7817)', () => {
+    const gateway = { ...groupNode, role: 'gateway_group', group: { ...group, kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null,
+      address: '10.1.2.1', gatewayAddresses: [], members: [],
+      gatewayMacs: [{ address: '10.1.2.1', mac: '00:11:22:33:44:55', observerCount: 3, confirmedAt: '2026-10-02T10:00:00.000Z', expiresAt: '2026-10-02T10:15:00.000Z' }] } };
+    expect(presentationNodeSchema.safeParse(gateway).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...gateway, group: { ...gateway.group, gatewayMacs: Array(17).fill(gateway.group.gatewayMacs[0]) } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...gateway, group: { ...gateway.group, gatewayMacs: [{ ...gateway.group.gatewayMacs[0], verified: true }] } }).success).toBe(false);
+  });
+
   it('round-trips a whole grouped response', () => {
     const response = { ...graphResponse, nodes: [{ ...graphResponse.nodes[0], inventory }], presentation: { nodes: [groupNode], edges: graphResponse.presentation.edges } };
     expect(graphResponseSchema.safeParse(response).success).toBe(true);
