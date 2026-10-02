@@ -76,8 +76,6 @@ import {
   reserveAiBudget,
 } from '../aiBudgetReservations';
 import {
-  AGENT_HUMAN_ONLY_TOOLS,
-  BLOCKED_TOOLS,
   checkAgentGuardrails,
   isNeverAgentTool,
   checkGuardrails,
@@ -85,7 +83,6 @@ import {
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
-import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
@@ -1654,8 +1651,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
  * (`aiToolActions.ts`) — the same three modules `agentToolCatalog.ts` itself
  * derives its per-operation tier/readOnly answers from, just without going
  * through the `TOOL_TIERS`-keyed reachability filter. The human-only/blocked/
- * secret-bearing exclusions are reproduced directly (`AGENT_HUMAN_ONLY_TOOLS`,
- * `BLOCKED_TOOLS`, `isSecretBearingTool`); the session-only (M365/Google)
+ * secret-bearing/agent-denied-read exclusions come from the guardrail's own
+ * `isNeverAgentTool` predicate (#7447 — never a hand copy, which had drifted
+ * and offered 7 `AGENT_DENIED_READ_TOOLS` the guardrail always refuses); the session-only (M365/Google)
  * exclusion is NOT needed — `aiToolNames.ts`'s own header states those tools
  * are session-aware and are never added to the `aiTools` map in the first
  * place, so iterating `aiTools.keys()` already excludes them structurally.
@@ -1677,7 +1675,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
 export function fullRunToolExposure(agentAllowlist: readonly string[]): string[] {
   const names = new Set<string>();
   for (const name of aiTools.keys()) {
-    if (AGENT_HUMAN_ONLY_TOOLS.has(name) || BLOCKED_TOOLS.has(name) || isSecretBearingTool(name)) continue;
+    // #7447 — the guardrail's own by-name predicate (blocked / secret-bearing /
+    // human-only / agent-denied-read), not a hand copy of part of it.
+    if (isNeverAgentTool(name)) continue;
     const actions = toolActionEnum(name);
     const operations: Array<string | null> = actions ?? [null];
     const admitted = operations.some((action) => {
