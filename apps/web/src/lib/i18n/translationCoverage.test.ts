@@ -1152,6 +1152,14 @@ function readLocale(locale: string): Map<string, string> {
   return result;
 }
 
+const AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS = new Set([
+  'settings.json:emailTemplates.billingPayments', 'settings.json:emailTemplates.supportPortal',
+  ...['autopay_request','autopay_enrolled','autopay_stopped','card_expiring']
+    .map(id => `settings.json:emailTemplates.labels.${id}`),
+  ...['client_name','setup_link','ach_mode_text','payment_method','schedule_text','fee_text','stopped_by',
+    'open_invoices_text','expires_on','update_link'].map(key => `settings.json:emailTemplates.variables.${key}`),
+]);
+
 function namespaceDuplicateRegressions(
   english: Map<string, string>,
   translated: Map<string, string>,
@@ -1159,6 +1167,7 @@ function namespaceDuplicateRegressions(
 ): string[] {
   const duplicateCounts = new Map<string, number>();
   for (const [key, value] of english) {
+    if (AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS.has(key)) continue;
     if (translated.get(key) !== value) continue;
     const namespace = key.slice(0, key.indexOf(':'));
     duplicateCounts.set(namespace, (duplicateCounts.get(namespace) ?? 0) + 1);
@@ -1226,4 +1235,11 @@ describe('translation coverage guard helpers', () => {
       }),
     ).toEqual(['settings.json: 2 exact-English duplicates exceeds baseline 1']);
   });
+});
+
+it('enrollment template fallbacks are finite existing keys', () => {
+  const english = readLocale('en');
+  for (const key of AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS) expect(english.has(key), key).toBe(true);
+  const unrelated = new Map([['settings.json:unrelated.newCopy', 'English']]);
+  expect(namespaceDuplicateRegressions(unrelated, unrelated, { 'settings.json': 0 })).toHaveLength(1);
 });

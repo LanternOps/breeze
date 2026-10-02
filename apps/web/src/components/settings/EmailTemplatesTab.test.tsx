@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import {
   EMAIL_TEMPLATE_IDS,
   emailTemplateLabel,
@@ -43,6 +43,18 @@ beforeEach(() => {
 });
 
 describe('EmailTemplatesTab', () => {
+  it('mounts all four enrollment templates under Billing & payments and opens their existing editor', async () => {
+    routeFetch();
+    render(<EmailTemplatesTab />);
+    const group = await screen.findByTestId('autopay-email-template-group');
+    expect(group.textContent).toContain('Billing & payments');
+    for (const id of ['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring']) {
+      expect(within(group).getByTestId(`autopay-email-template-${id}`)).toBeTruthy();
+    }
+    fireEvent.click(within(group).getByTestId('autopay-email-template-autopay_request'));
+    expect(await screen.findByTestId('email-template-editor')).toBeTruthy();
+  });
+
   it('lists all catalog template ids with catalog labels', async () => {
     routeFetch();
     render(<EmailTemplatesTab />);
@@ -55,9 +67,14 @@ describe('EmailTemplatesTab', () => {
       'quote_send',
       'invoice_send',
       'portal_invite',
+      'autopay_request',
+      'autopay_enrolled',
+      'autopay_stopped',
+      'card_expiring',
     ]);
+    const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring']);
     for (const id of EMAIL_TEMPLATE_IDS) {
-      const row = screen.getByTestId(`email-template-row-${id}`);
+      const row = screen.getByTestId(newIds.has(id) ? `autopay-email-template-${id}` : `email-template-row-${id}`);
       expect(row.textContent).toContain(emailTemplateLabel(id));
       expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
     }

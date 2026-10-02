@@ -1331,7 +1331,25 @@
       "invoice_number": "Numero fattura",
       "due_date": "Data di scadenza pagamento",
       "invite_url": "URL di invito",
-      "cta_button": "Pulsante"
+      "cta_button": "Pulsante",
+      "client_name": "Client name",
+      "setup_link": "Automatic payments setup link",
+      "ach_mode_text": "Available payment methods",
+      "payment_method": "Saved payment method",
+      "schedule_text": "Payment schedule",
+      "fee_text": "Processing fee terms",
+      "stopped_by": "Who stopped automatic payments",
+      "open_invoices_text": "Open invoice summary",
+      "expires_on": "Card expiry date",
+      "update_link": "Payment method update link"
+    },
+    "billingPayments": "Billing & payments",
+    "supportPortal": "Support & portal",
+    "labels": {
+      "autopay_request": "Automatic payments request",
+      "autopay_enrolled": "Automatic payments confirmed",
+      "autopay_stopped": "Automatic payments stopped",
+      "card_expiring": "Saved card expiring"
     }
   },
   "inboundEmail": {

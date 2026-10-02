@@ -48,6 +48,16 @@ const SAMPLE_VARS: Record<string, string> = {
   due_date: '2026-09-01',
   invite_url: 'https://portal.example.com/accept-invite?token=abc',
   cta_button: 'Button',
+  client_name:'Example client',
+  setup_link:'https://portal.example.test/autopay/example-token',
+  ach_mode_text:'Bank account (recommended) or card',
+  payment_method:'Visa debit ••1234',
+  schedule_text:'Invoices are charged on the due date or 5 days after issue, whichever is later.',
+  fee_text:'No processing fee applies.',
+  stopped_by:'Your accounts team',
+  open_invoices_text:'One invoice remains open.',
+  expires_on:'2026-10-31',
+  update_link:'https://portal.example.test/autopay/update-token',
 };
 
 /** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */
