@@ -20,6 +20,8 @@ describe('email template catalog', () => {
       'autopay_request',
       'autopay_enrolled',
       'autopay_stopped',
+      'autopay_paused',
+      'autopay_resumed',
       'card_expiring',
     ]);
   });
