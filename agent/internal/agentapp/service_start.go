@@ -3,8 +3,14 @@ package agentapp
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
+
+// reclaimStampRe matches the timestamp in the names of the folders a
+// take-back creates (<folder>.untrusted-<time>[-n], <folder>.new-<time>), so
+// the same refusal on every attempt reads as one reason.
+var reclaimStampRe = regexp.MustCompile(`\.(untrusted|new)-[0-9]{8}T[0-9.]+Z(-[0-9]+)?`)
 
 // Retry delays for a config folder the service cannot take back yet: they
 // start at configDirRetryFirstDelay and double up to configDirRetryMaxDelay.
@@ -45,7 +51,7 @@ func prepareServiceStart(startup ProcessStartup, stop <-chan struct{}, markRunni
 			}
 			break
 		}
-		if reason := err.Error(); reason != lastReason {
+		if reason := reclaimStampRe.ReplaceAllString(err.Error(), ".$1-<time>"); reason != lastReason {
 			writeInstanceGuardMarkerFn(startup, fmt.Errorf("agent config folder (the service keeps running and retries): %w", err))
 			lastReason = reason
 		} else {
