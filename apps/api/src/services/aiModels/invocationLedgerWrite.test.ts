@@ -39,3 +39,20 @@ describe('recordInvocation chargeback stamp (#7608)', () => {
       chargeBasis: null, chargeCurrency: null, chargeAmount: null });
   });
 });
+
+describe('recordInvocation prompt provenance (W11 #7609)', () => {
+  // Shadow rows need no chargeback stamp, so these stay independent of #7608.
+  const shadow: NewInvocation = { ...base, ledgerMode: 'shadow' };
+  it('writes promptProfile and promptVariant', async () => {
+    await recordInvocation({ ...shadow, promptProfile: 'claude-small', promptVariant: 'chat/claude-small@1' });
+    expect(inserted.at(-1)).toMatchObject({ promptProfile: 'claude-small', promptVariant: 'chat/claude-small@1' });
+  });
+  it('writes NULL for all three when the caller has none', async () => {
+    await recordInvocation(shadow);
+    expect(inserted.at(-1)).toMatchObject({ promptProfile: null, promptVariant: null, occurredAt: null });
+  });
+  it('revives occurredAt from the pending-settlement JSON string', async () => {
+    await recordInvocation(JSON.parse(JSON.stringify({ ...shadow, occurredAt: new Date('2026-09-15T12:00:00Z') })));
+    expect(inserted.at(-1)).toMatchObject({ occurredAt: new Date('2026-09-15T12:00:00Z') });
+  });
+});

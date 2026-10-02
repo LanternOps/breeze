@@ -102,7 +102,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // SUSPICIOUS_NAME_PARTS ('token') but are counters -> reviewedIncluded
   // (precedent ai_cost_usage.input_tokens). AI chargeback W10 (#7608): the five
   // charge_* snapshot columns are ordinary client billing data -> included.
-  "ai_invocations": tablePolicy("org_id", {"included":["id","org_id","surface","role","user_id","session_id","agent_run_id","source_ref","offering_id","connection_id","funding_source","requested_model","served_model","thinking_mode_sent","inference_geo_sent","stop_reason","refusal_category","fallback_used","catalog_revision_id","connection_config_version","cost_cents","chargeable","charge_billing_profile_id","charge_coverage","charge_basis","charge_currency","charge_amount","sdk_reported_cost_usd","ledger_mode","legacy_cost_cents","created_at"],"reviewedIncluded":["input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"],"excludedSensitive":[],"excludedOpen":["options_sent","rate_snapshot"]}),
+  // AI model registry W11 (#7609): prompt_profile / prompt_variant /
+  // occurred_at are short non-secret scalars -> included.
+  "ai_invocations": tablePolicy("org_id", {"included":["id","org_id","surface","role","user_id","session_id","agent_run_id","source_ref","offering_id","connection_id","funding_source","requested_model","served_model","thinking_mode_sent","inference_geo_sent","stop_reason","refusal_category","fallback_used","catalog_revision_id","connection_config_version","cost_cents","chargeable","charge_billing_profile_id","charge_coverage","charge_basis","charge_currency","charge_amount","sdk_reported_cost_usd","ledger_mode","legacy_cost_cents","created_at","prompt_profile","prompt_variant","occurred_at"],"reviewedIncluded":["input_tokens","output_tokens","cache_read_tokens","cache_write_tokens"],"excludedSensitive":[],"excludedOpen":["options_sent","rate_snapshot"]}),
   // AI model registry W02 (#7600): options is jsonb -> excludedOpen (CLAUDE.md).
   // The uuid[] columns hold offering ids (tenant identifiers, not json/jsonb/
   // bytea) -> included, precedent fix_memory.rebuild_pending_org_ids.
