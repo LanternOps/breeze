@@ -12,9 +12,10 @@
 // read under their own tenancy rules — this module never touches the DB.
 
 export interface DocumentBrand {
-  /** data:image/... or https:// URL; null when unset or unusable. */
+  /** From the partner: a data:image/... or https:// URL, else null. An org
+   *  portal_branding value overrides it as stored. */
   logoUrl: string | null;
-  /** #rgb / #rrggbb; null when unset or not hex. */
+  /** From the partner: #rgb / #rrggbb, else null. An org value overrides it as stored. */
   primaryColor: string | null;
   secondaryColor: string | null;
 }
@@ -46,15 +47,17 @@ export function partnerDocumentBrand(settings: unknown): DocumentBrand {
 }
 
 /** A customer org's portal_branding values win; the partner's branding fills
- *  whatever the org row leaves empty. */
+ *  whatever the org row leaves empty (null or blank). Org values pass through
+ *  as stored — the web views have always rendered them directly — so only the
+ *  partner fallback is validated here. */
 export function resolveDocumentBrand(
   orgBrand: { logoUrl?: string | null; primaryColor?: string | null } | undefined,
   partnerSettings: unknown,
 ): DocumentBrand {
   const partner = partnerDocumentBrand(partnerSettings);
   return {
-    logoUrl: orgBrand?.logoUrl ?? partner.logoUrl,
-    primaryColor: orgBrand?.primaryColor ?? partner.primaryColor,
+    logoUrl: orgBrand?.logoUrl?.trim() || partner.logoUrl,
+    primaryColor: orgBrand?.primaryColor?.trim() || partner.primaryColor,
     secondaryColor: partner.secondaryColor,
   };
 }

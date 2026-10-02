@@ -36,6 +36,11 @@ describe('resolveDocumentBrand', () => {
     expect(resolveDocumentBrand(undefined, partnerSettings)).toEqual({ logoUrl: PNG, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
   });
 
+  it('an empty org value falls through to the partner (only a real value overrides)', () => {
+    expect(resolveDocumentBrand({ logoUrl: '', primaryColor: '' }, partnerSettings))
+      .toEqual({ logoUrl: PNG, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
+  });
+
   it('a per-org portal_branding value wins field by field', () => {
     expect(resolveDocumentBrand({ logoUrl: 'org-logo.png', primaryColor: null }, partnerSettings))
       .toEqual({ logoUrl: 'org-logo.png', primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });

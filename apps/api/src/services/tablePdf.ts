@@ -16,7 +16,7 @@
 //    drawing (never mid-row) — rows never split, so a row taller than a full
 //    usable page degrades to a stacked "label: value" paragraph via
 //    renderRichTextIntoPdf, which paginates itself,
-//  - zebra striping and accent/plain header fills.
+//  - zebra striping; an accent-tint (or unfilled, for plain) header over a rule.
 
 import { quoteTableContentSchema } from '@breeze/shared';
 import { measureInlineRuns, renderInlineRunsIntoPdf, renderRichTextIntoPdf } from './richTextPdf';
@@ -114,13 +114,12 @@ export function parseTable(content: unknown, availableWidth: number): TableModel
 }
 
 /** Height a single cell/header value occupies at BODY_FONT_SIZE within
- *  `width` minus 2x CELL_PADDING, via Task 7's per-run measurer (so a
- *  bold-heavy cell measures at its actual bold glyph widths, not a flattened
- *  regular-face approximation). `forceBold` must match whatever the paired
- *  draw call passes to renderInlineRunsIntoPdf — header cells are always
- *  drawn bold (see drawHeader below), so they must also be MEASURED bold: a
- *  themed bold face can have taller line metrics than its regular face,
- *  under-measuring the header height otherwise. */
+ *  `width` minus 2x CELL_PADDING_X (plus 2x CELL_PADDING vertically), via
+ *  Task 7's per-run measurer (so a bold-heavy cell measures at its actual bold
+ *  glyph widths, not a flattened regular-face approximation). Header cells
+ *  (`forceBold`) are measured in headerFaces() — the same faces drawHeader
+ *  draws them in — since a heading face can have different line metrics than
+ *  the body face. */
 function measureCellHeight(doc: PDFKit.PDFDocument, text: string, width: number, fonts: PdfThemeFonts, forceBold = false): number {
   const innerWidth = Math.max(0, width - 2 * CELL_PADDING_X);
   return measureInlineRuns(doc, text, innerWidth, BODY_FONT_SIZE, forceBold ? headerFaces(fonts) : fonts.body, forceBold) + 2 * CELL_PADDING;
@@ -128,7 +127,8 @@ function measureCellHeight(doc: PDFKit.PDFDocument, text: string, width: number,
 
 /** Header cells draw in the theme's heading face (Barlow Condensed in the
  *  condensed theme, like the web's `th`); classic's heading face is Helvetica
- *  Bold, the same as before. */
+ *  Bold, as before — except that italic header text now draws upright, since
+ *  the heading face has no italic. */
 function headerFaces(fonts: PdfThemeFonts): PdfThemeFonts['body'] {
   const h = fonts.heading.bold;
   return { regular: h, bold: h, italic: h, boldItalic: h };
@@ -196,8 +196,8 @@ function tint(hex: string, ratio: number): string {
 export interface RenderTableOpts {
   x: number;
   startY: number;
-  /** Table header fill when headerStyle === 'accent' (usually the document's
-   *  branding primary color); the degrade path's rich-text isn't affected. */
+  /** Base colour of the 10% tint behind an 'accent' header (usually the
+   *  document's branding primary); plain headers have no fill. */
   accent: string;
   fonts: PdfThemeFonts;
   /** Caller's page-break helper — see EnsureRoomRich above. quotePdf.ts's
@@ -206,8 +206,8 @@ export interface RenderTableOpts {
 }
 
 /** Draws a measured TableModel (see measureTable) into `doc` starting at
- *  opts.startY. Returns the new y cursor, matching every other quotePdf
- *  block-type branch's convention (gap-after-block included).
+ *  opts.startY. Returns the y just below the last row (or the caption), with
+ *  no trailing gap — quotePdf's block walk adds BLOCK_GAP between blocks.
  *
  *  Header repeats on every page the table spans (ensureRoom's `didBreak`
  *  signal). Rows never split: a row that would still overflow a FRESH page

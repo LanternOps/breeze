@@ -441,9 +441,6 @@ describe('renderTableIntoPdf', () => {
     const positioned = extractPositionedPdfText(buf);
     const rowStarts = positioned.filter((f) => /^Service [ABC]$/.test(f.text)).sort((a, b) => a.y - b.y);
     expect(rowStarts.length).toBe(3);
-    // The wrapped middle-column text's LAST line ("our SOC team...") for each
-    // row must sit ABOVE (smaller y, since y grows downward here) the NEXT
-    // row's label — i.e. real vertical separation, not overlap/collapse.
     // Every wrapped line of a row's middle cell must sit between that row's
     // label and the next row's label: with the overlap bug, a row's last
     // line(s) landed below the next row's start. Each row wraps identically,

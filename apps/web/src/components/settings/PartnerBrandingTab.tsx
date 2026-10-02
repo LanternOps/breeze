@@ -14,7 +14,7 @@ const LOGO_ACCEPT = 'image/png,image/jpeg,image/webp';
 
 // Long-side pixel limits, largest first. Quote and report PDFs print the logo
 // ~2.5in wide, so the first try keeps enough pixels to stay sharp in print
-// (256px printed soft, ~100dpi). A detailed logo whose PNG would pass
+// (256px printed soft, ~100dpi). A detailed logo whose data URL would exceed
 // MAX_LOGO_BYTES steps down rather than being rejected.
 const LOGO_MAX_SIDES = [800, 512, 256];
 

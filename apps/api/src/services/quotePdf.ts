@@ -13,16 +13,17 @@
 // `loadImage`, branding via `branding`) so it is unit-testable without a DB; the
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
+import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { DEVICE_ROLE_NOUNS, toCents, fromCents, formatMoney as sharedFormatMoney, type BillableDeviceRole, type CoverPage } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
-import { renderRichTextIntoPdf, measureRichTextLead, WEB_TYPOGRAPHY } from './richTextPdf';
+import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAPHY } from './richTextPdf';
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
 import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
-import { renderCalloutIntoPdf } from './calloutPdf';
+import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -121,10 +122,11 @@ function contrastOnWhite(rgb: Rgb): number {
   return 1.05 / (lum + 0.05);
 }
 
-/** The accent prints as text (PROPOSAL eyebrow, the amount due) and under
- *  white table-header text, so a light brand colour is darkened toward ink
- *  until it reaches WCAG AA (4.5:1) — the same rule report PDFs apply
- *  (paletteForBranding). A colour that already passes is returned unchanged. */
+/** The accent prints as text (PROPOSAL eyebrow, the amount due, the
+ *  AGREEMENT/TERMS labels) and as rules, bars and tints, so a light brand
+ *  colour is darkened toward ink until it reaches WCAG AA (4.5:1) — the same
+ *  rule report PDFs apply (paletteForBranding). A colour that already passes
+ *  is returned unchanged. */
 export function legibleAccent(hex: string): string {
   const rgb = parseHexRgb(hex);
   if (!rgb || contrastOnWhite(rgb) >= 4.5) return hex;
@@ -141,6 +143,51 @@ function brandHeadingColor(hex: string | null | undefined): string | null {
   return rgb && contrastOnWhite(rgb) >= 7 ? hex!.trim() : null;
 }
 
+/** Whether pdfkit can draw this image without crashing the process.
+ *
+ *  pdfkit embeds JPEGs and opaque PNGs without decoding them, but a PNG with
+ *  an alpha channel (colour types 4/6) or a tRNS transparency chunk has its
+ *  pixels inflated ASYNCHRONOUSLY to split out the soft mask — after
+ *  doc.image() has returned. Corrupt pixel data then throws outside every
+ *  try/catch here, reaches the process's uncaughtException handler, and the
+ *  document never ends. Inflate those PNGs synchronously first: if the data
+ *  doesn't decompress, the caller skips the image. */
+export function imageIsDrawable(data: Buffer): boolean {
+  if (data.length < 8 || data.readUInt32BE(0) !== 0x89504e47) return true; // not a PNG (e.g. JPEG)
+  let offset = 8;
+  let colorType = -1;
+  let transparency = false;
+  const idat: Buffer[] = [];
+  while (offset + 8 <= data.length) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    const start = offset + 8;
+    if (start + length > data.length) return false; // truncated chunk
+    if (type === 'IHDR' && length >= 10) colorType = data[start + 9]!;
+    else if (type === 'tRNS') transparency = true;
+    else if (type === 'IDAT') idat.push(data.subarray(start, start + length));
+    else if (type === 'IEND') break;
+    offset = start + length + 4; // + CRC
+  }
+  if (colorType !== 4 && colorType !== 6 && !transparency) return true;
+  try {
+    zlib.inflateSync(Buffer.concat(idat));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Load-time gate for every image this renderer draws: a buffer pdfkit would
+ *  crash on (see imageIsDrawable) is reported and treated as missing. */
+function drawableOrNull(img: { data: Buffer } | null, what: string): { data: Buffer } | null {
+  if (!img?.data || imageIsDrawable(img.data)) return img;
+  const err = new Error(`[quotePdf] undecodable PNG skipped: ${what}`);
+  console.error(err.message);
+  captureException(err);
+  return null;
+}
+
 interface PdfLogo { data: Buffer; width: number; height: number }
 
 /** An uploaded logo (PNG/JPEG data URL) as drawable bytes, or null. */
@@ -149,7 +196,8 @@ export function decodeLogo(logoUrl: string | null | undefined): PdfLogo | null {
   if (!m) return null;
   const data = Buffer.from(m[1]!, 'base64');
   const dims = imageIntrinsicSize(data);
-  return dims ? { data, ...dims } : null;
+  if (!dims || !drawableOrNull({ data }, 'partner logo')) return null;
+  return { data, ...dims };
 }
 
 /** Fit the logo in a maxW × maxH box at (x, y). Returns the drawn size, or
@@ -469,6 +517,42 @@ export function imageIntrinsicSize(buf: Buffer): { width: number; height: number
 // Returns the y position below the table.
 // ---------------------------------------------------------------------------
 
+const LINE_THUMB = 44;
+
+/** Height a pricing-table row needs: bold-10 title, regular-8.5 blurb and any
+ *  device-set lines, at least a thumbnail tall when the row has one. Measures
+ *  each fragment at the SAME font/size it is drawn with — the blurb used to be
+ *  measured while the font was still 10pt, over-reserving ~1.5pt per wrapped
+ *  line (a visible gap below tall spec-list rows). */
+function measureLineRow(doc: PDFKit.PDFDocument, l: QuoteLine, descW: number, fonts: PdfThemeFonts, currency: string, locale: string, hasImage: boolean) {
+  // Title falls back to description for legacy lines that predate the name/description split.
+  const title = (l.name ?? l.description ?? '').trim() || '—';
+  const blurb = l.name ? (l.description ?? '').trim() : '';
+  doc.font(fonts.body.bold).fontSize(10);
+  const titleHeight = doc.heightOfString(title, { width: descW });
+  doc.font(fonts.body.regular).fontSize(8.5);
+  const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
+  const deviceSetText = deviceSetCustomerText(l, currency, locale);
+  const deviceSetHeight = deviceSetText.length
+    ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
+    : 0;
+  return { title, blurb, titleHeight, blurbHeight, deviceSetText, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, hasImage ? LINE_THUMB : 12) };
+}
+
+/** The label, column header and first row of a pricing table, which are
+ *  reserved as one unit (capped at a page) — by the table itself and by a
+ *  heading above it. `imageLines` holds the lines that will draw a thumbnail;
+ *  any thumbnail narrows every row's description column. */
+function lineTableLeadHeight(doc: PDFKit.PDFDocument, lines: QuoteLine[], label: string, fonts: PdfThemeFonts, currency: string, locale: string, showTax: boolean, imageLines: (l: QuoteLine) => boolean): number {
+  const c = columnsFor(doc, showTax);
+  const descW = c.colDescW - (lines.some(imageLines) ? LINE_THUMB + 8 : 0);
+  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
+  const first = lines[0];
+  const firstRowHeight = first ? measureLineRow(doc, first, descW, fonts, currency, locale, imageLines(first)).rowHeight + LINE_ROW_GAP : 0;
+  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+  return Math.min(labelHeight + LINE_HEADER_HEIGHT + firstRowHeight, usable);
+}
+
 async function renderLineTable(
   doc: PDFKit.PDFDocument,
   lines: QuoteLine[],
@@ -490,16 +574,16 @@ async function renderLineTable(
   // catalog item's image. A failed load degrades to "no thumbnail" — never
   // aborts the document. 44pt: large enough to recognize the product, small
   // enough that rows stay table-like.
-  const THUMB = 44;
+  const THUMB = LINE_THUMB;
   const imageByLine = new Map<string, Buffer>();
   for (const l of lines) {
     try {
       if (l.imageId) {
-        const img = await loadQuoteImage(l.imageId);
+        const img = drawableOrNull(await loadQuoteImage(l.imageId), `line image ${l.imageId}`);
         if (img?.data) { imageByLine.set(l.id, img.data); continue; }
       }
       if (l.catalogItemId) {
-        const img = await loadCatalogImage(l.catalogItemId);
+        const img = drawableOrNull(await loadCatalogImage(l.catalogItemId), `catalog image ${l.catalogItemId}`);
         if (img?.data) imageByLine.set(l.id, img.data);
       }
     } catch (e) {
@@ -541,24 +625,9 @@ async function renderLineTable(
     return rowY;
   };
 
-  // Measure each fragment at the SAME font/size it is drawn with. The blurb is
-  // rendered at 8.5pt but used to be measured while the font was still 10pt,
-  // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
-  // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
   const measureRow = (l: QuoteLine) => {
-    // Title falls back to description for legacy lines that predate the name/description split.
-    const title = (l.name ?? l.description ?? '').trim() || '—';
-    const blurb = l.name ? (l.description ?? '').trim() : '';
-    doc.font(fonts.body.bold).fontSize(10);
-    const titleHeight = doc.heightOfString(title, { width: descW });
-    doc.font(fonts.body.regular).fontSize(8.5);
-    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
-    const deviceSetText = deviceSetCustomerText(l, currency, locale);
-    const deviceSetHeight = deviceSetText.length
-      ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
-      : 0;
-    const img = imageByLine.get(l.id);
-    return { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, img ? THUMB : 12) };
+    const row = measureLineRow(doc, l, descW, fonts, currency, locale, imageByLine.has(l.id));
+    return { ...row, img: imageByLine.get(l.id) };
   };
 
   // Keep the section label, the column header and the FIRST row together as one
@@ -566,12 +635,9 @@ async function renderLineTable(
   // whenever the first row is a tall spec list: the label + header fit the guess,
   // got drawn at the foot of the page, then the row-level break moved the row to
   // the next page and stranded them. Reserve the first row's real measured height
-  // instead, capped to a page so a taller-than-a-page row can't force a blank one.
-  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
-  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-  const firstLine = lines[0];
-  const firstRowHeight = firstLine ? measureRow(firstLine).rowHeight + 6 : 0;
-  y = ensureSpace(doc, y, Math.min(labelHeight + LINE_HEADER_HEIGHT + firstRowHeight, usable));
+  // — with the same row gap the row loop asks for — capped to a page so a
+  // taller-than-a-page row can't force a blank one.
+  y = ensureSpace(doc, y, lineTableLeadHeight(doc, lines, label, fonts, currency, locale, showTax, (l) => imageByLine.has(l.id)));
   if (label) {
     doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(label, c.left, y, { width: c.contentWidth });
     y = doc.y + 6;
@@ -762,7 +828,7 @@ function renderRecurringSummary(
   const EMPHASIS_ROW_ADVANCE = 26;
   const EMPHASIS_RULE_ADVANCE = 13;
   const NOTE_GAP = 2;
-  // The first-period total and its note sit in a tinted box (web: rounded bg-muted p-3).
+  // The first-period total and its note sit in a tinted box (web: rounded bg-muted p-3; padded a little tighter here).
   const PERIOD_BOX_PAD = 6;
   const PERIOD_BOX_GAP = 6;
   const rollupRows = 1 + Number(showMonthly) + Number(showAnnual) + Number(showTaxRow);
@@ -810,8 +876,9 @@ function renderRecurringSummary(
     const { bold = false, emphasis = false } = opts;
     const strong = bold || emphasis;
     const size = emphasis ? 18 : strong ? 12 : 10;
-    // The emphasised label stays at 12pt (web: text-sm semibold) beside the
-    // larger figure, baseline-aligned by dropping it to the figure's baseline.
+    // The emphasised label stays at 12pt beside the 18pt figure (the web uses
+    // text-sm; 12pt holds up better next to the larger amount), dropped to sit
+    // on the figure's baseline.
     const labelSize = emphasis ? 12 : size;
     doc.font(strong ? fonts.body.bold : fonts.body.regular).fontSize(labelSize).fillColor(strong ? '#111827' : '#6b7280');
     doc.text(label, labelX, emphasis ? y + 4 : y, { width: labelW, align: 'left' });
@@ -866,7 +933,7 @@ function renderRecurringSummary(
 
 // ---------------------------------------------------------------------------
 // Cover page (Task 14): a page-1 frame drawn ahead of every block when
-// `quote.coverPage.enabled` — branding wordmark, a hero cover image (top ~55%
+// `quote.coverPage.enabled` — partner logo or wordmark, a hero cover image (top ~55%
 // of the page), the proposal title (24pt bold), then Prepared-for/Prepared-by
 // side by side at the bottom. Always ends with doc.addPage() when it draws
 // anything, so the existing header/blocks code below is unaffected — it always
@@ -898,7 +965,7 @@ async function renderCoverPage(
   if (cp.coverImageId) {
     let img: { data: Buffer } | null = null;
     try {
-      img = await loadImage(cp.coverImageId);
+      img = drawableOrNull(await loadImage(cp.coverImageId), `cover image ${cp.coverImageId}`);
     } catch (e) {
       console.error('[quotePdf] cover image load failed', cp.coverImageId, e instanceof Error ? e.message : e);
       captureException(e instanceof Error ? e : new Error(String(e)));
@@ -1033,6 +1100,10 @@ export async function renderQuotePdf(
   const brandHeading = brandHeadingColor(branding.secondaryColor);
   const headingColor = brandHeading ?? DEFAULT_HEADING_COLOR;
   const logo = decodeLogo(branding.logoUrl);
+  if (branding.logoUrl?.trim() && !logo) {
+    // Report-PDF parity (reportBranding.ts): say why the name prints instead.
+    console.warn('[quotePdf] partner logo is not an embeddable PNG/JPEG data URL; drawing the name instead', { quoteId: quote.id });
+  }
   const partnerName = branding.partnerName ?? 'Proposal';
   // Per-line Tax column only when this quote carries tax (mirrors the summary).
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
@@ -1164,11 +1235,33 @@ export async function renderQuotePdf(
   const tocTitleWidth = c.contentWidth - TOC_PAGE_COL;
   doc.font(fonts.body.regular).fontSize(10.5);
   const tocRowHeights = tocTitles.map((t) => doc.heightOfString(t, { width: tocTitleWidth }) + TOC_ROW_GAP);
-  let tocSlot: { pageIndex: number; y: number } | null = null;
+  let tocSlot: { pageIndex: number; y: number; shown: number } | null = null;
   if ((quote.coverPage as CoverPage | null)?.showContents === true && tocTitles.length > 0) {
-    const tocHeight = TOC_LABEL_HEIGHT + tocRowHeights.reduce((sum, h) => sum + h, 0);
-    y = ensureSpace(doc, y, Math.min(tocHeight, doc.page.height - doc.page.margins.top - doc.page.margins.bottom));
-    tocSlot = { pageIndex: currentPageNumber() - 1, y };
+    // The list never runs past one page: when it would, it stops after the
+    // entries that fit and ends with "…and N more" (the bookmarks still list
+    // every section). Drawn later onto a reserved slot, an overflowing list
+    // would otherwise spill a trail of one-entry pages after the T&C.
+    const pageBody = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    const moreRowHeight = doc.heightOfString('…', { width: tocTitleWidth }) + TOC_ROW_GAP;
+    const full = tocRowHeights.reduce((sum, h) => sum + h, 0);
+    let shown = tocRowHeights.length;
+    let rowsHeight = full;
+    if (TOC_LABEL_HEIGHT + full > pageBody) {
+      // Too long for any page: fill what's left of this one (or a fresh page
+      // when less than half a page remains) rather than leaving it blank.
+      const pageBottom = doc.page.height - doc.page.margins.bottom;
+      const room = pageBottom - y >= pageBody / 2 ? pageBottom - y : pageBody;
+      rowsHeight = 0;
+      shown = 0;
+      while (shown < tocRowHeights.length && TOC_LABEL_HEIGHT + rowsHeight + tocRowHeights[shown]! + moreRowHeight <= room) {
+        rowsHeight += tocRowHeights[shown]!;
+        shown++;
+      }
+      rowsHeight += moreRowHeight;
+    }
+    const tocHeight = TOC_LABEL_HEIGHT + rowsHeight;
+    y = ensureSpace(doc, y, tocHeight);
+    tocSlot = { pageIndex: currentPageNumber() - 1, y, shown };
     y += tocHeight + BLOCK_GAP;
   }
   // Shared by the 'table' and 'callout' branches below — both need the richer
@@ -1189,7 +1282,7 @@ export async function renderQuotePdf(
       // loadImage performs DB I/O and can reject; a failed fetch must degrade to
       // skip-the-image rather than escaping renderQuotePdf (which would skip
       // doc.end() and surface as a 500).
-      pending = loadImage(imageId).catch((e) => {
+      pending = loadImage(imageId).then((img) => drawableOrNull(img, `image ${imageId}`)).catch((e) => {
         console.error('[quotePdf] loadImage failed', imageId, e instanceof Error ? e.message : e);
         captureException(e instanceof Error ? e : new Error(String(e)));
         return null;
@@ -1203,15 +1296,29 @@ export async function renderQuotePdf(
   // Room the block after a heading reserves before it draws — the heading
   // asks for that much too, so it moves to the next page WITH its content
   // instead of being left as the last line of this one (Q-2026-0027 shipped
-  // eight such headings). Image and rich text are exact; the rest reserve a
-  // label/header plus a first row, which this approximates generously.
+  // eight such headings). Every follower is measured the way it will reserve:
+  // image, rich text, table, callout (its whole box) and pricing table (label
+  // + header + first row) exactly; a following heading recurses one level so
+  // "section, subsection, paragraph" holds together too.
+  const headingSize = (b: QuoteBlock) => {
+    const level = headingLevel(b);
+    // Portal sizes: text-2xl / text-xl / text-lg (24/20/18px).
+    return level <= 1 ? 18 : level === 2 ? 15 : 13.5;
+  };
+  const headingBlockHeight = (b: QuoteBlock) =>
+    doc.fontSize(headingSize(b)).font(fonts.heading.bold).heightOfString(headingText(b), { width: c.contentWidth });
   // Every block first passes the loop's flat ensureSpace(y, BLOCK_MIN_ROOM),
   // so whatever follows a heading needs at least that much as well.
-  const leadHeightOf = async (next: QuoteBlock | undefined): Promise<number> => {
+  const leadHeightOf = async (at: number, depth = 0): Promise<number> => {
+    const next = visible[at];
     if (!next) return 0;
-    return Math.max(BLOCK_MIN_ROOM, await ownLeadHeight(next));
+    return Math.max(BLOCK_MIN_ROOM, await ownLeadHeight(next, at, depth));
   };
-  const ownLeadHeight = async (next: QuoteBlock): Promise<number> => {
+  const ownLeadHeight = async (next: QuoteBlock, at: number, depth: number): Promise<number> => {
+    if (next.blockType === 'heading') {
+      const own = headingBlockHeight(next);
+      return depth >= 1 ? own : own + BLOCK_GAP + await leadHeightOf(at + 1, depth + 1);
+    }
     if (next.blockType === 'image') {
       const imageId = (next.content as { imageId?: string }).imageId;
       const img = imageId ? await loadBlockImage(imageId) : null;
@@ -1225,37 +1332,48 @@ export async function renderQuotePdf(
       const model = parseTable(next.content, c.contentWidth);
       return model ? tableLeadHeight(measureTable(doc, model, fonts)) : 0;
     }
-    if (next.blockType === 'callout' || next.blockType === 'line_items') return 90;
+    if (next.blockType === 'callout') return measureCalloutLead(doc, next.content, c.contentWidth, fonts);
+    if (next.blockType === 'line_items') {
+      const label = String((next.content as { label?: string }).label ?? '').trim();
+      const blockLines = lines.filter((l) => l.blockId === next.id);
+      // Thumbnails aren't loaded yet; assume one wherever a line could have one
+      // (a narrower description column only ever over-reserves).
+      return lineTableLeadHeight(doc, blockLines, label, fonts, currency, locale, showTax, (l) => !!(l.imageId || l.catalogItemId));
+    }
     return 0;
   };
-  // Whether a block draws anything — an empty one gets no gap around it.
+  // Whether a block draws anything — an empty one gets no gap around it, and
+  // a heading measures the next block that actually draws.
   const drawsSomething = async (b: QuoteBlock): Promise<boolean> => {
     const content = (b.content ?? {}) as Record<string, unknown>;
     if (b.blockType === 'heading') return String(content.text ?? '').trim().length > 0;
-    if (b.blockType === 'rich_text') return String(content.html ?? '').trim().length > 0;
+    // An empty editor saves "<p></p>": nothing visible, so it's skipped
+    // rather than drawn as a blank line a heading would be kept with.
+    if (b.blockType === 'rich_text') {
+      return parseRichText(String(content.html ?? '')).some((rb) => rb.kind === 'table' || rb.runs.some((r) => r.text.trim().length > 0));
+    }
     if (b.blockType === 'image') return typeof content.imageId === 'string' && !!(await loadBlockImage(content.imageId))?.data;
     if (b.blockType === 'line_items') return lines.some((l) => l.blockId === b.id);
     return b.blockType === 'table' || b.blockType === 'callout';
   };
+  const visible: QuoteBlock[] = [];
+  for (const b of drawable) if (await drawsSomething(b)) visible.push(b);
   let drewBlock = false;
-  for (const [index, b] of drawable.entries()) {
-    if (!(await drawsSomething(b))) continue;
+  for (const [index, b] of visible.entries()) {
     if (drewBlock) y += BLOCK_GAP;
     drewBlock = true;
     y = ensureSpace(doc, y, BLOCK_MIN_ROOM);
     if (b.blockType === 'heading') {
-      const level = Number((b.content as { level?: number }).level ?? 1);
-      const text = String((b.content as { text?: string }).text ?? '');
-      // Portal sizes: text-2xl / text-xl / text-lg (24/20/18px).
-      const size = level <= 1 ? 18 : level === 2 ? 15 : 13.5;
-      doc.fontSize(size).font(fonts.heading.bold);
-      const headingHeight = doc.heightOfString(text, { width: c.contentWidth }) + BLOCK_GAP;
+      const level = headingLevel(b);
+      const text = headingText(b);
+      const size = headingSize(b);
+      const headingHeight = headingBlockHeight(b) + BLOCK_GAP;
       // A follower that can't share any page with the heading (taller than
       // the page body) gets no reservation — moving the heading would only
       // strand it alone on a fresh page.
-      const lead = await leadHeightOf(drawable[index + 1]);
+      const lead = await leadHeightOf(index + 1);
       y = ensureSpace(doc, y, headingHeight + (lead <= usableHeight - headingHeight ? lead : 0));
-      if (level === sectionLevel) markSection(text.trim(), y);
+      if (level === sectionLevel) markSection(text, y);
       doc.fillColor(headingColor).fontSize(size).font(fonts.heading.bold).text(text, c.left, y, { width: c.contentWidth });
       y = doc.y;
     } else if (b.blockType === 'rich_text') {
@@ -1420,13 +1538,18 @@ export async function renderQuotePdf(
     let ty = tocSlot.y;
     doc.fillColor('#6b7280').fontSize(8).font(fonts.heading.bold).text('CONTENTS', c.left, ty, { width: c.contentWidth, characterSpacing: 1, lineBreak: false });
     ty += TOC_LABEL_HEIGHT;
-    tocEntries.slice(0, tocRowHeights.length).forEach((entry, i) => {
+    tocEntries.slice(0, tocSlot.shown).forEach((entry, i) => {
       doc.font(fonts.body.regular).fontSize(10.5).fillColor('#374151')
         .text(entry.title, c.left, ty, { width: tocTitleWidth, goTo: entry.dest });
       doc.fillColor('#6b7280')
         .text(String(entry.page), c.left + tocTitleWidth, ty, { width: TOC_PAGE_COL, align: 'right', goTo: entry.dest, lineBreak: false });
       ty += tocRowHeights[i]!;
     });
+    const hidden = tocEntries.length - tocSlot.shown;
+    if (hidden > 0) {
+      doc.font(fonts.body.regular).fontSize(10.5).fillColor('#6b7280')
+        .text(`…and ${hidden} more`, c.left, ty, { width: tocTitleWidth, lineBreak: false });
+    }
   }
 
   // ---- Per-page footer band: branding footer + quote number + page X of Y ---

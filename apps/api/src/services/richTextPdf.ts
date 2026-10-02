@@ -357,8 +357,10 @@ export interface RichTextTypography {
   trailingGap: boolean;
 }
 
-/** The long-standing look: every caller that doesn't opt in (standalone
- *  contract PDFs, the existing tests) renders exactly as before. */
+/** The long-standing sizes and spacing, used by every caller that doesn't opt
+ *  in (standalone contract PDFs, the existing tests). Pagination still keeps
+ *  lead-ins (h3/h4, bold labels) with what follows and a table's header row
+ *  with its first body row, so page breaks can differ from before. */
 export const CLASSIC_TYPOGRAPHY: RichTextTypography = {
   p: { fontSize: 11, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: false },
   li: { fontSize: 11, lineHeight: 0, spaceBefore: 0, spacingAfter: 8, forceBold: false },
@@ -371,11 +373,13 @@ export const CLASSIC_TYPOGRAPHY: RichTextTypography = {
   trailingGap: true,
 };
 
-/** The customer portal's `.quote-rich-text` rules (apps/portal globals.css) at
- *  0.75pt per CSS px: 14px text at leading-relaxed (1.625), p mb-2, h3 16px
- *  mt-4/mb-1.5, h4 14px mt-3/mb-1, lists pl-5 with space-y-1 and mb-2, muted
- *  markers, no margin after the last block. Quote PDFs use this so the PDF and
- *  the proposal the customer opens online read the same. */
+/** The customer portal's rich-text styling at 0.75pt per CSS px: the block's
+ *  text-sm leading-relaxed (14px / 1.625, quoteBlocks.tsx) and the
+ *  `.quote-rich-text` rules (apps/portal globals.css) — p mb-2, h3 16px
+ *  mt-4/mb-1.5, h4 14px mt-3/mb-1, lists pl-5 with space-y-1 and mb-2, no
+ *  margin after the last block. The softer body text and muted list markers
+ *  follow the web app's prose preview (the portal inherits its foreground
+ *  colour). Quote PDFs use this so the PDF and the online proposal match. */
 export const WEB_TYPOGRAPHY: RichTextTypography = {
   p: { fontSize: 10.5, lineHeight: 1.625, spaceBefore: 0, spacingAfter: 6, forceBold: false },
   li: { fontSize: 10.5, lineHeight: 1.625, spaceBefore: 0, spacingAfter: 6, forceBold: false },
@@ -450,8 +454,9 @@ export interface RenderRichTextOpts {
 }
 
 /** Draw sanitized rich-text HTML into `doc` starting at opts.startY, paginating
- *  via opts.ensureRoom. Returns the new y cursor (below the last block + its
- *  trailing spacing), for the caller to continue drawing from. */
+ *  via opts.ensureRoom. Returns the new y cursor: below the last block, plus its
+ *  trailing spacing when the typography has `trailingGap` (classic), for the
+ *  caller to continue drawing from. */
 export function renderRichTextIntoPdf(doc: PDFKit.PDFDocument, html: string, opts: RenderRichTextOpts): number {
   return drawBlocks(doc, parseRichText(html), opts, opts.fonts ?? DEFAULT_BODY_FONTS);
 }
@@ -468,7 +473,7 @@ function subheadFont(block: RichTextTextBlock, headingFont: string | undefined):
 function textBlockLayout(doc: PDFKit.PDFDocument, block: RichTextTextBlock, x: number, width: number, bodyFonts: BodyFonts, typo: RichTextTypography, headingFont?: string) {
   const style = styleFor(block.kind, typo);
   // Ordered-list ordinals reach 2+ digits ("10.", "11.", …) which overflow the
-  // fixed 14pt bullet gutter and character-wrap, garbling clause numbering.
+  // typography's bullet gutter and character-wrap, garbling clause numbering.
   // Measure the actual prefix and widen the gutter to fit, shifting the text
   // start so the ordinal and the item text never overlap.
   const isLi = block.kind === 'li';
@@ -560,8 +565,9 @@ function drawBlocks(doc: PDFKit.PDFDocument, blocks: RichTextBlock[], opts: Rend
   // startY is the public contract; synchronize doc.y before ensureRoom reads it.
   doc.y = opts.startY;
   let y = opts.startY;
-  // The gap BEFORE the upcoming block (0 for the first block; each subsequent
-  // block's leading gap is the PREVIOUS block's spacingAfter). Tracked explicitly
+  // The gap BEFORE the upcoming block (gapBetween: 0 for the first block, the
+  // list's item gap between list items, otherwise the larger of the previous
+  // block's spacingAfter and this block's spaceBefore). Tracked explicitly
   // rather than folded into `y` up front — ensureRoom's overflow check needs the
   // gap counted as part of `needed`, and pdfkit's own `doc.y` cursor (updated by
   // the actual draw calls) never reflects a gap that hasn't been drawn as text.
@@ -781,7 +787,7 @@ export function measureRichText(doc: PDFKit.PDFDocument, html: string, width: nu
  *  reflow as one wrapped paragraph). `align` is only meaningful passed on the
  *  FIRST run's text() call — pdfkit applies width/align to the whole
  *  continued-run paragraph, not per individual continued call. Restores
- *  doc.fillColor to TEXT_COLOR before returning (matching the block draw
+ *  doc.fillColor to TEXT_COLOR before returning (matching the classic block draw
  *  loop), but does NOT save/restore font state — callers already do that
  *  around their own measure+draw pair (see tablePdf.ts's renderTableIntoPdf).
  *  `forceBold` ORs into every run's own bold state (mirrors styleFor(...).forceBold
@@ -1136,13 +1142,20 @@ function drawTableBlock(
   let leadingGap = gapBefore;
   block.rows.forEach((row, index) => {
     const height = measureTableRow(doc, row, widths, fonts);
+    // A leading header row is reserved together with the first body row, so
+    // it can't be left at a page foot while the body starts on the next page
+    // (capped at a page, which ensureRoom could only answer with a blank one).
+    const nextRow = block.rows[1];
+    const keepWithBody = index === 0 && row.header && nextRow
+      ? Math.min(measureTableRow(doc, nextRow, widths, fonts), Math.max(0, usablePageHeight - height - leadingGap))
+      : 0;
     // ensureRoom decides from pdfkit's OWN cursor, which the per-cell draws
     // above leave wherever the LAST column ended — resync before every call so
     // the decision is anchored to the y this function tracks (same hazard and
     // fix as tablePdf.ts's renderTableIntoPdf).
     doc.y = y;
     const beforeDocY = doc.y;
-    const reserved = opts.ensureRoom(leadingGap + height);
+    const reserved = opts.ensureRoom(leadingGap + height + keepWithBody);
     const brokePage = doc.y !== beforeDocY;
     y = brokePage ? reserved : reserved + leadingGap;
     leadingGap = 0;

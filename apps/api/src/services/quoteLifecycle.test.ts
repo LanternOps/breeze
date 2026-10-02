@@ -1330,6 +1330,15 @@ describe('sendQuote document_locale stamp', () => {
     expect((capturedPdfArgs![0] as Record<string, unknown>).documentLocale).toBe('pt-BR');
   });
 
+  it("brands the emailed PDF with the partner's Settings → Branding logo and colours when the org has no portal branding", async () => {
+    const logo = 'data:image/png;base64,iVBORw0KGgo=';
+    queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { branding: { logoUrl: logo, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' } } });
+    await (await sendQuote('q1', actor)).deliverEmail();
+    expect(capturedPdfArgs).not.toBeNull();
+    // renderQuotePdf(quote, blocks, lines, loadImage, branding, ...) — branding is arg index 4.
+    expect(capturedPdfArgs![4]).toMatchObject({ logoUrl: logo, primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' });
+  });
+
   it('threads the freshly stamped locale into the same-request PDF render (frozenQuote)', async () => {
     queueSendPath(baseQuote, { id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null, settings: { language: 'it-IT' } });
     // #3905 — delivery is deferred out of the send transaction.

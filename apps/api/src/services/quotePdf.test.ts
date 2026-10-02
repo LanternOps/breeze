@@ -1639,3 +1639,147 @@ describe('contents: PDF bookmarks and the opt-in contents list', () => {
     expect(pages(await render(false))[0]).not.toContain('CONTENTS');
   });
 });
+
+describe('a corrupt transparent PNG never crashes the process (pdfkit decodes alpha PNGs after doc.image returns)', () => {
+  // RGBA PNG whose IHDR is valid but whose IDAT is not a deflate stream —
+  // pdfkit's alpha split inflates it asynchronously and throws outside any
+  // try/catch, which reaches the API's uncaughtException handler.
+  function corruptRgbaPng(): Buffer {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(4, 0); ihdr.writeUInt32BE(4, 4);
+    ihdr[8] = 8; ihdr[9] = 6; // 8-bit RGBA
+    return Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', ihdr),
+      pngChunk('IDAT', Buffer.from('this is not a zlib stream at all, just junk bytes')),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+  }
+  const quote = {
+    id: 'q-bad', quoteNumber: 'Q-BAD', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+
+  it('skips a corrupt logo, image block and cover image, keeps the wordmark, and reports them', async () => {
+    const bad = corruptRgbaPng();
+    vi.mocked(captureException).mockClear();
+    const buf = await renderQuotePdf(
+      { ...quote, coverPage: { enabled: true, title: 'Cover', coverImageId: 'cover', showPreparedBy: true } } as never,
+      [{ id: 'i', blockType: 'image', sortOrder: 0, content: { imageId: 'img' } }] as never,
+      [], async () => ({ data: bad }),
+      { partnerName: 'WordmarkCo', logoUrl: `data:image/png;base64,${bad.toString('base64')}` },
+    );
+    await settle(); // any async pdfkit decode error would surface here as an unhandled error
+    expect(buf.subarray(0, 4).toString()).toBe('%PDF');
+    expect(extractPdfText(buf)).toContain('WordmarkCo');
+    expect(vi.mocked(captureException)).toHaveBeenCalled();
+  });
+});
+
+describe('keep-with-next: every follower type (review of #7713)', () => {
+  const quote = {
+    id: 'q-kwn3', quoteNumber: 'Q-KWN3', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00',
+    annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
+  };
+  const filler = (n: number) => ({ id: 'filler', blockType: 'rich_text', sortOrder: 0, content: { html: Array.from({ length: n }, (_, i) => `<p>Filler line ${i + 1}.</p>`).join('') } });
+  const pageWith = (buf: Buffer, needle: string) => {
+    const pages = extractPdfTextByStream(buf).filter((t) => /Page \d+ of \d+/.test(t));
+    return pages.findIndex((t) => t.includes(needle)) + 1;
+  };
+  const longText = Array.from({ length: 8 }, (_, i) => `Sentence ${i + 1} of a callout body that runs long enough to wrap across the box.`).join(' ');
+  const cases: Array<{ name: string; blocks: unknown[]; lines?: unknown[]; follower: string }> = [
+    {
+      name: 'a subheading, then a paragraph',
+      blocks: [
+        { id: 'h2', blockType: 'heading', sortOrder: 2, content: { text: 'SubheadingMarker', level: 2 } },
+        { id: 'p', blockType: 'rich_text', sortOrder: 3, content: { html: '<p>Paragraph under the subheading with enough words to wrap to a second line of the page.</p>' } },
+      ],
+      follower: 'SubheadingMarker',
+    },
+    { name: 'a tall callout', blocks: [{ id: 'co', blockType: 'callout', sortOrder: 2, content: { variant: 'info', title: 'CalloutMarker', html: `<p>${longText}</p>` } }], follower: 'CalloutMarker' },
+    {
+      name: 'a pricing table with a tall first row',
+      blocks: [{ id: 'li', blockType: 'line_items', sortOrder: 2, content: { label: 'Section label' } }],
+      lines: [{ id: 'l1', blockId: 'li', name: 'FirstRowMarker', description: Array.from({ length: 10 }, (_, i) => `Spec ${i + 1}`).join('\n'), quantity: '1', unitPrice: '1', lineTotal: '1.00', recurrence: 'one_time' }],
+      follower: 'FirstRowMarker',
+    },
+    {
+      name: 'an empty rich-text block, then a paragraph',
+      blocks: [
+        { id: 'empty', blockType: 'rich_text', sortOrder: 2, content: { html: '<p></p>' } },
+        { id: 'p', blockType: 'rich_text', sortOrder: 3, content: { html: '<p>ParagraphMarker after an empty block, long enough to wrap onto a second line of the page.</p>' } },
+      ],
+      follower: 'ParagraphMarker',
+    },
+  ];
+  for (const tc of cases) {
+    it(`a heading stays with ${tc.name}`, async () => {
+      for (let n = 1; n <= 45; n++) {
+        const buf = await renderQuotePdf(quote as never, [
+          filler(n),
+          { id: 'h', blockType: 'heading', sortOrder: 1, content: { text: 'LeadHeading', level: 1 } },
+          ...tc.blocks,
+        ] as never, (tc.lines ?? []) as never, async () => null, {});
+        expect(pageWith(buf, tc.follower), `stranded (n=${n})`).toBe(pageWith(buf, 'LeadHeading'));
+      }
+    });
+  }
+
+  it("a pricing table's label and column header stay with its first row (fine sweep)", async () => {
+    // Filler lines (21pt steps) walk the table toward the page foot and a
+    // 1px-wide spacer image fills each step in 1.5pt increments — finer than
+    // the 4pt window a row-gap mismatch once left open.
+    for (let n = 20; n <= 36; n++) for (let h = 1; h <= 28; h += 2) {
+      const buf = await renderQuotePdf(quote as never, [
+        filler(n),
+        { id: 'sp', blockType: 'image', sortOrder: 1, content: { imageId: 'spacer', width: 1 } },
+        { id: 'li', blockType: 'line_items', sortOrder: 2, content: { label: 'LabelMarker' } },
+      ] as never, [{ id: 'l1', blockId: 'li', name: 'RowMarker', description: 'Short blurb', quantity: '1', unitPrice: '1', lineTotal: '1.00', recurrence: 'one_time' }] as never,
+      async () => ({ data: makePng(1, h) }), {});
+      expect(pageWith(buf, 'RowMarker'), `label stranded (n=${n}, h=${h})`).toBe(pageWith(buf, 'LabelMarker'));
+    }
+  });
+});
+
+describe('rich-text tables: header row stays with the first body row', () => {
+  it('never leaves a <thead> row at a page foot', async () => {
+    const quote = { id: 'q-rtt', quoteNumber: 'Q-RTT', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' };
+    const tall = Array.from({ length: 4 }, (_, i) => `line ${i + 1}`).join('<br>');
+    for (let n = 1; n <= 45; n++) {
+      const html = `${Array.from({ length: n }, (_, i) => `<p>Filler line ${i + 1}.</p>`).join('')}<table><thead><tr><th>HeadCellMarker</th><th>B</th></tr></thead><tbody><tr><td>BodyCellMarker ${tall}</td><td>x</td></tr></tbody></table>`;
+      const buf = await renderQuotePdf(quote as never, [{ id: 'rt', blockType: 'rich_text', sortOrder: 0, content: { html } }] as never, [], async () => null, {});
+      const pages = extractPdfTextByStream(buf).filter((t) => /Page \d+ of \d+/.test(t));
+      const headPage = pages.findIndex((t) => t.includes('HeadCellMarker'));
+      expect(pages[headPage], `header stranded (n=${n})`).toContain('BodyCellMarker');
+    }
+  });
+});
+
+describe('contents list: long lists and cover pages', () => {
+  const quote = { id: 'q-toc2', quoteNumber: 'Q-TOC2', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD' };
+  const pageCount = (buf: Buffer) => (buf.toString('latin1').match(/\/Type \/Page[^s]/g) ?? []).length;
+  const pages = (buf: Buffer) => extractPdfTextByStream(buf).filter((t) => /Page \d+ of \d+/.test(t));
+
+  it('a list taller than a page is cut short instead of spilling onto stray pages', async () => {
+    const blocks = Array.from({ length: 70 }, (_, i) => ({ id: `h${i}`, blockType: 'heading', sortOrder: i, content: { text: `Section${i + 1}`, level: 1 } }));
+    const off = await renderQuotePdf({ ...quote, coverPage: { enabled: false, showPreparedBy: true } } as never, blocks as never, [], async () => null, {});
+    const on = await renderQuotePdf({ ...quote, coverPage: { enabled: false, showPreparedBy: true, showContents: true } } as never, blocks as never, [], async () => null, {});
+    // One page of contents at most; never a trail of one-entry pages after the content.
+    expect(pageCount(on)).toBeLessThanOrEqual(pageCount(off) + 1);
+    expect(pages(on)[0]).toMatch(/and \d+ more/);
+    expect(pages(on).at(-1)).toContain('Section70');
+  });
+
+  it('counts the cover page in contents page numbers, like the footer does', async () => {
+    const blocks = [
+      { id: 'h1', blockType: 'heading', sortOrder: 0, content: { text: 'CoverAlpha', level: 1 } },
+      { id: 'p1', blockType: 'rich_text', sortOrder: 1, content: { html: '<p>Body.</p>' } },
+    ];
+    const buf = await renderQuotePdf({ ...quote, coverPage: { enabled: true, title: 'Cover', showPreparedBy: true, showContents: true } } as never, blocks as never, [], async () => null, {});
+    const all = pages(buf);
+    const contentsPage = all.findIndex((t) => t.includes('CONTENTS'));
+    expect(contentsPage).toBe(1); // page 2: the cover is page 1
+    expect(all[contentsPage]).toMatch(/CoverAlpha2/);
+  });
+});
