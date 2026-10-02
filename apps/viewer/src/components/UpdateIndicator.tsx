@@ -6,13 +6,11 @@ import {
   updateProgressPercent,
   isUpdateActive,
   isUpdateStatus,
-  shouldAutoDismiss,
+  autoDismissMs,
+  statusAfterApplyRejected,
   type UpdateStatus,
 } from '../lib/updateStatus';
 import { applyPendingUpdate, dismissPendingUpdate } from '../lib/updateActions';
-
-/** How long a deferred-update notice lingers before auto-dismissing (ms). */
-const DEFERRED_DISMISS_MS = 10_000;
 
 /**
  * Small fixed banner that surfaces the otherwise-silent auto-updater.
@@ -44,11 +42,12 @@ export default function UpdateIndicator() {
     };
   }, []);
 
-  // Auto-dismiss informational (deferred) notices; in-flight phases stay
+  // Auto-dismiss terminal notices (deferred / failed); in-flight phases stay
   // pinned until the process exits or restarts.
   useEffect(() => {
-    if (!status || !shouldAutoDismiss(status)) return;
-    const timer = setTimeout(() => setStatus(null), DEFERRED_DISMISS_MS);
+    const delay = status ? autoDismissMs(status) : null;
+    if (delay == null) return;
+    const timer = setTimeout(() => setStatus(null), delay);
     return () => clearTimeout(timer);
   }, [status]);
 
@@ -82,8 +81,18 @@ export default function UpdateIndicator() {
         <Icon
           className={`w-3.5 h-3.5 ${iconColor} ${status.phase === 'restarting' ? 'animate-spin' : ''}`}
         />
-        <span className="whitespace-nowrap">{message}</span>
+        <span className={status.phase === 'failed' ? 'break-words' : 'whitespace-nowrap'}>
+          {message}
+        </span>
       </div>
+      {status.phase === 'failed' && (
+        // What the updater actually reported, and where the full attempt is
+        // logged — "failed" alone left no way to diagnose #7681.
+        <div data-testid="update-failure-detail" className="text-[11px] leading-snug text-gray-400">
+          <div className="break-words">{status.error}</div>
+          {status.logPath && <div className="break-all">Log: {status.logPath}</div>}
+        </div>
+      )}
       {status.phase === 'ready' && (
         <div className="flex items-center gap-2 mt-0.5">
           <button
@@ -91,13 +100,13 @@ export default function UpdateIndicator() {
             disabled={acting}
             onClick={() => {
               setActing(true);
+              const { version } = status;
               applyPendingUpdate().catch((e) => {
                 console.error('Failed to apply update', e);
-                // The command rejected (install failed, or nothing staged) and
-                // may not have emitted a status event — surface a failure notice
-                // so the user isn't stranded on a dead prompt. It auto-dismisses
-                // and the update retries on next launch.
-                setStatus({ phase: 'failed', version: status.version });
+                // The command rejected (install failed, or nothing staged).
+                // Show a failure so the user isn't stranded on a dead prompt —
+                // keeping Rust's detailed one if its event already arrived.
+                setStatus((current) => statusAfterApplyRejected(current, version, e));
                 setActing(false);
               });
             }}
