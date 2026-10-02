@@ -130,6 +130,51 @@ describe('passive topology graph — real request RLS and scope', () => {
     expect(next.total).toBe(4); expect(next.nodes[0].id).not.toBe(page.nodes[0].id);
   });
 
+  it('expands a grouped-overview card to its whole group and pages every member exactly once (#7818)', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    const scope = { orgId: env.organization.id, siteId: env.site.id };
+    // One LAN seen by two observers: canonical network nodes are per observer, so the card
+    // folds two of them. Expanding the first one's neighbourhood (the old stand-in) would
+    // miss the second network and its members.
+    const networks = ['f0000000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000002'];
+    const memberIds = [1, 2, 3, 4].map((n) => `10000000-0000-4000-8000-00000000000${n}`);
+    // An endpoint on no network: its own (unidentified) card, never part of the LAN's expansion.
+    const outsider = '20000000-0000-4000-8000-000000000001';
+    await getTestDb().insert(topologySiteState).values({ ...scope, graphRevision: 1n }).onConflictDoNothing();
+    await getTestDb().insert(topologyNodes).values([...memberIds, outsider, ...networks].map(id => {
+      const kind = networks.includes(id) ? 'network' as const : 'endpoint' as const;
+      return { ...scope, id, kind, identityKey: canonicalIdentityKey(scope, kind, id), identityMaterial: { version: 1 as const, kind, sourceKey: id },
+        attributes: kind === 'network' ? { label: 'LAN', prefix: '10.1.2.0/24' } : { label: id } };
+    }));
+    await getTestDb().insert(topologyRelationships).values(memberIds.map((id, i) => {
+      const sourceKey = `membership:${id}`;
+      return { ...scope, kind: 'network_member' as const, sourceNodeId: id, targetNodeId: networks[i < 2 ? 0 : 1]!,
+        canonicalKey: canonicalIdentityKey(scope, 'network_member', sourceKey), identityMaterial: { version: 1 as const, kind: 'network_member' as const, sourceKey } };
+    }));
+    const overview = await graph(env, env.site.id, '?limit=2');
+    const card = overview.presentation.nodes.find(node => node.role === 'network_group')!;
+    expect(card.group!.members.map(member => member.nodeId)).toEqual(memberIds.slice(0, 2));
+    let res = await request(env, env.site.id, `expansions/${card.frontierToken}`);
+    expect(res.status).toBe(200);
+    let page = graphResponseSchema.parse(await res.json());
+    expect(page.counts.totalNodes).toBe(6);
+    const seen: string[] = [];
+    for (let pages = 0; pages < 4; pages++) {
+      expect(page.nodes.length).toBeLessThanOrEqual(2);
+      seen.push(...page.nodes.map(node => node.id));
+      const next = page.frontier.find(frontier => frontier.label === 'More devices');
+      if (!next) break;
+      res = await request(env, env.site.id, `expansions/${next.token}`);
+      expect(res.status).toBe(200);
+      page = graphResponseSchema.parse(await res.json());
+    }
+    expect(seen).toEqual([...memberIds, ...networks]);
+    expect(page.presentation.nodes.find(node => node.role === 'network_group')!.group!.canonicalNodeIds).toEqual(networks);
+    // The claim stays bound to its site: replayed against a sibling site it is refused.
+    const other = await createSite({ orgId: env.organization.id });
+    expect((await request(env, other.id, `expansions/${card.frontierToken}`)).status).toBe(400);
+  });
+
   it('does not expose same-org site subjects through detail, evidence, health or frontier tokens', async () => {
     const env = await setupTestEnvironment({ rolePermissions: READ }); await seed(env.organization.id, env.site.id);
     const other = await createSite({ orgId: env.organization.id }); const foreign = await seed(env.organization.id, other.id);

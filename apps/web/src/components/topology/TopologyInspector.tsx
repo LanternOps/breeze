@@ -98,7 +98,8 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
     })}</ul></div>}
     {'bindings' in entity && entity.bindings.filter((binding) => binding.type !== 'manual_node').map((binding) => <a key={binding.id} className="block text-sm text-primary underline" href={binding.type === 'device' ? `/devices/${binding.referenceId}` : `/devices/network/${binding.referenceId}`}>{t('openInventory')}</a>)}
     {'memberCount' in entity && !('group' in entity && entity.group) && <p className="text-sm">{t('members', { count: entity.memberCount })}</p>}
-    {'frontierToken' in entity && !('group' in entity && entity.group) && <button data-testid="topology-expand" className="rounded border px-3 py-2" onClick={() => onExpand(entity.frontierToken)}>{t('expand')}</button>}
+    {/* A card's token expands its whole group (#7818); a frontier or edge token its own slice. */}
+    {'frontierToken' in entity && <button data-testid="topology-expand" className="rounded border px-3 py-2" onClick={() => onExpand(entity.frontierToken)}>{t('expand')}</button>}
     {'kind' in entity && 'directionality' in entity && siteId && <>
       <PhysicalEvidencePanel relationship={detail?.relationship ?? entity} detail={detail} evidence={evidence} onLoadMoreEvidence={() => void loadMore()} />
       {!detail && !error && <p role="status" className="text-sm text-muted-foreground">{t('physicalView.loadingDetail')}</p>}

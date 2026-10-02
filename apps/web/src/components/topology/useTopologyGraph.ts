@@ -3,7 +3,12 @@ import { graphResponseSchema } from '@breeze/shared/validators/topology';
 import type { GraphResponse, TopologyView } from '@breeze/shared';
 import { topologyApi, topologyHealthSchema, topologyRead, TopologyReadError } from './topologyApi';
 
-/** Passive reads only. Health updates preserve structure and never trigger layout. */
+/**
+ * Passive reads only. Health updates preserve structure and never trigger layout.
+ * An expansion (a group card or frontier, #7818) stays on screen: the structural poll
+ * re-reads that same server-issued token until `collapse()` or until the server refuses
+ * it (graph changed, token expired), when the view falls back to the base read.
+ */
 export function useTopologyGraph(scope: { siteId: string }, query: { view: TopologyView; focusNodeId?: string }, enabled = true) {
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -11,10 +16,15 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
   const graphRef = useRef(graph); graphRef.current = graph;
   const [refresh, setRefresh] = useState(0);
   const activeScope = useRef('');
+  const [expansion, setExpansion] = useState<string | null>(null);
+  const expansionRef = useRef(expansion); expansionRef.current = expansion;
   const scopeKey = `${scope.siteId}/${query.view}/${query.focusNodeId ?? ''}`;
   const refreshGraph = useCallback(() => setRefresh((n) => n + 1), []);
+  const leave = useCallback(() => { expansionRef.current = null; setExpansion(null); setRefresh((n) => n + 1); }, []);
   useEffect(() => {
-    activeScope.current = scopeKey; setGraph(null); setError(null);
+    // The ref is cleared here too: the structural effect below runs in this same commit,
+    // and must not replay the previous scope's expansion token against the new one.
+    activeScope.current = scopeKey; setGraph(null); setError(null); expansionRef.current = null; setExpansion(null);
   }, [scopeKey]);
   useEffect(() => {
     if (!enabled) return;
@@ -28,11 +38,17 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
     const structure = async () => {
       if (document.hidden || graphBusy) return;
       graphBusy = true; if (!graphRef.current) setLoading(true);
+      const token = expansionRef.current;
       try {
-        const params = new URLSearchParams({ view: query.view, includeHealth: 'true', ...(query.focusNodeId ? { focusNodeId: query.focusNodeId, hops: '1' } : {}) });
-        const next = await topologyApi.graph(scope.siteId, params, controller.signal);
-        if (valid()) { setGraph(next); setError(null); }
-      } catch (cause) { fail(cause); }
+        const next = token
+          ? await topologyRead(`/topology/sites/${scope.siteId}/expansions/${encodeURIComponent(token)}`, graphResponseSchema, controller.signal)
+          : await topologyApi.graph(scope.siteId, new URLSearchParams({ view: query.view, includeHealth: 'true', ...(query.focusNodeId ? { focusNodeId: query.focusNodeId, hops: '1' } : {}) }), controller.signal);
+        if (valid() && token === expansionRef.current) { setGraph(next); setError(null); }
+      } catch (cause) {
+        // A refused expansion is stale, not an error: drop back to the base read.
+        if (token && valid() && token === expansionRef.current && cause instanceof TopologyReadError && [400, 409].includes(cause.status)) leave();
+        else fail(cause);
+      }
       finally { graphBusy = false; if (valid()) setLoading(false); }
     };
     const health = async () => {
@@ -60,8 +76,10 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
     const key = activeScope.current;
     try {
       const next = await topologyRead(`/topology/sites/${scope.siteId}/expansions/${encodeURIComponent(token)}`, graphResponseSchema);
-      if (key === activeScope.current) setGraph(next);
+      if (key === activeScope.current) { expansionRef.current = token; setExpansion(token); setGraph(next); }
     } catch (cause) { if (key === activeScope.current) setError(cause instanceof Error ? cause.message : 'Unable to expand topology'); }
   };
-  return { graph, loading, error, refreshGraph, expand };
+  return { graph, loading, error, refreshGraph, expand, expanded: expansion !== null,
+    /** Leave the expansion and reload the base (overview or focused) read. */
+    collapse: leave };
 }

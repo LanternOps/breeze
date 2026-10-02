@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { presentationEdgeSchema, presentationNodeSchema, type PresentationEdge, type PresentationNode } from '@breeze/shared';
-import { buildPresentationGroups, cidrContains, type PresentationGroupInput } from './presentationGroups';
+import { createHash } from 'node:crypto';
+import { buildPresentationGroups, cidrContains, presentationGroupMembers, type PresentationGroupInput, type PresentationGroupRef } from './presentationGroups';
 import { topologyOsContextKey, type NeighborObserverBaseline, type NeighborRowInput } from './neighborEvidence';
 
 const id = (prefix: string, n: number) => `${prefix}000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
@@ -33,7 +34,7 @@ function build(input: PresentationGroupInput, options: { visible?: string[]; max
     ...input.networks.map((n) => n.id), ...input.memberships.map((m) => m.endpointId), ...input.routes.map((r) => r.gatewayId),
     ...input.unplaced.map((u) => u.endpointId),
   ];
-  return buildPresentationGroups(input, { view: 'overview', scopeHash: SCOPE, visibleNodeIds: new Set(visible), tokenFor: (focus) => `token:${focus}`,
+  return buildPresentationGroups(input, { view: 'overview', scopeHash: SCOPE, visibleNodeIds: new Set(visible), tokenFor: (ref) => `token:${ref.kind}:${ref.key}`,
     ...(options.maxNodes !== undefined ? { maxNodes: options.maxNodes } : {}), ...(options.maxEdges !== undefined ? { maxEdges: options.maxEdges } : {}),
     ...(options.now ? { now: options.now } : {}) });
 }
@@ -42,6 +43,12 @@ const gateways = (nodes: PresentationNode[]) => nodes.filter((node) => node.grou
 const unidentified = (nodes: PresentationNode[]) => nodes.filter((node) => node.group?.kind === 'unidentified');
 const role = (edges: PresentationEdge[], name: string) => edges.filter((edge) => edge.meaning === 'aggregate' && edge.role === name) as Extract<PresentationEdge, { meaning: 'aggregate' }>[];
 const range = (count: number, from = 1) => Array.from({ length: count }, (_, index) => index + from);
+const sha = (key: string) => createHash('sha256').update(key).digest('hex');
+/** The ref a test token (`token:<kind>:<key>`) names. */
+function refOf(token: string): PresentationGroupRef {
+  const [, kind, key] = token.split(':');
+  return { kind: kind as PresentationGroupRef['kind'], key: key! };
+}
 
 describe('buildPresentationGroups', () => {
   it('folds 20 observers of one LAN and one gateway into one network group, one gateway group and one routes_via edge', () => {
@@ -54,7 +61,7 @@ describe('buildPresentationGroups', () => {
     expect(group.group!.members).toHaveLength(20);
     expect(group.group!.members.every((m) => m.placement === 'observed' && m.primary && !m.stale)).toBe(true);
     expect(new Set(group.group!.canonicalNodeIds)).toEqual(new Set(range(20).map(N)));
-    expect(group.frontierToken).toBe(`token:${N(1)}`);
+    expect(group.frontierToken).toBe(`token:network:${sha('lan|4|10.1.2.0/24|10.1.2.1')}`);
 
     expect(gateways(nodes)).toHaveLength(1);
     expect(gateways(nodes)[0]).toMatchObject({ role: 'gateway_group', label: 'Reported gateway 10.1.2.1' });
@@ -293,7 +300,7 @@ describe('buildPresentationGroups', () => {
     }
     expect(new Set([...first.nodes, ...first.edges].map((entity) => entity.id)).size).toBe(first.nodes.length + first.edges.length);
     const unid = unidentified(first.nodes)[0]!;
-    expect(unid).toMatchObject({ role: 'unidentified_group', label: 'Network not identified', frontierToken: `token:${E(40)}` });
+    expect(unid).toMatchObject({ role: 'unidentified_group', label: 'Network not identified', frontierToken: `token:unidentified:${sha('unidentified')}` });
     expect(unid.group).toMatchObject({ basis: 'unidentified', networkClass: null, prefix: null, canonicalNodeIds: [] });
   });
 
@@ -484,6 +491,62 @@ describe('neighbour-cache corroboration (#7816, #7817)', () => {
     expect(networks(plain.nodes)[0]!.group!.neighborCoverage).toBeUndefined();
     expect(gateways(plain.nodes)[0]!.group!.gatewayMacs).toBeUndefined();
     expect(memberOf(plain.nodes, E(40))!.m.placement).toBe('address_match');
+  });
+});
+
+describe('group-scoped expansion refs (#7818)', () => {
+  const site = () => lan(range(20).map((n) => ({ n, prefix: '10.1.2.0/24', gateway: '10.1.2.1' })), {
+    unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }, { endpointId: E(41), addresses: ['192.0.2.9'] }],
+  });
+
+  it('names the whole group, not its first canonical node, and resolves beyond the bounded page', () => {
+    const input = site();
+    // Only one observer is on this page: the card lists it alone, but the ref covers the group.
+    const { nodes } = build(input, { visible: [N(1), E(1), G(1), E(41)] });
+    const card = networks(nodes)[0]!;
+    expect(card.group!.members.map((m) => m.nodeId)).toEqual([E(1)]);
+    expect(card.frontierToken).not.toContain(N(1));
+    const members = presentationGroupMembers(input, refOf(card.frontierToken))!;
+    expect(new Set(members)).toEqual(new Set([...range(20).map(N), ...range(20).map(E), E(40)]));
+    expect(members).toEqual([...members].sort());
+    // Gateways are their own card; the unidentified endpoint is not on this LAN.
+    expect(members.some((id) => id === G(1) || id === E(41))).toBe(false);
+  });
+
+  it('resolves gateway and unidentified cards to exactly their own canonical sets', () => {
+    const input = site();
+    const { nodes } = build(input);
+    expect(presentationGroupMembers(input, refOf(gateways(nodes)[0]!.frontierToken))).toEqual(range(20).map(G).sort());
+    expect(presentationGroupMembers(input, refOf(unidentified(nodes)[0]!.frontierToken))).toEqual([E(41)]);
+  });
+
+  it('gives split candidates distinct refs over disjoint members', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.254' }]);
+    const cards = networks(build(input).nodes);
+    expect(cards).toHaveLength(2);
+    expect(cards[0]!.frontierToken).not.toBe(cards[1]!.frontierToken);
+    const [a, b] = cards.map((card) => new Set(presentationGroupMembers(input, refOf(card.frontierToken))));
+    expect([...a!].filter((id) => b!.has(id))).toEqual([]);
+  });
+
+  it('expands an aggregate edge to the card it stood in for', () => {
+    const base = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], {
+      networks: [{ id: N(60), prefix: '2001:db8:1::/64' }],
+      memberships: [{ id: M(60), endpointId: E(1), networkId: N(60), interfaceId: I(1), fresh: true }],
+    });
+    const { nodes, edges } = build(base);
+    const v4 = networks(nodes).find((node) => node.group!.prefix === '10.1.2.0/24')!;
+    const v6 = networks(nodes).find((node) => node.group!.prefix === '2001:db8:1::/64')!;
+    expect(role(edges, 'routes_via')[0]!.frontierToken).toBe(v4.frontierToken);
+    expect(role(edges, 'shared_devices')[0]!.frontierToken).toBe(v6.frontierToken);
+  });
+
+  it('returns null for a ref that names no group (gone, or kind and key mismatched)', () => {
+    const input = site();
+    const { nodes } = build(input);
+    expect(presentationGroupMembers(input, { kind: 'network', key: 'f'.repeat(64) })).toBeNull();
+    expect(presentationGroupMembers(input, { ...refOf(gateways(nodes)[0]!.frontierToken), kind: 'network' })).toBeNull();
+    expect(presentationGroupMembers({ networks: [], memberships: [], routes: [], unplaced: [] }, refOf(unidentified(nodes)[0]!.frontierToken))).toBeNull();
   });
 });
 
