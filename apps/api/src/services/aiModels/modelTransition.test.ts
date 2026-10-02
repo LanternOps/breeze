@@ -10,7 +10,7 @@ vi.mock('../../db', () => ({
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import { makeResolvedModel } from './__fixtures__/resolvedModel';
-import { planModelTransition, readPreviousTurn, type PreviousTurn } from './modelTransition';
+import { planModelTransition, planTransitionWithFailover, readPreviousTurn, type PreviousTurn } from './modelTransition';
 import { captureException } from '../sentry';
 import type { TranscriptFitDeps } from './transcriptFit';
 
@@ -122,5 +122,62 @@ describe('readPreviousTurn', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(captureException).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('planTransitionWithFailover (W09 #7607): every failover candidate passes W05\'s gate', () => {
+  const primary = makeResolvedModel('platform', { offering: { id: 'p', displayName: 'P' } });
+  const hop = (id: string) => makeResolvedModel('platform', {
+    offering: { id, displayName: id.toUpperCase() }, wireModel: `wire-${id}`,
+    failover: { fromOfferingId: 'p', hop: 1, cause: 'cooldown' },
+  });
+  const resume = { kind: 'switch_resume' as const, carriedRates: [], fit: { kind: 'fits' as const } } as never;
+  const cont = { kind: 'continuation_required' as const, reason: 'transcript_too_large' as const };
+
+  it('the user\'s own model (no failover) is planned once and never re-resolved', async () => {
+    const plan = vi.fn(async () => cont);
+    const reResolve = vi.fn();
+    const out = await planTransitionWithFailover({ first: primary, plan, reResolve });
+    expect(out).toEqual({ model: primary, transition: cont });
+    expect(reResolve).not.toHaveBeenCalled();
+  });
+
+  it('a failover candidate the transcript cannot move to is passed over for the next one', async () => {
+    const f1 = hop('f1');
+    const f2 = hop('f2');
+    const plan = vi.fn(async (t: { offering: { id: string | null } }) => (t.offering.id === 'f1' ? cont : resume));
+    const reResolve = vi.fn(async () => f2);
+    const out = await planTransitionWithFailover({ first: f1, plan, reResolve });
+    expect(reResolve).toHaveBeenCalledWith(['f1']);
+    expect(out).toEqual({ model: f2, transition: resume });
+  });
+
+  it('when no candidate can take the conversation, the cooling primary serves (never an outage)', async () => {
+    const f1 = hop('f1');
+    const plan = vi.fn(async (t: { offering: { id: string | null } }) => (t.offering.id === 'p' ? { kind: 'same_model' as const, carriedRates: [] } : cont));
+    const reResolve = vi.fn(async () => primary);
+    const out = await planTransitionWithFailover({ first: f1, plan, reResolve });
+    expect(out.model).toBe(primary);
+    expect(out.transition).toMatchObject({ kind: 'same_model' });
+  });
+
+  it('nothing else resolves: the FIRST candidate and its continuation are kept (W05 offers a new chat)', async () => {
+    const f1 = hop('f1');
+    const plan = vi.fn(async () => cont);
+    const reResolve = vi.fn()
+      .mockResolvedValueOnce(hop('f2'))
+      .mockResolvedValueOnce({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: null, message: 'x' });
+    const out = await planTransitionWithFailover({ first: f1, plan, reResolve });
+    expect(reResolve.mock.calls.map((c) => c[0])).toEqual([['f1'], ['f1', 'f2']]);
+    expect(out).toEqual({ model: f1, transition: cont });
+  });
+
+  it('a re-resolution that returns an already-planned candidate stops the walk', async () => {
+    const f1 = hop('f1');
+    const plan = vi.fn(async () => cont);
+    const reResolve = vi.fn(async () => f1);
+    const out = await planTransitionWithFailover({ first: f1, plan, reResolve });
+    expect(reResolve).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({ model: f1, transition: cont });
   });
 });

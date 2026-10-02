@@ -13,7 +13,8 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import type { AiBillingSource } from '../aiCostTracker';
 import { captureException } from '../sentry';
 import type { RateSnapshot } from './pricing';
-import type { ResolvedModel } from './resolveModel';
+import { MAX_FAILOVER_HOP } from './failover';
+import type { ResolvedModel, ResolveModelResult } from './resolveModel';
 import { checkTranscriptFit, defaultTranscriptFitDeps, type TranscriptFit, type TranscriptFitDeps } from './transcriptFit';
 import { parseTurnBinding, type CarriedRate } from './turnBinding';
 
@@ -174,6 +175,41 @@ export async function planModelTransition(
     reason: fit.kind === 'too_large' ? 'transcript_too_large' : 'fit_unverifiable',
     fit,
   };
+}
+
+/**
+ * W09 (#7607): a resolution-time failover (the resolver walked to a backup
+ * because the session's model is cooling or gone) must pass the SAME gate as
+ * a user's switch. Each failover candidate is planned with W05's
+ * planModelTransition; one that would need a continuation (another connection,
+ * config version or catalog revision, or a transcript that does not fit) is
+ * passed over by re-resolving with it excluded, so the walk moves on to the
+ * next candidate — or back to a cooling primary, which never needs a
+ * transition. The user's own model (`failover === null`) is planned once,
+ * exactly as W05 does. If nothing else resolves, the FIRST candidate and its
+ * continuation stand, so the client still offers a new chat on a working model.
+ */
+export async function planTransitionWithFailover(input: {
+  first: ResolvedModel;
+  plan: (target: ResolvedModel) => Promise<ModelTransition>;
+  reResolve: (excludeOfferingIds: string[]) => Promise<ResolveModelResult>;
+}): Promise<{ model: ResolvedModel; transition: ModelTransition }> {
+  const firstTransition = await input.plan(input.first);
+  let model = input.first;
+  let transition = firstTransition;
+  const excluded: string[] = [];
+  for (let i = 0; i < MAX_FAILOVER_HOP && transition.kind === 'continuation_required' && model.failover !== null; i++) {
+    if (!model.offering.id) break;
+    excluded.push(model.offering.id);
+    const next = await input.reResolve([...excluded]);
+    if (!next.ok || next.offering.id === null || excluded.includes(next.offering.id)) break;
+    model = next;
+    transition = await input.plan(next);
+    if (transition.kind !== 'continuation_required') return { model, transition };
+  }
+  return transition.kind === 'continuation_required'
+    ? { model: input.first, transition: firstTransition }
+    : { model, transition };
 }
 
 export function continuationMessage(reason: AiContinuationReason, targetName: string): string {
