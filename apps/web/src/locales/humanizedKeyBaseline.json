@@ -771,7 +771,6 @@
   "billing.orgBillingSettings.terms.partnerDefault",
   "billing.partnerBillingSettings.company.useCompanyAddress",
   "billing.partnerBillingSettings.defaults.currencyCode",
-  "billing.partnerBillingSettings.defaults.documentTheme",
   "billing.partnerBillingSettings.defaults.invoiceFooter",
   "billing.partnerBillingSettings.defaults.invoiceNumberPrefix",
   "billing.quotes.actions.acceptOnBehalf.method.purchase_order",
