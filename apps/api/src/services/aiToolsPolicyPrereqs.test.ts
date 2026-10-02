@@ -985,6 +985,34 @@ describe('manage_backup_configs refuses destination values in the stored encrypt
   });
 });
 
+describe('manage_backup_configs get masks every destination credential', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('shows whether each credential is set, never its value', async () => {
+    mockSelectReturns({
+      id: BACKUP_CONFIG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: {
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'AKIA-PLAIN',
+        secretKey: 'plain-secret',
+        sessionToken: 'plain-session',
+        secretAccessKey: 'plain-legacy-secret',
+      },
+    });
+    const output = await getBackupConfigsTool().handler({ action: 'get', configId: BACKUP_CONFIG_ID }, makeOrgAuth());
+
+    const parsed = JSON.parse(output);
+    expect(parsed.config.providerConfig.bucket).toBe('backups');
+    expect(parsed.config.providerConfig.sessionToken).toEqual({ redacted: true, hasSecret: true, masked: '********' });
+    expect(output).not.toMatch(/AKIA-PLAIN|plain-secret|plain-session|plain-legacy-secret/);
+  });
+});
+
 describe('manage_backup_configs storage key history', () => {
   const S3 = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
 

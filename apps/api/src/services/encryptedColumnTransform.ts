@@ -109,6 +109,11 @@ const SECRET_JSON_KEYS = new Set([
   'privPassword',
 ]);
 
+/** Whether `key` is one of the secret names sealed in every registered JSON column. */
+export function isSecretJsonKey(key: string): boolean {
+  return SECRET_JSON_KEYS.has(key);
+}
+
 function pathsEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }

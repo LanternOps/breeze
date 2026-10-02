@@ -211,8 +211,10 @@ async function updateValue(
     assignment = sql`${JSON.stringify(value)}::jsonb`;
     unchanged = sql`${target} = ${JSON.stringify(previous)}::jsonb`;
   } else if (spec.kind === 'text-array') {
-    assignment = sql`${value as string[]}::text[]`;
-    unchanged = sql`${target} = ${previous as string[]}::text[]`;
+    // Bound as ONE jsonb parameter: Drizzle expands a JS array into a
+    // parenthesised parameter list, which `::text[]` cannot cast.
+    assignment = sql`ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify(value)}::jsonb))`;
+    unchanged = sql`to_jsonb(${target}) = ${JSON.stringify(previous)}::jsonb`;
   } else {
     assignment = sql`${value as string}`;
     unchanged = sql`${target} = ${previous as string}`;

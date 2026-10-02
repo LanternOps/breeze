@@ -3,6 +3,7 @@ import {
   BACKUP_PROVIDER_CONFIG_COLUMN,
   BackupProviderConfigSealError,
   findCiphertextShapedValue,
+  isSecretField,
   holdsUnsealedBackupProviderSecret,
   openBackupProviderConfig,
   sealBackupProviderConfig,
@@ -119,6 +120,15 @@ describe('backup provider config sealing', () => {
     expect(findCiphertextShapedValue({ ...S3, nested: { bucket: foreign } })).toBe('nested.bucket');
     expect(findCiphertextShapedValue(S3)).toBeNull();
     expect(() => sealBackupProviderConfig({ ...S3, secretKey: foreign })).toThrow(BackupProviderConfigSealError);
+  });
+
+  it('masks every field it seals: the general secret names are secret fields too', () => {
+    const config = { bucket: 'b', routingKey: 'plain-rk', community: 'plain-community', authPassphrase: 'plain-pp' };
+    const stored = sealBackupProviderConfig(config) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(stored)) {
+      const sealed = typeof value === 'string' && isEncryptedSecret(value);
+      expect({ key, masked: isSecretField(key) }).toEqual({ key, masked: sealed });
+    }
   });
 
   describe('backfill transform', () => {

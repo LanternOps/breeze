@@ -1,6 +1,7 @@
 import { decryptSecret, isEncryptedSecret } from './secretCrypto';
 import {
   columnAad,
+  isSecretJsonKey,
   isSecretJsonPath,
   transformEncryptedColumnValue,
   type EncryptedColumnSpec,
@@ -56,7 +57,12 @@ const SECRET_FIELD_NAMES = new Set([
 
 export function isSecretField(key: string): boolean {
   const normalized = key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  return SECRET_FIELD_NAMES.has(normalized) || normalized.endsWith('token') || normalized.endsWith('secret');
+  return SECRET_FIELD_NAMES.has(normalized)
+    || normalized.endsWith('token')
+    || normalized.endsWith('secret')
+    // The names every registered JSON column seals (encryptedColumnTransform),
+    // so nothing is sealed at rest that a response would show unmasked.
+    || isSecretJsonKey(key);
 }
 
 /**
