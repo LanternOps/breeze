@@ -506,7 +506,9 @@ describe('grouped overview contract (2026-10-02)', () => {
     // A tunnel's own single-host address (Tailscale 100.x/32, WireGuard /32) is the overlay, not a host route.
     ['100.101.102.103/32', 'tunnel', 'overlay'], ['fd7a:115c:a1e0::1/128', 'tunnel', 'overlay'],
     // A genuine CGNAT LAN on a link-layer interface stays a LAN.
-    ['100.64.0.0/10', 'ethernet', 'lan'], ['100.100.0.0/16', 'wifi', 'lan'], ['100.72.0.0/16', 'bridge', 'lan'], ['100.80.0.0/12', 'cellular', 'lan'],
+    ['100.64.0.0/10', 'ethernet', 'lan'], ['100.100.0.0/16', 'wifi', 'lan'], ['100.72.0.0/16', 'bridge', 'lan'],
+    // A cellular uplink is a WAN, not a site LAN: a carrier CGNAT address keeps the CIDR guess.
+    ['100.80.0.0/12', 'cellular', 'overlay'], ['10.20.0.0/16', 'cellular', 'lan'],
     ['fd7a:115c:a1e0::/48', 'ethernet', 'lan'],
     // Address-shape facts are not heuristics: link-local scope and single-host prefixes still apply on a link.
     ['169.254.0.0/16', 'tunnel', 'link_local'], ['fe80::/64', 'tunnel', 'link_local'], ['169.254.0.0/16', 'ethernet', 'link_local'],
@@ -521,7 +523,7 @@ describe('grouped overview contract (2026-10-02)', () => {
 
   it('maps every reportable interface kind to exactly one evidence class', () => {
     expect(Object.fromEntries(TOPOLOGY_INTERFACE_KINDS.map((kind) => [kind, topologyInterfaceKindEvidence(kind)]))).toEqual({
-      ethernet: 'link', wifi: 'link', bridge: 'link', cellular: 'link', tunnel: 'tunnel', virtual: 'unknown', other: 'unknown', unknown: 'unknown',
+      ethernet: 'link', wifi: 'link', bridge: 'link', cellular: 'unknown', tunnel: 'tunnel', virtual: 'unknown', other: 'unknown', unknown: 'unknown',
     });
     expect(topologyInterfaceKindEvidence(null)).toBe('unknown');
     expect(topologyInterfaceKindEvidence(undefined)).toBe('unknown');

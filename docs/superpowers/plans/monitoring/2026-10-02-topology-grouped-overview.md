@@ -84,9 +84,10 @@ New presentation node roles (role is already a free string):
     **Amended (#7819):** the agent-reported kind of the membership's interface wins when known
     (`topologyNetworkClass(prefix, interfaceKind)` in `@breeze/shared`, also used by the
     neighbour-cache selector): a `tunnel` interface makes any non-link-local prefix `overlay` (a VPN
-    on RFC1918 included); a link-layer kind (`ethernet`, `wifi`, `bridge`, `cellular`) disables the
+    on RFC1918 included); a link-layer LAN kind (`ethernet`, `wifi`, `bridge`) disables the
     Tailscale/CGNAT range guess, so a genuine CGNAT LAN stays `lan`. The CIDR guess remains only
-    for `unknown`/`virtual`/`other` kinds and memberships with no interface.
+    for `unknown`/`virtual`/`cellular`/`other` kinds and memberships with no interface (a cellular
+    uplink is a carrier WAN, so its CGNAT address keeps the guess).
 - `gateway_group` — one per **(family, address)** for non-link-local gateways reported by observers
   inside the same network-group candidate; label `"Reported gateway 10.1.2.100"`,
   `observerCount`, `canonicalNodeIds` = per-observer gateway nodes. Link-local gateways

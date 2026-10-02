@@ -171,16 +171,17 @@ export type TopologyInterfaceKind = typeof TOPOLOGY_INTERFACE_KINDS[number];
  * What an interface kind says about the networks on it (#7819):
  * - `tunnel`: a point-to-point or overlay interface (tun/WireGuard/Tailscale, PPP, IPsec, VXLAN, TAP);
  *   anything addressed on it is an overlay, whatever its CIDR looks like.
- * - `link`: a link-layer segment (Ethernet, Wi-Fi, a bridge, a cellular modem); the CGNAT/Tailscale
- *   CIDR guess never applies to it.
+ * - `link`: a link-layer LAN segment (Ethernet, Wi-Fi, a bridge); the CGNAT/Tailscale CIDR guess
+ *   never applies to it.
  * - `unknown`: no usable evidence (`virtual` covers veth/macvlan/dummy as well as VPN adapters,
- *   `other` is unclassified, older or partial agents send `unknown`, a row may have no interface);
+ *   `cellular` is a carrier WAN uplink whose CGNAT address is not a site LAN, `other` is
+ *   unclassified, older or partial agents send `unknown`, a row may have no interface);
  *   the CIDR heuristic decides.
  */
 export function topologyInterfaceKindEvidence(kind: string | null | undefined): 'tunnel' | 'link' | 'unknown' {
   switch (kind) {
     case 'tunnel': return 'tunnel';
-    case 'ethernet': case 'wifi': case 'bridge': case 'cellular': return 'link';
+    case 'ethernet': case 'wifi': case 'bridge': return 'link';
     default: return 'unknown';
   }
 }
