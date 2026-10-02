@@ -1321,4 +1321,70 @@ describe('org merge engine SQL against real Postgres', () => {
       if (!(err instanceof Rollback)) throw err;
     }
   });
+
+  it('previews exactly the report definitions the reports pass deletes — every definition kind (#7615)', async () => {
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const creator = randomUUID();
+    const agentId = randomUUID();
+    const scheduleId = randomUUID();
+    const id = () => randomUUID();
+    const [nL, nS, pL, pS, fL, fS, plainL, plainS, loserOnlyPortal] = Array.from({ length: 9 }, id);
+    let previewed = -1;
+    let dropped = -1;
+    let remaining = -1;
+
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          INSERT INTO partners (id, name, slug)
+          VALUES (${P}::uuid, 'Reports preview', ${`reports-preview-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`rp-l-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`rp-s-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        // One partner-owned schedule referenced by a narrative definition in
+        // each org: the narrative key is source_ai_agent_schedule_id.
+        await db.execute(sql`
+          INSERT INTO users (id, email, name, partner_id)
+          VALUES (${creator}::uuid, ${`rp-${P.slice(0, 8)}@x.test`}, 'Creator', ${P}::uuid)`);
+        await db.execute(sql`
+          INSERT INTO ai_agents (id, partner_id, kind, name, created_by, enabled, mode)
+          VALUES (${agentId}::uuid, ${P}::uuid, 'triage', 'Narrator', ${creator}::uuid, true, 'act')`);
+        await db.execute(sql`
+          INSERT INTO ai_agent_schedules (id, partner_id, agent_id, kind, cron, timezone, sweep_kinds)
+          VALUES (${scheduleId}::uuid, ${P}::uuid, ${agentId}::uuid, 'narrative', '0 7 * * 1', 'UTC', '{}')`);
+        await db.execute(sql`
+          INSERT INTO reports (id, org_id, name, type, portal_self_service, source_ai_agent_schedule_id) VALUES
+            (${nL}::uuid, ${L}::uuid, 'Narrative', 'executive_summary', false, ${scheduleId}::uuid),
+            (${nS}::uuid, ${S}::uuid, 'Narrative', 'executive_summary', false, ${scheduleId}::uuid),
+            (${pL}::uuid, ${L}::uuid, 'Portal', 'device_inventory', true, NULL),
+            (${pS}::uuid, ${S}::uuid, 'Portal', 'device_inventory', true, NULL),
+            (${fL}::uuid, ${L}::uuid, 'Fleet Design', 'ai_fleet_design', false, NULL),
+            (${fS}::uuid, ${S}::uuid, 'Fleet Design', 'ai_fleet_design', false, NULL),
+            (${plainL}::uuid, ${L}::uuid, 'Plain', 'executive_summary', false, NULL),
+            (${plainS}::uuid, ${S}::uuid, 'Plain', 'executive_summary', false, NULL),
+            (${loserOnlyPortal}::uuid, ${L}::uuid, 'Loser-only portal', 'executive_summary', true, NULL)`);
+
+        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+        const before = (await db.execute(CUSTOM_WOULD_DROP_COUNTS.reports!(L, S))) as unknown as Array<{ n: number }>;
+        previewed = Number(before[0]?.n);
+        const out = await CUSTOM_EXECUTORS.reports!(L, S);
+        dropped = out.dropped;
+        const left = (await db.execute(sql`
+          SELECT count(*)::int AS n FROM reports
+           WHERE id IN (${nL}::uuid, ${pL}::uuid, ${fL}::uuid)`)) as unknown as Array<{ n: number }>;
+        remaining = Number(left[0]?.n);
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
+
+    // narrative + portal + Fleet Design collisions; plain / loser-only rows are not.
+    expect(previewed).toBe(3);
+    expect(dropped).toBe(previewed);
+    expect(remaining).toBe(0);
+  }, 120_000);
 });
