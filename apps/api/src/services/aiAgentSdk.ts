@@ -80,7 +80,7 @@ import { captureException } from './sentry';
 import { recordActionIntentMetric } from './actionIntents/metrics';
 import { resolveLlmConfigForOrg } from './llm/llmConfigResolver';
 import { isOpenAICompatibleProvider, isPlatformLlmConfigured } from './llm/llmAvailability';
-import type { AiSurface } from '@breeze/shared';
+import type { AiModelChoice, AiSurface } from '@breeze/shared';
 import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
@@ -416,6 +416,8 @@ export async function runPreFlightChecks(
   auth: AuthContext,
   pageContext?: AiPageContext,
   requestContext?: RequestLike,
+  /** W05: the composer's model choice on this message (chat only; strict user resolution). */
+  choice?: AiModelChoice,
 ): Promise<PreFlightResult> {
   const session = await getSession(sessionId, auth);
   if (!session) {
@@ -446,7 +448,7 @@ export async function runPreFlightChecks(
   } else {
     let turn;
     try {
-      turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id });
+      turn = await resolveSessionTurn({ sessionId, surface, userId: auth.user.id, ...(choice ? { choice } : {}) });
     } catch (error) {
       captureException(error, undefined, { service: 'aiAgentSdk', orgId });
       return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };

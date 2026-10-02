@@ -172,6 +172,7 @@ vi.mock('../services/aiBudgetReservations', () => ({
   markAiBudgetReservationIndeterminate: vi.fn(async () => ({
     kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
   })),
+  AiBudgetSessionBusyError: class AiBudgetSessionBusyError extends Error {},
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({
@@ -219,24 +220,21 @@ import { runPreFlightChecks } from '../services/aiAgentSdk';
 import { reserveAiBudget } from '../services/aiBudgetReservations';
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { turnBindingFrom } from '../services/aiModels/turnBinding';
+import { AiBudgetSessionBusyError } from '../services/aiBudgetReservations';
+import { withCarriedRates } from '../services/aiModels/turnBinding';
 
 /**
- * W03 Task 7 — the chat message route consumes the preflight's resolved
- * model: an ineligible stored model is a recoverable 409 with NO reservation
- * (Review Focus 1), and the reservation, the dispatch and the turn claim all
- * carry exactly that model (finding 13).
+ * W05 (#7603) — the composer's model choice rides on the message (D1) and
+ * passes ONE gate (planModelTransition) before anything is reserved: a
+ * transcript too large for the target is a 409 continuation with no
+ * reservation (spike constraint 1), a resumable switch reserves with the
+ * carried rates and recreates the query as a modelSwitch (constraints 2, 4),
+ * and a switch racing a turn in flight is a 409 turn_in_progress (constraint 3).
  */
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
 const RESERVATION_ID = '66666666-6666-4666-8666-666666666666';
-
-function postMessage(app: Hono) {
-  return app.request(`/ai/sessions/${SESSION_ID}/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-    body: JSON.stringify({ content: 'hi' }),
-  });
-}
+const OFF = '0b8f1f2e-6a1c-4c55-9a39-6a7f1e1c0a01';
 
 const DB_SESSION = {
   id: SESSION_ID, orgId: ORG_ID, sdkSessionId: null, maxTurns: 50, turnCount: 0,
@@ -257,69 +255,113 @@ function makeActiveSession() {
   } as any;
 }
 
-describe('POST /ai/sessions/:id/messages — model resolution (W03 Task 7)', () => {
+function postWithModel(app: Hono, model?: unknown) {
+  return app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+    body: JSON.stringify({ content: 'hi', ...(model ? { model } : {}) }),
+  });
+}
+
+describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
   let app: Hono;
+  const model = makeResolvedModel('anthropic_byok', { offering: { id: OFF, displayName: 'Haiku 4.5' } });
 
   beforeEach(() => {
     vi.clearAllMocks();
     openai.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
+    vi.mocked(runPreFlightChecks).mockResolvedValue({
+      ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+    });
+    vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
+    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
   });
 
   afterEach(() => {
     vi.mocked(runPreFlightChecks).mockReset();
   });
 
-  it('a turn whose model went ineligible returns 409 with the recoverable message and takes NO reservation', async () => {
-    vi.mocked(runPreFlightChecks).mockResolvedValue({
-      ok: false, error: 'Model Opus 5.5 is no longer available — choose another.', status: 409, code: 'model_unavailable',
-    });
-    const res = await postMessage(app);
+  it('passes the composer\'s choice to the preflight', async () => {
+    await (await postWithModel(app, { offeringId: OFF, options: { effort: 'high' } })).text();
+    expect(vi.mocked(runPreFlightChecks).mock.calls[0]![5]).toEqual({ offeringId: OFF, options: { effort: 'high' } });
+  });
+
+  it('a switch whose transcript does not fit returns 409 continuation_required and reserves nothing', async () => {
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'continuation_required', reason: 'transcript_too_large' });
+    const res = await postWithModel(app, { offeringId: OFF });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
-      error: 'Model Opus 5.5 is no longer available — choose another.', code: 'model_unavailable', recoverable: true,
+      error: 'This conversation is too long for Haiku 4.5. Continue in a new chat that starts from a summary of this one.',
+      code: 'continuation_required', reason: 'transcript_too_large', recoverable: true,
+      target: { offeringId: OFF, displayName: 'Haiku 4.5' },
     });
     expect(reserveAiBudget).not.toHaveBeenCalled();
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
   });
 
-  it('the cutover gate (registry_unavailable) is a retryable 503 with its code and no reservation', async () => {
-    vi.mocked(runPreFlightChecks).mockResolvedValue({
-      ok: false, error: 'AI configuration is being upgraded. Try again in a moment.', status: 503, code: 'registry_unavailable',
+  it('the planner sees the session\'s transcript, model, previous turn, target and prompt', async () => {
+    tr.readPreviousTurn.mockResolvedValueOnce({
+      reservationId: 'res-prev', wireModel: 'claude-sonnet-5-5', connectionId: 'conn-1', configVersion: 2, catalogRevisionId: null,
+      funding: 'partner_key', rateSnapshot: model.rateSnapshot, carriedRates: [],
     });
-    const res = await postMessage(app);
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ code: 'registry_unavailable', recoverable: true });
+    await (await postWithModel(app, { offeringId: OFF })).text();
+    expect(tr.readPreviousTurn).toHaveBeenCalledWith({ orgId: ORG_ID, sessionId: SESSION_ID });
+    expect(tr.planModelTransition).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID, sdkSessionId: 'sdk-1', sessionOfferingId: 'off-sonnet', target: model, systemPrompt: 'sys',
+      pendingUserTurn: 'hi', previous: expect.objectContaining({ wireModel: 'claude-sonnet-5-5' }),
+    }));
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
+      sessionSwitchGuard: { expectedPreviousChatReservationId: 'res-prev' },
+    }));
+  });
+
+  it('the gate runs with no request DB context held (#3127: self-managed route)', async () => {
+    const depths: number[] = [];
+    tr.readPreviousTurn.mockImplementationOnce(async () => { depths.push(dbCtx.depth); return null; });
+    tr.planModelTransition.mockImplementationOnce(async () => { depths.push(dbCtx.depth); return { kind: 'fresh' }; });
+    await (await postWithModel(app, { offeringId: OFF })).text();
+    expect(depths).toEqual([0, 0]);
+  });
+
+  it('a resumable switch reserves with the carried rates and recreates the query as a modelSwitch', async () => {
+    const carried = [{ wireModel: 'claude-sonnet-5-5', rateSnapshot: { source: 'linked_platform' as const, standard: { inputCentsPerM: 300, outputCentsPerM: 1500, cacheReadCentsPerM: 30, cacheWriteCentsPerM: 375 } } }];
+    tr.planModelTransition.mockResolvedValueOnce({ kind: 'switch_resume', carriedRates: carried, fit: { kind: 'fits', countedTokens: 10, limitTokens: 100 } });
+    await (await postWithModel(app, { offeringId: OFF })).text();
+    const binding = withCarriedRates(turnBindingFrom(model), carried);
+    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({ binding }));
+    expect(vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]![9]).toMatchObject({ modelSwitch: true });
+    expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
+      expect.anything(), RESERVATION_ID, expect.objectContaining({ turnBinding: binding }),
+    );
+  });
+
+  it('an offering change while a turn is in flight → 409 turn_in_progress (spike constraint 3)', async () => {
+    vi.mocked(reserveAiBudget).mockRejectedValueOnce(new AiBudgetSessionBusyError('busy'));
+    const res = await postWithModel(app, { offeringId: OFF });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'turn_in_progress' });
+    expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('a foreign or ineligible offering in the body → the preflight\'s 409 not_permitted, no reservation', async () => {
+    vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+      ok: false, error: 'This AI model is not available here. Choose another model.', status: 409, code: 'not_permitted',
+    });
+    const res = await postWithModel(app, { offeringId: OFF });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'not_permitted', recoverable: true });
+    expect(tr.planModelTransition).not.toHaveBeenCalled();
     expect(reserveAiBudget).not.toHaveBeenCalled();
   });
 
-  it('the reservation, the dispatch and the turn claim carry exactly the resolved model (finding 13)', async () => {
-    const model = makeResolvedModel('anthropic_byok');
-    vi.mocked(runPreFlightChecks).mockResolvedValue({
-      ok: true, session: DB_SESSION as any, sanitizedContent: 'hi', systemPrompt: 's',
-      maxBudgetUsd: undefined, model, openaiCompatible: false,
-    });
-    const active = makeActiveSession();
-    vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
-    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
-    vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
-    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
-
-    const res = await postMessage(app);
-    expect(res.status).toBe(200);
-    await res.text();
-
-    expect(reserveAiBudget).toHaveBeenCalledWith(expect.objectContaining({
-      orgId: ORG_ID, billingSource: 'partner_key', sessionId: SESSION_ID, binding: turnBindingFrom(model),
-    }));
-    const call = vi.mocked(streamingSessionManager.getOrCreate).mock.calls[0]!;
-    expect(call[6]).toBe(model);
-    expect(call[1]).not.toHaveProperty('model');
-    expect(call[9]).toMatchObject({ ledgerUserId: 'user-1', toolSearch: true });
-    expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
-      active, RESERVATION_ID, expect.objectContaining({ turnBinding: turnBindingFrom(model) }),
-    );
+  it('a model field that is not an offering id is a 400 (never a free-form model)', async () => {
+    const res = await postWithModel(app, { model: 'claude-opus-5-5' });
+    expect(res.status).toBe(400);
+    expect(runPreFlightChecks).not.toHaveBeenCalled();
   });
 });
-

@@ -85,7 +85,8 @@ import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
-import { liveQueryKey, turnBindingFrom } from '../services/aiModels/turnBinding';
+import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { continuationMessage, planModelTransition, readPreviousTurn } from '../services/aiModels/modelTransition';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 // Loaded lazily, only for a topology session: its tool/transport graph must not
@@ -118,11 +119,12 @@ function topologyAuditSessionCondition(visibility: TopologySessionVisibility): S
     ),
   );
 }
-import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
+import { createTicketFromChatSchema, type AiContinuationRequired, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
 import { pageContextWriteDefaultOrgId } from '../services/aiSessionOrgAnchor';
 import {
+  AiBudgetSessionBusyError,
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
@@ -751,7 +753,7 @@ aiRoutes.post(
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
     const preflight = await inRequestDb(() =>
-      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c),
+      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model),
     );
     if (!preflight.ok) {
       const err = preflight.error;
@@ -972,10 +974,47 @@ aiRoutes.post(
     // Off the env OpenAI-compatible path preflight always resolves a model.
     if (!resolvedModel) throw new Error('chat preflight returned no resolved model on the Agent SDK path');
     const model = resolvedModel;
+    // W05 (spec §9.2; spike constraints 1–3): every model change passes ONE
+    // gate before anything is reserved. Same model → W03 reuse; another
+    // connection or funding, a transcript too large for the target, or one
+    // whose fit can't be proven → the client offers a continuation.
+    // #3127: both reads open their own system contexts; no request DB
+    // context is held here (between inRequestDb phases).
+    let previous: Awaited<ReturnType<typeof readPreviousTurn>>;
+    let transition: Awaited<ReturnType<typeof planModelTransition>>;
+    try {
+      previous = await readPreviousTurn({ orgId: dbSession.orgId, sessionId });
+      transition = await planModelTransition({
+        orgId: dbSession.orgId,
+        sdkSessionId: dbSession.sdkSessionId,
+        sessionOfferingId: dbSession.offeringId ?? null,
+        previous,
+        target: model,
+        systemPrompt: topology ? topology.systemPrompt : systemPrompt,
+        pendingUserTurn: topology ? topology.prompt : sanitizedContent,
+      });
+    } catch (err) {
+      // Nothing is reserved yet; release the topology lease like every other refusal.
+      await abortTopology();
+      throw err;
+    }
+    if (transition.kind === 'continuation_required') {
+      await abortTopology();
+      const answer: AiContinuationRequired = {
+        error: continuationMessage(transition.reason, model.offering.displayName),
+        code: 'continuation_required',
+        reason: transition.reason,
+        recoverable: true,
+        target: { offeringId: model.offering.id, displayName: model.offering.displayName },
+      };
+      return c.json(answer, 409);
+    }
     // Spec §9.2: the turn binding (offering, options, rate, connection
     // identity, wire model) is written onto the reservation in its own
     // transaction; funding is the resolved offering's, decided before admission.
-    const binding = turnBindingFrom(model);
+    // W05: a resumed session also carries the rates of the models it switched
+    // away from, so their late deltas bill at their own rate (spike Q6).
+    const binding = withCarriedRates(turnBindingFrom(model), transition.kind === 'fresh' ? [] : transition.carriedRates);
     // S8: no stable request identity reaches this surface — the client sends
     // no message/draft id — so the key is random per dispatch. The unique
     // (org_id, idempotency_key) index is therefore a structural guarantee
@@ -991,9 +1030,13 @@ aiRoutes.post(
         sessionId,
         idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
         binding,
+        // W05 spike constraint 3: claimed only against the turn this plan
+        // read, and never re-stamped mid-turn.
+        sessionSwitchGuard: { expectedPreviousChatReservationId: previous?.reservationId ?? null },
       });
     } catch (err) {
       await abortTopology();
+      if (err instanceof AiBudgetSessionBusyError) return c.json({ error: err.message, code: 'turn_in_progress' }, 409);
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
       throw err;
     }
@@ -1036,10 +1079,10 @@ aiRoutes.post(
           topology ? topology.allowedMcpTools : undefined,
           topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
           topology
-            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false, ledgerUserId: auth.user.id }
+            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' }
             // A-W04: only a full-registry chat turn may defer tools behind
             // ToolSearch; the host/budget/operator policy decides the rest.
-            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id },
+            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' },
         );
       } catch (err) {
         return { kind: 'failed', error: err };

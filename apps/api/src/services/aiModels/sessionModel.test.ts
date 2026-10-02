@@ -69,6 +69,23 @@ describe('resolveSessionTurn', () => {
   });
 });
 
+describe('resolveSessionTurn: a composer choice (W05)', () => {
+  it('a choice is a strict USER request, overriding the stored offering and options', async () => {
+    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: { effort: 'low' } });
+    m.readOrgPartnerId.mockResolvedValueOnce('p1');
+    await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1', choice: { offeringId: 'picked', options: { effort: 'high' } } });
+    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({
+      requested: { offeringId: 'picked', options: { effort: 'high' }, origin: 'user' },
+    }));
+  });
+  it('without a choice the stored offering is a SESSION request (W03 behaviour, bounded fallback allowed)', async () => {
+    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: null });
+    m.readOrgPartnerId.mockResolvedValueOnce('p1');
+    await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' });
+    expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'stored', origin: 'session' } }));
+  });
+});
+
 describe('chooseSessionModel', () => {
   const base = { partnerId: 'partner-1', orgId: 'org-1', userId: 'u1', surface: 'chat' as const };
 

@@ -929,6 +929,13 @@ export class StreamingSessionManager {
       toolSearch?: boolean;
       /** The Breeze users.id the ledger attributes this session's turns to (null: helper / Office / system). */
       ledgerUserId?: string | null;
+      /**
+       * W05: this turn deliberately switches model (planModelTransition said
+       * `switch_resume`). An idle live query with a different key is
+       * recreated — `resume` + this turn's resolved options, never setModel
+       * (spike D3) — silently: the user asked for it.
+       */
+      modelSwitch?: boolean;
     },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
@@ -949,7 +956,11 @@ export class StreamingSessionManager {
           // lets the route's existing concurrent-message guard return a 409
           // without killing an in-flight stream mid-response.
         } else if (existing.state === 'idle') {
-          if (existing.liveKey !== key) {
+          if (existing.liveKey !== key && options?.modelSwitch) {
+            console.info('[StreamingSessionManager] model switch: recreating the idle query with resume', {
+              breezeSessionId, from: existing.liveKey, to: key,
+            });
+          } else if (existing.liveKey !== key) {
             console.info(
               '[StreamingSessionManager] rotating idle AI session after model/provider change',
               { breezeSessionId, from: existing.liveKey, to: key },
