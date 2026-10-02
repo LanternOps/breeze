@@ -153,9 +153,16 @@ async function assertFallbacks(input: {
   }
 }
 
-/** The DB CHECK (ai_model_assignments_fallback_shape_chk) as a 422 instead of a 23514. */
-function assertNotOwnFallback(surface: AiSurface, role: AssignmentRole, defaultOfferingId: string | null, ids: readonly string[]): void {
-  if (defaultOfferingId && ids.includes(defaultOfferingId)) {
+/**
+ * W09 (D10): a model cannot be its own fallback. Checked here, not by the DB
+ * CHECK, and only for an entry this write ADDS: a legacy /ai/provider remap
+ * may leave the default inside a stored list (inert; the walk skips the
+ * primary), and that must not make the row unsaveable.
+ */
+function assertNotOwnFallback(
+  surface: AiSurface, role: AssignmentRole, defaultOfferingId: string | null, ids: readonly string[], storedIds: readonly string[] | null,
+): void {
+  if (defaultOfferingId && ids.includes(defaultOfferingId) && !(storedIds ?? []).includes(defaultOfferingId)) {
     throw new RegistryWriteError('A model cannot be its own fallback.', 'invalid', 422, { surface, role, field: 'fallbackOfferingIds', offeringId: defaultOfferingId });
   }
 }
@@ -193,7 +200,7 @@ export async function putPartnerAssignments(input: { partnerId: string; rows: Pa
 
       const fallbackIds = effectiveFallbackIds(row, stored);
       if (fallbackIds.length > 0) {
-        assertNotOwnFallback(surface, role, row.defaultOfferingId, fallbackIds);
+        assertNotOwnFallback(surface, role, row.defaultOfferingId, fallbackIds, stored?.fallbackOfferingIds ?? null);
         const permitted = row.permittedOfferingIds;
         await assertFallbacks({
           partnerId, surface, role, ids: fallbackIds, storedIds: stored?.fallbackOfferingIds ?? null,
@@ -446,7 +453,7 @@ async function assertOrgRowNarrows(
   // switch on and the org's not off (an org can only turn it off).
   const fallbackIds = effectiveFallbackIds(row, stored);
   if (fallbackIds.length > 0) {
-    assertNotOwnFallback(surface, role, row.defaultOfferingId, fallbackIds);
+    assertNotOwnFallback(surface, role, row.defaultOfferingId, fallbackIds, stored?.fallbackOfferingIds ?? null);
     const orgCrossing = row.fallbackMayCrossFunding !== undefined ? row.fallbackMayCrossFunding : stored?.fallbackMayCrossFunding ?? null;
     await assertFallbacks({
       partnerId: env.partnerId, surface, role, ids: fallbackIds, storedIds: stored?.fallbackOfferingIds ?? null,

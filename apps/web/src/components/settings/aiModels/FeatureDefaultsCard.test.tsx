@@ -271,6 +271,19 @@ describe('FeatureDefaultsCard', () => {
     })]));
   });
 
+  it('a self-entry a legacy remap left in the stored list is never shown or sent back (the write would refuse it)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ assignments: [] }));
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults({ chatFallbacks: [A, B] })} onSaved={vi.fn()} />);
+    expect(screen.getByTestId('ai-defaults-fallback-chat-0').textContent).toContain('Model b');
+    expect(screen.queryByTestId('ai-defaults-fallback-chat-1')).toBeNull();
+    expect(screen.queryByTestId('ai-defaults-dirty')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-defaults-default-chat'), { target: { value: A2 } });
+    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
+      surface: 'chat', defaultOfferingId: A2, fallbackOfferingIds: [B],
+    })]));
+  });
+
   it('switching cross-funding off drops the entries that cross', () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults({ chatFallbacks: [B, K], chatCrossFunding: true })} onSaved={vi.fn()} />);
     expect(screen.getByTestId('ai-defaults-fallback-chat-1')).toBeTruthy();

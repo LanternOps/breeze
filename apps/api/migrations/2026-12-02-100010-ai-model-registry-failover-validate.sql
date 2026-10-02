@@ -6,7 +6,7 @@
 --
 -- Every existing row passes: the ledger and run columns are new (hop 0 / all
 -- NULL), and W02 wrote fallback_offering_ids = NULL on every assignment
--- (legacyReconcile.ts). Lab gate L4 confirms the assignment count on each
+-- (legacyReconcile.ts), so no list exceeds 5. Lab gate L4 confirms the assignment count on each
 -- production region before release.
 --
 -- Idempotent: validating an already-valid constraint is a no-op. DDL only.

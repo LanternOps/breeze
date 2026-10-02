@@ -22,8 +22,13 @@
 -- re-driven run resumes on served_failover_hop's reservation key, so a hop is
 -- never reserved twice.
 --
--- ai_model_assignments: a row's fallback list holds at most 5 offerings and
--- never its own default (W09 D10).
+-- ai_model_assignments: a row's fallback list holds at most 5 offerings
+-- (W09 D10). "Never its own default" is enforced at the API write (422) and
+-- not here: W03's legacy /ai/provider default change and the BYOK disconnect /
+-- kind-switch remaps preserve a registry-native fallback list verbatim (the
+-- aiProviderAuthority contract), and re-pointing a default onto an offering
+-- already in its list is legal there. Such a self-entry is inert: the
+-- resolver's walk skips the primary.
 --
 -- The three CHECKs are added NOT VALID here and VALIDATEd in the next file
 -- (2026-12-02-100010), in its own transaction: autoMigrate wraps each file in
@@ -124,7 +129,5 @@ ALTER TABLE public.ai_agent_runs ADD CONSTRAINT ai_agent_runs_served_chk CHECK (
 
 ALTER TABLE public.ai_model_assignments DROP CONSTRAINT IF EXISTS ai_model_assignments_fallback_shape_chk;
 ALTER TABLE public.ai_model_assignments ADD CONSTRAINT ai_model_assignments_fallback_shape_chk CHECK (
-  fallback_offering_ids IS NULL
-  OR (cardinality(fallback_offering_ids) <= 5
-      AND (default_offering_id IS NULL OR NOT (default_offering_id = ANY (fallback_offering_ids))))
+  fallback_offering_ids IS NULL OR cardinality(fallback_offering_ids) <= 5
 ) NOT VALID;

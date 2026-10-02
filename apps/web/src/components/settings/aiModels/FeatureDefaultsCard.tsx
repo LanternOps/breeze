@@ -70,7 +70,9 @@ function fromSnapshot(d: AiSurfaceDefaultsDto): RowDraft {
     effort: p?.options?.effort ?? '',
     display: p?.options?.thinkingDisplay ?? '',
     speed: p?.options?.speed ?? '',
-    fallbacks: p?.fallbackOfferingIds ?? [],
+    // A legacy /ai/provider remap can leave the default inside its own list
+    // (inert: the walk skips the primary). Never echo it back: the write rejects it.
+    fallbacks: (p?.fallbackOfferingIds ?? []).filter((id) => id !== p?.defaultOfferingId),
     crossFunding: p?.fallbackMayCrossFunding ?? false,
   };
 }
@@ -149,7 +151,7 @@ function toInput(draft: RowDraft, d: AiSurfaceDefaultsDto): PartnerAssignmentInp
     permittedOfferingIds: set ? (draft.mode === 'all' ? null : draft.permitted) : null,
     allowUserChoice: draft.allowUserChoice,
     options: set && Object.keys(options).length > 0 ? options : null,
-    fallbackOfferingIds: set ? draft.fallbacks : null,
+    fallbackOfferingIds: set ? draft.fallbacks.filter((id) => id !== draft.defaultOfferingId) : null,
     fallbackMayCrossFunding: draft.crossFunding,
     expectedUpdatedAt: d.partner?.updatedAt ?? null,
   };

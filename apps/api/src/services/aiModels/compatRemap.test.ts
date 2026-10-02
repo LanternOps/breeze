@@ -76,8 +76,7 @@ describe('remapPartnerOfferings (Task 6B: registry-native id remaps, never a re-
     const [assign, agents, sessions, offerings] = m.statements;
     expect(assign!.text).toMatch(/^UPDATE ai_model_assignments SET default_offering_id = CASE/);
     expect(assign!.text).toContain('permitted_offering_ids = array_replace(permitted_offering_ids,');
-    // W09: the row's (new) default leaves its own fallback list.
-    expect(assign!.text).toMatch(/fallback_offering_ids = array_remove\(\s*array_replace\(fallback_offering_ids,[^)]*\),\s*CASE WHEN default_offering_id = /);
+    expect(assign!.text).toContain('fallback_offering_ids = array_replace(fallback_offering_ids,');
     expect(assign!.text).toContain('WHERE offering_partner_id =');
     expect(agents!.text).toMatch(/^UPDATE ai_agents SET offering_id = /);
     expect(sessions!.text).toMatch(/^UPDATE ai_sessions SET offering_id = /);

@@ -68,12 +68,14 @@ describe.runIf(RUN)('W09 schema: failover provenance', () => {
     expect(await sqlState(ledgerInsert(s, { hop: 1, cause: 'ineligible', from: null }))).toBeNull();
   });
 
-  it('an assignment cannot list its own default as a fallback, nor more than five (23514)', async () => {
+  it('an assignment holds at most five fallbacks (23514); a self-entry left by a legacy remap is allowed (inert, W03 authority)', async () => {
     const extra = await Promise.all(Array.from({ length: 6 }, async () =>
       seedOffering({ partnerId: s.partnerId, platformModelId: await seedPricedPlatformModel(), enabled: true })));
+    // The API write rejects a model as its own fallback (422); the DB allows it so
+    // W03's legacy remaps can keep a registry-native list verbatim.
     expect(await sqlState(fixtureSql`
       UPDATE ai_model_assignments SET fallback_offering_ids = ARRAY[${s.offeringId}]::uuid[]
-       WHERE partner_id = ${s.partnerId} AND surface = 'chat'`)).toBe('23514');
+       WHERE partner_id = ${s.partnerId} AND surface = 'chat'`)).toBeNull();
     expect(await sqlState(fixtureSql`
       UPDATE ai_model_assignments SET fallback_offering_ids = ${extra}::uuid[]
        WHERE partner_id = ${s.partnerId} AND surface = 'chat'`)).toBe('23514');
@@ -237,22 +239,22 @@ describe.runIf(RUN)('W09 agent-run served hop (Task 11)', () => {
   });
 });
 
-describe.runIf(RUN)('W09 review fix: compat remaps keep the fallback list valid (a default never lands in its own list)', () => {
+describe.runIf(RUN)('W09: compat remaps keep a registry-native fallback list verbatim and never trip the fallback CHECK', () => {
   const assignmentOf = async (partnerId: string, surface: string) => (await fixtureSql`
     SELECT default_offering_id, fallback_offering_ids FROM ai_model_assignments
      WHERE partner_id = ${partnerId} AND org_id IS NULL AND surface = ${surface} AND role = 'default'`)[0]!;
 
-  it('disconnecting a BYOK key whose default falls back to the same model on platform succeeds; the list drops the new default', async () => {
+  it('disconnecting a BYOK key whose default falls back to the same model on platform succeeds; the list is kept verbatim', async () => {
     const f = await seedFailoverPartner();
     await setPartnerDefault(f, 'script_reviewer', f.byokOfferingId);
     await setPartnerFallbacks(f, 'script_reviewer', [f.platformOfferingId], true);
     expect(await withSystemDbAccessContext(() => disconnectCompat(f.partnerId))).toBe(true);
     const row = await assignmentOf(f.partnerId, 'script_reviewer');
     expect(row.default_offering_id).toBe(f.platformOfferingId);
-    expect(row.fallback_offering_ids).toEqual([]);
+    expect(row.fallback_offering_ids).toEqual([f.platformOfferingId]);
   });
 
-  it('changing the legacy default model onto a model already in the fallback list succeeds; the list drops it', async () => {
+  it('changing the legacy default model onto a model already in the fallback list succeeds; the list is kept verbatim', async () => {
     const f = await seedFailoverPartner();
     const otherModel = `w09-h-${randomUUID()}`;
     const h = await seedOffering({ partnerId: f.partnerId, connectionId: f.byokConnectionId, modelId: otherModel, source: 'discovered', enabled: true });
@@ -262,6 +264,6 @@ describe.runIf(RUN)('W09 review fix: compat remaps keep the fallback list valid 
     await withSystemDbAccessContext(() => changeCompatDefaultModel(f.partnerId, otherModel));
     const row = await assignmentOf(f.partnerId, 'chat');
     expect(row.default_offering_id).toBe(h);
-    expect(row.fallback_offering_ids).toEqual([]);
+    expect(row.fallback_offering_ids).toEqual([h]);
   });
 });

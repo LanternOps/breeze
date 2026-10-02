@@ -494,6 +494,17 @@ describe('W09 partner role rows and fallbacks', () => {
     expect(h.upserts).toHaveLength(0);
   });
 
+  it('422: adding the row\'s own default as a fallback is refused', async () => {
+    const err = await putPartnerAssignments({ partnerId: P, rows: [row({ fallbackOfferingIds: [B, A] })] }).catch((e) => e);
+    expect([err.status, err.code, err.details]).toEqual([422, 'invalid', { surface: 'ai_agents', role: 'default', field: 'fallbackOfferingIds', offeringId: A }]);
+  });
+
+  it('a self-entry a legacy /ai/provider remap left in the STORED list does not make the row unsaveable (W03 authority)', async () => {
+    h.partnerRows = [{ id: 'r1', surface: 'ai_agents', role: 'default', orgId: null, fallbackOfferingIds: [A, B], updatedAt: new Date(V) }];
+    await putPartnerAssignments({ partnerId: P, rows: [row({ options: { effort: 'high' }, expectedUpdatedAt: V })] });
+    expect(h.upserts[0]!.kind).toBe('update');
+  });
+
   it('clearing a role row deletes it (the role inherits the feature default)', async () => {
     h.partnerRows = [{ id: 'r2', surface: 'ai_agents', role: 'triage', orgId: null, updatedAt: new Date(V) }];
     await putPartnerAssignments({ partnerId: P, rows: [row({ role: 'triage', defaultOfferingId: null, expectedUpdatedAt: V })] });
