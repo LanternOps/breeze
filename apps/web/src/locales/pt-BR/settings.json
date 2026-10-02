@@ -283,7 +283,9 @@
         "keepKey": "Deixe em branco para manter a chave atual",
         "removeKey": "Remover a chave armazenada",
         "keyTooShort": "A chave deve ter pelo menos {{min}} caracteres.",
+        "keyRequiredForNewUrl": "Informe a chave para a nova URL ou remova a chave. A chave armazenada nunca é enviada para uma nova URL.",
         "envManaged": "Esta conexão é gerenciada pelo ambiente da instância (configurações MCP_LLM_*). Altere-a lá; ela não pode ser editada aqui.",
+        "envReleased": "Esta conexão foi configurada pelo ambiente da instância (configurações MCP_LLM_*), que não a gerencia mais. Ela não pode ser editada aqui; você pode desconectá-la.",
         "envManagedBadge": "Gerenciada pelo ambiente",
         "noKey": "Sem chave",
         "discovered_one": "{{count}} modelo encontrado · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "Esta conexão é gerenciada pelo ambiente da instância e não pode ser alterada aqui.",
       "connection_in_use": "Um recurso ainda usa um modelo desta conexão. Escolha outro padrão primeiro.",
       "duplicate_model": "Esse ID de modelo já existe nesta conexão.",
-      "geo_not_supported": "Este tipo de conexão não pode definir uma região de inferência."
+      "geo_not_supported": "Este tipo de conexão não pode definir uma região de inferência.",
+      "key_required_for_new_endpoint": "Informe a chave para a nova URL (ou remova a chave).",
+      "too_many_models": "Esta conexão já tem o número máximo de modelos adicionados manualmente."
     },
     "org": {
       "title": "Modelos padrão",

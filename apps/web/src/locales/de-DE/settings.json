@@ -283,7 +283,9 @@
         "keepKey": "Leer lassen, um den aktuellen Schlüssel zu behalten",
         "removeKey": "Gespeicherten Schlüssel entfernen",
         "keyTooShort": "Ein Schlüssel muss mindestens {{min}} Zeichen lang sein.",
+        "keyRequiredForNewUrl": "Geben Sie den Schlüssel für die neue URL ein oder entfernen Sie den Schlüssel. Der gespeicherte Schlüssel wird nie an eine neue URL gesendet.",
         "envManaged": "Diese Verbindung wird über die Umgebung der Instanz verwaltet (MCP_LLM_*-Einstellungen). Ändern Sie sie dort; hier ist sie nicht bearbeitbar.",
+        "envReleased": "Diese Verbindung wurde über die Umgebung der Instanz (MCP_LLM_*-Einstellungen) eingerichtet, die sie nicht mehr verwaltet. Sie ist hier nicht bearbeitbar; Sie können sie trennen.",
         "envManagedBadge": "Über Umgebung verwaltet",
         "noKey": "Kein Schlüssel",
         "discovered_one": "{{count}} Modell gefunden · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "Diese Verbindung wird über die Umgebung der Instanz verwaltet und kann hier nicht geändert werden.",
       "connection_in_use": "Eine Funktion verwendet noch ein Modell dieser Verbindung. Wählen Sie zuerst einen anderen Standard.",
       "duplicate_model": "Diese Modell-ID ist bei dieser Verbindung bereits vorhanden.",
-      "geo_not_supported": "Bei dieser Verbindungsart kann keine Inferenzregion festgelegt werden."
+      "geo_not_supported": "Bei dieser Verbindungsart kann keine Inferenzregion festgelegt werden.",
+      "key_required_for_new_endpoint": "Geben Sie den Schlüssel für die neue URL ein (oder entfernen Sie den Schlüssel).",
+      "too_many_models": "Diese Verbindung hat bereits die maximale Anzahl manuell eingetragener Modelle."
     },
     "org": {
       "title": "Modellstandards",

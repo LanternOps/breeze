@@ -99,8 +99,11 @@ import { ByoEndpointRejected } from './gateway/byoEndpointPolicy';
 import {
   createGatewayConnection,
   createManualOffering,
+  createManualOfferingLocked,
   deleteGatewayConnection,
   isEnvManaged,
+  isEnvReleased,
+  MAX_MANUAL_OFFERINGS_PER_CONNECTION,
   updateGatewayConnection,
 } from './gatewayConnections';
 import { RegistryWriteError } from './registryWriteErrors';
@@ -113,8 +116,9 @@ const saved = { key: process.env.APP_ENCRYPTION_KEY, keyId: process.env.APP_ENCR
 
 const conn = (over: Record<string, unknown> = {}) => ({
   id: C, partnerId: P, kind: 'openai_compatible', status: 'active', configVersion: 5,
-  providerConfig: null, baseUrl: 'https://a.example.com/v1', ...over,
+  providerConfig: null, baseUrl: 'https://a.example.com/v1', keyLast4: '3456', ...over,
 });
+const RELEASED = { managedBy: 'env', envModel: 'llama3', envReleasedAt: '2026-10-01T00:00:00.000Z' };
 const caught = (p: Promise<unknown>) => p.then(
   () => { throw new Error('expected a rejection'); },
   (e: unknown) => e as RegistryWriteError,
@@ -149,6 +153,13 @@ describe('isEnvManaged', () => {
     expect(isEnvManaged({ providerConfig: { managedBy: 'env' } })).toBe(true);
     expect(isEnvManaged({ providerConfig: { managedBy: 'user' } })).toBe(false);
     expect(isEnvManaged({ providerConfig: null })).toBe(false);
+  });
+
+  it('a released env connection is still env-managed (read-only), and flagged released', () => {
+    expect(isEnvManaged({ providerConfig: RELEASED })).toBe(true);
+    expect(isEnvReleased({ providerConfig: RELEASED })).toBe(true);
+    expect(isEnvReleased({ providerConfig: { managedBy: 'env' } })).toBe(false);
+    expect(isEnvReleased({ providerConfig: { envReleasedAt: '2026-10-01T00:00:00.000Z' } })).toBe(false);
   });
 });
 
@@ -267,7 +278,7 @@ describe('updateGatewayConnection', () => {
 
   it('a base-URL change never writes offerings (verification goes stale by fingerprint) and never sets capabilities', async () => {
     h.selectRows = [[conn()]];
-    await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', expectedConfigVersion: 5 });
+    await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', apiKey: 'sk-new-key-123', expectedConfigVersion: 5 });
     expect(offeringUpdates()).toHaveLength(0);
     expect(JSON.stringify(h.updated.map((u) => u.set))).not.toContain('capabilities');
   });
@@ -333,6 +344,56 @@ describe('updateGatewayConnection', () => {
     expect([err.code, err.status]).toEqual(['not_found', 404]);
   });
 
+  describe('the stored key never follows a new endpoint', () => {
+    it.each([
+      ['another origin', 'https://b.example.com/v1'],
+      ['another path on the same origin', 'https://a.example.com/other/v1'],
+      ['another port', 'https://a.example.com:8443/v1'],
+    ])('%s without apiKey → 422 key_required_for_new_endpoint, nothing written', async (_label, url) => {
+      h.selectRows = [[conn()]];
+      const err = await caught(updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: url, expectedConfigVersion: 5 }));
+      expect(err).toBeInstanceOf(RegistryWriteError);
+      expect([err.code, err.status]).toEqual(['key_required_for_new_endpoint', 422]);
+      expect(err.message).toBe('Enter the key for the new URL (or remove the key).');
+      expect(h.updated).toHaveLength(0);
+    });
+
+    it('a new URL with a new key, or with the key removed (null), is accepted', async () => {
+      h.selectRows = [[conn()]];
+      await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', apiKey: 'sk-new-key-123', expectedConfigVersion: 5 });
+      h.selectRows = [[conn()]];
+      await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', apiKey: null, expectedConfigVersion: 5 });
+      expect(connUpdates()).toHaveLength(2);
+      expect(connUpdates()[1]!.set).toMatchObject({ baseUrl: 'https://b.example.com/v1', apiKeyEncrypted: null });
+    });
+
+    it('re-submitting the same URL without a key is not an endpoint change', async () => {
+      h.selectRows = [[conn()]];
+      await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://a.example.com/v1/', expectedConfigVersion: 5 });
+      expect(connUpdates()).toHaveLength(1);
+    });
+
+    it('a keyless connection may move without a key (there is no key to carry)', async () => {
+      h.selectRows = [[conn({ keyLast4: null })]];
+      await updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', expectedConfigVersion: 5 });
+      expect(connUpdates()[0]!.set).toMatchObject({ baseUrl: 'https://b.example.com/v1' });
+      expect(connUpdates()[0]!.set).not.toHaveProperty('apiKeyEncrypted');
+    });
+
+    it('applies to the env bootstrap too (it always sends the configured key with a new URL)', async () => {
+      h.selectRows = [[conn({ providerConfig: { managedBy: 'env' } })]];
+      const err = await caught(updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://b.example.com/v1', expectedConfigVersion: 5, allowManaged: true }));
+      expect(err.code).toBe('key_required_for_new_endpoint');
+    });
+  });
+
+  it('a released env connection stays read-only: URL and key writes refused (409 managed_by_env)', async () => {
+    h.selectRows = [[conn({ providerConfig: RELEASED })]];
+    const err = await caught(updateGatewayConnection({ partnerId: P, connectionId: C, baseUrl: 'https://evil.example.net/v1', apiKey: 'sk-mine-12345', expectedConfigVersion: 5 }));
+    expect([err.code, err.status]).toEqual(['managed_by_env', 409]);
+    expect(h.updated).toHaveLength(0);
+  });
+
   it('refuses an update that changes neither the URL nor the key', async () => {
     const err = await caught(updateGatewayConnection({ partnerId: P, connectionId: C, expectedConfigVersion: 5 }));
     expect([err.code, err.status]).toEqual(['invalid', 422]);
@@ -381,6 +442,13 @@ describe('deleteGatewayConnection (soft-disconnect)', () => {
     const err = await caught(deleteGatewayConnection({ partnerId: P, connectionId: C }));
     expect([err.code, err.status]).toEqual(['managed_by_env', 409]);
     expect(h.updated).toHaveLength(0);
+  });
+
+  it('a released env connection can be disconnected by the partner (its only permitted write)', async () => {
+    h.selectRows = [[conn({ providerConfig: RELEASED })], []];
+    await deleteGatewayConnection({ partnerId: P, connectionId: C });
+    expect(connUpdates()).toHaveLength(1);
+    expect(connUpdates()[0]!.set).toMatchObject({ status: 'disconnected', apiKeyEncrypted: null });
   });
 
   it('already disconnected, non-gateway or missing → 404', async () => {
@@ -452,5 +520,32 @@ describe('createManualOffering', () => {
     const err = await caught(createManualOffering({ partnerId: P, connectionId: C, modelId: 'bad id <script>' }));
     expect([err.code, err.status]).toEqual(['invalid', 422]);
     expect(h.inserted).toHaveLength(0);
+  });
+
+  it('an env-managed connection (managed or released) takes no hand-entered model: 409 managed_by_env', async () => {
+    for (const providerConfig of [{ managedBy: 'env' }, RELEASED]) {
+      h.selectRows = [[conn({ providerConfig })], []];
+      const err = await caught(createManualOffering({ partnerId: P, connectionId: C, modelId: 'llama3' }));
+      expect([err.code, err.status]).toEqual(['managed_by_env', 409]);
+    }
+    expect(h.inserted).toHaveLength(0);
+  });
+
+  it('the env bootstrap itself can still add its model (allowManaged, inside its own locked write)', async () => {
+    h.selectRows = [[conn({ providerConfig: { managedBy: 'env' } })], [], [{ n: 0 }]];
+    await createManualOfferingLocked({ partnerId: P, connectionId: C, modelId: 'llama3', allowManaged: true });
+    expect(h.inserted).toHaveLength(1);
+  });
+
+  it('caps hand-entered models per connection: one past the cap is 409 too_many_models, nothing inserted', async () => {
+    expect(MAX_MANUAL_OFFERINGS_PER_CONNECTION).toBe(200);
+    h.selectRows = [[conn()], [], [{ n: MAX_MANUAL_OFFERINGS_PER_CONNECTION }]];
+    const err = await caught(createManualOffering({ partnerId: P, connectionId: C, modelId: 'llama3' }));
+    expect([err.code, err.status]).toEqual(['too_many_models', 409]);
+    expect(h.inserted).toHaveLength(0);
+
+    h.selectRows = [[conn()], [], [{ n: MAX_MANUAL_OFFERINGS_PER_CONNECTION - 1 }]];
+    await createManualOffering({ partnerId: P, connectionId: C, modelId: 'llama3' });
+    expect(h.inserted).toHaveLength(1);
   });
 });

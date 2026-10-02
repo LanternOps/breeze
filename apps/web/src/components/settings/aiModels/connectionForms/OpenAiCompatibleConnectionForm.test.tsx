@@ -69,14 +69,45 @@ describe('OpenAI-compatible connection (create)', () => {
 });
 
 describe('OpenAI-compatible connection (edit)', () => {
-  it('PATCHes /gateway with only the changed URL plus expectedConfigVersion (blank key keeps it)', async () => {
+  it('a new URL on a connection with a stored key needs a new key or Remove key before Save is enabled', () => {
+    render(<ConnectionDrawer connection={GATEWAY_CONNECTION} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={noop} />);
+    const save = screen.getByTestId('ai-connection-save') as HTMLButtonElement;
+    expect(screen.queryByTestId('ai-connection-openai-key-required')).toBeNull();
+    fill('ai-connection-openai-base-url', 'https://llm2.example.com/v1');
+    expect(save.disabled).toBe(true);
+    expect(screen.getByTestId('ai-connection-openai-key-required').textContent).toMatch(/key for the new URL/i);
+    fill('ai-connection-openai-api-key', 'new-endpoint-key-1');
+    expect(save.disabled).toBe(false);
+    expect(screen.queryByTestId('ai-connection-openai-key-required')).toBeNull();
+    fill('ai-connection-openai-api-key', '');
+    expect(save.disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('ai-connection-openai-remove-key'));
+    expect(save.disabled).toBe(false);
+    // Back to the stored URL: no key needed.
+    fireEvent.click(screen.getByTestId('ai-connection-openai-remove-key'));
+    fill('ai-connection-openai-base-url', 'https://llm.example.com/v1/');
+    expect(screen.queryByTestId('ai-connection-openai-key-required')).toBeNull();
+  });
+
+  it('PATCHes /gateway with the new URL and the key for it, plus expectedConfigVersion', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: GW }));
     render(<ConnectionDrawer connection={GATEWAY_CONNECTION} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={noop} />);
     fill('ai-connection-openai-base-url', 'https://llm2.example.com/v1');
+    fill('ai-connection-openai-api-key', 'new-endpoint-key-1');
     fireEvent.click(screen.getByTestId('ai-connection-save'));
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/ai/models/connections/${GW}/gateway`, expect.objectContaining({ method: 'PATCH' })));
-    expect(JSON.parse(String(fetchWithAuth.mock.calls[0]![1].body))).toEqual({ baseUrl: 'https://llm2.example.com/v1', expectedConfigVersion: 3 });
+    expect(JSON.parse(String(fetchWithAuth.mock.calls[0]![1].body))).toEqual({ baseUrl: 'https://llm2.example.com/v1', apiKey: 'new-endpoint-key-1', expectedConfigVersion: 3 });
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('a keyless connection can move to a new URL without a key', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ id: GW }));
+    render(<ConnectionDrawer connection={{ ...GATEWAY_CONNECTION, keyLast4: null }} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={noop} />);
+    fill('ai-connection-openai-base-url', 'https://llm2.example.com/v1');
+    expect(screen.queryByTestId('ai-connection-openai-key-required')).toBeNull();
+    fireEvent.click(screen.getByTestId('ai-connection-save'));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(JSON.parse(String(fetchWithAuth.mock.calls[0]![1].body))).toEqual({ baseUrl: 'https://llm2.example.com/v1', expectedConfigVersion: 3 });
   });
 
   it('Remove key sends apiKey:null', async () => {
@@ -110,6 +141,7 @@ describe('OpenAI-compatible connection (edit)', () => {
     const onClose = vi.fn();
     render(<ConnectionDrawer connection={GATEWAY_CONNECTION} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={noop} />);
     fill('ai-connection-openai-base-url', 'http://169.254.169.254/v1');
+    fireEvent.click(screen.getByTestId('ai-connection-openai-remove-key'));
     fireEvent.click(screen.getByTestId('ai-connection-save'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
     expect(onClose).not.toHaveBeenCalled();
@@ -123,5 +155,15 @@ describe('OpenAI-compatible connection (edit)', () => {
     expect((screen.getByTestId('ai-connection-save') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('ai-connection-openai-env-managed').textContent).toMatch(/MCP_LLM_/);
     expect(screen.queryByTestId('ai-connection-disconnect')).toBeNull();
+  });
+
+  it('a released env connection stays read-only but can be disconnected, with its own explanation', () => {
+    const conn = { ...GATEWAY_CONNECTION, name: 'Instance endpoint', managedBy: 'env' as const, envReleased: true };
+    render(<ConnectionDrawer connection={conn} catalog={[]} catalogEnabled={false} onClose={vi.fn()} onSaved={noop} />);
+    expect((screen.getByTestId('ai-connection-openai-base-url') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('ai-connection-openai-api-key') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId('ai-connection-save') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('ai-connection-openai-env-managed').textContent).toMatch(/no longer/i);
+    expect(screen.getByTestId('ai-connection-disconnect')).toBeTruthy();
   });
 });

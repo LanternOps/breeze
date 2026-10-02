@@ -283,7 +283,9 @@
         "keepKey": "Leave blank to keep the current key",
         "removeKey": "Remove the stored key",
         "keyTooShort": "A key must be at least {{min}} characters.",
+        "keyRequiredForNewUrl": "Enter the key for the new URL, or remove the key. The stored key is never sent to a new URL.",
         "envManaged": "This connection is managed by the instance environment (MCP_LLM_* settings). Change it there; it cannot be edited here.",
+        "envReleased": "This connection was set up from the instance environment (MCP_LLM_* settings), which no longer manages it. It cannot be edited here; you can disconnect it.",
         "envManagedBadge": "Managed by environment",
         "noKey": "No key",
         "discovered_one": "Found {{count}} model · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "This connection is managed by the instance environment and cannot be changed here.",
       "connection_in_use": "A feature still uses a model on this connection. Choose another default first.",
       "duplicate_model": "That model id is already on this connection.",
-      "geo_not_supported": "This kind of connection cannot set an inference region."
+      "geo_not_supported": "This kind of connection cannot set an inference region.",
+      "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
+      "too_many_models": "This connection already has the maximum number of hand-entered models."
     },
     "org": {
       "title": "Model defaults",

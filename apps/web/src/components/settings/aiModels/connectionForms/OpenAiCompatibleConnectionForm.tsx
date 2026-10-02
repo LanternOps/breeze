@@ -25,6 +25,16 @@ function validUrl(v: string): boolean {
 
 const KEY_MIN = 8; // byoApiKey in @breeze/shared
 
+/** Origin + path, trailing slashes ignored (mirrors the server's endpoint comparison). */
+function endpointIdentity(v: string): string | null {
+  try {
+    const u = new URL(v.trim());
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
+
 const inputClass = 'h-10 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-60';
 
 export function OpenAiCompatibleConnectionForm({
@@ -36,6 +46,7 @@ export function OpenAiCompatibleConnectionForm({
 }) {
   const { t } = useTranslation('settings');
   const readOnly = connection?.managedBy === 'env';
+  const released = readOnly && connection?.envReleased === true;
   const [name, setName] = useState(connection?.name ?? '');
   const [baseUrl, setBaseUrl] = useState(connection?.baseUrl ?? '');
   const [apiKey, setApiKey] = useState('');
@@ -45,7 +56,12 @@ export function OpenAiCompatibleConnectionForm({
   onChangeRef.current = onChange;
 
   const keyOk = apiKey.trim() === '' || apiKey.trim().length >= KEY_MIN;
-  const valid = !readOnly && name.trim().length > 0 && validUrl(baseUrl) && keyOk;
+  // The stored key never follows a connection to a new URL (the server refuses
+  // it too): a moved endpoint needs its own key, or the key removed.
+  const urlMoved = connection !== null && validUrl(baseUrl)
+    && endpointIdentity(baseUrl) !== endpointIdentity(connection.baseUrl ?? '');
+  const keyRequired = urlMoved && Boolean(connection?.keyLast4) && apiKey.trim() === '' && !removeKey;
+  const valid = !readOnly && name.trim().length > 0 && validUrl(baseUrl) && keyOk && !keyRequired;
 
   useEffect(() => {
     onChangeRef.current({ name, baseUrl, apiKey, removeKey, readOnly, valid });
@@ -55,7 +71,7 @@ export function OpenAiCompatibleConnectionForm({
     <div className="space-y-4" data-testid="ai-connection-openai-form">
       {readOnly && (
         <p data-testid="ai-connection-openai-env-managed" role="status" className="rounded-md border bg-muted/30 p-3 text-sm">
-          {t('aiModels.connections.openai.envManaged')}
+          {released ? t('aiModels.connections.openai.envReleased') : t('aiModels.connections.openai.envManaged')}
         </p>
       )}
       <div className="space-y-1">
@@ -80,6 +96,11 @@ export function OpenAiCompatibleConnectionForm({
         {!keyOk && (
           <p data-testid="ai-connection-openai-key-short" role="alert" className="text-xs text-destructive">
             {t('aiModels.connections.openai.keyTooShort', { min: KEY_MIN })}
+          </p>
+        )}
+        {keyRequired && (
+          <p data-testid="ai-connection-openai-key-required" role="alert" className="text-xs text-destructive">
+            {t('aiModels.connections.openai.keyRequiredForNewUrl')}
           </p>
         )}
       </div>

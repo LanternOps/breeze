@@ -938,7 +938,10 @@ describe.skipIf(!RUN)('W06 openai_compatible routes: tenant isolation (#7604)', 
     const w = await seedWorld();
     const { reqB, connB, offB } = await seedGatewayB(w);
     expect((await reqB('PATCH', `/api/v1/ai/models/connections/${connB}`, { name: 'Renamed' })).status).toBe(200);
-    expect((await reqB('PATCH', `/api/v1/ai/models/connections/${connB}/gateway`, { baseUrl: 'https://llm2.example.com/v1', expectedConfigVersion: 1 })).status).toBe(200);
+    // A new URL without the key for it is refused: the stored key never follows a connection to a new endpoint.
+    const keyless = await reqB('PATCH', `/api/v1/ai/models/connections/${connB}/gateway`, { baseUrl: 'https://llm2.example.com/v1', expectedConfigVersion: 1 });
+    expect([keyless.status, ((await keyless.json()) as { code?: string }).code]).toEqual([422, 'key_required_for_new_endpoint']);
+    expect((await reqB('PATCH', `/api/v1/ai/models/connections/${connB}/gateway`, { baseUrl: 'https://llm2.example.com/v1', apiKey: 'llm2-key-0123456789', expectedConfigVersion: 1 })).status).toBe(200);
     expect((await reqB('POST', `/api/v1/ai/models/connections/${connB}/refresh`)).status).toBe(202);
     expect((await reqB('POST', `/api/v1/ai/models/offerings/${offB}/verify`)).status).toBe(202);
     const snap = await (await reqB('GET', '/api/v1/ai/models')).json() as { connections: Array<{ id: string; kind: string; baseUrl: string | null }> };

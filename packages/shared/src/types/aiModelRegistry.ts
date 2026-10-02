@@ -35,6 +35,12 @@ export interface AiConnectionDto {
   baseUrl: string | null;
   /** 'env' = bootstrapped from MCP_LLM_* (W06 Task 15); read-only in the UI. */
   managedBy: 'env' | null;
+  /**
+   * An env connection whose MCP_LLM_* variables are no longer set. Still
+   * read-only (it holds the operator's endpoint and key); the partner may only
+   * disconnect it. Always false unless managedBy is 'env'.
+   */
+  envReleased: boolean;
 }
 
 /** Why the enable switch is disabled (the subset of ResolveFailureReason the enable gate can return). */

@@ -443,7 +443,7 @@ describe('unknown capabilities on an Anthropic connection (W01 D4 + W00 wire par
       ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: null, source: 'manual', modelId: 'claude-sonnet-4-6', ...PRICE,
     });
     m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1' });
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', configVersion: 4, apiKeyEncrypted: 'enc' });
     const c = (await loadOfferingCandidate('off-1', 'p1'))!;
     expect(c.capabilities).toEqual({ thinkingMode: 'unknown', effortLevels: [], supportsTools: false, supportsVision: false });
   });
@@ -453,7 +453,7 @@ describe('unknown capabilities on an Anthropic connection (W01 D4 + W00 wire par
       ...BASE_OFFERING, connectionId: 'conn-9', platformModelId: 'pm-1', source: 'discovered', modelId: 'qwen2.5-coder:7b', ...PRICE,
     });
     m.getConnection.mockResolvedValue({ ...BYOK_CONN, id: 'conn-9', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', inferenceGeo: 'eu' });
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'conn-9', partnerId: 'p1', status: 'active', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', configVersion: 4, apiKeyEncrypted: 'enc' });
     const c = (await loadOfferingCandidate('off-1', 'p1'))!;
     expect(c.connection).toEqual({
       id: 'conn-9', kind: 'openai_compatible',

@@ -23,6 +23,7 @@ import {
   createGatewayConnection,
   createManualOffering,
   deleteGatewayConnection,
+  MAX_MANUAL_OFFERINGS_PER_CONNECTION,
   updateGatewayConnection,
 } from '../../services/aiModels/gatewayConnections';
 import {
@@ -152,16 +153,22 @@ describe('gateway connections — update', () => {
     const stale = await caught(asPartner(a, () => updateGatewayConnection({ partnerId: a, connectionId: conn.id, baseUrl: 'https://v2.example.com/v1', expectedConfigVersion: 1 })));
     expect([stale.code, stale.status]).toEqual(['stale_write', 409]);
 
+    // A URL change without the key for the new URL is refused: the stored key never follows it.
+    const keyless = await caught(asPartner(a, () => updateGatewayConnection({ partnerId: a, connectionId: conn.id, baseUrl: 'https://v2.example.com/v1/', expectedConfigVersion: 2 })));
+    expect([keyless.code, keyless.status]).toEqual(['key_required_for_new_endpoint', 422]);
+    expect(await connRow(conn.id)).toMatchObject({ base_url: 'https://v1.example.com/v1', config_version: 2 });
+
     // URL change: verification goes stale by fingerprint; the stored tree is untouched.
-    const moved = await asPartner(a, () => updateGatewayConnection({ partnerId: a, connectionId: conn.id, baseUrl: 'https://v2.example.com/v1/', expectedConfigVersion: 2 }));
+    const moved = await asPartner(a, () => updateGatewayConnection({ partnerId: a, connectionId: conn.id, baseUrl: 'https://v2.example.com/v1/', apiKey: 'sk-v-moved-777777', expectedConfigVersion: 2 }));
     expect(moved).toMatchObject({ configVersion: 3, baseUrl: 'https://v2.example.com/v1', status: 'active', lastError: null });
     expect(moved).not.toHaveProperty('apiKeyEncrypted');
     expect(await stateFor()).toBe('stale');
     const [o] = await offeringRows(conn.id);
     expect(o!.capabilities).toEqual(tree);
-    // The rotated key is the one stored.
+    // The key given with the new URL is the one stored, read with the routing it belongs to.
     const m = await asSystem(() => getConnectionKeyMaterial(conn.id));
-    expect(decryptConnectionKey(m!)).toBe('sk-v-rotated-654321');
+    expect(decryptConnectionKey(m!)).toBe('sk-v-moved-777777');
+    expect(m).toMatchObject({ kind: 'openai_compatible', baseUrl: 'https://v2.example.com/v1', configVersion: 3 });
   });
 
   it('an env-managed connection is read-only (409 managed_by_env)', async () => {
@@ -225,5 +232,28 @@ describe('gateway connections — manual models', () => {
     const dup = await caught(asPartner(a, () => createManualOffering({ partnerId: a, connectionId: conn.id, modelId: 'qwen2.5-coder:7b' })));
     expect([dup.code, dup.status]).toEqual(['duplicate_model', 409]);
     expect(await offeringRows(conn.id)).toHaveLength(1);
+  });
+
+  it('caps hand-entered models per connection (409 too_many_models at the cap; discovered rows do not count)', async () => {
+    const a = (await createPartner()).id;
+    const conn = await asPartner(a, () => createGatewayConnection({ partnerId: a, name: 'cap', baseUrl: 'https://cap.example.com/v1', connectedBy: null }));
+    await fixtureSql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, enabled)
+      SELECT ${a}::uuid, ${conn.id}::uuid, 'm-' || g, 'manual', false FROM generate_series(1, ${MAX_MANUAL_OFFERINGS_PER_CONNECTION - 1}) g`;
+    await fixtureSql`
+      INSERT INTO partner_ai_models (partner_id, connection_id, model_id, source, enabled)
+      VALUES (${a}, ${conn.id}, 'discovered-1', 'discovered', false)`;
+    await asPartner(a, () => createManualOffering({ partnerId: a, connectionId: conn.id, modelId: 'last-one' }));
+    const over = await caught(asPartner(a, () => createManualOffering({ partnerId: a, connectionId: conn.id, modelId: 'one-too-many' })));
+    expect([over.code, over.status]).toEqual(['too_many_models', 409]);
+    expect(await offeringRows(conn.id)).toHaveLength(MAX_MANUAL_OFFERINGS_PER_CONNECTION + 1);
+  });
+
+  it('an env-managed connection takes no hand-entered model', async () => {
+    const a = (await createPartner()).id;
+    const conn = await asPartner(a, () => createGatewayConnection({ partnerId: a, name: 'env', baseUrl: 'https://env2.example.com/v1', connectedBy: null, managedBy: 'env' }));
+    const err = await caught(asPartner(a, () => createManualOffering({ partnerId: a, connectionId: conn.id, modelId: 'extra' })));
+    expect([err.code, err.status]).toEqual(['managed_by_env', 409]);
+    expect(await offeringRows(conn.id)).toHaveLength(0);
   });
 });

@@ -16,7 +16,13 @@
  * - A disconnected connection is provenance only: never edited, re-activated,
  *   given a model or disconnected again — all 404, as if absent.
  * - An env-managed connection (provider_config.managedBy = 'env', Task 15) is
- *   read-only here: 409 managed_by_env.
+ *   read-only here: 409 managed_by_env. That includes hand-entered models on
+ *   it. A RELEASED one (variables unset, envReleasedAt set) still holds the
+ *   operator's endpoint and key: it stays read-only, and the partner may only
+ *   disconnect it. Only the bootstrap (allowManaged) writes either.
+ * - A base-URL change (origin or path) must carry the key for the new URL in
+ *   the same write (a string, or null = keyless): the stored key never follows
+ *   a connection to a new endpoint. 422 key_required_for_new_endpoint.
  * - Every endpoint/key change bumps config_version (live sessions rebuild) and
  *   clears last_error. A base-URL change makes each offering's verification
  *   stale by fingerprint (gatewayCapabilities.endpointFingerprint) — offerings
@@ -29,7 +35,7 @@
  * - No write here ever sets partner_ai_models.capabilities: only the Task 12
  *   verifier writes a verification record.
  */
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { BYO_MODEL_ID_PATTERN, isGatewayConnectionKind, type AiSurface, type ModelRates } from '@breeze/shared';
 import { db, runOutsideDbContext } from '../../db';
 import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
@@ -79,15 +85,43 @@ export interface CreateManualOfferingInput {
   modelId: string;
   displayName?: string;
   prices?: ModelRates | null;
+  /** Task 15 env bootstrap only: adds the env model to its own env-managed connection. */
+  allowManaged?: boolean;
 }
 
 const NOT_FOUND = 'Connection not found.';
 const MANAGED_BY_ENV = 'This connection is managed by the MCP_LLM_* environment variables. Change them and restart Breeze.';
+const RELEASED_BY_ENV = 'This connection was set up from the MCP_LLM_* environment variables, which are no longer set. It cannot be edited; you can disconnect it.';
+const KEY_REQUIRED = 'Enter the key for the new URL (or remove the key).';
 const STALE = 'This connection changed since you opened it. Reload and try again.';
 const MAX_DISPLAY_NAME = 120;
 
+/**
+ * Env-bootstrap ownership of a gateway connection (provider_config):
+ *  - 'managed': kept in sync with MCP_LLM_* (managedBy = 'env');
+ *  - 'released': the variables were unset (envReleasedAt set). It still holds
+ *    the operator's endpoint and key, so it stays read-only for the partner —
+ *    who may only disconnect it — until the bootstrap re-adopts it.
+ */
+export type EnvManagementState = 'managed' | 'released' | null;
+
+export function envManagementState(providerConfig: Record<string, unknown> | null | undefined): EnvManagementState {
+  const cfg = providerConfig as { managedBy?: unknown; envReleasedAt?: unknown } | null | undefined;
+  if (cfg?.managedBy !== 'env') return null;
+  return typeof cfg.envReleasedAt === 'string' ? 'released' : 'managed';
+}
+
+/** Hand-entered models per connection, counted under the registry lock. */
+export const MAX_MANUAL_OFFERINGS_PER_CONNECTION = 200;
+
+/** Env-managed, whether still synced or released: read-only for the partner either way. */
 export function isEnvManaged(conn: Pick<PartnerAiConnection, 'providerConfig'>): boolean {
-  return (conn.providerConfig as { managedBy?: unknown } | null)?.managedBy === 'env';
+  return envManagementState(conn.providerConfig) !== null;
+}
+
+/** Env-managed but no longer synced (MCP_LLM_* unset): the partner may disconnect it, nothing else. */
+export function isEnvReleased(conn: Pick<PartnerAiConnection, 'providerConfig'>): boolean {
+  return envManagementState(conn.providerConfig) === 'released';
 }
 
 /** DNS-bearing validation, outside any held DB context and before the registry transaction. */
@@ -101,6 +135,9 @@ interface LockedGatewayConnection {
   status: string;
   providerConfig: Record<string, unknown> | null;
   configVersion: number;
+  baseUrl: string | null;
+  /** Non-null exactly when a key is stored (key_triplet_chk). */
+  keyLast4: string | null;
 }
 
 /**
@@ -116,6 +153,8 @@ async function lockOwnGatewayConnection(partnerId: string, connectionId: string)
       status: partnerAiConnections.status,
       providerConfig: partnerAiConnections.providerConfig,
       configVersion: partnerAiConnections.configVersion,
+      baseUrl: partnerAiConnections.baseUrl,
+      keyLast4: partnerAiConnections.keyLast4,
     })
     .from(partnerAiConnections)
     .where(and(eq(partnerAiConnections.id, connectionId), eq(partnerAiConnections.partnerId, partnerId)))
@@ -126,8 +165,31 @@ async function lockOwnGatewayConnection(partnerId: string, connectionId: string)
   return row;
 }
 
-function assertWritable(row: LockedGatewayConnection, allowManaged: boolean | undefined): void {
-  if (isEnvManaged(row) && !allowManaged) throw new RegistryWriteError(MANAGED_BY_ENV, 'managed_by_env', 409);
+/**
+ * Env-managed rows are the bootstrap's (allowManaged). A released one admits
+ * exactly one partner write, the disconnect; a managed one admits none.
+ */
+function assertWritable(row: LockedGatewayConnection, allowManaged: boolean | undefined, write: 'edit' | 'disconnect' = 'edit'): void {
+  if (allowManaged) return;
+  const state = envManagementState(row.providerConfig);
+  if (state === 'managed') throw new RegistryWriteError(MANAGED_BY_ENV, 'managed_by_env', 409);
+  if (state === 'released' && write !== 'disconnect') throw new RegistryWriteError(RELEASED_BY_ENV, 'managed_by_env', 409);
+}
+
+/** Origin + path, trailing slashes ignored; an unparsable value never equals anything. */
+function endpointIdentity(url: string | null): string | null {
+  if (url === null) return null;
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return null;
+  }
+}
+
+function changesEndpoint(stored: string | null, next: string): boolean {
+  const a = endpointIdentity(stored);
+  return a === null || a !== endpointIdentity(next);
 }
 
 // ── create ──────────────────────────────────────────────────────────────────
@@ -167,6 +229,10 @@ export async function updateGatewayConnectionLocked(input: UpdateGatewayConnecti
   const row = await lockOwnGatewayConnection(input.partnerId, input.connectionId);
   assertWritable(row, input.allowManaged);
   if (row.configVersion !== input.expectedConfigVersion) throw new RegistryWriteError(STALE, 'stale_write', 409);
+  // Under the row lock, so the stored key and URL cannot change underneath.
+  if (input.baseUrl !== undefined && input.apiKey === undefined && row.keyLast4 !== null && changesEndpoint(row.baseUrl, input.baseUrl)) {
+    throw new RegistryWriteError(KEY_REQUIRED, 'key_required_for_new_endpoint', 422, { field: 'apiKey' });
+  }
 
   const set: Partial<typeof partnerAiConnections.$inferInsert> = {
     configVersion: row.configVersion + 1,
@@ -219,7 +285,7 @@ export async function deleteGatewayConnection(input: DeleteGatewayConnectionInpu
 /** Inside a held registry write only. Assignment writes take the same lock, so the in-use check cannot race one. */
 export async function deleteGatewayConnectionLocked(input: DeleteGatewayConnectionInput): Promise<void> {
   const row = await lockOwnGatewayConnection(input.partnerId, input.connectionId);
-  assertWritable(row, input.allowManaged);
+  assertWritable(row, input.allowManaged, 'disconnect');
   const inUse = await connectionDefaultUses(input.partnerId, row.id);
   if (inUse.length > 0) {
     throw new RegistryWriteError(
@@ -272,6 +338,8 @@ export async function createManualOffering(input: CreateManualOfferingInput): Pr
  */
 export async function createManualOfferingLocked(input: CreateManualOfferingInput): Promise<Offering> {
   const conn = await lockOwnGatewayConnection(input.partnerId, input.connectionId);
+  // An env connection's models (and their prices) are the operator's.
+  assertWritable(conn, input.allowManaged);
   const duplicate = () => new RegistryWriteError('That model is already listed on this connection.', 'duplicate_model', 409);
   const [existing] = await db
     .select({ id: partnerAiModels.id })
@@ -283,6 +351,21 @@ export async function createManualOfferingLocked(input: CreateManualOfferingInpu
     ))
     .limit(1);
   if (existing) throw duplicate();
+  // Counted under the registry lock: concurrent adds for this partner serialise on it.
+  const [counted] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(partnerAiModels)
+    .where(and(
+      eq(partnerAiModels.partnerId, input.partnerId),
+      eq(partnerAiModels.connectionId, conn.id),
+      eq(partnerAiModels.source, 'manual'),
+    ));
+  if (Number(counted?.n ?? 0) >= MAX_MANUAL_OFFERINGS_PER_CONNECTION) {
+    throw new RegistryWriteError(
+      `This connection already has the maximum of ${MAX_MANUAL_OFFERINGS_PER_CONNECTION} hand-entered models.`,
+      'too_many_models', 409, { max: MAX_MANUAL_OFFERINGS_PER_CONNECTION },
+    );
+  }
   const p = input.prices ?? null;
   const [row] = await db
     .insert(partnerAiModels)

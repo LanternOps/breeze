@@ -390,7 +390,8 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
                 {t('aiModels.drawer.refresh')}
               </button>
             )}
-            {connection !== null && connection.managedBy !== 'env' && (
+            {/* A released env connection is read-only, but the partner may still remove it. */}
+            {connection !== null && (connection.managedBy !== 'env' || connection.envReleased) && (
               <button type="button" data-testid="ai-connection-disconnect" onClick={() => setConfirmDisconnect(true)} disabled={busy}
                 className="inline-flex items-center gap-2 rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
                 <Unplug className="h-4 w-4" />

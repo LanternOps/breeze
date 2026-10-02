@@ -128,7 +128,7 @@ describe('verifyConnectionOffering (real DB)', () => {
     }));
     expect((await loadOfferingCandidate(offeringId, partnerId))!.facts.supportsTools).toBe(true);
     await asPartner(partnerId, async () => updateGatewayConnection({
-      partnerId, connectionId, baseUrl: 'https://other-llm.example.com/v1', expectedConfigVersion: await connectionVersion(connectionId),
+      partnerId, connectionId, baseUrl: 'https://other-llm.example.com/v1', apiKey: 'other-llm-key-0123456789', expectedConfigVersion: await connectionVersion(connectionId),
     }));
     expect((await loadOfferingCandidate(offeringId, partnerId))!.facts.supportsTools).toBe(false);
   });
@@ -137,7 +137,7 @@ describe('verifyConnectionOffering (real DB)', () => {
     const { partnerId, connectionId, offeringId } = await seed();
     const r = await verifyConnectionOffering({ offeringId, partnerId }, harness(async () => {
       await asPartner(partnerId, async () => updateGatewayConnection({
-        partnerId, connectionId, baseUrl: 'https://other-llm.example.com/v1', expectedConfigVersion: await connectionVersion(connectionId),
+        partnerId, connectionId, baseUrl: 'https://other-llm.example.com/v1', apiKey: 'other-llm-key-0123456789', expectedConfigVersion: await connectionVersion(connectionId),
       }));
       return PASS;
     }));

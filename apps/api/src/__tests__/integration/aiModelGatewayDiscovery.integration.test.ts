@@ -122,6 +122,27 @@ describe('syncConnectionModels — openai_compatible (real DB, real discoverer)'
     expect(await offering(connectionId, 'b')).toMatchObject({ enabled: false });
   });
 
+  it('a hostile listing that echoes the key never stores it: the name is dropped, an id carrying it is skipped', async () => {
+    const { connectionId } = await seedGateway();
+    listing(
+      { id: 'echo-name', display_name: `Leaked ${KEY}` } as never,
+      { id: 'window-name', name: `model ${KEY.slice(4, 20)}` },
+      { id: `id-${KEY.slice(-16)}` },
+      { id: 'clean', name: 'Clean Model' },
+    );
+    const report = await syncConnectionModels(connectionId, T0);
+    expect(report).toMatchObject({ status: 'ok' });
+    const rows = await offerings(connectionId);
+    expect(rows.map((r) => [r.model_id, r.display_name])).toEqual([
+      ['clean', 'Clean Model'],
+      ['echo-name', null],
+      ['window-name', null],
+    ]);
+    const stored = JSON.stringify(rows);
+    expect(stored).not.toContain(KEY.slice(4, 16));
+    expect(stored).not.toContain(KEY.slice(-12));
+  });
+
   it('a keyless connection lists without any Authorization header', async () => {
     const { connectionId } = await seedGateway(null);
     listing('a');

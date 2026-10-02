@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   conn: null as Record<string, unknown> | null,
   credential: { secret: 'sk-upstream-777777777777' } as { secret: string | null } | null,
   platformCaps: null as unknown,
+  /** When set, the REAL loadGatewayCredential runs against this key row. */
+  material: null as Record<string, unknown> | null,
 }));
 
 vi.mock('../../db', async (orig) => ({
@@ -35,11 +37,21 @@ vi.mock('../llm/providerFidelityHarness', async (orig) => ({
   },
 }));
 vi.mock('./offerings', async (orig) => ({ ...(await orig<typeof import('./offerings')>()), getOffering: async () => h.offering }));
-vi.mock('./connections', async (orig) => ({ ...(await orig<typeof import('./connections')>()), getConnection: async () => h.conn }));
-vi.mock('./gatewayCandidate', async (orig) => ({
-  ...(await orig<typeof import('./gatewayCandidate')>()),
-  loadGatewayCredential: async () => (h.credential ? { ...h.credential } : null),
+vi.mock('./connections', async (orig) => ({
+  ...(await orig<typeof import('./connections')>()),
+  getConnection: async () => h.conn,
+  getConnectionKeyMaterial: async () => h.material,
 }));
+vi.mock('./gatewayCandidate', async (orig) => {
+  const real = await orig<typeof import('./gatewayCandidate')>();
+  return {
+    ...real,
+    loadGatewayCredential: async (conn: Parameters<typeof real.loadGatewayCredential>[0]) => {
+      if (h.material) return real.loadGatewayCredential(conn);
+      return h.credential ? { ...h.credential } : null;
+    },
+  };
+});
 vi.mock('./platformModels', async (orig) => ({
   ...(await orig<typeof import('./platformModels')>()),
   getPlatformModelById: async () => ({ capabilities: h.platformCaps }),
@@ -80,6 +92,7 @@ beforeEach(async () => {
   h.conn = { id: 'c1', partnerId: 'p1', kind: 'openai_compatible', baseUrl: BASE_URL, providerConfig: null, configVersion: 2, status: 'active' };
   h.credential = { secret: UPSTREAM_KEY };
   h.platformCaps = null;
+  h.material = null;
   await getModelGateway();
 });
 afterEach(async () => {
@@ -89,6 +102,22 @@ afterEach(async () => {
 });
 
 describe('verifyConnectionOffering', () => {
+  it('an endpoint+key change between the connection read and the key read: refused, the harness never runs, nothing written', async () => {
+    h.material = {
+      id: 'c1', partnerId: 'p1', status: 'active', kind: 'openai_compatible',
+      baseUrl: 'https://attacker.example.net/v1', configVersion: 3, apiKeyEncrypted: null,
+    };
+    await expect(verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' })).rejects.toMatchObject({ code: 'not_eligible', status: 409 });
+    expect(h.harnessArgs).toBeNull();
+    expect(h.writes).toEqual([]);
+  });
+
+  it('a key row from the same routing snapshot is used (keyless control for the race test above)', async () => {
+    h.material = { id: 'c1', partnerId: 'p1', status: 'active', kind: 'openai_compatible', baseUrl: BASE_URL, configVersion: 2, apiKeyEncrypted: null };
+    const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
+    expect(r.state).toBe('verified');
+  });
+
   it('passes → stores a verified tree bound to the endpoint fingerprint, tools supported', async () => {
     const r = await verifyConnectionOffering({ offeringId: 'o1', partnerId: 'p1' });
     expect(r.state).toBe('verified');

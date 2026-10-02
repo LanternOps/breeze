@@ -39,6 +39,7 @@ import {
   discoverAnthropicModels,
   syncConnectionModels,
   syncPlatformModels,
+  withoutKeyMaterial,
 } from './discovery';
 import { DiscoveryTruncatedError } from './gateway/openai/discovery';
 import { captureException } from '../sentry';
@@ -166,7 +167,10 @@ describe('syncConnectionModels — gateway kinds, before any row is written (W06
     id: 'conn-1', partnerId: 'p-1', kind: 'openai_compatible', status: 'active', configVersion: 4,
     baseUrl: 'https://llm.example.com/v1', catalogEntryId: null, providerConfig: null, ...over,
   });
-  const material = (over: Record<string, unknown> = {}) => ({ id: 'conn-1', partnerId: 'p-1', status: 'active', apiKeyEncrypted: 'enc:v1:xx', ...over });
+  const material = (over: Record<string, unknown> = {}) => ({
+    id: 'conn-1', partnerId: 'p-1', status: 'active', kind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', configVersion: 4,
+    apiKeyEncrypted: 'enc:v1:xx', ...over,
+  });
   const discoverer = vi.fn();
   const run = () => syncConnectionModels('conn-1', NOW, {
     discoverAnthropicModels: vi.fn(),
@@ -251,5 +255,54 @@ describe('syncConnectionModels — gateway kinds, before any row is written (W06
     discoverer.mockRejectedValue(new DiscoveryTruncatedError('The endpoint lists more than 500 models; add the ones you need by hand.'));
     expect(await run()).toMatchObject({ status: 'failed', error: expect.stringMatching(/more than 500/) });
     expect(dbWrites).toHaveLength(2);
+  });
+
+  it('an endpoint+key change between the connection read and the key read: the new key is never sent to the old URL (skip + retry)', async () => {
+    connMocks.getConnectionKeyMaterial.mockResolvedValue(material({ baseUrl: 'https://attacker.example.net/v1', configVersion: 5 }));
+    expect(await run()).toMatchObject({ status: 'skipped', retry: true });
+    expect(discoverer).not.toHaveBeenCalled();
+    expect(connMocks.decryptConnectionKey).not.toHaveBeenCalled();
+    expect(dbWrites).toEqual([]);
+  });
+
+  it('a key rotation alone between the two reads (config_version bumped) is also a skip + retry', async () => {
+    connMocks.getConnectionKeyMaterial.mockResolvedValue(material({ configVersion: 5 }));
+    expect(await run()).toMatchObject({ status: 'skipped', retry: true });
+    expect(discoverer).not.toHaveBeenCalled();
+  });
+});
+
+describe('withoutKeyMaterial — discovered rows never persist the connection key', () => {
+  const KEY = 'sk-live-partner-key-0123456789';
+  it('drops a display name that echoes the key, any 12-char window of it, or an encoding of it', () => {
+    const out = withoutKeyMaterial([
+      { modelId: 'a', displayName: `leak ${KEY}` },
+      { modelId: 'b', displayName: `mid ${KEY.slice(5, 17)} window` },
+      { modelId: 'c', displayName: `upper ${KEY.slice(3, 20).toUpperCase()}` },
+      { modelId: 'd', displayName: Buffer.from(KEY).toString('base64') },
+      { modelId: 'e', displayName: 'Llama 3.1 8B' },
+    ], KEY);
+    expect(out).toEqual([
+      { modelId: 'a', displayName: null },
+      { modelId: 'b', displayName: null },
+      { modelId: 'c', displayName: null },
+      { modelId: 'd', displayName: null },
+      { modelId: 'e', displayName: 'Llama 3.1 8B' },
+    ]);
+  });
+
+  it('skips a model id that carries key material; keeps ordinary ids', () => {
+    const out = withoutKeyMaterial([
+      { modelId: `m-${KEY.slice(-14)}`, displayName: null },
+      { modelId: 'qwen2.5-coder:7b', displayName: null },
+    ], KEY);
+    expect(out).toEqual([{ modelId: 'qwen2.5-coder:7b', displayName: null }]);
+  });
+
+  it('keyless: generic key shapes in a display name drop the name, the id is kept', () => {
+    expect(withoutKeyMaterial([{ modelId: 'x', displayName: 'Bearer abcdefghijklmnop' }], null))
+      .toEqual([{ modelId: 'x', displayName: null }]);
+    expect(withoutKeyMaterial([{ modelId: 'x', displayName: 'Mistral 7B' }], null))
+      .toEqual([{ modelId: 'x', displayName: 'Mistral 7B' }]);
   });
 });

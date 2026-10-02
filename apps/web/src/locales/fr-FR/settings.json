@@ -283,7 +283,9 @@
         "keepKey": "Laissez vide pour conserver la clé actuelle",
         "removeKey": "Supprimer la clé enregistrée",
         "keyTooShort": "Une clé doit comporter au moins {{min}} caractères.",
+        "keyRequiredForNewUrl": "Saisissez la clé pour la nouvelle URL ou supprimez la clé. La clé enregistrée n'est jamais envoyée à une nouvelle URL.",
         "envManaged": "Cette connexion est gérée par l'environnement de l'instance (paramètres MCP_LLM_*). Modifiez-la à cet endroit ; elle ne peut pas être modifiée ici.",
+        "envReleased": "Cette connexion a été configurée à partir de l'environnement de l'instance (paramètres MCP_LLM_*), qui ne la gère plus. Elle ne peut pas être modifiée ici ; vous pouvez la déconnecter.",
         "envManagedBadge": "Gérée par l'environnement",
         "noKey": "Aucune clé",
         "discovered_one": "{{count}} modèle trouvé · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "Cette connexion est gérée par l'environnement de l'instance et ne peut pas être modifiée ici.",
       "connection_in_use": "Une fonctionnalité utilise encore un modèle de cette connexion. Choisissez d'abord un autre modèle par défaut.",
       "duplicate_model": "Cet ID de modèle existe déjà sur cette connexion.",
-      "geo_not_supported": "Ce type de connexion ne peut pas définir de région d'inférence."
+      "geo_not_supported": "Ce type de connexion ne peut pas définir de région d'inférence.",
+      "key_required_for_new_endpoint": "Saisissez la clé pour la nouvelle URL (ou supprimez la clé).",
+      "too_many_models": "Cette connexion compte déjà le nombre maximal de modèles ajoutés manuellement."
     },
     "org": {
       "title": "Modèles par défaut",

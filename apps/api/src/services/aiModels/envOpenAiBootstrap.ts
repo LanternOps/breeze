@@ -20,7 +20,13 @@
  *    offering (enabled), chat moved from the old env offering only where the
  *    default is exactly it, the old one disabled unless still referenced;
  *    prices → re-priced;
- *  - variables unset → managedBy cleared everywhere; nothing deleted.
+ *  - variables unset → every env-managed connection is RELEASED
+ *    (provider_config.envReleasedAt): nothing deleted or disabled, so chat
+ *    keeps working, but the row still holds the operator's endpoint and key,
+ *    so it stays read-only for the partner, who may only disconnect it;
+ *  - variables set again → the released row is re-adopted (marker cleared,
+ *    URL/key/model re-synced as on any later boot). Never a second connection,
+ *    and never a second platform-default re-point.
  * The base URL goes through validateByoBaseUrl once, outside any DB context
  * (same self-host private-network policy as the deleted env runtime).
  * Verification jobs are enqueued only after the partner's transaction
@@ -95,6 +101,10 @@ async function syncPartner(partnerId: string, s: EnvOpenAiSettings, baseUrl: str
 
   let resynced = false;
   let reverify = false;
+  if (conn.released) {
+    await store.readoptEnvConnection(partnerId, conn.id, conn.envModel);
+    resynced = true;
+  }
   // Fingerprint, not last4: a rotated key can share its last four characters.
   const keyChanged = s.apiKey === null ? conn.keyFingerprint !== null : conn.keyFingerprint !== hmacFingerprint(s.apiKey);
   const urlChanged = conn.baseUrl !== baseUrl;
@@ -103,7 +113,9 @@ async function syncPartner(partnerId: string, s: EnvOpenAiSettings, baseUrl: str
       partnerId,
       connectionId: conn.id,
       ...(urlChanged ? { baseUrl } : {}),
-      ...(keyChanged ? { apiKey: s.apiKey } : {}),
+      // A new URL always carries the configured key (or keyless): the stored
+      // key never follows a connection to a new endpoint.
+      ...(keyChanged || urlChanged ? { apiKey: s.apiKey } : {}),
       expectedConfigVersion: conn.configVersion,
       allowManaged: true,
     });
@@ -153,7 +165,7 @@ export async function bootstrapEnvOpenAiConnections(opts: BootstrapEnvOpenAiOpti
   if (!settings) {
     report.released = await store.releaseEnvManagedConnections();
     if (report.released > 0) {
-      console.log(`[envOpenAiBootstrap] MCP_LLM_PROVIDER is not openai-compatible: released ${report.released} env-managed connection(s); nothing deleted`);
+      console.log(`[envOpenAiBootstrap] MCP_LLM_PROVIDER is not openai-compatible: released ${report.released} env-managed connection(s); nothing deleted, they stay read-only (partners may disconnect them)`);
     }
     return report;
   }

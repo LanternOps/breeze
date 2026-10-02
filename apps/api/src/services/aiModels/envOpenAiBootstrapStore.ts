@@ -17,7 +17,7 @@ import type { ModelRates } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiModelAssignments, partnerAiConnections, partnerAiModels, partners } from '../../db/schema';
 import { createGatewayConnectionRow } from './connections';
-import { createManualOfferingLocked } from './gatewayConnections';
+import { createManualOfferingLocked, envManagementState } from './gatewayConnections';
 import { lockPartnerRegistryReconcile } from './legacyReconcile';
 
 /** Upper bound on waiting for the partner registry lock (or a row lock) at boot; the retry schedule picks the partner up again. */
@@ -30,6 +30,8 @@ export interface EnvConnectionState {
   keyFingerprint: string | null;
   /** The MCP_LLM_MODEL this connection was last synced to (bootstrap bookkeeping, non-secret). */
   envModel: string | null;
+  /** Released by an earlier boot with the variables unset; this boot re-adopts it. */
+  released: boolean;
 }
 
 export interface EnvOfferingResult {
@@ -56,7 +58,10 @@ export async function inPartnerEnvLock<T>(partnerId: string, fn: () => Promise<T
   }, 'aiModels.envBootstrap.partner'));
 }
 
-/** The partner's live env-managed connection, row-locked. Oldest first if (impossibly) several. */
+/**
+ * The partner's live env-managed connection, released or not, row-locked.
+ * Oldest first if (impossibly) several.
+ */
 export async function findEnvConnection(partnerId: string): Promise<EnvConnectionState | null> {
   const [row] = await db
     .select({
@@ -84,6 +89,7 @@ export async function findEnvConnection(partnerId: string): Promise<EnvConnectio
     configVersion: row.configVersion,
     keyFingerprint: row.keyFingerprint,
     envModel: typeof envModel === 'string' ? envModel : null,
+    released: envManagementState(row.providerConfig) === 'released',
   };
 }
 
@@ -107,6 +113,14 @@ export async function setEnvModel(partnerId: string, connectionId: string, model
   await db
     .update(partnerAiConnections)
     .set({ providerConfig: { managedBy: 'env', envModel: model }, updatedAt: new Date() })
+    .where(and(eq(partnerAiConnections.id, connectionId), eq(partnerAiConnections.partnerId, partnerId)));
+}
+
+/** Clears the release marker: the connection is synced from MCP_LLM_* again. No routing field changes. */
+export async function readoptEnvConnection(partnerId: string, connectionId: string, envModel: string | null): Promise<void> {
+  await db
+    .update(partnerAiConnections)
+    .set({ providerConfig: envModel === null ? { managedBy: 'env' } : { managedBy: 'env', envModel }, updatedAt: new Date() })
     .where(and(eq(partnerAiConnections.id, connectionId), eq(partnerAiConnections.partnerId, partnerId)));
 }
 
@@ -157,6 +171,7 @@ export async function upsertEnvOffering(input: {
   if (!existing) {
     const created = await createManualOfferingLocked({
       partnerId: input.partnerId, connectionId: input.connectionId, modelId: input.model, displayName: input.model, prices: p,
+      allowManaged: true,
     });
     await db.update(partnerAiModels).set({ enabled: true, updatedAt: new Date() })
       .where(and(eq(partnerAiModels.id, created.id), eq(partnerAiModels.partnerId, input.partnerId)));
@@ -248,19 +263,27 @@ export async function disableOfferingIfUnused(partnerId: string, offeringId: str
 }
 
 /**
- * MCP_LLM_PROVIDER no longer openai-compatible: every env-managed connection
- * becomes an ordinary one the admin can edit or remove. Nothing is deleted or
- * disabled, so chat keeps working until an admin changes it. No routing
- * field changes (provider_config is not part of an openai_compatible
- * endpoint fingerprint), so config_version is left alone.
+ * MCP_LLM_PROVIDER no longer openai-compatible: every live env-managed
+ * connection is marked released (envReleasedAt). It is NOT handed to the
+ * partner as an ordinary connection: it still holds the operator's endpoint
+ * and key, so the write services keep it read-only and allow only a
+ * disconnect. Nothing is deleted or disabled, so chat keeps working until an
+ * admin changes it. No routing field changes (provider_config is not part of
+ * an openai_compatible endpoint fingerprint), so config_version is left
+ * alone. Returns the number newly released.
  */
-export async function releaseEnvManagedConnections(): Promise<number> {
+export async function releaseEnvManagedConnections(now: Date = new Date()): Promise<number> {
   const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
     () => db.update(partnerAiConnections)
-      .set({ providerConfig: null, updatedAt: new Date() })
+      .set({
+        providerConfig: sql`${partnerAiConnections.providerConfig} || jsonb_build_object('envReleasedAt', ${now.toISOString()}::text)`,
+        updatedAt: now,
+      })
       .where(and(
         eq(partnerAiConnections.kind, 'openai_compatible'),
+        ne(partnerAiConnections.status, 'disconnected'),
         sql`${partnerAiConnections.providerConfig}->>'managedBy' = 'env'`,
+        sql`(${partnerAiConnections.providerConfig}->>'envReleasedAt') IS NULL`,
       ))
       .returning({ id: partnerAiConnections.id }),
     'aiModels.envBootstrap.release',

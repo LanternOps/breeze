@@ -22,6 +22,10 @@ import {
   type EnvOpenAiSettings,
 } from '../../services/aiModels/envOpenAiBootstrap';
 import { __resetRegistryCutoverMemoForTests, cutoverPartner } from '../../services/aiModels/registryCutover';
+import { createManualOffering, deleteGatewayConnection, updateGatewayConnection } from '../../services/aiModels/gatewayConnections';
+import { updateOfferingDetails } from '../../services/aiModels/offeringWrites';
+import { getOffering } from '../../services/aiModels/offerings';
+import { withSystemDbAccessContext } from '../../db';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedRegistryPartner } from './helpers/aiModelRegistrySeed';
 import { createPartner } from './db-utils';
@@ -196,16 +200,72 @@ describe.skipIf(!RUN)('MCP_LLM_* env bootstrap (real DB)', () => {
     expect(after[0]).toMatchObject({ id: before!.id, base_url: 'https://llm2.example.com/v1', key_last4: '0002', config_version: before!.config_version + 1 });
   });
 
-  it('variables unset later → managedBy cleared; nothing deleted, still active', async () => {
+  it('variables unset later → released, not handed over: still env-managed, key kept, active; nothing deleted', async () => {
     const p = await seedRegistryPartner('platform');
     await run([p.partnerId]);
     const [conn] = await envConnections(p.partnerId);
     const r = await run([p.partnerId], null);
     expect(r.released).toBeGreaterThanOrEqual(1);
     const [after] = await envConnections(p.partnerId);
-    expect(after).toMatchObject({ id: conn!.id, status: 'active', base_url: SETTINGS.baseUrl });
-    expect(after!.provider_config?.managedBy).toBeUndefined();
+    expect(after).toMatchObject({ id: conn!.id, status: 'active', base_url: SETTINGS.baseUrl, config_version: conn!.config_version, key_last4: '0001' });
+    expect(after!.api_key_encrypted).not.toBeNull();
+    expect(after!.provider_config).toMatchObject({ managedBy: 'env', envModel: 'qwen', envReleasedAt: expect.any(String) });
     expect((await offerings(conn!.id))[0]!.enabled).toBe(true);
+    // A second unset boot does not release it again.
+    const releasedAt = after!.provider_config!.envReleasedAt;
+    await run([p.partnerId], null);
+    expect((await envConnections(p.partnerId))[0]!.provider_config!.envReleasedAt).toBe(releasedAt);
+  });
+
+  it('a released connection stays read-only for the partner (URL/key, hand-entered models, price, name refused); disconnect is allowed', async () => {
+    const p = await seedRegistryPartner('platform');
+    await run([p.partnerId]);
+    await run([p.partnerId], null);
+    const [conn] = await envConnections(p.partnerId);
+    const [off] = await offerings(conn!.id);
+    const refusal = (promise: Promise<unknown>) => promise.then(() => null, (e: { code?: string; status?: number }) => [e.status, e.code]);
+
+    expect(await refusal(updateGatewayConnection({
+      partnerId: p.partnerId, connectionId: conn!.id, baseUrl: 'https://evil.example.net/v1', expectedConfigVersion: conn!.config_version,
+    }))).toEqual([409, 'managed_by_env']);
+    expect(await refusal(updateGatewayConnection({
+      partnerId: p.partnerId, connectionId: conn!.id, apiKey: 'sk-partner-own-key-1', expectedConfigVersion: conn!.config_version,
+    }))).toEqual([409, 'managed_by_env']);
+    expect(await refusal(createManualOffering({ partnerId: p.partnerId, connectionId: conn!.id, modelId: 'extra-model' }))).toEqual([409, 'managed_by_env']);
+    const offRow = await withSystemDbAccessContext(() => getOffering(off!.id));
+    expect(await refusal(updateOfferingDetails({
+      partnerId: p.partnerId, offeringId: off!.id,
+      patch: { expectedUpdatedAt: offRow!.updatedAt.toISOString(), prices: { inputCentsPerM: 1, outputCentsPerM: 1, cacheReadCentsPerM: 1, cacheWriteCentsPerM: 0 } },
+    }))).toEqual([409, 'managed_by_env']);
+    const [unchanged] = await envConnections(p.partnerId);
+    expect(unchanged).toMatchObject({ base_url: SETTINGS.baseUrl, key_last4: '0001', config_version: conn!.config_version });
+    expect(await offerings(conn!.id)).toHaveLength(1);
+
+    // Disconnect: move chat off the env model first (a default blocks it), then remove.
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${p.offeringId}, updated_at = now()
+      WHERE partner_id = ${p.partnerId} AND org_id IS NULL AND surface = 'chat'`;
+    await deleteGatewayConnection({ partnerId: p.partnerId, connectionId: conn!.id });
+    const [gone] = await envConnections(p.partnerId);
+    expect(gone).toMatchObject({ id: conn!.id, status: 'disconnected', key_last4: null, api_key_encrypted: null });
+  });
+
+  it('variables set again → the released connection is re-adopted (same id, re-synced), chat NOT re-pointed a second time', async () => {
+    const p = await seedRegistryPartner('platform');
+    const first = await run([p.partnerId]);
+    expect(first.chatRepointed).toBe(1);
+    await run([p.partnerId], null);
+    const [released] = await envConnections(p.partnerId);
+    // Meanwhile the admin moved chat back to a platform model.
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${p.offeringId}, updated_at = now()
+      WHERE partner_id = ${p.partnerId} AND org_id IS NULL AND surface = 'chat'`;
+
+    const r = await run([p.partnerId], { ...SETTINGS, baseUrl: 'https://llm3.example.com/v1', apiKey: 'sk-env-integration-0003' });
+    expect(r).toMatchObject({ created: 0, chatRepointed: 0, failed: [] });
+    const conns = await envConnections(p.partnerId);
+    expect(conns).toHaveLength(1);
+    expect(conns[0]).toMatchObject({ id: released!.id, status: 'active', base_url: 'https://llm3.example.com/v1', key_last4: '0003' });
+    expect(conns[0]!.provider_config).toEqual({ managedBy: 'env', envModel: 'qwen' });
+    expect((await partnerChat(p.partnerId))!.default_offering_id).toBe(p.offeringId);
   });
 
   it('a partner-scoped id that does not exist fails alone (reported), others still bootstrapped', async () => {

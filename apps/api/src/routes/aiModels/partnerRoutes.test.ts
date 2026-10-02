@@ -705,6 +705,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       ['managed_by_env', new RegistryWriteError('This connection is managed by the MCP_LLM_* environment variables.', 'managed_by_env', 409)],
       ['stale_write', new RegistryWriteError('This connection changed since you opened it.', 'stale_write', 409)],
       ['egress_blocked', new ByoEndpointRejected('Use https for an endpoint on a public address.', 'egress_blocked')],
+      ['key_required_for_new_endpoint', new RegistryWriteError('Enter the key for the new URL (or remove the key).', 'key_required_for_new_endpoint', 422, { field: 'apiKey' })],
     ])('maps a %s refusal to its status/code; nothing queued or audited', async (code, err) => {
       vi.mocked(updateGatewayConnection).mockRejectedValueOnce(err);
       const res = await call('PATCH', `/connections/${G}/gateway`, { baseUrl: 'http://example.com', expectedConfigVersion: 3 });
@@ -753,6 +754,12 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(deleteGatewayConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: G });
       expect(deletePartnerLlmConfig).not.toHaveBeenCalled();
       expect(audits()[0]).toMatchObject({ action: 'ai_models.connection.deleted', details: { connectionId: G, kind: 'openai_compatible' } });
+    });
+    it('a released env connection can be disconnected (the route leaves the env rule to the service)', async () => {
+      vi.mocked(getConnection).mockResolvedValue(gatewayConn({ providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } }) as any);
+      const res = await call('DELETE', `/connections/${G}`);
+      expect(res.status).toBe(200);
+      expect(deleteGatewayConnection).toHaveBeenCalledWith({ partnerId: P, connectionId: G });
     });
     it('the Anthropic connection still goes through the compat delete', async () => {
       expect((await call('DELETE', `/connections/${C}`)).status).toBe(200);
@@ -829,6 +836,15 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       vi.mocked(createManualOffering).mockRejectedValueOnce(new RegistryWriteError('That model is already listed on this connection.', 'duplicate_model', 409));
       const res = await call('POST', `/connections/${G}/offerings`, { modelId: 'm1' });
       expect([res.status, (await res.json()).code]).toEqual([409, 'duplicate_model']);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+    it.each([
+      ['too_many_models', new RegistryWriteError('This connection already has the maximum of 200 hand-entered models.', 'too_many_models', 409, { max: 200 })],
+      ['managed_by_env', new RegistryWriteError('This connection is managed by the MCP_LLM_* environment variables.', 'managed_by_env', 409)],
+    ])('maps %s → 409, nothing audited', async (code, err) => {
+      vi.mocked(createManualOffering).mockRejectedValueOnce(err);
+      const res = await call('POST', `/connections/${G}/offerings`, { modelId: 'm1' });
+      expect([res.status, (await res.json()).code]).toEqual([409, code]);
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });

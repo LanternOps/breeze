@@ -283,7 +283,9 @@
         "keepKey": "Lascia vuoto per mantenere la chiave attuale",
         "removeKey": "Rimuovi la chiave salvata",
         "keyTooShort": "La chiave deve contenere almeno {{min}} caratteri.",
+        "keyRequiredForNewUrl": "Inserisci la chiave per il nuovo URL oppure rimuovi la chiave. La chiave salvata non viene mai inviata a un nuovo URL.",
         "envManaged": "Questa connessione è gestita dall'ambiente dell'istanza (impostazioni MCP_LLM_*). Modificala lì; qui non è modificabile.",
+        "envReleased": "Questa connessione è stata configurata dall'ambiente dell'istanza (impostazioni MCP_LLM_*), che non la gestisce più. Qui non è modificabile; puoi disconnetterla.",
         "envManagedBadge": "Gestita dall'ambiente",
         "noKey": "Nessuna chiave",
         "discovered_one": "{{count}} modello trovato · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "Questa connessione è gestita dall'ambiente dell'istanza e non può essere modificata qui.",
       "connection_in_use": "Una funzione usa ancora un modello di questa connessione. Scegli prima un altro modello predefinito.",
       "duplicate_model": "Questo ID modello esiste già su questa connessione.",
-      "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza."
+      "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza.",
+      "key_required_for_new_endpoint": "Inserisci la chiave per il nuovo URL (oppure rimuovi la chiave).",
+      "too_many_models": "Questa connessione ha già il numero massimo di modelli aggiunti manualmente."
     },
     "org": {
       "title": "Modelli predefiniti",

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   getConnectionKeyMaterial: vi.fn(),
+  getConnection: vi.fn(),
   decryptConnectionKey: vi.fn(),
   captureException: vi.fn(),
 }));
@@ -13,6 +14,7 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('./connections', () => ({
   getConnectionKeyMaterial: m.getConnectionKeyMaterial,
+  getConnection: m.getConnection,
   decryptConnectionKey: m.decryptConnectionKey,
 }));
 
@@ -26,6 +28,8 @@ const CONN = {
   providerConfig: null, status: 'active', configVersion: 4, inferenceGeo: null, catalogEntryId: null,
 };
 const conn = (over: Record<string, unknown> = {}) => ({ ...CONN, ...over }) as never;
+/** The routing fields read in the same row read as the key. */
+const ROUTING = { kind: CONN.kind, baseUrl: CONN.baseUrl, configVersion: CONN.configVersion };
 const verified = verifiedCapabilitiesTree({
   harnessVersion: FIDELITY_HARNESS_VERSION, endpointFingerprint: endpointFingerprint(CONN),
   at: '2026-11-23T00:00:00.000Z', passed: true, toolUse: true, adaptiveEffort: false, summary: null,
@@ -44,7 +48,7 @@ const CTX: EligibilityContext = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  m.getConnectionKeyMaterial.mockResolvedValue({ id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x' });
+  m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x' });
   m.decryptConnectionKey.mockReturnValue('sk-local');
 });
 
@@ -79,7 +83,7 @@ describe('gatewayCandidate', () => {
   });
 
   it('keyless connection (active, NULL key) is usable with a null secret; no decrypt attempted', async () => {
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: null });
+    m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: null });
     const c = await gatewayCandidate({ offering: offering(), conn: conn() });
     expect(c.facts.connection.keyUsable).toBe(true);
     expect(c.connection).toMatchObject({ credential: { secret: null } });
@@ -87,7 +91,7 @@ describe('gatewayCandidate', () => {
   });
 
   it('a DISCONNECTED connection (NULL key by constraint) is never read as keyless-and-usable', async () => {
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'c1', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
+    m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
     const c = await gatewayCandidate({ offering: offering(), conn: conn({ status: 'disconnected' }) });
     expect(c.facts.connection).toEqual({ kind: 'openai_compatible', status: 'disconnected', keyUsable: false });
     expect(c.connection).toBeNull();
@@ -95,7 +99,7 @@ describe('gatewayCandidate', () => {
   });
 
   it('disconnected between the connection read and the key read: the key row status wins (no keyless race)', async () => {
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'c1', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
+    m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'disconnected', apiKeyEncrypted: null });
     const c = await gatewayCandidate({ offering: offering(), conn: conn() });
     expect(c.facts.connection.keyUsable).toBe(false);
     expect(c.connection).toBeNull();
@@ -103,7 +107,7 @@ describe('gatewayCandidate', () => {
   });
 
   it('a non-active (error) connection is unusable even with a decryptable key', async () => {
-    m.getConnectionKeyMaterial.mockResolvedValue({ id: 'c1', partnerId: 'p1', status: 'error', apiKeyEncrypted: 'enc:x' });
+    m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'error', apiKeyEncrypted: 'enc:x' });
     const c = await gatewayCandidate({ offering: offering(), conn: conn({ status: 'error' }) });
     expect(c.facts.connection.keyUsable).toBe(false);
     expect(c.connection).toBeNull();
@@ -149,6 +153,7 @@ describe('gatewayCandidate', () => {
   });
 
   it('a verification for a different base URL is stale → unverified', async () => {
+    m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x', baseUrl: 'https://other.example.com/v1' });
     const c = await gatewayCandidate({ offering: offering(), conn: conn({ baseUrl: 'https://other.example.com/v1' }) });
     expect(c.facts.supportsTools).toBe(false);
     expect(c.connection).toMatchObject({ config: { baseUrl: 'https://other.example.com/v1' } });
@@ -173,5 +178,46 @@ describe('gatewayCandidate', () => {
   it('uses the offering display name when set', async () => {
     const c = await gatewayCandidate({ offering: offering({ displayName: 'Qwen Coder' }), conn: conn() });
     expect(c.displayName).toBe('Qwen Coder');
+  });
+
+  describe('routing snapshot read with the key', () => {
+    const NEW_URL = 'https://attacker.example.net/v1';
+
+    it('an endpoint+key change between the connection read and the key read never pairs the new key with the old URL', async () => {
+      // The key row reflects a concurrent update: new URL, new version, new key.
+      m.getConnectionKeyMaterial.mockResolvedValue({
+        id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:new', kind: 'openai_compatible', baseUrl: NEW_URL, configVersion: 5,
+      });
+      // The re-read finds the connection still changing (another bump).
+      m.getConnection.mockResolvedValue({ ...CONN, baseUrl: NEW_URL, configVersion: 6 });
+      m.decryptConnectionKey.mockReturnValue('sk-new-key');
+      const c = await gatewayCandidate({ offering: offering(), conn: conn() });
+      expect(c.connection).toBeNull();
+      expect(c.facts.connection.keyUsable).toBe(false);
+      expect(m.decryptConnectionKey).not.toHaveBeenCalled();
+    });
+
+    it('retries the resolution once from a fresh connection read: the credential travels with the URL it was read with', async () => {
+      m.getConnectionKeyMaterial
+        .mockResolvedValueOnce({ id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:new', kind: 'openai_compatible', baseUrl: NEW_URL, configVersion: 5 })
+        .mockResolvedValueOnce({ id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:new', kind: 'openai_compatible', baseUrl: NEW_URL, configVersion: 5 });
+      m.getConnection.mockResolvedValue({ ...CONN, baseUrl: NEW_URL, configVersion: 5 });
+      m.decryptConnectionKey.mockReturnValue('sk-new-key');
+      const c = await gatewayCandidate({ offering: offering(), conn: conn() });
+      expect(c.connection).toMatchObject({ config: { baseUrl: NEW_URL, configVersion: 5 }, credential: { secret: 'sk-new-key' } });
+      expect(c.configVersion).toBe(5);
+      expect(m.getConnection).toHaveBeenCalledTimes(1);
+    });
+
+    it('loadGatewayCredential refuses a key read whose config_version or base URL differs from the connection it was given', async () => {
+      const { loadGatewayCredential } = await import('./gatewayCandidate');
+      m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x', configVersion: 5 });
+      expect(await loadGatewayCredential(conn())).toBeNull();
+      m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x', baseUrl: NEW_URL });
+      expect(await loadGatewayCredential(conn())).toBeNull();
+      expect(m.decryptConnectionKey).not.toHaveBeenCalled();
+      m.getConnectionKeyMaterial.mockResolvedValue({ ...ROUTING, id: 'c1', partnerId: 'p1', status: 'active', apiKeyEncrypted: 'enc:x' });
+      expect(await loadGatewayCredential(conn())).toEqual({ secret: 'sk-local' });
+    });
   });
 });

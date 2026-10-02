@@ -20,7 +20,7 @@ import { refreshPlatformModelSnapshot, upsertDiscoveredPlatformModel, type Disco
 import { safeErrorMessage } from './safeDbError';
 import { scrubSecrets } from './gateway/scrub';
 import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
-import { gatewayConfigFor } from './gatewayCandidate';
+import { gatewayConfigFor, sameRoutingSnapshot } from './gatewayCandidate';
 
 export const ANTHROPIC_API_ORIGIN = 'https://api.anthropic.com';
 export type AnthropicModelInfo = DiscoveredModelInput;
@@ -319,7 +319,8 @@ async function listConnectionModels(
     // capabilities null: discovery never writes capabilities for a gateway
     // offering (only the verifier does), and the upsert's COALESCE keeps a
     // verification record already on the row.
-    return models.map((model) => ({ modelId: model.modelId, capabilities: null, displayName: model.displayName }));
+    return withoutKeyMaterial(models, gateway.credential.secret)
+      .map((model) => ({ modelId: model.modelId, capabilities: null, displayName: model.displayName }));
   }
   if (conn.kind === 'anthropic_byok') {
     const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
@@ -347,6 +348,50 @@ async function listConnectionModels(
     .map((id) => ({ modelId: id, capabilities: null, displayName: null }));
 }
 
+/** Shortest run of the key that is treated as the key itself when it appears in endpoint-supplied text. */
+const KEY_WINDOW = 12;
+
+function carriesKey(text: string, key: string | null): boolean {
+  if (!key) return false;
+  const hay = text.toLowerCase();
+  const needle = key.toLowerCase();
+  if (needle.length <= KEY_WINDOW) return hay.includes(needle);
+  for (let i = 0; i + KEY_WINDOW <= needle.length; i += 1) {
+    if (hay.includes(needle.slice(i, i + KEY_WINDOW))) return true;
+  }
+  return false;
+}
+
+/** The gateway scrubber would redact something in `text` (the key in an encoded form, or a generic credential shape). */
+function redacts(text: string, key: string | null): boolean {
+  const count = (t: string) => t.split('[redacted]').length;
+  return count(scrubSecrets(text, [key], Number.MAX_SAFE_INTEGER)) > count(text);
+}
+
+/**
+ * An endpoint's /models listing is stored and shown to admins, so it must
+ * never carry the connection key back into the database: a listed id that
+ * contains the key (or any 12-character run of it) is skipped, and a display
+ * name that contains it, one of its encodings, or a generic credential shape
+ * is dropped (the row falls back to its model id).
+ */
+export function withoutKeyMaterial<T extends { modelId: string; displayName: string | null }>(
+  models: readonly T[],
+  key: string | null,
+): T[] {
+  const out: T[] = [];
+  for (const model of models) {
+    if (carriesKey(model.modelId, key)) {
+      console.warn('[aiModels] skipping a listed model whose id carries credential material');
+      continue;
+    }
+    const name = model.displayName;
+    const nameLeaks = name !== null && (carriesKey(name, key) || redacts(name, key));
+    out.push(nameLeaks ? { ...model, displayName: null } : model);
+  }
+  return out;
+}
+
 async function recordDiscoveryError(connectionId: string, message: string): Promise<void> {
   try {
     await sysTx(() => db.update(partnerAiConnections)
@@ -360,12 +405,16 @@ async function recordDiscoveryError(connectionId: string, message: string): Prom
 type GatewayPreparation =
   | { kind: 'ready'; listing: GatewayListing }
   | { kind: 'skip'; error: string }
+  | { kind: 'superseded' }
   | { kind: 'fail'; error: string };
 
 /**
  * The discoverer, config and credential for a gateway connection. Status is
  * read in the SAME row read as the key: a disconnected row also has a NULL key,
- * so it must never be taken for a keyless endpoint.
+ * so it must never be taken for a keyless endpoint. So are kind, base URL and
+ * config_version: a key row from a newer endpoint state than `conn` (the URL
+ * and key changed between the two reads) is never sent to `conn`'s URL — the
+ * sync is skipped for a re-run against the new state.
  */
 async function prepareGatewayListing(
   conn: PartnerAiConnection & { kind: GatewayConnectionKind },
@@ -378,6 +427,7 @@ async function prepareGatewayListing(
   const material = await sysTx(() => getConnectionKeyMaterial(conn.id), 'aiModels.syncConnection.key');
   if (!material || material.partnerId !== conn.partnerId) return { kind: 'skip', error: 'connection not found' };
   if (material.status !== 'active') return { kind: 'skip', error: 'connection disconnected' };
+  if (!sameRoutingSnapshot(material, conn)) return { kind: 'superseded' };
   if (material.apiKeyEncrypted === null) return { kind: 'ready', listing: { discoverer, config, credential: { secret: null } } };
   try {
     return { kind: 'ready', listing: { discoverer, config, credential: { secret: decryptConnectionKey(material) } } };
@@ -414,6 +464,7 @@ export async function syncConnectionModels(
   if (gatewayKind) {
     const prepared = await prepareGatewayListing(conn as PartnerAiConnection & { kind: GatewayConnectionKind }, deps);
     if (prepared.kind === 'skip') return { ...base, status: 'skipped', error: prepared.error };
+    if (prepared.kind === 'superseded') return { ...base, status: 'skipped', retry: true, error: 'connection changed during sync' };
     if (prepared.kind === 'fail') {
       console.warn(`[aiModels] connection ${conn.id} model discovery failed: ${prepared.error}`);
       await recordDiscoveryError(conn.id, prepared.error);

@@ -93,19 +93,34 @@ export async function getCompatConnection(partnerId: string): Promise<PartnerAiC
   return row ?? null;
 }
 
+export interface ConnectionKeyMaterial {
+  id: string;
+  partnerId: string;
+  status: string;
+  kind: string;
+  baseUrl: string | null;
+  configVersion: number;
+  apiKeyEncrypted: string | null;
+}
+
 /**
  * `status` is read in the SAME row read as the key (W06): a gateway kind may be
  * legitimately keyless, so a NULL key is only "keyless" while the row is
  * active — a disconnected row also has a NULL key (disconnected_keyless_chk).
+ * The routing fields (kind, base_url, config_version) come from the same row
+ * read too: a caller that already holds a routing snapshot compares them
+ * (gatewayCandidate.sameRoutingSnapshot) so a key is never paired with a URL
+ * it was not stored for.
  */
-export async function getConnectionKeyMaterial(
-  id: string,
-): Promise<{ id: string; partnerId: string; status: string; apiKeyEncrypted: string | null } | null> {
+export async function getConnectionKeyMaterial(id: string): Promise<ConnectionKeyMaterial | null> {
   const [row] = await db
     .select({
       id: partnerAiConnections.id,
       partnerId: partnerAiConnections.partnerId,
       status: partnerAiConnections.status,
+      kind: partnerAiConnections.kind,
+      baseUrl: partnerAiConnections.baseUrl,
+      configVersion: partnerAiConnections.configVersion,
       apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted,
     })
     .from(partnerAiConnections)

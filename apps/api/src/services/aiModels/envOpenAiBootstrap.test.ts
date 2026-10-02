@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type ChatDefault = { kind: 'platform' } | { kind: 'none' } | { kind: 'offering'; id: string };
 interface FakeOffering { id: string; modelId: string; enabled: boolean; verified: boolean; prices: Record<string, number> }
-interface FakeConn { id: string; baseUrl: string; configVersion: number; keyFingerprint: string | null; envModel: string | null }
+interface FakeConn { id: string; baseUrl: string; configVersion: number; keyFingerprint: string | null; envModel: string | null; released?: boolean }
 interface FakePartner { conn: FakeConn | null; offerings: FakeOffering[]; chat: ChatDefault; otherDefaults: string[] }
 
 const h = vi.hoisted(() => ({
@@ -123,9 +123,16 @@ vi.mock('./envOpenAiBootstrapStore', () => {
       return true;
     },
     setEnvModel: async (partnerId: string, _connectionId: string, model: string) => { need(partnerId).conn!.envModel = model; },
+    readoptEnvConnection: async (partnerId: string, connectionId: string) => {
+      const c = need(partnerId).conn!;
+      if (c.id !== connectionId) throw new Error('readopt of another connection');
+      h.calls.push(`readopt:${partnerId}`);
+      c.released = false;
+    },
+    // Release keeps the row (and its key) but marks it released: read-only for the partner.
     releaseEnvManagedConnections: async () => {
       let n = 0;
-      for (const p of h.partners.values()) if (p.conn) { p.conn = null; n += 1; }
+      for (const p of h.partners.values()) if (p.conn && !p.conn.released) { p.conn.released = true; n += 1; }
       h.released = n;
       return n;
     },
@@ -266,8 +273,9 @@ describe('bootstrapEnvOpenAiConnections', () => {
   it('changed base URL → updateGatewayConnectionLocked(allowManaged, expected version) and re-verification', async () => {
     partner('p1', { conn: envConn({ partnerId: 'p1', baseUrl: 'http://10.0.0.9:8000/v1' }), offerings: [offering('qwen')] });
     const r = await bootstrapEnvOpenAiConnections({ settings: SETTINGS });
+    // The configured key always travels with a new URL: the stored one never follows it.
     expect(updateGatewayConnectionLocked).toHaveBeenCalledWith({
-      partnerId: 'p1', connectionId: 'conn-p1', baseUrl: SETTINGS.baseUrl, expectedConfigVersion: 3, allowManaged: true,
+      partnerId: 'p1', connectionId: 'conn-p1', baseUrl: SETTINGS.baseUrl, apiKey: SETTINGS.apiKey, expectedConfigVersion: 3, allowManaged: true,
     });
     expect(r).toMatchObject({ resynced: 1, chatRepointed: 0 });
     expect(h.enqueue).toHaveBeenCalledWith({ offeringId: 'off-qwen', partnerId: 'p1' });
@@ -395,6 +403,36 @@ describe('bootstrapEnvOpenAiConnections', () => {
     const r = await bootstrapEnvOpenAiConnections({ settings: null });
     expect(r).toMatchObject({ released: 1, created: 0 });
     expect(h.calls.some((c) => c.startsWith('cutover:') || c.startsWith('lock:') || c.startsWith('validate:'))).toBe(false);
+  });
+
+  it('variables unset → the connection is kept but marked released (not handed to the partner as an editable one)', async () => {
+    partner('p1', { conn: envConn({ partnerId: 'p1' }), offerings: [offering('qwen')] });
+    await bootstrapEnvOpenAiConnections({ settings: null });
+    expect(h.partners.get('p1')!.conn).toMatchObject({ id: 'conn-p1', released: true });
+    // A second unset boot releases nothing new.
+    expect(await bootstrapEnvOpenAiConnections({ settings: null })).toMatchObject({ released: 0 });
+  });
+
+  it('variables set again → the released connection is re-adopted (same id), chat is NOT re-pointed again', async () => {
+    partner('p1', {
+      conn: envConn({ partnerId: 'p1', released: true }), offerings: [offering('qwen')],
+      chat: { kind: 'platform' },   // the admin moved chat back to a platform model meanwhile
+    });
+    const r = await bootstrapEnvOpenAiConnections({ settings: SETTINGS });
+    expect(r).toMatchObject({ created: 0, chatRepointed: 0 });
+    expect(h.calls).toContain('readopt:p1');
+    expect(h.calls.some((c) => c.startsWith('repoint:'))).toBe(false);
+    expect(h.calls.some((c) => c.startsWith('insertConn:'))).toBe(false);
+    expect(h.partners.get('p1')!.conn).toMatchObject({ id: 'conn-p1', released: false });
+    expect(h.partners.get('p1')!.chat).toEqual({ kind: 'platform' });
+  });
+
+  it('re-adopting with a new URL re-syncs URL and key together', async () => {
+    partner('p1', { conn: envConn({ partnerId: 'p1', released: true, baseUrl: 'http://10.0.0.9:8000/v1' }), offerings: [offering('qwen')] });
+    await bootstrapEnvOpenAiConnections({ settings: SETTINGS });
+    expect(updateGatewayConnectionLocked).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: SETTINGS.baseUrl, apiKey: SETTINGS.apiKey, allowManaged: true,
+    }));
   });
 
   it('refuses to run on hosted even if validation was bypassed (defense in depth)', async () => {

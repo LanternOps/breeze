@@ -53,6 +53,8 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   connection_in_use: 'aiModels.errors.connection_in_use',
   duplicate_model: 'aiModels.errors.duplicate_model',
   geo_not_supported: 'aiModels.errors.geo_not_supported',
+  key_required_for_new_endpoint: 'aiModels.errors.key_required_for_new_endpoint',
+  too_many_models: 'aiModels.errors.too_many_models',
 };
 
 /**

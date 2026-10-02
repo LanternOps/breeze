@@ -283,7 +283,9 @@
         "keepKey": "Mevcut anahtarı korumak için boş bırakın",
         "removeKey": "Kayıtlı anahtarı kaldır",
         "keyTooShort": "Anahtar en az {{min}} karakter olmalıdır.",
+        "keyRequiredForNewUrl": "Yeni URL için anahtarı girin veya anahtarı kaldırın. Kayıtlı anahtar hiçbir zaman yeni bir URL'ye gönderilmez.",
         "envManaged": "Bu bağlantı örneğin ortamı (MCP_LLM_* ayarları) tarafından yönetiliyor. Orada değiştirin; burada düzenlenemez.",
+        "envReleased": "Bu bağlantı örneğin ortamı (MCP_LLM_* ayarları) üzerinden kuruldu ve artık o ortam tarafından yönetilmiyor. Burada düzenlenemez; bağlantıyı kesebilirsiniz.",
         "envManagedBadge": "Ortam tarafından yönetiliyor",
         "noKey": "Anahtar yok",
         "discovered_one": "{{count}} model bulundu · {{when}}",
@@ -366,7 +368,9 @@
       "managed_by_env": "Bu bağlantı örneğin ortamı tarafından yönetiliyor ve burada değiştirilemez.",
       "connection_in_use": "Bir özellik hâlâ bu bağlantıdaki bir modeli kullanıyor. Önce başka bir varsayılan seçin.",
       "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",
-      "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez."
+      "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez.",
+      "key_required_for_new_endpoint": "Yeni URL için anahtarı girin (veya anahtarı kaldırın).",
+      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde."
     },
     "org": {
       "title": "Varsayılan modeller",

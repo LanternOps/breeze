@@ -16,8 +16,11 @@ export type RegistryWriteCode =
   | 'registry_busy' | 'crosses_funding'
   // W06 (#7604) gateway connections: an env-managed (MCP_LLM_*) connection is
   // read-only; a connection whose model is still a default can't be removed;
-  // a (connection, model id) pair exists once; verification is gateway-only.
-  | 'managed_by_env' | 'connection_in_use' | 'duplicate_model' | 'not_gateway';
+  // a (connection, model id) pair exists once; verification is gateway-only;
+  // a new endpoint URL needs its own key (or none) in the same write; a
+  // connection holds a bounded number of hand-entered models.
+  | 'managed_by_env' | 'connection_in_use' | 'duplicate_model' | 'not_gateway'
+  | 'key_required_for_new_endpoint' | 'too_many_models';
 
 export const REGISTRY_BUSY_MESSAGE = 'Another AI configuration change is in progress. Try again in a moment.';
 

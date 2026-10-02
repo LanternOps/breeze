@@ -291,6 +291,17 @@ describe('buildPartnerModelsSnapshot', () => {
       expect(s.connections[0]).toMatchObject({ kind: 'platform', baseUrl: null, managedBy: null });
     });
 
+    it('a released env connection stays managedBy env (read-only) and is flagged envReleased (the partner may disconnect it)', async () => {
+      h.connections = [
+        conn({ id: G, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env', envReleasedAt: '2026-10-01T00:00:00.000Z' } }),
+        conn({ id: C, kind: 'openai_compatible', baseUrl: URL_, providerConfig: { managedBy: 'env' } }),
+      ];
+      const s = await buildPartnerModelsSnapshot(P);
+      expect(s.connections.find((c) => c.id === G)).toMatchObject({ managedBy: 'env', envReleased: true });
+      expect(s.connections.find((c) => c.id === C)).toMatchObject({ managedBy: 'env', envReleased: false });
+      expect(s.connections[0]).toMatchObject({ kind: 'platform', envReleased: false });
+    });
+
     it('a user-created gateway connection is not managedBy env', async () => {
       h.connections = [conn({ id: G, kind: 'openai_compatible', baseUrl: URL_ })];
       const s = await buildPartnerModelsSnapshot(P);

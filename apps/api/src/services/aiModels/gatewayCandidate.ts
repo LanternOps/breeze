@@ -21,7 +21,13 @@ import { SecretKeyMaterialError } from '../secretCrypto';
 import { captureException } from '../sentry';
 import type { AllowedOptions, LoadedCandidate } from './candidateLoader';
 import type { DerivedCapabilities } from './capabilities';
-import { decryptConnectionKey, getConnectionKeyMaterial, type PartnerAiConnection } from './connections';
+import {
+  decryptConnectionKey,
+  getConnection,
+  getConnectionKeyMaterial,
+  type ConnectionKeyMaterial,
+  type PartnerAiConnection,
+} from './connections';
 import type { ConnectionKind } from './eligibility';
 import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
 import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
@@ -72,27 +78,52 @@ function adapterCarriesThinking(kind: string): boolean {
 }
 
 /**
- * The credential, or null when the connection is unusable. Reads the key row
- * itself (status in the same read as the key), so a disconnect that lands
- * between the connection read and this read can never surface as "keyless".
- * A LOOKUP failure is infrastructure (DB), not a dead key: it throws, scrubbed,
- * like every other read in the candidate loader (review S6). Also the Task 12
- * verifier's credential read (offeringVerification.ts).
+ * Whether a key row was read from the same connection state as `routing`
+ * (kind, base URL and config_version all unchanged). Every endpoint or key
+ * change bumps config_version, so a match means the key belongs to that URL.
  */
-export async function loadGatewayCredential(conn: PartnerAiConnection): Promise<GatewayCredential | null> {
-  if (conn.status !== 'active') return null;
-  let material: Awaited<ReturnType<typeof getConnectionKeyMaterial>>;
+export function sameRoutingSnapshot(
+  material: Pick<ConnectionKeyMaterial, 'kind' | 'baseUrl' | 'configVersion'>,
+  routing: Pick<PartnerAiConnection, 'kind' | 'baseUrl' | 'configVersion'>,
+): boolean {
+  return material.kind === routing.kind
+    && material.baseUrl === routing.baseUrl
+    && material.configVersion === routing.configVersion;
+}
+
+type CredentialRead =
+  | { kind: 'ok'; credential: GatewayCredential }
+  | { kind: 'unusable' }
+  /** The key row is from a newer connection state than `conn`: its routing must be re-read. */
+  | { kind: 'changed' };
+
+function lookupFailed(error: unknown, partnerId: string): Error {
+  const scrubbed = new Error(`AI connection key lookup failed: ${safeErrorMessage(error)}`);
+  captureException(scrubbed, undefined, { service: 'gatewayCandidate', partner_id: partnerId });
+  return scrubbed;
+}
+
+/**
+ * Reads the key row itself (status in the same read as the key), so a
+ * disconnect that lands between the connection read and this read can never
+ * surface as "keyless". The key row also carries kind/base_url/config_version:
+ * a key stored for a different endpoint state than `conn` is never decrypted
+ * against `conn`'s URL. A LOOKUP failure is infrastructure (DB), not a dead
+ * key: it throws, scrubbed, like every other read in the candidate loader.
+ */
+async function readCredential(conn: PartnerAiConnection): Promise<CredentialRead> {
+  if (conn.status !== 'active') return { kind: 'unusable' };
+  let material: ConnectionKeyMaterial | null;
   try {
     material = await systemRead(() => getConnectionKeyMaterial(conn.id));
   } catch (error) {
-    const scrubbed = new Error(`AI connection key lookup failed: ${safeErrorMessage(error)}`);
-    captureException(scrubbed, undefined, { service: 'gatewayCandidate', partner_id: conn.partnerId });
-    throw scrubbed;
+    throw lookupFailed(error, conn.partnerId);
   }
-  if (!material || material.partnerId !== conn.partnerId || material.status !== 'active') return null;
-  if (material.apiKeyEncrypted === null) return { secret: null };
+  if (!material || material.partnerId !== conn.partnerId || material.status !== 'active') return { kind: 'unusable' };
+  if (!sameRoutingSnapshot(material, conn)) return { kind: 'changed' };
+  if (material.apiKeyEncrypted === null) return { kind: 'ok', credential: { secret: null } };
   try {
-    return { secret: decryptConnectionKey(material) };
+    return { kind: 'ok', credential: { secret: decryptConnectionKey(material) } };
   } catch (error) {
     if (error instanceof SecretKeyMaterialError) {
       captureException(error, undefined, { service: 'gatewayCandidate', partner_id: conn.partnerId });
@@ -101,13 +132,41 @@ export async function loadGatewayCredential(conn: PartnerAiConnection): Promise<
         connectionId: conn.id, error: safeErrorMessage(error),
       });
     }
-    return null;
+    return { kind: 'unusable' };
   }
 }
 
+/**
+ * The credential for exactly `conn`'s routing snapshot, or null when the
+ * connection is unusable OR changed since `conn` was read (the caller's URL
+ * and config_version would no longer match the key). Also the Task 12
+ * verifier's credential read (offeringVerification.ts).
+ */
+export async function loadGatewayCredential(conn: PartnerAiConnection): Promise<GatewayCredential | null> {
+  const read = await readCredential(conn);
+  return read.kind === 'ok' ? read.credential : null;
+}
+
 export async function gatewayCandidate(input: { offering: Offering; conn: PartnerAiConnection }): Promise<LoadedCandidate> {
-  const { offering, conn } = input;
-  const credential = await loadGatewayCredential(conn);
+  const { offering } = input;
+  let conn = input.conn;
+  let read = await readCredential(conn);
+  if (read.kind === 'changed') {
+    // The connection changed between its read and the key read: resolve once
+    // more from a fresh read, so URL, config_version and key come from one
+    // state. A second change in that window leaves it unusable for this turn.
+    let fresh: PartnerAiConnection | null;
+    try {
+      fresh = await systemRead(() => getConnection(conn.id));
+    } catch (error) {
+      throw lookupFailed(error, conn.partnerId);
+    }
+    if (fresh && fresh.partnerId === conn.partnerId && fresh.kind === conn.kind) {
+      conn = fresh;
+      read = await readCredential(conn);
+    }
+  }
+  const credential = read.kind === 'ok' ? read.credential : null;
   const keyUsable = credential !== null;
 
   const verified = verifiedGatewayCapabilities(
