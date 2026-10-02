@@ -35,6 +35,16 @@ const mergeAiAgents = CUSTOM_EXECUTORS.ai_agents!;
 const mergeReports = CUSTOM_EXECUTORS.reports!;
 const mergeCustomFieldDefinitions = CUSTOM_EXECUTORS.custom_field_definitions!;
 
+describe('CUSTOM_WOULD_DROP_COUNTS.reports — preview mirrors every dedupe pass (#7615)', () => {
+  it('counts narrative, portal and Fleet Design collisions', () => {
+    const { sql: text } = dialect.sqlToQuery(CUSTOM_WOULD_DROP_COUNTS.reports!(L, S));
+    expect(text).toMatch(/source_ai_agent_schedule_id/i);
+    expect(text).toMatch(/portal_self_service\s*=\s*true/i);
+    expect(text).toMatch(/t\.type\s*=\s*'ai_fleet_design'/i);
+    expect(text).toMatch(/s\.type\s*=\s*'ai_fleet_design'/i);
+  });
+});
+
 describe('mergeReports — dedupes portal self-service definitions and recipients', () => {
   afterEach(() => {
     executeMock.mockReset();

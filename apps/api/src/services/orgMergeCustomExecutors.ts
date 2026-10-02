@@ -1413,6 +1413,22 @@ const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_s
 const FLEET_DESIGN_REPORT_KEY = ['type'] as const;
 const FLEET_DESIGN_REPORT_WHERE_BOTH = sql`s.type = 'ai_fleet_design' AND t.type = 'ai_fleet_design'`;
 
+/**
+ * Every collision pass `mergeReports` runs. `mergeReports` iterates this list
+ * and `CUSTOM_WOULD_DROP_COUNTS.reports` ORs over it, so the preview cannot
+ * drift from what the executor deletes (#7615: Fleet Design was missing from
+ * the preview). A new dedupe pass belongs here and nowhere else.
+ */
+const REPORT_DEDUPE_PASSES: ReadonlyArray<{
+  name: 'narrative' | 'portal' | 'fleetDesign';
+  key: readonly string[];
+  whereBoth?: SQL;
+}> = [
+  { name: 'narrative', key: REPORTS_KEY },
+  { name: 'portal', key: PORTAL_REPORT_KEY, whereBoth: PORTAL_REPORT_WHERE_BOTH },
+  { name: 'fleetDesign', key: FLEET_DESIGN_REPORT_KEY, whereBoth: FLEET_DESIGN_REPORT_WHERE_BOTH },
+];
+
 async function rehomeReportChildrenThenDelete(
   loser: string,
   survivor: string,
@@ -1580,23 +1596,14 @@ async function archiveCollidingSeriesChildren(
 
 const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
   const series = await archiveCollidingSeriesChildren(loser, survivor);
-  const narrative = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    REPORTS_KEY,
-  );
-  const portal = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    PORTAL_REPORT_KEY,
-    PORTAL_REPORT_WHERE_BOTH,
-  );
-  const fleetDesign = await rehomeReportChildrenThenDelete(
-    loser,
-    survivor,
-    FLEET_DESIGN_REPORT_KEY,
-    FLEET_DESIGN_REPORT_WHERE_BOTH,
-  );
+  const passes = {} as Record<
+    (typeof REPORT_DEDUPE_PASSES)[number]['name'],
+    Awaited<ReturnType<typeof rehomeReportChildrenThenDelete>>
+  >;
+  for (const pass of REPORT_DEDUPE_PASSES) {
+    passes[pass.name] = await rehomeReportChildrenThenDelete(loser, survivor, pass.key, pass.whereBoth);
+  }
+  const { narrative, portal, fleetDesign } = passes;
   const moved = await run(buildRepoint('reports', loser, survivor));
   const notes: string[] = [];
   if (narrative.dropped > 0) {
@@ -1861,12 +1868,9 @@ export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, s
     SELECT count(*)::int AS n FROM reports t
      WHERE t.org_id = ${uuid(loser)}
        AND (
-         ${collidesWithSurvivor('reports', REPORTS_KEY, survivor)}
-         OR ${collidesWithSurvivor(
-           'reports',
-           PORTAL_REPORT_KEY,
-           survivor,
-           PORTAL_REPORT_WHERE_BOTH,
+         ${sql.join(
+           REPORT_DEDUPE_PASSES.map((p) => collidesWithSurvivor('reports', p.key, survivor, p.whereBoth)),
+           sql` OR `,
          )}
        )`,
   pax8_orders: (loser, survivor) => sql`
