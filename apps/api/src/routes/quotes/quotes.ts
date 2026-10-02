@@ -397,6 +397,8 @@ quoteCrudRoutes.patch('/:id/orders/:orderId/lines/:lineId', scopes, fulfillPerm,
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
+    // A draft PDF prints the rate that applies now, same as GET /:id (#7507).
+    await refreshDraftQuoteTaxRate(id, quoteActorFrom(c));
     const { quote, blocks, lines, billTo } = await getQuote(id, quoteActorFrom(c));
 
     const branding = await resolveQuoteBranding(quote);

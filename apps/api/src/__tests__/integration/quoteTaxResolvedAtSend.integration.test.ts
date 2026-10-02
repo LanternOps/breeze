@@ -17,7 +17,7 @@ import { quotes } from '../../db/schema/quotes';
 import { organizations, partners } from '../../db/schema/orgs';
 import { buildDbAccessContext } from '../../middleware/auth';
 import { createPartner, createOrganization } from './db-utils';
-import { createQuote, addManualLine, cloneQuote, refreshDraftQuoteTaxRate } from '../../services/quoteService';
+import { createQuote, addManualLine, cloneQuote, refreshDraftQuoteTaxRate, reviseQuote, updateQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import type { QuoteActor } from '../../services/quoteTypes';
 
@@ -136,5 +136,55 @@ describe('quote tax rate resolves when the quote is sent (#7507)', () => {
     draft = await readQuote(created.id);
     expect(draft.taxRate).toBeNull();
     expect(draft.taxTotal).toBe('0.00');
+  });
+});
+
+describe('quote tax rate — deposit, reassignment and revision (#7507)', () => {
+  runDb('send recomputes the deposit at the send-time rate; a revision of the sent quote resolves the current rate', async () => {
+    const { partner, org } = await seed();
+    const ctx = partnerCtx(partner.id, org.id);
+    const actor = actorFor(org.id, partner.id);
+
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, taxableLine(100), actor));
+    const withDeposit = await withDbAccessContext(ctx, () =>
+      updateQuote(created.id, { depositType: 'percent', depositPercent: 50 }, actor));
+    expect(withDeposit.depositAmount).toBe('50.00'); // 50% of 100, no tax yet
+
+    await setOrgRate(org.id, '0.10000');
+    await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
+    const sent = await readQuote(created.id);
+    expect(sent.taxRate).toBe('0.10000');
+    expect(sent.total).toBe('110.00');
+    // The deposit froze on the SAME rate as the totals — 50% of 110, not of 100.
+    expect(sent.depositAmount).toBe('55.00');
+
+    await setOrgRate(org.id, '0.20000');
+    const revision = await withDbAccessContext(ctx, () => reviseQuote(created.id, actor));
+    const revised = await readQuote(revision.id);
+    expect(revised.status).toBe('draft');
+    expect(revised.revisionOfQuoteId).toBe(created.id);
+    expect(revised.taxRate).toBe('0.20000');
+    expect(revised.total).toBe('120.00');
+    expect((await readQuote(created.id)).taxRate).toBe('0.10000');
+  });
+
+  runDb('reassigning a draft to another org resolves the TARGET org rate', async () => {
+    const { partner, org } = await seed();
+    const orgB = await withSystemDbAccessContext(() => createOrganization({ partnerId: partner.id }));
+    await setOrgRate(org.id, '0.05000');
+    await setOrgRate(orgB.id, '0.15000');
+    const ctx = buildDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: [org.id, orgB.id], partnerId: partner.id, userId: null });
+    const actor: QuoteActor = { userId: null, partnerId: partner.id, accessibleOrgIds: [org.id, orgB.id] };
+
+    const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
+    await withDbAccessContext(ctx, () => addManualLine(created.id, taxableLine(100), actor));
+    expect((await readQuote(created.id)).taxRate).toBe('0.05000');
+
+    await withDbAccessContext(ctx, () => updateQuote(created.id, { orgId: orgB.id }, actor));
+    const moved = await readQuote(created.id);
+    expect(moved.orgId).toBe(orgB.id);
+    expect(moved.taxRate).toBe('0.15000');
+    expect(moved.taxTotal).toBe('15.00');
   });
 });

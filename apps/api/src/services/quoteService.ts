@@ -407,6 +407,9 @@ export async function syncDraftQuoteTaxRate(quoteId: string): Promise<boolean> {
   const rate = await resolveDraftTaxRateOn(db, q.orgId, q.partnerId);
   if (sameTaxRate(rate, q.taxRate)) return false;
   await recomputeAndPersist(quoteId, db, rate);
+  // A money change nobody typed: leave a trail (a draft carrying a rate set via
+  // the pre-#7507 per-quote API override also lands here once).
+  console.info('[quoteService] DRAFT_TAX_RATE_REFRESHED', { quoteId, orgId: q.orgId, from: q.taxRate, to: rate });
   return true;
 }
 
@@ -417,6 +420,12 @@ export async function syncDraftQuoteTaxRate(quoteId: string): Promise<boolean> {
  * moved takes the same FOR UPDATE every draft mutator takes before writing —
  * so a quote being sent concurrently either sees the refreshed totals or this
  * call sees it already sent and does nothing. A non-draft is never touched.
+ *
+ * Read paths only (detail, draft PDF, AI get_quote). An invisible partner —
+ * a caller outside the partner/system scope resolveDraftTaxRateOn assumes —
+ * degrades to "not refreshed" (already logged) rather than 500-ing the read;
+ * it is an app-level throw, so the transaction is still usable. Send and the
+ * on-behalf accept call syncDraftQuoteTaxRate directly and stay fail-closed.
  */
 export async function refreshDraftQuoteTaxRate(quoteId: string, actor: QuoteActor): Promise<boolean> {
   const [q] = await db.select({
@@ -426,9 +435,14 @@ export async function refreshDraftQuoteTaxRate(quoteId: string, actor: QuoteActo
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
   if (q.status !== 'draft') return false;
-  if (sameTaxRate(await resolveDraftTaxRateOn(db, q.orgId, q.partnerId), q.taxRate)) return false;
-  await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
-  return syncDraftQuoteTaxRate(quoteId);
+  try {
+    if (sameTaxRate(await resolveDraftTaxRateOn(db, q.orgId, q.partnerId), q.taxRate)) return false;
+    await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.id, quoteId)).limit(1).for('update');
+    return await syncDraftQuoteTaxRate(quoteId);
+  } catch (err) {
+    if (err instanceof PartnerNotVisibleForTaxError) return false;
+    throw err;
+  }
 }
 
 /** Load a quote and assert it is owned/accessible AND still a draft (409 if not). */
