@@ -147,7 +147,10 @@ async function updateProfileInTransaction(tx: DbExecutor, id: string, partnerId:
     throw new BillingProfileServiceError('Set another default profile first', 409, 'DEFAULT_PROFILE_REQUIRED');
   }
   if (data.currencyCode && data.currencyCode !== profile.currencyCode) {
+    // An AI markup is a price too (#7608): after a currency change a markup-only
+    // card would silently stamp 'unpriced' (markup applies to USD cards only).
     const priced = profile.baseHourlyRate !== null
+      || profile.aiMarkupPercent !== null
       || (await withRules(tx, profile)).rules.some(row => row.hourlyRate !== null)
       || (await tx.select({ id: billingProfileAiRates.id }).from(billingProfileAiRates)
         .where(eq(billingProfileAiRates.billingProfileId, profile.id)).limit(1)).length > 0;

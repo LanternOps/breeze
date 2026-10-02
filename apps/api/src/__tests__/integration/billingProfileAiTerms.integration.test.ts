@@ -84,6 +84,40 @@ describe.runIf(RUN)('billing profile AI terms (#7608)', () => {
       .rejects.toMatchObject({ code: 'PROFILE_CURRENCY_LOCKED' });
   });
 
+  it('a markup is a price: a markup-only card cannot change currency until the markup is cleared', async () => {
+    const f = await fixture();
+    const created = await f.run(() => createProfile(writer, f.partner.id, { ...base, name: `AI ${randomUUID()}`,
+      aiCoverage: 'billable', aiMarkupPercent: '25.00' }));
+    await expect(f.run(() => updateProfile(writer, created.id, f.partner.id, { currencyCode: 'EUR' })))
+      .rejects.toMatchObject({ status: 409, code: 'PROFILE_CURRENCY_LOCKED' });
+    expect(await f.run(() => getProfile(created.id, f.partner.id))).toMatchObject({ currencyCode: 'USD', aiMarkupPercent: '25.00' });
+    await f.run(() => updateProfile(writer, created.id, f.partner.id, { aiMarkupPercent: null }));
+    const moved = await f.run(() => updateProfile(writer, created.id, f.partner.id, { currencyCode: 'EUR' }));
+    expect(moved).toMatchObject({ currencyCode: 'EUR', aiMarkupPercent: null, aiCoverage: 'billable' });
+  });
+
+  it('the drawer save: switching to included with no aiRates clears the markup and the price list', async () => {
+    const f = await fixture();
+    const created = await f.run(() => createProfile(writer, f.partner.id, { ...base, name: `AI ${randomUUID()}`,
+      aiCoverage: 'billable', aiMarkupPercent: '15.00', aiRates: [rate('w10-test-a')] }));
+    const saved = await f.run(() => saveProfile(writer, created.id, f.partner.id,
+      { ...base, name: created.name, rows: [], aiCoverage: 'included' }));
+    expect(saved).toMatchObject({ aiCoverage: 'included', aiMarkupPercent: null, aiRates: [] });
+    expect(await f.run(() => getProfile(created.id, f.partner.id))).toMatchObject({ aiCoverage: 'included', aiMarkupPercent: null, aiRates: [] });
+  });
+
+  it('the drawer save: included with a non-empty price list is INVALID_AI_TERMS and changes nothing', async () => {
+    const f = await fixture();
+    const created = await f.run(() => createProfile(writer, f.partner.id, { ...base, name: `AI ${randomUUID()}`,
+      aiCoverage: 'billable', aiMarkupPercent: '15.00', aiRates: [rate('w10-test-a')] }));
+    await expect(f.run(() => saveProfile(writer, created.id, f.partner.id,
+      { ...base, name: created.name, rows: [], aiCoverage: 'included', aiRates: [rate('w10-test-b')] })))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_AI_TERMS' });
+    const card = await f.run(() => getProfile(created.id, f.partner.id));
+    expect(card).toMatchObject({ aiCoverage: 'billable', aiMarkupPercent: '15.00' });
+    expect(card.aiRates.map((r) => r.modelId)).toEqual(['w10-test-a']);
+  });
+
   it('loadCardsForOrg returns aiRates on the cards it resolves', async () => {
     const f = await fixture();
     await f.run(() => createProfile(writer, f.partner.id, { ...base, name: `Default ${randomUUID()}`, isDefault: true,
