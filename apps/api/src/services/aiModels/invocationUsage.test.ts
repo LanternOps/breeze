@@ -390,6 +390,57 @@ describe('sdkTurnUsage — served model is read from the usage, never assumed', 
   });
 });
 
+describe('W09: provider-failure observation', () => {
+  it('an api_retry records the classified cause, its status and the CLI\'s attempt count', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 500, error_status: 529, error: 'overloaded' });
+    expect(obs.providerFailure).toEqual({ cause: 'overloaded', status: 529, retries: 2 });
+    expect(obs.sawOutput).toBe(false);
+  });
+
+  it('a synthetic API-error assistant message is a failure, not output', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'assistant', error: 'rate_limit', message: { content: [{ type: 'text', text: 'API Error: 429' }] } });
+    expect(obs.providerFailure).toMatchObject({ cause: 'rate_limited' });
+    expect(obs.sawOutput).toBe(false);
+  });
+
+  it('real assistant content (text, thinking, tool_use) is output', () => {
+    for (const block of [{ type: 'text', text: 'hi' }, { type: 'thinking', thinking: '' }, { type: 'tool_use', id: 't', name: 'x', input: {} }]) {
+      const obs = newSdkTurnObservation();
+      observeSdkMessage(obs, { type: 'assistant', message: { content: [block] } });
+      expect(obs.sawOutput).toBe(true);
+    }
+  });
+
+  it('a streamed content block start is output (the user may already be reading it)', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } });
+    expect(obs.sawOutput).toBe(true);
+  });
+
+  it('a result with api_error_status records the failure', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'result', subtype: 'success', is_error: true, api_error_status: 401 });
+    expect(obs.providerFailure).toMatchObject({ cause: 'auth_failed', status: 401 });
+  });
+
+  it('a non-failover error (invalid_request) records nothing', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 400, error: 'invalid_request' });
+    expect(obs.providerFailure).toBeNull();
+  });
+
+  it('the refusal and fast-mode observations are unchanged alongside it', () => {
+    const obs = newSdkTurnObservation();
+    observeSdkMessage(obs, { type: 'system', subtype: 'api_retry', attempt: 1, error_status: 529, error: 'overloaded', fast_mode_state: 'cooldown' });
+    observeSdkMessage(obs, { type: 'system', subtype: 'model_refusal_fallback', fallback_model: 'm2', api_refusal_category: 'cyber' });
+    expect(obs.fastNotOnSeen).toBe(true);
+    expect(obs.refusalFallback).toEqual({ fallbackModel: 'm2', category: 'cyber' });
+    expect(obs.providerFailure).toMatchObject({ cause: 'overloaded' });
+  });
+});
+
 describe('parseSdkUsageSnapshot', () => {
   it('round-trips a valid snapshot', () => {
     const s = snap({ [SONNET]: [T, 2], [OPUS]: tok(1, 2, 3, 4) });

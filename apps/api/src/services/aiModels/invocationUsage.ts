@@ -23,6 +23,7 @@
  *   the next turn's delta picks up whatever the CLI persisted.
  */
 import { z } from 'zod';
+import { classifySdkAssistantError, type ProviderFailureCause } from './failover';
 import type { TokenComponents } from './pricing';
 import type { TurnBinding } from './turnBinding';
 
@@ -73,23 +74,58 @@ export interface SdkTurnObservation {
   refusalNoFallback: { category: string | null } | null;
   /** W05: some frame of the turn reported fast mode not serving (cooldown / off). */
   fastNotOnSeen: boolean;
+  /** W09 (#7607): the last failover-eligible provider failure the CLI reported this turn. */
+  providerFailure: { cause: ProviderFailureCause; status: number | null; retries: number } | null;
+  /** W09: assistant content (text / thinking / tool_use) was produced this turn: never fail over after it. */
+  sawOutput: boolean;
 }
 
 export function newSdkTurnObservation(): SdkTurnObservation {
-  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false };
+  return { refusalFallback: null, refusalNoFallback: null, fastNotOnSeen: false, providerFailure: null, sawOutput: false };
 }
 
-/** Feed EVERY SDK message of the turn through this (system messages are the only ones it reads). */
+const OUTPUT_BLOCKS = new Set(['text', 'thinking', 'redacted_thinking', 'tool_use', 'server_tool_use']);
+
+/** Feed EVERY SDK message of the turn through this. */
 export function observeSdkMessage(obs: SdkTurnObservation, message: unknown): void {
   if (!message || typeof message !== 'object') return;
   const m = message as {
     type?: unknown; subtype?: unknown; scope?: unknown; fallback_model?: unknown; api_refusal_category?: unknown;
+    error?: unknown; error_status?: unknown; attempt?: unknown; api_error_status?: unknown;
+    message?: { content?: unknown }; event?: { type?: unknown };
   };
   // W05: any frame that reports fast mode not serving (rate-limit cooldown,
   // or off) during the turn means at least part of it ran at standard.
   const fastState = (message as { fast_mode_state?: unknown }).fast_mode_state;
   if (fastState === 'cooldown' || fastState === 'off') obs.fastNotOnSeen = true;
+
+  // W09: a classified provider status failure (D8). Anything the classifier
+  // does not recognise (invalid request, unknown model, …) records nothing.
+  const recordFailure = (error: unknown, status: unknown, attempt: unknown) => {
+    const httpStatus = typeof status === 'number' ? status : null;
+    const cause = classifySdkAssistantError(typeof error === 'string' ? error : null, httpStatus);
+    if (!cause) return;
+    const retries = typeof attempt === 'number' ? attempt : (obs.providerFailure?.retries ?? 0);
+    obs.providerFailure = { cause, status: httpStatus, retries };
+  };
+  if (m.type === 'assistant') {
+    // A synthetic API-error assistant message carries `error`: a failure, not
+    // output. Anything else with a content block is output.
+    if (typeof m.error === 'string') { recordFailure(m.error, null, undefined); return; }
+    const content = Array.isArray(m.message?.content) ? (m.message!.content as Array<{ type?: unknown }>) : [];
+    if (content.some((b) => typeof b?.type === 'string' && OUTPUT_BLOCKS.has(b.type))) obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'stream_event') {
+    if (m.event?.type === 'content_block_start') obs.sawOutput = true;
+    return;
+  }
+  if (m.type === 'result') {
+    if (typeof m.api_error_status === 'number') recordFailure(null, m.api_error_status, undefined);
+    return;
+  }
   if (m.type !== 'system') return;
+  if (m.subtype === 'api_retry') { recordFailure(m.error, m.error_status, m.attempt); return; }
   const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : null;
   if (m.subtype === 'model_refusal_fallback') {
     // 'local' = a subagent / side question fell back; the main loop did not.

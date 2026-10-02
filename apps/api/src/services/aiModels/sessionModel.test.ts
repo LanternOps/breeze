@@ -31,9 +31,40 @@ beforeEach(() => {
   m.resolveModel.mockResolvedValue({ ok: true });
 });
 
+describe('W09 (D5): a resumed SDK session with history fails over only within its connection', () => {
+  it.each([
+    [{ turnCount: 3, sdkSessionId: 'sdk-1' }, 'agent_sdk', true],
+    [{ turnCount: 0, sdkSessionId: 'sdk-1' }, 'agent_sdk', true],      // a persisted transcript is history
+    [{ turnCount: 3, sdkSessionId: null }, 'agent_sdk', true],
+    [{ turnCount: 0, sdkSessionId: null }, 'agent_sdk', false],
+    [{ turnCount: 3, sdkSessionId: 'sdk-1' }, 'messages_api', false],  // a one-shot (ticket draft) sends its transcript explicitly
+  ] as const)('%o on %s → sameConnectionOnly %s', async (history, transport, expected) => {
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'o1', offeringId: 'off', options: null, ...history });
+    await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1', transport });
+    const call = m.resolveModel.mock.calls.at(-1)![0] as { sameConnectionOnly?: boolean };
+    expect(call.sameConnectionOnly === true).toBe(expected);
+  });
+
+  it('the surface default transport decides when none is passed (chat = Agent SDK)', async () => {
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'o1', offeringId: 'off', options: null, turnCount: 2, sdkSessionId: 'x' });
+    await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' });
+    expect(m.resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({ sameConnectionOnly: true }));
+  });
+
+  it('passes dispatch exclusions, cause and origin through', async () => {
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'o1', offeringId: 'off', options: null, turnCount: 0, sdkSessionId: null });
+    const origin = { offeringId: 'off', funding: 'platform' as const, connectionId: null };
+    await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1', transport: 'messages_api',
+      excludeOfferingIds: ['off'], failoverCause: 'overloaded', failoverOrigin: origin });
+    expect(m.resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+      excludeOfferingIds: ['off'], failoverCause: 'overloaded', failoverOrigin: origin,
+    }));
+  });
+});
+
 describe('resolveSessionTurn', () => {
   it('re-resolves the stored offering + options as a session-origin request (bounded fallback applies)', async () => {
-    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: 'off-9', options: { effort: 'high' } });
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: 'off-9', options: { effort: 'high' }, turnCount: 0, sdkSessionId: null });
     await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' });
     expect(m.resolveModel).toHaveBeenCalledWith({
       partnerId: 'partner-1', orgId: 'org-1', userId: 'u1', surface: 'chat',
@@ -42,7 +73,7 @@ describe('resolveSessionTurn', () => {
   });
 
   it('a session with no stored offering resolves the effective default', async () => {
-    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null });
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null, turnCount: 0, sdkSessionId: null });
     await resolveSessionTurn({ sessionId: 's1', surface: 'helper', userId: null });
     expect(m.resolveModel).toHaveBeenCalledWith({
       partnerId: 'partner-1', orgId: 'org-1', userId: null, surface: 'helper',
@@ -50,13 +81,13 @@ describe('resolveSessionTurn', () => {
   });
 
   it('passes maxTokens and transport through', async () => {
-    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null });
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null, turnCount: 0, sdkSessionId: null });
     await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: null, maxTokens: 512, transport: 'agent_sdk' });
     expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 512, transport: 'agent_sdk' }));
   });
 
   it('an org with no partner has no assignment to resolve', async () => {
-    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null });
+    m.readSessionModelRow.mockResolvedValue({ orgId: 'org-1', offeringId: null, options: null, turnCount: 0, sdkSessionId: null });
     m.readOrgPartnerId.mockResolvedValue(null);
     expect(await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' }))
       .toMatchObject({ ok: false, reason: 'no_eligible_model', recoverable: true });
@@ -71,7 +102,7 @@ describe('resolveSessionTurn', () => {
 
 describe('resolveSessionTurn: a composer choice (W05)', () => {
   it('a choice is a strict USER request, overriding the stored offering and options', async () => {
-    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: { effort: 'low' } });
+    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: { effort: 'low' }, turnCount: 0, sdkSessionId: null });
     m.readOrgPartnerId.mockResolvedValueOnce('p1');
     await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1', choice: { offeringId: 'picked', options: { effort: 'high' } } });
     expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({
@@ -79,7 +110,7 @@ describe('resolveSessionTurn: a composer choice (W05)', () => {
     }));
   });
   it('without a choice the stored offering is a SESSION request (W03 behaviour, bounded fallback allowed)', async () => {
-    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: null });
+    m.readSessionModelRow.mockResolvedValueOnce({ orgId: 'o1', offeringId: 'stored', options: null, turnCount: 0, sdkSessionId: null });
     m.readOrgPartnerId.mockResolvedValueOnce('p1');
     await resolveSessionTurn({ sessionId: 's1', surface: 'chat', userId: 'u1' });
     expect(m.resolveModel).toHaveBeenCalledWith(expect.objectContaining({ requested: { offeringId: 'stored', origin: 'session' } }));
