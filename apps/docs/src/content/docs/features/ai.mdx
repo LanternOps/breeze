@@ -606,6 +606,26 @@ When a model declines, Breeze:
 
 An administrator can give a model a **refusal fallback** under **Partner Settings → AI Providers & Models**. The fallback must be another enabled model on the **same connection**, so it never changes who pays for the request. On the Claude API, Breeze asks Anthropic to retry the turn on the fallback model in the same request. On a catalog provider, Breeze retries once itself. The turn is billed at the rate of the model that served it.
 
+## Choosing a model in chat
+
+When your partner allows it, the chat composer has a model menu. It lists the models you may use, with each model's context size and price per million tokens. A model your role can't use is shown greyed out with the role that grants it. Next to the menu, set the options the chosen model supports:
+
+- **Effort** — how much the model reasons before answering (adaptive-thinking models).
+- **Fast** — a faster, more expensive mode, shown where your administrator enables it and the model supports it; its rate is shown next to the switch.
+- **Thinking** — an on/off switch for models that think with a fixed budget.
+
+Your choice applies from your next message. While the model reasons, the chat shows **Thinking…**. Under each answer, the chat shows the model and options that actually answered. A model can decline a request and hand it to another, and Fast can be unavailable for a moment, so this can differ from what you picked.
+
+Administrators can lock a feature to one model under **Partner Settings → AI Providers & Models → Defaults by feature** (turn off **Users may choose**). The menu is then hidden for that feature.
+
+## Switching models mid-conversation
+
+Switching to another model keeps the conversation when the new model is on the same AI connection and the conversation fits its context window. Breeze counts the conversation with the new model before switching. Otherwise Breeze offers **Continue with the new model in a new chat**: the newly chosen model summarises the conversation and a linked chat starts from that summary. Your message is kept either way, and you can choose **Keep the current model** instead.
+
+## The model an AI agent uses
+
+An agent's settings include a **Model** field: use the AI agents default, or pick one of the models allowed for AI agents. Picking a model that needs a permission requires you to hold that permission.
+
 ## Troubleshooting
 
 **Tier 3 action pending but never executing**

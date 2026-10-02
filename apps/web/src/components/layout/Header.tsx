@@ -408,6 +408,7 @@ export default function Header() {
           <button
             type="button"
             data-tour="ai-assistant"
+            data-testid="ai-assistant-toggle"
             onClick={toggleAi}
             className="relative rounded-md p-2 hover:bg-muted transition-colors"
             title={t('layout.header.aiTitle')}
