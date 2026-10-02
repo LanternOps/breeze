@@ -7,6 +7,11 @@ set -e
 # Install-location rules shared with the running agent (#7211).
 # shellcheck source=install-location.sh
 . "$(dirname "$0")/install-location.sh"
+# ensure_breeze_group: create or repair the IPC socket group (#7829). The same
+# file the daemon embeds (agent/internal/sessionbroker/ensure_ipc_group.sh);
+# build-pkg.sh copies it here.
+# shellcheck source=../../internal/sessionbroker/ensure_ipc_group.sh
+. "$(dirname "$0")/ensure_ipc_group.sh"
 
 # The payload stages the root-daemon binaries here, never in /usr/local/bin:
 # on the hosts where /usr/local/bin is unsafe, a non-root identity could
@@ -47,26 +52,6 @@ if [ "$BIN_DIR" != "$LEGACY_BIN_DIR" ]; then
     point_plist_at "$DAEMON_PLIST" "$LEGACY_BIN_DIR" "$BIN_DIR" breeze-agent
     point_plist_at "$WATCHDOG_PLIST" "$LEGACY_BIN_DIR" "$BIN_DIR" breeze-watchdog
 fi
-
-ensure_breeze_group() {
-    if dscl . -read /Groups/breeze &>/dev/null; then
-        dscl . -read /Groups/breeze PrimaryGroupID &>/dev/null
-        return
-    fi
-
-    gid=350
-    while [ "$gid" -le 499 ]; do
-        if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
-            dscl . -create /Groups/breeze
-            dscl . -create /Groups/breeze PrimaryGroupID "$gid"
-            return
-        fi
-        gid=$((gid + 1))
-    done
-
-    echo "No free local system GID available for breeze group" >&2
-    exit 1
-}
 
 # Create directories
 mkdir -p "$CONFIG_DIR"
@@ -135,7 +120,9 @@ add_console_users_to_breeze_group() {
     done
 }
 
-# Create breeze group for IPC socket access.
+# Create the breeze group for IPC socket access, or give a GID-less one left by
+# an earlier failed install its GID (#7829). Fails the install (set -e) if it
+# cannot: a group without a GID leaves every user-session helper locked out.
 ensure_breeze_group
 add_console_users_to_breeze_group
 

@@ -43,42 +43,26 @@ func runDscl(args []string) (string, error) {
 	return string(out), nil
 }
 
-// ensureIPCGroupScript creates the breeze group if absent, without assuming a
-// fixed GID: it scans the local system GID range for a free slot. Kept as a
-// shell script so the daemon, `breeze-agent service install`,
-// installer/macos/postinstall and scripts/install/install-darwin.sh all create
-// the group identically.
-const ensureIPCGroupScript = `
-set -e
-if dscl . -read /Groups/` + IPCGroupName + ` >/dev/null 2>&1; then
-  dscl . -read /Groups/` + IPCGroupName + ` PrimaryGroupID >/dev/null
-  exit 0
-fi
-gid=350
-while [ "$gid" -le 499 ]; do
-  if ! dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{print $2}' | grep -qx "$gid"; then
-    dscl . -create /Groups/` + IPCGroupName + `
-    dscl . -create /Groups/` + IPCGroupName + ` PrimaryGroupID "$gid"
-    exit 0
-  fi
-  gid=$((gid + 1))
-done
-echo "no free local system GID available for ` + IPCGroupName + ` group" >&2
-exit 1
-`
-
-// EnsureIPCGroup creates the breeze group if it does not exist. Idempotent.
+// EnsureIPCGroup creates the breeze group if it does not exist, and repairs one
+// that exists without a valid PrimaryGroupID (#7829). Idempotent: a group with
+// a numeric GID is never touched. The rule lives in ensure_ipc_group.sh.
 //
 // This runs on every daemon start (from setupSocket) rather than at install
-// time only. Hosts installed by an agent build that predates the group, or
-// where an admin removed it, would otherwise never get a group for the socket
-// to belong to and would stay broken forever.
+// time only. Hosts installed by an agent build that predates the group, where
+// an admin removed it, or where a failed install left a GID-less record, would
+// otherwise never get a group for the socket to belong to and would stay
+// broken forever.
 func EnsureIPCGroup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), dsclTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "/bin/sh", "-c", ensureIPCGroupScript).CombinedOutput()
+	msg := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("ensure %q group: %w: %s", IPCGroupName, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("ensure %q group: %w: %s", IPCGroupName, err, msg)
+	}
+	if msg != "" {
+		// Silent on the steady-state path; only a create or a repair prints.
+		log.Info("ensured IPC socket group", "group", IPCGroupName, "detail", msg)
 	}
 	return nil
 }
