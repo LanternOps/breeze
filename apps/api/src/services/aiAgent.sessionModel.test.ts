@@ -5,14 +5,13 @@
  * user's options, the logical model snapshot and the offering's funding — and
  * writes no row when the choice is refused.
  *
- * The env OpenAI-compatible chat deployment (review finding 12) keeps its
- * legacy creation branch until W06: no offering, no registry call.
+ * W06: an env OpenAI-compatible deployment creates through the registry too
+ * (its env-managed offering); there is no legacy creation branch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 const getEffectiveAiBudgetMock = vi.fn();
 const readOrgPartnerIdMock = vi.fn();
 const getConfigMock = vi.fn();
@@ -47,10 +46,6 @@ vi.mock('./aiAgentSystemPrompt', () => ({ AI_SYSTEM_PROMPT_BASE: 'base', AI_SYST
 vi.mock('./aiToolIndex', () => ({ composeStaticSystemPrompt: () => 'base\nindex\ntail' }));
 vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
-vi.mock('./llm/llmConfigResolver', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./llm/llmConfigResolver')>()),
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
-}));
 vi.mock('./effectiveSettings', () => ({
   getEffectiveAiBudget: (...args: unknown[]) => getEffectiveAiBudgetMock(...args),
 }));
@@ -97,7 +92,7 @@ beforeEach(() => {
   insertedValues = undefined;
   getEffectiveAiBudgetMock.mockResolvedValue({ maxTurnsPerSession: 50 });
   readOrgPartnerIdMock.mockResolvedValue('partner-1');
-  // Unvalidated config (the unit default): isOpenAICompatibleProvider() is false.
+  // Unvalidated config (the unit default).
   getConfigMock.mockImplementation(() => { throw new Error('config not validated'); });
 });
 
@@ -128,7 +123,6 @@ describe('createSession stores the registry choice (W03 Task 9)', () => {
       offeringId: OFFERING, offeringPartnerId: 'partner-1', options: { effort: 'high' },
       model: 'claude-sonnet-5-5', billingSource: 'partner_key',
     });
-    expect(resolveLlmConfigForOrgMock).not.toHaveBeenCalled();
   });
 
   it('passes no legacyModel to chooseSessionModel (W05 removed the free-form model)', async () => {
@@ -164,40 +158,37 @@ describe('createSession stores the registry choice (W03 Task 9)', () => {
   });
 });
 
-describe('env OpenAI-compatible deployment (finding 12)', () => {
-  beforeEach(async () => {
+describe('env OpenAI-compatible deployment (W06: one runtime)', () => {
+  beforeEach(() => {
     getConfigMock.mockReturnValue({ MCP_LLM_PROVIDER: 'openai-compatible' });
     for (const key of PLATFORM_LLM_CREDENTIAL_ENV_KEYS) vi.stubEnv(key, '');
-    vi.stubEnv('ANTHROPIC_API_KEY', '');
-    // Unmocked: a registry call on this deployment would fail loudly.
-    const actual = await vi.importActual<typeof import('./aiModels/sessionModel')>('./aiModels/sessionModel');
-    sm.chooseSessionModel.mockImplementation(actual.chooseSessionModel);
-    resolveLlmConfigForOrgMock.mockResolvedValue({ source: 'platform', apiKey: undefined, model: 'gpt-4o-mini' });
   });
 
-  it('creates on the legacy branch: no offering, never the registry', async () => {
+  it('creates through the registry like any deployment: the env-managed offering, its funding, no legacy branch', async () => {
+    const envChoice = {
+      resolved: makeResolvedModel('openai_compatible'),
+      offeringId: OFFERING,
+      offeringPartnerId: 'partner-1',
+      options: null,
+      model: 'qwen',
+      billingSource: 'partner_key' as const,
+    };
+    sm.chooseSessionModel.mockResolvedValue(envChoice);
     armInsert();
     await expect(createSession(orgAuth(), {})).resolves.toMatchObject({ id: 'sess-1' });
-    expect(sm.chooseSessionModel).not.toHaveBeenCalled();
+    expect(sm.chooseSessionModel).toHaveBeenCalledWith({ partnerId: 'partner-1', orgId: ORG_A, userId: 'user-2', surface: 'chat' });
     expect(insertedValues).toMatchObject({
-      offeringId: null, offeringPartnerId: null, options: null, model: 'gpt-4o-mini', billingSource: 'platform',
+      offeringId: OFFERING, offeringPartnerId: 'partner-1', model: 'qwen', billingSource: 'partner_key',
     });
   });
 
-  it.each([
-    [{ offeringId: OFFERING }],
-    [{ options: { effort: 'high' as const } }],
-  ])('a model choice %j is invalid_model with no row', async (body) => {
-    await expect(createSession(orgAuth(), body)).rejects.toMatchObject({
-      name: 'InvalidSessionModelError', code: 'invalid_model',
+  it('a model choice is a registry choice there too (no blanket invalid_model refusal)', async () => {
+    sm.chooseSessionModel.mockResolvedValue({
+      resolved: makeResolvedModel('openai_compatible'), offeringId: OFFERING, offeringPartnerId: 'partner-1',
+      options: null, model: 'qwen', billingSource: 'partner_key' as const,
     });
-    expect(sm.chooseSessionModel).not.toHaveBeenCalled();
-    expect(insertMock).not.toHaveBeenCalled();
-  });
-
-  it('the legacy resolver returning unavailable is ai_unavailable', async () => {
-    resolveLlmConfigForOrgMock.mockResolvedValue({ source: 'unavailable', partnerId: 'partner-1', reason: 'x' });
-    await expect(createSession(orgAuth(), {})).rejects.toBeInstanceOf(LlmUnavailableError);
-    expect(insertMock).not.toHaveBeenCalled();
+    armInsert();
+    await expect(createSession(orgAuth(), { offeringId: OFFERING })).resolves.toMatchObject({ id: 'sess-1' });
+    expect(sm.chooseSessionModel).toHaveBeenCalledWith(expect.objectContaining({ offeringId: OFFERING }));
   });
 });

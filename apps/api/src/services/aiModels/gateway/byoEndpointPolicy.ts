@@ -3,9 +3,9 @@
  *
  * This is the AUTHORING-time gate (write, discovery). It is not the rebinding
  * defence: every request re-resolves and pins its dial through safeFetch with the
- * same allowances (gateway/forward.ts). Mirrors the env provider's long-standing
- * self-host policy (openaiCompatibleProvider.ts) so absorbing it (Task 15) is not
- * a regression: private RFC 1918/ULA only on an explicitly self-hosted deployment,
+ * same allowances (gateway/forward.ts). Mirrors the long-standing self-host
+ * policy of the deleted env-only OpenAI-compatible provider, so absorbing that
+ * path (W06) is not a regression: private RFC 1918/ULA only on an explicitly self-hosted deployment,
  * cleartext only to a private address, loopback/link-local/metadata never.
  */
 import { isHosted, selfHostAllowsPrivateNetwork } from '../../../config/env';

@@ -40,7 +40,10 @@ vi.mock('./platformModels', async (orig) => ({
   getPlatformInferenceGeo: m.getPlatformInferenceGeo,
 }));
 vi.mock('../llmProviderCatalog', () => ({ getListedProviderByEntryId: m.getListedProviderByEntryId }));
-vi.mock('../llm/llmAvailability', () => ({ isPlatformLlmConfigured: m.isPlatformLlmConfigured }));
+vi.mock('../llm/llmAvailability', async (orig) => ({
+  ...(await orig<typeof import('../llm/llmAvailability')>()),
+  isPlatformLlmConfigured: m.isPlatformLlmConfigured,
+}));
 vi.mock('../llm/llmConfigResolver', async (orig) => ({
   ...(await orig<typeof import('../llm/llmConfigResolver')>()),
   isLlmProviderCatalogEnabled: m.isLlmProviderCatalogEnabled,

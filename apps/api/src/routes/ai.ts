@@ -70,9 +70,6 @@ import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { persistAutoSessionTitle } from '../services/aiSessionTitle';
-import { getConfig } from '../config/validate';
-import { OpenAICompatibleProvider } from '../services/llm/openaiCompatibleProvider';
-import { OpenAISessionManager } from '../services/llm/openaiSessionManager';
 import {
   draftTicketFromTranscript,
   ThinTranscriptError,
@@ -93,7 +90,7 @@ import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailabl
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
 import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
-import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
+import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
 import { continuationMessage, planModelTransition, planTransitionWithFailover, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
@@ -145,50 +142,14 @@ import {
   type ReserveAiBudgetResult,
 } from '../services/aiBudgetReservations';
 
-// Provider check that tolerates an unvalidated config (route unit tests never
-// call validateConfig()). It lives with the "can a model be called" decision
-// it feeds (services/llm/llmAvailability.ts); re-exported for existing callers.
-export { isOpenAICompatibleProvider };
-
 /**
  * Topology answer cache key (M4 Task 3): moves whenever the dispatch identity
  * moves — the live-query key of the resolved model (connection, config
- * version, catalog revision, wire model, wire params), or the env
- * OpenAI-compatible chat transport.
+ * version, catalog revision, wire model, wire params). W06: every chat turn,
+ * env OpenAI-compatible deployments included, resolves through the registry.
  */
-function topologyProviderRevision(model: ResolvedModel | null): string {
-  return model ? `sdk:${liveQueryKey(turnBindingFrom(model))}` : 'openai-compatible:chat-only';
-}
-
-// Lazy singleton for the openai-compatible path.
-// Only constructed on first use when MCP_LLM_PROVIDER=openai-compatible.
-let _openaiSessionManager: OpenAISessionManager | null = null;
-function getOpenAISessionManager(): OpenAISessionManager {
-  if (!_openaiSessionManager) {
-    const cfg = getConfig();
-    if (!cfg.MCP_LLM_BASE_URL) {
-      // Should be caught at startup by the superRefine cross-field validation,
-      // but guard here in case getConfig() is called before validateConfig().
-      throw new Error('MCP_LLM_BASE_URL is required when MCP_LLM_PROVIDER is openai-compatible');
-    }
-    if (
-      cfg.MCP_LLM_PROVIDER === 'openai-compatible' &&
-      cfg.MCP_LLM_PRICE_INPUT_PER_M_USD === 0 &&
-      cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD === 0
-    ) {
-      console.warn(
-        'MCP_LLM_PROVIDER=openai-compatible but both MCP_LLM_PRICE_*_PER_M_USD are 0: cost tracking and budget enforcement are no-ops on this path.'
-      );
-    }
-    const provider = new OpenAICompatibleProvider({
-      baseUrl: cfg.MCP_LLM_BASE_URL,
-      apiKey: cfg.MCP_LLM_API_KEY!,
-      priceInputPerMUsd: cfg.MCP_LLM_PRICE_INPUT_PER_M_USD,
-      priceOutputPerMUsd: cfg.MCP_LLM_PRICE_OUTPUT_PER_M_USD,
-    });
-    _openaiSessionManager = new OpenAISessionManager(provider);
-  }
-  return _openaiSessionManager;
+function topologyProviderRevision(model: ResolvedModel): string {
+  return `sdk:${liveQueryKey(turnBindingFrom(model))}`;
 }
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
@@ -397,11 +358,7 @@ aiRoutes.delete(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const manager =
-      isOpenAICompatibleProvider()
-        ? getOpenAISessionManager()
-        : streamingSessionManager;
-    manager.remove(sessionId);
+    streamingSessionManager.remove(sessionId);
 
     writeRouteAudit(c, {
       orgId: closed.orgId,
@@ -852,7 +809,7 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, model: resolvedModel, openaiCompatible } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, model: resolvedModel } = preflight;
 
     // Topology M4 Task 3 (#6000): a topology session runs a bounded
     // investigation on this same transport. The pinned site is re-authorized,
@@ -893,137 +850,6 @@ aiRoutes.post(
       topology = prepared.prepared;
     }
     const abortTopology = async () => { await topology?.runtime.abort(); };
-
-    // ---- OpenAI-compatible path (chat-only, no tool-calling) ----
-    // (A partner config on this path is refused in preflight.)
-    if (openaiCompatible) {
-      const billingSource = 'platform' as const;
-      // S8: no stable request identity reaches this surface — the client sends
-      // no message/draft id — so the key is random per dispatch. The unique
-      // (org_id, idempotency_key) index is therefore a structural guarantee
-      // that two dispatches never share a reservation row, NOT a replay guard.
-      // The one caller with a real identity uses it: `ai-agent-run:${run.id}`
-      // in services/aiAgents/runLoop.ts. Give this one a stable key only when
-      // the request schema starts carrying a client-generated id.
-      let reservation;
-      try {
-        reservation = await reserveAiBudget({
-          orgId: dbSession.orgId,
-          billingSource,
-          sessionId,
-          idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
-        });
-      } catch (err) {
-        await abortTopology();
-        if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
-        throw err;
-      }
-      if (reservation.kind === 'denied') {
-        await abortTopology();
-        return c.json({ error: reservation.message }, 402);
-      }
-      const budgetDispatch = budgetDispatchFrom(reservation)!;
-
-      type OpenAIChatSession = ReturnType<OpenAISessionManager['getOrCreate']>;
-      const dispatch = await inRequestDb(async (): Promise<
-        | { kind: 'dispatched'; openaiSession: OpenAIChatSession }
-        | { kind: 'refused'; response: Response }
-        | { kind: 'failed'; error: unknown }
-      > => {
-        // Caught (not thrown through) so the reservation taken above is still
-        // released below — same shape as the Claude SDK branch.
-        let openaiManager: OpenAISessionManager;
-        let openaiSession: OpenAIChatSession;
-        try {
-          openaiManager = getOpenAISessionManager();
-          openaiSession = openaiManager.getOrCreate(sessionId, dbSession.orgId, auth, c);
-        } catch (err) {
-          return { kind: 'failed', error: err };
-        }
-
-        if (!openaiManager.tryTransitionToProcessing(openaiSession)) {
-          return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
-        }
-        // Bound for THIS turn only; the chat-only transport clears it when the turn starts.
-        openaiSession.topologyInvestigation = topology?.runtime;
-
-        writeRouteAudit(c, {
-          orgId: dbSession.orgId,
-          action: 'ai.message.send',
-          resourceType: 'ai_session',
-          resourceId: sessionId,
-          details: { contentLength: body.content.length },
-        });
-
-        try {
-          await db.insert(aiMessages).values({
-            sessionId,
-            role: 'user',
-            content: sanitizedContent,
-          });
-        } catch (err) {
-          console.error('[AI/OpenAI] Failed to save user message to DB:', err);
-          openaiSession.state = 'idle';
-          openaiSession.topologyInvestigation = undefined;
-          return { kind: 'refused', response: c.json({ error: 'Failed to save message' }, 500) };
-        }
-
-        if (!dbSession.title) {
-          // Topology sessions get a fixed title: no model or evidence text ever names a session.
-          const title = topology ? TOPOLOGY_SESSION_TITLE : generateSessionTitle(sanitizedContent);
-          try {
-            await persistAutoSessionTitle(sessionId, title);
-            openaiSession.eventBus.publish({ type: 'title_updated', title });
-          } catch (err) {
-            captureException(err, c);
-            console.error('[AI/OpenAI] Failed to auto-set session title:', err);
-          }
-        }
-
-        openaiManager.startTurn(
-          openaiSession,
-          dbSession.model,
-          topology ? topology.systemPrompt : systemPrompt,
-          topology ? topology.prompt : sanitizedContent,
-          budgetDispatch,
-        );
-        return { kind: 'dispatched', openaiSession };
-      });
-      if (dispatch.kind !== 'dispatched') {
-        // Released only after the dispatch context has closed, so the release's
-        // own system transaction never runs beside a held request connection.
-        await abortTopology();
-        await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
-        if (dispatch.kind === 'failed') throw dispatch.error;
-        return dispatch.response;
-      }
-      const { openaiSession } = dispatch;
-
-      const subscriptionId = crypto.randomUUID();
-      return streamSSE(c, async (stream) => {
-        const events = openaiSession.eventBus.subscribe(subscriptionId);
-        try {
-          for await (const event of events) {
-            await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
-            if (event.type === 'done') break;
-          }
-        } catch (err) {
-          // Never stream a raw error to the browser (#2603). Uses the stream
-          // sanitizer (not the tool one) so user-actionable conditions — rate
-          // limit, budget, approval timeout — survive, while driver text does
-          // not. sanitizeErrorForClient is now detector-gated.
-          console.error('[AI/OpenAI] Stream error:', err);
-          const message = sanitizeErrorForClient(err);
-          await stream.writeSSE({
-            event: 'error',
-            data: JSON.stringify({ type: 'error', message }),
-          });
-        } finally {
-          openaiSession.eventBus.unsubscribe(subscriptionId);
-        }
-      });
-    }
-    // ---- End OpenAI-compatible path ----
 
     // W05 (#7603): a continuation's FIRST turn (no SDK transcript yet) is
     // seeded with the summary its creation stored; later turns resume the SDK
@@ -1072,8 +898,7 @@ aiRoutes.post(
       streamingSessionManager.remove(sessionId);
     }
 
-    // Off the env OpenAI-compatible path preflight always resolves a model.
-    if (!resolvedModel) throw new Error('chat preflight returned no resolved model on the Agent SDK path');
+    // W09: a failover hop replaces the dispatched model.
     let model = resolvedModel;
     // W05 (spec §9.2; spike constraints 1–3): every model change passes ONE
     // gate before anything is reserved. Same model → W03 reuse; another
@@ -1213,7 +1038,7 @@ aiRoutes.post(
       }
 
       // The topology runtime is bound by the transition itself, and only when
-      // this request wins the slot (PR #7147 F1) — same as the OpenAI branch.
+      // this request wins the slot (PR #7147 F1).
       if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
@@ -1296,8 +1121,10 @@ aiRoutes.post(
           if (event.type === 'done') break;
         }
       } catch (err) {
-        // Never stream a raw error to the browser (#2603). See the OpenAI
-        // branch above for why this uses the stream sanitizer.
+        // Never stream a raw error to the browser (#2603). Uses the stream
+        // sanitizer (not the tool one) so user-actionable conditions — rate
+        // limit, budget, approval timeout — survive, while driver text does
+        // not. sanitizeErrorForClient is detector-gated.
         console.error('[AI] Stream error:', err);
         const message = sanitizeErrorForClient(err);
         await stream.writeSSE({
@@ -1335,11 +1162,7 @@ aiRoutes.post(
 
     let result: { interrupted: boolean; reason?: string };
     try {
-      const manager =
-        isOpenAICompatibleProvider()
-          ? getOpenAISessionManager()
-          : streamingSessionManager;
-      result = await manager.interrupt(sessionId);
+      result = await streamingSessionManager.interrupt(sessionId);
     } catch (err) {
       console.error('[AI] Interrupt failed:', err);
       return c.json({ error: 'Failed to interrupt session' }, 500);
@@ -1436,16 +1259,6 @@ aiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    if (isOpenAICompatibleProvider()) {
-      return c.json(
-        {
-          error: 'This operation is not supported when using the OpenAI-compatible provider.',
-          code: 'NOT_SUPPORTED_ON_PROVIDER',
-        },
-        501,
-      );
-    }
-
     const activeSession = streamingSessionManager.get(sessionId);
     if (!activeSession) {
       return c.json({ error: 'Session not active in memory' }, 404);
@@ -1491,16 +1304,6 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
-    }
-
-    if (isOpenAICompatibleProvider()) {
-      return c.json(
-        {
-          error: 'This operation is not supported when using the OpenAI-compatible provider.',
-          code: 'NOT_SUPPORTED_ON_PROVIDER',
-        },
-        501,
-      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);
@@ -1592,16 +1395,6 @@ aiRoutes.post(
     const session = await getSession(sessionId, auth);
     if (!session) {
       return c.json({ error: 'Session not found' }, 404);
-    }
-
-    if (isOpenAICompatibleProvider()) {
-      return c.json(
-        {
-          error: 'This operation is not supported when using the OpenAI-compatible provider.',
-          code: 'NOT_SUPPORTED_ON_PROVIDER',
-        },
-        501,
-      );
     }
 
     const activeSession = streamingSessionManager.get(sessionId);

@@ -402,10 +402,10 @@ export async function debitBillingCredits(
 /**
  * Draw platform-funded spend down from the org's prepaid AI credit balance.
  *
- * UNKEYED legacy debit, kept for its two remaining callers: compute
- * settlement (settleComputeCents) and the env-only OpenAI-compatible chat path
- * (llm/openaiSessionManager.ts, W06). Token spend on the registry path uses
- * the keyed debitBillingCredits via settleInvocation. Only ever call this for
+ * UNKEYED legacy debit, kept for its one remaining caller: compute
+ * settlement (settleComputeCents). Token spend uses the keyed
+ * debitBillingCredits via settleInvocation (W06 deleted the env-only
+ * OpenAI-compatible chat path, its other caller). Only ever call this for
  * `billingSource === 'platform'`: partner BYOK spend is billed by Anthropic to
  * the partner, not against our credits.
  */

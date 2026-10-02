@@ -4,10 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
 // The SDK transport must never run here: a real model call is a test bug.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: () => { throw new Error('SDK transport must not run in this suite'); }, tool: () => ({}), createSdkMcpServer: () => ({}) }));
 

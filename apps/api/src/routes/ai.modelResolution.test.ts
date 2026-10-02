@@ -11,16 +11,6 @@ import { Hono } from 'hono';
 // handler opens now that it no longer runs inside a request transaction.
 const dbCtx = vi.hoisted(() => ({ depth: 0 }));
 
-// OpenAI-compatible branch harness (#3127): provider switch + session manager.
-const openai = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-  manager: {
-    getOrCreate: vi.fn(),
-    tryTransitionToProcessing: vi.fn(),
-    startTurn: vi.fn(),
-  },
-}));
-
 // Topology M4 turn harness (#6000 on #3127): the lazily-imported route half.
 const topo = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -39,22 +29,6 @@ vi.mock('./aiTopologyTurn', () => ({
     ];
   }),
   topologyMcpServerFactory: vi.fn(),
-}));
-
-vi.mock('../config/validate', () => ({
-  getConfig: vi.fn(() => ({
-    MCP_LLM_PROVIDER: openai.provider,
-    MCP_LLM_BASE_URL: 'http://llm.example.test',
-    MCP_LLM_API_KEY: 'k',
-    MCP_LLM_PRICE_INPUT_PER_M_USD: 1,
-    MCP_LLM_PRICE_OUTPUT_PER_M_USD: 1,
-  })),
-}));
-
-vi.mock('../services/llm/openaiSessionManager', () => ({
-  OpenAISessionManager: vi.fn(function OpenAISessionManager() {
-    return openai.manager;
-  }),
 }));
 
 vi.mock('../db', () => ({
@@ -263,7 +237,6 @@ describe('POST /ai/sessions/:id/messages — model resolution (W03 Task 7)', () 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    openai.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
   });
@@ -299,7 +272,7 @@ describe('POST /ai/sessions/:id/messages — model resolution (W03 Task 7)', () 
     const model = makeResolvedModel('anthropic_byok');
     vi.mocked(runPreFlightChecks).mockResolvedValue({
       ok: true, session: DB_SESSION as any, sanitizedContent: 'hi', systemPrompt: 's',
-      maxBudgetUsd: undefined, model, openaiCompatible: false,
+      maxBudgetUsd: undefined, model,
     });
     const active = makeActiveSession();
     vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);

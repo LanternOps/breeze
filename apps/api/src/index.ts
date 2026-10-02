@@ -288,7 +288,6 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher, warnOnUnsupportedPlatformInferenceGeo } from './services/aiModels/platformModels';
-import { registerInvocationLedgerShadow } from './services/aiModels/invocationLedger';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -1791,9 +1790,6 @@ async function bootstrap(): Promise<void> {
   // (W01 D3). Non-fatal: an unsupported AI_PLATFORM_INFERENCE_GEO takes
   // platform models offline (residency_unavailable), so say so at boot.
   warnOnUnsupportedPlatformInferenceGeo();
-  // AI model registry W02 (#7600): shadow every legacy AI cost record into the
-  // invocation ledger (after the caller's transaction exits; never affects billing).
-  registerInvocationLedgerShadow();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this

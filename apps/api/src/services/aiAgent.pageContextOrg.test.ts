@@ -12,7 +12,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -49,7 +48,6 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
 // W03 Task 9 (#7601): createSession picks its model through the registry.
@@ -114,11 +112,6 @@ function expectInsert() {
 describe('createSession page-context org anchoring (#5593)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   it('anchors a partner-scoped session to the page-context device org, not accessibleOrgIds[0]', async () => {
@@ -230,11 +223,6 @@ describe('createSession page-context org anchoring (#5593)', () => {
 describe('createSession records the page-context org anchor server-side (#6675)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   function snapshotOf(valuesSpy: ReturnType<typeof vi.fn>) {

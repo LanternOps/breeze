@@ -1,4 +1,3 @@
-import { getConfig } from '../../config/validate';
 import type { ResolvedLlmConfig } from './llmConfigResolver';
 
 /**
@@ -35,10 +34,11 @@ export const PLATFORM_LLM_CREDENTIAL_ENV_KEYS = [
 ] as const;
 
 /**
- * How a surface reaches the model. `chat` (AI chat, topology "Explain this")
- * can run on the platform's OpenAI-compatible provider; `agent_sdk` surfaces
- * (the script builder) always spawn the Claude Agent SDK, which needs an
- * Anthropic-dialect credential and cannot use that provider.
+ * How a surface reaches the model. Since W06 every surface runs the Agent SDK
+ * or the Messages API on a registry-resolved model, so both transports need
+ * the same platform credential; the parameter is kept for call-site intent.
+ * (An env OpenAI-compatible deployment is an env-managed registry connection,
+ * not a platform credential.)
  */
 export type LlmTransport = 'chat' | 'agent_sdk';
 
@@ -58,19 +58,6 @@ export class LlmNotConfiguredError extends Error {
   }
 }
 
-/**
- * Platform chat runs on an OpenAI-compatible endpoint instead of the Agent
- * SDK (`MCP_LLM_PROVIDER=openai-compatible`; its URL, model and key are
- * boot-validated). False before the config is validated.
- */
-export function isOpenAICompatibleProvider(): boolean {
-  try {
-    return getConfig().MCP_LLM_PROVIDER === 'openai-compatible';
-  } catch {
-    return false;
-  }
-}
-
 function present(value: string | undefined): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -82,11 +69,10 @@ function present(value: string | undefined): boolean {
  */
 export function isPlatformLlmConfigured(
   apiKey: string | undefined = process.env.ANTHROPIC_API_KEY,
-  transport: LlmTransport = 'chat',
+  _transport: LlmTransport = 'chat',
 ): boolean {
-  const credentialPresent = PLATFORM_LLM_CREDENTIAL_ENV_KEYS.some((key) =>
+  return PLATFORM_LLM_CREDENTIAL_ENV_KEYS.some((key) =>
     present(key === 'ANTHROPIC_API_KEY' ? apiKey : process.env[key]));
-  return credentialPresent || (transport === 'chat' && isOpenAICompatibleProvider());
 }
 
 /** Why no model can be called for `resolved` over `transport`, or null when one can. */

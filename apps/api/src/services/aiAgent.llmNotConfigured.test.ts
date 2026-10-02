@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const selectMock = vi.fn();
 const insertMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 const getEffectiveAiBudgetMock = vi.fn();
 const resolveModelMock = vi.fn();
 
@@ -40,7 +39,6 @@ vi.mock('./aiAgentSdkTools', () => ({ listChatSurfaceToolNames: () => [] }));
 vi.mock('./brainDeviceContext', () => ({ getActiveDeviceContext: vi.fn().mockResolvedValue([]) }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 vi.mock('./effectiveSettings', () => ({
   getEffectiveAiBudget: (...args: unknown[]) => getEffectiveAiBudgetMock(...args),
@@ -105,6 +103,5 @@ describe('createSession refuses when no model provider is configured', () => {
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       offeringId: 'off-1', offeringPartnerId: 'partner-1', model: 'claude-sonnet-5-5', billingSource: 'platform',
     }));
-    expect(resolveLlmConfigForOrgMock).not.toHaveBeenCalled();
   });
 });

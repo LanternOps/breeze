@@ -689,11 +689,10 @@ export class StreamingSessionManager {
   private lastCapacityAlarmAt = 0;
 
   constructor() {
-    // No `runOutsideDbContext` wrapper around this `setInterval`, unlike the
-    // OpenAI twin (llm/openaiSessionManager.ts). That manager is a LAZY
-    // singleton first constructed inside an AI request handler, so its timer
-    // would inherit the requester's AsyncLocalStorage scope on every tick for
-    // the life of the process. This one is a MODULE-LEVEL singleton
+    // No `runOutsideDbContext` wrapper around this `setInterval`: a LAZY
+    // singleton first constructed inside an AI request handler would need one,
+    // because its timer would inherit the requester's AsyncLocalStorage scope
+    // on every tick for the life of the process. This one is a MODULE-LEVEL singleton
     // (bottom of file), constructed at import time with no ambient context, so
     // the sweep starts clean. `markSessionsExpired` still re-enters the escape
     // per statement — that is what actually guarantees the write's context,
@@ -1825,8 +1824,15 @@ export class StreamingSessionManager {
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
       this.stopThinking(session);
+      // A topology turn never surfaces transport/provider text, sanitized or
+      // not: it ends in the same fixed failure as a failed result (W06 made
+      // this the only topology transport).
+      const topologyTurn = Boolean(session.topologyInvestigation);
       await this.abortTopologyTurn(session);
-      session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
+      session.eventBus.publish({
+        type: 'error',
+        message: topologyTurn ? 'The topology explanation could not be completed.' : sanitizeErrorForClient(err),
+      });
       session.eventBus.publish({ type: 'done' });
     } finally {
       // W05: a turn that ended without a `result` mid-thought (teardown,

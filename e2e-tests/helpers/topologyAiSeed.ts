@@ -73,8 +73,8 @@ export function seedTopologyAi(): TopologyAiFixture {
 }
 
 /**
- * Side effects an approved action would leave. The chat-only transport exposes
- * no tools, so every one must stay zero: diagnostic runs for the site, device
+ * Side effects an approved action would leave. The mock model never calls a
+ * tool on an evidence prompt, so every one must stay zero: diagnostic runs for the site, device
  * commands for the org since the fixture was seeded, action intents for the
  * two tools the model's text names, and AI tool executions for the org.
  */

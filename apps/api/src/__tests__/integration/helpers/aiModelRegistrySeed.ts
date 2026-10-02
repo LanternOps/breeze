@@ -81,6 +81,26 @@ export async function seedCatalogRevision(entryId: string, modelIds: string[], c
   return revisionId;
 }
 
+/**
+ * W06: put an EXISTING partner (e.g. one from setupTestEnvironment) on the
+ * registry with a priced, enabled platform offering as the default of every
+ * tenant surface, marked cut over. Returns the offering and its wire model id.
+ */
+export async function seedPlatformRegistryForPartner(partnerId: string): Promise<{ offeringId: string; modelId: string }> {
+  const modelId = `w06-test-${randomUUID()}`;
+  const platformModelId = await seedPricedPlatformModel(modelId);
+  const offeringId = await seedOffering({ partnerId, platformModelId, enabled: true });
+  for (const surface of AI_SURFACES) {
+    if (surface === 'patch_test') continue;   // platform-only, no assignment
+    await fixtureSql`
+      INSERT INTO ai_model_assignments (partner_id, offering_partner_id, surface, role, default_offering_id, allow_user_choice)
+      VALUES (${partnerId}, ${partnerId}, ${surface}, 'default', ${offeringId}, true)`;
+  }
+  await fixtureSql`
+    INSERT INTO ai_model_registry_partner_cutover (partner_id) VALUES (${partnerId}) ON CONFLICT DO NOTHING`;
+  return { offeringId, modelId };
+}
+
 export async function seedRegistryPartner(kind: RegistrySeedKind): Promise<SeededRegistryPartner> {
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });

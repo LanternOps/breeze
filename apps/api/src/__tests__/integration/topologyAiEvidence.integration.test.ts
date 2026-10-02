@@ -4,10 +4,6 @@ import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vites
 import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
 // Topology AI readiness requires a usable model provider (no key = not
 // configured). These suites exercise the gate itself, so give the platform
 // path a key for their duration.

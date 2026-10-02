@@ -438,9 +438,6 @@ export async function bootWorker(): Promise<void> {
   const { extensionContributionRegistry } = await import('./extensions/contributionRegistry');
   const { createExtensionStateStore } = await import('./extensions/stateStore');
   const { registerAiAgentEnqueuer } = await import('./jobs/aiAgentEnqueuer');
-  // AI model registry W02 (#7600): agents and the script reviewer record AI
-  // cost in this process; shadow those records into the invocation ledger.
-  const { registerInvocationLedgerShadow } = await import('./services/aiModels/invocationLedger');
   const { runRegistryCutoverSweepWithRetry, reportableCutoverError } = await import('./services/aiModels/registryCutover');
   const { registerAllEventSubscribers } = await import('./services/eventSubscribers');
   const { buildWebhookFanoutDeps } = await import('./services/webhookFanoutDeps');
@@ -605,7 +602,6 @@ export async function bootWorker(): Promise<void> {
   // Step 7 — must run before step 8 so a job enqueued mid-worker-boot (or any
   // event published during it) always finds a registered enqueuer/subscriber.
   registerAiAgentEnqueuer();
-  registerInvocationLedgerShadow();
   registerAllEventSubscribers(buildWebhookFanoutDeps());
 
   // Step 8: the registry's `global`-placement workers, then the event-dispatch

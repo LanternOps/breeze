@@ -16,14 +16,6 @@ vi.mock('../services/aiModels/modelTransition', async (orig) => ({
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { Hono } from 'hono';
 
-const configRef = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-}));
-
-vi.mock('../config/validate', () => ({
-  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
-}));
-
 vi.mock('../services/llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {
     readonly status = 503;
@@ -33,7 +25,6 @@ vi.mock('../services/llm/llmConfigResolver', () => ({
       this.name = 'LlmUnavailableError';
     }
   },
-  resolveLlmConfigForOrg: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -197,7 +188,6 @@ describe('AI routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    configRef.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
   });
@@ -563,10 +553,7 @@ describe('AI routes', () => {
       expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     });
 
-    it('refuses partner-key traffic before entering the instance OpenAI-compatible path', async () => {
-      configRef.provider = 'openai-compatible';
-      // W03 Task 7: the refusal moved into runPreFlightChecks (env OpenAI-compatible
-      // chat keeps legacy resolution and refuses a partner config there).
+    it('a preflight ai_unavailable refusal is a 503 before any session or message write', async () => {
       vi.mocked(runPreFlightChecks).mockResolvedValueOnce({ ok: false, error: 'ai_unavailable', status: 503 });
 
       const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
@@ -604,7 +591,6 @@ describe('AI routes', () => {
         systemPrompt: 'SYSTEM PROMPT',
         maxBudgetUsd: undefined,
         model: BYOK_MODEL,
-        openaiCompatible: false,
       });
 
       const fakeActiveSession = {

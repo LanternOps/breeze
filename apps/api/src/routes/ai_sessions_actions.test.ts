@@ -19,16 +19,6 @@ import { Hono } from 'hono';
 // handler opens now that it no longer runs inside a request transaction.
 const dbCtx = vi.hoisted(() => ({ depth: 0 }));
 
-// OpenAI-compatible branch harness (#3127): provider switch + session manager.
-const openai = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-  manager: {
-    getOrCreate: vi.fn(),
-    tryTransitionToProcessing: vi.fn(),
-    startTurn: vi.fn(),
-  },
-}));
-
 // Topology M4 turn harness (#6000 on #3127): the lazily-imported route half.
 const topo = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -47,22 +37,6 @@ vi.mock('./aiTopologyTurn', () => ({
     ];
   }),
   topologyMcpServerFactory: vi.fn(),
-}));
-
-vi.mock('../config/validate', () => ({
-  getConfig: vi.fn(() => ({
-    MCP_LLM_PROVIDER: openai.provider,
-    MCP_LLM_BASE_URL: 'http://llm.example.test',
-    MCP_LLM_API_KEY: 'k',
-    MCP_LLM_PRICE_INPUT_PER_M_USD: 1,
-    MCP_LLM_PRICE_OUTPUT_PER_M_USD: 1,
-  })),
-}));
-
-vi.mock('../services/llm/openaiSessionManager', () => ({
-  OpenAISessionManager: vi.fn(function OpenAISessionManager() {
-    return openai.manager;
-  }),
 }));
 
 vi.mock('../db', () => ({
@@ -341,10 +315,9 @@ describe('AI routes', () => {
   // ============================================
   describe('POST /ai/sessions/:id/messages — approval-blocked turn settling', () => {
     function mockPreflightOk(sessionOverrides: Record<string, unknown> = {}) {
-      // Preflight decides the transport (W03 Task 7): the env OpenAI-compatible
-      // chat path has no resolved model; every other turn carries one.
+      // Preflight resolves the turn's model (W03 Task 7); since W06 every
+      // turn carries one (no env OpenAI-compatible chat runtime).
       vi.mocked(runPreFlightChecks).mockImplementation(async () => {
-        const openaiCompatible = openai.provider === 'openai-compatible';
         return {
           ok: true,
           session: {
@@ -361,8 +334,7 @@ describe('AI routes', () => {
           sanitizedContent: 'hello there',
           systemPrompt: 'sp',
           maxBudgetUsd: undefined,
-          model: openaiCompatible ? null : makeResolvedModel(),
-          openaiCompatible,
+          model: makeResolvedModel(),
         } as any;
       });
     }
@@ -516,78 +488,6 @@ describe('AI routes', () => {
       expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
       expect(releaseDepth).toBe(0);
       expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-    });
-
-    describe('#3127: OpenAI-compatible branch', () => {
-      beforeEach(() => {
-        openai.provider = 'openai-compatible';
-      });
-      afterEach(() => {
-        openai.provider = 'anthropic';
-      });
-
-      it('reads in a short context and reserves with none held', async () => {
-        const depths: Record<string, number> = {};
-        trackPreflightDepth(depths);
-        const reserveImpl = vi.mocked(reserveAiBudget).getMockImplementation()!;
-        vi.mocked(reserveAiBudget).mockImplementationOnce(async (...args) => {
-          depths.reserve = dbCtx.depth;
-          return reserveImpl(...args);
-        });
-        const openaiSession = makeActiveSession();
-        openai.manager.getOrCreate.mockImplementation(() => {
-          depths.getOrCreate = dbCtx.depth;
-          return openaiSession;
-        });
-        openai.manager.tryTransitionToProcessing.mockReturnValue(true);
-        vi.mocked(db.insert).mockImplementation(() => {
-          depths.insert = dbCtx.depth;
-          return { values: vi.fn().mockResolvedValue(undefined) } as any;
-        });
-
-        const res = await postMessage();
-
-        expect(res.status).toBe(200);
-        await res.text();
-        expect(depths).toEqual({ preflight: 1, reserve: 0, getOrCreate: 1, insert: 1 });
-        expect(openai.manager.startTurn).toHaveBeenCalledTimes(1);
-        expect(dbCtx.depth).toBe(0);
-      });
-
-      it('releases the reservation with no context held when the session manager throws', async () => {
-        trackPreflightDepth({});
-        openai.manager.getOrCreate.mockImplementation(() => {
-          throw new Error('manager exploded');
-        });
-        let releaseDepth = -1;
-        vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
-          releaseDepth = dbCtx.depth;
-          return { kind: 'released', reservationId: input.reservationId } as any;
-        });
-
-        const res = await postMessage();
-
-        expect(res.status).toBe(500);
-        expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
-        expect(releaseDepth).toBe(0);
-        expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-      });
-
-      it('releases the reservation with no context held when the turn slot is taken', async () => {
-        trackPreflightDepth({});
-        openai.manager.getOrCreate.mockReturnValue(makeActiveSession());
-        openai.manager.tryTransitionToProcessing.mockReturnValue(false);
-        let releaseDepth = -1;
-        vi.mocked(releaseUnusedAiBudgetReservation).mockImplementationOnce(async (input) => {
-          releaseDepth = dbCtx.depth;
-          return { kind: 'released', reservationId: input.reservationId } as any;
-        });
-
-        const res = await postMessage();
-
-        expect(res.status).toBe(409);
-        expect(releaseDepth).toBe(0);
-      });
     });
 
     // Topology M4 (#6000) on the self-managed route (#3127): the topology
@@ -764,35 +664,6 @@ describe('AI routes', () => {
           expect(topo.abort).toHaveBeenCalledTimes(1);
           expect(depths).toMatchObject({ abort: 0, release: 0 });
           expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
-        }
-      });
-
-      it('OpenAI-compatible: the topology turn dispatches in one short context and a taken slot aborts with none held', async () => {
-        openai.provider = 'openai-compatible';
-        try {
-          const depths: Record<string, number> = {};
-          mockTopologyPreflight(depths);
-          mockLivePrepare(depths);
-          const session = makeActiveSession();
-          openai.manager.getOrCreate.mockReturnValue(session);
-          openai.manager.tryTransitionToProcessing.mockReturnValue(true);
-          openai.manager.startTurn.mockImplementation(() => { depths.startTurn = dbCtx.depth; });
-          vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
-
-          const ok = await postMessage();
-          expect(ok.status).toBe(200);
-          await ok.text();
-          expect(depths).toMatchObject({ prepareCall: 0, prepare: 1, startTurn: 1 });
-          expect(session.topologyInvestigation).toMatchObject({ abort: topo.abort });
-          expect(openai.manager.startTurn.mock.calls[0]!.slice(2, 4)).toEqual(['TOPOLOGY SYSTEM', 'TOPOLOGY PROMPT']);
-
-          openai.manager.tryTransitionToProcessing.mockReturnValue(false);
-          topo.abort.mockImplementation(async () => { depths.abort = dbCtx.depth; });
-          const busy = await postMessage();
-          expect(busy.status).toBe(409);
-          expect(depths.abort).toBe(0);
-        } finally {
-          openai.provider = 'anthropic';
         }
       });
     });

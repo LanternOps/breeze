@@ -245,7 +245,6 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
           systemPrompt: 'System prompt',
           maxBudgetUsd: 1,
           model: makeResolvedModel('platform', { surface: 'script_builder' }),
-          openaiCompatible: false,
         } as any;
       });
       const activeSession = {
@@ -310,7 +309,6 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         systemPrompt: 'System prompt',
         maxBudgetUsd: 1,
         model,
-        openaiCompatible: false,
       } as any);
       vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue({ state: 'processing' } as any);
       vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(false);
@@ -379,7 +377,6 @@ describe('scriptAi routes — messages, interrupt, approve', () => {
         systemPrompt: 'System prompt',
         maxBudgetUsd: 1,
         model: makeResolvedModel('platform', { surface: 'script_builder' }),
-        openaiCompatible: false,
       } as any);
       // Last-resort guard: an LlmUnavailableError from the manager (e.g. a
       // wire option the transport cannot carry) maps to 503, never a 500.

@@ -1,6 +1,7 @@
 /**
  * Eviction contract for the DEFAULT (Anthropic) session manager — issue #4514,
- * the deferred twin of #4384/#4406 (llm/openaiSessionManager.eviction.test.ts).
+ * the deferred twin of #4384/#4406 (fixed first on the env-only OpenAI-compatible
+ * session manager, deleted in W06).
  *
  * Two defects are pinned here:
  *   1. Neither eviction path checked `state === 'processing'`, so under cap
