@@ -21,47 +21,63 @@
 # for a key the record lacks prints "No such key: <attr>" and still exits 0, so
 # the GID has to be parsed — the exit status cannot tell "has one" from "none".
 #
-# Never touches a record that already has a numeric GID.
+# Never touches a record that already has a numeric GID, and never writes when
+# the record cannot be read.
 
-# breeze_group_gid prints the breeze group's numeric PrimaryGroupID, or nothing
-# when the group or the attribute is missing or not a number. Always returns 0.
-breeze_group_gid() {
-    local _bg_out
-    _bg_out=$(dscl . -read /Groups/breeze PrimaryGroupID 2>/dev/null) || _bg_out=""
-    # Word-split on purpose: covers both "PrimaryGroupID: 350" and dscl's
-    # folded form "PrimaryGroupID:\n 350".
-    # shellcheck disable=SC2086
-    set -- $_bg_out
-    if [ "$#" -ge 2 ] && [ "$1" = "PrimaryGroupID:" ]; then
-        case "$2" in
-            '' | *[!0-9]*) ;;
-            *) printf '%s\n' "$2" ;;
+# breeze_group_read prints one word describing the breeze record:
+#   absent  no such record (dscl's eDSRecordNotFound)
+#   <n>     its numeric PrimaryGroupID
+#   nogid   the record exists but PrimaryGroupID is missing or not a number
+# Any other read failure (wedged opendirectoryd, timeout, permissions) returns
+# 1 with dscl's output on stderr, so a transient error is never mistaken for
+# "absent" or "nogid" — which would overwrite a valid GID.
+breeze_group_read() {
+    local _bg_out _bg_val
+    if ! _bg_out=$(dscl . -read /Groups/breeze PrimaryGroupID 2>&1); then
+        case "$_bg_out" in
+            *eDSRecordNotFound*)
+                echo absent
+                return 0
+                ;;
         esac
+        printf '%s\n' "$_bg_out" >&2
+        return 1
     fi
+    # Handles "PrimaryGroupID: 350" and dscl's folded "PrimaryGroupID:\n 350";
+    # "No such key: PrimaryGroupID" (which exits 0) yields nothing. awk rather
+    # than word splitting, so nothing is glob-expanded.
+    _bg_val=$(printf '%s\n' "$_bg_out" | awk '
+        $1 == "PrimaryGroupID:" { if (NF >= 2) print $2; else if ((getline) > 0) print $1; exit }')
+    case "$_bg_val" in
+        '' | *[!0-9]*) echo nogid ;;
+        *) printf '%s\n' "$_bg_val" ;;
+    esac
     return 0
 }
 
 # ensure_breeze_group creates the group, or repairs one without a valid GID,
 # using the first GID in the local system range 350-499 no other group holds.
-# Returns non-zero, with the reason on stderr, when it cannot.
+# Returns non-zero, with the reason on stderr, when it cannot — including when
+# the record cannot be read, in which case nothing is written.
 ensure_breeze_group() {
-    local _bg_existing _bg_used _bg_gid
-    _bg_existing=0
-    if dscl . -read /Groups/breeze >/dev/null 2>&1; then
-        if [ -n "$(breeze_group_gid)" ]; then
-            return 0
-        fi
-        _bg_existing=1
+    local _bg_state _bg_existing _bg_list _bg_used _bg_gid
+    if ! _bg_state=$(breeze_group_read); then
+        echo "Error: could not read the breeze group; leaving it untouched" >&2
+        return 1
     fi
+    case "$_bg_state" in
+        absent) _bg_existing=0 ;;
+        nogid) _bg_existing=1 ;;
+        *) return 0 ;; # numeric GID: never touched
+    esac
 
-    if ! _bg_used=$(dscl . -list /Groups PrimaryGroupID); then
+    if ! _bg_list=$(dscl . -list /Groups PrimaryGroupID); then
         echo "Error: could not list local group IDs; cannot ensure the breeze group" >&2
         return 1
     fi
-    # One space-delimited line ("name gid name gid ..."); a GID is free when it
-    # does not appear as a whole word.
-    # shellcheck disable=SC2086
-    _bg_used=" $(printf '%s ' $_bg_used)"
+    # One space-delimited line of every assigned GID; a candidate is free when
+    # it does not appear there as a whole word.
+    _bg_used=" $(printf '%s\n' "$_bg_list" | awk '{ printf "%s ", $2 }')"
 
     _bg_gid=350
     while [ "$_bg_gid" -le 499 ]; do
@@ -82,7 +98,7 @@ ensure_breeze_group() {
             return 1
         }
         # Re-read rather than trust dscl's exit status.
-        if [ "$(breeze_group_gid)" != "$_bg_gid" ]; then
+        if [ "$(breeze_group_read 2>/dev/null)" != "$_bg_gid" ]; then
             echo "Error: breeze group PrimaryGroupID did not take (wanted $_bg_gid)" >&2
             return 1
         fi

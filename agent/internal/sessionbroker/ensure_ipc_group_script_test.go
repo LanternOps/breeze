@@ -26,6 +26,7 @@ name=${path#/Groups/}
 d="$state/groups/$name"
 case "$op" in
 -read)
+  if [ -n "$FAKE_DSCL_FAIL_READ" ]; then echo "<dscl_cmd> DS Error: -14987 (eServerNotRunning)" >&2; exit 70; fi
   if [ ! -d "$d" ]; then echo "<dscl_cmd> DS Error: -14136 (eDSRecordNotFound)" >&2; exit 56; fi
   if [ -z "$attr" ]; then
     for f in "$d"/*; do [ -f "$f" ] && echo "$(basename "$f"): $(cat "$f")"; done
@@ -280,6 +281,31 @@ func TestEnsureIPCGroupScript(t *testing.T) {
 				}
 				if !strings.Contains(out, "no free") {
 					t.Fatalf("error should name the cause; output %q", out)
+				}
+			})
+
+			// A read failure other than eDSRecordNotFound (wedged opendirectoryd,
+			// timeout) must not be read as "absent" or "no GID": either would
+			// overwrite a valid GID and orphan everything group-owned by it.
+			t.Run("an unreadable record is never written", func(t *testing.T) {
+				for _, seeded := range []map[string]string{
+					{"PrimaryGroupID": "401", "GroupMembership": "admin"},
+					nil, // record absent
+				} {
+					f := newFakeDirectory(t)
+					if seeded != nil {
+						f.group("breeze", seeded)
+					}
+					out, code := f.runEnsure(t, sh.run(t), "FAKE_DSCL_FAIL_READ=1")
+					if code == 0 {
+						t.Fatalf("seeded %v: want a non-zero exit when the record cannot be read; output %q", seeded, out)
+					}
+					if w := f.writes(); len(w) != 0 {
+						t.Fatalf("seeded %v: an unreadable record must not be written; got %q", seeded, w)
+					}
+					if !strings.Contains(out, "eServerNotRunning") {
+						t.Fatalf("seeded %v: the dscl error should be surfaced; output %q", seeded, out)
+					}
 				}
 			})
 

@@ -55,9 +55,17 @@ func runDscl(args []string) (string, error) {
 func EnsureIPCGroup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), dsclTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/sh", "-c", ensureIPCGroupScript).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", ensureIPCGroupScript)
+	// The context kills only sh. A dscl it spawned that is wedged on
+	// opendirectoryd would keep the output pipe open and block Wait past
+	// dsclTimeout; WaitDelay bounds that so daemon startup cannot hang here.
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput()
 	msg := strings.TrimSpace(string(out))
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("%w (%w after %s)", err, ctxErr, dsclTimeout)
+		}
 		return fmt.Errorf("ensure %q group: %w: %s", IPCGroupName, err, msg)
 	}
 	if msg != "" {
