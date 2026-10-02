@@ -3,7 +3,8 @@ import { zValidator } from '../../lib/validation';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import { requirePermission, requireScope } from '../../middleware/auth';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
+import { readOwnPartnerAxisRows } from '../../db/partnerAxisRead';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { enqueuePatchComplianceReport } from '../../jobs/patchComplianceReportWorker';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
@@ -134,31 +135,32 @@ complianceRoutes.get(
     // Approvals are partner-scoped; use effectivePartnerId resolved above.
     let ringPatchScope: string[] | null = null;
     if (query.ringId && effectivePartnerId) {
-      // patch_approvals is partner-axis RLS; org-scoped callers get 0 rows in
-      // request context (accessiblePartnerIds=[]). Partner is SERVER-DERIVED
-      // from the ring's partnerId (already access-checked above).
-      const ringApprovedPatches = await runOutsideDbContext(() =>
-        withSystemDbAccessContext(() =>
-          db
-            .select({ patchId: patchApprovals.patchId })
-            .from(patchApprovals)
-            .where(
-              and(
-                eq(patchApprovals.partnerId, effectivePartnerId!),
-                eq(patchApprovals.ringId, query.ringId!),
-                eq(patchApprovals.status, 'approved')
-              )
+      // patch_approvals is partner-axis RLS with an own-partner SELECT branch
+      // (#7647), read on the request's own connection when the ambient context
+      // covers the partner (#7663). Partner is SERVER-DERIVED from the ring's
+      // partnerId (already access-checked above).
+      const ringPartnerId = effectivePartnerId;
+      const ringApprovedPatches = await readOwnPartnerAxisRows(ringPartnerId, () =>
+        db
+          .select({ patchId: patchApprovals.patchId })
+          .from(patchApprovals)
+          .where(
+            and(
+              eq(patchApprovals.partnerId, ringPartnerId),
+              eq(patchApprovals.ringId, query.ringId!),
+              eq(patchApprovals.status, 'approved')
             )
-        )
+          )
       );
       ringPatchScope = ringApprovedPatches.map(a => a.patchId);
     }
 
-    // Pre-fetch approved patch IDs in system context when we have a known partner.
-    // patch_approvals is partner-axis RLS; org-scoped callers cannot read it in
-    // request context (accessiblePartnerIds=[]). The partner is SERVER-DERIVED
-    // from the org/ring (already access-checked), so reading their approvals in
-    // system context does not leak cross-partner data.
+    // Pre-fetch approved patch IDs when we have a known partner. patch_approvals
+    // is partner-axis RLS with an own-partner SELECT branch (#7647), so
+    // readOwnPartnerAxisRows reads it on the request's own connection when the
+    // ambient context covers the partner and only falls back to the system
+    // escape otherwise (#7663). The partner is SERVER-DERIVED from the org/ring
+    // (already access-checked) and the query stays pinned to it.
     // For the system-wide case (effectivePartnerId=null, no ringId, no orgId),
     // we fall back to the correlated SQL subquery which resolves per-device partner.
     let preApprovedPatchIds: Set<string> | null = null;
@@ -178,13 +180,11 @@ complianceRoutes.get(
         if (query.ringId) {
           approvalConditions.push(eq(patchApprovals.ringId, query.ringId));
         }
-        const approvedRows = await runOutsideDbContext(() =>
-          withSystemDbAccessContext(() =>
-            db
-              .select({ patchId: patchApprovals.patchId })
-              .from(patchApprovals)
-              .where(and(...approvalConditions))
-          )
+        const approvedRows = await readOwnPartnerAxisRows(effectivePartnerId, () =>
+          db
+            .select({ patchId: patchApprovals.patchId })
+            .from(patchApprovals)
+            .where(and(...approvalConditions))
         );
         preApprovedPatchIds = new Set(approvedRows.map(r => r.patchId));
       } else {
