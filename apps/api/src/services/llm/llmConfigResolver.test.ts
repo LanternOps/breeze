@@ -100,10 +100,8 @@ vi.mock('../../db', () => ({
 
 import {
   buildCatalogEndpointSnapshot,
-  LlmOrgResolutionError,
   markPartnerLlmError,
   resolveLlmConfig,
-  resolveLlmConfigForOrg,
   llmUnusableCodeForOrgInSystemContext,
 } from './llmConfigResolver';
 import { SecretKeyMaterialError } from '../secretCrypto';
@@ -190,35 +188,6 @@ afterEach(() => {
   else process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken;
 });
 
-describe('resolveLlmConfigForOrg', () => {
-  it('resolves the partner from the organization under system DB context', async () => {
-    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row()]);
-
-    await expect(resolveLlmConfigForOrg('33333333-3333-4333-8333-333333333333')).resolves.toMatchObject({
-      source: 'partner',
-      partnerId: PARTNER_ID,
-      apiKey: 'partner-plaintext-key',
-    });
-
-    expect(contextState.outsideCalls).toBe(2);
-    expect(contextState.systemCalls).toBe(2);
-  });
-
-  it('throws the typed org-resolution error when the organization is missing', async () => {
-    dbState.selectResults.push([]);
-
-    const promise = resolveLlmConfigForOrg('33333333-3333-4333-8333-333333333333');
-    await expect(promise).rejects.toBeInstanceOf(LlmOrgResolutionError);
-    await expect(promise).rejects.toMatchObject({
-      name: 'LlmOrgResolutionError',
-      orgId: '33333333-3333-4333-8333-333333333333',
-    });
-    expect(decryptMock).not.toHaveBeenCalled();
-    expect(contextState.outsideCalls).toBe(1);
-    expect(contextState.systemCalls).toBe(1);
-  });
-});
-
 describe('llmUnusableCodeForOrgInSystemContext (topology readiness, review R1)', () => {
   beforeEach(() => { contextState.ambientScope = 'system'; });
 
@@ -261,6 +230,24 @@ describe('llmUnusableCodeForOrgInSystemContext (topology readiness, review R1)',
     process.env.ANTHROPIC_AUTH_TOKEN = 'gateway-token';
     dbState.selectResults.push([{ partnerId: null }]);
     await expect(llmUnusableCodeForOrgInSystemContext(ORG_ID)).resolves.toBeNull();
+  });
+
+  it('W06: with no platform key, an active OpenAI-compatible connection is a usable provider (env / BYO gateway deployments)', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', '');
+    // No compat row, one live gateway connection → ready.
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [], [{ id: 'conn-oai' }]);
+    await expect(llmUnusableCodeForOrgInSystemContext(ORG_ID)).resolves.toBeNull();
+    // No live gateway connection (disconnected / errored rows are filtered in SQL) → not configured.
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [], []);
+    await expect(llmUnusableCodeForOrgInSystemContext(ORG_ID)).resolves.toBe('ai_not_configured');
+    // An unusable compat config still wins: no gateway read, unavailable.
+    dbState.selectResults.push([{ partnerId: PARTNER_ID }], [row({ status: 'error' })], [{ id: 'conn-oai' }]);
+    await expect(llmUnusableCodeForOrgInSystemContext(ORG_ID)).resolves.toBe('ai_unavailable');
+    dbState.selectResults.length = 0;
+    expect(contextState.outsideCalls).toBe(0);
+    expect(dbState.updateSets).toEqual([]);
   });
 
   it('refuses to run outside a system context (it would read under the wrong RLS scope)', async () => {

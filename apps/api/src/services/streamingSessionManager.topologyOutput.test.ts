@@ -232,6 +232,26 @@ describe('topology investigation output (M4 Task 3)', () => {
     expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
   });
 
+  it('a transport that dies mid-turn publishes only the fixed topology error, never the generic or provider text (W06: the only topology transport)', async () => {
+    const { rt } = runtime();
+    queryMock.mockImplementation(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* HOSTILE_TURN as never[];
+        throw new Error('upstream 500 FOREIGN-SITE-SECRET');
+      },
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    }));
+    const session = await manager.getOrCreate('sess-topo-crash', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG, undefined, undefined, { topologyInvestigation: rt });
+    await session.processorPromise;
+    const replay = session.eventBus.getReplayEvents();
+    expect(rt.abort).toHaveBeenCalled();
+    expect(rt.complete).not.toHaveBeenCalled();
+    expect(JSON.stringify(replay)).not.toContain('FOREIGN-SITE-SECRET');
+    expect(replay.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'The topology explanation could not be completed.' }]);
+    expect(insertedRows.filter((r) => r.role === 'assistant')).toHaveLength(0);
+  });
+
   it('crossing a token cap stops the turn without a current explanation', async () => {
     const { rt } = runtime({ noteUsage: vi.fn(() => false) });
     mockSdkQuery([...HOSTILE_TURN, RESULT_MSG]);

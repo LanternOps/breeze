@@ -1,8 +1,8 @@
 /**
  * The ONE scrubber for database errors on the AI model registry paths (#7600
  * W02): the /ai/provider facade (partnerLlmConfig.ts), the reconcile boot
- * sweep (legacyReconcile.ts), the ledger shadow listener (invocationLedger.ts)
- * and the legacy cost bridge (legacyCostEvents.ts).
+ * sweep (legacyReconcile.ts) and the other registry writers that log a
+ * database failure.
  *
  * A Drizzle query error's message and `params` (and a postgres.js error's
  * `query` / `parameters`) carry the statement's values — key ciphertext,

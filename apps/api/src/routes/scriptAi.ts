@@ -96,9 +96,10 @@ scriptAiRoutes.post(
     const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
     if (!orgId) return c.json({ error: 'Organization context required' }, 400);
 
-    // The builder's model is picked through the registry (W03 #7601). It
-    // always runs the Agent SDK, never the env OpenAI-compatible provider, so
-    // it has no legacy branch. Refuse before a session exists: with no model
+    // The builder's model is picked through the registry (W03 #7601) and runs
+    // on the Agent SDK. An MCP_LLM_* OpenAI-compatible endpoint reaches it only
+    // as a registry offering (env-managed gateway connection), never as a
+    // separate provider branch. Refuse before a session exists: with no model
     // the builder's first message could only come back empty.
     let choice: SessionModelChoice;
     try {

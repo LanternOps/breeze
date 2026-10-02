@@ -2,14 +2,15 @@
  * Request schemas for the /ai/models API (AI model registry W04, #7602).
  * Response DTOs live in ../types/aiModelRegistry.ts.
  *
- * Extension points, deliberately narrow in W04:
- *  - connectionCreateSchema is a discriminated union on `kind`; W06 adds
+ * Extension points:
+ *  - connectionCreateSchema is a discriminated union on `kind`; W06 added
  *    `openai_compatible`, W07 adds `bedrock` | `vertex` | `foundry`.
  *  - assignment role/fallback fields: widened by W09 (#7607).
  *  - aiUsageQuerySchema.groupBy; W10/W11 add groupings (W11: a sibling aiQualityQuerySchema over the same base and range rules).
  */
 import { z } from 'zod';
 import { AI_AGENT_ESCALATION_ROLES, AI_SURFACE_ROLES, AI_SURFACES, MAX_FALLBACK_OFFERINGS, type AiSurface } from '../constants/aiSurfaces';
+import { BYO_MODEL_ID_PATTERN } from '../constants/aiConnectionKinds';
 import { INFERENCE_GEO_PATTERN, modelRatesSchema, offeringOptionsSchema } from './aiModelOptions';
 
 export const CONFIGURABLE_AI_SURFACES = AI_SURFACES.filter(
@@ -27,6 +28,25 @@ const uuid = z.string().uuid();
 const apiKey = z.string().trim().min(20, 'Enter a valid Anthropic API key.').max(500);
 const connectionName = z.string().trim().min(1).max(80);
 const inferenceGeo = z.string().regex(INFERENCE_GEO_PATTERN);
+/**
+ * W06: syntax of a BYO OpenAI-compatible base URL. This is NOT the egress policy —
+ * private/metadata addresses, https-on-hosted and DNS pinning are enforced
+ * server-side (services/aiModels/gateway/byoEndpointPolicy.ts) and at connect.
+ */
+export const byoBaseUrlSchema = z.string().trim().max(2048)
+  .transform((v) => v.replace(/\/+$/, ''))
+  .refine((v) => {
+    let u: URL;
+    try { u = new URL(v); } catch { return false; }
+    return (u.protocol === 'https:' || u.protocol === 'http:')
+      && u.hostname !== '' && u.username === '' && u.password === ''
+      && !v.includes('?') && !v.includes('#');
+  }, { message: 'Enter an http(s) URL with no credentials, query or fragment.' });
+
+/** Optional on a BYO endpoint: a local Ollama/vLLM usually has none. */
+// ≥ 8 chars: the gateway's scrubber redacts secrets of 8+ characters wherever they
+// are echoed (Codex review #2); a shorter "key" could not be scrubbed safely.
+const byoApiKey = z.string().trim().min(8, 'A key must be at least 8 characters.').max(500);
 
 export const connectionCreateSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -35,8 +55,35 @@ export const connectionCreateSchema = z.discriminatedUnion('kind', [
     name: connectionName.optional(),
     inferenceGeo: inferenceGeo.nullable().optional(),
   }).strict(),
+  // W06 (#7604): BYO OpenAI-compatible. No inferenceGeo: its geography is
+  // unverifiable, so it is never residency-eligible (Decision D7).
+  z.object({
+    kind: z.literal('openai_compatible'),
+    name: connectionName,
+    baseUrl: byoBaseUrlSchema,
+    apiKey: byoApiKey.optional(),
+  }).strict(),
 ]);
 export type ConnectionCreateInput = z.infer<typeof connectionCreateSchema>;
+
+/** W06: edit a gateway connection's endpoint/key. `apiKey: null` clears it. */
+export const connectionGatewayPatchSchema = z.object({
+  baseUrl: byoBaseUrlSchema.optional(),
+  apiKey: byoApiKey.nullable().optional(),
+  /** Optimistic concurrency on config_version (bumped by every endpoint/key change). */
+  expectedConfigVersion: z.number().int().min(1),
+}).strict().refine((v) => v.baseUrl !== undefined || v.apiKey !== undefined, {
+  message: 'Change the URL or the key.',
+});
+export type ConnectionGatewayPatchInput = z.infer<typeof connectionGatewayPatchSchema>;
+
+/** W06: hand-entered model on a gateway connection (spec §6 "manual entry is always allowed"). */
+export const manualOfferingCreateSchema = z.object({
+  modelId: z.string().trim().regex(BYO_MODEL_ID_PATTERN, 'Enter the model id exactly as the endpoint expects it.'),
+  displayName: z.string().trim().min(1).max(120).optional(),
+  prices: modelRatesSchema.nullable().optional(),
+}).strict();
+export type ManualOfferingCreateInput = z.infer<typeof manualOfferingCreateSchema>;
 
 export const connectionRotateKeySchema = z.object({ apiKey }).strict();
 

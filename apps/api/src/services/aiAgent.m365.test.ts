@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // through the real service logic without a live database.
 const selectMock = vi.fn();
 const insertMock = vi.fn();
-const resolveLlmConfigForOrgMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
@@ -39,7 +38,6 @@ vi.mock('./brainDeviceContext', () => ({
 }));
 vi.mock('./llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {},
-  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
 }));
 
 // W03 Task 9 (#7601): createSession picks its model through the registry.
@@ -76,11 +74,6 @@ const auth: any = {
 describe('createSession M365 binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resolveLlmConfigForOrgMock.mockResolvedValue({
-      source: 'platform',
-      apiKey: 'platform-key',
-      model: 'claude-sonnet-4-6',
-    });
   });
 
   it('rejects a connection belonging to a different org', async () => {

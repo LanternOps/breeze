@@ -267,7 +267,31 @@
       "geoProviderDefault": "Padrão do provedor",
       "supportedGeos": "Suporta: {{geos}}",
       "refreshQueued": "Atualização de modelos na fila",
-      "refreshFailed": "Não foi possível enfileirar a atualização de modelos."
+      "refreshFailed": "Não foi possível enfileirar a atualização de modelos.",
+      "alreadyConnected": "Já conectada",
+      "addKind": {
+        "anthropic_byok": "Chave de API da Anthropic",
+        "openai_compatible": "Endpoint compatível com OpenAI"
+      },
+      "openai": {
+        "name": "Nome",
+        "baseUrl": "URL base",
+        "baseUrlHelp": "A URL que termina antes de /chat/completions, por exemplo https://llm.example.com/v1. O Breeze hospedado se conecta apenas a endpoints https públicos.",
+        "apiKey": "Chave de API (opcional)",
+        "apiKeyHelp": "Armazenada criptografada e nunca exibida novamente. Servidores locais como Ollama ou vLLM geralmente não precisam de uma.",
+        "optional": "Opcional",
+        "keepKey": "Deixe em branco para manter a chave atual",
+        "removeKey": "Remover a chave armazenada",
+        "keyTooShort": "A chave deve ter pelo menos {{min}} caracteres.",
+        "keyRequiredForNewUrl": "Informe a chave para a nova URL ou remova a chave. A chave armazenada nunca é enviada para uma nova URL.",
+        "envManaged": "Esta conexão é gerenciada pelo ambiente da instância (configurações MCP_LLM_*). Altere-a lá; ela não pode ser editada aqui.",
+        "envReleased": "Esta conexão foi configurada pelo ambiente da instância (configurações MCP_LLM_*), que não a gerencia mais. Ela não pode ser editada aqui; você pode desconectá-la.",
+        "envManagedBadge": "Gerenciada pelo ambiente",
+        "noKey": "Sem chave",
+        "discovered_one": "{{count}} modelo encontrado · {{when}}",
+        "discovered_other": "{{count}} modelos encontrados · {{when}}",
+        "partialSaved": "O endpoint ou a chave foi salvo, mas o nome não. Reabra a conexão para renomeá-la."
+      }
     },
     "drawer": {
       "titleCreate": "Adicionar conexão",
@@ -338,7 +362,15 @@
       "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide.",
       "queue_unavailable": "A fila de solicitações está indisponível. Tente novamente em instantes.",
       "registry_busy": "Outra alteração na configuração de IA está em andamento. Tente novamente em instantes.",
-      "crossesFunding": "Esse modelo de backup é pago por outra fonte. Permita primeiro o failover entre créditos do Breeze e sua própria chave de API."
+      "crossesFunding": "Esse modelo de backup é pago por outra fonte. Permita primeiro o failover entre créditos do Breeze e sua própria chave de API.",
+      "egress_blocked": "Esse endereço não é permitido.",
+      "invalid_url": "Essa URL não é válida.",
+      "managed_by_env": "Esta conexão é gerenciada pelo ambiente da instância e não pode ser alterada aqui.",
+      "connection_in_use": "Um recurso ainda usa um modelo desta conexão. Escolha outro padrão primeiro.",
+      "duplicate_model": "Esse ID de modelo já existe nesta conexão.",
+      "geo_not_supported": "Este tipo de conexão não pode definir uma região de inferência.",
+      "key_required_for_new_endpoint": "Informe a chave para a nova URL (ou remova a chave).",
+      "too_many_models": "Esta conexão já tem o número máximo de modelos adicionados manualmente."
     },
     "org": {
       "title": "Modelos padrão",
@@ -399,7 +431,27 @@
       "disableTitle": "Desativar {{name}}?",
       "disableMessage": "Estes recursos usam este modelo como padrão. Ficarão sem modelo até você escolher outro:",
       "disableAnyway": "Desativar mesmo assim",
-      "orgOverrides": "Substituições de organização afetadas: {{count}}"
+      "orgOverrides": "Substituições de organização afetadas: {{count}}",
+      "verification": {
+        "verified": "Verificado",
+        "unverified": "Não verificado",
+        "failed": "Falha na verificação",
+        "failedWithSummary": "Falha na verificação: {{summary}}",
+        "stale": "Verificar novamente: endpoint alterado"
+      },
+      "setPriceToEnable": "Defina um preço para ativar",
+      "manual": {
+        "add": "Adicionar modelo",
+        "empty": "Ainda não há modelos. Adicione um manualmente ou atualize a conexão para descobri-los.",
+        "title": "Adicionar um modelo",
+        "modelId": "ID do modelo",
+        "modelIdHelp": "Exatamente como o endpoint espera, por exemplo qwen2.5-coder:7b.",
+        "modelIdInvalid": "Use apenas letras, dígitos e . _ : / @ + -, sem espaços.",
+        "displayName": "Nome de exibição (opcional)",
+        "pricesHint": "Opcional. Centavos por 1 milhão de tokens. Preencha os quatro campos ou deixe todos em branco e defina um preço antes de ativar.",
+        "added": "Modelo adicionado",
+        "failed": "Não foi possível adicionar o modelo."
+      }
     },
     "offering": {
       "displayName": "Nome de exibição",
@@ -453,7 +505,8 @@
       "saveFailed": "Não foi possível salvar o modelo. Tente novamente.",
       "verify": "Verificar",
       "verifyQueued": "Verificação do modelo na fila",
-      "verifyFailed": "Não foi possível enfileirar a verificação do modelo."
+      "verifyFailed": "Não foi possível enfileirar a verificação do modelo.",
+      "verifyGatewayHint": "Executa um breve teste de chamada de ferramentas no seu endpoint (usa alguns milhares de tokens)."
     },
     "defaults": {
       "title": "Padrões por recurso",

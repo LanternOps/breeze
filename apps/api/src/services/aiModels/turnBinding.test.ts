@@ -57,7 +57,7 @@ describe('liveQueryKey (spec §9.2: reuse only if nothing that shaped the subpro
   it('never carries the API key into the binding or the key', () => {
     const conn = resolved().connection;
     const b = turnBindingFrom(resolved({
-      connection: { ...conn, config: { ...conn.config, apiKey: 'sk-secret-material' } },
+      connection: { ...conn, config: { ...conn.config, apiKey: 'sk-secret-material' } } as ResolvedModel['connection'],
     }));
     expect(JSON.stringify(b)).not.toContain('sk-secret-material');
     expect(liveQueryKey(b)).not.toContain('sk-secret-material');
@@ -209,5 +209,25 @@ describe('W09 failover on the binding', () => {
     const a = turnBindingFrom(makeResolvedModel('platform'));
     const b = turnBindingFrom(makeResolvedModel('platform', { failover: { fromOfferingId: 'x', hop: 1, cause: 'cooldown' } }));
     expect(liveQueryKey(a)).toBe(liveQueryKey(b));
+  });
+});
+
+describe('W06 gateway kinds', () => {
+  it('parses a persisted binding for an openai_compatible connection', () => {
+    const b = turnBindingFrom(makeResolvedModel('openai_compatible'));
+    expect(b.connectionKind).toBe('openai_compatible');
+    expect(b.connectionId).toBe('conn-oai');
+    expect(b.funding).toBe('partner_key');
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(b)))).toEqual(b);
+  });
+
+  it('the binding carries no credential (the gateway secret never reaches a persisted row)', () => {
+    const b = turnBindingFrom(makeResolvedModel('openai_compatible'));
+    expect(JSON.stringify(b)).not.toContain('sk-fixture-upstream');
+  });
+
+  it('still rejects an unknown connection kind', () => {
+    const b = turnBindingFrom(makeResolvedModel('openai_compatible'));
+    expect(parseTurnBinding({ ...JSON.parse(JSON.stringify(b)), connectionKind: 'bedrock_unknown' })).toBeNull();
   });
 });

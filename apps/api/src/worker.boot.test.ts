@@ -65,7 +65,6 @@ const mocks = vi.hoisted(() => {
     loadBuiltinExtensions: vi.fn(async () => {}),
     createExtensionStateStore: vi.fn(() => ({})),
     registerAiAgentEnqueuer: vi.fn(),
-    registerInvocationLedgerShadow: vi.fn(),
     runRegistryCutoverSweepWithRetry: vi.fn(async () => ({ outcome: 'complete', processed: 0, failed: [] as string[] })),
     registerAllEventSubscribers: vi.fn(),
     buildWebhookFanoutDeps: vi.fn(() => ({})),
@@ -165,7 +164,6 @@ vi.mock('./extensions/builtinExtensions', () => ({ loadBuiltinExtensions: mocks.
 vi.mock('./extensions/contributionRegistry', () => ({ extensionContributionRegistry: {} }));
 vi.mock('./extensions/stateStore', () => ({ createExtensionStateStore: mocks.createExtensionStateStore }));
 vi.mock('./jobs/aiAgentEnqueuer', () => ({ registerAiAgentEnqueuer: mocks.registerAiAgentEnqueuer }));
-vi.mock('./services/aiModels/invocationLedger', () => ({ registerInvocationLedgerShadow: mocks.registerInvocationLedgerShadow }));
 vi.mock('./services/aiModels/registryCutover', () => ({
   runRegistryCutoverSweepWithRetry: mocks.runRegistryCutoverSweepWithRetry,
   reportableCutoverError: (e: unknown) => e,
@@ -406,7 +404,6 @@ describe('worker.ts boot (#4086 Task 6)', () => {
       'startRegisteredWorkers',
       'initializeEventDispatchWorker',
     ]);
-    expect(mocks.registerInvocationLedgerShadow).toHaveBeenCalledTimes(1);
   });
 
   it('starts the AI model registry cutover sweep detached, after the workers (#7601 Task 6A)', async () => {

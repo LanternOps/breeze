@@ -11,16 +11,6 @@ import { Hono } from 'hono';
 // handler opens now that it no longer runs inside a request transaction.
 const dbCtx = vi.hoisted(() => ({ depth: 0 }));
 
-// OpenAI-compatible branch harness (#3127): provider switch + session manager.
-const openai = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-  manager: {
-    getOrCreate: vi.fn(),
-    tryTransitionToProcessing: vi.fn(),
-    startTurn: vi.fn(),
-  },
-}));
-
 // Topology M4 turn harness (#6000 on #3127): the lazily-imported route half.
 const topo = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -43,18 +33,12 @@ vi.mock('./aiTopologyTurn', () => ({
 
 vi.mock('../config/validate', () => ({
   getConfig: vi.fn(() => ({
-    MCP_LLM_PROVIDER: openai.provider,
+    MCP_LLM_PROVIDER: 'anthropic',
     MCP_LLM_BASE_URL: 'http://llm.example.test',
     MCP_LLM_API_KEY: 'k',
     MCP_LLM_PRICE_INPUT_PER_M_USD: 1,
     MCP_LLM_PRICE_OUTPUT_PER_M_USD: 1,
   })),
-}));
-
-vi.mock('../services/llm/openaiSessionManager', () => ({
-  OpenAISessionManager: vi.fn(function OpenAISessionManager() {
-    return openai.manager;
-  }),
 }));
 
 vi.mock('../db', () => ({
@@ -273,12 +257,11 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    openai.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
     vi.mocked(runPreFlightChecks).mockResolvedValue({
       ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model,
     });
     vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
     vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
@@ -352,7 +335,7 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
       failover: { fromOfferingId: 'off-sonnet', hop: 2, cause: 'cooldown' } });
     vi.mocked(runPreFlightChecks).mockResolvedValue({
       ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: 'off-sonnet' } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model: f1,
     });
     vi.mocked(resolveSessionTurn).mockResolvedValueOnce(f2);
     tr.planModelTransition
@@ -378,7 +361,7 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
   it('the planner gets the session offering re-read AFTER resolveModel (its lazy cutover stamps it), not the preflight snapshot (M2)', async () => {
     vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
       ok: true, session: { ...DB_SESSION, sdkSessionId: 'sdk-1', model: 'claude-sonnet-5-5', offeringId: null } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model,
     });
     const depths: number[] = [];
     tr.readSessionOfferingId.mockImplementationOnce(async () => { depths.push(dbCtx.depth); return OFF; });
@@ -400,7 +383,7 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
   it('a topology turn whose model changed gets a topology-specific 409 (continuations refuse topology sessions)', async () => {
     vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
       ok: true, session: { ...DB_SESSION, type: 'topology', sdkSessionId: 'sdk-1', offeringId: 'off-sonnet' } as any,
-      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model, openaiCompatible: false,
+      sanitizedContent: 'hi', systemPrompt: 'sys', maxBudgetUsd: undefined, model,
     });
     topo.prepare.mockResolvedValueOnce({
       ok: true,
@@ -448,6 +431,46 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
       expect.anything(), RESERVATION_ID,
       expect.objectContaining({ turnDisplay: { requestedDisplayName: 'Haiku 4.5', fallbackDisplayName: null } }),
     );
+  });
+
+  it('subscribes to the session events BEFORE the turn is pushed: a transport that answers at once still reaches the client', async () => {
+    // The real SessionEventBus has no replay: an event published while nobody
+    // is subscribed is gone. Model a transport fast enough to publish the
+    // whole turn synchronously when the message is pushed.
+    const subscribers = new Map<string, Array<{ type: string; message?: string }>>();
+    const waiters = new Map<string, () => void>();
+    const bus = {
+      subscribe: vi.fn((id: string) => {
+        subscribers.set(id, []);
+        return (async function* () {
+          for (;;) {
+            const queue = subscribers.get(id)!;
+            while (queue.length) {
+              const event = queue.shift()!;
+              yield event;
+              if (event.type === 'done') return;
+            }
+            await new Promise<void>((resolve) => { waiters.set(id, resolve); });
+          }
+        })();
+      }),
+      unsubscribe: vi.fn((id: string) => { subscribers.delete(id); }),
+      publish: vi.fn((event: { type: string; message?: string }) => {
+        for (const [id, queue] of subscribers) { queue.push(event); waiters.get(id)?.(); }
+      }),
+    };
+    const active = makeActiveSession();
+    active.eventBus = bus;
+    active.inputController.pushMessage = vi.fn(() => {
+      bus.publish({ type: 'error', message: 'The topology explanation could not be completed.' });
+      bus.publish({ type: 'done' });
+    });
+    vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(active);
+    const res = await postWithModel(app);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain('The topology explanation could not be completed.');
+    expect(bus.unsubscribe).toHaveBeenCalled();
   });
 
   it('GET /sessions/:id returns the persisted lastTurnModel (W05)', async () => {

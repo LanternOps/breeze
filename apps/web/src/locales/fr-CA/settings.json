@@ -267,7 +267,31 @@
       "geoProviderDefault": "Valeur par défaut du fournisseur",
       "supportedGeos": "Prend en charge : {{geos}}",
       "refreshQueued": "Actualisation des modèles mise en file d'attente",
-      "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente."
+      "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente.",
+      "alreadyConnected": "Déjà connectée",
+      "addKind": {
+        "anthropic_byok": "Clé API Anthropic",
+        "openai_compatible": "Point de terminaison compatible OpenAI"
+      },
+      "openai": {
+        "name": "Nom",
+        "baseUrl": "URL de base",
+        "baseUrlHelp": "L'URL qui s'arrête avant /chat/completions, p. ex. https://llm.example.com/v1. Breeze hébergé se connecte uniquement à des points de terminaison https publics.",
+        "apiKey": "Clé API (facultative)",
+        "apiKeyHelp": "Stockée chiffrée et jamais réaffichée. Les serveurs locaux comme Ollama ou vLLM n'en demandent généralement pas.",
+        "optional": "Facultative",
+        "keepKey": "Laissez vide pour conserver la clé actuelle",
+        "removeKey": "Retirer la clé enregistrée",
+        "keyTooShort": "Une clé doit comporter au moins {{min}} caractères.",
+        "keyRequiredForNewUrl": "Entrez la clé pour la nouvelle URL ou retirez la clé. La clé enregistrée n'est jamais envoyée à une nouvelle URL.",
+        "envManaged": "Cette connexion est gérée par l'environnement de l'instance (paramètres MCP_LLM_*). Modifiez-la à cet endroit; elle ne peut pas être modifiée ici.",
+        "envReleased": "Cette connexion a été configurée à partir de l'environnement de l'instance (paramètres MCP_LLM_*), qui ne la gère plus. Elle ne peut pas être modifiée ici; vous pouvez la déconnecter.",
+        "envManagedBadge": "Gérée par l'environnement",
+        "noKey": "Aucune clé",
+        "discovered_one": "{{count}} modèle trouvé · {{when}}",
+        "discovered_other": "{{count}} modèles trouvés · {{when}}",
+        "partialSaved": "Le point de terminaison ou la clé a été enregistré, mais pas le nom. Rouvrez la connexion pour la renommer."
+      }
     },
     "drawer": {
       "titleCreate": "Ajouter une connexion",
@@ -338,7 +362,15 @@
       "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide.",
       "queue_unavailable": "La file d'attente des requêtes est indisponible. Réessayez dans un instant.",
       "registry_busy": "Une autre modification de la configuration IA est en cours. Réessayez dans un instant.",
-      "crossesFunding": "Ce modèle de secours est payé par une autre source. Autorisez d’abord le basculement entre les crédits Breeze et votre propre clé API."
+      "crossesFunding": "Ce modèle de secours est payé par une autre source. Autorisez d’abord le basculement entre les crédits Breeze et votre propre clé API.",
+      "egress_blocked": "Cette adresse n'est pas autorisée.",
+      "invalid_url": "Cette URL n'est pas valide.",
+      "managed_by_env": "Cette connexion est gérée par l'environnement de l'instance et ne peut pas être modifiée ici.",
+      "connection_in_use": "Une fonctionnalité utilise encore un modèle de cette connexion. Choisissez d'abord un autre modèle par défaut.",
+      "duplicate_model": "Cet ID de modèle existe déjà sur cette connexion.",
+      "geo_not_supported": "Ce type de connexion ne peut pas définir de région d'inférence.",
+      "key_required_for_new_endpoint": "Entrez la clé pour la nouvelle URL (ou retirez la clé).",
+      "too_many_models": "Cette connexion compte déjà le nombre maximal de modèles ajoutés manuellement."
     },
     "org": {
       "title": "Modèles par défaut",
@@ -399,7 +431,27 @@
       "disableTitle": "Désactiver {{name}} ?",
       "disableMessage": "Ces fonctionnalités utilisent ce modèle par défaut. Elles resteront sans modèle tant que vous n’en aurez pas choisi un autre :",
       "disableAnyway": "Désactiver quand même",
-      "orgOverrides": "Remplacements d’organisation concernés : {{count}}"
+      "orgOverrides": "Remplacements d’organisation concernés : {{count}}",
+      "verification": {
+        "verified": "Vérifié",
+        "unverified": "Non vérifié",
+        "failed": "Échec de la vérification",
+        "failedWithSummary": "Échec de la vérification : {{summary}}",
+        "stale": "À revérifier : point de terminaison modifié"
+      },
+      "setPriceToEnable": "Définissez un prix pour activer",
+      "manual": {
+        "add": "Ajouter un modèle",
+        "empty": "Aucun modèle pour l'instant. Ajoutez-en un manuellement ou actualisez la connexion pour les détecter.",
+        "title": "Ajouter un modèle",
+        "modelId": "ID du modèle",
+        "modelIdHelp": "Exactement comme le point de terminaison l'attend, p. ex. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Utilisez uniquement des lettres, des chiffres et . _ : / @ + -, sans espaces.",
+        "displayName": "Nom affiché (facultatif)",
+        "pricesHint": "Facultatif. Cents par million de jetons. Remplissez les quatre champs, ou laissez-les tous vides et définissez un prix avant d'activer.",
+        "added": "Modèle ajouté",
+        "failed": "Impossible d'ajouter le modèle."
+      }
     },
     "offering": {
       "displayName": "Nom affiché",
@@ -453,7 +505,8 @@
       "saveFailed": "Impossible d’enregistrer le modèle. Réessayez.",
       "verify": "Vérifier",
       "verifyQueued": "Vérification du modèle mise en file d'attente",
-      "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente."
+      "verifyFailed": "Impossible de mettre la vérification du modèle en file d'attente.",
+      "verifyGatewayHint": "Exécute un court test d'appel d'outils sur votre point de terminaison (utilise quelques milliers de jetons)."
     },
     "defaults": {
       "title": "Valeurs par défaut par fonctionnalité",

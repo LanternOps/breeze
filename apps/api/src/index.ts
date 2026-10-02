@@ -180,6 +180,8 @@ import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
+import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
+import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
@@ -288,7 +290,6 @@ import {
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher, warnOnUnsupportedPlatformInferenceGeo } from './services/aiModels/platformModels';
-import { registerInvocationLedgerShadow } from './services/aiModels/invocationLedger';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -297,6 +298,7 @@ import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/auditService';
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
+import { closeModelGateway } from './services/aiModels/gateway/server';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
@@ -1387,6 +1389,9 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         // subscribers. A leaked one keeps the process alive past SIGTERM, which
         // is how a rolling deploy turns into a stuck pod.
         shutdownChatRunBridge,
+        // W06: the loopback model gateway — revokes every grant (aborting in-flight
+        // upstream calls) once the workers that hold them have settled.
+        closeModelGateway,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
@@ -1787,9 +1792,6 @@ async function bootstrap(): Promise<void> {
   // (W01 D3). Non-fatal: an unsupported AI_PLATFORM_INFERENCE_GEO takes
   // platform models offline (residency_unavailable), so say so at boot.
   warnOnUnsupportedPlatformInferenceGeo();
-  // AI model registry W02 (#7600): shadow every legacy AI cost record into the
-  // invocation ledger (after the caller's transaction exits; never affects billing).
-  registerInvocationLedgerShadow();
 
   // Boot-time self-test for every deployment that signs its own update
   // manifests: round-trip a synthetic manifest through sign + validate. If this
@@ -1822,6 +1824,11 @@ async function bootstrap(): Promise<void> {
   // M2 D1: physical topology producer authorities (discovery target, UniFi
   // controller site). Default-deny when absent, so install before serving.
   registerTopologyPhysicalAuthorities();
+
+  // Model gateway: before every upstream dial, refuse a grant whose connection
+  // was disconnected or re-keyed/re-pointed (on any replica) since it was
+  // issued. Installed before serving, so no request can dial without it.
+  registerGatewayConnectionCheck();
 
   server = serve({
     fetch: app.fetch,
@@ -1910,6 +1917,21 @@ async function bootstrap(): Promise<void> {
       // Scrubbed: a query error's message carries the statement's bound values.
       console.error('[startup] AI model registry cutover sweep failed:', safeErrorMessage(err));
       captureException(reportableCutoverError(err), undefined, { area: 'ai_model_registry_cutover' });
+    });
+
+  // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed
+  // OpenAI-compatible connection + priced offering per partner (and the chat
+  // default re-pointed once); unset → those connections are released. Started
+  // after the cutover sweep: each partner is cut over FIRST inside the
+  // bootstrap, so the cutover can never undo it. Detached and retried on a
+  // bounded schedule; idempotent across restarts and replicas (per-partner
+  // registry lock). One Sentry event if it still ends incomplete; then, every
+  // 10 minutes, partners created since boot get their connection. Never logs
+  // the key.
+  void runEnvOpenAiBootstrapAtBoot()
+    .catch((err) => {
+      console.error('[startup] MCP_LLM_* env bootstrap failed:', safeErrorMessage(err));
+      captureException(reportableCutoverError(err), undefined, { area: 'ai_env_openai_bootstrap' });
     });
 
   // Storage keys that S3 backup destinations used before backups were written

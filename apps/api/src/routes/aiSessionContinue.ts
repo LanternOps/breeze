@@ -56,7 +56,7 @@ import { safeErrorMessage } from '../services/aiModels/safeDbError';
 import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { turnBindingFrom } from '../services/aiModels/turnBinding';
-import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
+import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 
 /** The idempotency-key prefix of a continuation summary's reservation (never `chat:`). */
@@ -73,9 +73,9 @@ export async function continueAiSession(
   const loaded = await inRequestDb(() => getSessionMessages(sessionId, auth));
   if (!loaded) return c.json({ error: 'Session not found' }, 404);
   const { session, messages } = loaded;
-  // Only a general chat on the registry path continues (topology, script
-  // builder and the env OpenAI-compatible transport have no such switch).
-  if (session.type !== 'general' || isOpenAICompatibleProvider()) {
+  // Only a general chat continues (topology and script builder sessions have
+  // no such switch).
+  if (session.type !== 'general') {
     return c.json({ error: 'This chat cannot be continued in a new chat.', code: 'continuation_unsupported' }, 400);
   }
   // A reply in flight on this replica, or on ANY replica (an active

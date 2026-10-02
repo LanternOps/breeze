@@ -67,6 +67,18 @@ export class ResponseTooLargeError extends Error {
   }
 }
 
+/**
+ * The response headers did not arrive within the caller's `headersTimeoutMs`
+ * (measured from the call, so it covers DNS, connect and the wait for the
+ * status line). The request is destroyed.
+ */
+export class ResponseHeadersTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`response headers not received within ${timeoutMs}ms`);
+    this.name = 'ResponseHeadersTimeoutError';
+  }
+}
+
 // Optionally override DNS lookup in tests via module-level hook.
 type LookupAllFn = (
   hostname: string,
@@ -317,6 +329,69 @@ export interface SafeFetchInit extends Omit<RequestInit, 'signal'> {
    * Defaults to false — every existing caller keeps byte-identical behavior.
    */
   streamResponse?: boolean;
+  /**
+   * Deadline, from the moment `safeFetch` is called, for the response HEADERS
+   * to arrive — DNS resolution, connect, TLS and the wait for the status line.
+   * Once headers arrive it no longer applies: a body that takes longer (a slow
+   * non-streamed generation, say) is bounded only by `timeoutMs` inactivity,
+   * `maxBytes` and the caller's `signal`. On expiry the request is destroyed
+   * and the call rejects with `ResponseHeadersTimeoutError`.
+   *
+   * Distinct from `timeoutMs`, which is a socket-INACTIVITY timeout. Unset =
+   * no headers deadline (existing behaviour).
+   */
+  headersTimeoutMs?: number;
+}
+
+/**
+ * Bound the pre-dial work (DNS resolution) by the request's signal and
+ * deadlines. The OS resolver cannot be cancelled, so a stalled lookup keeps
+ * running in the background; what matters is that the CALLER is released
+ * promptly instead of waiting on it past every deadline it set. The abandoned
+ * lookup's eventual result or error is ignored.
+ */
+function boundPreDial<T>(
+  work: Promise<T>,
+  bounds: { signal?: AbortSignal; timeoutMs?: number; headersTimeoutMs?: number }
+): Promise<T> {
+  const { signal, timeoutMs, headersTimeoutMs } = bounds;
+  const hasTimeout = timeoutMs !== undefined && timeoutMs > 0;
+  if (!signal && !hasTimeout && headersTimeoutMs === undefined) return work;
+
+  return new Promise<T>((resolve, reject) => {
+    const timers: NodeJS.Timeout[] = [];
+    let done = false;
+    const onAbort = (): void => finish(() => reject(new Error('aborted')));
+    function finish(settle: () => void): void {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    }
+
+    work.then(
+      (value) => finish(() => resolve(value)),
+      (err: unknown) => finish(() => reject(err))
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (hasTimeout) {
+      timers.push(setTimeout(
+        () => finish(() => reject(new Error(`request timed out after ${timeoutMs}ms`))),
+        timeoutMs
+      ));
+    }
+    if (headersTimeoutMs !== undefined) {
+      timers.push(setTimeout(
+        () => finish(() => reject(new ResponseHeadersTimeoutError(headersTimeoutMs))),
+        headersTimeoutMs
+      ));
+    }
+  });
 }
 
 /**
@@ -460,14 +535,22 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
   const hostname = bareHostname(u.hostname);
 
+  const headersTimeoutMs =
+    init.headersTimeoutMs !== undefined && init.headersTimeoutMs > 0 ? init.headersTimeoutMs : undefined;
+  const startedAt = Date.now();
+
   // Resolve + filter through the SHARED policy helper, so `safeFetch`,
   // `assertSafeUrl` and `createGuardedLookup` can never drift apart on what
   // counts as a blocked address. It rejects literal private IPs without any DNS
-  // work, and throws when every resolved record is blocked.
-  const { safe, allIps } = await resolveSafeRecords(hostname, {
-    allowPrivateNetwork: init.allowPrivateNetwork,
-    allowCarrierNat: init.allowCarrierNat
-  });
+  // work, and throws when every resolved record is blocked. Resolution is
+  // bounded by the caller's signal and deadlines like the rest of the request.
+  const { safe, allIps } = await boundPreDial(
+    resolveSafeRecords(hostname, {
+      allowPrivateNetwork: init.allowPrivateNetwork,
+      allowCarrierNat: init.allowCarrierNat
+    }),
+    { signal: init.signal, timeoutMs: init.timeoutMs, headersTimeoutMs }
+  );
   const safeRecord = safe[0]!;
 
   if (init.onConnect) {
@@ -584,6 +667,11 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     // that moment a transport error can no longer `reject` (the promise is
     // settled), so it has to be raised on the body instead.
     let failStream: ((err: Error) => void) | null = null;
+    let headersTimer: NodeJS.Timeout | undefined;
+    const clearHeadersTimer = (): void => {
+      if (headersTimer !== undefined) clearTimeout(headersTimer);
+      headersTimer = undefined;
+    };
 
     /**
      * Build and resolve the caller's `Response`. The constructor throws for a
@@ -612,6 +700,7 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
 
     const req = requester(reqOptions, (res) => {
       responded = true;
+      clearHeadersTimer();
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
@@ -721,6 +810,16 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       req.setTimeout(timeoutMs, () => {
         req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
       });
+    }
+
+    if (headersTimeoutMs !== undefined) {
+      // Whatever is left of the deadline after DNS resolution.
+      const remaining = Math.max(0, headersTimeoutMs - (Date.now() - startedAt));
+      headersTimer = setTimeout(() => {
+        headersTimer = undefined;
+        req.destroy(new ResponseHeadersTimeoutError(headersTimeoutMs));
+      }, remaining);
+      req.once('close', clearHeadersTimer);
     }
 
     if (init.signal) {

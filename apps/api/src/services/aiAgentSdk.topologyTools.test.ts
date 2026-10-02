@@ -79,11 +79,6 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
-const mockResolveLlmConfigForOrg = vi.fn();
-vi.mock('./llm/llmConfigResolver', () => ({
-  resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
-}));
-
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();

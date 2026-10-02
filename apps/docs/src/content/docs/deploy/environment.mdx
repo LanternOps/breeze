@@ -1022,8 +1022,11 @@ recognised Claude model id, Breeze sends adaptive thinking and an effort level
 `drop_params: true`). If it can do neither, set `ANTHROPIC_MODEL` to your
 backend's own model id instead; Breeze then sends thinking `disabled`, as
 before. For an
-OpenAI-dialect-only endpoint, use the separate `MCP_LLM_*` openai-compatible
-path instead (chat-only, no tool-use).
+OpenAI-dialect-only endpoint, use `MCP_LLM_PROVIDER=openai-compatible` with the
+`MCP_LLM_*` variables instead. At boot Breeze creates a read-only, env-managed
+connection per partner with one priced, auto-verified model that supports tools
+(see [Bring Your Own LLM Key](/features/bring-your-own-llm-key/#instance-wide-openai-compatible-endpoint)).
+Hosted deployments refuse `MCP_LLM_PROVIDER=openai-compatible`.
 
 `ANTHROPIC_BASE_URL` is **fail-closed**: it is honored only when self-host is
 affirmatively declared (`IS_HOSTED` explicitly `false`/`0`/`no`/`off`). If
@@ -1038,7 +1041,7 @@ adds it once (when your partners move to the registry) and prices it at
 conservative Opus-tier rates ($5/$25 per MTok) — likely an *over*-estimate for
 a cheap local model, not `$0`. For accurate accounting, set that model's
 prices on **Admin → AI models**, or use the openai-compatible path's
-`MCP_LLM_PRICE_*` overrides.
+`MCP_LLM_PRICE_INPUT_PER_M_USD` / `MCP_LLM_PRICE_OUTPUT_PER_M_USD` variables.
 
 ## Warranty lookups
 

@@ -44,6 +44,8 @@ export interface LlmEgressEventInput {
   catalogEntryId?: string | null;
   revisionId?: string | null;
   aiSessionId?: string | null;
+  /** W06: the gateway connection this request was for (null for catalog traffic). */
+  connectionId?: string | null;
 }
 
 let queue: LlmEgressEventInput[] = [];
@@ -66,6 +68,7 @@ async function writeOne(event: LlmEgressEventInput): Promise<void> {
           catalogEntryId: event.catalogEntryId ?? null,
           revisionId: event.revisionId ?? null,
           aiSessionId: event.aiSessionId ?? null,
+          connectionId: event.connectionId ?? null,
         });
       }),
     );

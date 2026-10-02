@@ -59,7 +59,11 @@ vi.mock('./aiBudgetReservations', async (importOriginal) => ({
 }));
 
 vi.mock('./llm/llmConfigResolver', () => ({ markPartnerLlmError }));
-vi.mock('./llm/llmAvailability', () => ({ isPlatformLlmConfigured }));
+// Partial: the SDK-child env builder (via connectionFactory) reads the real credential key list.
+vi.mock('./llm/llmAvailability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./llm/llmAvailability')>()),
+  isPlatformLlmConfigured,
+}));
 vi.mock('./llm/platformKeyAlert', () => ({ reportPlatformKeyMissing }));
 vi.mock('./aiModels/resolveModel', () => ({ resolveModel }));
 vi.mock('./aiModels/candidateLoader', () => ({ readOrgPartnerId, findOfferingIdByModel }));
@@ -78,6 +82,7 @@ vi.mock('./aiModels/settleInvocation', async (importOriginal) => ({
 vi.mock('./aiModels/offeringHealth', () => ({ noteProviderFailure: vi.fn(async () => undefined) }));
 
 import { buildExtensionAiContext } from './extensionAi';
+import { LlmUnavailableError } from './llm/llmUnavailableError';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { turnBindingFrom } from './aiModels/turnBinding';
 
@@ -551,6 +556,51 @@ describe('buildExtensionAiContext', () => {
       expect(markPartnerLlmError).not.toHaveBeenCalled();
     });
 
+    it('W06: a gateway 401 (expired or invalid grant) raises ai_unavailable and NEVER marks the connection broken', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway 403 (model not bound to the grant) raises ai_unavailable without a stamp', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+      create.mockRejectedValueOnce(apiError(403, 'This connection is not authorised for the requested model.'));
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('W06: a gateway connection is dispatched and settled like any other partner_key connection', async () => {
+      resolveModel.mockResolvedValueOnce(makeResolvedModel('openai_compatible', { surface: 'extension_content' }));
+
+      const result = await buildExtensionAiContext().invoke(input);
+
+      expect(result.billingSource).toBe('partner_key');
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ model: 'qwen2.5-coder:7b' }));
+      expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ reservationId: RESERVATION_ID }));
+    });
+
+    it('a client that cannot be built is refused BEFORE any reservation is taken (no leaked hold)', async () => {
+      anthropicClientFor.mockImplementationOnce(() => {
+        throw new LlmUnavailableError('This AI model needs an organization context on this surface.');
+      });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError',
+        code: 'ai_unavailable',
+      });
+      expect(reserveAiBudget).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+    });
+
     it('rethrows a permanent per-request 4xx unchanged so the caller can fail soft', async () => {
       const rejection = apiError(400, 'prompt too long');
       create.mockRejectedValueOnce(rejection);
@@ -814,6 +864,59 @@ describe('buildExtensionAiContext', () => {
       expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
       expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
       expect(releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    });
+
+    const gatewayPrimary = () => makeResolvedModel('openai_compatible', {
+      surface: 'extension_content', offering: { id: 'p', displayName: 'P' }, rateSnapshot: rates, failoverRemaining: ['k'],
+    });
+
+    it.each([
+      ['a gateway 529', () => overloaded(), 'overloaded'],
+      ['a gateway 429', () => Object.assign(apiError(429, 'rate limited'), { error: { type: 'error', error: { type: 'rate_limit_error' } } }), 'rate_limited'],
+      ['a gateway 502', () => apiError(502, 'upstream unavailable'), 'server_error'],
+    ] as const)('%s fails over like any provider\'s, and the connection is never marked', async (_label, failure, cause) => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(failure()).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({
+        excludeOfferingIds: ['p'], failoverCause: cause,
+        failoverOrigin: { offeringId: 'p', funding: 'partner_key', connectionId: 'conn-oai' },
+      }));
+      expect(out).toMatchObject({ billingSource: 'platform', model: 'claude-haiku-4-5' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a gateway 401 (expired grant or rejected endpoint key) fails over without ever stamping the connection', async () => {
+      resolveModel.mockReset();
+      resolveModel.mockResolvedValueOnce(gatewayPrimary()).mockResolvedValueOnce(backup());
+      create.mockRejectedValueOnce(apiError(401, 'Invalid or expired gateway grant.')).mockResolvedValueOnce(response());
+
+      const out = await buildExtensionAiContext().invoke(input);
+
+      expect(resolveModel).toHaveBeenLastCalledWith(expect.objectContaining({ failoverCause: 'auth_failed' }));
+      expect(out).toMatchObject({ billingSource: 'platform' });
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0], ['k', HOP1_RESERVATION, 1]]);
+      expect(markPartnerLlmError).not.toHaveBeenCalled();
+    });
+
+    it('a failover hop whose client cannot be built releases THAT hop\'s reservation and raises a transient ai_unavailable', async () => {
+      create.mockRejectedValueOnce(overloaded());
+      anthropicClientFor
+        .mockReturnValueOnce({ messages: { create } })
+        .mockImplementationOnce(() => { throw new LlmUnavailableError('This AI model needs an organization context on this surface.'); });
+
+      await expect(buildExtensionAiContext().invoke(input)).rejects.toMatchObject({
+        name: 'ExtensionAiError', code: 'ai_unavailable', permanent: false,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(settledRows()).toEqual([['p', HOP0_RESERVATION, 0]]);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledTimes(1);
+      expect(releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({ orgId: ORG_ID, reservationId: HOP1_RESERVATION });
+      expect(markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
     });
 
     it('a rejected partner credential is still stamped when the backup serves', async () => {

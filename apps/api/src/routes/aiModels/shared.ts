@@ -11,7 +11,9 @@ import { PERMISSIONS, userCanDecideApprovals } from '../../services/permissions'
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../../services/partnerWideAccess';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
-import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
+import { getConnection, type PartnerAiConnection } from '../../services/aiModels/connections';
+import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpointPolicy';
+import { enqueueConnectionSync, enqueueOfferingVerification } from '../../jobs/aiModelDiscoveryWorker';
 import { PartnerLlmError } from '../../services/partnerLlmConfig';
 import { captureException } from '../../services/sentry';
 
@@ -79,7 +81,39 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
       if (error.status >= 500) captureException(error, undefined, { service: 'aiModels' });
       return c.json({ error: error.message }, error.status);
     }
+    // W06: a BYO base URL refused by the egress policy (egress_blocked /
+    // invalid_url). Its message is the policy's own fixed text, never the URL.
+    if (error instanceof ByoEndpointRejected) {
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
     throw error;
+  }
+}
+
+/** A live connection the partner can change: missing, foreign and W03 soft-disconnected rows are all "absent". */
+export type OwnedConnection = PartnerAiConnection & { status: Exclude<PartnerAiConnection['status'], 'disconnected'> };
+
+/**
+ * Any-kind ownership (W06). Call it INSIDE the registryWrite callback (same
+ * reason as the compat-only ownConnectionId: a not-yet-cut-over partner gets
+ * the recoverable 503 first). A disconnected connection is provenance only, so
+ * it 404s exactly like another partner's id.
+ */
+export async function ownConnection(partnerId: string, id: string): Promise<OwnedConnection> {
+  const conn = await getConnection(id);
+  if (!conn || conn.partnerId !== partnerId || conn.status === 'disconnected') {
+    throw new RegistryWriteError('Connection not found.', 'not_found', 404);
+  }
+  return conn as OwnedConnection;
+}
+
+/** `new URL(baseUrl).host` for audit rows: never the path (it can carry tenant ids) and never a key. */
+export function auditHost(baseUrl: string | null | undefined): string | null {
+  if (!baseUrl) return null;
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return null;
   }
 }
 
@@ -95,5 +129,19 @@ export async function queueConnectionSync(c: Context, connectionId: string): Pro
   } catch (error) {
     captureException(error, undefined, { service: 'aiModels', stage: 'enqueue' });
     return c.json({ error: 'Could not queue the model refresh. Try again in a moment.', code: 'queue_unavailable' }, 503);
+  }
+}
+
+/** Queue a gateway offering's harness verification (W06 Task 12 job, ids only). Same failure contract as queueConnectionSync. */
+export async function queueOfferingVerification(
+  c: Context,
+  input: { offeringId: string; partnerId: string },
+): Promise<Response | null> {
+  try {
+    await enqueueOfferingVerification(input);
+    return null;
+  } catch (error) {
+    captureException(error, undefined, { service: 'aiModels', stage: 'enqueue' });
+    return c.json({ error: 'Could not queue the verification. Try again in a moment.', code: 'queue_unavailable' }, 503);
   }
 }

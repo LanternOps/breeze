@@ -1,10 +1,10 @@
 import { Hono, type Context } from 'hono';
-import { offeringDetailsPatchSchema, offeringEnableSchema } from '@breeze/shared';
+import { isGatewayConnectionKind, offeringDetailsPatchSchema, offeringEnableSchema } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getConnection } from '../../services/aiModels/connections';
 import { getOffering } from '../../services/aiModels/offerings';
-import { CONNECTION_DISCONNECTED_MESSAGE } from '../../services/aiModels/registryWriteErrors';
+import { CONNECTION_DISCONNECTED_MESSAGE, RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
 import {
   ensurePlatformOffering,
   listOfferingDefaultUses,
@@ -18,6 +18,7 @@ import {
   partnerWrite,
   platformModelIdParamSchema,
   queueConnectionSync,
+  queueOfferingVerification,
   registryWrite,
   requirePartnerWide,
 } from './shared';
@@ -75,9 +76,10 @@ aiModelOfferingRoutes.patch('/:id', ...partnerWrite, zValidator('param', idParam
   });
 });
 
-// "Verify" (spec §11, Decision D4) in v1 re-runs discovery for the offering's
-// connection, which re-reads its capabilities and lifecycle. Platform offerings
-// (no connection) are verified by the operator on /admin/ai-models.
+// "Verify" (spec §11, Decision D4): for an Anthropic-dialect connection it re-runs
+// discovery, which re-reads its capabilities and lifecycle; for a gateway
+// connection (W06) it queues the fidelity-harness verification. Platform
+// offerings (no connection) are verified by the operator on /admin/ai-models.
 aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, zValidator('param', idParamSchema), async (c) => {
   const { partnerId } = requirePartnerWide(c);
   const { id: offeringId } = c.req.valid('param');
@@ -92,6 +94,19 @@ aiModelOfferingRoutes.post('/:id/verify', ...partnerWrite, zValidator('param', i
     const conn = await getConnection(offering.connectionId);
     if (!conn || conn.partnerId !== partnerId || conn.status === 'disconnected') {
       return c.json({ error: CONNECTION_DISCONNECTED_MESSAGE, code: 'connection_unavailable' }, 409);
+    }
+    if (isGatewayConnectionKind(conn.kind)) {
+      // W06 (Task 12): a gateway offering is verified by the fidelity harness, the
+      // only producer of its capabilities. Refuse here what the verifier would
+      // refuse, so the admin gets the 4xx now instead of a silently failed job.
+      if (!offering.modelId) throw new RegistryWriteError('Only models on a BYO endpoint connection are verified here.', 'not_gateway', 409);
+      if (conn.status !== 'active') {
+        throw new RegistryWriteError("This model's connection cannot be used right now.", 'not_eligible', 409, { reason: 'connection_unavailable' });
+      }
+      const failedVerify = await queueOfferingVerification(c, { offeringId: offering.id, partnerId });
+      if (failedVerify) return failedVerify;
+      auditOffering(c, partnerId, 'verify_requested', { offeringId: offering.id, connectionId: conn.id, mode: 'harness' });
+      return c.json({ queued: true, connectionId: conn.id, offeringId: offering.id }, 202);
     }
     const failed = await queueConnectionSync(c, offering.connectionId);
     if (failed) return failed;

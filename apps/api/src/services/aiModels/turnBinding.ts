@@ -6,7 +6,16 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { AI_SURFACES, PROMPT_PROFILES, offeringOptionsSchema, type AiSurface, type OfferingOptions, type PromptProfile } from '@breeze/shared';
+import {
+  AI_SURFACES,
+  GATEWAY_CONNECTION_KINDS,
+  PROMPT_PROFILES,
+  offeringOptionsSchema,
+  type AiSurface,
+  type GatewayConnectionKind,
+  type OfferingOptions,
+  type PromptProfile,
+} from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import type { ThinkingMode } from './capabilities';
 import { FAILOVER_CAUSES, MAX_FAILOVER_HOP, type FailoverCause } from './failover';
@@ -27,7 +36,7 @@ export interface TurnBinding {
   partnerId: string | null;
   offeringId: string | null;
   connectionId: string | null;
-  connectionKind: 'platform' | 'anthropic_byok' | 'catalog';
+  connectionKind: 'platform' | 'anthropic_byok' | 'catalog' | GatewayConnectionKind;
   configVersion: number | null;
   catalogRevisionId: string | null;
   funding: AiBillingSource;
@@ -151,7 +160,7 @@ const turnBindingSchema = z.object({
   partnerId: z.string().nullable(),
   offeringId: z.string().nullable(),
   connectionId: z.string().nullable(),
-  connectionKind: z.enum(['platform', 'anthropic_byok', 'catalog']),
+  connectionKind: z.enum(['platform', 'anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS]),
   configVersion: z.number().int().nullable(),
   catalogRevisionId: z.string().nullable(),
   funding: z.enum(['platform', 'partner_key']),

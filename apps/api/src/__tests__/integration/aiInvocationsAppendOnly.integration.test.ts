@@ -17,8 +17,6 @@ import {
   seedOffering,
   seedPlatformModel,
 } from './aiModelRegistryFixtures';
-import { recordShadowInvocation } from '../../services/aiModels/invocationLedger';
-import { reconcilePartnerFromLegacy } from '../../services/aiModels/legacyReconcile';
 import { pruneAiInvocations } from '../../jobs/aiInvocationRetention';
 
 const RUN = !!process.env.DATABASE_URL;
@@ -168,26 +166,6 @@ describe.skipIf(!RUN)('ai_invocations append-only ledger (#7600 W02)', () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     await expect(insertRow(org.id, extra)).rejects.toMatchObject({ code: '23514' });
-  });
-});
-
-describe.skipIf(!RUN)('shadow ledger write (#7600 W02)', () => {
-  it('records a platform call against the reconciled platform offering and passes the provenance guard', async () => {
-    const partner = await createPartner();
-    const org = await createOrganization({ partnerId: partner.id });
-    await reconcilePartnerFromLegacy(partner.id, {
-      defaultModel: 'claude-sonnet-5-5', reviewerModel: 'claude-sonnet-5-5', extensionModel: 'claude-haiku-4-5',
-      legacyRates: () => ({ inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 }),
-    });
-    const outcome = await withSystemDbAccessContext(() => recordShadowInvocation({
-      orgId: org.id, sessionId: null, model: 'claude-sonnet-5-5', billingSource: 'platform', catalogPricing: null,
-      tokens: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 }, legacyCostCents: 0.3, legacyAdditionalCostCents: 0,
-      legacyCostSource: 'model_pricing', sdkReportedCostUsd: null, ledger: { surface: 'catalog_enrichment' },
-    }));
-    expect(outcome).toBe('written');
-    const [row] = await adminSql`SELECT surface, funding_source, offering_id, ledger_mode, legacy_cost_cents FROM ai_invocations WHERE org_id = ${org.id}`;
-    expect(row).toMatchObject({ surface: 'catalog_enrichment', funding_source: 'platform', ledger_mode: 'shadow' });
-    expect(row!.offering_id).not.toBeNull();
   });
 });
 

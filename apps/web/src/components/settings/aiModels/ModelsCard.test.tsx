@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { jsonRes, CONN } from './testFixtures';
+import { jsonRes, CONN, GW, GATEWAY_CONNECTION } from './testFixtures';
 import { OFF, PM, RATES, offeringRow as row, synthRow, snapWith as snap } from './offeringFixtures';
 
 const fetchWithAuth = vi.fn();
@@ -127,5 +127,46 @@ describe('ModelsCard', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'error', message: 'Another AI configuration change is in progress. Try again in a moment.',
     })));
+  });
+
+  describe('gateway (BYO OpenAI-compatible) models', () => {
+    const gwSnap = (offerings: ReturnType<typeof row>[], managedBy: 'env' | null = null) =>
+      ({ ...snap(offerings), connections: [{ ...GATEWAY_CONNECTION, managedBy }] });
+    const gw = (over: Parameters<typeof row>[0] = {}) => row({ id: OFF, connectionId: GW, funding: 'partner_key', source: 'discovered', ...over });
+
+    it.each([
+      ['verified', null, /^Verified/],
+      ['unverified', null, /Not verified/],
+      ['failed', 'Tool call returned no arguments', /Verification failed: Tool call returned no arguments/],
+      ['stale', null, /Re-verify: endpoint changed/],
+    ] as const)('shows the %s verification badge', (state, summary, expected) => {
+      render(<ModelsCard snapshot={gwSnap([gw({ verification: { state, at: null, harnessVersion: null, summary } })])} onChanged={vi.fn()} />);
+      expect(screen.getByTestId(`ai-model-verification-${OFF}`).textContent).toMatch(expected);
+    });
+
+    it('shows no verification badge for a non-gateway offering', () => {
+      render(<ModelsCard snapshot={snap([row({ id: OFF })])} onChanged={vi.fn()} />);
+      expect(screen.queryByTestId(`ai-model-verification-${OFF}`)).toBeNull();
+    });
+
+    it('an unpriced gateway model disables its switch and says to set a price', () => {
+      render(<ModelsCard snapshot={gwSnap([gw({ rates: null, priceSource: null, enableBlocker: 'unpriced', verification: { state: 'unverified', at: null, harnessVersion: null, summary: null } })])} onChanged={vi.fn()} />);
+      expect((screen.getByTestId(`ai-offering-enable-${OFF}`) as HTMLInputElement).disabled).toBe(true);
+      expect(screen.getByTestId(`ai-offering-blocker-${OFF}`).textContent).toBe('Set a price to enable');
+    });
+
+    it('offers Add model on a gateway connection (even with no models yet) and opens the manual form', () => {
+      render(<ModelsCard snapshot={gwSnap([])} onChanged={vi.fn()} />);
+      fireEvent.click(screen.getByTestId(`ai-models-add-manual-${GW}`));
+      expect(screen.getByTestId('ai-manual-model-id')).toBeTruthy();
+    });
+
+    it('does not offer Add model on a non-gateway connection or an env-managed one', () => {
+      const { unmount } = render(<ModelsCard snapshot={snap([row({ id: OFF, connectionId: CONN, funding: 'partner_key' })])} onChanged={vi.fn()} />);
+      expect(screen.queryByTestId(`ai-models-add-manual-${CONN}`)).toBeNull();
+      unmount();
+      render(<ModelsCard snapshot={gwSnap([gw()], 'env')} onChanged={vi.fn()} />);
+      expect(screen.queryByTestId(`ai-models-add-manual-${GW}`)).toBeNull();
+    });
   });
 });

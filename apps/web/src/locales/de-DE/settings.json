@@ -267,7 +267,31 @@
       "geoProviderDefault": "Anbieter-Standard",
       "supportedGeos": "Unterstützt: {{geos}}",
       "refreshQueued": "Modellaktualisierung eingeplant",
-      "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden."
+      "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
+      "alreadyConnected": "Bereits verbunden",
+      "addKind": {
+        "anthropic_byok": "Anthropic-API-Schlüssel",
+        "openai_compatible": "OpenAI-kompatibler Endpunkt"
+      },
+      "openai": {
+        "name": "Bezeichnung",
+        "baseUrl": "Basis-URL",
+        "baseUrlHelp": "Die URL, die vor /chat/completions endet, z. B. https://llm.example.com/v1. Gehostetes Breeze verbindet sich nur mit öffentlichen https-Endpunkten.",
+        "apiKey": "API-Schlüssel (optional)",
+        "apiKeyHelp": "Wird verschlüsselt gespeichert und nie wieder angezeigt. Lokale Server wie Ollama oder vLLM brauchen meist keinen.",
+        "optional": "Freiwillig",
+        "keepKey": "Leer lassen, um den aktuellen Schlüssel zu behalten",
+        "removeKey": "Gespeicherten Schlüssel entfernen",
+        "keyTooShort": "Ein Schlüssel muss mindestens {{min}} Zeichen lang sein.",
+        "keyRequiredForNewUrl": "Geben Sie den Schlüssel für die neue URL ein oder entfernen Sie den Schlüssel. Der gespeicherte Schlüssel wird nie an eine neue URL gesendet.",
+        "envManaged": "Diese Verbindung wird über die Umgebung der Instanz verwaltet (MCP_LLM_*-Einstellungen). Ändern Sie sie dort; hier ist sie nicht bearbeitbar.",
+        "envReleased": "Diese Verbindung wurde über die Umgebung der Instanz (MCP_LLM_*-Einstellungen) eingerichtet, die sie nicht mehr verwaltet. Sie ist hier nicht bearbeitbar; Sie können sie trennen.",
+        "envManagedBadge": "Über Umgebung verwaltet",
+        "noKey": "Kein Schlüssel",
+        "discovered_one": "{{count}} Modell gefunden · {{when}}",
+        "discovered_other": "{{count}} Modelle gefunden · {{when}}",
+        "partialSaved": "Endpunkt oder Schlüssel wurden gespeichert, der Name jedoch nicht. Öffnen Sie die Verbindung erneut, um sie umzubenennen."
+      }
     },
     "drawer": {
       "titleCreate": "Verbindung hinzufügen",
@@ -338,7 +362,15 @@
       "approvals_decide_required": "Zum Ändern des Skript-Prüfer-Modells ist die Berechtigung approvals:decide erforderlich.",
       "queue_unavailable": "Die Anfragewarteschlange ist nicht verfügbar. Versuchen Sie es gleich noch einmal.",
       "registry_busy": "Eine andere Änderung der KI-Konfiguration wird gerade ausgeführt. Versuchen Sie es gleich noch einmal.",
-      "crossesFunding": "Dieses Ausweichmodell wird über eine andere Quelle bezahlt. Erlauben Sie zuerst das Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel."
+      "crossesFunding": "Dieses Ausweichmodell wird über eine andere Quelle bezahlt. Erlauben Sie zuerst das Ausweichen zwischen Breeze-Guthaben und Ihrem eigenen API-Schlüssel.",
+      "egress_blocked": "Diese Adresse ist nicht zulässig.",
+      "invalid_url": "Diese URL ist ungültig.",
+      "managed_by_env": "Diese Verbindung wird über die Umgebung der Instanz verwaltet und kann hier nicht geändert werden.",
+      "connection_in_use": "Eine Funktion verwendet noch ein Modell dieser Verbindung. Wählen Sie zuerst einen anderen Standard.",
+      "duplicate_model": "Diese Modell-ID ist bei dieser Verbindung bereits vorhanden.",
+      "geo_not_supported": "Bei dieser Verbindungsart kann keine Inferenzregion festgelegt werden.",
+      "key_required_for_new_endpoint": "Geben Sie den Schlüssel für die neue URL ein (oder entfernen Sie den Schlüssel).",
+      "too_many_models": "Diese Verbindung hat bereits die maximale Anzahl manuell eingetragener Modelle."
     },
     "org": {
       "title": "Modellstandards",
@@ -399,7 +431,27 @@
       "disableTitle": "{{name}} deaktivieren?",
       "disableMessage": "Diese Funktionen nutzen dieses Modell als Standard. Sie haben kein Modell, bis Sie ein anderes wählen:",
       "disableAnyway": "Trotzdem deaktivieren",
-      "orgOverrides": "Betroffene Organisations-Überschreibungen: {{count}}"
+      "orgOverrides": "Betroffene Organisations-Überschreibungen: {{count}}",
+      "verification": {
+        "verified": "Geprüft",
+        "unverified": "Nicht geprüft",
+        "failed": "Prüfung fehlgeschlagen",
+        "failedWithSummary": "Prüfung fehlgeschlagen: {{summary}}",
+        "stale": "Erneut prüfen: Endpunkt geändert"
+      },
+      "setPriceToEnable": "Preis festlegen, um zu aktivieren",
+      "manual": {
+        "add": "Modell hinzufügen",
+        "empty": "Noch keine Modelle. Fügen Sie eines von Hand hinzu oder aktualisieren Sie die Verbindung, um Modelle zu finden.",
+        "title": "Modell hinzufügen",
+        "modelId": "Modell-ID",
+        "modelIdHelp": "Genau so, wie der Endpunkt sie erwartet, z. B. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Nur Buchstaben, Ziffern und . _ : / @ + - verwenden, keine Leerzeichen.",
+        "displayName": "Anzeigename (optional)",
+        "pricesHint": "Optional. Cent pro 1 Mio. Tokens. Füllen Sie alle vier aus oder lassen Sie alle leer und legen Sie vor dem Aktivieren einen Preis fest.",
+        "added": "Modell hinzugefügt",
+        "failed": "Das Modell konnte nicht hinzugefügt werden."
+      }
     },
     "offering": {
       "displayName": "Anzeigename",
@@ -453,7 +505,8 @@
       "saveFailed": "Das Modell konnte nicht gespeichert werden. Versuchen Sie es erneut.",
       "verify": "Prüfen",
       "verifyQueued": "Modellprüfung eingeplant",
-      "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden."
+      "verifyFailed": "Die Modellprüfung konnte nicht eingeplant werden.",
+      "verifyGatewayHint": "Führt einen kurzen Tool-Calling-Test gegen Ihren Endpunkt aus (verbraucht einige tausend Tokens)."
     },
     "defaults": {
       "title": "Standards pro Funktion",

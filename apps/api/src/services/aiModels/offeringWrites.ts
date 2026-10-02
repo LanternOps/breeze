@@ -17,7 +17,7 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { AiSurface, OfferingDetailsPatch, OfferingOptions } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { aiModelAssignments, partnerAiModels } from '../../db/schema';
+import { aiModelAssignments, partnerAiConnections, partnerAiModels } from '../../db/schema';
 import { isHosted } from '../../config/env';
 import { loadOfferingCandidate, loadPartnerFacts, platformCandidateFacts, type LoadedCandidate } from './candidateLoader';
 import { checkEnableEligibility, onDisconnectedConnection, type EnableEligibilityContext } from './eligibility';
@@ -272,6 +272,21 @@ export function sameVersion(stored: Date, expectedIso: string): boolean {
   return stored.toISOString() === new Date(expectedIso).toISOString();
 }
 
+const ENV_MANAGED_OFFERING = 'This model is managed by the MCP_LLM_* environment variables; its price and name are set there.';
+
+async function assertNotEnvManagedConnection(partnerId: string, connectionId: string): Promise<void> {
+  const [conn] = await db
+    .select({ providerConfig: partnerAiConnections.providerConfig })
+    .from(partnerAiConnections)
+    .where(and(eq(partnerAiConnections.id, connectionId), eq(partnerAiConnections.partnerId, partnerId)))
+    .limit(1);
+  // managedBy 'env' covers both a synced and a released env connection
+  // (gatewayConnections.envManagementState; not imported: that module imports this one).
+  if (conn && (conn.providerConfig as { managedBy?: unknown } | null)?.managedBy === 'env') {
+    throw new RegistryWriteError(ENV_MANAGED_OFFERING, 'managed_by_env', 409);
+  }
+}
+
 export async function updateOfferingDetails(input: {
   partnerId: string; offeringId: string; patch: OfferingDetailsPatch;
 }): Promise<Offering> {
@@ -293,6 +308,14 @@ async function updateOfferingDetailsLocked(input: {
   // hidden from every list, so no edit of one is meaningful.
   if (onDisconnectedConnection(candidate.facts)) {
     throw new RegistryWriteError(CONNECTION_DISCONNECTED_MESSAGE, 'not_eligible', 409, { reason: 'connection_unavailable' });
+  }
+
+  // An env-managed (MCP_LLM_*) connection's models are the operator's: their
+  // price and name come from the environment, released or not. Access policy
+  // (options, required permission, refusal fallback) and enable/disable stay
+  // the partner's.
+  if (current.connectionId && (patch.prices !== undefined || patch.displayName !== undefined)) {
+    await assertNotEnvManagedConnection(input.partnerId, current.connectionId);
   }
 
   const set: Partial<typeof partnerAiModels.$inferInsert> = { updatedAt: new Date() };

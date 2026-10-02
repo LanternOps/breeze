@@ -14,13 +14,13 @@ export * from './offerings';
 export * from './registryWriteErrors';
 export * from './offeringWrites';
 export * from './assignmentWrites';
+export * from './gatewayConnections';
 export * from './residency';
 export * from './connectionSettings';
 export * from './assignments';
 export * from './legacyProjection';
 export * from './legacyReconcile';
-export * from './legacyCostEvents';
-export { recordInvocation, registerInvocationLedgerShadow, recordShadowInvocation, surfaceFromSession, buildShadowRateSnapshot, shadowCostDiff, type NewInvocation } from './invocationLedger';
+export { recordInvocation, type NewInvocation } from './invocationLedgerWrite';
 export {
   resolveModel,
   unavailableMessage,

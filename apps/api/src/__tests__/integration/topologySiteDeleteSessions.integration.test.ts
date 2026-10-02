@@ -4,11 +4,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
-
 import { aiMessages, aiSessions, aiToolExecutions, auditLogs, organizations, sites } from '../../db/schema';
 import { orgRoutes } from '../../routes/orgs';
 import { createAccessToken } from '../../services/jwt';

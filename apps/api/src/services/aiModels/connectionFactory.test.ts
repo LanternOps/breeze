@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({
   ctor: vi.fn(),
@@ -38,9 +38,13 @@ import { LlmUnavailableError } from '../llm/llmConfigResolver';
 import { recordLlmEgressEvent } from '../llm/llmEgressRecorder';
 import { __resetPlatformKeyAlertForTests } from '../llm/platformKeyAlert';
 import { captureMessage } from '../sentry';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import {
   ANTHROPIC_PUBLIC_BASE_URL,
   SERVER_SIDE_FALLBACK_BETA,
+  GATEWAY_CLIENT_BASE_URL,
+  SERVER_SIDE_FALLBACK_KINDS,
+  anthropicClientFor,
   clientForConnection,
   createAnthropicClient,
   createMessage,
@@ -53,6 +57,13 @@ import {
   sdkModelOptions,
 } from './connectionFactory';
 import type { ResolvedModel } from './resolveModel';
+import type { UsableLlmConfig } from '../llm/llmConfigResolver';
+import { closeModelGateway, getModelGateway } from './gateway';
+import { __setUpstreamFetchForTests } from './gateway/forward';
+import { FIXTURE_STD_RATES } from './__fixtures__/resolvedModel';
+
+/** The Anthropic-dialect config of a non-gateway fixture. */
+const anthropicConfig = (c: ResolvedModel['connection']): UsableLlmConfig => c.config as UsableLlmConfig;
 
 const STD = { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 };
 const catalogEndpoint = {
@@ -93,22 +104,22 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('clientForConnection — credential pinning moved verbatim from llmConfigResolver', () => {
   it('platform: SDK defaults, apiKey only', () => {
-    clientForConnection(r('platform').connection.config, null);
+    clientForConnection(anthropicConfig(r('platform').connection), null);
     expect(m.ctor).toHaveBeenCalledWith({ apiKey: 'sk-platform' });
   });
   it('BYOK: pinned to the public API with ambient bearer cleared', () => {
-    clientForConnection(r('anthropic_byok').connection.config, null);
+    clientForConnection(anthropicConfig(r('anthropic_byok').connection), null);
     expect(m.ctor).toHaveBeenCalledWith({ apiKey: 'sk-partner', authToken: null, baseURL: ANTHROPIC_PUBLIC_BASE_URL });
   });
   it('catalog: exactly one credential header + guarded fetch pinned to the revision origin', () => {
-    clientForConnection(r('catalog').connection.config, { surface: 'one_shot_ticket_draft', orgId: 'o1' });
+    clientForConnection(anthropicConfig(r('catalog').connection), { surface: 'one_shot_ticket_draft', orgId: 'o1' });
     expect(m.ctor).toHaveBeenCalledWith({
       baseURL: 'https://gw.example.com', authToken: 'sk-partner', apiKey: null, fetch: 'guarded-fetch',
     });
     expect(m.guarded).toHaveBeenCalledWith(expect.objectContaining({ allowedOrigin: 'https://gw.example.com' }));
   });
   it('catalog: the egress recorder stamps caller surface, org and catalog provenance', () => {
-    clientForConnection(r('catalog').connection.config, { surface: 'one_shot_ticket_draft', orgId: 'o1' });
+    clientForConnection(anthropicConfig(r('catalog').connection), { surface: 'one_shot_ticket_draft', orgId: 'o1' });
     const { recordEgress } = m.guarded.mock.calls[0]![0] as { recordEgress: (a: unknown) => void };
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
     expect(recordLlmEgressEvent).toHaveBeenCalledWith({
@@ -118,7 +129,7 @@ describe('clientForConnection — credential pinning moved verbatim from llmConf
   });
   it('catalog with no org in context: not audited, warns once, request proceeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    clientForConnection(r('catalog').connection.config, null);
+    clientForConnection(anthropicConfig(r('catalog').connection), null);
     const { recordEgress } = m.guarded.mock.calls[0]![0] as { recordEgress: (a: unknown) => void };
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
     recordEgress({ host: 'gw.example.com', resolvedIp: null, blocked: false });
@@ -331,5 +342,155 @@ describe('grantCatalogSdkEgress (moved from the session manager, W03 Task 12)', 
     }));
     got!.revoke();
     expect(egress.revoke).toHaveBeenCalledWith('agent-run:run-1');
+  });
+});
+
+describe('gateway connections (W06 Task 9)', () => {
+  type CtorOpts = { baseURL: string; apiKey: string | null; authToken: string | null; fetch: typeof fetch };
+  const upstream: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }> = [];
+
+  beforeEach(async () => {
+    upstream.length = 0;
+    __setUpstreamFetchForTests((async (url: string, init: { body: string; headers: Record<string, string> }) => {
+      upstream.push({ url, body: JSON.parse(init.body) as Record<string, unknown>, headers: init.headers });
+      return new Response(JSON.stringify({
+        id: 'cmpl-1', object: 'chat.completion', model: 'qwen2.5-coder:7b',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 12, completion_tokens: 3 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as never);
+  });
+  afterEach(async () => {
+    __setUpstreamFetchForTests(null);
+    await closeModelGateway();
+  });
+
+  function buildGatewayClient(over: Partial<ResolvedModel> = {}): CtorOpts {
+    anthropicClientFor(makeResolvedModel('openai_compatible', over), { surface: 'one_shot_ticket_draft', orgId: 'org-1' });
+    return m.ctor.mock.calls.at(-1)![0] as CtorOpts;
+  }
+
+  const messagesCall = (f: typeof fetch, model = 'qwen2.5-coder:7b') => f(`${GATEWAY_CLIENT_BASE_URL}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'breeze-gateway' },
+    body: JSON.stringify({ model, max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+
+  it('anthropicClientFor builds a gateway client: placeholder key only, ambient bearer nulled, never the guarded fetch', () => {
+    const opts = buildGatewayClient();
+    expect(opts.baseURL).toBe(GATEWAY_CLIENT_BASE_URL);
+    expect(opts.apiKey).toBe('breeze-gateway');
+    expect(opts.authToken).toBeNull();
+    expect(typeof opts.fetch).toBe('function');
+    expect(m.guarded).not.toHaveBeenCalled();
+    expect(JSON.stringify(m.ctor.mock.calls)).not.toContain('sk-fixture-upstream');
+  });
+
+  it('takes a fresh short-lived grant per request and revokes it once the response settles', async () => {
+    const opts = buildGatewayClient();
+    const gw = await getModelGateway();
+    const grantSpy = vi.spyOn(gw, 'grant');
+
+    const res = await messagesCall(opts.fetch);
+    expect(res.status).toBe(200);
+    const msg = await res.json() as { content: Array<{ type: string; text: string }>; usage: { input_tokens: number } };
+    expect(msg.content).toEqual([{ type: 'text', text: 'hello' }]);
+    expect(msg.usage.input_tokens).toBe(12);
+    // The upstream got the credential; the client never had it.
+    expect(upstream).toHaveLength(1);
+    expect(upstream[0]!.url).toBe('https://llm.example.com/v1/chat/completions');
+    expect(upstream[0]!.headers.authorization).toBe('Bearer sk-fixture-upstream');
+
+    expect(grantSpy).toHaveBeenCalledTimes(1);
+    const input = grantSpy.mock.calls[0]![0];
+    expect(input).toMatchObject({ orgId: 'org-1', aiSessionId: null, purpose: 'dispatch', wireModels: ['qwen2.5-coder:7b'] });
+    expect(input.ttlMs).toBeLessThanOrEqual(15 * 60_000);
+    const first = grantSpy.mock.results[0]!.value as { baseUrl: string };
+    // Revoked: the grant URL is dead now.
+    expect((await fetch(`${first.baseUrl}/v1/models`)).status).toBe(401);
+
+    await (await messagesCall(opts.fetch)).text();
+    expect(grantSpy).toHaveBeenCalledTimes(2);
+    expect((grantSpy.mock.results[1]!.value as { baseUrl: string }).baseUrl).not.toBe(first.baseUrl);
+  });
+
+  it('an upstream failure still revokes the request grant (error body read)', async () => {
+    __setUpstreamFetchForTests((async () => { throw new Error('connect ECONNREFUSED'); }) as never);
+    const opts = buildGatewayClient();
+    const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+    const res = await messagesCall(opts.fetch);
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    await res.text();
+    const g = grantSpy.mock.results[0]!.value as { baseUrl: string };
+    expect((await fetch(`${g.baseUrl}/v1/models`)).status).toBe(401);
+  });
+
+  it('a cancelled response body revokes the grant too', async () => {
+    const opts = buildGatewayClient();
+    const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+    const res = await messagesCall(opts.fetch);
+    await res.body!.cancel();
+    const g = grantSpy.mock.results[0]!.value as { baseUrl: string };
+    expect((await fetch(`${g.baseUrl}/v1/models`)).status).toBe(401);
+  });
+
+  it('refuses any URL other than the gateway sentinel, issuing no grant', async () => {
+    const opts = buildGatewayClient();
+    const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+    await expect(opts.fetch('https://api.anthropic.com/v1/messages', { method: 'POST' })).rejects.toThrow(/loopback model gateway/);
+    await expect(opts.fetch('http://breeze-model-gateway.invalid.evil.com/v1/messages')).rejects.toThrow(/loopback model gateway/);
+    expect(grantSpy).not.toHaveBeenCalled();
+  });
+
+  it('binds the refusal fallback too, and the gateway refuses any other model', async () => {
+    const opts = buildGatewayClient({ refusalFallback: { ...FALLBACK, wireModel: 'qwen-b', rateSnapshot: { source: 'offering', standard: FIXTURE_STD_RATES } } as never });
+    const grantSpy = vi.spyOn(await getModelGateway(), 'grant');
+    const res = await messagesCall(opts.fetch, 'claude-opus-5');
+    expect(res.status).toBe(403);
+    await res.text();
+    expect(grantSpy.mock.calls[0]![0].wireModels).toEqual(['qwen2.5-coder:7b', 'qwen-b']);
+    expect(upstream).toHaveLength(0);
+  });
+
+  it('refuses an org-less gateway dispatch up front with a credential-free error and builds no client', () => {
+    let thrown: unknown;
+    try { anthropicClientFor(makeResolvedModel('openai_compatible', { orgId: null }), null); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(LlmUnavailableError);
+    expect((thrown as Error).message).not.toContain('sk-fixture-upstream');
+    expect(m.ctor).not.toHaveBeenCalled();
+  });
+
+  it('createAnthropicClient never routes a caller-supplied key to the gateway', () => {
+    createAnthropicClient({ apiKey: 'sk-should-not-appear', target: { kind: 'gateway', dialect: 'anthropic', openGrant: async () => { throw new Error('unused'); } } });
+    expect(JSON.stringify(m.ctor.mock.calls)).not.toContain('sk-should-not-appear');
+  });
+
+  it('createMessage never sends server-side fallbacks on a gateway connection (client-side retry instead)', async () => {
+    expect(SERVER_SIDE_FALLBACK_KINDS.has('openai_compatible')).toBe(false);
+    expect(SERVER_SIDE_FALLBACK_KINDS.has('catalog')).toBe(false);
+    m.create
+      .mockResolvedValueOnce({ stop_reason: 'refusal', content: [], usage: {} })
+      .mockResolvedValueOnce({ stop_reason: 'end_turn', content: [], usage: {} });
+    const client = { messages: { create: m.create }, beta: { messages: { create: m.betaCreate } } } as never;
+    const resolved = makeResolvedModel('openai_compatible', {
+      refusalFallback: { ...FALLBACK, wireModel: 'qwen-b', rateSnapshot: { source: 'offering', standard: FIXTURE_STD_RATES } } as never,
+    });
+    const out = await createMessage(client, resolved, { max_tokens: 10, messages: [{ role: 'user', content: 'x' }] });
+    expect(out.attempts.map((a) => a.wireModel)).toEqual(['qwen2.5-coder:7b', 'qwen-b']);
+    expect(m.betaCreate).not.toHaveBeenCalled();
+  });
+
+  it('describeDispatch reports the gateway kind and its base URL', () => {
+    expect(describeDispatch(makeResolvedModel('openai_compatible'))).toEqual({
+      destinationKind: 'openai_compatible', baseUrl: 'https://llm.example.com/v1', connectionId: 'conn-oai',
+      funding: 'partner_key', wireModel: 'qwen2.5-coder:7b',
+    });
+  });
+
+  it('grantCatalogSdkEgress grants nothing for a gateway connection (the gateway, not the CONNECT proxy, carries it)', async () => {
+    egress.grant.mockClear();
+    await expect(grantCatalogSdkEgress(makeResolvedModel('openai_compatible'), { key: 'k', orgId: 'org-1', aiSessionId: null }))
+      .resolves.toBeNull();
+    expect(egress.grant).not.toHaveBeenCalled();
   });
 });

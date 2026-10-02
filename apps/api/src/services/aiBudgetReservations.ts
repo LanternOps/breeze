@@ -243,7 +243,7 @@ export interface SettleAiBudgetReservationInput {
    * totals below are derived from them (and must then be omitted), each row is
    * inserted in this transaction, and every row must carry a rate the
    * reservation's turn binding fixed. Without them, the legacy numeric totals
-   * are required.
+   * are required — see settlementTotals for why that form is still accepted.
    */
   invocations?: NewInvocation[];
   actualCostCents?: number;
@@ -918,6 +918,14 @@ function settlementTotals(input: SettleAiBudgetReservationInput): SettlementTota
     }
     return ledgerTotals(input.invocations);
   }
+  // Explicit numeric totals: no live caller writes this form any more (every
+  // settlement goes through settleInvocation with priced invocations; W06
+  // deleted the env-only OpenAI-compatible chat runtime, the last one). It is
+  // KEPT because that runtime could defer a settlement into
+  // `pending_settlement` with explicit totals, and replayPendingAiSettlements
+  // replays such rows through here; refusing them would strand the spend.
+  // Follow-up: once no live (non-dead) pending_settlement row lacks
+  // `invocations` in any deployment, delete this branch.
   if (input.actualCostCents === undefined || input.inputTokens === undefined || input.outputTokens === undefined) {
     throw new Error('settleAiBudgetReservation needs invocations or explicit totals');
   }

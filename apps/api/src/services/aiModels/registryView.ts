@@ -14,11 +14,13 @@ import { eq } from 'drizzle-orm';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
   CONFIGURABLE_AI_SURFACE_ROLES,
+  isGatewayConnectionKind,
   TOOL_REQUIRING_SURFACES,
   type AiAssignmentRowDto,
   type AiConnectionDto,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
+  type AiOfferingVerificationDto,
   type AiOrgModelDefaultsDto,
   type AiSurface,
   type OfferingOptions,
@@ -42,6 +44,8 @@ import { listConnections, type PartnerAiConnection } from './connections';
 import { listOfferings, type Offering } from './offerings';
 import { listAssignmentRows } from './assignmentRows';
 import { mergeEffectiveAssignment, selectRoleRows } from './assignments';
+import { endpointFingerprint, verifiedGatewayCapabilities } from './gatewayCapabilities';
+import { isEnvManaged, isEnvReleased } from './gatewayConnections';
 
 const TOOL_SURFACES = new Set<string>(TOOL_REQUIRING_SURFACES);
 
@@ -62,11 +66,27 @@ export async function buildCatalogSummary(): Promise<AiModelsSnapshotDto['catalo
   }));
 }
 
+/**
+ * W06: a gateway offering's verification as the UI shows it, judged against the
+ * connection's CURRENT endpoint fingerprint (a base-URL change makes it stale).
+ * Only the record's state, time, harness version and scrubbed summary leave —
+ * never the tree or the fingerprint. null for every non-gateway offering.
+ */
+function verificationDto(o: Offering, conn: PartnerAiConnection | undefined): AiOfferingVerificationDto | null {
+  if (!conn || !isGatewayConnectionKind(conn.kind)) return null;
+  const { state, record } = verifiedGatewayCapabilities(
+    o.capabilities,
+    endpointFingerprint({ kind: conn.kind, baseUrl: conn.baseUrl, providerConfig: conn.providerConfig ?? null }),
+  );
+  return { state, at: record?.at ?? null, harnessVersion: record?.harnessVersion ?? null, summary: record?.summary ?? null };
+}
+
 function offeringDto(
   o: Offering,
   c: LoadedCandidate,
   blocker: AiOfferingDto['enableBlocker'],
   defaultFor: AiOfferingDto['defaultFor'],
+  conn: PartnerAiConnection | undefined,
 ): AiOfferingDto {
   const own = o.priceInputCentsPerM === null || o.priceOutputCentsPerM === null
     || o.priceCacheReadCentsPerM === null || o.priceCacheWriteCentsPerM === null
@@ -104,6 +124,7 @@ function offeringDto(
     enableBlocker: blocker,
     defaultFor,
     updatedAt: o.updatedAt.toISOString(),
+    verification: verificationDto(o, conn),
   };
 }
 
@@ -143,6 +164,7 @@ function synthesizedPlatformOffering(
     enableBlocker: enableBlockerFor(platformCandidateFacts(partnerId, pm, platformGeo), ctx),
     defaultFor: [],
     updatedAt: null,
+    verification: null,
   };
 }
 
@@ -211,8 +233,8 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
   const connections = listedConnections.filter(isLiveConnection);
   // A disconnected connection's offerings stay as provenance (W03) but are
   // never shown: not in the Models card, the defaults pickers or defaultFor.
-  const liveConnectionIds = new Set(connections.map((c) => c.id));
-  const offerings = listedOfferings.filter((o) => o.connectionId === null || liveConnectionIds.has(o.connectionId));
+  const connectionsById = new Map<string, PartnerAiConnection>(connections.map((c) => [c.id, c]));
+  const offerings = listedOfferings.filter((o) => o.connectionId === null || connectionsById.has(o.connectionId));
 
   const offeringDtos: AiOfferingDto[] = [];
   for (const o of offerings) {
@@ -230,7 +252,8 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
         seen.add(k);
         return true;
       });
-    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor));
+    const conn = o.connectionId === null ? undefined : connectionsById.get(o.connectionId);
+    offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor, conn));
   }
   const added = new Set(offerings.filter((o) => o.connectionId === null).map((o) => o.platformModelId));
   for (const pm of platformModels) {
@@ -264,25 +287,36 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     lastDiscoveredAt: null,
     discoveryError: null,
     funding: 'platform',
+    baseUrl: null,
+    managedBy: null,
+    envReleased: false,
   };
-  const partnerConns: AiConnectionDto[] = connections.map((c) => ({
-    id: c.id,
-    kind: c.kind,
-    name: c.name,
-    status: c.status,
-    lastError: c.lastError,
-    keyLast4: c.keyLast4,
-    inferenceGeo: c.inferenceGeo,
-    ...effectiveGeo(c.inferenceGeo, platformGeo),
-    supportedInferenceGeos: unionGeos(offeringDtos, c.id),
-    catalogEntryId: c.catalogEntryId,
-    catalogName: c.catalogEntryId ? catalogNames.get(c.catalogEntryId) ?? null : null,
-    configVersion: c.configVersion,
-    verifiedAt: c.verifiedAt?.toISOString() ?? null,
-    lastDiscoveredAt: c.lastDiscoveredAt?.toISOString() ?? null,
-    discoveryError: c.discoveryError,
-    funding: 'partner_key',
-  }));
+  const partnerConns: AiConnectionDto[] = connections.map((c) => {
+    const gateway = isGatewayConnectionKind(c.kind);
+    return {
+      id: c.id,
+      kind: c.kind,
+      name: c.name,
+      status: c.status,
+      lastError: c.lastError,
+      keyLast4: c.keyLast4,
+      // D7: a BYO endpoint's geography is unverifiable — it never claims, inherits or serves one.
+      inferenceGeo: gateway ? null : c.inferenceGeo,
+      ...(gateway ? effectiveGeo(null, null) : effectiveGeo(c.inferenceGeo, platformGeo)),
+      supportedInferenceGeos: gateway ? [] : unionGeos(offeringDtos, c.id),
+      catalogEntryId: c.catalogEntryId,
+      catalogName: c.catalogEntryId ? catalogNames.get(c.catalogEntryId) ?? null : null,
+      configVersion: c.configVersion,
+      verifiedAt: c.verifiedAt?.toISOString() ?? null,
+      lastDiscoveredAt: c.lastDiscoveredAt?.toISOString() ?? null,
+      discoveryError: c.discoveryError,
+      funding: 'partner_key' as const,
+      // Gateway kinds only; the base URL never carries credentials (byoBaseUrlSchema / byoEndpointPolicy refuse them).
+      baseUrl: gateway ? c.baseUrl : null,
+      managedBy: gateway && isEnvManaged(c) ? 'env' as const : null,
+      envReleased: gateway && isEnvReleased(c),
+    };
+  });
 
   return {
     partner: { residencyRequired: facts.residencyRequired, plan: facts.plan, hosted },

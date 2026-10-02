@@ -38,14 +38,6 @@ const routeMocks = vi.hoisted(() => ({
   releaseUnusedAiBudgetReservation: vi.fn(),
 }));
 
-const configRef = vi.hoisted(() => ({
-  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
-}));
-
-vi.mock('../config/validate', () => ({
-  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
-}));
-
 vi.mock('../services/llm/llmConfigResolver', () => ({
   LlmUnavailableError: class LlmUnavailableError extends Error {
     constructor() {
@@ -244,7 +236,7 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
-import { aiRoutes, isOpenAICompatibleProvider } from './ai';
+import { aiRoutes } from './ai';
 import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
@@ -287,7 +279,6 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    configRef.provider = 'anthropic';
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
@@ -843,16 +834,6 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
       expect(routeMocks.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
       expect(routeMocks.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
     });
-  });
-});
-
-describe('isOpenAICompatibleProvider', () => {
-  it.each([
-    ['openai-compatible', true],
-    ['anthropic', false],
-  ] as const)('returns %s only for the openai-compatible config', (provider, expected) => {
-    configRef.provider = provider;
-    expect(isOpenAICompatibleProvider()).toBe(expected);
   });
 });
 

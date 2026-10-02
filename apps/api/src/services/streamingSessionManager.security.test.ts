@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildClaudeSdkChildEnv,
+  createSdkStderrRedactor,
   redactClaudeSdkStderr,
   streamingSessionManager,
 } from './streamingSessionManager';
@@ -199,5 +200,80 @@ describe('Claude SDK process hardening', () => {
     expect(redacted).not.toContain('hunter2');
     expect(redacted).not.toContain('sk-ant-secret');
     expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('redacts gateway capability URLs (the grant token in /g/<token>) from SDK stderr', () => {
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde'; // 43 base64url chars
+    expect(token).toHaveLength(43);
+    const redacted = redactClaudeSdkStderr(
+      `API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token}/v1/messages; retry /g/${token}`,
+    );
+    expect(redacted).not.toContain(token);
+    expect(redacted).toContain('http://127.0.0.1:41234/g/[redacted]/v1/messages');
+    expect(redacted.match(/\/g\/\[redacted\]/g)).toHaveLength(2);
+    // An unrelated short path segment is left alone.
+    expect(redactClaudeSdkStderr('Error at /g/short/path')).toContain('/g/short/path');
+  });
+
+  describe('SDK stderr is redacted per complete line, not per chunk', () => {
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde'; // 43 base64url chars
+    const line = `API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token}/v1/messages\n`;
+
+    function collect(): { logged: string[]; redactor: ReturnType<typeof createSdkStderrRedactor> } {
+      const logged: string[] = [];
+      return { logged, redactor: createSdkStderrRedactor((text) => logged.push(text)) };
+    }
+
+    it('a grant token split across two chunks never appears in the logged output', () => {
+      for (let cut = 1; cut < line.length; cut += 1) {
+        const { logged, redactor } = collect();
+        redactor.write(line.slice(0, cut));
+        redactor.write(line.slice(cut));
+        redactor.flush();
+        const all = logged.join('');
+        expect({ cut, leaked: all.includes(token) }).toEqual({ cut, leaked: false });
+        expect(all).toContain('/g/[redacted]/v1/messages');
+      }
+    });
+
+    it('a token split across chunks on an unterminated final line is redacted at flush', () => {
+      const { logged, redactor } = collect();
+      redactor.write(`FATAL /g/${token.slice(0, 20)}`);
+      redactor.write(`${token.slice(20)} gave up`);
+      expect(logged).toEqual([]);
+      redactor.flush();
+      expect(logged.join('')).not.toContain(token);
+      expect(logged.join('')).toContain('/g/[redacted]');
+    });
+
+    it('only batches carrying an error marker are logged (with their context lines), each once', () => {
+      const { logged, redactor } = collect();
+      redactor.write('debug: starting\n');
+      redactor.write('Error: one\n    at frame (x.js:1)\n');
+      redactor.write('FATAL two\n');
+      redactor.write('plain tail');
+      redactor.flush();
+      redactor.flush();
+      const all = logged.join('\n');
+      expect(all).toContain('Error: one');
+      expect(all).toContain('at frame (x.js:1)');
+      expect(all).toContain('FATAL two');
+      expect(all).not.toContain('debug: starting');
+      expect(all).not.toContain('plain tail');
+      expect(all.match(/Error: one/g)).toHaveLength(1);
+    });
+
+    it('an oversized line is flushed redacted and bounded, and a token straddling the flush point still never leaks', () => {
+      const { logged, redactor } = collect();
+      // An Error line longer than the line cap with the token right at the cap.
+      // The token starts 20 chars before the first overflow check (17000 buffered chars).
+      const pad = 'x'.repeat(16_970);
+      const big = `Error ${pad} /g/${token} tail\n`;
+      for (let i = 0; i < big.length; i += 1000) redactor.write(big.slice(i, i + 1000));
+      redactor.flush();
+      const all = logged.join('');
+      expect(all).not.toContain(token);
+      for (const text of logged) expect(text.length).toBeLessThanOrEqual(16 * 1024 + 64);
+    });
   });
 });

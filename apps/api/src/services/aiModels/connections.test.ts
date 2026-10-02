@@ -37,6 +37,7 @@ import { decryptSecret, encryptSecret } from '../secretCrypto';
 import {
   ConnectionKeyError,
   createConnection,
+  createGatewayConnectionRow,
   decryptConnectionKey,
   encryptConnectionKey,
   getConnection,
@@ -105,6 +106,48 @@ describe('createConnection (#7600 W02)', () => {
     expect(String(values.keyFingerprint)).toMatch(/^fp1:/);
     expect(Object.keys(state.selected[0] as object)).not.toContain('apiKeyEncrypted');
     expect(created).not.toHaveProperty('apiKeyEncrypted');
+  });
+});
+
+describe('createGatewayConnectionRow (W06 #7604)', () => {
+  it('keyless: all three key columns NULL, base_url kept, active, config_version 1, public columns returned', async () => {
+    state.returned.push([{ id: ID, partnerId: PARTNER, kind: 'openai_compatible' }]);
+    await createGatewayConnectionRow({ id: ID, partnerId: PARTNER, kind: 'openai_compatible', name: 'Ollama', baseUrl: 'http://ollama.lan:11434/v1', connectedBy: null });
+    expect(state.inserted[0]).toMatchObject({
+      id: ID, partnerId: PARTNER, kind: 'openai_compatible', name: 'Ollama', baseUrl: 'http://ollama.lan:11434/v1',
+      apiKeyEncrypted: null, keyLast4: null, keyFingerprint: null, catalogEntryId: null, inferenceGeo: null,
+      providerConfig: null, status: 'active', configVersion: 1, verifiedAt: null,
+    });
+    expect(Object.keys(state.selected[0] as object)).not.toContain('apiKeyEncrypted');
+    expect(Object.keys(state.selected[0] as object)).not.toContain('keyFingerprint');
+  });
+
+  it('keyed: seals the trimmed key to the row id under the registry AAD, last4 + fingerprint', async () => {
+    state.returned.push([{ id: ID }]);
+    await createGatewayConnectionRow({ id: ID, partnerId: PARTNER, kind: 'openai_compatible', name: 'OR', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '  sk-or-v1-0000wxyz ', connectedBy: null });
+    const values = state.inserted[0]!;
+    expect(decryptSecret(String(values.apiKeyEncrypted), { aad: columnAad(PARTNER_AI_CONNECTION_KEY_SPEC, ID) })).toBe('sk-or-v1-0000wxyz');
+    expect(values.keyLast4).toBe('wxyz');
+    expect(String(values.keyFingerprint)).toMatch(/^fp1:/);
+    expect(JSON.stringify(values)).not.toContain('sk-or-v1-0000wxyz');
+  });
+
+  it('refuses an enc: paste and a key under 8 chars before any insert', async () => {
+    await expect(createGatewayConnectionRow({ partnerId: PARTNER, kind: 'openai_compatible', name: 'x', baseUrl: 'https://a.example.com', apiKey: 'enc:v3:abcdefgh', connectedBy: null }))
+      .rejects.toMatchObject({ code: 'key_rejected' });
+    await expect(createGatewayConnectionRow({ partnerId: PARTNER, kind: 'openai_compatible', name: 'x', baseUrl: 'https://a.example.com', apiKey: 'short', connectedBy: null }))
+      .rejects.toMatchObject({ code: 'key_rejected' });
+    expect(state.inserted).toEqual([]);
+  });
+
+  it('scrubs an insert failure into a RegistryWriteError (no ciphertext in the surfaced error)', async () => {
+    state.rejectNext = Object.assign(new Error('Failed query: insert params: enc:v3:SECRETCIPHERTEXT'), {
+      name: 'DrizzleQueryError', params: ['enc:v3:SECRETCIPHERTEXT'],
+      cause: Object.assign(new Error('check'), { code: '23514', constraint_name: 'partner_ai_connections_shape_chk', parameters: ['enc:v3:SECRETCIPHERTEXT'] }),
+    });
+    const err = await createGatewayConnectionRow({ partnerId: PARTNER, kind: 'openai_compatible', name: 'x', baseUrl: 'https://a.example.com', apiKey: 'sk-or-v1-0000wxyz', connectedBy: null }).catch((e) => e);
+    expect(err).toBeInstanceOf(RegistryWriteError);
+    expect(`${err.message} ${String(err.cause)}`).not.toContain('SECRET');
   });
 });
 

@@ -1,8 +1,9 @@
 /**
- * The ai_invocations insert (#7600 W02, spec §5.5), split out of
- * invocationLedger.ts so the reservation settlement can import it without the
- * shadow listener's dependencies (#7601 W03). One append-only row, written
- * through the AMBIENT db: inside a settlement it joins that transaction.
+ * The ai_invocations insert (#7600 W02, spec §5.5) — the invocation ledger's
+ * one writer, used by the reservation settlement (settleInvocation). One
+ * append-only row, written through the AMBIENT db: inside a settlement it
+ * joins that transaction. (W06 deleted the W02 shadow listener; historical
+ * rows keep `ledger_mode = 'shadow'`.)
  */
 import type { AiSurface, OfferingOptions, PromptProfile } from '@breeze/shared';
 import { db } from '../../db';

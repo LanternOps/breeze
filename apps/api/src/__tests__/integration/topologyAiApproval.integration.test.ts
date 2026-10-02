@@ -3,12 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 
-// Provider governance is mocked so topology AI reads as available; nothing in
-// this suite ever reaches a model (there is no model call on this path at all).
-vi.mock('../../services/llm/llmConfigResolver', async (original) => ({
-  ...await original<object>(),
-  resolveLlmConfigForOrg: vi.fn(async () => ({ source: 'platform', apiKey: 'test-key', model: 'claude-sonnet-4-6' })),
-}));
+// Nothing in this suite ever reaches a model (there is no model call on this
+// path at all).
 // Topology AI readiness requires a usable model provider (no key = not
 // configured). These suites exercise the gate itself, so give the platform
 // path a key for their duration.

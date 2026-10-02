@@ -4,11 +4,14 @@
  * (W03's connection factory) and `decryptConnectionKey` touch it.
  *
  * Writers: the one-time per-partner cutover (legacyReconcile.ts byte-copy of
- * partner_llm_configs) and, since W03 Task 6B, the /ai/provider facade's
- * registry-native writes (compatRemap.ts, which uses `createConnection`).
+ * partner_llm_configs), since W03 Task 6B the /ai/provider facade's
+ * registry-native writes (compatRemap.ts, which uses `createConnection`), and
+ * since W06 the gateway-kind write service (gatewayConnections.ts, which uses
+ * `createGatewayConnectionRow` and `gatewayKeyColumns`).
  */
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, ne } from 'drizzle-orm';
+import type { GatewayConnectionKind } from '@breeze/shared';
 import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
 import { hmacFingerprint } from '../secretCrypto';
@@ -36,7 +39,8 @@ export interface CreateConnectionInput {
   verifiedAt: Date | null;
 }
 
-const PUBLIC_COLUMNS = {
+/** Every column except key material (ciphertext, fingerprint). Writers return rows through it. */
+export const CONNECTION_PUBLIC_COLUMNS = {
   id: partnerAiConnections.id,
   partnerId: partnerAiConnections.partnerId,
   kind: partnerAiConnections.kind,
@@ -57,6 +61,7 @@ const PUBLIC_COLUMNS = {
   createdAt: partnerAiConnections.createdAt,
   updatedAt: partnerAiConnections.updatedAt,
 } as const;
+const PUBLIC_COLUMNS = CONNECTION_PUBLIC_COLUMNS;
 
 /** A disconnected connection is provenance only (#7700 finding 1): never listed, never the compat one. */
 const LIVE = ne(partnerAiConnections.status, 'disconnected');
@@ -88,11 +93,36 @@ export async function getCompatConnection(partnerId: string): Promise<PartnerAiC
   return row ?? null;
 }
 
-export async function getConnectionKeyMaterial(
-  id: string,
-): Promise<{ id: string; partnerId: string; apiKeyEncrypted: string | null } | null> {
+export interface ConnectionKeyMaterial {
+  id: string;
+  partnerId: string;
+  status: string;
+  kind: string;
+  baseUrl: string | null;
+  configVersion: number;
+  apiKeyEncrypted: string | null;
+}
+
+/**
+ * `status` is read in the SAME row read as the key (W06): a gateway kind may be
+ * legitimately keyless, so a NULL key is only "keyless" while the row is
+ * active — a disconnected row also has a NULL key (disconnected_keyless_chk).
+ * The routing fields (kind, base_url, config_version) come from the same row
+ * read too: a caller that already holds a routing snapshot compares them
+ * (gatewayCandidate.sameRoutingSnapshot) so a key is never paired with a URL
+ * it was not stored for.
+ */
+export async function getConnectionKeyMaterial(id: string): Promise<ConnectionKeyMaterial | null> {
   const [row] = await db
-    .select({ id: partnerAiConnections.id, partnerId: partnerAiConnections.partnerId, apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted })
+    .select({
+      id: partnerAiConnections.id,
+      partnerId: partnerAiConnections.partnerId,
+      status: partnerAiConnections.status,
+      kind: partnerAiConnections.kind,
+      baseUrl: partnerAiConnections.baseUrl,
+      configVersion: partnerAiConnections.configVersion,
+      apiKeyEncrypted: partnerAiConnections.apiKeyEncrypted,
+    })
     .from(partnerAiConnections)
     .where(eq(partnerAiConnections.id, id))
     .limit(1);
@@ -135,6 +165,89 @@ export async function createConnection(input: CreateConnectionInput): Promise<Pa
     // PR #7665 handoff: a failed insert's query params carry the key ciphertext
     // and fingerprint. Scrub at the source so every caller (W03 connectCompat,
     // W04 routes, W06/W07) gets a RegistryWriteError, never the raw error.
+    toRegistryWriteError(error, 'Could not save the AI connection.');
+  }
+  if (!created) throw new Error('Could not create the connection.');
+  return created;
+}
+
+/**
+ * W06: a gateway key must be at least this long. The gateway's scrubber
+ * redacts secrets of 8+ characters wherever an endpoint echoes them, so a
+ * shorter key could leak into stored error text (Codex review #2).
+ */
+export const MIN_GATEWAY_KEY_LENGTH = 8;
+
+export interface ConnectionKeyColumns {
+  apiKeyEncrypted: string | null;
+  keyLast4: string | null;
+  keyFingerprint: string | null;
+}
+
+/**
+ * The key triplet for a gateway-kind row: sealed to the row id (row-bound
+ * AAD), last 4 and HMAC fingerprint, exactly as for anthropic_byok. `null`
+ * means keyless (a local endpoint) — all three NULL, as
+ * partner_ai_connections_key_triplet_chk requires. Throws ConnectionKeyError
+ * (never echoing the key) for an encrypted-envelope paste or a short key.
+ */
+export function gatewayKeyColumns(id: string, apiKey: string | null): ConnectionKeyColumns {
+  if (apiKey === null) return { apiKeyEncrypted: null, keyLast4: null, keyFingerprint: null };
+  const key = apiKey.trim();
+  if (key.startsWith('enc:')) {
+    throw new ConnectionKeyError('Keys must not start with the encrypted-value prefix.', 'key_rejected');
+  }
+  if (key.length < MIN_GATEWAY_KEY_LENGTH) {
+    throw new ConnectionKeyError(`A key must be at least ${MIN_GATEWAY_KEY_LENGTH} characters.`, 'key_rejected');
+  }
+  return { apiKeyEncrypted: encryptConnectionKey(id, key), keyLast4: key.slice(-4), keyFingerprint: hmacFingerprint(key) };
+}
+
+export interface CreateGatewayConnectionRowInput {
+  id?: string;
+  partnerId: string;
+  kind: GatewayConnectionKind;
+  name: string;
+  /** Must already have passed validateByoBaseUrl: this helper does no DNS (it runs inside the write transaction). */
+  baseUrl: string;
+  /** Absent/null = keyless. */
+  apiKey?: string | null;
+  providerConfig?: Record<string, unknown> | null;
+  connectedBy: string | null;
+}
+
+/**
+ * Inserts one gateway-kind connection (W06), beside `createConnection` (which
+ * stays Anthropic-dialect only). The plain insert: callers own validation, the
+ * registry lock and the transaction (gatewayConnections.ts; Task 15's env
+ * bootstrap under the same lock). Insert failures are scrubbed into a
+ * RegistryWriteError at the source: their params carry the key ciphertext.
+ */
+export async function createGatewayConnectionRow(input: CreateGatewayConnectionRowInput): Promise<PartnerAiConnection> {
+  const id = input.id ?? randomUUID();
+  // Sealed before the insert: a sealing failure stays a ConnectionKeyError.
+  const keyColumns = gatewayKeyColumns(id, input.apiKey ?? null);
+  let created: PartnerAiConnection | undefined;
+  try {
+    [created] = await db
+      .insert(partnerAiConnections)
+      .values({
+        id,
+        partnerId: input.partnerId,
+        kind: input.kind,
+        name: input.name,
+        inferenceGeo: null,
+        providerConfig: input.providerConfig ?? null,
+        ...keyColumns,
+        catalogEntryId: null,
+        baseUrl: input.baseUrl,
+        status: 'active',
+        configVersion: 1,
+        verifiedAt: null,
+        connectedBy: input.connectedBy,
+      })
+      .returning(PUBLIC_COLUMNS);
+  } catch (error) {
     toRegistryWriteError(error, 'Could not save the AI connection.');
   }
   if (!created) throw new Error('Could not create the connection.');

@@ -18,8 +18,10 @@ import {
   MAX_AI_USAGE_RANGE_DAYS,
   aiUsageQuerySchema,
   connectionCreateSchema,
+  connectionGatewayPatchSchema,
   connectionSettingsPatchSchema,
   offeringDetailsPatchSchema,
+  manualOfferingCreateSchema,
   orgAssignmentsPutSchema,
   partnerAssignmentsPutSchema,
   residencyPutSchema,
@@ -40,11 +42,48 @@ describe('connectionCreateSchema', () => {
     expect(connectionCreateSchema.parse({ kind: 'anthropic_byok', apiKey: 'sk-ant-api03-' + 'x'.repeat(40) }))
       .toMatchObject({ kind: 'anthropic_byok' });
   });
-  it('rejects a kind W04 does not create (W06/W07 add arms)', () => {
-    expect(connectionCreateSchema.safeParse({ kind: 'openai_compatible', apiKey: 'x'.repeat(30), baseUrl: 'https://example.com' }).success).toBe(false);
+  it('rejects an unknown kind', () => {
+    expect(connectionCreateSchema.safeParse({ kind: 'mystery', apiKey: 'x'.repeat(30) }).success).toBe(false);
   });
   it('rejects a short key', () => {
     expect(connectionCreateSchema.safeParse({ kind: 'anthropic_byok', apiKey: 'short' }).success).toBe(false);
+  });
+});
+
+describe('W06: openai_compatible connections', () => {
+  const base = { kind: 'openai_compatible', name: 'Office vLLM', baseUrl: 'https://llm.example.com/v1' } as const;
+
+  it('accepts a keyless endpoint (local Ollama / vLLM)', () => {
+    expect(connectionCreateSchema.safeParse(base).success).toBe(true);
+  });
+  it('accepts an optional key and trims it', () => {
+    const r = connectionCreateSchema.safeParse({ ...base, apiKey: '  sk-local-123  ' });
+    expect(r.success && r.data.kind === 'openai_compatible' && r.data.apiKey).toBe('sk-local-123');
+  });
+  it.each([
+    ['ftp://llm.example.com', 'scheme'], ['https://user:pw@llm.example.com/v1', 'userinfo'],
+    ['https://llm.example.com/v1?x=1', 'query'], ['https://llm.example.com/v1#frag', 'fragment'],
+    ['not a url', 'garbage'], [`https://llm.example.com/${'a'.repeat(2100)}`, 'length'],
+  ])('rejects base URL %j (%s)', (baseUrl) => {
+    expect(connectionCreateSchema.safeParse({ ...base, baseUrl }).success).toBe(false);
+  });
+  it('strips a trailing slash so the fingerprint is stable', () => {
+    const r = connectionCreateSchema.safeParse({ ...base, baseUrl: 'https://llm.example.com/v1/' });
+    expect(r.success && r.data.kind === 'openai_compatible' && r.data.baseUrl).toBe('https://llm.example.com/v1');
+  });
+  it('refuses inferenceGeo on an openai_compatible connection (residency is never claimable, D7)', () => {
+    expect(connectionCreateSchema.safeParse({ ...base, inferenceGeo: 'eu' }).success).toBe(false);
+  });
+  it('connectionGatewayPatchSchema: null apiKey clears the key; needs a change and the version', () => {
+    expect(connectionGatewayPatchSchema.safeParse({ apiKey: null, expectedConfigVersion: 3 }).success).toBe(true);
+    expect(connectionGatewayPatchSchema.safeParse({ expectedConfigVersion: 3 }).success).toBe(false);
+    expect(connectionGatewayPatchSchema.safeParse({ baseUrl: 'https://x.example.com' }).success).toBe(false);
+  });
+  it('manualOfferingCreateSchema validates the model id and allows a zero price', () => {
+    const zero = { inputCentsPerM: 0, outputCentsPerM: 0, cacheReadCentsPerM: 0, cacheWriteCentsPerM: 0 };
+    expect(manualOfferingCreateSchema.safeParse({ modelId: 'qwen2.5-coder:7b', prices: zero }).success).toBe(true);
+    expect(manualOfferingCreateSchema.safeParse({ modelId: 'bad id' }).success).toBe(false);
+    expect(manualOfferingCreateSchema.safeParse({ modelId: 'm', displayName: 'x'.repeat(121) }).success).toBe(false);
   });
 });
 
