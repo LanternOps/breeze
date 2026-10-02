@@ -92,6 +92,16 @@ describe('AdminSessionManager idle timeout source', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/orgs/partners/me');
   });
 
+  it('cold load with no token and unknown scope does not call partner-only /orgs/partners/me (#7498)', async () => {
+    jwtClaims = { scope: null, orgId: null };
+    useOrgStoreMock.mockImplementation((selector: any) => selector({ currentOrgId: null }));
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/orgs/partners/me');
+  });
+
   it('enforces a partner-level effective session timeout for idle logout', async () => {
     // Partner default of 2 minutes, delivered via effective settings only —
     // the org has no local override.

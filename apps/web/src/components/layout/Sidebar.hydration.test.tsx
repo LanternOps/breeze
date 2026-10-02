@@ -93,4 +93,12 @@ describe('Sidebar hydration (#7498)', () => {
     await act(async () => { render(<Sidebar currentPath="/devices" />); });
     expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/orgs/partners/me');
   });
+
+  it('positive control: a partner-scoped user still fetches /orgs/partners/me', async () => {
+    state.user.permissions = ORG_VIEWER;
+    state.scope = 'partner';
+    state.token = 'tok';
+    await act(async () => { render(<Sidebar currentPath="/devices" />); });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners/me');
+  });
 });

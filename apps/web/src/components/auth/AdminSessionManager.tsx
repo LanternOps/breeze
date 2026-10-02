@@ -49,6 +49,9 @@ const DELIBERATE_ACTIVITY_EVENTS: ReadonlyArray<keyof WindowEventMap> = [
 
 export default function AdminSessionManager() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  // Boolean, not the token: refreshes rotate the token and must not re-run the
+  // session-timeout effect (it resets the budget to the default).
+  const hasAccessToken = useAuthStore((state) => Boolean(state.tokens?.accessToken));
   const currentOrgId = useOrgStore((state) => state.currentOrgId);
   const [idleTimeoutMs, setIdleTimeoutMs] = useState(DEFAULT_IDLE_TIMEOUT_MS);
   // Last budget we actually READ from the server, for any scope. Used only as a
@@ -227,6 +230,10 @@ export default function AdminSessionManager() {
         const claims = getJwtClaims();
         const settingsOrgId =
           currentOrgId ?? (claims.scope === 'organization' ? claims.orgId : null);
+        // Cold load: no token yet, so the scope is unknown. Don't guess partner
+        // (that 403s for org users); keep the default budget armed and let the
+        // effect re-run when the token lands (accessToken is a dep).
+        if (!settingsOrgId && claims.scope === null && !hasAccessToken) return;
         if (settingsOrgId) {
           // Org selected: use that org's effective settings so a partner-level
           // `security.sessionTimeout` default is honored by the idle-logout
@@ -282,7 +289,7 @@ export default function AdminSessionManager() {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, currentOrgId]);
+  }, [isAuthenticated, currentOrgId, hasAccessToken]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
