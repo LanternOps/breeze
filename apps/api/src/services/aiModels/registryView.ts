@@ -13,7 +13,7 @@
 import { eq } from 'drizzle-orm';
 import {
   AI_ASSIGNMENT_WRITE_ROLES,
-  CONFIGURABLE_AI_SURFACES,
+  CONFIGURABLE_AI_SURFACE_ROLES,
   TOOL_REQUIRING_SURFACES,
   type AiAssignmentRowDto,
   type AiConnectionDto,
@@ -41,7 +41,7 @@ import { getPlatformInferenceGeo, listPlatformModels, type PlatformModel } from 
 import { listConnections, type PartnerAiConnection } from './connections';
 import { listOfferings, type Offering } from './offerings';
 import { listAssignmentRows } from './assignmentRows';
-import { mergeEffectiveAssignment } from './assignments';
+import { mergeEffectiveAssignment, selectRoleRows } from './assignments';
 
 const TOOL_SURFACES = new Set<string>(TOOL_REQUIRING_SURFACES);
 
@@ -171,7 +171,7 @@ function isLiveConnection(c: PartnerAiConnection): c is LiveConnection {
   return c.status !== 'disconnected';
 }
 
-/** Callers pass only role-'default' rows; a role outside the shared list is a programming error, never a DTO. */
+/** A role outside the shared write-role list is a programming error, never a DTO. */
 function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
   const role = AI_ASSIGNMENT_WRITE_ROLES.find((known) => known === r.role);
   if (!role) throw new Error(`assignmentRowDto: unexpected assignment role '${r.role}'`);
@@ -182,8 +182,8 @@ function assignmentRowDto(r: AiModelAssignmentRow): AiAssignmentRowDto {
     permittedOfferingIds: r.permittedOfferingIds,
     allowUserChoice: r.allowUserChoice,
     options: (r.options ?? null) as OfferingOptions | null,
-    fallbackOfferingIds: null, // W09 stub (replaced in the registry-view task)
-    fallbackMayCrossFunding: null, // W09 stub
+    fallbackOfferingIds: r.fallbackOfferingIds ?? null,
+    fallbackMayCrossFunding: r.fallbackMayCrossFunding ?? null,
     updatedAt: r.updatedAt.toISOString(),
   };
 }
@@ -200,6 +200,7 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     // Every assignment (partner and org level) whose offerings belong to this partner.
     db.select({
       surface: aiModelAssignments.surface,
+      role: aiModelAssignments.role,
       orgId: aiModelAssignments.orgId,
       defaultOfferingId: aiModelAssignments.defaultOfferingId,
     })
@@ -217,9 +218,18 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
   for (const o of offerings) {
     const c = await loadOfferingCandidate(o.id, partnerId);
     if (!c) continue;
+    // One entry per (surface, level, org): an offering that is both the ai_agents
+    // default and one of its role defaults (W09) is listed once.
+    const seen = new Set<string>();
     const defaultFor = allRows
       .filter((r) => r.defaultOfferingId === o.id)
-      .map((r) => ({ surface: r.surface as AiSurface, level: r.orgId === null ? 'partner' as const : 'org' as const, orgId: r.orgId }));
+      .map((r) => ({ surface: r.surface as AiSurface, level: r.orgId === null ? 'partner' as const : 'org' as const, orgId: r.orgId }))
+      .filter((d) => {
+        const k = `${d.surface}/${d.level}/${d.orgId ?? ''}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
     offeringDtos.push(offeringDto(o, c, enableBlockerFor(c.facts, ctx), defaultFor));
   }
   const added = new Set(offerings.filter((o) => o.connectionId === null).map((o) => o.platformModelId));
@@ -278,14 +288,16 @@ export async function buildPartnerModelsSnapshot(partnerId: string): Promise<AiM
     partner: { residencyRequired: facts.residencyRequired, plan: facts.plan, hosted },
     connections: platformConfigured ? [platformConn, ...partnerConns] : partnerConns,
     offerings: offeringDtos,
-    defaults: CONFIGURABLE_AI_SURFACES.map((surface) => {
-      const p = partnerRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
+    // W09: one entry per (surface, role); a role entry shows the partner's own
+    // role row only (null = the role inherits the feature default).
+    defaults: CONFIGURABLE_AI_SURFACE_ROLES.map(({ surface, role }) => {
+      const p = partnerRows.find((r) => r.surface === surface && r.role === role) ?? null;
       return {
         surface,
-        role: 'default', // W09 stub
+        role,
         requiresTools: TOOL_SURFACES.has(surface),
         partner: p && assignmentRowDto(p),
-        orgOverrideCount: allRows.filter((r) => r.surface === surface && r.orgId !== null).length,
+        orgOverrideCount: allRows.filter((r) => r.surface === surface && r.role === role && r.orgId !== null).length,
       };
     }),
     catalog,
@@ -320,31 +332,34 @@ export async function buildOrgModelDefaults(input: {
     offerings,
     canEdit: input.canEdit,
     canEditReviewer: input.canEditReviewer,
-    surfaces: CONFIGURABLE_AI_SURFACES.map((surface) => {
-      const p = partnerRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
-      const o = orgRows.find((r) => r.surface === surface && r.role === 'default') ?? null;
-      const eff = mergeEffectiveAssignment({ surface, role: 'default', partner: p, org: o });
+    // W09: one entry per (surface, role), merged with selectRoleRows exactly as
+    // the resolver merges it (D2), so the view never disagrees with dispatch.
+    surfaces: CONFIGURABLE_AI_SURFACE_ROLES.map(({ surface, role }) => {
+      const picked = selectRoleRows([...partnerRows, ...orgRows].filter((r) => r.surface === surface), role);
+      const eff = mergeEffectiveAssignment({ surface, role, ...picked });
+      const p = picked.partner;
+      const own = orgRows.find((r) => r.surface === surface && r.role === role) ?? null;
       return {
         surface,
-        role: 'default', // W09 stub
+        role,
         requiresTools: TOOL_SURFACES.has(surface),
         inherited: {
           defaultOfferingId: p?.defaultOfferingId ?? null,
           permittedOfferingIds: p?.permittedOfferingIds ?? null,
           allowUserChoice: p?.allowUserChoice ?? true,
           options: (p?.options ?? {}) as OfferingOptions,
-          fallbackOfferingIds: [], // W09 stub
-          fallbackMayCrossFunding: false, // W09 stub
+          fallbackOfferingIds: [...(p?.fallbackOfferingIds ?? [])],
+          fallbackMayCrossFunding: p?.fallbackMayCrossFunding ?? false,
         },
-        org: o && assignmentRowDto(o),
+        org: own && assignmentRowDto(own),
         effective: {
           defaultOfferingId: eff.defaultOfferingId,
           defaultSource: eff.defaultSource,
           permittedOfferingIds: eff.permitted.kind === 'all' ? null : [...eff.permitted.offeringIds],
           allowUserChoice: eff.allowUserChoice,
           options: eff.options,
-          fallbackOfferingIds: [], // W09 stub
-          fallbackMayCrossFunding: false, // W09 stub
+          fallbackOfferingIds: [...eff.fallbackOfferingIds],
+          fallbackMayCrossFunding: eff.fallbackMayCrossFunding,
         },
       };
     }),

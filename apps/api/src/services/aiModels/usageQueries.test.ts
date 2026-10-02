@@ -9,6 +9,16 @@ const base = (over: Partial<UsageQueryInput> = {}): UsageQueryInput => ({
 const O1 = '11111111-1111-4111-8111-111111111111';
 const O2 = '22222222-2222-4222-8222-222222222222';
 
+describe('W09 failovers', () => {
+  it('counts rows served by a failover hop', () => {
+    const text = render(buildUsageQuery(base({ groupBy: 'model' }))).sql;
+    expect(text).toContain('FILTER (WHERE i.failover_hop > 0)');
+    expect(text).toMatch(/g\.fallbacks, g\.failovers/);
+    expect(render(buildUsageQuery(base({ groupBy: 'surface' }))).sql).toContain('FILTER (WHERE i.failover_hop > 0)');
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '4', cost_cents: '1', input_tokens: '1', output_tokens: '1', refusals: '0', fallbacks: '0', failovers: '2' }).failovers).toBe(2);
+  });
+});
+
 describe('buildUsageQuery', () => {
   it('counts only authoritative ledger rows', () => {
     expect(render(buildUsageQuery(base())).sql).toContain(`i.ledger_mode = 'authoritative'`);
@@ -74,22 +84,22 @@ describe('buildUsageQuery', () => {
 
 describe('toUsageRow', () => {
   it('computes refusalRate and coerces numerics', () => {
-    expect(toUsageRow({ key: 'k', label: 'L', invocations: '4', cost_cents: '12.5', input_tokens: '100', output_tokens: '50', refusals: '1', fallbacks: '0' }))
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '4', cost_cents: '12.5', input_tokens: '100', output_tokens: '50', refusals: '1', fallbacks: '0', failovers: '0' }))
       .toEqual({ key: 'k', label: 'L', invocations: 4, costCents: 12.5, inputTokens: 100, outputTokens: 50, refusals: 1, refusalRate: 0.25, fallbacks: 0, failovers: 0 });
   });
   it('refusalRate is 0 with no invocations', () => {
-    expect(toUsageRow({ key: 'k', label: 'L', invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0' }).refusalRate).toBe(0);
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '0', cost_cents: null, input_tokens: null, output_tokens: null, refusals: '0', fallbacks: '0', failovers: '0' }).refusalRate).toBe(0);
   });
   it.each([[true, true], [false, false]])('maps connection_disconnected %s → connectionDisconnected %s (model rows)', (raw, flag) => {
-    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0', connection_disconnected: raw }))
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0', failovers: '0', connection_disconnected: raw }))
       .toMatchObject({ connectionDisconnected: flag });
   });
   it('a row without the column (non-model groupings, totals) has no connectionDisconnected key', () => {
-    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0' }))
+    expect(toUsageRow({ key: 'k', label: 'L', invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0', failovers: '0' }))
       .not.toHaveProperty('connectionDisconnected');
   });
   it('falls back to the key when no label resolved', () => {
-    expect(toUsageRow({ key: 'k', label: null, invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0' }).label).toBe('k');
+    expect(toUsageRow({ key: 'k', label: null, invocations: '1', cost_cents: '0', input_tokens: '0', output_tokens: '0', refusals: '0', fallbacks: '0', failovers: '0' }).label).toBe('k');
   });
 });
 
