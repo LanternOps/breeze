@@ -117,6 +117,44 @@ describe('aiToolHandoff', () => {
       expect(outcome.message).not.toContain('hunter2');
     });
 
+    describe('read-only result splice (#7828)', () => {
+      const done = (result: Record<string, unknown> | null) =>
+        ({ status: 'completed', errorCode: null, result }) as const;
+      const evq = { toolName: 'mcp__breeze__execute_command', input: { commandType: 'event_logs_query' } };
+
+      it('splices stdout for an approved event_logs_query so the model sees what it approved', () => {
+        const out = describeIntentOutcome(done({ status: 'completed', stdout: '[{"id":4625}]' }), evq);
+        expect(out.handoff).toBe(APPROVED_COMPLETED_STATUS);
+        expect(out.message).toContain('[{"id":4625}]');
+        expect(out.message).not.toContain('not available in this turn');
+      });
+
+      it('bounds a huge stdout', () => {
+        const out = describeIntentOutcome(done({ stdout: 'x'.repeat(100_000) }), evq);
+        expect(out.message.length).toBeLessThan(20_000);
+        expect(out.message).toMatch(/truncated/i);
+      });
+
+      it('never splices for non-allowlisted commands, other tools, or unknown input', () => {
+        const secret = done({ stdout: 'hunter2' });
+        for (const call of [
+          { toolName: 'execute_command', input: { commandType: 'file_read' } },
+          { toolName: 'execute_command', input: {} },
+          { toolName: 'm365_reset_password', input: { commandType: 'event_logs_query' } },
+          undefined,
+        ]) {
+          const out = describeIntentOutcome(secret, call);
+          expect(out.message).toBe(APPROVED_COMPLETED_MESSAGE);
+          expect(out.message).not.toContain('hunter2');
+        }
+      });
+
+      it('falls back to the generic completion when the result has no string stdout', () => {
+        expect(describeIntentOutcome(done({ truncated: true }), evq).message).toBe(APPROVED_COMPLETED_MESSAGE);
+        expect(describeIntentOutcome(done(null), evq).message).toBe(APPROVED_COMPLETED_MESSAGE);
+      });
+    });
+
     it('a non-terminal or unreadable intent stays "executing" — a failed READ is not evidence of a failed ACTION', () => {
       expect(describeIntentOutcome({ status: 'executing', errorCode: null, result: null }).handoff).toBe(
         APPROVED_EXECUTING_STATUS,
