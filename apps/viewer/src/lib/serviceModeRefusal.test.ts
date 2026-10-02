@@ -6,8 +6,12 @@ import source from '../components/DesktopViewer.tsx?raw';
 
 describe('DesktopViewer wiring', () => {
   it('maps the WebSocket transport error through the service-mode refusal helpers', () => {
-    expect(source).toContain('isServiceModeRefusal(rawMessage)');
-    expect(source).toContain('serviceModeRefusalMessage(webrtcUsableRef.current)');
+    expect(source).toMatch(
+      /const message = isServiceModeRefusal\(rawMessage\)\s*\?\s*serviceModeRefusalMessage\(webrtcUsableRef\.current\)\s*:\s*rawMessage;/,
+    );
+    // The mapped text, not the raw agent text, must reach the UI and the host.
+    expect(source).toContain('setErrorMessage(message);\n        onError(message);');
+    expect(source).not.toContain('setErrorMessage(rawMessage)');
   });
 });
 
@@ -29,6 +33,9 @@ describe('isServiceModeRefusal', () => {
   it('ignores unrelated errors', () => {
     expect(isServiceModeRefusal('WebSocket connection error')).toBe(false);
     expect(isServiceModeRefusal('')).toBe(false);
+    expect(isServiceModeRefusal(null)).toBe(false);
+    expect(isServiceModeRefusal(undefined)).toBe(false);
+    expect(isServiceModeRefusal('unavailable in headless mode')).toBe(false);
   });
 });
 
