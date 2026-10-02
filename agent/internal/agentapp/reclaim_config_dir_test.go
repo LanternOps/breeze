@@ -16,18 +16,28 @@ import (
 // main.go: bare identifiers, and pkg.Func selectors as "pkg.Func".
 func callOrder(t *testing.T, funcName string) []string {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	return callOrderIn(t, "main.go", funcName)
+}
+
+// callOrderIn is callOrder for funcName in fileName; funcName "" lists the
+// calls in the whole file (for code in a closure, such as a cobra RunE).
+func callOrderIn(t *testing.T, fileName, funcName string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), fileName, nil, 0)
 	if err != nil {
-		t.Fatalf("parse main.go: %v", err)
+		t.Fatalf("parse %s: %v", fileName, err)
 	}
-	var body *ast.BlockStmt
-	for _, d := range file.Decls {
-		if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == funcName {
-			body = f.Body
+	var body ast.Node = file
+	if funcName != "" {
+		body = nil
+		for _, d := range file.Decls {
+			if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == funcName {
+				body = f.Body
+			}
 		}
-	}
-	if body == nil {
-		t.Fatalf("%s not found in main.go", funcName)
+		if body == nil {
+			t.Fatalf("%s not found in %s", funcName, fileName)
+		}
 	}
 	var order []string
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -83,6 +93,24 @@ func TestEnrollReclaimsConfigDirBeforeReadingIt(t *testing.T) {
 	reclaim, load := indexOf(order, "reclaimConfigDirFn"), indexOf(order, "config.Load")
 	if reclaim < 0 || load < 0 || reclaim > load {
 		t.Errorf("enrollDevice: reclaim at %d, config.Load at %d; want the reclaim first", reclaim, load)
+	}
+}
+
+// TestInstallerStepsReclaimConfigDirBeforeReadingIt: the installer's
+// bootstrap enrollment and `service install` take the config folder back
+// before they read the existing config, so a config another account planted
+// can neither make them skip enrollment as "already enrolled" nor be
+// reported as an enrolled host.
+func TestInstallerStepsReclaimConfigDirBeforeReadingIt(t *testing.T) {
+	for _, tc := range []struct{ file, fn string }{
+		{"bootstrap.go", "runBootstrap"},
+		{"service_cmd_windows.go", ""},
+	} {
+		order := callOrderIn(t, tc.file, tc.fn)
+		reclaim, load := indexOf(order, "reclaimConfigDirFn"), indexOf(order, "config.Load")
+		if reclaim < 0 || load < 0 || reclaim > load {
+			t.Errorf("%s %s: reclaim at %d, config.Load at %d; want the reclaim first", tc.file, tc.fn, reclaim, load)
+		}
 	}
 }
 

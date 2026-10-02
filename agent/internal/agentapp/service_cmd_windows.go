@@ -63,6 +63,15 @@ var serviceInstallCmd = &cobra.Command{
 		// exactly the box we cannot diagnose, which is the failure this issue
 		// is about. The cost of guessing wrong is an un-enrolled agent sitting
 		// in waitForEnrollment, which is what the MSI does anyway.
+		// Take the machine config folder back first if another account
+		// created it: a config that account planted must neither be read
+		// below nor make this host look enrolled. A folder that cannot be
+		// taken back stops the install with the reason.
+		if configFileInMachineDir(cfgFile) {
+			if err := reclaimConfigDirFn(true); err != nil {
+				return fmt.Errorf("the agent config folder %s cannot be used: %w", config.MachineConfigDir(), err)
+			}
+		}
 		existingCfg, cfgErr := config.Load(cfgFile)
 		agentID := ""
 		if existingCfg != nil {
