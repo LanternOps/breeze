@@ -63,7 +63,8 @@ import {
   approveToolSchema,
   approvePlanSchema,
   pauseAiSchema,
-  aiSessionQuerySchema
+  aiSessionQuerySchema,
+  continueAiSessionSchema,
 } from '@breeze/shared/validators';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
@@ -83,6 +84,7 @@ import { messagesUsage, messagesUsageAfterDispatchError } from '../services/aiMo
 import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailable';
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
+import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
@@ -93,6 +95,8 @@ import type { PreparedTopologyInvestigation } from '../services/topology/aiInves
 // Loaded lazily, only for a topology session: its tool/transport graph must not
 // load for every chat route (and every route unit test's partial mocks).
 const loadTopologyTurn = () => import('./aiTopologyTurn');
+// W05 (#7603): the continuation handler, loaded on first use for the same reason.
+const loadSessionContinuation = () => import('./aiSessionContinue');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -670,6 +674,28 @@ aiRoutes.post(
   }
 );
 
+// POST /sessions/:id/continue — W05 (#7603; spec §9.2, §15 #4): a model
+// switch that cannot resume continues in a NEW chat on the target offering,
+// linked back to this one and seeded with a summary the TARGET writes.
+// D12: registered in selfManagedDbContextRoutes (it makes a provider call).
+// The handler (routes/aiSessionContinue.ts) loads lazily, like the topology
+// turn: its resolver / candidate-loader graph must not load for every route.
+aiRoutes.post(
+  '/sessions/:id/continue',
+  requireScope('organization', 'partner', 'system'),
+  requireAiUse,
+  requireMfa(),
+  zValidator('json', continueAiSessionSchema),
+  async (c) => {
+    const { continueAiSession } = await loadSessionContinuation();
+    return continueAiSession(c, {
+      auth: c.get('auth'),
+      sessionId: c.req.param('id')!,
+      choice: c.req.valid('json').model,
+    });
+  }
+);
+
 aiRoutes.post(
   '/sessions/:id/ticket',
   requireScope('organization', 'partner', 'system'),
@@ -948,6 +974,16 @@ aiRoutes.post(
     }
     // ---- End OpenAI-compatible path ----
 
+    // W05 (#7603): a continuation's FIRST turn (no SDK transcript yet) is
+    // seeded with the summary its creation stored; later turns resume the SDK
+    // transcript, which already contains it. The summary is model output over
+    // tool results, so it is untrusted: it is only ever prefixed to this user
+    // turn (below), never the system prompt. Read here, in its own short
+    // caller-scoped context, before anything is reserved or claimed.
+    const continuationSummary = !topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId
+      ? await inRequestDb(() => loadContinuationSummary(sessionId))
+      : null;
+
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
     // created with the exact durable reservation ceiling.
@@ -1141,7 +1177,13 @@ aiRoutes.post(
       // with no SSE subscriber, so the assistant's reply would never reach the
       // browser.
       const pendingRunResults = drainPendingRunResults(activeSession);
-      const turnContent = topology ? topology.prompt : sanitizedContent;
+      // W05 (#7603): a continuation's FIRST turn carries the summary (read
+      // above) as delimited, sanitised, untrusted background — never the
+      // system prompt. The persisted user row above keeps the plain text, so
+      // the prefix reaches only the model.
+      const turnContent = topology
+        ? topology.prompt
+        : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
       activeSession.inputController.pushMessage(
         pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
       );

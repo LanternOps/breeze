@@ -611,3 +611,13 @@ it('W05: the W04 snapshot GET /ai/models and every sibling keep the request cont
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models/choices/chat/extra')).toBe(false);
   expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/models/offerings')).toBe(false);
 });
+
+// AI model registry W05 (#7603, D12): the continuation route makes a provider
+// call (the summary) and must not hold the request's connection across it.
+it('W05: the continuation route manages its own DB context (it makes a provider call)', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions/11111111-1111-1111-1111-111111111111/continue')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions/11111111-1111-1111-1111-111111111111/continue/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/ai/sessions/11111111-1111-1111-1111-111111111111/continue')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions/11111111-1111-1111-1111-111111111111/continue/extra')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions//continue')).toBe(false);
+});

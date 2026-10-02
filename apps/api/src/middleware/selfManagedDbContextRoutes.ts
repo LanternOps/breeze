@@ -507,6 +507,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },
+  // AI model registry W05 (#7603, D12): the continuation route makes a
+  // provider call (the summary) and takes/settles a budget reservation in
+  // their own system transactions; it must not hold the request's connection
+  // across any of them (#1105). It reads the owner-bound source session and
+  // writes the new session in two short withAuthDbAccessContext phases.
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/continue\/?$/ },
   // AI model registry W05 (#7603): the chat / agent model pickers judge every
   // permitted offering through the candidate loader, which opens its own short
   // system transactions (up to the 200-candidate cap). Under the ambient

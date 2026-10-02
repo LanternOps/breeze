@@ -110,6 +110,13 @@ export const aiSessions = pgTable('ai_sessions', {
   // is published. The object-only CHECK lives in SQL:
   // 2026-11-22-100100-ai-sessions-last-turn-model.sql.
   lastTurnModel: jsonb('last_turn_model').$type<AiTurnModel | null>(),
+  // AI model registry W05 (#7603): the session this one continues (a model
+  // switch that could not resume). Server-owned: written only by
+  // insertContinuationSession, never from a request body. Composite same-org
+  // self-FK (continued_from_session_id, org_id) → (id, org_id), ON DELETE SET
+  // NULL (continued_from_session_id), DEFERRABLE INITIALLY IMMEDIATE, and a
+  // not-self CHECK — declared in 2026-11-22-100200-ai-sessions-continued-from.sql.
+  continuedFromSessionId: uuid('continued_from_session_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
@@ -128,6 +135,7 @@ export const aiSessions = pgTable('ai_sessions', {
     name: 'ai_sessions_offering_org_partner_fk',
   }),
   offeringIdx: index('ai_sessions_offering_idx').on(table.offeringId).where(sql`${table.offeringId} IS NOT NULL`),
+  continuedFromIdx: index('ai_sessions_continued_from_idx').on(table.continuedFromSessionId).where(sql`${table.continuedFromSessionId} IS NOT NULL`),
 }));
 
 // ============================================
