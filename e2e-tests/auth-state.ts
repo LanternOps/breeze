@@ -66,6 +66,12 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     // app's own 428 re-POST would be just as easy to miss between iterations.
     type LoginResponse = { status: number; text: string };
     const loginResponses: Promise<LoginResponse>[] = [];
+    const inflightRefreshes = new Set<unknown>();
+    const isRefresh = (r: { method(): string; url(): string }) =>
+      r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
+    page.on('request', (r) => { if (isRefresh(r)) inflightRefreshes.add(r); });
+    page.on('requestfinished', (r) => inflightRefreshes.delete(r));
+    page.on('requestfailed', (r) => inflightRefreshes.delete(r));
     page.on('response', (res) => {
       if (res.request().method() !== 'POST') return;
       if (!new URL(res.url()).pathname.endsWith('/auth/login')) return;
@@ -154,8 +160,21 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     // while that call is in flight leaves the saved cookie already-rotated
     // with the new one lost (aborted response): every later replay gets
     // 401 refresh_raced and, past the 15 s grace, trips family revocation.
-    // Let the page go idle so the snapshot holds the post-rotation cookie.
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined);
+    // Wait until no refresh is in flight (seen on two consecutive polls, since
+    // the bootstrap request can start just after the URL settles), then
+    // snapshot. Throws instead of saving a possibly stale cookie.
+    const refreshDeadline = Date.now() + 15_000;
+    let idlePolls = 0;
+    while (idlePolls < 2) {
+      if (Date.now() > refreshDeadline) {
+        throw new Error(
+          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) 15s after login; ` +
+            'refusing to save a storage state whose refresh cookie may already be rotated (stale-cookie race).'
+        );
+      }
+      idlePolls = inflightRefreshes.size === 0 ? idlePolls + 1 : 0;
+      await page.waitForTimeout(150);
+    }
     await ctx.storageState({ path: statePath });
   } finally {
     await ctx.close();
