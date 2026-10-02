@@ -85,6 +85,10 @@ vi.mock('../db/schema', () => ({
   backupJobs: {},
   backupSlaEvents: {},
   backupVerifications: {},
+  deviceDisks: {},
+  deviceHardwareComponents: {},
+  deviceHardwareEvents: {},
+  deviceHardwareHealth: {},
   devices: {},
   discoveredAssets: {},
   // networkBaseline.ts (pulled in transitively by the portal route graph) reads
