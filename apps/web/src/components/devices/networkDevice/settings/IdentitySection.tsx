@@ -66,7 +66,16 @@ export function IdentitySection({ asset, assetId, extras, onSaved, onAnnounce }:
     previousBaseline.current = baseline;
     const hadEdits = draft.label.trim() !== previous.label.trim()
       || draft.notes !== previous.notes || draft.tags !== previous.tags || draft.type !== previous.type;
-    if (hadEdits && !saving) setConflict(true);
+    // A baseline that already equals the draft is our own save echoing back
+    // (the refetched asset can commit after `saving` flips false) — not a
+    // concurrent edit, so adopt it instead of flagging a conflict (#7388).
+    // handleSave normalises tags/notes before PATCHing, so compare the same way.
+    const normTags = (v: string) => v.split(',').map((s) => s.trim()).filter(Boolean).join(', ');
+    const echoesDraft = draft.label.trim() === baseline.label.trim()
+      && draft.notes.trim() === baseline.notes.trim()
+      && normTags(draft.tags) === normTags(baseline.tags)
+      && draft.type === baseline.type;
+    if (hadEdits && !saving && !echoesDraft) setConflict(true);
     else setDraft(baseline);
   }, [baseline, draft, saving]);
 
