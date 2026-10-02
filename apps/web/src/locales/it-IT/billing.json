@@ -2292,7 +2292,8 @@
     "saveButton": "Salva impostazioni di fatturazione",
     "saveError": "Impossibile salvare le impostazioni di fatturazione.",
     "saveSuccess": "Impostazioni di fatturazione salvate",
-    "readOnlyNotice": "Hai accesso in sola lettura alle impostazioni di fatturazione. Chiedi a un amministratore di modificarle."
+    "readOnlyNotice": "Hai accesso in sola lettura alle impostazioni di fatturazione. Chiedi a un amministratore di modificarle.",
+    "readOnlyNoPartnerWideNotice": "Le impostazioni di fatturazione si applicano a tutte le organizzazioni, quindi modificarle richiede l'accesso completo alle organizzazioni del partner. Hai accesso in sola lettura."
   },
   "shared": {
     "documentWorkspace": {

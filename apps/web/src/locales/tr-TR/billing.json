@@ -2292,7 +2292,8 @@
     "saveButton": "Faturalandırma ayarlarını kaydet",
     "saveError": "Faturalandırma ayarları kaydedilemedi.",
     "saveSuccess": "Faturalandırma ayarları kaydedildi",
-    "readOnlyNotice": "Faturalandırma ayarlarına yalnızca görüntüleme erişiminiz var. Değiştirmek için bir yöneticiden yardım isteyin."
+    "readOnlyNotice": "Faturalandırma ayarlarına yalnızca görüntüleme erişiminiz var. Değiştirmek için bir yöneticiden yardım isteyin.",
+    "readOnlyNoPartnerWideNotice": "Faturalandırma ayarları tüm kuruluşlar için geçerlidir; değiştirmek için iş ortağı kuruluşlarına tam erişim gerekir. Yalnızca görüntüleme erişiminiz var."
   },
   "shared": {
     "documentWorkspace": {

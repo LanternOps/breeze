@@ -2292,7 +2292,8 @@
     "saveButton": "Save billing settings",
     "saveError": "Failed to save billing settings.",
     "saveSuccess": "Billing settings saved",
-    "readOnlyNotice": "You have view-only access to billing settings. Ask an administrator to change them."
+    "readOnlyNotice": "You have view-only access to billing settings. Ask an administrator to change them.",
+    "readOnlyNoPartnerWideNotice": "Billing settings apply to all organizations, so changing them requires full partner org access. You have view-only access."
   },
   "shared": {
     "documentWorkspace": {

@@ -2292,7 +2292,8 @@
     "saveButton": "Salvar configurações de cobrança",
     "saveError": "Falha ao salvar as configurações de cobrança.",
     "saveSuccess": "Configurações de cobrança salvas",
-    "readOnlyNotice": "Você tem acesso somente leitura às configurações de faturamento. Peça a um administrador para alterá-las."
+    "readOnlyNotice": "Você tem acesso somente leitura às configurações de faturamento. Peça a um administrador para alterá-las.",
+    "readOnlyNoPartnerWideNotice": "As configurações de faturamento valem para todas as organizações, então alterá-las exige acesso total às organizações do parceiro. Você tem acesso somente leitura."
   },
   "shared": {
     "documentWorkspace": {

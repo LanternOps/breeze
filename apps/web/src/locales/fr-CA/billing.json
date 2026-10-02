@@ -2292,7 +2292,8 @@
     "saveButton": "Enregistrer les paramètres de facturation",
     "saveError": "Impossible d’enregistrer les paramètres de facturation.",
     "saveSuccess": "Paramètres de facturation enregistrés",
-    "readOnlyNotice": "Vous avez un accès en lecture seule aux paramètres de facturation. Demandez à un administrateur de les modifier."
+    "readOnlyNotice": "Vous avez un accès en lecture seule aux paramètres de facturation. Demandez à un administrateur de les modifier.",
+    "readOnlyNoPartnerWideNotice": "Les paramètres de facturation s'appliquent à toutes les organisations; les modifier exige un accès complet aux organisations du partenaire. Vous avez un accès en lecture seule."
   },
   "shared": {
     "documentWorkspace": {

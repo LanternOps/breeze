@@ -2292,7 +2292,8 @@
     "saveButton": "Abrechnungseinstellungen speichern",
     "saveError": "Die Abrechnungseinstellungen konnten nicht gespeichert werden.",
     "saveSuccess": "Abrechnungseinstellungen gespeichert",
-    "readOnlyNotice": "Sie haben nur Lesezugriff auf die Rechnungseinstellungen. Bitten Sie eine Administratorin oder einen Administrator, sie zu ändern."
+    "readOnlyNotice": "Sie haben nur Lesezugriff auf die Rechnungseinstellungen. Bitten Sie eine Administratorin oder einen Administrator, sie zu ändern.",
+    "readOnlyNoPartnerWideNotice": "Die Rechnungseinstellungen gelten für alle Organisationen; zum Ändern ist voller Zugriff auf die Partnerorganisationen nötig. Sie haben nur Lesezugriff."
   },
   "shared": {
     "documentWorkspace": {

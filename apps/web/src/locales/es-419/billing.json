@@ -2292,7 +2292,8 @@
     "saveButton": "Guardar configuración de facturación",
     "saveError": "No se pudo guardar la configuración de facturación.",
     "saveSuccess": "Configuración de facturación guardada",
-    "readOnlyNotice": "Tienes acceso de solo lectura a la configuración de facturación. Pide a un administrador que la cambie."
+    "readOnlyNotice": "Tienes acceso de solo lectura a la configuración de facturación. Pide a un administrador que la cambie.",
+    "readOnlyNoPartnerWideNotice": "La configuración de facturación se aplica a todas las organizaciones, por lo que modificarla requiere acceso completo a las organizaciones del socio. Tienes acceso de solo lectura."
   },
   "shared": {
     "documentWorkspace": {
