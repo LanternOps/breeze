@@ -72,7 +72,13 @@ export async function readPreviousTurn(input: { orgId: string; sessionId: string
   };
 }
 
-/** A chat turn of this session is in flight on ANY replica (its reservation is still active). */
+/**
+ * A chat turn of this session is in flight on ANY replica (its reservation is
+ * still active). A reservation whose settlement was DEFERRED
+ * (`pending_settlement` set by persistPendingSettlement, replayed later by the
+ * sweep) stays 'active' but belongs to a FINISHED turn, so it is not in
+ * flight. Same predicate as reserveAiBudget's switch guard.
+ */
 export async function hasActiveChatTurn(input: { orgId: string; sessionId: string }): Promise<boolean> {
   const result = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{ id: string }>(sql`
     SELECT id FROM ai_budget_reservations
@@ -80,6 +86,7 @@ export async function hasActiveChatTurn(input: { orgId: string; sessionId: strin
       AND session_id = ${input.sessionId}::uuid
       AND starts_with(idempotency_key, ${CHAT_TURN_KEY_PREFIX})
       AND status = 'active' AND expires_at > now()
+      AND pending_settlement IS NULL
     LIMIT 1
   `)));
   return rowsOf(result).length > 0;

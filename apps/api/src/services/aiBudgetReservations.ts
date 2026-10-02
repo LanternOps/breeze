@@ -603,11 +603,15 @@ async function assertSessionSwitchAllowed(
     || stableJson(current.options ?? null) !== stableJson(binding.options)
     || current.billing_source !== binding.funding;
   if (!changes) return;
+  // A deferred settlement (pending_settlement set, status still 'active' until
+  // the sweep replays it) belongs to a FINISHED turn: not in flight. Same
+  // predicate as hasActiveChatTurn (modelTransition.ts).
   const inFlight = rows<{ id: string }>(await db.execute<{ id: string }>(sql`
     SELECT id FROM ai_budget_reservations
     WHERE org_id = ${orgId}::uuid AND session_id = ${sessionId}::uuid
       AND starts_with(idempotency_key, ${CHAT_TURN_KEY_PREFIX})
       AND status = 'active' AND expires_at > now()
+      AND pending_settlement IS NULL
       AND id <> ${claimingReservationId}::uuid
     LIMIT 1
   `))[0];

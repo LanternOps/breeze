@@ -8,10 +8,10 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
-  AiBudgetSessionBusyError, releaseUnusedAiBudgetReservation, reserveAiBudget,
+  AiBudgetSessionBusyError, persistPendingSettlement, releaseUnusedAiBudgetReservation, reserveAiBudget,
 } from '../../services/aiBudgetReservations';
 import { makeResolvedModel } from '../../services/aiModels/__fixtures__/resolvedModel';
-import { readPreviousTurn } from '../../services/aiModels/modelTransition';
+import { hasActiveChatTurn, readPreviousTurn } from '../../services/aiModels/modelTransition';
 import { settleInvocation } from '../../services/aiModels/settleInvocation';
 import { turnBindingFrom, withCarriedRates } from '../../services/aiModels/turnBinding';
 import type { OfferingOptions } from '@breeze/shared';
@@ -29,10 +29,10 @@ async function setup() {
     partnerId: seed.partnerId, orgId: seed.orgId, offering: { id: offeringId, displayName: offeringId }, options,
   }));
   /** A chat-turn claim exactly as the messages route makes it (guarded, chat key). */
-  const claim = (offeringId: string, opts: { expectPrev?: string | null; options?: OfferingOptions; binding?: ReturnType<typeof bindingFor> } = {}) =>
+  const claim = (offeringId: string, opts: { expectPrev?: string | null; options?: OfferingOptions; binding?: ReturnType<typeof bindingFor>; key?: string } = {}) =>
     reserveAiBudget({
-      orgId: seed.orgId, billingSource: 'platform', sessionId: seed.chatSessionId,
-      idempotencyKey: `chat:${seed.chatSessionId}:${randomUUID()}`,
+      orgId: seed.orgId, billingSource: opts.binding?.funding ?? 'platform', sessionId: seed.chatSessionId,
+      idempotencyKey: opts.key ?? `chat:${seed.chatSessionId}:${randomUUID()}`,
       binding: opts.binding ?? bindingFor(offeringId, opts.options),
       sessionSwitchGuard: { expectedPreviousChatReservationId: opts.expectPrev ?? null },
     });
@@ -126,6 +126,72 @@ describe.skipIf(!RUN)('model switch claim (W05)', () => {
     await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: first });
     await claim(other, { expectPrev: null });
     expect(String((await stamped()).offering_id)).toBe(other);
+  });
+
+  it('a turn whose settlement was DEFERRED (pending_settlement set, still active) is finished: it does not block a switch (M1)', async () => {
+    const { seed, other, claim, stamped, idOf } = await setup();
+    const first = idOf(await claim(seed.offeringId));
+    // The turn finished, but the org lock was contended so its settlement was
+    // persisted for the sweep to replay: status stays 'active' until then.
+    expect(await persistPendingSettlement({
+      orgId: seed.orgId, reservationId: first, actualCostCents: 0, inputTokens: 0, outputTokens: 0,
+    })).toBe('persisted');
+    expect((await fixtureSql`SELECT status FROM ai_budget_reservations WHERE id = ${first}`)[0]!.status).toBe('active');
+    expect(await hasActiveChatTurn({ orgId: seed.orgId, sessionId: seed.chatSessionId })).toBe(false);
+    idOf(await claim(other, { expectPrev: first }));
+    expect(String((await stamped()).offering_id)).toBe(other);
+  });
+
+  it('hasActiveChatTurn is true for a plain active chat turn (control for the deferred-settlement case)', async () => {
+    const { seed, claim, idOf } = await setup();
+    const first = idOf(await claim(seed.offeringId));
+    expect(await hasActiveChatTurn({ orgId: seed.orgId, sessionId: seed.chatSessionId })).toBe(true);
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: first });
+  });
+
+  it('a FUNDING change (same offering and options) is refused while a turn is in flight (Codex review finding 9)', async () => {
+    const { seed, claim, bindingFor, stamped, reservationCount, idOf } = await setup();
+    const first = idOf(await claim(seed.offeringId));
+    const partnerFunded = { ...bindingFor(seed.offeringId), funding: 'partner_key' as const };
+    await expect(claim(seed.offeringId, { expectPrev: first, binding: partnerFunded })).rejects.toBeInstanceOf(AiBudgetSessionBusyError);
+    expect(String((await fixtureSql`SELECT billing_source FROM ai_sessions WHERE id = ${seed.chatSessionId}`)[0]!.billing_source)).toBe('platform');
+    expect(String((await stamped()).offering_id)).toBe(seed.offeringId);
+    expect(await reservationCount()).toBe(1);
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: first });
+  });
+
+  it('a claim that changes NOTHING is admitted while another turn is in flight (only a change waits for the turn)', async () => {
+    const { seed, claim, reservationCount, idOf } = await setup();
+    const first = idOf(await claim(seed.offeringId));
+    const second = idOf(await claim(seed.offeringId, { expectPrev: first }));
+    expect(second).not.toBe(first);
+    expect(await reservationCount()).toBe(2);
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: second });
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: first });
+  });
+
+  it('an active reservation whose expires_at has passed is not in flight: the switch is admitted', async () => {
+    const { seed, other, claim, stamped, idOf } = await setup();
+    const first = idOf(await claim(seed.offeringId));
+    await fixtureSql`UPDATE ai_budget_reservations SET expires_at = now() - interval '1 minute' WHERE id = ${first}`;
+    idOf(await claim(other, { expectPrev: first }));
+    expect(String((await stamped()).offering_id)).toBe(other);
+  });
+
+  it('the stable-key re-bind path is guarded too: replaying a key with a changed binding while another turn is active is refused', async () => {
+    const { seed, other, claim, stamped, idOf } = await setup();
+    const key = `chat:${seed.chatSessionId}:${randomUUID()}`;
+    const replayed = idOf(await claim(seed.offeringId, { key }));
+    // Another turn is claimed after it (same offering, so no change) and is still in flight.
+    const inFlight = idOf(await claim(seed.offeringId, { expectPrev: replayed }));
+    // The first key is replayed with a switched binding, planned against the in-flight turn.
+    await expect(claim(other, { key, expectPrev: inFlight })).rejects.toBeInstanceOf(AiBudgetSessionBusyError);
+    // Whole rollback: neither the re-bind nor the stamp landed.
+    const row = (await fixtureSql`SELECT model_binding FROM ai_budget_reservations WHERE id = ${replayed}`)[0]!;
+    expect((row.model_binding as { offeringId: string }).offeringId).toBe(seed.offeringId);
+    expect(String((await stamped()).offering_id)).toBe(seed.offeringId);
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: inFlight });
+    await releaseUnusedAiBudgetReservation({ orgId: seed.orgId, reservationId: replayed });
   });
 
   it('two concurrent claims with different offerings: one wins, the loser stamps nothing', async () => {
