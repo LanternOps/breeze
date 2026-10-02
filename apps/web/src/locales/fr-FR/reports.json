@@ -329,6 +329,7 @@
         "ticket_sla_attainment": "Respect des SLA des tickets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
+        "ai_usage_by_client": "Utilisation de l'IA par client",
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
@@ -431,6 +432,7 @@
         "ticket_sla_attainment": "Respect des SLA des tickets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
+        "ai_usage_by_client": "Utilisation de l'IA par client",
         "backup_status": "État des sauvegardes"
       },
       "runsTable": {
@@ -979,6 +981,7 @@
         "ticket_sla_attainment": "Respect des SLA des tickets",
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
+        "ai_usage_by_client": "Utilisation de l'IA par client",
         "backup_status": "État des sauvegardes"
       },
       "schedules": {
@@ -1047,6 +1050,10 @@
         "ar_aging": {
           "name": "Balance âgée des comptes clients",
           "description": "Soldes de factures impayées répartis en courant / 1–30 / 31–60 / 61–90 / plus de 90 jours de retard, un jeu de totaux par devise sans conversion. Les factures sans date d'échéance reçoivent leur propre catégorie, jamais « courant »."
+        },
+        "ai_usage_by_client": {
+          "name": "Utilisation de l'IA par client",
+          "description": "Utilisation de l'IA de la plateforme par client sur la période : requêtes, jetons, coût Breeze, montant à facturer selon le profil de facturation du client et ce qui a déjà été facturé. L'utilisation incluse et les modèles sans tarif sont présentés séparément, jamais fusionnés."
         },
         "backup_status": {
           "name": "Rapport d’état des sauvegardes",
@@ -1151,6 +1158,18 @@
       "currencyNote": "Chaque devise a ses propres totaux. Les montants ne sont pas convertis d'une devise à l'autre.",
       "includePaidInPeriod": "Lister les factures payées depuis le début du mois",
       "includePaidInPeriodHelp": "Ajoute une note listant les factures entièrement payées entre le premier jour du mois de référence et la date de référence. Elle ne modifie jamais les tranches d'ancienneté.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "aiUsageByClientOptions": {
+      "groupBy": "Regrouper par",
+      "groupByAutomatic": "Automatique : par organisation pour toutes les organisations, par modèle pour une seule organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "model": "Modèle"
+      },
+      "periodNote": "Les frais sont facturés par mois civil UTC. Une période définie dans un autre fuseau horaire peut différer de la facture pour l'utilisation proche des limites du mois.",
+      "unpricedNote": "L'utilisation d'un modèle sans tarif dans le profil de facturation du client est comptée comme non tarifée. Elle n'est jamais considérée comme gratuite.",
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },
