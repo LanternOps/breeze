@@ -28,11 +28,23 @@ describe('autopay worker registration', () => {
     expect(mocks.add).toHaveBeenCalledWith('notice-dispatch', { type: 'notice-dispatch' }, expect.objectContaining({
       jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
     }));
+    const processor = mocks.work.mock.calls.at(-1)?.[1] as (job: { data: { type: string }; name: string }) => Promise<unknown>;
+    expect(await processor({ data: { type: 'notice-dispatch' }, name: 'notice-dispatch' })).toEqual({ sent: 1, failed: 0 });
+    await expect(processor({ data: { type: 'unexpected' }, name: 'unexpected' })).rejects.toThrow('Unknown autopay job: unexpected');
     expect(await processNoticeDispatch()).toEqual({ sent: 1, failed: 0 });
-    expect(mocks.dispatch).toHaveBeenCalledOnce();
-    expect(mocks.drain).toHaveBeenCalledOnce();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(2);
+    expect(mocks.drain).toHaveBeenCalledTimes(2);
     await shutdownAutopayWorkers();
     expect(mocks.close).toHaveBeenCalledTimes(2);
+  });
+  it('closes partial resources and retries initialization when schedule registration fails', async () => {
+    mocks.add.mockRejectedValueOnce(new Error('redis unavailable'));
+    await expect(initializeAutopayWorkers()).rejects.toThrow('redis unavailable');
+    expect(mocks.close).toHaveBeenCalledTimes(2);
+
+    await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
+    expect(mocks.add).toHaveBeenCalledTimes(2);
+    await shutdownAutopayWorkers();
   });
   it('is selected by the real worker registry and actual entrypoint uses that registry', () => {
     const entry = WORKER_REGISTRY.find(e => e.name === 'autopayWorker');

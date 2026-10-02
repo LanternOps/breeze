@@ -18,18 +18,30 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
 
 export async function initializeAutopayWorkers(): Promise<void> {
   if (worker) return;
-  queue = new Queue<AutopayJobData>('autopay-jobs', { connection: getBullMQConnection() });
-  worker = new Worker<AutopayJobData>('autopay-jobs', async (job: Job<AutopayJobData>) => {
-    if (job.data.type !== 'notice-dispatch') throw new Error(`Unknown autopay job: ${job.name}`);
-    return processNoticeDispatch();
-  }, { connection: getBullMQConnection(), concurrency: 1 });
-  attachWorkerObservability(worker, 'autopayWorker');
-  worker.on('error', error => console.error('[autopayWorker]', error));
-  await queue.add('notice-dispatch', { type: 'notice-dispatch' }, {
-    jobId: 'billing-notice-dispatch',
-    repeat: { pattern: jobSchedule('billing-notice-dispatch'), tz: 'UTC' },
-    removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
-  });
+  let pendingQueue: Queue<AutopayJobData> | null = null;
+  let pendingWorker: Worker<AutopayJobData> | null = null;
+  try {
+    pendingQueue = new Queue<AutopayJobData>('autopay-jobs', { connection: getBullMQConnection() });
+    pendingWorker = new Worker<AutopayJobData>('autopay-jobs', async (job: Job<AutopayJobData>) => {
+      if (job.data.type !== 'notice-dispatch') throw new Error(`Unknown autopay job: ${job.name}`);
+      return processNoticeDispatch();
+    }, { connection: getBullMQConnection(), concurrency: 1 });
+    attachWorkerObservability(pendingWorker, 'autopayWorker');
+    pendingWorker.on('error', error => console.error('[autopayWorker]', error));
+    await pendingQueue.add('notice-dispatch', { type: 'notice-dispatch' }, {
+      jobId: 'billing-notice-dispatch',
+      repeat: { pattern: jobSchedule('billing-notice-dispatch'), tz: 'UTC' },
+      removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
+    });
+    queue = pendingQueue;
+    worker = pendingWorker;
+  } catch (error) {
+    await Promise.allSettled([
+      ...(pendingWorker ? [pendingWorker.close()] : []),
+      ...(pendingQueue ? [pendingQueue.close()] : []),
+    ]);
+    throw error;
+  }
 }
 
 export async function shutdownAutopayWorkers(): Promise<void> {
