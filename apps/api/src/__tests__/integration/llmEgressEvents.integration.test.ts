@@ -17,7 +17,7 @@
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   LLM_EGRESS_SURFACES,
@@ -84,6 +84,41 @@ describe('llm_egress_events schema contracts', () => {
     ).rejects.toMatchObject({
       cause: { code: '23514', constraint_name: 'llm_egress_events_surface_chk' },
     });
+  });
+
+  runDb("accepts W05's surfaces (one_shot_token_count, one_shot_continuation_summary) — the W06 re-issue is a union", async () => {
+    const { org, partner } = await withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      return { org, partner };
+    });
+
+    for (const surface of [
+      'one_shot_token_count',
+      'one_shot_continuation_summary',
+    ] as LlmEgressSurface[]) {
+      await withSystemDbAccessContext(() =>
+        db.insert(llmEgressEvents).values({
+          orgId: org.id,
+          partnerId: partner.id,
+          surface,
+          host: `${surface}.provider.test`,
+          resolvedIp: '203.0.113.10',
+          blocked: false,
+        }),
+      );
+    }
+  });
+
+  runDb('has a nullable connection_id with no FK (provenance survives connection deletion)', async () => {
+    const cols = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT is_nullable, data_type FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'llm_egress_events' AND column_name = 'connection_id'`));
+    expect(cols).toEqual([{ is_nullable: 'YES', data_type: 'uuid' }]);
+    const fks = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+      WHERE c.conrelid = 'public.llm_egress_events'::regclass AND c.contype = 'f' AND a.attname = 'connection_id'`));
+    expect(fks).toHaveLength(0);
   });
 
   runDb('rejects a row whose org belongs to a different partner than it names', async () => {

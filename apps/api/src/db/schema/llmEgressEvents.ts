@@ -1,5 +1,6 @@
 // apps/api/src/db/schema/llmEgressEvents.ts
 import { boolean, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { llmProviderCatalog, llmProviderCatalogRevisions } from './llmProviderCatalog';
 
 /**
@@ -22,6 +23,9 @@ export const LLM_EGRESS_SURFACES = [
   // 2026-11-29-100000-llm-egress-events-w05-surfaces.sql.
   'one_shot_token_count',
   'one_shot_continuation_summary',
+  // W06 (#7604): loopback model gateway forwards to a gateway-kind connection.
+  // CHECK re-issued in 2026-11-23-100000-ai-gateway-egress-events.sql.
+  'gateway_forward',
 ] as const;
 
 export type LlmEgressSurface = (typeof LLM_EGRESS_SURFACES)[number];
@@ -41,6 +45,8 @@ export const llmEgressEvents = pgTable('llm_egress_events', {
   catalogEntryId: uuid('catalog_entry_id').references(() => llmProviderCatalog.id, { onDelete: 'set null' }),
   revisionId: uuid('revision_id').references(() => llmProviderCatalogRevisions.id, { onDelete: 'set null' }),
   aiSessionId: uuid('ai_session_id'),
+  /** W06: gateway connection provenance; no FK by design (see migration). */
+  connectionId: uuid('connection_id'),
   surface: text('surface', { enum: LLM_EGRESS_SURFACES }).notNull(),
   host: text('host').notNull(),
   resolvedIp: text('resolved_ip'),
@@ -49,6 +55,7 @@ export const llmEgressEvents = pgTable('llm_egress_events', {
 }, (t) => [
   index('llm_egress_events_org_idx').on(t.orgId, t.createdAt),
   index('llm_egress_events_partner_idx').on(t.partnerId, t.createdAt),
+  index('llm_egress_events_connection_idx').on(t.connectionId, t.createdAt).where(sql`${t.connectionId} IS NOT NULL`),
 ]);
 
 export type LlmEgressEvent = typeof llmEgressEvents.$inferSelect;
