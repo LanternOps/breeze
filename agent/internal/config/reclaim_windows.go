@@ -467,10 +467,10 @@ func replaceConfigRoot(root string, forEnroll bool) error {
 	// The first move fails while a process holds the old folder, or anything
 	// in it, open without delete sharing: the agent then does not start,
 	// rather than run in a folder that process can still change.
-	// Plain moves: the folder's own move never needs more (ProgramData grants
-	// SYSTEM and Administrators delete-child), and a refusal — a file in it
-	// held open — must leave it exactly as it was.
-	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, os.Rename, func(p string) bool {
+	// renameEntry never changes security: a refusal (a file in the folder
+	// held open) leaves the folder exactly as it was, and only a folder whose
+	// own DACL keeps the agent out is moved with backup intent.
+	keepStaging, err := swapConfigRootIntoPlace(root, staging, aside, renameEntry, func(p string) bool {
 		_, err := os.Lstat(p)
 		return err == nil
 	})
