@@ -91,3 +91,23 @@ it('shows hidden connections to a read-only user without a restore action', () =
   expect(screen.getByTestId('topology-hidden-exclusion-1')).toBeVisible();
   expect(screen.queryByTestId('topology-restore-exclusion-1')).not.toBeInTheDocument();
 });
+
+it('shows each device’s address and network and sorts rows by network, then name (grouped overview)', () => {
+  const graph = topologyGraphFixture();
+  const base = graph.nodes[0]!;
+  const inv = (name: string, address: string) => ({ source: 'device' as const, name, addresses: [address], mac: null, vendor: null, model: null, os: null, type: 'workstation',
+    presence: { state: 'online' as const, source: 'agent' as const, agentStatus: 'online', lastSeenAt: null } });
+  const zed = { ...base, id: '10000000-0000-4000-8000-0000000000a1', kind: 'endpoint' as const, label: 'ZED', inventory: inv('ZED', '10.1.2.9') };
+  const amy = { ...base, id: '10000000-0000-4000-8000-0000000000a2', kind: 'endpoint' as const, label: 'AMY', inventory: inv('AMY', '10.1.2.8') };
+  graph.nodes = [zed, amy];
+  graph.relationships = [];
+  graph.presentation = { edges: [], nodes: [{ id: 'presentation:overview:s:net-a', view: 'overview', role: 'network_group', label: '10.1.2.0/24', memberCount: 2, frontierToken: 't', authority: false,
+    group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix: '10.1.2.0/24', address: null, gatewayAddresses: [], conflict: false, observerCount: 2,
+      members: [{ nodeId: zed.id, placement: 'observed', primary: true, stale: false }, { nodeId: amy.id, placement: 'observed', primary: true, stale: false }], canonicalNodeIds: [] } }] };
+  render(<TopologyList graph={graph} onSelect={() => {}} />);
+  const zedRow = screen.getByTestId(`topology-node-${zed.id}`).closest('tr')!;
+  expect(zedRow).toHaveTextContent('10.1.2.9');
+  expect(zedRow).toHaveTextContent('10.1.2.0/24');
+  const names = [...screen.getByTestId('topology-list').querySelectorAll('tbody tr button[data-testid^="topology-node-"]')].map((b) => b.textContent);
+  expect(names.indexOf('AMY')).toBeLessThan(names.indexOf('ZED'));
+});

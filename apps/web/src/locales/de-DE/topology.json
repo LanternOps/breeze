@@ -63,7 +63,7 @@
   "layout_fallback": "Die automatische Anordnung hat ihr Limit erreicht. Verbleibende Knoten verwenden ein lokales Raster; gespeicherte Positionen bleiben erhalten.",
   "pinned_overlap": "Angeheftete Geräte überlappen sich. Lösen Sie sie und ordnen Sie neu an, um ihre Beschriftungen zu trennen.",
   "empty": "Es ist noch keine Topologie verfügbar. Fügen Sie diesem Standort einen Agenten, ein Erkennungsprofil oder ein manuelles Netzwerk hinzu.",
-  "legend": "Durchgezogen: physisch · Gestrichelt: logisch · Gepunktet: abgeleitet oder schematisch. Unbekannter Zustand ist keine erfolgreiche Prüfung.",
+  "legend": "Karten gruppieren Geräte, die dasselbe Netzwerk melden · Durchgezogen: physisch · Gestrichelt: logisch · Gepunktet: abgeleitet, nicht verifiziert oder schematisch. Unbekannter Zustand ist keine erfolgreiche Prüfung.",
   "diagnostics": "Diagnosen",
   "diagnosticScope": "Wählen Sie einen Ursprung am selben Standort und eine Adressfamilie. Nur „Diagnose ausführen“ sendet einen Befehl; jede Familie hat ihren eigenen begrenzten Durchlauf.",
   "recipe": "Prüfung",
@@ -617,5 +617,57 @@
       "cancelled": "Abgebrochen",
       "expired": "Abgelaufen"
     }
+  },
+  "grouped": {
+    "useLayout": "Gruppiertes Layout verwenden",
+    "showAllNetworks_one": "{{count}} Link-Local-, VPN- oder Einzelhost-Netzwerk anzeigen",
+    "showAllNetworks_other": "{{count}} Link-Local-, VPN- oder Einzelhost-Netzwerke anzeigen",
+    "evidenceSection": "Nachweise und Aktualität",
+    "type": "Typ",
+    "addresses": "Adressen",
+    "mac": "MAC",
+    "vendor": "Hersteller",
+    "os": "Betriebssystem",
+    "gateway": "Gateway",
+    "networks": "Netzwerk",
+    "lastSeen": "zuletzt gesehen {{when}}",
+    "presence": {
+      "agent": {
+        "online": "Agent ist online",
+        "offline": "Agent ist offline",
+        "unknown": "Agent-Status unbekannt"
+      },
+      "scan": {
+        "online": "Hat den letzten Erkennungsscan beantwortet",
+        "offline": "Hat den letzten Erkennungsscan nicht beantwortet",
+        "unknown": "Nicht gescannt"
+      }
+    },
+    "addressMatchNote": "Hier eingeordnet, weil die Adresse in diesem Bereich liegt. Zugehörigkeit nicht verifiziert.",
+    "staleMembership": "In der letzten Erfassung nicht gesehen.",
+    "gatewayExplanation_one": "{{count}} Gerät meldet {{address}} als Standard-Gateway. Jedes Gerät behält seine eigene Route; wählen Sie eines aus, um es zu prüfen oder von diesem Gerät aus zu diagnostizieren.",
+    "gatewayExplanation_other": "{{count}} Geräte melden {{address}} als Standard-Gateway. Jedes Gerät behält seine eigene Route; wählen Sie eines aus, um es zu prüfen oder von diesem Gerät aus zu diagnostizieren.",
+    "reportedBy": "Gemeldet von",
+    "diagnoseHint": "Diagnosen laufen auf dem ausgewählten Gerät, über dessen eigene Route.",
+    "stale": "veraltet",
+    "unverified": "nicht verifiziert",
+    "networkExplanation_one": "{{count}} Gerät meldet eine Schnittstelle in {{prefix}}. Die Gruppierung nach Adressbereich ist abgeleitet: Sie belegt nicht, dass die Geräte einen Switch teilen.",
+    "networkExplanation_other": "{{count}} Geräte melden eine Schnittstelle in {{prefix}}. Die Gruppierung nach Adressbereich ist abgeleitet: Sie belegt nicht, dass die Geräte einen Switch teilen.",
+    "unidentifiedExplanation": "Diese Geräte melden keine Netzwerkzugehörigkeit, und ihre Adresse liegt nicht in genau einem bekannten Netzwerk dieses Standorts.",
+    "class": {
+      "link_local": "Link-Local-Bereich: Jedes Gerät hat einen; er identifiziert kein gemeinsames Netzwerk.",
+      "host": "Eine Einzelhost-Route, meist eine VPN- oder Tunneladresse.",
+      "overlay": "Ein Overlay- oder VPN-Bereich (z. B. Tailscale), nicht das lokale Netzwerk.",
+      "other": "Ein ungewöhnlich breiter Bereich."
+    },
+    "via": "Standard-Gateway: {{gateways}}",
+    "conflict": "Geräte in diesem Bereich melden unterschiedliche Gateways, daher ist er in einzelne Karten aufgeteilt.",
+    "addressMatchCount_one": "{{count}} Gerät wird hier nur angezeigt, weil seine Adresse in diesem Bereich liegt. Zugehörigkeit nicht verifiziert.",
+    "addressMatchCount_other": "{{count}} Geräte werden hier nur angezeigt, weil ihre Adresse in diesem Bereich liegt. Zugehörigkeit nicht verifiziert.",
+    "devices_one": "{{count}} Gerät",
+    "devices_other": "{{count}} Geräte",
+    "moreOutside_one": "{{count}} weiteres außerhalb dieser Ansicht",
+    "moreOutside_other": "{{count}} weitere außerhalb dieser Ansicht",
+    "gatewayAddressMatch": "Ein erkanntes Gerät verwendet diese Adresse (nur Adressabgleich, nicht verifiziert):"
   }
 }

@@ -119,6 +119,7 @@ export const topologyNodeBindings = pgTable('topology_node_bindings', {
   uniqueIndex('topology_binding_device_id_uniq').on(table.deviceId).where(sql`device_id IS NOT NULL`),
   uniqueIndex('topology_binding_discovered_asset_id_uniq').on(table.discoveredAssetId).where(sql`discovered_asset_id IS NOT NULL`),
   uniqueIndex('topology_binding_manual_node_id_uniq').on(table.manualNodeId).where(sql`manual_node_id IS NOT NULL`),
+  index('topology_binding_node_idx').on(table.orgId, table.siteId, table.nodeId),
   foreignKey({ name: 'topology_node_bindings_site_scope_fk', columns: [table.siteId, table.orgId], foreignColumns: [sites.id, sites.orgId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_binding_node_scope_fk', columns: [table.nodeId, table.orgId, table.siteId], foreignColumns: [topologyNodes.id, topologyNodes.orgId, topologyNodes.siteId] }).onDelete('cascade'),
   foreignKey({ name: 'topology_binding_device_scope_fk', columns: [table.deviceId, table.orgId, table.siteId], foreignColumns: [devices.id, devices.orgId, devices.siteId] }).onDelete('no action'),
