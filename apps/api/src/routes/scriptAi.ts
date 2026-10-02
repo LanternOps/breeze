@@ -44,7 +44,7 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { LlmUnavailableError } from '../services/llm/llmUnavailableError';
+import { LlmUnavailableError, llmUnavailableBody } from '../services/llm/llmUnavailableError';
 import { AI_NOT_CONFIGURED_BODY, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
 import { chooseSessionModel, type SessionModelChoice } from '../services/aiModels/sessionModel';
@@ -108,7 +108,7 @@ scriptAiRoutes.post(
       choice = await chooseSessionModel({ partnerId, orgId, userId: auth.user.id, surface: 'script_builder' });
     } catch (err) {
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       captureException(err, c);
       return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
     }

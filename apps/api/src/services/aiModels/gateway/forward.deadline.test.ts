@@ -14,12 +14,20 @@ vi.mock('./byoEndpointPolicy', async (orig) => ({
   ...(await orig<typeof import('./byoEndpointPolicy')>()),
   byoEgressAllowances: () => ({ allowPrivateNetwork: false, requirePrivateForCleartext: false }),
 }));
+// The headers deadline and the idle limit are shrunk so the tests run in
+// milliseconds; both are mutable per test.
+const knobs = vi.hoisted(() => ({ headersMs: 100, idleMs: 120_000 }));
+vi.mock('./deadlines', async (orig) => ({
+  ...(await orig<typeof import('./deadlines')>()),
+  gatewayHeadersTimeoutMs: () => knobs.headersMs,
+}));
 vi.mock('./limits', async (orig) => ({
   ...(await orig<typeof import('./limits')>()),
-  GATEWAY_CONNECT_TIMEOUT_MS: 100,
+  get GATEWAY_IDLE_TIMEOUT_MS() { return knobs.idleMs; },
 }));
 
 import { __setLookupForTests } from '../../urlSafety';
+import { __resetGatewayFailureNotesForTests, takeGatewayFailureNote } from './failureNotes';
 import { __setUpstreamFetchForTests, forwardUpstream } from './forward';
 import type { GatewayGrantRecord } from './types';
 
@@ -72,8 +80,45 @@ describe('forwardUpstream — connect/headers deadline', () => {
     close?.();
     close = undefined;
     __setLookupForTests(null);
+    __resetGatewayFailureNotesForTests();
+    knobs.headersMs = 100;
+    knobs.idleMs = 120_000;
     vi.restoreAllMocks();
   });
+
+  it('#7794: a headers timeout is logged (scrubbed, with ids) and noted for the session, and the error names the deadline', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = await rawServer(() => { /* never answers */ });
+    close = s.close;
+    await expect(forwardUpstream(grantFor(s.port), {
+      url: `http://llm.example.com:${s.port}/v1/chat/completions`, method: 'POST', headers: {}, body: '{}', stream: true,
+    }, new AbortController().signal)).rejects.toMatchObject({
+      status: 504, code: 'upstream_timeout', message: expect.stringMatching(/did not start responding within 0\.1 s/),
+    });
+    const logged = warn.mock.calls.map((c) => c.map(String).join(' ')).find((l) => l.includes('response-header deadline'));
+    expect(logged).toBeDefined();
+    expect(logged).toContain('grant g1');
+    expect(logged).toContain('connection c1');
+    expect(logged).not.toContain('sk-secret-123456');
+    // The chat turn that owns this grant can now say why it failed.
+    expect(takeGatewayFailureNote('s1')).toMatch(/did not start responding within 0\.1 s/);
+  }, 5000);
+
+  it('#7794: the idle limit never cuts a longer headers deadline short (headers late but inside the deadline)', async () => {
+    knobs.headersMs = 1000;
+    knobs.idleMs = 50;
+    const body = '{"choices":[]}';
+    const s = await rawServer((sock) => {
+      // Silent for 6x the idle limit, then headers well inside the headers deadline.
+      setTimeout(() => sock.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n${body}`), 300);
+    });
+    close = s.close;
+    const res = await forwardUpstream(grantFor(s.port), {
+      url: `http://llm.example.com:${s.port}/v1/chat/completions`, method: 'POST', headers: {}, body: '{}', stream: false,
+    }, new AbortController().signal);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(body);
+  }, 5000);
 
   it('a non-streamed response whose body outlasts the connect deadline is delivered, not timed out', async () => {
     const body = '{"choices":[]}';

@@ -76,6 +76,7 @@ import {
   TicketDraftFailedError,
 } from '../services/aiTicketDraft';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
+import { llmUnavailableBody } from '../services/llm/llmUnavailableError';
 import { anthropicClientFor, type MessageAttempt } from '../services/aiModels/connectionFactory';
 import {
   FailoverExhaustedError,
@@ -252,7 +253,7 @@ aiRoutes.post(
     } catch (err) {
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       if (err instanceof TopologyAiSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Invalid topology context') return c.json({ error: message }, 400);
@@ -507,7 +508,7 @@ aiRoutes.post(
     try {
       client = anthropicClientFor(turn, { surface: 'one_shot_ticket_draft', orgId: session.orgId });
     } catch (err) {
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       throw err;
     }
     // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
@@ -647,7 +648,7 @@ aiRoutes.post(
         });
       }
       if (err instanceof ThinTranscriptError) return c.json({ error: err.message }, 422);
-      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
       console.error('[AI] Ticket draft failed:', err);
       captureException(err);
       return c.json({ error: 'Could not draft a ticket from this conversation' }, 502);

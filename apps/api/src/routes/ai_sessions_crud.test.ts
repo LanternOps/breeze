@@ -253,6 +253,25 @@ describe('AI routes', () => {
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     });
 
+    it('#7793: a resolver refusal returns its user-facing reason and code, not the raw ai_unavailable', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(Object.assign(new LlmUnavailableError(), {
+        message: 'This AI model cannot use tools, which this feature needs.',
+        reason: 'tools_unsupported',
+      }));
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        error: 'This AI model cannot use tools, which this feature needs.',
+        code: 'tools_unsupported',
+      });
+    });
+
     it('returns 400 invalid_model when the requested model is not allowed (#7587)', async () => {
       vi.mocked(createSession).mockRejectedValueOnce(
         new InvalidSessionModelError('Model "claude-made-up-9" is not available for AI sessions.', 'invalid_model'),

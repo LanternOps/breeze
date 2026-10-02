@@ -163,6 +163,18 @@ describe('chooseSessionModel', () => {
     expect(extra.findOfferingIdByModel).not.toHaveBeenCalled();
   });
 
+  it('#7793: the 503 carries the resolver reason and its user-facing message (e.g. a default model without tools)', async () => {
+    m.resolveModel.mockResolvedValue({
+      ok: false, reason: 'tools_unsupported', recoverable: true, offeringId: 'off-1',
+      message: 'This AI model cannot use tools, which this feature needs.',
+    });
+    const err = await chooseSessionModel(base).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmUnavailableError);
+    expect(err).toMatchObject({ reason: 'tools_unsupported', message: 'This AI model cannot use tools, which this feature needs.' });
+    m.resolveModel.mockResolvedValue({ ok: false, reason: 'registry_unavailable', recoverable: true, offeringId: null, message: 'upgrading' });
+    await expect(chooseSessionModel(base)).rejects.toMatchObject({ reason: 'registry_unavailable', message: 'upgrading' });
+  });
+
   it('nothing requested and nothing eligible keeps the legacy 503 shapes', async () => {
     m.resolveModel.mockResolvedValue({ ok: false, reason: 'model_unavailable', recoverable: true, offeringId: null, message: 'm' });
     await expect(chooseSessionModel(base)).rejects.toBeInstanceOf(LlmUnavailableError);
