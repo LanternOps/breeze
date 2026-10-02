@@ -304,6 +304,70 @@ describe('fleet software rollup (#2262)', () => {
     expect(cross.body.findings).toEqual([]);
   });
 
+  runDb('Ready counts only findings Remediate would act on, not the catalog flag (#7499)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dA = await seedDevice(env, 'ready-none');
+    const dB = await seedDevice(env, 'ready-unapproved');
+    const dC = await seedDevice(env, 'ready-approved');
+    const acmeCve = await seedCve('CVE-2026-71001'); // catalog patch flag = true
+    const lonelyCve = await seedCve('CVE-2026-71002'); // catalog patch flag = true
+    const acmeA = await seedInventory(env, dA, 'Acme Agent', 'Acme', '1.0');
+    const acmeB = await seedInventory(env, dB, 'Acme Agent', 'Acme', '1.0');
+    const acmeC = await seedInventory(env, dC, 'Acme Agent', 'Acme', '1.0');
+    const lonelyA = await seedInventory(env, dA, 'Lonely Tool', 'Lonely', '1.0');
+    const fA = await seedFinding(env, dA, acmeCve, { softwareInventoryId: acmeA });
+    const fB = await seedFinding(env, dB, acmeCve, { softwareInventoryId: acmeB });
+    const fC = await seedFinding(env, dC, acmeCve, { softwareInventoryId: acmeC });
+    await seedFinding(env, dA, lonelyCve, { softwareInventoryId: lonelyA });
+
+    seq += 1;
+    const mkPatch = async (suffix: string) => {
+      const [p] = await getTestDb()
+        .insert(patches)
+        .values({ source: 'third_party', externalId: `ready-${suffix}-${Date.now()}-${seq}`, title: 'Acme Agent', cveIds: ['CVE-2026-71001'] })
+        .returning({ id: patches.id });
+      if (!p) throw new Error('failed to seed patch');
+      return p.id;
+    };
+    const unapproved = await mkPatch('unapproved');
+    const approved = await mkPatch('approved');
+    await getTestDb().insert(devicePatches).values([
+      { deviceId: dB, orgId: env.organization.id, patchId: unapproved, status: 'pending' },
+      { deviceId: dC, orgId: env.organization.id, patchId: approved, status: 'pending' },
+    ]);
+    await getTestDb().insert(patchApprovals).values({ partnerId: env.partner.id, patchId: approved, status: 'approved' });
+    // dA: no pending patch at all. dB: pending but NOT approved. dC: pending + approved.
+
+    const key = (name: string, vendor: string) => `sw:${name.toLowerCase()}|${vendor.toLowerCase()}`;
+    const list = await get<{ items: Array<{ groupKey: string; patchReadyFindingCount: number; patchReadyDeviceCount: number }> }>(env, '/software');
+    const acme = list.body.items.find((g) => g.groupKey === key('Acme Agent', 'Acme'))!;
+    const lonely = list.body.items.find((g) => g.groupKey === key('Lonely Tool', 'Lonely'))!;
+    expect([acme.patchReadyFindingCount, acme.patchReadyDeviceCount]).toEqual([1, 1]);
+    expect(lonely.patchReadyFindingCount).toBe(0);
+
+    // The patch-ready filter means "has a Ready finding" — a group whose only
+    // finding is unready must drop out, even though its catalog flag is set.
+    const filtered = await get<{ items: Array<{ groupKey: string }> }>(env, '/software?status=open&patchAvailable=true');
+    expect(filtered.body.items.map((g) => g.groupKey)).toEqual([key('Acme Agent', 'Acme')]);
+
+    const stats = await get<{ patchReadyFindingCount: number }>(env, '/stats');
+    expect(stats.body.patchReadyFindingCount).toBe(1);
+
+    const detail = await get<{ devices: Array<{ deviceId: string; patchReadyFindingCount: number }> }>(env, `/software/${encodeURIComponent(key('Acme Agent', 'Acme'))}`);
+    expect(Object.fromEntries(detail.body.devices.map((d) => [d.deviceId, d.patchReadyFindingCount]))).toEqual({ [dA]: 0, [dB]: 0, [dC]: 1 });
+
+    for (const [deviceId, findingId, ready] of [[dA, fA, false], [dB, fB, false], [dC, fC, true]] as const) {
+      const drill = await get<{ findings: Array<{ deviceVulnerabilityId: string; patchAvailable: boolean }> }>(
+        env, `/software/${encodeURIComponent(key('Acme Agent', 'Acme'))}/devices/${deviceId}`,
+      );
+      expect(drill.body.findings.find((f) => f.deviceVulnerabilityId === findingId)!.patchAvailable).toBe(ready);
+    }
+
+    // And the device tab / CVE drawer rows (fetchFleetFindingRows) agree.
+    const cveRows = await get<{ findings: Array<{ deviceId: string; patchAvailable: boolean }> }>(env, '/CVE-2026-71001/devices');
+    expect(Object.fromEntries(cveRows.body.findings.map((f) => [f.deviceId, f.patchAvailable]))).toEqual({ [dA]: false, [dB]: false, [dC]: true });
+  });
+
   runDb('GET /software/:groupKey 404s for a group the caller has no findings in', async () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     await seedChromeFleet(env);
