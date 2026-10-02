@@ -59,6 +59,7 @@ import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import {
   isAccountingProviderError,
+  providerFaultSuffix,
   providerPermissionMessage,
   providerRateLimitedRetryLaterMessage,
   providerRateLimitedTryAgainMessage,
@@ -141,7 +142,13 @@ export type AccountingMappingErrorCode =
   | 'duplicate_name'
   | 'remote_archived'
   | 'remote_missing'
-  | 'provider_permission';
+  | 'provider_permission'
+  // #7292 — the provider answered HTTP 400 `validation` with no neutral refusal
+  // code (e.g. a name Xero or QuickBooks will not accept). Only editing the record
+  // fixes it, so it is terminal (409, never retried). Unlike the codes above it is
+  // still reported to Sentry ONCE by the coordinator: a code-less 400 can also be a
+  // Breeze payload bug, and that must stay visible.
+  | 'provider_rejected';
 
 // Typed failure the route translates straight to an HTTP status (mirrors
 // AccountingImportError in accountingCustomerImport.ts). Narrowing `code`/`status` to
@@ -1269,6 +1276,31 @@ function providerRefusal(
 }
 
 /**
+ * A provider 400 `validation` verdict that carries NO neutral refusal code
+ * (#7292) — e.g. a contact name Xero rejects, or a QuickBooks Business
+ * Validation fault. Retrying re-sends the same payload, so it can never
+ * succeed: terminal 409 with a fix-the-record message. Gated on HTTP 400 so a
+ * provider's own pre-flight `validation` guards (no status: a missing tenant
+ * id, an unparseable payload) and every transient (5xx, timeout, 429) keep the
+ * retryable 502. The message carries the fault CLASS only (`providerFaultSuffix`),
+ * the same text invoice-push already persists — never a raw provider body.
+ * The payment/invoice-only refusal codes `providerRefusal` does not handle
+ * (remote_locked, amount_exceeds_due, remote_deleted, remote_batched) are not
+ * produced by customer/item upserts; if one ever were, it lands here — still
+ * terminal, with this generic advice.
+ */
+function providerRejection(
+  err: unknown, entityType: MappingEntityType, providerLabel: string,
+): AccountingMappingError | null {
+  if (!isAccountingProviderError(err) || err.kind !== 'validation' || err.httpStatus !== 400) return null;
+  const noun = entityType === 'org' ? 'customer' : 'item';
+  const local = entityType === 'org' ? 'organization' : 'catalog item';
+  return new AccountingMappingError('provider_rejected', 409,
+    `${providerLabel} rejected the ${noun} sync${providerFaultSuffix(err)} — check this ${local}'s details in Breeze, then sync again`,
+    { cause: err });
+}
+
+/**
  * Never persists or rethrows a raw provider error's message/body (mirrors
  * `callProviderOrThrow`'s sanitization) — only the HTTP status, when the
  * provider attached one, is safe to keep.
@@ -1490,13 +1522,16 @@ async function syncMappedEntityUnderLease(
     // typed 409 and no Sentry event. Throttled (Xero W01): the same persistence
     // as a transient failure — the row is marked `error` so it never reads as
     // silently stuck — but no Sentry event, and a typed 429 the worker delays on
-    // and the route answers with Retry-After.
+    // and the route answers with Retry-After. A code-less provider validation
+    // verdict (#7292) is terminal like a refusal, but still reported to Sentry
+    // (once — the worker no longer retries it).
     const refusal = providerRefusal(
       err, breezeEntityType, providerLabel, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name, existingRef !== null,
     );
-    const retryAfterMs = refusal ? null : rateLimitRetryAfterMs(err);
+    const rejection = refusal ? null : providerRejection(err, breezeEntityType, providerLabel);
+    const retryAfterMs = refusal || rejection ? null : rateLimitRetryAfterMs(err);
     const throttleSource = rateLimitSourceOf(err) ?? undefined;
-    const message = refusal?.message ?? (retryAfterMs !== null
+    const message = refusal?.message ?? rejection?.message ?? (retryAfterMs !== null
       ? providerRateLimitedRetryLaterMessage(providerLabel, 'sync', throttleSource)
       : sanitizeSyncErrorMessage(err, breezeEntityType, providerLabel));
     if (!refusal && retryAfterMs === null) {
@@ -1514,13 +1549,15 @@ async function syncMappedEntityUnderLease(
       // Still best-effort: markMappingError swallows a failed UPDATE, but
       // OPENING the context can fail too, and that must not replace the typed
       // 409/502/429 below with a raw error. On the failure path Sentry already
-      // has the original; on the refusal and throttle paths it does not (neither
-      // is ever reported), so this marker failure is the only event for it.
+      // has the original (so does a #7292 rejection); on the refusal and throttle
+      // paths it does not (neither is ever reported), so this marker failure is
+      // the only event for it.
       captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), undefined, {
         service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
     }
     if (refusal) throw refusal;
+    if (rejection) throw rejection;
     if (retryAfterMs !== null) {
       throw new AccountingMappingError('rate_limited', 429, message, { retryAfterMs, throttleSource, cause: err });
     }
