@@ -1,11 +1,13 @@
 # AI model registry W09: lab gates L1–L3 (failover against real models and a local billing service)
 
+**Status (2026-10-02):** #7784 and #7786 are fixed by #7789. L1 is now PASS (see Re-check). #7785 and #7787 remain open.
+
 Feature #7598, wave W09 (#7607, PR #7775). These are release gates for v0.121.
 
 - **Date:** 2026-10-02
 - **Build:** `origin/main` at `055d03a822`, which is the #7775 merge. A fresh worktree, brought up with `pnpm wt-stack up`.
 - **Models:** the real platform Anthropic key, held only in the stack's env. The BYOK connection uses the same real key as a stand-in partner key, so its funding differs. Every other provider key was blank.
-- **Billing:** the billing service at `origin/main` `e3b0f4c` (idempotent deduct), run locally with `npm run dev` against the stack's Postgres. `/health` reported `creditDeductIdempotencySchema: ok`.
+- **Billing:** the billing service at its idempotent-deduct build, run locally against the stack's Postgres; its health check reported the idempotency schema as ready.
 - **Spend:** about **USD 1.30**. The `ai_invocations` ledger holds USD 1.23 (platform 100.93¢, BYOK 22.50¢). The rest is roughly 30 unbilled CLI background calls on Haiku (about 21.5k input / 2.1k output tokens in total) plus the SDK-probe calls. The cap was USD 10.
 - **Drivers:** the settings UI (Playwright MCP) for defaults and fallbacks, the API for chat, agent runs and connections, and SQL/Redis for checks. Screenshots are in the worktree's gitignored `.superpowers/lab-w09/`.
 
@@ -15,7 +17,7 @@ Feature #7598, wave W09 (#7607, PR #7775). These are release gates for v0.121.
 |---|---|---|
 | **L1** | Raw Agent SDK failure shapes (429 / 529 / 401 / low credit) | **PASS** for 429, 529 and 401. **Low credit is classified, then cleared** (#7784). |
 | L1 | Chat, next-message failover (D5) on 529 / 429 / 401 | **PASS** |
-| L1 | Chat, low credit | **FAIL**: no cooldown, so no next-message failover (#7784) |
+| L1 | Chat, low credit | **FAIL**: no cooldown, so no next-message failover (#7784) (superseded, see Status) |
 | L1 | Agent run, per-hop failover (pre-output) on 529 / 401 / low credit | **PASS** |
 | L1 | Fast-mode 429 is not a failover | **PASS** (see the note: fast mode never reaches Breeze's Agent SDK transport today) |
 | **L2** | Cross-funding OFF (org override): platform → BYOK must not happen | **PASS** |
@@ -42,7 +44,7 @@ Feature #7598, wave W09 (#7607, PR #7775). These are release gates for v0.121.
 |---|---|
 | Stack | `pnpm wt-stack up` with `BREEZE_WORKSPACE_ENABLED=false`, a free docker subnet, caddy IP and trusted proxy, plus `BREEZE_AI_AGENTS_ENABLED=true`, which needs an api recreate. |
 | Fault proxy | A local Node proxy modeled on the W05 spike harness. It is set as the stack's `ANTHROPIC_BASE_URL`, which `IS_HOSTED=false` allows, so it sits in front of **platform** traffic only. BYOK traffic goes straight to the provider: the CLI child for a partner key gets no base-URL override, and the Messages client pins the public endpoint. The proxy logs path, model, `speed`, status, the injected rule and usage, never headers or text. Rules match on model substring and optionally `speed`. |
-| Billing service | A separate billing worktree at `e3b0f4c` with `npm ci && npm run dev`, connected to the stack's Postgres through a local port forward. Its own tables were created first from its drizzle schema (generated SQL, applied by hand; `db:push` failed to introspect the shared DB). Its boot `ensureSchema` created `billing_credit_deductions`. The stack's API env got the matching `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY`, with a lab-only key. |
+| Billing service | A separate billing worktree at its idempotent-deduct build, connected to the stack's Postgres through a local port forward. Its tables were created in the shared lab database and its boot-time schema check created `billing_credit_deductions`. The stack's API env got the matching `BILLING_SERVICE_URL` / `BILLING_SERVICE_API_KEY`, with a lab-only key. |
 | Credit wallet | **SQL:** a `billing_credit_balances` row for the seed partner (plan `enterprise`) with a purchased balance. The billing service's credit check returned `allowed: true`. |
 | W03 cutover | Already run at boot (`ai_model_registry_partner_cutover` has the seed partner). |
 | BYOK connection | **API** (`POST /ai/models/connections`, the W04 route). As designed, the first key moved the partner defaults onto BYOK and disabled platform Haiku, so platform Haiku was re-enabled through the API. |
@@ -63,7 +65,7 @@ This used a lab script run in the API container: one `query()` against the fault
 | **529** `overloaded_error` | `api_retry {error:"overloaded", error_status:529, attempt:1..3}` → `assistant {error:"server_error", model:"<synthetic>"}` → `result {subtype:"success", is_error:true, api_error_status:529}` | `overloaded` (retries 1 → no failover yet; retries 2 → **failover**), then `server_error`, then `overloaded` | correct |
 | **429** `rate_limit_error` | `api_retry {error:"rate_limit", 429, attempt:1..3}` → `assistant {error:"rate_limit"}` → `result {api_error_status:429, is_error:true}` | `rate_limited`, failover from retries ≥ 2 | correct |
 | **401** `authentication_error` | `api_retry {error:"authentication_failed", 401, attempt:1..3}` → `assistant {error:"authentication_failed"}` → `result {api_error_status:401, is_error:true}` | `auth_failed`, **failover at once** (attempt 1) | correct. The CLI does retry 401s. |
-| **Low credit** (400 `invalid_request_error`, "credit balance is too low") | `assistant {error:"billing_error"}` → `result {api_error_status:400, is_error:true}`. No retry. | `quota_exhausted`, failover at once → **then `null`** after the result frame | **defect #7784**: the result's bare 400 clears the cause |
+| **Low credit** (400 `invalid_request_error`, "credit balance is too low") | `assistant {error:"billing_error"}` → `result {api_error_status:400, is_error:true}`. No retry. | `quota_exhausted`, failover at once → **then `null`** after the result frame | **defect #7784**: the result's bare 400 clears the cause (pre-#7789 behaviour; now a terminal cause is never cleared) |
 
 Two more things in these frames:
 - Every failed query's `result.modelUsage` holds `claude-haiku-4-5-20251001`: the CLI's own background call, which succeeds even when the main model fails. This is the cause of #7786.
@@ -278,7 +280,7 @@ Raw output, final run (after the negative control was removed and the lost-respo
 
 In the **lab billing DB only**:
 1. An **unkeyed** deduct call to the billing service for the cost of reservation `0849c842` (already settled and debited) → `200 {"creditsDeducted":2,…}`. This is the realistic double debit: a debit that bypasses the key.
-2. A direct duplicate insert of that reservation's keyed row into `billing_credit_deductions` → **refused**: `duplicate key value violates unique constraint "billing_credit_deductions_partner_key_uniq"`. A double debit under the same key cannot exist at all.
+2. A direct duplicate insert of that reservation's keyed row into `billing_credit_deductions` → **refused**: `duplicate key value violates the unique constraint on (partner, idempotency key)`. A double debit under the same key cannot exist at all.
 
 Re-running the assertion after step 1:
 
@@ -325,7 +327,7 @@ The legacy `POST /ai-provider/key` does not clear cooldowns. That is the known g
   - Switching cross-funding OFF silently removes a cross-funding backup from the draft list.
   - The usage-by-model view labels the BYOK Sonnet offering with its raw id `claude-sonnet-5-5`.
 - **Billing transaction description:** agent-run deducts are written as "AI chat message" in `billing_credit_transactions.description`.
-- **Per-query fixed cost:** a brand-new chat's first turn wrote about 94.8k cache tokens (versus about 18.5k at W05), and an agent run about 71.6k. Cold first turns cost about 24¢ on Sonnet and about 47¢ on Opus.
+- **Per-query fixed cost:** a brand-new chat's first turn wrote about 94.8k cache tokens (versus about 18.5k at W05), and an agent run about 71.6k. Cold first turns cost about 24¢ on Sonnet and about 47¢ on Opus. Filed as #7798.
 
 ## Lab-only changes and clean-up
 
@@ -395,6 +397,7 @@ cooldown: 59cbb1ee quota_exhausted, pttl about 892 s
 ### Still open (unchanged)
 
 - **#7785:** every failed chat turn still ends with only `turn_model` + `done`, with no error event. On 529 and 401 the empty answer arrives after about 3 minutes of CLI retries. It was out of scope for #7789.
+- **#7787:** an agent run admitted onto a backup because its primary is cooling still records no failover provenance (hop 0, no cause). Not touched by #7789.
 
 ### Clean-up
 

@@ -1,5 +1,7 @@
 # AI model registry W05 — lab gate L2 results (real switching, continuation, carried-rate billing)
 
+**Status (2026-10-02):** #7768 and #7769 are fixed by #7774. Scenario 1 re-checked PASS through the composer (see Re-check). Scenarios 2 (PARTIAL) and 4 (NOT OBSERVED) are unchanged. Scenarios 2–3 ran with the #7768 workaround and were not re-run.
+
 Feature #7598, wave W05 (#7603, PR #7763). Gate: release-blocking for v0.121.
 
 - **Date:** 2026-10-02
@@ -12,14 +14,14 @@ Feature #7598, wave W05 (#7603, PR #7763). Gate: release-blocking for v0.121.
 
 | # | Scenario | Verdict |
 |---|---|---|
-| 1 | Same-connection resume switch, Sonnet → Opus | **PASS**, but only with a workaround for defect #7768 |
+| 1 | Same-connection resume switch, Sonnet → Opus | **PASS**, but only with a workaround for defect #7768 (superseded, see Status) |
 | 2 | Too big for the target → continuation | **PARTIAL**: mechanics pass; the summaries of the filler-heavy test chat were unusable (see below) |
 | 3 | Interrupt, then switch | **PASS** |
 | 4 | Carried rates | **NOT OBSERVED** (the binding carries them; no late delta occurred) |
 | 5 | Locked surface | **PASS** |
 
 **Defects filed (not fixed here):**
-- **#7768** — the model picker vanishes once a session exists: `fetchWithAuth` injects an ambient `?orgId=` next to `?sessionId=`, and the endpoint answers 400 "Pass a session or an organization, not both." Without a workaround, scenarios 1–3 cannot be run through the composer. **Release-blocking.**
+- **#7768** — the model picker vanishes once a session exists: `fetchWithAuth` injects an ambient `?orgId=` next to `?sessionId=`, and the endpoint answers 400 "Pass a session or an organization, not both." Without a workaround, scenarios 1–3 cannot be run through the composer. **Release-blocking** (superseded, see Status).
 - **#7769** — opening another chat from History leaves the previous chat's picker state (`switchSession` never reloads choices). The label can show a model the next turn does not use.
 
 ## Setup
@@ -66,7 +68,7 @@ Ledger (one row per turn; deltas, not cumulative; ids redacted):
 | 50 | 138,418 | 171,494 | 1.239 |
 | 72 | 162,118 | 200,965 | 1.240 |
 
-The same transcript is 24% smaller on Haiku's tokenizer here, so a source-model estimate would have been wrong in the permissive direction. (The spike saw 1.62× on prose; the ratio depends on the text.)
+The same transcript is about 19% smaller on Haiku's tokenizer (Sonnet counts about 24% more) here, so a source-model estimate would have been wrong in the permissive direction. (The spike saw 1.62× on prose; the ratio depends on the text.)
 
 **Switch to Haiku at count 138,418 (limit 136,000):**
 - `POST …/messages` with `model=Haiku` → **409 `continuation_required`**; the composer shows "This conversation is too long for Claude Haiku 4.5. Your message is kept. Continue in a new chat… / Keep the current model."
@@ -101,7 +103,7 @@ On a long turn (a 6,000-word essay on Sonnet; then a 15,000-word request on Opus
 - **UI guard:** while a turn is streaming, the picker and effort controls are disabled and the textarea shows "Waiting for response…" (disabled), so the UI cannot send a switch mid-turn.
 - **Server guard, forged requests during an in-flight turn:** a plain follow-up and one carrying `model=Sonnet` both got **409 `A message is already being processed for this session`**. (This is the in-process "already processing" refusal. The DB-level `SessionSwitchGuard` claim — `turn_in_progress` — was not separately reachable from outside; it is covered by `aiModelSwitchClaim.integration.test.ts`.)
 - **Interrupt:** `POST …/interrupt` → 200 `{"success":true,"interrupted":true}`.
-- **Interrupted-turn ledger:** one Opus row, `stop_reason=error`, tokens 0, cost 0, `chargeable=false`; reservation `settled` at 0¢, none left open. The API log carries `ai_usage_unconfirmed` (`usageNote":"delta"`) for that reservation. This is the documented `no_result` settlement: nothing billed, usage flagged unconfirmed, the SDK usage snapshot left where it was.
+- **Interrupted-turn ledger:** one Opus row, `stop_reason=error`, tokens 0, cost 0, `chargeable=false`; reservation `settled` at 0¢, none left open. The API log carries `ai_usage_unconfirmed` (`usageNote":"delta"`) for that reservation. This is a normal delta settlement (`usageNote:"delta"`): nothing billed, usage flagged unconfirmed, the SDK usage snapshot left where it was. `no_result` is a different note (`invocationUsage.ts`).
 - **No double billing on the next turn:** switching to Sonnet and sending billed one Sonnet row of 4.02517¢ (2×200 + 4×1000 + 22,926×20 + 14,249×250), and SDK cumulative moved 0.405042 → 0.445294 (Δ 0.040252 = the row). The interrupted Opus work, a few seconds of thinking, was never billed. That is the design's under-bill-never-double-bill; the unbilled amount is under a cent here.
 - **Not tested:** an interrupt on Haiku (the plan's wording) — the same code path on a different model; I used Opus to leave the switch-away rate visible.
 
@@ -122,7 +124,7 @@ With `allow_user_choice=false` on the `chat` assignment:
 
 - **Haiku refusal on a benign turn:** in the continued Haiku chat, a tool-using device question ended `stop_reason=refusal`, then a second row on `claude-haiku-4-5-20251001` with `fallback_used=true`; the UI read "Claude Haiku 4.5 declined; another model answered". Seen once; the registry's refusal-fallback path works, but the refusal itself is surprising on a plain question.
 - **Warn-level noise:** every session's first turn logs `ai_usage_unconfirmed` (`usageNote":"first_result"`) at `console.warn`. Probably intended (baseline turn), but it reads like an incident in logs.
-- **Priced and cheap:** a full resume or continuation round costs cents; the dominant spend was ~$7.5 of Sonnet cache reads over the 36-turn filler chat.
+- **Priced and cheap:** a full resume or continuation round costs cents; the dominant spend was ~$7.5 of Sonnet cache writes after the cache expired over the 36-turn filler chat.
 
 ## Clean-up
 
