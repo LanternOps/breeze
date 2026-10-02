@@ -12,6 +12,10 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   quote_send: 'A proposal is ready for review.',
   invoice_send: 'An invoice is ready to view.',
   portal_invite: 'Set your password to access your support portal.',
+  autopay_request: 'Set up payments for future invoices.',
+  autopay_enrolled: 'Your automatic payment details.',
+  autopay_stopped: 'Future automatic payments have stopped.',
+  card_expiring: 'Update your saved payment method.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -21,6 +25,10 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   quote_send: undefined,
   invoice_send: undefined,
   portal_invite: undefined,
+  autopay_request: undefined,
+  autopay_enrolled: undefined,
+  autopay_stopped: undefined,
+  card_expiring: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {

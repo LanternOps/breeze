@@ -8,6 +8,10 @@ export const EMAIL_TEMPLATE_IDS = [
   'quote_send',
   'invoice_send',
   'portal_invite',
+  'autopay_request',
+  'autopay_enrolled',
+  'autopay_stopped',
+  'card_expiring',
 ] as const;
 
 export type EmailTemplateId = (typeof EMAIL_TEMPLATE_IDS)[number];
@@ -30,7 +34,10 @@ export type EmailTemplateVarKey =
   | 'invoice_number'
   | 'due_date'
   | 'invite_url'
-  | 'cta_button';
+  | 'cta_button'
+  | 'client_name' | 'setup_link' | 'ach_mode_text' | 'payment_method'
+  | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
+  | 'expires_on' | 'update_link';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -88,6 +95,10 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
   portal_invite: PORTAL_INVITE_VARS,
+  autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
+  autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
+  autopay_stopped: ['partner_name','org_name','client_name','stopped_by','open_invoices_text'],
+  card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -97,6 +108,10 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   quote_send: 'Quote / proposal',
   invoice_send: 'Invoice',
   portal_invite: 'Portal invite',
+  autopay_request: 'Automatic payments request',
+  autopay_enrolled: 'Automatic payments confirmed',
+  autopay_stopped: 'Automatic payments stopped',
+  card_expiring: 'Saved card expiring',
 };
 
 const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
@@ -106,6 +121,10 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   quote_send: true,
   invoice_send: true,
   portal_invite: true,
+  autopay_request: true,
+  autopay_enrolled: false,
+  autopay_stopped: false,
+  card_expiring: true,
 };
 
 export function varsForEmailTemplate(id: EmailTemplateId): readonly EmailTemplateVarKey[] {
@@ -192,6 +211,35 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
       `<p>{{requester_name}} invited you to the {{org_name}} support portal, where you can open tickets, view invoices, and track your devices.</p>
 <p>{{cta_button}}</p>
 <p>This invite link expires in 7 days. If you didn't expect this, you can ignore this email.</p>`,
+  },
+  autopay_request: {
+    subject: 'Set up automatic payments with {{partner_name}}',
+    heading: 'One less thing to remember', buttonLabel: 'Set up automatic payments',
+    html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} invites you to set up automatic payments for future invoices. Save a payment method securely with Stripe, and we will send you an invoice before each payment.</p>
+<p>{{ach_mode_text}}</p><p>{{cta_button}}</p>
+<p>The schedule is shown below. You can stop automatic payments at any time. Existing open invoices still need to be paid separately.</p>`,
+  },
+  autopay_enrolled: {
+    subject: 'Automatic payments are set up with {{partner_name}}',
+    heading: 'Your payment method is saved', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p><p>Thank you for setting up automatic payments with {{partner_name}}.</p>
+<p>Payment method: {{payment_method}}.</p><p>{{schedule_text}}</p><p>{{fee_text}}</p>
+<p>We will send you an invoice before each payment. You can stop automatic payments at any time using the link below.</p>`,
+  },
+  autopay_stopped: {
+    subject: 'Automatic payments stopped with {{partner_name}}',
+    heading: 'Automatic payments have stopped', buttonLabel: '',
+    html: `<p>Hi {{client_name}},</p><p>{{stopped_by}} stopped automatic payments with {{partner_name}}.</p>
+<p>We will not start any new automatic payments. A payment already processing may still complete.</p>
+<p>{{open_invoices_text}}</p><p>Please use the invoice payment links below for any amount still due.</p>`,
+  },
+  card_expiring: {
+    subject: 'Please update your saved card for {{partner_name}}',
+    heading: 'Your saved card expires soon', buttonLabel: 'Update payment method',
+    html: `<p>Hi {{client_name}},</p><p>Your {{payment_method}} expires on {{expires_on}}.</p>
+<p>Please update your payment method to keep future automatic payments running.</p><p>{{cta_button}}</p>
+<p>Updating your method keeps your existing automatic-payment enrollment.</p>`,
   },
 };
 

@@ -1955,6 +1955,15 @@ describe('org routes', () => {
       expect(getCaptured().settings.emailTemplates.quote_send).toEqual(fourFields);
     });
 
+    it.each(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring'])('accepts %s as a template id', async (id) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+      const res = await patchMe({ settings: { emailTemplates: { [id]: fourFields } } });
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates[id]).toEqual(fourFields);
+    });
+
     it('rejects an unknown template id with 400 and never writes', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       mockCurrentPartnerSelect({});

@@ -10,6 +10,7 @@ export const NOTIFICATION_TYPES = [
   'ticket',
   'approval',
   'ai',
+  'billing',
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
