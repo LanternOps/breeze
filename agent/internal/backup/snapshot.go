@@ -2108,8 +2108,18 @@ func listSnapshotPrefixItems(provider providers.BackupProvider, snapshotID strin
 	return scoped, nil
 }
 
-// ensureGzipExtension derives the stored object-key suffix for an uploaded
-// (always-gzip-compressed) file. It ALWAYS appends ".gz", even when p
+// ensureGzipExtension derives the stored object key for an uploaded file.
+// The ".gz" suffix is a key-namespace convention, NOT a promise that the
+// stored bytes are gzip: the cloud providers (S3/B2/Azure/GCS, legacy and
+// brokered write paths alike) store the original bytes verbatim under the
+// ".gz" key, and only LocalProvider gzips on it (and gunzips on Download).
+// That layout is a cross-module contract — the BMR recovery client, API
+// presigned downloads, older agents and the stored-digest checks
+// (storedEntryMatches) all read cloud objects as raw bytes — so never add
+// or strip ".gz", and never start compressing cloud writes, without a
+// versioned per-entry encoding field shipped to every reader first (#7621).
+//
+// It ALWAYS appends ".gz", even when p
 // already ends in ".gz" (yielding ".gz.gz") — this keeps the derived key
 // injective over source snapshot paths. A conditional append (skip when p
 // already ends in ".gz") would map two distinct source paths — e.g. "report"
