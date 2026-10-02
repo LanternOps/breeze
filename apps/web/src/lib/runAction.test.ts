@@ -388,3 +388,25 @@ describe('runAction', () => {
     expect(call.detail).toBeUndefined();
   });
 });
+
+describe('runAction suppressErrorToast (#7386)', () => {
+  it('skips the toast for a matching failure but still throws ActionError', async () => {
+    const p = runAction({
+      request: async () => res({ error: 'busy', code: 'sync_in_progress' }, 409),
+      errorFallback: 'fallback',
+      suppressErrorToast: (status, code) => status === 409 && code === 'sync_in_progress',
+    });
+    await expect(p).rejects.toMatchObject({ status: 409, code: 'sync_in_progress' });
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('still toasts failures the predicate does not match', async () => {
+    const p = runAction({
+      request: async () => res({ error: 'dup', code: 'duplicate_name' }, 409),
+      errorFallback: 'fallback',
+      suppressErrorToast: (_s, code) => code === 'sync_in_progress',
+    });
+    await expect(p).rejects.toBeInstanceOf(ActionError);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+});
