@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { apiGet, apiPost } from '@/lib/api';
 import AutopaySetupPage from './AutopaySetupPage';
 vi.mock('@/lib/api', () => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); });
 const disclosure = { text: 'I authorize Example MSP under these schedule terms.', hash: 'a'.repeat(64), feeText: 'No fee applies.' };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -50,4 +50,40 @@ it('uses the actual Stripe portal return target and never sends a public token',
   render(<AutopaySetupPage mode="return" />);
   fireEvent.click(screen.getByTestId('autopay-return-submit'));
   await waitFor(() => expect(apiPost).toHaveBeenCalledWith('/portal/payment-methods/setup-return', { checkoutSessionId: 'cs_test_2' }, { redirectOnUnauthorized: true }));
+});
+
+it('portal confirmation does not access unavailable session storage', async () => {
+  window.history.replaceState({}, '', '/autopay/return?target=portal&session_id=cs_portal');
+  const storage = vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => { throw new Error('blocked'); });
+  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
+  render(<AutopaySetupPage mode="return" />);
+  fireEvent.click(screen.getByTestId('autopay-return-submit'));
+  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
+  expect(storage).not.toHaveBeenCalled();
+  expect(apiPost).toHaveBeenCalledWith('/portal/payment-methods/setup-return', { checkoutSessionId: 'cs_portal' }, { redirectOnUnauthorized: true });
+});
+it('public storage read failure reports feedback and allows retry', async () => {
+  window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_public');
+  sessionStorage.setItem('autopay-return-token', 'test-token');
+  const read = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  render(<AutopaySetupPage mode="return" />);
+  fireEvent.click(screen.getByTestId('autopay-return-submit'));
+  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Enable session storage');
+  expect(screen.getByTestId('autopay-return-submit')).toBeEnabled();
+  expect(apiPost).not.toHaveBeenCalled();
+  read.mockRestore();
+  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
+  fireEvent.click(screen.getByTestId('autopay-return-submit'));
+  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
+});
+it('public storage removal failure preserves the confirmed outcome and reports feedback', async () => {
+  window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_public');
+  sessionStorage.setItem('autopay-return-token', 'test-token');
+  vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
+  vi.mocked(apiPost).mockResolvedValue({ data: { outcome: 'activated', orgId: 'org', methodLabel: 'Card', feeText: 'No fee applies.' } });
+  render(<AutopaySetupPage mode="return" />);
+  fireEvent.click(screen.getByTestId('autopay-return-submit'));
+  expect(await screen.findByTestId('autopay-return-outcome')).toHaveTextContent('Automatic payments are set up');
+  expect(screen.getByTestId('autopay-feedback')).toHaveTextContent('could not clear');
+  expect(apiPost).toHaveBeenCalledTimes(1);
 });

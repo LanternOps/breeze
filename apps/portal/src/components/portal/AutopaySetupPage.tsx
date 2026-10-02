@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api';
 import { runAction } from '@/lib/runAction';
 import type { AutopayPageData, MethodType, SetupOutcome } from '@/lib/autopay';
-export default function AutopaySetupPage({ token, portal = false, mode = 'setup' }: {
-  token?: string; portal?: boolean; mode?: 'setup' | 'return' | 'stop';
+export default function AutopaySetupPage({ token, portal = false, mode = 'setup', onStopped }: {
+  token?: string; portal?: boolean; mode?: 'setup' | 'return' | 'stop'; onStopped?: () => void;
 }) {
   const [data, setData] = useState<AutopayPageData | null>(null);
   const [stopName, setStopName] = useState<string | null>(null);
@@ -43,24 +43,40 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
   }
   async function confirmReturn() {
     if (busy) return; setBusy(true);
-    const params = new URLSearchParams(window.location.search);
-    const checkoutSessionId = params.get('session_id');
-    const returnToken = sessionStorage.getItem('autopay-return-token');
-    const returnPortal = params.get('target') === 'portal';
-    if (!checkoutSessionId || (!returnPortal && !returnToken)) { onOutcome('This return link is incomplete. Contact your service provider.', true); setBusy(false); return; }
-    const result = await runAction<SetupOutcome>({
-      request: () => apiPost(returnPortal ? '/portal/payment-methods/setup-return' : '/autopay/public/setup-return',
-        { checkoutSessionId, ...(!returnPortal ? { token: returnToken } : {}) }, { redirectOnUnauthorized: returnPortal }),
-      onOutcome, successMessage: 'Setup checked.', errorFallback: 'Could not confirm setup. Try again.',
-    });
-    if (result) { setOutcome(result); if (!returnPortal) sessionStorage.removeItem('autopay-return-token'); } setBusy(false);
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const checkoutSessionId = params.get('session_id');
+      const returnPortal = params.get('target') === 'portal';
+      let returnToken: string | null = null;
+      if (!returnPortal) {
+        try { returnToken = sessionStorage.getItem('autopay-return-token'); }
+        catch { onOutcome('Enable session storage to return securely from Stripe, then try again.', true); return; }
+      }
+      if (!checkoutSessionId || (!returnPortal && !returnToken)) {
+        onOutcome('This return link is incomplete. Contact your service provider.', true); return;
+      }
+      const result = await runAction<SetupOutcome>({
+        request: () => apiPost(returnPortal ? '/portal/payment-methods/setup-return' : '/autopay/public/setup-return',
+          { checkoutSessionId, ...(!returnPortal ? { token: returnToken } : {}) }, { redirectOnUnauthorized: returnPortal }),
+        onOutcome, successMessage: 'Setup checked.', errorFallback: 'Could not confirm setup. Try again.',
+      });
+      if (result) {
+        setOutcome(result);
+        if (!returnPortal) {
+          try { sessionStorage.removeItem('autopay-return-token'); }
+          catch { onOutcome('Setup checked, but could not clear the return token from session storage. Close this tab when finished.', true); }
+        }
+      }
+    } finally { setBusy(false); }
   }
+
   async function stop() {
     if (busy || finished) return; setBusy(true);
     const result = await runAction({ request: () => apiPost(portal ? '/portal/autopay/stop' : `${base}/stop`, {}, config),
       onOutcome, successMessage: 'Automatic payments stopped. Any payment already processing will still complete.',
       errorFallback: 'Could not stop automatic payments. Try again.' });
     setFinished(result !== null); setBusy(false);
+    if (result !== null) onStopped?.();
   }
   return <section className="mx-auto max-w-xl space-y-5 p-6" data-testid="autopay-setup-page">
     {feedback && <p role={failed ? 'alert' : 'status'} data-testid="autopay-feedback">{feedback}</p>}
