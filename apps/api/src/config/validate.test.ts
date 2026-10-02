@@ -1435,13 +1435,56 @@ describe('validateConfig', () => {
     });
   });
 
+  // W06 (#7604, D6): the env path bootstraps per-partner rows for EVERY
+  // partner, so it is self-host only — affirmatively declared, fail closed.
   const openAiCompatibleEnv = {
     ...validEnv,
+    IS_HOSTED: 'false',
     MCP_LLM_PROVIDER: 'openai-compatible',
-    MCP_LLM_BASE_URL: 'http://localhost:8000/v1',
+    MCP_LLM_BASE_URL: 'http://10.0.0.5:8000/v1',
     MCP_LLM_MODEL: 'test-model',
-    MCP_LLM_API_KEY: 'sk-test',
+    MCP_LLM_API_KEY: 'sk-test-key',
   };
+
+  it('refuses MCP_LLM_PROVIDER=openai-compatible on hosted, pointing at the per-partner connection', () => {
+    withEnv({ ...openAiCompatibleEnv, IS_HOSTED: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_PROVIDER=openai-compatible is for self-hosted Breeze/);
+      expect(() => validateConfig()).toThrow(/Partner Settings → AI Providers & Models/);
+    });
+  });
+
+  it('refuses MCP_LLM_PROVIDER=openai-compatible when IS_HOSTED is unset or unrecognised (fail closed)', () => {
+    for (const IS_HOSTED of ['', 'maybe']) {
+      withEnv({ ...openAiCompatibleEnv, IS_HOSTED }, () => {
+        expect(() => validateConfig()).toThrow(/MCP_LLM_PROVIDER=openai-compatible is for self-hosted Breeze/);
+      });
+    }
+  });
+
+  it('accepts a keyless openai-compatible endpoint (local model server)', () => {
+    const { MCP_LLM_API_KEY: _, ...rest } = openAiCompatibleEnv;
+    withEnv(rest as Record<string, string>, () => {
+      const config = validateConfig();
+      expect(config.MCP_LLM_PROVIDER).toBe('openai-compatible');
+    });
+    withEnv({ ...openAiCompatibleEnv, MCP_LLM_API_KEY: '' }, () => {
+      expect(validateConfig().MCP_LLM_PROVIDER).toBe('openai-compatible');
+    });
+  });
+
+  it('refuses an MCP_LLM_API_KEY shorter than 8 characters without echoing it', () => {
+    withEnv({ ...openAiCompatibleEnv, MCP_LLM_API_KEY: 'sk-Q7z' }, () => {
+      let message = '';
+      try {
+        validateConfig();
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toContain('MCP_LLM_API_KEY');
+      expect(message).toContain('at least 8 characters');
+      expect(message).not.toContain('sk-Q7z');
+    });
+  });
 
   it('requires MCP_LLM_MODEL when MCP_LLM_PROVIDER is openai-compatible', () => {
     const { MCP_LLM_MODEL: _, ...rest } = openAiCompatibleEnv;
@@ -1456,10 +1499,10 @@ describe('validateConfig', () => {
     });
   });
 
-  it('requires MCP_LLM_API_KEY when MCP_LLM_PROVIDER is openai-compatible', () => {
-    const { MCP_LLM_API_KEY: _, ...rest } = openAiCompatibleEnv;
+  it('requires MCP_LLM_BASE_URL when MCP_LLM_PROVIDER is openai-compatible', () => {
+    const { MCP_LLM_BASE_URL: _, ...rest } = openAiCompatibleEnv;
     withEnv(rest as Record<string, string>, () => {
-      expect(() => validateConfig()).toThrow('MCP_LLM_API_KEY');
+      expect(() => validateConfig()).toThrow('MCP_LLM_BASE_URL');
     });
   });
 
@@ -1468,7 +1511,7 @@ describe('validateConfig', () => {
       const config = validateConfig();
       expect(config.MCP_LLM_PROVIDER).toBe('openai-compatible');
       expect(config.MCP_LLM_MODEL).toBe('test-model');
-      expect(config.MCP_LLM_API_KEY).toBe('sk-test');
+      expect(config.MCP_LLM_API_KEY).toBe('sk-test-key');
     });
   });
 

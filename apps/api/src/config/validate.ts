@@ -20,6 +20,13 @@ import {
   parseOAuthAuthEpochEnforceAfter,
 } from './env';
 
+/**
+ * W06 (#7604): minimum MCP_LLM_API_KEY length. Mirrors MIN_GATEWAY_KEY_LENGTH
+ * (services/aiModels/connections.ts — not imported: it pulls in the DB layer);
+ * envOpenAiBootstrap.test.ts asserts the two stay equal.
+ */
+export const MCP_LLM_MIN_API_KEY_LENGTH = 8;
+
 // ---------------------------------------------------------------------------
 // Insecure default detection
 // ---------------------------------------------------------------------------
@@ -1263,9 +1270,25 @@ const envSchema = envObjectSchema
       }
     }
 
-    // MCP_LLM_PROVIDER openai-compatible: vLLM endpoint + auth + model id required at boot
-    // (enforced in all environments, not just production)
+    // MCP_LLM_PROVIDER openai-compatible: endpoint + model id required at boot
+    // (enforced in all environments, not just production). W06 (#7604, D6):
+    // boot turns these into one env-managed OpenAI-compatible connection PER
+    // PARTNER (services/aiModels/envOpenAiBootstrap.ts), so the path is
+    // self-host only — refused unless self-host is affirmatively declared
+    // (same fail-closed rule as ANTHROPIC_BASE_URL above). The key is optional
+    // (keyless local model servers); when set it must meet the gateway
+    // scrubber's minimum (MIN_GATEWAY_KEY_LENGTH). Messages never echo it.
     if (data.MCP_LLM_PROVIDER === 'openai-compatible') {
+      if (!isRecognizedSelfHostSignal(data.IS_HOSTED)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['MCP_LLM_PROVIDER'],
+          message:
+            'MCP_LLM_PROVIDER=openai-compatible is for self-hosted Breeze (set IS_HOSTED explicitly to false). '
+            + 'On hosted — or with IS_HOSTED unset/invalid — it is refused: it would create a connection for every '
+            + 'partner. Add an OpenAI-compatible connection under Partner Settings → AI Providers & Models instead.',
+        });
+      }
       if (!data.MCP_LLM_BASE_URL) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -1280,11 +1303,12 @@ const envSchema = envObjectSchema
           message: 'MCP_LLM_MODEL is required when MCP_LLM_PROVIDER is openai-compatible.',
         });
       }
-      if (!data.MCP_LLM_API_KEY?.trim()) {
+      const mcpLlmKey = data.MCP_LLM_API_KEY?.trim();
+      if (mcpLlmKey && mcpLlmKey.length < MCP_LLM_MIN_API_KEY_LENGTH) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['MCP_LLM_API_KEY'],
-          message: 'MCP_LLM_API_KEY is required when MCP_LLM_PROVIDER is openai-compatible.',
+          message: `MCP_LLM_API_KEY must be at least ${MCP_LLM_MIN_API_KEY_LENGTH} characters when set (leave it empty for a keyless endpoint).`,
         });
       }
     }

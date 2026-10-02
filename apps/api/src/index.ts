@@ -180,6 +180,7 @@ import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
 import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
+import { runEnvOpenAiBootstrapWithRetry } from './services/aiModels/envOpenAiBootstrap';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
 import { safeErrorMessage } from './services/aiModels/safeDbError';
 import { baselineCredentialHistory } from './services/backupStorageCredentialHistory';
@@ -1910,6 +1911,19 @@ async function bootstrap(): Promise<void> {
       // Scrubbed: a query error's message carries the statement's bound values.
       console.error('[startup] AI model registry cutover sweep failed:', safeErrorMessage(err));
       captureException(reportableCutoverError(err), undefined, { area: 'ai_model_registry_cutover' });
+    });
+
+  // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed
+  // OpenAI-compatible connection + priced offering per partner (and the chat
+  // default re-pointed once); unset → those connections are released. Started
+  // after the cutover sweep: each partner is cut over FIRST inside the
+  // bootstrap, so the cutover can never undo it. Detached and retried on a
+  // bounded schedule; idempotent across restarts and replicas (per-partner
+  // registry lock). Never logs the key.
+  void runEnvOpenAiBootstrapWithRetry()
+    .catch((err) => {
+      console.error('[startup] MCP_LLM_* env bootstrap failed:', safeErrorMessage(err));
+      captureException(reportableCutoverError(err), undefined, { area: 'ai_env_openai_bootstrap' });
     });
 
   // Storage keys that S3 backup destinations used before backups were written
