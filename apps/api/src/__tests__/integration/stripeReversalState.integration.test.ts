@@ -109,6 +109,35 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.useRealTimers());
 
+  runDb('ACH full dispute and reinstatement preserve principal, fee and original method', async () => {
+    const f = await seed(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
+      stripeObjectType: 'payment_intent', stripeObjectId: f.paymentIntentId,
+      paymentMethodType: 'us_bank_account', source: 'autopay', feeAmount: '3.00', status: 'failed',
+    }).where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    await recordStripePayment({ stripeObjectId: f.paymentIntentId, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: '103.00', currency: 'USD' });
+    const captured = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ amount: '100.00', method: 'ach_debit' });
+    await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: 'evt_ach_withdraw', eventType: 'charge.dispute.funds_withdrawn', chargeAmountMinor: 10300, refundedAmountMinor: null, disputeAmountMinor: 10300, disputeFundsWithdrawn: true, providerCreated: 300 }));
+    expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)))).toHaveLength(0);
+    await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: 'evt_ach_restore', eventType: 'charge.dispute.funds_reinstated', chargeAmountMinor: 10300, refundedAmountMinor: null, disputeAmountMinor: 10300, disputeFundsWithdrawn: false, providerCreated: 301 }));
+    const restored = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({ amount: '100.00', method: 'ach_debit' });
+  });
+  runDb('partial gross refund reduces only the proportional principal and duplicate delivery is harmless', async () => {
+    const f = await seed(false);
+    await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ feeAmount: '3.00', paymentMethodType: 'card', source: 'autopay', stripeObjectType: 'payment_intent', stripeObjectId: f.paymentIntentId }).where(eq(invoiceStripePayments.stripePaymentIntentId, f.paymentIntentId)));
+    await recordStripePayment({ stripeObjectId: f.paymentIntentId, stripePaymentIntentId: f.paymentIntentId, stripeAccountId: f.accountId, amount: '103.00', currency: 'USD' });
+    const event = financialEvent(f, { stripeEventId: 'evt_fee_partial', chargeAmountMinor: 10300, refundedAmountMinor: 5150 });
+    await ingestStripeFinancialEvent(event);
+    await ingestStripeFinancialEvent(event);
+    const payments = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoiceId)));
+    expect(payments).toHaveLength(1);
+    expect(payments[0]).toMatchObject({ amount: '50.00', method: 'card' });
+  });
+
   runDb('full refund transitions the mapping before deleting, so the real FK/CHECK commits', async () => {
     const f = await seed();
     await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: 'evt_full_refund', refundedAmountMinor: 10_000 }));
@@ -209,7 +238,7 @@ describe('Stripe financial reversal state (real PostgreSQL)', () => {
       .where(eq(invoicePayments.id, mapping!.invoicePaymentId!)));
     const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
     expect(mapping).toMatchObject({ status: 'succeeded', disputeFundsWithdrawn: false });
-    expect(payment!.amount).toBe('100.00');
+    expect(payment).toMatchObject({ amount: '100.00', method: 'card' });
     expect(invoice).toMatchObject({ status: 'paid', balance: '0.00' });
   });
 
