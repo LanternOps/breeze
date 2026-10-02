@@ -19,7 +19,7 @@ export async function isAutopayEnabledForPartner(db: Tx, partnerId: string): Pro
 
 export function requireAutopayEnabled(): MiddlewareHandler {
   return async (c, next) => {
-    const partnerId = c.get('auth')?.partnerId;
+    const partnerId = c.get('autopayPartnerId') ?? c.get('auth')?.partnerId;
     // Self-managed routes have no ambient transaction. Close this short read
     // before entering the handler, which owns its own authorized context.
     const enabled = partnerId && await (getCurrentDbAccessContext()

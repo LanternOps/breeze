@@ -31,6 +31,8 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   // `partners` or activate a partner on these paths BEFORE the route has
   // checked its HMAC. Exact match only; no partner is ever acted for here.
   if (SIGNED_WEBHOOK_PATHS.has(path)) return true;
+  // Public token GETs must never trigger staff account activation.
+  if (path.startsWith('/api/v1/autopay/public/')) return true;
   return false;
 }
 
