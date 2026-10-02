@@ -27,6 +27,8 @@
  *   covers all `aiTools*.ts` handlers without per-file changes.
  */
 
+import { redactLogMessage } from './logRedaction';
+
 export const GENERIC_TOOL_ERROR_MESSAGE =
   'The tool could not complete this request. Details were recorded in the server logs.';
 
@@ -95,6 +97,23 @@ const INTERNAL_DETAIL_PATTERNS: RegExp[] = [
 const MAX_SAFE_ERROR_CHARS = 300;
 
 /**
+ * Cap for a *returned* error that matches no internal-detail pattern. Such text
+ * is author-written (typically a zod validation message — a long enum alone is
+ * 300+ chars, #7825), so it is passed through; beyond this cap it is truncated
+ * rather than genericized so the model still sees the actionable head. The
+ * stricter `MAX_SAFE_ERROR_CHARS` still governs thrown errors.
+ */
+const MAX_RETURNED_ERROR_CHARS = 600;
+
+/** Bound on the original text written to the server log per scrubbed error. */
+const MAX_LOGGED_ERROR_CHARS = 4000;
+
+/** Extra context for the server-side log line written when text is scrubbed. */
+export interface ScrubLogContext {
+  toolName?: string;
+}
+
+/**
  * Object keys that mark an error context. Covers `error`, `errors`, `warning(s)`,
  * `queueError`, `scheduleWarning`, `errorMessage`, `errorDetail`, `errorLog`, and
  * snake_case forms like `db_error` / `sync_error`.
@@ -120,13 +139,42 @@ export function looksLikeInternalErrorDetail(text: string): boolean {
   return INTERNAL_DETAIL_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/** Pattern-only check (no length rule) — what makes returned text driver-shaped. */
+function matchesInternalDetailPattern(text: string): boolean {
+  return INTERNAL_DETAIL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function logScrubbedReturnedError(
+  action: 'genericized' | 'truncated',
+  text: string,
+  ctx?: ScrubLogContext,
+): void {
+  console.error(
+    `[aiTools] ${ctx?.toolName ?? 'unknown tool'} returned an error that was ${action} before reaching the chat; full original:`,
+    redactLogMessage(text.length > MAX_LOGGED_ERROR_CHARS ? `${text.slice(0, MAX_LOGGED_ERROR_CHARS)}… [log-truncated, ${text.length} chars total]` : text),
+  );
+}
+
 /**
  * Pattern-based scrub for error text a handler returned as a normal result.
- * Preserves short, author-written messages; replaces anything driver-shaped.
+ * Preserves author-written messages; replaces anything driver-shaped.
+ *
+ * Whenever the text is changed, the full (redacted) original is logged — the
+ * generic replacement promises "details were recorded in the server logs", so
+ * that must be true (#7825). Pattern-free text longer than
+ * `MAX_RETURNED_ERROR_CHARS` is truncated, not genericized.
  */
-export function scrubErrorText(text: string): string {
+export function scrubErrorText(text: string, ctx?: ScrubLogContext): string {
   if (typeof text !== 'string' || text.length === 0) return text;
-  return looksLikeInternalErrorDetail(text) ? GENERIC_TOOL_ERROR_MESSAGE : text;
+  if (matchesInternalDetailPattern(text)) {
+    logScrubbedReturnedError('genericized', text, ctx);
+    return GENERIC_TOOL_ERROR_MESSAGE;
+  }
+  if (text.length > MAX_RETURNED_ERROR_CHARS) {
+    logScrubbedReturnedError('truncated', text, ctx);
+    return `${text.slice(0, MAX_RETURNED_ERROR_CHARS)}… [truncated ${text.length - MAX_RETURNED_ERROR_CHARS} chars; full text in server logs]`;
+  }
+  return text;
 }
 
 /**
@@ -151,18 +199,25 @@ export function scrubErrorFieldsDeep(
   value: unknown,
   depth = 0,
   inErrorContext = false,
+  ctx?: ScrubLogContext,
 ): unknown {
   if (typeof value === 'string') {
-    return inErrorContext ? scrubErrorText(value) : value;
+    return inErrorContext ? scrubErrorText(value, ctx) : value;
   }
   if (value === null || typeof value !== 'object') return value;
 
   // Fail CLOSED at the depth cap: inside an error context, an un-walkable subtree
   // is replaced rather than passed through unscrubbed.
-  if (depth > 8) return inErrorContext ? GENERIC_TOOL_ERROR_MESSAGE : value;
+  if (depth > 8) {
+    if (!inErrorContext) return value;
+    console.error(
+      `[aiTools] ${ctx?.toolName ?? 'unknown tool'} returned an error payload nested past the scrub depth cap; replaced with the generic message`,
+    );
+    return GENERIC_TOOL_ERROR_MESSAGE;
+  }
 
   if (Array.isArray(value)) {
-    return value.map((item) => scrubErrorFieldsDeep(item, depth + 1, inErrorContext));
+    return value.map((item) => scrubErrorFieldsDeep(item, depth + 1, inErrorContext, ctx));
   }
 
   const proto = Object.getPrototypeOf(value);
@@ -174,7 +229,7 @@ export function scrubErrorFieldsDeep(
     // defineProperty rather than `out[key] =` so a JSON-parsed "__proto__" key is
     // preserved as an own property instead of hitting the prototype setter.
     Object.defineProperty(out, key, {
-      value: scrubErrorFieldsDeep(child, depth + 1, childInErrorContext),
+      value: scrubErrorFieldsDeep(child, depth + 1, childInErrorContext, ctx),
       enumerable: true,
       writable: true,
       configurable: true,

@@ -97,6 +97,61 @@ describe('aiToolErrors', () => {
     it('passes through empty/non-string input unchanged', () => {
       expect(scrubErrorText('')).toBe('');
     });
+
+    describe('returned-error logging and long validation errors (#7825)', () => {
+      const KINDS = Array.from({ length: 18 }, (_, i) => `metric_kind_${i}`).join('|');
+      // ~311 chars: the shape of the zod enum issue seen in production.
+      const LONG_ZOD = `definition.kind: Invalid option: expected one of ${KINDS}`;
+
+      it('logs the full original, with tool name, whenever it genericizes a driver error', () => {
+        const spy = vi.mocked(console.error);
+        scrubErrorText(RAW_DRIZZLE_ERROR, { toolName: 'manage_x' });
+        expect(spy).toHaveBeenCalledTimes(1);
+        const line = (spy.mock.calls[0] ?? []).join(' ');
+        expect(line).toContain('manage_x');
+        expect(line).toContain('benchmark_version');
+      });
+
+      it('redacts secrets in the logged original', () => {
+        const spy = vi.mocked(console.error);
+        scrubErrorText('Failed query: select "a" from t where password=hunter2hunter2', {
+          toolName: 'manage_x',
+        });
+        expect(JSON.stringify(spy.mock.calls)).not.toContain('hunter2hunter2');
+      });
+
+      it('keeps a >300-char pattern-free validation error useful and does not log', () => {
+        expect(LONG_ZOD.length).toBeGreaterThan(300);
+        expect(scrubErrorText(LONG_ZOD, { toolName: 'manage_x' })).toBe(LONG_ZOD);
+        expect(console.error).not.toHaveBeenCalled();
+      });
+
+      it('truncates (not genericizes) a huge pattern-free error and logs the full text', () => {
+        const huge = 'Invalid option: ' + 'abcdefgh '.repeat(200);
+        const out = scrubErrorText(huge, { toolName: 'manage_x' });
+        expect(out).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
+        expect(out.startsWith('Invalid option: abcdefgh')).toBe(true);
+        expect(out.length).toBeLessThan(huge.length);
+        expect(out).toMatch(/truncated/i);
+        expect(console.error).toHaveBeenCalledTimes(1);
+      });
+
+      it('still genericizes a long error that matches an internal pattern, and logs it', () => {
+        const long = `${'x'.repeat(400)} relation "secret_tbl" does not exist`;
+        expect(scrubErrorText(long, { toolName: 'manage_x' })).toBe(GENERIC_TOOL_ERROR_MESSAGE);
+        expect(console.error).toHaveBeenCalledTimes(1);
+      });
+
+      it('bounds the size of the logged original', () => {
+        scrubErrorText(`relation "t" does not exist ${'z'.repeat(20000)}`, { toolName: 'manage_x' });
+        expect((vi.mocked(console.error).mock.calls[0] ?? []).join(' ').length).toBeLessThan(5000);
+      });
+
+      it('propagates tool context through scrubErrorFieldsDeep', () => {
+        scrubErrorFieldsDeep({ error: RAW_DRIZZLE_ERROR }, 0, false, { toolName: 'manage_y' });
+        expect(String(vi.mocked(console.error).mock.calls[0]?.[0])).toContain('manage_y');
+      });
+    });
   });
 
   describe('scrubErrorFieldsDeep', () => {
