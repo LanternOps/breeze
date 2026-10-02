@@ -542,6 +542,21 @@ describe('metric anomaly detector tuning (2026-09-26)', () => {
     expect(await selectAnomaliesByType(org, stale, 'memory_growth')).toHaveLength(1);
   });
 
+  it('disk growth is not novelty-gated: a disk filling back up after a cleanup still fires', async () => {
+    const DISK = { sourceTable: 'device_metrics', metricType: 'disk', metricName: 'disk_percent' } as const;
+    const base = new Date('2026-06-18T18:00:00.000Z');
+    const device = await insertDevice({ orgId: org, siteId: site, hostname: 'disk-refill' });
+    await insertRollup({ orgId: org, deviceId: device, ...DISK, bucketStart: new Date(base.getTime() - 24 * 60 * 60_000), avgValue: 90 });
+    const climb = [50, 54, 58, 62, 66, 70];
+    for (let i = 0; i < MIN_TREND_BUCKETS; i++) {
+      await insertRollup({ orgId: org, deviceId: device, ...DISK, bucketStart: bucketAt(base, i), avgValue: climb[i]! });
+    }
+
+    await runDetection(org, base, bucketAt(base, MIN_TREND_BUCKETS));
+
+    expect(await selectAnomaliesByType(org, device, 'disk_growth')).toHaveLength(1);
+  });
+
   it('a pending (not yet episode) bucket is excluded from the baseline, so a return inside the gap still counts', async () => {
     const device = await insertDevice({ orgId: org, siteId: site, hostname: 'pending-return' });
     const anchor = new Date('2026-06-18T18:00:00.000Z');

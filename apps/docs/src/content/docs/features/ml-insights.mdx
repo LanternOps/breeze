@@ -100,7 +100,7 @@ For self-hosted operators, environment variables provide an emergency off-switch
 
 Anomaly Detection watches each device's metric history and flags behavior that deviates from the device's own recent baseline — a CPU spike, a sudden drop, a steady upward trend, runaway memory or disk growth, or unusual network egress. It catches developing problems that a fixed alert threshold would miss.
 
-To keep routine work out of the list, a run of unusual readings has to last at least 15 minutes (three 5-minute readings) before it shows up. A burst shorter than that, such as a Defender scan or an indexer run, closes on its own and is never shown. Memory and disk growth also has to reach a new high for the device: a climb back to a level the device already reached in the past 7 days, such as a nightly job, is treated as normal for that device.
+To keep routine work out of the list, a run of unusual readings has to last at least 15 minutes (three 5-minute readings) before it shows up. A burst shorter than that, such as a Defender scan or an indexer run, closes on its own and is never shown. Memory growth also has to reach a new high for the device: a climb back to a level the device already reached in the past 7 days, such as a nightly job, is treated as normal for that device. Disk growth is always reported, because a disk filling back up after a cleanup still matters.
 
 ### Where to find it
 
