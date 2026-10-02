@@ -173,8 +173,79 @@ export { buildClaudeSdkChildEnv } from './aiModels/sdkChildEnv';
  */
 const GATEWAY_CAPABILITY_PATH = /\/g\/[A-Za-z0-9_-]{43,}/g;
 
+function redactSdkStderrText(data: string): string {
+  return redactAiToolOutputText(data.replace(GATEWAY_CAPABILITY_PATH, '/g/[redacted]'));
+}
+
 export function redactClaudeSdkStderr(data: string): string {
-  return redactAiToolOutputText(data.replace(GATEWAY_CAPABILITY_PATH, '/g/[redacted]')).trim();
+  return redactSdkStderrText(data).trim();
+}
+
+/** Longest stderr line buffered before it is flushed unterminated; also the cap on one logged entry. */
+const SDK_STDERR_MAX_LINE = 16 * 1024;
+/** Characters kept back when an over-long line is flushed, so a token cut there is matched whole later. */
+const SDK_STDERR_CARRY = 64;
+const SDK_STDERR_MARKER = /error|Error|FATAL/;
+
+/**
+ * Line-buffered, redacting sink for one SDK child's stderr. The CLI's stderr
+ * arrives in arbitrary chunks, so a secret (a gateway grant token in a /g/
+ * URL, a key) can be split across two of them; redacting each chunk on its own
+ * would let both halves through. Text is therefore held until a newline and
+ * each write's batch of complete lines is redacted as a whole before it is
+ * logged (only when it carries an error marker, as before). A line longer
+ * than SDK_STDERR_MAX_LINE is redacted as buffered and flushed except for its
+ * last SDK_STDERR_CARRY characters, which stay buffered: a token that is
+ * incomplete at the cut lies wholly inside them and is matched once the rest
+ * arrives. Every logged entry is at most SDK_STDERR_MAX_LINE characters.
+ * `flush()` (child exit / session teardown) logs whatever is left; it is
+ * idempotent.
+ */
+export function createSdkStderrRedactor(emit: (text: string) => void): { write(data: string): void; flush(): void } {
+  let pending = '';
+  // The current (unterminated) line already had a marked part logged.
+  let continuing = false;
+
+  const emitRedacted = (text: string): void => {
+    const redacted = redactSdkStderrText(text);
+    for (let i = 0; i < redacted.length; i += SDK_STDERR_MAX_LINE) {
+      const part = redacted.slice(i, i + SDK_STDERR_MAX_LINE).trim();
+      if (part) emit(part);
+    }
+  };
+
+  return {
+    write(data: string): void {
+      pending += data;
+      const nl = pending.lastIndexOf('\n');
+      if (nl >= 0) {
+        const batch = pending.slice(0, nl + 1);
+        pending = pending.slice(nl + 1);
+        if (continuing || SDK_STDERR_MARKER.test(batch)) emitRedacted(batch);
+        continuing = false;
+      }
+      if (pending.length > SDK_STDERR_MAX_LINE) {
+        const marked = continuing || SDK_STDERR_MARKER.test(pending);
+        // Redact BEFORE cutting, so a complete secret anywhere in the buffer is
+        // replaced whole; only redacted text is ever logged or carried.
+        const redacted = redactSdkStderrText(pending);
+        const cut = Math.max(0, redacted.length - SDK_STDERR_CARRY);
+        if (marked) {
+          for (let i = 0; i < cut; i += SDK_STDERR_MAX_LINE) {
+            const part = redacted.slice(i, Math.min(i + SDK_STDERR_MAX_LINE, cut)).trim();
+            if (part) emit(part);
+          }
+          continuing = true;
+        }
+        pending = redacted.slice(cut);
+      }
+    },
+    flush(): void {
+      if (pending && (continuing || SDK_STDERR_MARKER.test(pending))) emitRedacted(pending);
+      pending = '';
+      continuing = false;
+    },
+  };
 }
 
 // ============================================
@@ -421,6 +492,8 @@ export interface ActiveSession {
    * grant + deny-all proxy grant, W06). Idempotent; called on every teardown.
    */
   revokeEgressGrant?: () => void;
+  /** Logs any buffered (redacted) SDK stderr tail. Idempotent; called on teardown. */
+  flushSdkStderr?: () => void;
   sdkSessionId: string | null;
   query: Query;
   abortController: AbortController;
@@ -1174,6 +1247,8 @@ export class StreamingSessionManager {
     // transaction (via withDbAccessContext). Without this escape hatch, the SDK's
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
+    const stderrLog = createSdkStderrRedactor((text) => console.error('[SDK-stderr]', breezeSessionId, text));
+    session.flushSdkStderr = () => stderrLog.flush();
     try {
       runOutsideDbContextSafe(() => {
         const childEnv = child.env;
@@ -1204,11 +1279,8 @@ export class StreamingSessionManager {
             resume: resumeSdkSessionId,
             persistSession: true,
             settingSources: [],
-            stderr: (data: string) => {
-              if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-                console.error('[SDK-stderr]', breezeSessionId, redactClaudeSdkStderr(data));
-              }
-            },
+            // Redacted per complete line, never per chunk (see createSdkStderrRedactor).
+            stderr: (data: string) => stderrLog.write(data),
           }
         });
 
@@ -1219,7 +1291,7 @@ export class StreamingSessionManager {
         session.processorPromise.catch((err) => {
           captureException(err);
           console.error('[StreamingSessionManager] Background processor error:', err);
-        });
+        }).finally(() => stderrLog.flush());
       });
     } catch (err) {
       // The subprocess never started (a rejected child env, a query() throw).
@@ -1278,6 +1350,7 @@ export class StreamingSessionManager {
     try { session.revokeEgressGrant?.(); } catch (err) {
       captureException(err); console.error('[StreamingSessionManager] Failed to revoke LLM egress grant:', sessionId, err);
     }
+    try { session.flushSdkStderr?.(); } catch { /* logging must not block teardown */ }
     session.eventBus.closeAll();
     session.state = 'closed';
     this.sessions.delete(sessionId);

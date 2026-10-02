@@ -531,6 +531,31 @@ describe('getOrCreate — catalog egress proxy wiring', () => {
     await session.processorPromise;
   });
 
+  it('SDK stderr: a grant token split across two stderr chunks is never logged, and the tail is flushed on remove', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde';
+
+    const session = await manager.getOrCreate(
+      'sess-catalog-stderr', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, resolvedFor(catalogConfig()),
+    );
+    const stderr = capturedQueryArgs[0]!.options.stderr as (data: string) => void;
+    stderr(`API Error: connect ECONNREFUSED http://127.0.0.1:41234/g/${token.slice(0, 21)}`);
+    stderr(`${token.slice(21)}/v1/messages Error\n`);
+    stderr(`FATAL retry /g/${token.slice(0, 10)}`);
+    stderr(`${token.slice(10)} (no newline before exit)`);
+    manager.remove('sess-catalog-stderr');
+
+    const logged = errors.mock.calls.filter((c) => c[0] === '[SDK-stderr]').map((c) => String(c[2]));
+    expect(logged.join('')).not.toContain(token);
+    expect(logged.join('\n')).toContain('/g/[redacted]/v1/messages');
+    expect(logged.join('\n')).toContain('FATAL retry /g/[redacted]');
+
+    gate.resolve();
+    await session.processorPromise;
+  });
+
   it('revokes the grant when the session is removed', async () => {
     const gate = deferred();
     mockSdkQuery([], gate.promise);

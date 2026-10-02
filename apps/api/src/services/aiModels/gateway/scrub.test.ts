@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scrubSecrets } from './scrub';
+import { containsSecretMaterial, scrubSecrets } from './scrub';
 
 describe('scrubSecrets', () => {
   it('removes the exact secret and its common echoes', () => {
@@ -88,6 +88,56 @@ describe('scrubSecrets', () => {
       const t0 = performance.now();
       scrubSecrets('%5A'.repeat(20_000), [secret], 100);
       expect(performance.now() - t0).toBeLessThan(250);
+    });
+  });
+
+  it('redacts mixed-case percent-encoding of a non-ASCII secret', () => {
+    const key = 'clé-secrète-ünïcode-0123456789';
+    let flip = false;
+    const mixed = encodeURIComponent(key).replace(/%([0-9A-F])([0-9A-F])/g, (_m, a: string, b: string) => {
+      flip = !flip;
+      return flip ? `%${a.toLowerCase()}${b}` : `%${a}${b.toLowerCase()}`;
+    });
+    expect(mixed).not.toBe(encodeURIComponent(key));
+    expect(mixed.toLowerCase()).toBe(encodeURIComponent(key).toLowerCase());
+    expect(scrubSecrets(`q=${mixed}&x=1`, [key])).toBe('q=[redacted]&x=1');
+    // A fragment of it, too.
+    const fragment = mixed.slice(10, 70);
+    expect(scrubSecrets(`q=${fragment}&x=1`, [key])).not.toContain(fragment);
+  });
+
+  it('redacts mixed-case hex and fragments of the hex/base64 encodings', () => {
+    const key = 'sk-live-0123456789abcdefXYZ-long-enough';
+    const hex = Buffer.from(key).toString('hex');
+    const mixedHex = `${hex.slice(0, 30)}${hex.slice(30).toUpperCase()}`;
+    expect(scrubSecrets(`h=${mixedHex}.`, [key])).toBe('h=[redacted].');
+    const b64 = Buffer.from(key).toString('base64');
+    expect(scrubSecrets(`b=${b64.slice(7, 40)}.`, [key])).not.toContain(b64.slice(7, 40));
+    expect(scrubSecrets(`h=${hex.slice(5, 41)}.`, [key])).not.toContain(hex.slice(5, 41));
+  });
+
+  describe('containsSecretMaterial', () => {
+    const key = 'gk_Live+9f/A1b2C3d4E5f6G7h8I9j0KLmNoPqRsT=';
+    const b64 = Buffer.from(key).toString('base64');
+    it.each([
+      ['raw', key],
+      ['a 12-char window', `x ${key.slice(7, 19)} y`],
+      ['hex', Buffer.from(key).toString('hex')],
+      ['mixed-case hex', Buffer.from(key).toString('hex').replace(/[a-f]/g, (c, i: number) => (i % 2 ? c.toUpperCase() : c))],
+      ['base64', b64],
+      ['base64url', Buffer.from(key).toString('base64url')],
+      ['a base64 fragment', `Name ${b64.slice(9, 41)}`],
+      ['percent-encoded', encodeURIComponent(key)],
+      ['every char percent-encoded', [...key].map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')],
+    ])('finds %s', (_name, text) => {
+      expect(containsSecretMaterial(text, key)).toBe(true);
+    });
+    it('is false for unrelated text and for no secret', () => {
+      expect(containsSecretMaterial('Llama 3.1 8B Instruct (Q4_K_M)', key)).toBe(false);
+      expect(containsSecretMaterial(key, null)).toBe(false);
+    });
+    it('generic key shapes are not this function\'s concern (scrubSecrets handles them)', () => {
+      expect(containsSecretMaterial('Bearer abcdefghijklmnop', key)).toBe(false);
     });
   });
 

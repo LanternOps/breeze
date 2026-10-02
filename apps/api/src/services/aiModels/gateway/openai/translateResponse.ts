@@ -74,18 +74,82 @@ function typeMatches(t: string, v: unknown): boolean | null {
   }
 }
 
+/** Schema nodes one validation may visit (combinators re-walk a value per branch); beyond it the call fails closed. */
+const SCHEMA_MAX_STEPS = 100_000;
+
+interface SchemaWalk {
+  /** The tool's whole input_schema: local `$ref`s resolve against it. */
+  root: unknown;
+  steps: number;
+  exhausted: boolean;
+  /** The `$ref`s being followed on the current path, with the value each was applied to. */
+  refPath: Array<{ ref: string; value: unknown }>;
+}
+
+/**
+ * Resolve a local `$ref` (`#` or a `#/...` JSON pointer, URI-escaped, with
+ * `~1`/`~0` escapes) into the root schema; `$defs`, `definitions` or any other
+ * path. undefined for a non-local or unresolvable reference.
+ */
+function resolveLocalRef(root: unknown, ref: string): unknown {
+  if (ref === '#') return root;
+  if (!ref.startsWith('#/')) return undefined;
+  let node: unknown = root;
+  for (const raw of ref.slice(2).split('/')) {
+    let key: string;
+    try { key = decodeURIComponent(raw); } catch { return undefined; }
+    key = key.replace(/~1/g, '/').replace(/~0/g, '~');
+    if (Array.isArray(node) && /^\d+$/.test(key)) node = node[Number(key)];
+    else if (isPlainObject(node) && Object.hasOwn(node, key)) node = node[key];
+    else return undefined;
+  }
+  return node;
+}
+
 /**
  * Check a model-produced value against the subset of JSON Schema the gateway
  * enforces: `type` (name or list, plus OpenAPI `nullable`), `required`,
- * `properties`, `additionalProperties` (false or a schema), `items`, and
- * primitive `enum`/`const`. Combinators, `$ref`, formats and patterns are not
- * evaluated (they never loosen what is checked here). Work is bounded by the
- * size of the value, and no schema-supplied regex is ever compiled.
+ * `properties`, `additionalProperties` (false or a schema), `items`, primitive
+ * `enum`/`const`, and the combinators `allOf` (every branch), `anyOf` (at least
+ * one) and `oneOf` (checked as at least one: rejecting a value that matches
+ * several branches would turn an imprecise schema into a false rejection).
+ * A local `$ref` (`#/...` into the tool's own schema, `$defs`/`definitions`
+ * included) is followed, together with any sibling keywords; a `$ref` cycle
+ * that makes no progress on the value adds no constraint. A non-local or
+ * unresolvable `$ref` cannot be checked offline and constrains nothing.
+ * `not`, `if`/`then`/`else`, formats and patterns are not evaluated (no
+ * schema-supplied regex is ever compiled). Work is bounded by
+ * SCHEMA_MAX_DEPTH and SCHEMA_MAX_STEPS; hitting either fails closed.
  */
-export function matchesToolSchema(value: unknown, schema: unknown, depth = 0): boolean {
+export function matchesToolSchema(value: unknown, schema: unknown): boolean {
+  const walk: SchemaWalk = { root: schema, steps: 0, exhausted: false, refPath: [] };
+  return matchesSchema(value, schema, 0, walk) && !walk.exhausted;
+}
+
+function matchesSchema(value: unknown, schema: unknown, depth: number, walk: SchemaWalk): boolean {
   if (schema === false) return false;
   if (!isPlainObject(schema)) return true;
   if (depth > SCHEMA_MAX_DEPTH) return false;
+  if (walk.exhausted || ++walk.steps > SCHEMA_MAX_STEPS) { walk.exhausted = true; return false; }
+  if (typeof schema.$ref === 'string') {
+    const ref = schema.$ref;
+    const target = resolveLocalRef(walk.root, ref);
+    const revisit = walk.refPath.some((e) => e.ref === ref && Object.is(e.value, value));
+    if (target !== undefined && !revisit) {
+      walk.refPath.push({ ref, value });
+      const ok = matchesSchema(value, target, depth + 1, walk);
+      walk.refPath.pop();
+      if (!ok) return false;
+    }
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) if (!matchesSchema(value, branch, depth + 1, walk)) return false;
+  }
+  for (const key of ['anyOf', 'oneOf'] as const) {
+    const branches = schema[key];
+    if (Array.isArray(branches) && branches.length > 0
+      && !branches.some((branch) => matchesSchema(value, branch, depth + 1, walk))) return false;
+  }
   if (!(value === null && schema.nullable === true)) {
     const t = schema.type;
     const names = (Array.isArray(t) ? t : [t]).filter((x): x is string => typeof x === 'string');
@@ -107,13 +171,13 @@ export function matchesToolSchema(value: unknown, schema: unknown, depth = 0): b
     // patternProperties would admit keys this check cannot evaluate without compiling a schema regex.
     const extra = schema.patternProperties === undefined ? schema.additionalProperties : undefined;
     for (const [k, v] of Object.entries(value)) {
-      if (Object.hasOwn(props, k)) { if (!matchesToolSchema(v, props[k], depth + 1)) return false; }
+      if (Object.hasOwn(props, k)) { if (!matchesSchema(v, props[k], depth + 1, walk)) return false; }
       else if (extra === false) return false;
-      else if (isPlainObject(extra) && !matchesToolSchema(v, extra, depth + 1)) return false;
+      else if (isPlainObject(extra) && !matchesSchema(v, extra, depth + 1, walk)) return false;
     }
   }
   if (Array.isArray(value) && (isPlainObject(schema.items) || schema.items === false)) {
-    for (const item of value) if (!matchesToolSchema(item, schema.items, depth + 1)) return false;
+    for (const item of value) if (!matchesSchema(item, schema.items, depth + 1, walk)) return false;
   }
   return true;
 }

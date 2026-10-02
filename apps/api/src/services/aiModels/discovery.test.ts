@@ -299,6 +299,28 @@ describe('withoutKeyMaterial — discovered rows never persist the connection ke
     expect(out).toEqual([{ modelId: 'qwen2.5-coder:7b', displayName: null }]);
   });
 
+  it('skips a model id that carries an ENCODED form of the key (hex, base64, base64url, percent) or a fragment of one', () => {
+    const hex = Buffer.from(KEY).toString('hex');
+    const b64 = Buffer.from(KEY).toString('base64');
+    const ids = [
+      hex,
+      `m-${hex.toUpperCase()}`,
+      `mixed-${hex.slice(0, 20)}${hex.slice(20, 50).toUpperCase()}`,
+      b64.replace(/=+$/, ''),
+      Buffer.from(KEY).toString('base64url'),
+      `frag-${b64.slice(8, 32)}`,
+      `pct-${[...KEY].map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')}`,
+    ];
+    const out = withoutKeyMaterial([...ids.map((modelId) => ({ modelId, displayName: null })), { modelId: 'llama3.1:8b', displayName: null }], KEY);
+    expect(out).toEqual([{ modelId: 'llama3.1:8b', displayName: null }]);
+  });
+
+  it('drops a display name carrying a base64 fragment of the key (e.g. what survives a length cut)', () => {
+    const b64 = Buffer.from(KEY).toString('base64');
+    expect(withoutKeyMaterial([{ modelId: 'x', displayName: `Model ${b64.slice(5, 25)}` }], KEY))
+      .toEqual([{ modelId: 'x', displayName: null }]);
+  });
+
   it('keyless: generic key shapes in a display name drop the name, the id is kept', () => {
     expect(withoutKeyMaterial([{ modelId: 'x', displayName: 'Bearer abcdefghijklmnop' }], null))
       .toEqual([{ modelId: 'x', displayName: null }]);

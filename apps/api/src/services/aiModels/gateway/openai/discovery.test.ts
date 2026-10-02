@@ -66,6 +66,18 @@ describe('openai_compatible discovery', () => {
     expect(named.displayName).not.toMatch(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/);
   });
 
+  it('a long name carrying the key\'s base64 is dropped, judged on the FULL name before the length cut', async () => {
+    const longKey = 'sk-live-partner-key-0123456789-abcdefghijklmnopqrstuvwxyz';
+    const b64 = Buffer.from(longKey).toString('base64');
+    // The encoding straddles the 120-char display cut: only a fragment would remain.
+    const name = `${'Model '.repeat(17)}${b64}${'z'.repeat(300 - 102 - b64.length)}`;
+    expect(name.length).toBe(300);
+    __setUpstreamFetchForTests((async () => Response.json({ data: [{ id: 'a', name }, { id: 'b', name: 'Llama 3.1 8B' }] })) as never);
+    const models = await discoverOpenAiCompatibleModels({ config, credential: { secret: longKey } });
+    expect(models).toEqual([{ modelId: 'a', displayName: null }, { modelId: 'b', displayName: 'Llama 3.1 8B' }]);
+    expect(sanitizeDiscoveredModels({ data: [{ id: 'a', name }] }, longKey)).toEqual([{ modelId: 'a', displayName: null }]);
+  });
+
   it('sanitize: a whitespace-only or non-string name is null', () => {
     expect(sanitizeDiscoveredModels({ data: [{ id: 'a', name: '  \u0007 ' }, { id: 'b', name: { x: 1 } }] }))
       .toEqual([{ modelId: 'a', displayName: null }, { modelId: 'b', displayName: null }]);

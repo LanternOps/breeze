@@ -24,7 +24,9 @@ function parseEvent(raw: string): SseEvent | null {
  * new text only (a trailing CR is held back until the next chunk shows whether
  * it starts a CRLF), the separator is searched for in the new text only (plus
  * the one-character seam with the previous piece), and the pending event is
- * kept as a list of pieces with a running byte count.
+ * kept as a list of pieces with a running byte count. The cap applies to the
+ * event text between separators, so where a chunk boundary falls never changes
+ * whether an event fits.
  */
 export async function* parseSse(
   source: AsyncIterable<Uint8Array>,
@@ -66,7 +68,11 @@ export async function* parseSse(
       parts.push(rest);
       partBytes += Buffer.byteLength(rest, 'utf8');
       endsWithLf = rest.endsWith('\n');
-      if (partBytes > maxEventBytes) throw tooLarge();
+      // A trailing LF may be the first half of the separator, which is not part
+      // of the event; count it only once the next text shows it is content (it
+      // then rides in partBytes into the piece check above). This keeps the cap
+      // decision identical however the stream is chunked.
+      if (partBytes - (endsWithLf ? 1 : 0) > maxEventBytes) throw tooLarge();
     }
   }
 

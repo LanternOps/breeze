@@ -48,3 +48,40 @@ describe('sse bounded work', () => {
     expect(await collect(parseSse(bytes('event: x\ndata: a\ndata: b')))).toEqual([{ event: 'x', data: 'a\nb' }]);
   });
 });
+
+describe('sse event cap is independent of chunking', () => {
+  type Outcome = { ok: Array<{ event: string | null; data: string }> } | { err: string };
+  async function outcome(chunks: string[], cap: number): Promise<Outcome> {
+    try { return { ok: await collect(parseSse(bytes(...chunks), cap)) }; } catch (e) { return { err: (e as Error).message }; }
+  }
+  /** The whole stream, every two-way split, and one character per chunk. */
+  function chunkings(s: string): string[][] {
+    const out: string[][] = [[s], s.split('')];
+    for (let i = 1; i < s.length; i++) out.push([s.slice(0, i), s.slice(i)]);
+    return out;
+  }
+
+  const cases: Array<{ name: string; stream: string; cap: number; expect: 'ok' | 'too large' }> = [
+    // The event body is the text between separators: 'data: xx' is 8 bytes.
+    { name: 'LF event exactly at the cap', stream: 'data: xx\n\n', cap: 8, expect: 'ok' },
+    { name: 'LF event one byte over', stream: 'data: xx\n\n', cap: 7, expect: 'too large' },
+    { name: 'CRLF event exactly at the cap', stream: 'data: xx\r\n\r\n', cap: 8, expect: 'ok' },
+    { name: 'CR-only event exactly at the cap', stream: 'data: xx\r\r', cap: 8, expect: 'ok' },
+    { name: 'two-line event at the cap (inner newline counts)', stream: 'data: x\ndata: y\n\n', cap: 15, expect: 'ok' },
+    { name: 'two-line event one byte over', stream: 'data: x\ndata: y\n\n', cap: 14, expect: 'too large' },
+    { name: 'two events, each at the cap', stream: 'data: aa\n\ndata: bb\n\n', cap: 8, expect: 'ok' },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: every chunking agrees (${c.expect})`, async () => {
+      for (const chunks of chunkings(c.stream)) {
+        const got = await outcome(chunks, c.cap);
+        if (c.expect === 'ok') {
+          expect({ chunks, ok: 'ok' in got && got.ok.length > 0 }).toEqual({ chunks, ok: true });
+        } else {
+          expect({ chunks, got }).toEqual({ chunks, got: { err: 'SSE event too large' } });
+        }
+      }
+    });
+  }
+});

@@ -18,7 +18,7 @@ import { CONNECTION_MODEL_DISCOVERERS, type ConnectionModelDiscoverer } from './
 import { decryptConnectionKey, getConnection, getConnectionKeyMaterial, type PartnerAiConnection } from './connections';
 import { refreshPlatformModelSnapshot, upsertDiscoveredPlatformModel, type DiscoveredModelInput } from './platformModels';
 import { safeErrorMessage } from './safeDbError';
-import { scrubSecrets } from './gateway/scrub';
+import { containsSecretMaterial, scrubSecrets } from './gateway/scrub';
 import type { GatewayConnectionConfig, GatewayCredential } from './gateway/types';
 import { gatewayConfigFor, sameRoutingSnapshot } from './gatewayCandidate';
 
@@ -362,18 +362,24 @@ function carriesKey(text: string, key: string | null): boolean {
   return false;
 }
 
-/** The gateway scrubber would redact something in `text` (the key in an encoded form, or a generic credential shape). */
-function redacts(text: string, key: string | null): boolean {
+/** Whether `text` carries the key: case-insensitive 12-char windows, or anything the gateway scrubber detects (encodings and their fragments). */
+function leaksKey(text: string, key: string | null): boolean {
+  return carriesKey(text, key) || containsSecretMaterial(text, key);
+}
+
+/** The gateway scrubber would redact a generic credential shape in `text` (key or not). */
+function hasGenericCredentialShape(text: string): boolean {
   const count = (t: string) => t.split('[redacted]').length;
-  return count(scrubSecrets(text, [key], Number.MAX_SAFE_INTEGER)) > count(text);
+  return count(scrubSecrets(text, [], Number.MAX_SAFE_INTEGER)) > count(text);
 }
 
 /**
  * An endpoint's /models listing is stored and shown to admins, so it must
  * never carry the connection key back into the database: a listed id that
- * contains the key (or any 12-character run of it) is skipped, and a display
- * name that contains it, one of its encodings, or a generic credential shape
- * is dropped (the row falls back to its model id).
+ * contains the key, any 12-character run of it, or an encoding of it (hex,
+ * base64/base64url, percent-encoding, or a fragment of one) is skipped, and a
+ * display name that does the same or holds a generic credential shape is
+ * dropped (the row falls back to its model id).
  */
 export function withoutKeyMaterial<T extends { modelId: string; displayName: string | null }>(
   models: readonly T[],
@@ -381,12 +387,12 @@ export function withoutKeyMaterial<T extends { modelId: string; displayName: str
 ): T[] {
   const out: T[] = [];
   for (const model of models) {
-    if (carriesKey(model.modelId, key)) {
+    if (leaksKey(model.modelId, key)) {
       console.warn('[aiModels] skipping a listed model whose id carries credential material');
       continue;
     }
     const name = model.displayName;
-    const nameLeaks = name !== null && (carriesKey(name, key) || redacts(name, key));
+    const nameLeaks = name !== null && (leaksKey(name, key) || hasGenericCredentialShape(name));
     out.push(nameLeaks ? { ...model, displayName: null } : model);
   }
   return out;
