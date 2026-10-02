@@ -39,3 +39,5 @@ export * from './modelChoices';
 export * from './permissionRoles';
 export { promptProvenanceFor, renderSystemPrompt, toPromptProfile, type PromptProvenance } from './promptProfiles';
 export { PROMPT_VARIANTS, PROMPT_VARIANT_SURFACES, selectPromptVariant, type PromptVariant } from './promptVariants';
+export { queryAiQuality, queryAiQualityBreakdown, QualityQueryTimeoutError, type QualityQueryInput } from './qualityQueries';
+export { detectQualitySources, type QualitySources } from './qualitySources';
