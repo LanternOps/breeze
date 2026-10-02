@@ -21,7 +21,7 @@
 - Invoice history moves during merge while payment authority stays on the losing org. Cancel/revoke first and clear `invoice_autopay_schedules.enrollment_id` and `invoice_collection_attempts.payment_method_id` on moved terminal records, allowing NULL only for terminal states through CHECK constraints; composite org FKs must never be relaxed to permit a survivor record to retain usable authority from another org. Task 4 spells out the constraints and migration behavior.
 - `sendEmail` in `apps/api/src/services/email.ts` returns `Promise<void>`; it exposes neither a provider id nor a provider idempotency contract. The outbox guarantees deduplicated enqueue and fenced concurrent dispatch, but delivery is at least once across an external-send/DB-commit crash. Keep `provider_message_id` null rather than fabricate an id, and do not claim exactly-once external delivery. A sent-handler retry must not resend mail after `sent_at` is durable.
 - `renderPartnerEmail` in `apps/api/src/services/emailTemplates/renderPartnerEmail.ts` returns only subject and HTML. The per-kind renderer supplies plain text explicitly; mandatory blocks are appended to both HTML and text. W1 installs no production kinds or template ids.
-- `startRegisteredWorkers` is already called by `bootWorker` in `apps/api/src/worker.ts`. Register the worker through `WORKER_REGISTRY`; do not add a second direct startup invocation. Test the actual entrypoint connection and both expected-name contracts.
+- `startRegisteredWorkers` is already called by `bootWorker` in `apps/api/src/worker.ts`. Register the worker through `WORKER_REGISTRY`; do not add a second direct startup invocation. Test the actual entrypoint connection and both expected-name contracts. **CW-06:** Task 15 also owns `WORKER_READINESS_MANIFEST` registration with `consumers('autopayWorker')` in `jobs/workerReadinessManifest.ts`, required whenever Redis is available. W3 Task 5 only verifies this prerequisite; W1 must supply it and run `workerReadinessCoverage.test.ts` in Tasks 15 and 17.
 - C4's `Tx` is not an exported invoice-service symbol. Introduce the same DB/transaction union in `services/autopay/types.ts`; no binding function signature changes.
 - The index supersedes the spec's charging-only rollout flag and deferred fee calculator: use `partners.autopay_enabled`, put the pure calculator in `services/autopay/processingFee.ts`, keep fees unwritable until W5, and leave setup/PI sweep branches to W2/W4. No `autopay_charging_enabled` or `services/surchargeRules.ts` is created.
 
@@ -74,6 +74,7 @@
 3. Crash or handler failure after a notice was accepted: Task 14 tests concurrent claims, durable send acknowledgement, handler-only recovery, and eventual retry exhaustion.
 4. Late Stripe success after failure, with a fee or bank method: Tasks 9–10 prove principal-only booking, gross verification, method preservation, and unchanged zero-fee Checkout behavior.
 5. Inherited false/zero/null settings and malicious extra fields: Tasks 5–7 prove explicit unlimited/off wins, org tokens can read defaults but cannot write partner rows, and fee/attestation injection is rejected.
+6. Worker readiness ownership: Task 15 declares exactly one Redis-required `autopayWorker` consumer matching its observability attachment; Tasks 15 and 17 run the readiness coverage contract before W3 relies on that registration.
 
 ## File map
 
@@ -104,6 +105,8 @@
 | `apps/api/src/jobs/autopayWorker.test.ts` | Create: Verify register the autopay worker and its one-minute notice job. |
 | `apps/api/src/jobs/autopayWorker.ts` | Create: Register the autopay worker and its one-minute notice job. |
 | `apps/api/src/jobs/scheduleRegistry.ts` | Modify: Register the one-minute billing-notice-dispatch schedule. |
+| `apps/api/src/jobs/workerReadinessManifest.ts` | Modify: Declare the single Redis-required autopayWorker consumer for W1 and later waves. |
+| `apps/api/src/jobs/workerReadinessCoverage.test.ts` | Test existing: Verify exact manifest/observability attachment coverage in Tasks 15 and 17. |
 | `apps/api/src/routes/admin/autopayRollout.test.ts` | Create: Verify partner rollout gate and platform-admin mutation. |
 | `apps/api/src/routes/admin/autopayRollout.ts` | Create: Partner rollout gate and platform-admin mutation. |
 | `apps/api/src/routes/admin/index.ts` | Modify: Mount rollout control under platform-admin authorization. |
@@ -4112,10 +4115,10 @@ git commit -m "feat(billing): dispatch durable notices with retry and send ackno
 ```
 
 ### Task 15: Register the autopay worker and its one-minute notice job
-**Files:** Create `apps/api/src/jobs/autopayWorker.ts`; Test `apps/api/src/jobs/autopayWorker.test.ts`; Modify `apps/api/src/jobs/scheduleRegistry.ts`, `apps/api/src/services/workerRegistry.ts`, `apps/api/src/services/workerRegistry.test.ts`, `apps/api/src/services/workerEntrypointClosure.contract.test.ts`.
-**Interfaces:** Consumes `dispatchPendingBillingNotices(now?: Date): Promise<{ sent: number; failed: number }>`, Task 4's private detach-drain service, `jobSchedule`, `getBullMQConnection`, and `attachWorkerObservability`. Produces `initializeAutopayWorkers(): Promise<void>`, `shutdownAutopayWorkers(): Promise<void>`, `processNoticeDispatch(): Promise<{ sent: number; failed: number }>`. C5 queue = `autopay-jobs`; job = `notice-dispatch`; schedule key = `billing-notice-dispatch`; cron = `* * * * *`.
+**Files:** Create `apps/api/src/jobs/autopayWorker.ts`; Test `apps/api/src/jobs/autopayWorker.test.ts`, existing `apps/api/src/jobs/workerReadinessCoverage.test.ts`; Modify `apps/api/src/jobs/scheduleRegistry.ts`, `apps/api/src/jobs/workerReadinessManifest.ts`, `apps/api/src/services/workerRegistry.ts`, `apps/api/src/services/workerRegistry.test.ts`, `apps/api/src/services/workerEntrypointClosure.contract.test.ts`.
+**Interfaces:** Consumes `dispatchPendingBillingNotices(now?: Date): Promise<{ sent: number; failed: number }>`, Task 4's private detach-drain service, `jobSchedule`, `getBullMQConnection`, and `attachWorkerObservability`. Produces `initializeAutopayWorkers(): Promise<void>`, `shutdownAutopayWorkers(): Promise<void>`, `processNoticeDispatch(): Promise<{ sent: number; failed: number }>`. C5 queue = `autopay-jobs`; job = `notice-dispatch`; schedule key = `billing-notice-dispatch`; cron = `* * * * *`. Produces one `WORKER_READINESS_MANIFEST` entry with `initializer: 'autopayWorker'`, `consumers: ['autopayWorker']`, and `requiredWhen: 'redis'`, consumed as a W1 prerequisite by W3 Task 5.
 
-Existing evidence: `initializeInvoiceWorkers` in `jobs/invoiceWorker.ts`; `WORKER_REGISTRY` in `services/workerRegistry.ts`; `bootWorker` calls `startRegisteredWorkers('worker', ...)` in `src/worker.ts`. `scheduleRegistry.contract.test.ts` deliberately excludes sub-hourly cron patterns from coarse collision checks, so the one-minute binding contract needs no exemption or altered cron.
+Existing evidence: `consumers` in `jobs/workerReadinessManifest.ts` defaults to the initializer's name and `requiredWhen: 'redis'`; `workerReadinessCoverage.test.ts` requires an exact match between manifest consumer names and production observability attachments. `initializeInvoiceWorkers` in `jobs/invoiceWorker.ts`; `WORKER_REGISTRY` in `services/workerRegistry.ts`; `bootWorker` calls `startRegisteredWorkers('worker', ...)` in `src/worker.ts`. `scheduleRegistry.contract.test.ts` deliberately excludes sub-hourly cron patterns from coarse collision checks, so the one-minute binding contract needs no exemption or altered cron.
 
 - [ ] **Step 1: Write the failing test** — create `autopayWorker.test.ts`:
 
@@ -4138,12 +4141,15 @@ vi.mock('./workerObservability', () => ({ attachWorkerObservability: mocks.obser
 import { initializeAutopayWorkers, shutdownAutopayWorkers, processNoticeDispatch } from './autopayWorker';
 import { jobSchedule } from './scheduleRegistry';
 import { WORKER_REGISTRY, selectWorkers } from '../services/workerRegistry';
+import { WORKER_READINESS_MANIFEST } from './workerReadinessManifest';
 beforeEach(() => vi.clearAllMocks());
 describe('autopay worker registration', () => {
   it('registers precisely the C5 cadence and closes both resources', async () => {
     expect(jobSchedule('billing-notice-dispatch')).toBe('* * * * *');
     await initializeAutopayWorkers();
     expect(mocks.work).toHaveBeenCalledWith('autopay-jobs', expect.any(Function));
+    expect(mocks.observe).toHaveBeenCalledOnce();
+    expect(mocks.observe).toHaveBeenCalledWith(expect.anything(), 'autopayWorker');
     expect(mocks.add).toHaveBeenCalledWith('notice-dispatch', { type: 'notice-dispatch' }, expect.objectContaining({
       jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
     }));
@@ -4161,6 +4167,12 @@ describe('autopay worker registration', () => {
     expect(entrypoint).toContain("await import('./services/workerRegistry')");
     expect(entrypoint).toContain("startRegisteredWorkers('worker'");
   });
+  it('declares exactly one Redis-required consumer for later waves', () => {
+    expect(WORKER_READINESS_MANIFEST.filter(entry => entry.initializer === 'autopayWorker')).toEqual([{
+      kind: 'consumers', initializer: 'autopayWorker',
+      consumers: ['autopayWorker'], requiredWhen: 'redis',
+    }]);
+  });
   it('propagates dispatcher failure so BullMQ records it', async () => {
     mocks.dispatch.mockRejectedValueOnce(new Error('database down'));
     await expect(processNoticeDispatch()).rejects.toThrow('database down');
@@ -4170,7 +4182,7 @@ describe('autopay worker registration', () => {
 
 Add `'autopayWorker'` immediately after `'invoiceWorker'` in `EXPECTED_WORKER_NAMES` in `workerRegistry.test.ts` and `EXPECTED_NAMES` in `workerEntrypointClosure.contract.test.ts`, before the production registry edit. Both exact-name contracts must go red when the worker is absent.
 
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/jobs/autopayWorker.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts`; missing worker and registry name mismatch.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/jobs/autopayWorker.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/workerReadinessCoverage.test.ts`; missing worker and registry name mismatch. After adding the worker but before the manifest row, the new manifest assertion and existing readiness coverage contract must fail for the undeclared autopay consumer.
 - [ ] **Step 3: Implement** — create `autopayWorker.ts`:
 
 ```ts
@@ -4230,13 +4242,21 @@ Inside `WORKER_REGISTRY` in `workerRegistry.ts`, immediately after the invoice w
 },
 ```
 
+Inside `WORKER_READINESS_MANIFEST` in `jobs/workerReadinessManifest.ts`, immediately after `consumers('invoiceWorker'),`, add exactly once:
+
+```ts
+consumers('autopayWorker'),
+```
+
+This uses the existing helper's default consumer name and `requiredWhen: 'redis'`, matching `attachWorkerObservability(worker, 'autopayWorker')`. Worker construction is unconditional when initialized, so readiness must not be gated by a partner's autopay rollout flag. W3 Task 5 verifies this W1-owned row without adding another one. Keep the existing readiness coverage test unchanged and run it against the new production attachment and manifest entry.
+
 The entrypoint registration is the existing registry call, exercised by the test above. Do not directly import this worker into `src/worker.ts` or start it twice. Future waves add handlers to this one worker and the fixed C5 schedules; W1 adds only notice dispatch.
 
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/jobs/autopayWorker.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts`.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/jobs/autopayWorker.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/workerReadinessCoverage.test.ts`.
 - [ ] **Step 5: Commit** — from repository root:
 
 ```bash
-git add apps/api/src/jobs/autopayWorker.ts apps/api/src/jobs/autopayWorker.test.ts apps/api/src/jobs/scheduleRegistry.ts apps/api/src/services/workerRegistry.ts apps/api/src/services/workerRegistry.test.ts apps/api/src/services/workerEntrypointClosure.contract.test.ts
+git add apps/api/src/jobs/workerReadinessManifest.ts apps/api/src/jobs/autopayWorker.ts apps/api/src/jobs/autopayWorker.test.ts apps/api/src/jobs/scheduleRegistry.ts apps/api/src/services/workerRegistry.ts apps/api/src/services/workerRegistry.test.ts apps/api/src/services/workerEntrypointClosure.contract.test.ts
 git commit -m "feat(billing): register autopay notice dispatcher lifecycle"
 ```
 
@@ -4375,7 +4395,7 @@ git commit -m "feat(billing): quote autopay fees with conservative jurisdiction 
 
 ### Task 17: Verification and release evidence for both PRs
 **Files:** Create `apps/api/src/services/autopay/foundation.contract.test.ts`; Test all files listed below. No additional production module is created by this task.
-**Interfaces:** Consumes the finished W1 C1–C7 surface. Produces a reproducible verification record for W1a and W1b, including the exact migration filenames, C4 compile-time signatures, app mounts, worker closure, and real tenancy/concurrency results.
+**Interfaces:** Consumes the finished W1 C1–C7 surface. Produces a reproducible verification record for W1a and W1b, including the exact migration filenames, C4 compile-time signatures, app mounts, worker closure and readiness coverage, and real tenancy/concurrency results.
 
 - [ ] **Step 1: Write the failing test** — add `foundation.contract.test.ts` before final acceptance:
 
@@ -4451,7 +4471,7 @@ pnpm --filter @breeze/shared exec tsc --noEmit
 pnpm --filter @breeze/api exec tsc --noEmit
 pnpm --filter @breeze/web exec astro check
 (cd apps/api && npx vitest run src/services/autopay/linkTokens.test.ts src/services/autopay/renderBillingNotice.test.ts src/services/autopay/processingFee.test.ts src/services/autopay/foundation.contract.test.ts src/services/autopay/reservation.test.ts src/services/autopay/stripeCapabilities.test.ts src/services/stripeSettle.test.ts src/services/stripeCredentialArchive.test.ts src/services/autopay/merge.test.ts src/services/stripeReconcile.test.ts src/services/partnerStripe.test.ts src/services/invoiceCheckout.test.ts src/services/invoiceService.test.ts src/routes/portal/invoices.test.ts src/routes/invoicesPublic.test.ts src/services/invoiceService.test.ts src/services/accounting/accountingPaymentPull.test.ts src/routes/stripeConnect/index.test.ts src/jobs/autopayWorker.test.ts)
-(cd apps/api && npx vitest run src/jobs/scheduleRegistry.contract.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/services/emailDomains/mailPurposes.test.ts src/services/emailDomains/mailPurposes.callSites.test.ts src/services/encryptedColumnRegistry.test.ts)
+(cd apps/api && npx vitest run src/jobs/scheduleRegistry.contract.test.ts src/services/workerRegistry.test.ts src/services/workerEntrypointClosure.contract.test.ts src/jobs/workerReadinessCoverage.test.ts src/services/emailDomains/mailPurposes.test.ts src/services/emailDomains/mailPurposes.callSites.test.ts src/services/encryptedColumnRegistry.test.ts)
 pnpm test-stack up
 (cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/autopay/reservation.integration.test.ts src/services/autopay/noticeOutbox.integration.test.ts src/__tests__/integration/invoiceCheckout.integration.test.ts src/__tests__/integration/accountingPaymentPull.integration.test.ts src/__tests__/integration/stripeSessionRevocation.integration.test.ts src/__tests__/integration/stripeSettle.integration.test.ts src/__tests__/integration/stripeReversalState.integration.test.ts src/__tests__/integration/autopayFoundation.integration.test.ts src/__tests__/integration/autopayMerge.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/tenantCascadeExecution.integration.test.ts src/__tests__/integration/tenantCascadeErasureBreadth.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/orgMergeCustomExecutors.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/tenantExportErasureRoundtrip.integration.test.ts)
 DB_CONTEXTLESS_WRITE_STRICT=true pnpm --filter=@breeze/api test:rls-coverage
@@ -4462,7 +4482,7 @@ pnpm test-stack down
 
 No new screen ships, so a new Playwright UI suite would not exercise W1's new behavior. Existing card Checkout route/service regressions and the Stripe lab below cover the reachable surface. Do not mark enrollment, notice compliance lead times, charging retries, or W5 fee accounting verified by this wave.
 
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/foundation.contract.test.ts`, followed by the boundary commands above. Acceptance means no failed or silently skipped targeted integration tests, no schema drift, preserved fee-zero/card Checkout behavior, passing real app-mount tests, and closed test-stack resources. Record actual command results in each PR; this plan does not claim those runs have already happened.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/foundation.contract.test.ts`, followed by the boundary commands above. Acceptance means no failed or silently skipped targeted integration tests, no schema drift, preserved fee-zero/card Checkout behavior, passing real app-mount tests, exactly one Redis-required autopay readiness entry matching its production attachment with passing `workerReadinessCoverage.test.ts`, and closed test-stack resources. Record actual command results in each PR; this plan does not claim those runs have already happened.
 - [ ] **Step 5: Commit** — from repository root:
 
 ```bash

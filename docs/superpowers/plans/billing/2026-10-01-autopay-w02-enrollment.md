@@ -17,7 +17,7 @@
 
 ## Where this plan corrects or refines the spec/index
 
-1. **W01 is a prerequisite, not present source.** The index declares `Tx` shorthand but `invoiceService.ts` does not export a `Tx` type. `InvoiceActor` is declared in `apps/api/src/services/invoiceTypes.ts` and re-exported by `invoiceService.ts`. Use an explicit local transaction type derived from the verified `db` API; do not import an invented export.
+1. **W01 is a prerequisite, not present source.** The index declares `Tx` shorthand but `invoiceService.ts` does not export a `Tx` type. `InvoiceActor` is declared in `apps/api/src/services/invoiceTypes.ts` and re-exported by `invoiceService.ts`. Import W1 Task 5's `Tx` from `services/autopay/types.ts` (`typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0]`) in payment methods, enrollment lifecycle and disclosure helpers. Never narrow C4 to `typeof db` or invent an `invoiceService.ts` export; raw transactions must remain accepted (CW-04).
 2. **Consent needs durable pre-redirect storage.** C2's append-only `orgAutopayConsents` is the completed consent history; it cannot safely serve as a mutable setup attempt. Store the exact accepted terms, server-derived identities, generation, and setup reference before leaving Breeze, so a lost return, settings edit, or delayed microdeposit result cannot substitute new terms. The private W2 setup record and its migration are an additive refinement; C2 table names and C4 signatures stay unchanged.
 3. **The notification enum needs a migration.** `notificationTypeEnum` in `apps/api/src/db/schema/notifications.ts` is a PostgreSQL enum sourced from `NOTIFICATION_TYPES`. Adding the TypeScript value alone cannot persist a `billing` notification. W2 includes an idempotent enum extension in its reserved migration block.
 4. **Staff delivery differs from client outbox delivery.** `dispatchNotice` in `apps/api/src/services/contractRenewal.ts` sends staff email through `getEmailService().sendEmail`; it does not put staff notices in the billing notice outbox. Its `sendInAppNotification` call produces an alert. W2 retains the staff-email transport but inserts typed `billing` notifications and sends to the partner billing address. It does not invent an additional C3 notice kind.
@@ -29,6 +29,8 @@
 9. **Portal follows a separate presentation convention.** `lineWorkedVsBilledNote` in `apps/portal/src/lib/api.ts` explicitly states that portal has no i18n runtime; `apps/portal/package.json` has no react-i18next dependency. Keep portal copy in its existing English convention and add a portal-local `runAction` adapter around its API response shape. Web strings still use react-i18next and locale fallbacks.
 10. **The real app is not currently importable without boot.** `app` in `apps/api/src/index.ts` is not exported, and the file unconditionally calls `bootstrap`; `index.bootBinarySync.test.ts` documents that side effect. Export the existing app and suppress only the bootstrap call under `NODE_ENV === 'test'` so mounting tests exercise the actual route composition.
 11. **Effective settings alone cannot populate inheritance controls.** C4's resolver output intentionally returns effective values and sources, not raw nullable overrides. Add raw values and inherited effective values to the C7 GET response without changing the resolver signature; blank means null, while explicit unlimited remains false. The UI must never infer raw overrides from effective values.
+
+12. **Partner-axis visibility belongs to the mutation orchestration (CW-05).** W1 Task 11's `getAutopayStripeReadiness` uses the passed executor and never escalates it. As `db/partnerAxisRead.ts` documents, organization scope has `accessiblePartnerIds: []` and cannot read `partners` or `stripe_connect_accounts`. Task 10 therefore opens short system contexts for staff mutations after real auth, `BILLING_MANAGE`, rollout and org-allowlist checks; Task 5 rechecks the actor’s non-null partner and org access, and the locked org's partner before any mutation. C4 services keep their caller-supplied `Tx` and never open a replacement transaction. Task 11 already supplies verified token/portal identity and a short system context for client stop. No RLS policy or C4 signature changes; Task 12 proves org-scoped request, notice rendering and resume through the real app and unprivileged database role.
 
 ## Global Constraints
 
@@ -68,24 +70,25 @@
 3. Stop rolls back or races a processing debit: Task 7's real-DB `a rolled-back stop cannot detach, and committed stop keeps a processing debit intact` verifies committed removal and preserved collection attempts; Task 2 verifies replacement-account detach refusal.
 4. A disabled or foreign partner is reached through public, portal or bulk operations: Tasks 10–12 test feature gates, ownership and real application mounts before Stripe admission, including body-supplied foreign org IDs and GET safety.
 5. Debit-card display or inherited settings misleads the client: Task 7 persists actual debit funding, Task 16 verifies the server-returned no-fee outcome, and Task 14 tests `keeps blank distinct from explicit unlimited and submits decimal cap without floats`.
+6. C4 transaction compatibility and partner-axis visibility: Tasks 1–2 and 5 assert the shared `Tx` input; Task 12 proves raw-transaction rollback, org-scoped request/pause/resume with a frozen notice, and same-partner/foreign-partner rejection under `breeze_app`. Staff mutation services must retain their caller's transaction and validate the locked org against the authenticated partner.
 
 ## File map
 
-These are implementation targets; only this plan is created while planning. W1-owned paths marked Modify in tasks require the prerequisite merge.
+These are implementation targets; only this plan is edited while planning. W1-owned paths marked Modify in tasks require the prerequisite merge. `apps/api/src/services/autopay/types.ts` is a read-only W1 dependency for Tasks 1, 2 and 5; reuse its `Tx` export without redefining it.
 
 - `apps/api/migrations/2026-11-20-110000-autopay-setup-attempts.sql` — Idempotent tenant-scoped setup storage, forced RLS and immutable-authority trigger.
 - `apps/api/src/db/schema/autopaySetupAttempts.ts` — Durable, tenant-scoped setup-attempt schema and frozen consent snapshot.
 - `apps/api/src/db/schema/autopaySetupAttempts.integration.test.ts` — Regression and contract assertions for autopaySetupAttempts (real PostgreSQL).
-- `apps/api/src/services/autopay/consentText.ts` — Versioned authorization text, immutable disclosure hashing and acceptance context.
-- `apps/api/src/services/autopay/consentText.test.ts` — Regression and contract assertions for consentText.
+- `apps/api/src/services/autopay/consentText.ts` — Versioned authorization text, immutable disclosure hashing and acceptance context; accepts the shared W1 `Tx`.
+- `apps/api/src/services/autopay/consentText.test.ts` — Disclosure and consent regressions, including the shared W1 `Tx` parameter contract.
 - `apps/api/src/db/schema/index.ts` — Export the private W2 setup-attempt table.
 - `apps/api/src/services/tenantCascade.ts` — Register setup-attempt erasure ordering.
 - `apps/api/src/services/orgMergeRegistry.ts` — Keep setup authority with the source org for erasure.
 - `apps/api/src/services/tenantExportPolicyRegistry.ts` — Classify every setup-attempt column for export.
 - `apps/api/vitest.config.ts` — Exclude colocated real-DB suites from the unit runner.
 - `apps/api/vitest.integration.config.ts` — Discover all new colocated real-DB suites.
-- `apps/api/src/services/autopay/paymentMethods.ts` — Payment-method lookup, unusable state and committed-removal detachment.
-- `apps/api/src/services/autopay/paymentMethods.test.ts` — Regression and contract assertions for paymentMethods.
+- `apps/api/src/services/autopay/paymentMethods.ts` — Payment-method lookup and unusable state on W1 `Tx`, plus committed-removal detachment.
+- `apps/api/src/services/autopay/paymentMethods.test.ts` — Detachment regressions and both C4 payment-method executor type contracts.
 - `packages/shared/src/utils/emailTemplates.ts` — Add fixed template IDs, variables, labels and CTA metadata.
 - `packages/shared/src/constants/notificationTypes.ts` — Add the shared billing notification category.
 - `apps/api/src/services/emailTemplates/defaults.ts` — Warm plain defaults for the four enrollment templates.
@@ -110,8 +113,8 @@ These are implementation targets; only this plan is created while planning. W1-o
 - `apps/web/src/locales/it-IT/settings.json` — English fallback leaves for settings autopay surfaces.
 - `apps/web/src/locales/pt-BR/settings.json` — English fallback leaves for settings autopay surfaces.
 - `apps/web/src/locales/tr-TR/settings.json` — English fallback leaves for settings autopay surfaces.
-- `apps/api/src/services/autopay/enrollmentLifecycle.ts` — Request, pause, resume and stop transitions under org/enrollment locks.
-- `apps/api/src/services/autopay/enrollmentLifecycle.test.ts` — Regression and contract assertions for enrollmentLifecycle.
+- `apps/api/src/services/autopay/enrollmentLifecycle.ts` — Request, pause, resume and stop transitions on W1 `Tx`, with staff actor/partner/org authorization under org/enrollment locks.
+- `apps/api/src/services/autopay/enrollmentLifecycle.test.ts` — Lifecycle regressions and all five C4 executor type contracts.
 - `apps/api/src/services/autopay/enrollmentService.ts` — Binding C4 enrollment facade and exports.
 - `apps/api/src/services/autopay/setupSession.ts` — Account-bound Customer recovery and setup Checkout creation.
 - `apps/api/src/services/autopay/setupSession.test.ts` — Regression and contract assertions for setupSession.
@@ -133,8 +136,8 @@ These are implementation targets; only this plan is created while planning. W1-o
 - `apps/api/src/jobs/stripeReconcileSweep.ts` — Recover recent setup and pay-and-save sessions.
 - `apps/api/src/services/stripeFinancialEventPoller.ts` — Persist and replay setup, mandate and detach events.
 - `apps/api/src/services/stripeReversalState.ts` — Keep enrollment events out of the monetary reversal reducer.
-- `apps/api/src/routes/autopay/index.ts` — MSP list, bulk requests and per-org enrollment routes.
-- `apps/api/src/routes/autopay/index.test.ts` — Regression and contract assertions for index.
+- `apps/api/src/routes/autopay/index.ts` — MSP list, bulk requests and per-org enrollment routes; staff writes use authorized short system contexts.
+- `apps/api/src/routes/autopay/index.test.ts` — Route authorization, dispatch and short system-context orchestration regressions.
 - `apps/api/src/services/autopay/enrollmentViews.ts` — Tenant-scoped MSP list and org enrollment projections.
 - `apps/api/src/middleware/selfManagedDbContextRoutes.ts` — Release outer request transactions before Stripe workflows.
 - `apps/api/src/services/autopay/autopayGate.ts` — Verified partner identity and fail-closed feature switch.
@@ -142,11 +145,11 @@ These are implementation targets; only this plan is created while planning. W1-o
 - `apps/api/src/routes/portal/paymentMethods.ts` — Authenticated portal method setup, return and stop routes.
 - `apps/api/src/services/autopay/customerViews.ts` — Token/portal identity, branded setup data and owned completion.
 - `apps/api/src/routes/autopay/public.test.ts` — Regression and contract assertions for public.
-- `apps/api/src/routes/portal/paymentMethods.test.ts` — Regression and contract assertions for paymentMethods.
+- `apps/api/src/routes/portal/paymentMethods.test.ts` — Detachment regressions and both C4 payment-method executor type contracts.
 - `apps/api/src/middleware/partnerGuard.ts` — Admit explicit public autopay routes without staff authentication.
 - `apps/api/src/routes/portal/helpers.ts` — Require JSON and existing cookie CSRF for autopay mutations.
 - `apps/api/src/index.ts` — Export the real app safely in tests and mount all W2 API routers.
-- `apps/api/src/index.autopay.integration.test.ts` — Regression and contract assertions for index.autopay (real PostgreSQL).
+- `apps/api/src/index.autopay.integration.test.ts` — Real application mounts plus org-scoped request/notice/pause/resume, tenant rejection, and raw-transaction rollback under `breeze_app`.
 - `apps/api/src/services/autopay/cardExpiryCheck.ts` — Once-per-method expiring-card notices.
 - `apps/api/src/services/autopay/cardExpiryCheck.test.ts` — Regression and contract assertions for cardExpiryCheck.
 - `apps/api/src/services/autopay/cardExpiryCheck.integration.test.ts` — Regression and contract assertions for cardExpiryCheck (real PostgreSQL).
@@ -236,17 +239,21 @@ These are implementation targets; only this plan is created while planning. W1-o
 **PR split:** W2a is Tasks 1–13 (API, storage, emails, template editor and jobs). W2b is Tasks 14–19 (web/portal UI, composition and browser smoke). Task 20 verifies each PR against its applicable gates; execute its API/DB/lab subset before W2a and the complete checklist before W2b.
 
 ### Task 1: Preserve the authorization accepted before leaving Breeze
-**Files:** Create `apps/api/migrations/2026-11-20-110000-autopay-setup-attempts.sql`, `apps/api/src/db/schema/autopaySetupAttempts.ts`, `apps/api/src/db/schema/autopaySetupAttempts.integration.test.ts`, `apps/api/src/services/autopay/consentText.ts`, `apps/api/src/services/autopay/consentText.test.ts`; Modify `apps/api/src/db/schema/index.ts`, `apps/api/src/services/tenantCascade.ts`, `apps/api/src/services/orgMergeRegistry.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`, `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts`.
-**Interfaces:** Consumes C4 `resolveBillingPaymentSettings(db, {partnerId,orgId})`, `getAutopayStripeReadiness(db,partnerId)`, `quoteProcessingFee(input)` and C2 enrollment schema. Produces C4 `AUTOPAY_CONSENT_TEXT`, `CURRENT_AUTOPAY_CONSENT_VERSION`; private `autopaySetupAttempts`, `AutopayDisclosure`, `buildAutopayDisclosure`, `withAcceptedAutopayDisclosure`, `requireAcceptedAutopayDisclosure`.
+**Files:** Create `apps/api/migrations/2026-11-20-110000-autopay-setup-attempts.sql`, `apps/api/src/db/schema/autopaySetupAttempts.ts`, `apps/api/src/db/schema/autopaySetupAttempts.integration.test.ts`, `apps/api/src/services/autopay/consentText.ts`, `apps/api/src/services/autopay/consentText.test.ts`; Modify `apps/api/src/db/schema/index.ts`, `apps/api/src/services/tenantCascade.ts`, `apps/api/src/services/orgMergeRegistry.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`, `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts`. Read W1 `apps/api/src/services/autopay/types.ts`; do not modify it.
+**Interfaces:** Consumes W1 `Tx` from `./types` and C4 `resolveBillingPaymentSettings(db, {partnerId,orgId})`, `getAutopayStripeReadiness(db,partnerId)`, `quoteProcessingFee(input)` and C2 enrollment schema. Produces C4 `AUTOPAY_CONSENT_TEXT`, `CURRENT_AUTOPAY_CONSENT_VERSION`; private `autopaySetupAttempts`, `AutopayDisclosure`, `buildAutopayDisclosure`, `withAcceptedAutopayDisclosure`, `requireAcceptedAutopayDisclosure`.
 
 The attempt is transaction data, not configuration: organization ownership is deliberate. Its immutable snapshot includes the *rendered* authorization, contact, source and settings accepted before redirect. Do not reconstruct consent from present-day settings when Stripe calls back. A client supplied `disclosureHash` is compared with the current server disclosure before saving; a mismatch returns 409 and requires showing the new terms. The private async context carries this precondition without changing C4's signature.
 
 - [ ] **Step 1: Write the failing test** — create `consentText.test.ts`:
 ```ts
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { AUTOPAY_CONSENT_TEXT, CURRENT_AUTOPAY_CONSENT_VERSION,
-  requireAcceptedAutopayDisclosure, withAcceptedAutopayDisclosure } from './consentText';
+  buildAutopayDisclosure, requireAcceptedAutopayDisclosure, withAcceptedAutopayDisclosure } from './consentText';
+import type { Tx } from './types';
 describe('accepted authorization', () => {
+  it('accepts the shared database-or-transaction executor', () => {
+    expectTypeOf<Parameters<typeof buildAutopayDisclosure>[0]>().toEqualTypeOf<Tx>();
+  });
   it('requires a named MSP and schedule in both immutable versions', () => {
     for (const text of Object.values(AUTOPAY_CONSENT_TEXT[CURRENT_AUTOPAY_CONSENT_VERSION]!)) {
       expect(text).toContain('{{msp}}');
@@ -440,7 +447,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { AutopayPaymentMethodType } from '@breeze/shared';
-import { db as database } from '../../db';
+import type { Tx } from './types';
 import { organizations,partners } from '../../db/schema';
 import { InvoiceServiceError } from '../invoiceTypes';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
@@ -466,7 +473,7 @@ export interface AutopayDisclosure {
  scheduleTerms:{offsetDays:number;rule:'earlier'|'later';cap:{enabled:false}|{enabled:true;amount:string;currency:string}};
  feeTerms:{methodType:AutopayPaymentMethodType;cardFeeBps:number;achFeeAmount:string;feeAttested:boolean;currency:string};
 }
-export async function buildAutopayDisclosure(db:typeof database,orgId:string,methodType:AutopayPaymentMethodType):Promise<AutopayDisclosure>{
+export async function buildAutopayDisclosure(db:Tx,orgId:string,methodType:AutopayPaymentMethodType):Promise<AutopayDisclosure>{
  const [row]=await db.select({org:organizations,partner:partners}).from(organizations)
   .innerJoin(partners,eq(partners.id,organizations.partnerId)).where(eq(organizations.id,orgId)).limit(1);
  if(!row)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
@@ -497,7 +504,7 @@ export async function buildAutopayDisclosure(db:typeof database,orgId:string,met
 ```
 The division for rendering integer basis points is presentation only; `quoteProcessingFee` remains the sole money computation.
 
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/consentText.test.ts`. From the repository root run:
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/consentText.test.ts`; from the root run `pnpm exec tsc --build apps/api/tsconfig.tests.json` for the disclosure executor type assertion. From the repository root run:
 ```bash
 pnpm test-stack up
 cd apps/api && npx vitest run -c vitest.integration.config.ts src/db/schema/autopaySetupAttempts.integration.test.ts src/__tests__/integration/tenantCascade.integration.test.ts src/__tests__/integration/orgMergeRegistry.integration.test.ts src/__tests__/integration/tenant-export-policy.integration.test.ts src/__tests__/integration/orgLifecycleFoundations.integration.test.ts
@@ -508,12 +515,12 @@ pnpm test-stack down
 - [ ] **Step 5: Commit** — `git add apps/api/migrations/2026-11-20-110000-autopay-setup-attempts.sql apps/api/src/db/schema/autopaySetupAttempts.ts apps/api/src/db/schema/autopaySetupAttempts.integration.test.ts apps/api/src/db/schema/index.ts apps/api/src/services/autopay/consentText.ts apps/api/src/services/autopay/consentText.test.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts` then `git commit -m "feat(billing): persist accepted autopay authorization before redirect"`.
 
 ### Task 2: Own payment-method usability and safe post-commit detachment
-**Files:** Create `apps/api/src/services/autopay/paymentMethods.ts`, `apps/api/src/services/autopay/paymentMethods.test.ts`.
-**Interfaces:** Consumes C2 `orgPaymentMethods`, `orgAutopayEnrollments`, existing `getPartnerStripeClient(partnerId)` and `runAfterDbContextExit(label,work)`; produces the three exact C4 payment-method functions.
+**Files:** Create `apps/api/src/services/autopay/paymentMethods.ts`, `apps/api/src/services/autopay/paymentMethods.test.ts`. Read W1 `apps/api/src/services/autopay/types.ts`; do not modify it.
+**Interfaces:** Consumes W1 `Tx` from `./types`, C2 `orgPaymentMethods`, `orgAutopayEnrollments`, existing `getPartnerStripeClient(partnerId)` and `runAfterDbContextExit(label,work)`; produces the three exact C4 payment-method functions.
 
 - [ ] **Step 1: Write the failing test** — `paymentMethods.test.ts`:
 ```ts
-import { beforeEach,describe,expect,it,vi } from 'vitest';
+import { beforeEach,describe,expect,expectTypeOf,it,vi } from 'vitest';
 const m=vi.hoisted(()=>({rows:[] as unknown[][],detach:vi.fn(),retrieve:vi.fn(),client:vi.fn()}));
 vi.mock('../../db',()=>{
  const chain:any={};
@@ -522,8 +529,13 @@ vi.mock('../../db',()=>{
  return {db:chain,runOutsideDbContext:(fn:any)=>fn(),withSystemDbAccessContext:(fn:any)=>fn(),hasDbAccessContext:()=>false};
 });
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
-import {detachPaymentMethodPostCommit} from './paymentMethods';
+import {getAutopayMethod,markPaymentMethodUnusable,detachPaymentMethodPostCommit} from './paymentMethods';
+import type { Tx } from './types';
 describe('post-commit detach',()=>{
+ it('accepts database and raw transaction inputs for both C4 operations',()=>{
+  expectTypeOf<Parameters<typeof getAutopayMethod>[0]>().toEqualTypeOf<Tx>();
+  expectTypeOf<Parameters<typeof markPaymentMethodUnusable>[0]>().toEqualTypeOf<Tx>();
+ });
  beforeEach(()=>{m.rows.length=0;vi.clearAllMocks();m.client.mockResolvedValue({stripeAccountId:'acct_one',
   stripe:{paymentMethods:{retrieve:m.retrieve,detach:m.detach}}});});
  it('does nothing if rollback left the method active',async()=>{
@@ -543,7 +555,7 @@ describe('post-commit detach',()=>{
  });
 });
 ```
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/paymentMethods.test.ts`; missing module.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/paymentMethods.test.ts`; missing module; once present, the test-project type gate rejects a narrowed executor: `pnpm exec tsc --build apps/api/tsconfig.tests.json` from the repository root.
 - [ ] **Step 3: Implement** — `paymentMethods.ts`:
 ```ts
 import { and,eq,inArray } from 'drizzle-orm';
@@ -551,7 +563,7 @@ import { db as database,runOutsideDbContext,withSystemDbAccessContext } from '..
 import { orgPaymentMethods,orgAutopayEnrollments } from '../../db/schema';
 import { getPartnerStripeClient } from '../partnerStripe';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
-type Tx=typeof database;
+import type { Tx } from './types';
 export async function getAutopayMethod(db:Tx,orgId:string):Promise<typeof orgPaymentMethods.$inferSelect|null>{
  const [method]=await db.select().from(orgPaymentMethods).where(and(eq(orgPaymentMethods.orgId,orgId),
   eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification']))).limit(1);
@@ -583,7 +595,7 @@ export async function detachPaymentMethodPostCommit(partnerId:string,methodId:st
 }
 ```
 `runAfterDbContextExit` runs even after rollback (`apps/api/src/db/index.ts`), therefore the committed-status read is mandatory. The reconciliation pass in Task 9 retries removed methods; a failed detach never restores local authority. Account replacement cannot detach a same-named method on a different account.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/paymentMethods.test.ts`.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/paymentMethods.test.ts`; from the repository root run `pnpm exec tsc --build apps/api/tsconfig.tests.json` to evaluate the `expectTypeOf` contract assertions.
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/paymentMethods.ts apps/api/src/services/autopay/paymentMethods.test.ts` then `git commit -m "feat(billing): fence unusable methods and detach after commit"`.
 
 ### Task 3: Enrollment email catalog, protected disclosures, and staff notifications (W2a)
@@ -1077,14 +1089,22 @@ const AUTOPAY_ENROLLMENT_TEMPLATE_FALLBACKS = new Set([
 - [ ] **Step 5: Commit** — `git add apps/web/src/lib/i18n/translationCoverage.test.ts apps/web/src/components/settings/EmailTemplatesTab.tsx apps/web/src/components/settings/EmailTemplateEditor.tsx apps/web/src/components/settings/EmailTemplatesTab.test.tsx packages/shared/src/utils/emailTemplates.test.ts apps/web/src/locales/en/settings.json apps/web/src/locales/de-DE/settings.json apps/web/src/locales/es-419/settings.json apps/web/src/locales/fr-CA/settings.json apps/web/src/locales/fr-FR/settings.json apps/web/src/locales/it-IT/settings.json apps/web/src/locales/pt-BR/settings.json apps/web/src/locales/tr-TR/settings.json` then `git commit -m "feat(billing): expose autopay email templates in the editor"`.
 
 ### Task 5: Request, pause, resume and stop enrollment under the organization lock
-**Files:** Create `apps/api/src/services/autopay/enrollmentLifecycle.ts`, `apps/api/src/services/autopay/enrollmentLifecycle.test.ts`, `apps/api/src/services/autopay/enrollmentService.ts`.
-**Interfaces:** Consumes exact C4 `mintBillingLinkToken`, `revokeBillingLinkTokens`, `enqueueBillingNotice`, `getAutopayStripeReadiness`, `isAutopayEnabledForPartner`, `getAutopayMethod`; existing `InvoiceActor` and `requireOrgAccess`. Produces C4 `requestAutopay`, `pauseAutopay`, `resumeAutopay`, `turnOffAutopay`, `stopAutopayByClient`. The notice context and staff notification adapter are defined in Task 3 and land in the same W2a PR.
+**Files:** Create `apps/api/src/services/autopay/enrollmentLifecycle.ts`, `apps/api/src/services/autopay/enrollmentLifecycle.test.ts`, `apps/api/src/services/autopay/enrollmentService.ts`. Read W1 `apps/api/src/services/autopay/types.ts`; do not modify it.
+**Interfaces:** Consumes W1 `Tx` from `./types` and exact C4 `mintBillingLinkToken`, `revokeBillingLinkTokens`, `enqueueBillingNotice`, `getAutopayStripeReadiness`, `isAutopayEnabledForPartner`, `getAutopayMethod`; existing `InvoiceActor` and `requireOrgAccess`. Produces C4 `requestAutopay`, `pauseAutopay`, `resumeAutopay`, `turnOffAutopay`, `stopAutopayByClient`. All executor-taking functions and their lock/notice/stop helpers accept the shared database-or-transaction union without casts. The caller owns the transaction and must provide partner/system visibility; Task 10 supplies short system contexts for staff mutations, Task 11 for verified client stop. The notice context and staff notification adapter are defined in Task 3 and land in the same W2a PR.
 
 - [ ] **Step 1: Write the failing test** — `enrollmentLifecycle.test.ts`:
 ```ts
-import {describe,expect,it} from 'vitest';
-import {NON_TERMINAL_SCHEDULE_STATES,nextEnrollmentRequest} from './enrollmentLifecycle';
+import {describe,expect,expectTypeOf,it} from 'vitest';
+import type { Tx } from './types';
+import {NON_TERMINAL_SCHEDULE_STATES,nextEnrollmentRequest,requestAutopay,pauseAutopay,resumeAutopay,turnOffAutopay,stopAutopayByClient} from './enrollmentLifecycle';
 describe('enrollment lifecycle',()=>{
+ it('preserves the C4 executor union for every lifecycle operation',()=>{
+  expectTypeOf<Parameters<typeof requestAutopay>[0]>().toEqualTypeOf<Tx>();
+  expectTypeOf<Parameters<typeof pauseAutopay>[0]>().toEqualTypeOf<Tx>();
+  expectTypeOf<Parameters<typeof resumeAutopay>[0]>().toEqualTypeOf<Tx>();
+  expectTypeOf<Parameters<typeof turnOffAutopay>[0]>().toEqualTypeOf<Tx>();
+  expectTypeOf<Parameters<typeof stopAutopayByClient>[0]>().toEqualTypeOf<Tx>();
+ });
  it('cannot treat processing as permission for another charge',()=>{
   expect(NON_TERMINAL_SCHEDULE_STATES).toEqual(['awaiting_notice','scheduled','collecting','retry_scheduled','action_required']);
  });
@@ -1097,7 +1117,7 @@ describe('enrollment lifecycle',()=>{
  });
 });
 ```
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/enrollmentLifecycle.test.ts`; missing module.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/enrollmentLifecycle.test.ts`; missing module. With a narrowed executor implementation, `pnpm exec tsc --build apps/api/tsconfig.tests.json` from the repository root must fail the five C4 parameter assertions.
 - [ ] **Step 3: Implement** — `enrollmentLifecycle.ts`:
 ```ts
 import {and,eq,inArray,sql} from 'drizzle-orm';
@@ -1115,15 +1135,19 @@ import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
 import {getAutopayMethod,detachPaymentMethodPostCommit} from './paymentMethods';
 import {notifyAutopayStaff} from './staffNotifications';
-type Tx=typeof database;
+import type { Tx } from './types';
 export const NON_TERMINAL_SCHEDULE_STATES=['awaiting_notice','scheduled','collecting','retry_scheduled','action_required'] as const;
 export function nextEnrollmentRequest(row:{status:string;generation:number}|null):number|null{
  return row&&['active','paused'].includes(row.status)?null:(row?.generation??0)+1;
 }
 async function lockOrg(db:Tx,orgId:string,actor?:InvoiceActor){
- if(actor)requireOrgAccess(actor,orgId);
- const [org]=await db.select().from(organizations).where(eq(organizations.id,orgId)).limit(1).for('update');
- if(!org||actor?.partnerId&&actor.partnerId!==org.partnerId)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
+ if(actor){
+  if(!actor.partnerId)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
+  requireOrgAccess(actor,orgId);
+ }
+ const [org]=await db.select().from(organizations).where(and(eq(organizations.id,orgId),
+  actor?eq(organizations.partnerId,actor.partnerId!):undefined)).limit(1).for('update');
+ if(!org)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
  if(org.deletedAt||!['active','trial'].includes(org.status)||['quick_support','unassigned_pool'].includes(org.type))
   throw new InvoiceServiceError('Organization is not available for automatic payments',409,'INVALID_STATE');
  return org;
@@ -1230,8 +1254,8 @@ Create `enrollmentService.ts` as the C4 facade:
 ```ts
 export {requestAutopay,pauseAutopay,resumeAutopay,turnOffAutopay,stopAutopayByClient} from './enrollmentLifecycle';
 ```
-Stop changes schedules but never changes an `invoice_collection_attempts` row: an ACH debit already processing keeps its reservation and settles through W4. Pause preserves the method and generation. Resume resets the eligibility boundary to the resume timestamp and never restores cancelled schedules. Requested and cancelled enrollments alone can receive a new generation.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/enrollmentLifecycle.test.ts`; also run Task 7's real-DB lifecycle cases after its completion implementation exists.
+Staff actors retain the existing nullable `InvoiceActor.userId` attribution contract; a partner identity is mandatory and the org allowlist is enforced. Public/client stop receives an org already authenticated by Task 11. These functions never substitute a new executor or independently commit. Stop changes schedules but never changes an `invoice_collection_attempts` row: an ACH debit already processing keeps its reservation and settles through W4. Pause preserves the method and generation. Resume resets the eligibility boundary to the resume timestamp and never restores cancelled schedules. Requested and cancelled enrollments alone can receive a new generation.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/enrollmentLifecycle.test.ts`; from the root run `pnpm exec tsc --build apps/api/tsconfig.tests.json` for all five C4 executor assertions. Also run Task 7's real-DB lifecycle cases and Task 12's org-scoped request/pause/resume, authorization and raw-transaction rollback cases after their implementation exists.
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/enrollmentLifecycle.ts apps/api/src/services/autopay/enrollmentLifecycle.test.ts apps/api/src/services/autopay/enrollmentService.ts` then `git commit -m "feat(billing): manage autopay enrollment lifecycle"`.
 
 ### Task 6: Create one account-bound Customer and a setup-only Checkout session
@@ -2111,9 +2135,9 @@ Change its return to `{settled,setups,financialEvents}`. Call this from the work
 
 ### Task 10: MSP enrollment operations and read models (W2a)
 
-**Files:** Create `apps/api/src/routes/autopay/index.ts`, `apps/api/src/routes/autopay/index.test.ts`, `apps/api/src/services/autopay/enrollmentViews.ts`; Modify `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, `apps/api/src/services/autopay/autopayGate.ts`.
+**Files:** Create `apps/api/src/routes/autopay/index.ts`, `apps/api/src/routes/autopay/index.test.ts`, `apps/api/src/services/autopay/enrollmentViews.ts`; Modify `apps/api/src/middleware/selfManagedDbContextRoutes.ts`, `apps/api/src/services/autopay/autopayGate.ts`. Real-DB coverage is created in `apps/api/src/index.autopay.integration.test.ts` by Task 12.
 
-**Interfaces:** Consumes C4 `requestAutopay(db,actor,{orgIds,recipientOverride?})`, `pauseAutopay(db,actor,orgId)`, `resumeAutopay(db,actor,orgId)`, `turnOffAutopay(db,actor,orgId)`, `getAutopayMethod(db,orgId)`, `requireAutopayEnabled()`; existing `InvoiceActor` in `services/invoiceTypes.ts` and `invoiceActorFrom` in `routes/invoices/invoices.ts`. Produces `autopayRoutes` and `listAutopayEnrollments(actor,orgId?)`. All route responses intentionally project only enrollment/method display fields; never return Stripe customer IDs, tokens, IPs or consent histories to this list.
+**Interfaces:** Consumes C4 `requestAutopay(db,actor,{orgIds,recipientOverride?})`, `pauseAutopay(db,actor,orgId)`, `resumeAutopay(db,actor,orgId)`, `turnOffAutopay(db,actor,orgId)`, `getAutopayMethod(db,orgId)`, `requireAutopayEnabled()`; existing `InvoiceActor` in `services/invoiceTypes.ts` and `invoiceActorFrom` in `routes/invoices/invoices.ts`. Uses `runOutsideDbContext` + `withSystemDbAccessContext` for each authorized staff mutation; the C4 service receives that context-bound `db` without replacing its executor. Produces `autopayRoutes` and `listAutopayEnrollments(actor,orgId?)`. All route responses intentionally project only enrollment/method display fields; never return Stripe customer IDs, tokens, IPs or consent histories to this list.
 
 - [ ] **Step 1: Write the failing test** — `index.test.ts`:
 
@@ -2128,9 +2152,10 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   },
   requirePermission: () => async (c: any,next: any) => c.req.header('x-deny') ? c.json({error:'Forbidden'},403) : next(),
-  withAuthDbAccessContext: (_auth:unknown,fn:()=>unknown)=>fn(),
 }));
-vi.mock('../../db', () => ({ db: {} }));
+vi.mock('../../db', () => ({ db: {},runOutsideDbContext:(fn:()=>unknown)=>fn(),
+  withSystemDbAccessContext:vi.fn((fn:()=>unknown)=>fn()) }));
+import { withSystemDbAccessContext } from '../../db';
 vi.mock('../../services/autopay/autopayGate', () => ({ requireAutopayEnabled: () => async(c:any,next:any) => c.req.header('x-disabled') ? c.json({code:'autopay_not_enabled'},404) : next() }));
 vi.mock('../../services/autopay/enrollmentService', () => ({ requestAutopay:h.request,pauseAutopay:h.pause,resumeAutopay:h.resume,turnOffAutopay:h.off }));
 vi.mock('../../services/autopay/enrollmentViews', () => ({ listAutopayEnrollments:h.list }));
@@ -2154,6 +2179,7 @@ describe('MSP autopay routes',()=>{
   it.each(['pause','resume','turn_off'])('dispatches %s',async(action)=>{
     const res=await app.request(`/orgs/${orgId}/autopay`,{method:'PATCH',headers,body:JSON.stringify({action})});
     expect(res.status).toBe(200);
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
     expect({pause:h.pause,resume:h.resume,turn_off:h.off}[action]).toHaveBeenCalledWith({},expect.anything(),orgId);
   });
   it('rejects malformed and empty bulk operations before writing',async()=>{
@@ -2164,6 +2190,7 @@ describe('MSP autopay routes',()=>{
   });
   it('passes the recipient override and exact scoped actor',async()=>{
     await app.request('/billing/autopay/requests',{method:'POST',headers,body:JSON.stringify({orgIds:[orgId],recipientOverride:'accounts@example.test'})});
+    expect(withSystemDbAccessContext).toHaveBeenCalledOnce();
     expect(h.request).toHaveBeenCalledWith({},expect.objectContaining({accessibleOrgIds:[orgId]}),{orgIds:[orgId],recipientOverride:'accounts@example.test'});
   });
   it('rejects an inaccessible org before dispatch, including mixed bulk requests',async()=>{
@@ -2171,6 +2198,7 @@ describe('MSP autopay routes',()=>{
     expect((await app.request(`/orgs/${foreign}/autopay`,{method:'PATCH',headers,body:'{"action":"pause"}'})).status).toBe(404);
     expect((await app.request('/billing/autopay/requests',{method:'POST',headers,body:JSON.stringify({orgIds:[orgId,foreign]})})).status).toBe(404);
     expect(h.pause).not.toHaveBeenCalled(); expect(h.request).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
   it('returns 404 for a missing org and 500 for an unexpected service failure',async()=>{
     h.list.mockResolvedValueOnce([]);
@@ -2181,7 +2209,7 @@ describe('MSP autopay routes',()=>{
 });
 ```
 
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/routes/autopay/index.test.ts`; the router import is missing.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/routes/autopay/index.test.ts`; the router import is missing. Against the previous `withAuthDbAccessContext` implementation, the system-context dispatch assertions fail; Task 12 supplies the real org-RLS regression.
 - [ ] **Step 3: Implement** — create `enrollmentViews.ts`:
 
 ```ts
@@ -2224,8 +2252,8 @@ Create `routes/autopay/index.ts`. The middleware is attached to the three exact 
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { PERMISSIONS } from '@breeze/shared';
-import { db } from '../../db';
-import { authMiddleware,requirePermission,withAuthDbAccessContext } from '../../middleware/auth';
+import { db,runOutsideDbContext,withSystemDbAccessContext } from '../../db';
+import { authMiddleware,requirePermission } from '../../middleware/auth';
 import { zValidator } from '../../lib/validation';
 import { invoiceActorFrom } from '../invoices/invoices';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -2242,7 +2270,7 @@ autopayRoutes.onError((err,c)=>{
   throw err;
 });
 const orgParam=z.object({orgId:z.string().uuid()});
-const allowed=(actor:ReturnType<typeof invoiceActorFrom>,ids:string[])=>actor.partnerId!==null&&
+const allowed=(actor:ReturnType<typeof invoiceActorFrom>,ids:string[])=>actor.userId!==null&&actor.partnerId!==null&&
   ids.every(id=>actor.accessibleOrgIds===null||actor.accessibleOrgIds.includes(id));
 autopayRoutes.get('/billing/autopay',async c=>{
   const data=await listAutopayEnrollments(invoiceActorFrom(c));
@@ -2253,7 +2281,7 @@ autopayRoutes.post('/billing/autopay/requests',zValidator('json',z.object({
 }).strict()),async c=>{
   const actor=invoiceActorFrom(c),input=c.req.valid('json');
   if(!allowed(actor,input.orgIds))return c.json({error:'Organization not found'},404);
-  return c.json(await withAuthDbAccessContext(c.get('auth'),()=>requestAutopay(db,actor,{...input,orgIds:[...new Set(input.orgIds)]})));
+  return c.json(await runOutsideDbContext(()=>withSystemDbAccessContext(()=>requestAutopay(db,actor,{...input,orgIds:[...new Set(input.orgIds)]}))));
 });
 autopayRoutes.get('/orgs/:orgId/autopay',zValidator('param',orgParam),async c=>{
   const actor=invoiceActorFrom(c),{orgId}=c.req.valid('param');
@@ -2266,12 +2294,12 @@ autopayRoutes.patch('/orgs/:orgId/autopay',zValidator('param',orgParam),
     const actor=invoiceActorFrom(c),{orgId}=c.req.valid('param');
     if(!allowed(actor,[orgId]))return c.json({error:'Organization not found'},404);
     const action=c.req.valid('json').action;
-    await withAuthDbAccessContext(c.get('auth'),()=>({pause:pauseAutopay,resume:resumeAutopay,turn_off:turnOffAutopay}[action](db,actor,orgId)));
+    await runOutsideDbContext(()=>withSystemDbAccessContext(()=>({pause:pauseAutopay,resume:resumeAutopay,turn_off:turnOffAutopay}[action](db,actor,orgId))));
     return c.json({success:true});
   });
 ```
 
-These mutations own short transactions in their services. Add the following entries to `SELF_MANAGED_DB_CONTEXT_ROUTES` in `middleware/selfManagedDbContextRoutes.ts`, keeping the existing entries:
+The route owns one short system transaction per mutation; the lifecycle service keeps the supplied executor and its locks through commit/rollback. Real authentication and billing permission checks run before the system context. Route org-allowlist checks reject mixed unauthorized batches before dispatch; `lockOrg` also requires the authenticated partner, enforces actor org access, and predicates its locked lookup on that partner. Readiness, connection binding, partner notice rendering, tokens and outbox writes therefore share the authorized transaction. Never add partner-axis RLS grants for organization scope or use `runOutsideDbContext` as a substitute for releasing an outer request transaction. Add the following entries to `SELF_MANAGED_DB_CONTEXT_ROUTES` in `middleware/selfManagedDbContextRoutes.ts`, keeping the existing entries:
 
 ```ts
 { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
@@ -2284,7 +2312,7 @@ These mutations own short transactions in their services. Add the following entr
 { method: 'POST', pattern: /^\/api\/v1\/portal\/autopay\/stop\/?$/ },
 ```
 
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/routes/autopay/index.test.ts src/middleware/selfManagedDbContextRoutes.test.ts`. The service's real-DB tests remain responsible for partner ownership, active org status, and atomic generation changes; an `accessibleOrgIds:null` actor still has a partner filter in every service read.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/routes/autopay/index.test.ts src/middleware/selfManagedDbContextRoutes.test.ts`. Task 12's real-app PostgreSQL cases must prove org-scoped request/pause/resume and notice rendering, reject same-partner and foreign-partner targets, and retain raw-transaction rollback; Task 7 retains active-org and generation cases; an `accessibleOrgIds:null` actor still has a partner filter in every service read.
 - [ ] **Step 5: Commit** — `git add apps/api/src/routes/autopay/index.ts apps/api/src/routes/autopay/index.test.ts apps/api/src/services/autopay/enrollmentViews.ts apps/api/src/middleware/selfManagedDbContextRoutes.ts` then `git commit -m "feat(billing): expose scoped autopay enrollment operations"`.
 
 ### Task 11: Public and portal setup, verified return, and stop boundaries (W2a)
@@ -2612,7 +2640,7 @@ This prevents a prefetched public GET carrying an unrelated staff Authorization 
 
 **Files:** Modify `apps/api/src/index.ts`, `apps/api/vitest.config.ts`, `apps/api/vitest.integration.config.ts`; Create `apps/api/src/index.autopay.integration.test.ts`; Test `apps/api/src/routes/orgs.test.ts`.
 
-**Interfaces:** Consumes `autopayRoutes`, `publicAutopayRoutes`, `portalPaymentMethodRoutes` from Tasks 10–11. Produces named `app` export from the existing `index.ts` Hono instance, with the same middleware and route order as production. Do not create a test-only substitute router. `index.ts` currently unconditionally calls `bootstrap` at import and exports no application; the `NODE_ENV !== 'test'` bootstrap guard is required for a real app-level test without opening a listener or workers.
+**Interfaces:** Consumes `autopayRoutes`, `publicAutopayRoutes`, `portalPaymentMethodRoutes` from Tasks 10–11. Also consumes the shared W1 `Tx` and Task 5 lifecycle functions to prove raw-transaction rollback; uses real organization membership, JWT authentication and forced RLS for request/pause/resume. Produces named `app` export from the existing `index.ts` Hono instance, with the same middleware and route order as production. Do not create a test-only substitute router. `index.ts` currently unconditionally calls `bootstrap` at import and exports no application; the `NODE_ENV !== 'test'` bootstrap guard is required for a real app-level test without opening a listener or workers.
 
 - [ ] **Step 1: Write the failing test** — create `index.autopay.integration.test.ts`:
 
@@ -2622,8 +2650,10 @@ import { randomUUID } from 'node:crypto';
 import { eq,sql } from 'drizzle-orm';
 import { beforeEach,describe,expect,it,vi } from 'vitest';
 import { getTestDb } from './__tests__/integration/setup';
-import { createPartner,createOrganization,createRole,createUser,assignUserToPartner,grantRolePermissions } from './__tests__/integration/db-utils';
-import { partners } from './db/schema';
+import { createPartner,createOrganization,createRole,createUser,assignUserToPartner,assignUserToOrganization,grantRolePermissions } from './__tests__/integration/db-utils';
+import { partners,organizations,stripeConnectAccounts,orgAutopayEnrollments,orgPaymentMethods,billingNoticeOutbox,billingLinkTokens } from './db/schema';
+import { db,withDbAccessContext,withSystemDbAccessContext } from './db';
+import { requestAutopay,resumeAutopay } from './services/autopay/enrollmentLifecycle';
 import { createAccessToken } from './services/jwt';
 const h=vi.hoisted(()=>({identity:vi.fn(),page:vi.fn(),complete:vi.fn(),create:vi.fn(),stop:vi.fn(),stripe:vi.fn()}));
 vi.mock('./services/partnerStripe',async actual=>({...await actual<typeof import('./services/partnerStripe')>(),getPartnerStripeClient:h.stripe}));
@@ -2632,22 +2662,118 @@ vi.mock('./services/autopay/customerViews',async actual=>({...await actual<typeo
 vi.mock('./services/autopay/enrollmentService',async actual=>({...await actual<typeof import('./services/autopay/enrollmentService')>(),
   createAutopaySetupSession:h.create,stopAutopayByClient:h.stop}));
 import { app } from './index';
-async function fixture(){
+async function fixture(scope:'partner'|'organization'='partner',canManage=true){
   const partner=await createPartner();
   const org=await createOrganization({partnerId:partner.id});
   const otherPartner=await createPartner();
   const otherOrg=await createOrganization({partnerId:otherPartner.id});
   await getTestDb().update(partners).set({autopayEnabled:true}).where(eq(partners.id,partner.id));
-  const role=await createRole({scope:'partner',partnerId:partner.id});
-  await grantRolePermissions(role.id,[{resource:'billing',action:'manage'}]);
-  const user=await createUser({partnerId:partner.id,email:`${randomUUID()}@example.test`,mfaEnabled:true});
-  await assignUserToPartner(user.id,partner.id,role.id,'all');
-  const token=await createAccessToken({sub:user.id,email:user.email,roleId:role.id,scope:'partner',orgId:null,
+  await getTestDb().update(organizations).set({billingContact:{email:'billing@example.test'}}).where(eq(organizations.id,org.id));
+  const [connection]=await getTestDb().insert(stripeConnectAccounts).values({partnerId:partner.id,
+    stripeAccountId:`acct_${randomUUID().replaceAll('-','')}`,status:'connected',accountCountry:'US',defaultCurrency:'USD',
+    autopayCapabilitiesCheckedAt:new Date(),autopayMissingPermissions:[]}).returning();
+  const role=await createRole({scope,partnerId:partner.id,orgId:scope==='organization'?org.id:undefined});
+  if(canManage)await grantRolePermissions(role.id,[{resource:'billing',action:'manage'}]);
+  const user=await createUser({partnerId:partner.id,orgId:scope==='organization'?org.id:null,
+    email:`${randomUUID()}@example.test`,mfaEnabled:true});
+  if(scope==='organization')await assignUserToOrganization(user.id,org.id,role.id);
+  else await assignUserToPartner(user.id,partner.id,role.id,'all');
+  const token=await createAccessToken({sub:user.id,email:user.email,roleId:role.id,scope,orgId:scope==='organization'?org.id:null,
     partnerId:partner.id,mfa:true,aep:1,mep:1,sid:randomUUID()});
-  return {partner,org,otherOrg,headers:{authorization:`Bearer ${token}`,'content-type':'application/json'}};
+  const actor={userId:user.id,partnerId:partner.id,accessibleOrgIds:scope==='organization'?[org.id]:null};
+  return {partner,org,otherOrg,user,connection:connection!,actor,headers:{authorization:`Bearer ${token}`,'content-type':'application/json'}};
 }
 describe('autopay mounted in the production Hono application',()=>{
   beforeEach(()=>{vi.clearAllMocks();h.stripe.mockRejectedValue(new Error('Unexpected Stripe request'));});
+  it('org-scoped request, pause and resume resolve partner rows without widening org authority',async()=>{
+    const f=await fixture('organization');
+    const role=await withSystemDbAccessContext(()=>db.execute(sql`SELECT current_user AS role,rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user`));
+    expect(role[0]).toMatchObject({role:'breeze_app',rolsuper:false,rolbypassrls:false});
+    // Negative control: these partner-axis rows exist but org RLS hides them.
+    await withDbAccessContext({scope:'organization',orgId:f.org.id,accessibleOrgIds:[f.org.id],
+      accessiblePartnerIds:[],currentPartnerId:f.partner.id,userId:f.user.id},async()=>{
+      expect(await db.select({id:organizations.id}).from(organizations).where(eq(organizations.id,f.org.id))).toEqual([{id:f.org.id}]);
+      expect(await db.select().from(partners).where(eq(partners.id,f.partner.id))).toEqual([]);
+      expect(await db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId,f.partner.id))).toEqual([]);
+    });
+    const requested=await app.request('/api/v1/billing/autopay/requests',{method:'POST',headers:f.headers,
+      body:JSON.stringify({orgIds:[f.org.id]})});
+    expect(requested.status,await requested.clone().text()).toBe(200);
+    expect(await requested.json()).toEqual({requested:[f.org.id],skipped:[]});
+    const [enrollment]=await getTestDb().select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,f.org.id));
+    expect(enrollment).toMatchObject({partnerId:f.partner.id,status:'requested',generation:1,
+      stripeConnectionId:f.connection.id,stripeAccountId:f.connection.stripeAccountId,requestedBy:f.user.id});
+    const [notice]=await getTestDb().select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id));
+    expect(notice).toMatchObject({orgId:f.org.id,enrollmentId:enrollment!.id,kind:'autopay_request',status:'pending',toEmail:'billing@example.test',
+      rendered:{text:expect.stringContaining(f.partner.name)}});
+    expect(notice).toMatchObject({rendered:{text:expect.stringContaining(f.org.name)}});
+    const oldEffectiveFrom=new Date('2026-01-01T00:00:00Z');
+    await getTestDb().update(orgAutopayEnrollments).set({status:'active',effectiveFrom:oldEffectiveFrom})
+      .where(eq(orgAutopayEnrollments.id,enrollment!.id));
+    await getTestDb().insert(orgPaymentMethods).values({orgId:f.org.id,enrollmentId:enrollment!.id,
+      stripePaymentMethodId:`pm_${randomUUID().replaceAll('-','')}`,type:'card',status:'active',isAutopayMethod:true});
+    const paused=await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{method:'PATCH',headers:f.headers,body:'{"action":"pause"}'});
+    expect(paused.status,await paused.clone().text()).toBe(200);
+    const notices=await getTestDb().select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id));
+    expect(notices.map(row=>row.kind).sort()).toEqual(['autopay_request','autopay_stopped']);
+    expect(notices.find(row=>row.kind==='autopay_stopped')).toMatchObject({rendered:{text:expect.stringContaining(f.partner.name)}});
+    // A raw transaction must stay usable and a caller rollback must undo resume.
+    await expect(withSystemDbAccessContext(()=>db.transaction(async tx=>{
+      await resumeAutopay(tx,f.actor,f.org.id);
+      const [inside]=await tx.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,enrollment!.id));
+      expect(inside!.status).toBe('active');
+      throw new Error('rollback raw resume');
+    }))).rejects.toThrow('rollback raw resume');
+    const [rolledBack]=await getTestDb().select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,enrollment!.id));
+    expect(rolledBack).toMatchObject({status:'paused',effectiveFrom:oldEffectiveFrom});
+    const resumed=await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{method:'PATCH',headers:f.headers,body:'{"action":"resume"}'});
+    expect(resumed.status,await resumed.clone().text()).toBe(200);
+    const [active]=await getTestDb().select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,enrollment!.id));
+    expect(active).toMatchObject({status:'active',generation:1,pausedAt:null,pausedBy:null});
+    expect(active!.effectiveFrom!.getTime()).toBeGreaterThan(oldEffectiveFrom.getTime());
+    expect(h.stripe).not.toHaveBeenCalled();
+  });
+  it.each(['organization','partner'] as const)('%s mutations reject unauthorized targets without partial writes',async scope=>{
+    const f=await fixture(scope);
+    const sibling=await createOrganization({partnerId:f.partner.id});
+    const denied=scope==='organization'?[sibling.id,f.otherOrg.id]:[f.otherOrg.id];
+    for(const orgId of denied){
+      const request=await app.request('/api/v1/billing/autopay/requests',{method:'POST',headers:f.headers,
+        body:JSON.stringify({orgIds:[f.org.id,orgId]})});
+      expect(request.status,await request.clone().text()).toBe(404);
+      for(const action of ['pause','resume','turn_off']){
+        expect((await app.request(`/api/v1/orgs/${orgId}/autopay`,{method:'PATCH',headers:f.headers,
+          body:JSON.stringify({action})})).status).toBe(404);
+      }
+    }
+    // Even an unrestricted org list cannot authorize a different partner at the service boundary.
+    await expect(withSystemDbAccessContext(()=>requestAutopay(db,{...f.actor,accessibleOrgIds:null},
+      {orgIds:[f.org.id,f.otherOrg.id]}))).rejects.toMatchObject({status:404,code:'ORG_NOT_FOUND'});
+    await expect(withSystemDbAccessContext(()=>requestAutopay(db,{...f.actor,partnerId:null},
+      {orgIds:[f.org.id]}))).rejects.toMatchObject({status:404,code:'ORG_NOT_FOUND'});
+    if(scope==='organization'){
+      await expect(withSystemDbAccessContext(()=>requestAutopay(db,f.actor,{orgIds:[sibling.id]})))
+        .rejects.toMatchObject({status:403,code:'ORG_DENIED'});
+    }
+    expect(await getTestDb().select().from(orgAutopayEnrollments)).toEqual([]);
+    expect(await getTestDb().select().from(billingNoticeOutbox)).toEqual([]);
+    expect(await getTestDb().select().from(billingLinkTokens)).toEqual([]);
+    expect(h.stripe).not.toHaveBeenCalled();
+  });
+  it('org-scoped writes require billing permission and the rollout switch',async()=>{
+    const denied=await fixture('organization',false);
+    const enabled=await fixture('organization');
+    await getTestDb().update(partners).set({autopayEnabled:false}).where(eq(partners.id,enabled.partner.id));
+    for(const [f,status]of [[denied,403],[enabled,404]] as const){
+      expect((await app.request('/api/v1/billing/autopay/requests',{method:'POST',headers:f.headers,
+        body:JSON.stringify({orgIds:[f.org.id]})})).status).toBe(status);
+      expect((await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{method:'PATCH',headers:f.headers,
+        body:'{"action":"resume"}'})).status).toBe(status);
+    }
+    expect(await getTestDb().select().from(orgAutopayEnrollments)).toEqual([]);
+    expect(await getTestDb().select().from(billingNoticeOutbox)).toEqual([]);
+    expect(h.stripe).not.toHaveBeenCalled();
+  });
   it('the actual enum accepts billing and adding it again is a no-op',async()=>{
     const before=await getTestDb().execute(sql`SELECT 'billing'::public.notification_type AS value`);
     expect(before[0]).toMatchObject({value:'billing'});
@@ -2714,7 +2840,7 @@ it.each(['autopay_request','autopay_enrolled','autopay_stopped','card_expiring']
 });
 ```
 
-- [ ] **Step 2: Run it, expect FAIL** — `pnpm test-stack up`, then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/index.autopay.integration.test.ts`; expect the missing `app` export/mounts or `billing` enum to fail. Add `'src/index.autopay.integration.test.ts'` to integration `include` and unit `exclude` before this invocation, so the test really runs and never tries the default no-DB runner. `cd apps/api && npx vitest run src/routes/orgs.test.ts` fails the new ID cases before Task 3's catalog additions.
+- [ ] **Step 2: Run it, expect FAIL** — `pnpm test-stack up`, then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/index.autopay.integration.test.ts`; expect the missing `app` export/mounts or `billing` enum to fail. Against the pre-fix Task 10 route, the org-scoped request must fail its `{requested:[orgId],skipped:[]}` assertion because org RLS hides Stripe readiness; the resume fixture also needs the same system orchestration. Against a narrowed C4 executor, the raw `resumeAutopay(tx,...)` call must fail the test-project type gate. Add `'src/index.autopay.integration.test.ts'` to integration `include` and unit `exclude` before this invocation, so the test really runs and never tries the default no-DB runner. `cd apps/api && npx vitest run src/routes/orgs.test.ts` fails the new ID cases before Task 3's catalog additions.
 - [ ] **Step 3: Implement** — add these imports and mounts in `index.ts`. Place the three mounts before the existing `/orgs` and `/portal` aggregate mounts, because the generic routers have broad auth middleware. The MSP autopay router has exact-path middleware and cannot shadow public requests.
 
 ```ts
@@ -2736,9 +2862,9 @@ if(process.env.NODE_ENV!=='test'){
 }
 ```
 
-Do not mount `portalPaymentMethodRoutes` a second time in `routes/portal/index.ts`: its own `portalAuthMiddleware` plus CSRF guard already make it a self-contained router. The application test loads the real root router, so deleting any one mount gives a failing test; a source-string assertion is not a substitute.
+Do not mount `portalPaymentMethodRoutes` a second time in `routes/portal/index.ts`: its own `portalAuthMiddleware` plus CSRF guard already make it a self-contained router. Keep the Task 12 org-scoped cases unmocked for auth, lifecycle services, readiness, rendering, outbox and SQL; only the existing Stripe boundary and unrelated public setup adapters are mocked. The request role assertion and org-RLS negative control prevent a superuser fixture from disguising CW-05. The application test loads the real root router, so deleting any one mount gives a failing test; a source-string assertion is not a substitute.
 
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run -c vitest.integration.config.ts src/index.autopay.integration.test.ts`, then `cd apps/api && npx vitest run src/routes/orgs.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/index.bootBinarySync.test.ts`; tear down with `pnpm test-stack down` from the root when the integration session is finished.
+- [ ] **Step 4: Run it, expect PASS** — from the repository root run `pnpm exec tsc --build apps/api/tsconfig.tests.json` to check the raw-transaction call; run `cd apps/api && npx vitest run -c vitest.integration.config.ts src/index.autopay.integration.test.ts`, then `cd apps/api && npx vitest run src/routes/orgs.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/index.bootBinarySync.test.ts`; tear down with `pnpm test-stack down` from the root when the integration session is finished.
 - [ ] **Step 5: Commit** — `git add apps/api/src/index.ts apps/api/src/index.autopay.integration.test.ts apps/api/vitest.config.ts apps/api/vitest.integration.config.ts apps/api/src/routes/orgs.test.ts` then `git commit -m "feat(billing): mount and verify autopay API routes"`.
 
 ### Task 13: Card expiry notices and worker registration (W2a)
@@ -4332,7 +4458,7 @@ pnpm --filter @breeze/web exec astro check
 pnpm --filter @breeze/portal exec astro check
 ```
 
-The API test-project build is additional to the requested API command: `.github/workflows/ci.yml` checks test types through that project. It catches incorrect mock chains and fixtures that the production-only TypeScript project cannot see.
+The API test-project build is additional to the requested API command: `.github/workflows/ci.yml` checks test types through that project. It catches incorrect mock chains and fixtures that the production-only TypeScript project cannot see. In particular, Tasks 1–2 and 5 assert exact W1 `Tx` parameter types and Task 12 passes a real transaction to `resumeAutopay`; Vitest runtime alone does not evaluate those type assertions.
 
 ```bash
 cd apps/api && npx vitest run src/services/autopay/ src/routes/autopay/ src/routes/portal/paymentMethods.test.ts src/services/invoiceCheckout.test.ts src/services/stripeCheckoutCallSites.test.ts src/services/stripeFinancialEventPoller.test.ts src/jobs/autopayWorker.test.ts src/routes/orgs.test.ts src/routes/portal/invoices.test.ts src/routes/invoicesPublic.test.ts
@@ -4370,7 +4496,7 @@ pnpm db:check-drift
 pnpm test-stack down
 ```
 
-Run the root commands from the root, not from a directory retained by a previous shell. Record actual file counts and confirm that the generation race, rollback/detach, forced-RLS forge, and duplicate completion assertions ran.
+Run the root commands from the root, not from a directory retained by a previous shell. Record actual file counts and confirm that the generation race, rollback/detach, forced-RLS forge, and duplicate completion assertions ran. For CW-04/CW-05, record Task 12's `breeze_app` role and org-scope partner-invisibility controls, successful org-scoped request/pause/resume with rendered notices, raw-transaction resume rollback, permission/rollout denials, and same-partner/foreign-partner rejection without partial enrollment/token/outbox writes.
 
 - [ ] **Step 4: Run browser and stack smoke** — start an isolated worktree stack and execute the Playwright file through the existing Chromium project:
 
@@ -4385,7 +4511,7 @@ Exercise both the MSP app and portal under the stack's configured base paths. Co
 pnpm wt-stack down
 ```
 
-- [ ] **Step 5: Record evidence and prepare the PR** — no verification-only commit is necessary when there is no diff. Commit fixes in the task that owns them, rerun the affected gates, and put command results and the lab outcomes in the PR description. W2a's description states the durable consent storage refinement and its tenancy classification; W2b states the settings home (Billing → Payments / org Billing → Payments), levels (partner default → org override), resolver (`resolveBillingPaymentSettings`), and configuration counts (zero → one home at each level). Do not represent an unrun Stripe lab or a missing W1 prerequisite as passing.
+- [ ] **Step 5: Record evidence and prepare the PR** — no verification-only commit is necessary when there is no diff. Commit fixes in the task that owns them, rerun the affected gates, and put command results and the lab outcomes in the PR description. W2a's description states the durable consent storage refinement, its tenancy classification, the preserved W1 `Tx` boundary, and the authorized short system transaction orchestration for org-scoped staff mutations; W2b states the settings home (Billing → Payments / org Billing → Payments), levels (partner default → org override), resolver (`resolveBillingPaymentSettings`), and configuration counts (zero → one home at each level). Do not represent an unrun Stripe lab or a missing W1 prerequisite as passing.
 
 #### Stripe test-mode lab checklist
 

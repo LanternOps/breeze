@@ -31,6 +31,13 @@
 
 12. **Unconfirmed Stripe creation cannot set `off_session`.** The [Stripe create API](https://docs.stripe.com/api/payment_intents/create) permits that parameter only with `confirm=true`. Create with `confirm:false`, customer, method and metadata, persist the PI/mapping, then pass `off_session:true` to confirm. This preserves the required crash boundary without sending an invalid create request. The [idempotency contract](https://docs.stripe.com/api/idempotent_requests) also permits pruning after 24 hours, motivating the 23-hour quarantine above.
 
+13. **W1 credential-source compatibility (CW-01).** Extend `partnerStripeClient.ts`, preserve candidate and explicit-archive overloads and the `partnerStripe.ts` re-export, and add a distinct account-bound reconciliation overload. Settlement and polling opt into it deliberately (Tasks 9, 11–12, 15, 17).
+14. **Merged history is money, not authority (CW-02).** Preserve W1’s nullable/cleared schedule enrollment and attempt method links. Only live collection/control loads require them. Historical outcomes bind to the mapping and validate original Stripe org metadata through the existing partner-scoped merge history; no current-org metadata rewrite or survivor method substitution (Tasks 3, 6, 10–14, 17, 20).
+15. **Durable PI replay (CW-03).** Extend W2’s global inbox filter to charge OR PaymentIntent events while leaving per-payment post-settlement replay charge-only; otherwise an early PI event becomes unreachable after the poll cursor advances (Task 15).
+16. **ACH availability is derived (CW-07).** W2’s disclosure can derive `card_only`; C3’s persisted `achMode` cannot. Bank admission consumes the disclosure without widening the settings enum (Task 16).
+17. **Money attention outlives rollout (CW-08).** C7 still gates enrollment/list routes. Captured unresolved money is projected by the existing authorized, ungated invoice detail and displayed in its workspace; payment-attention links target that invoice, not the gated enrollment list (Tasks 14, 19–21).
+18. **Late returns notify both parties (CW-09).** An applied bank-return/dispute reduction atomically enqueues a `payment_failed` returned variant using C6’s existing variables. Its mapping/return identity is independent of earlier attempt-failure mail. Staff notification uses the same return identity after commit; replay never duplicates customer outbox or in-app staff rows (Tasks 13–14, 20–21).
+
 ## Global Constraints
 
 - Money: `numeric(12,2)` decimal strings in services; Stripe in integer minor units via the existing
@@ -61,7 +68,7 @@
 - Scheduled idempotency keys are exactly `autopay_<schedule>_<attempt_no>`. Client-initiated unscheduled keys are `autopay_client_<invoice>_<attempt_no>`, with the ordinal allocated under the invoice lock across all invoice attempts.
 - Re-notice on method type, holder lead class, or fee terms changing. Never collect more principal or fee than noticed. Changes that reduce a legally permitted fee may lower the actual charge; changed method/fee terms still require a new notice.
 - `ACTIVE_COLLECTION_ATTEMPT_STATES` stays exactly `reserved|created|confirming|processing`. Skip/exclude/replace also inspect unresolved `requires_action` and cancel it at Stripe before releasing client authority. Do not add it to C3’s fixed tuple.
-- Every remote call is mocked at `getPartnerStripeClient`; no unit test constructs a Stripe client. Real DB locks, RLS, races, and crash replay use the integration runner.
+- Every remote call is mocked at `getPartnerStripeClient`; the constructor-only factory tests in Task 9 mock the SDK constructor itself and perform no provider HTTP. Real DB locks, RLS, races, and crash replay use the integration runner.
 - W4a keeps collection code absent; do not enable partners for live charging until W4b verification and the Stripe lab pass.
 
 ## Review Focus
@@ -71,6 +78,12 @@
 3. An obsolete notice callback arrives after re-notice, skip, exclusion, or generation replacement: it cannot revive charging or satisfy a new notice’s lead time (Tasks 3 and 20).
 4. A failed PI succeeds after retry/manual payment, or an ACH return arrives after success: provider truth is reconciled once; captured excess becomes unapplied; return reopens the invoice without resurrecting collection (Tasks 12, 13, 20).
 5. Setup return is replayed or microdeposit verification finishes days later: one explicit payment authorization produces at most one unscheduled attempt, and a background setup sweep cannot turn it into an unnotified charge (Tasks 16 and 20).
+6. Candidate-key probes and explicit-archive detaches retain W1 overloads; settlement/polling opt into the new factory source, and mapped merged attempts retain account credentials (Tasks 9, 11–12, 15).
+7. Merge clears authority and moves terminal history, then the original-org PI succeeds/refunds: the mapping plus durable partner merge history permits accounting, while tokens, retry schedules and survivor methods remain untouched (Tasks 3, 6, 10–14, 17, 20).
+8. A PI event arrives before its mapping and its attempt later becomes terminal failed: global pending replay still applies current provider truth; per-payment replay remains charge-only and cannot recurse (Tasks 15, 20).
+9. Persisted `ach_preferred` coexists with derived `card_only`: bank admission refuses using the disclosure, never a nonexistent C3 enum value (Task 16).
+10. Rollout is disabled with unapplied money: the authorized invoice workspace keeps its banner and staff link, while C7’s enrollment list remains gated. A late bank return enqueues customer and staff notices under its return identity, independent of earlier failure mail and optional reminders (Tasks 13–14, 19–21).
+
 
 ## File map
 
@@ -109,11 +122,11 @@ Paths marked “prerequisite” exist after W1–W3. Test paths labelled new are
 | `apps/web/src/components/contracts/ContractEditor.tsx` | Exclusion form field |
 | `apps/web/src/components/contracts/ContractEditor.test.tsx` | Exclusion field is mounted and saved |
 | `apps/web/src/components/billing/InvoiceDetail.tsx` | Autopay status/exclusion/charge panel |
-| `apps/web/src/components/billing/invoiceTypes.ts` | Autopay read model |
+| `apps/web/src/components/billing/invoiceTypes.ts` | Autopay read model and ungated invoice unapplied count |
 | `apps/web/src/components/billing/InvoiceDetail.autopay.test.tsx` (new) | Page composition and mutation feedback |
 | `apps/web/src/components/billing/InvoiceActions.tsx` | Queued-notice result wording |
 | `apps/web/src/components/billing/InvoiceActions.test.tsx` | Queue versus sent feedback |
-| `apps/web/src/components/billing/AutopayListPage.tsx` (prerequisite) | Last result, unapplied and stuck notices |
+| `apps/web/src/components/billing/AutopayListPage.tsx` (prerequisite) | Rollout-gated last result and stuck notices |
 | `apps/web/src/components/billing/AutopayListPage.test.tsx` (prerequisite) | List composition |
 | `apps/web/src/components/settings/EmailTemplatesTab.tsx` | Billing & payments entries |
 | `apps/web/src/locales/en/billing.json` | Web billing strings |
@@ -121,21 +134,25 @@ Paths marked “prerequisite” exist after W1–W3. Test paths labelled new are
 | `apps/api/src/services/autopay/failureClassifier.test.ts` (new) | Exhaustive return/decline table |
 | `apps/api/src/services/autopay/retryDates.ts` (new) | UTC card and banking-day retry dates |
 | `apps/api/src/services/autopay/retryDates.test.ts` (new) | Weekend/holiday boundaries |
-| `apps/api/src/services/partnerStripe.ts` | Account-bound archived client and enrollment switch block |
+| `apps/api/src/services/partnerStripeClient.ts` (prerequisite) | Candidate/stored/archive overloads plus account-bound reconciliation |
+| `apps/api/src/services/partnerStripeClient.test.ts` (new) | Retained overloads and original-account binding |
+| `apps/api/src/services/partnerStripe.ts` | Factory re-export and enrollment switch block |
 | `apps/api/src/services/partnerStripe.test.ts` | Disconnect, permission loss, same/different account |
 | `apps/api/src/services/stripeCredentialArchive.ts` | Keep unresolved PI credentials |
-| `apps/api/src/services/stripeCredentialArchive.test.ts` (new) | Unresolved versus erasable archive |
+| `apps/api/src/services/stripeCredentialArchive.test.ts` (prerequisite) | Unresolved versus erasable archive |
 | `apps/api/src/services/stripeSessionRevocation.ts` | Collection revocation reason |
 | `apps/api/src/services/autopay/collectionEngine.ts` (new) | C4 collection, replay, outcomes |
 | `apps/api/src/services/autopay/collectionEngine.test.ts` (new) | Stripe-boundary tests |
-| `apps/api/src/services/autopay/paymentNotices.ts` (new) | Receipt, failure variants, MSP notifications |
+| `apps/api/src/services/autopay/paymentNotices.ts` (new) | Receipt, failure/returned variants, return-specific dedupe, MSP notifications |
 | `apps/api/src/services/autopay/paymentNotices.test.ts` (new) | Idempotent outcome mail |
-| `apps/api/src/services/stripeSettle.ts` | All-online receipt hook |
+| `apps/api/src/services/stripeSettle.ts` | Explicit account-bound settlement and all-online receipt hook |
+| `apps/api/src/services/stripeSettle.test.ts` (prerequisite) | Retained settlement tests consume reconciliation overload |
+| `apps/api/src/services/orgMerge.ts` (read-only) | Existing partner-scoped original-org provenance resolver |
 | `apps/api/src/__tests__/integration/stripeSettle.integration.test.ts` | Checkout receipt after applied settlement |
-| `apps/api/src/services/stripeFinancialEventPoller.ts` | PI event dispatch through durable inbox |
+| `apps/api/src/services/stripeFinancialEventPoller.ts` | PI event dispatch through globally replayable durable inbox |
 | `apps/api/src/services/stripeFinancialEventPoller.test.ts` | Out-of-order PI outcomes |
-| `apps/api/src/services/stripeReversalState.ts` | ACH return notification and method restoration |
-| `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts` | Late ACH return and replay |
+| `apps/api/src/services/stripeReversalState.ts` | Atomic customer return outbox, staff handoff and method restoration |
+| `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts` | Late ACH return customer outbox, staff notification and replay |
 | `apps/api/src/jobs/stripeReconcileSweep.ts` | No-age-cutoff attempt recovery |
 | `apps/api/src/jobs/stripeReconcileSweep.test.ts` (new) | Old processing and reserved recovery |
 | `apps/api/src/jobs/autopayWorker.ts` (prerequisite) | Collection job and notice-handler boot |
@@ -144,7 +161,7 @@ Paths marked “prerequisite” exist after W1–W3. Test paths labelled new are
 | `apps/api/src/services/autopay/confirmPayment.ts` (new) | Cancel/reconcile before hosted replacement |
 | `apps/api/src/services/autopay/confirmPayment.test.ts` (new) | Scanner safety and SCA race |
 | `apps/api/src/services/autopay/bankPayment.ts` (new) | Invoice-bound setup and explicit bank charge |
-| `apps/api/src/services/autopay/bankPayment.test.ts` (new) | Replay, pending verification, amount consent |
+| `apps/api/src/services/autopay/bankPayment.test.ts` (new) | Derived ACH availability, replay, pending verification, amount consent |
 | `apps/api/src/routes/invoicesPublic.ts` | Extend existing pay route with bank setup |
 | `apps/api/src/routes/portal/invoices.ts` | Portal bank setup/charge with CSRF |
 | `apps/api/src/routes/portal/paymentMethods.ts` (prerequisite) | Return handling without background charge |
@@ -165,7 +182,8 @@ Paths marked “prerequisite” exist after W1–W3. Test paths labelled new are
 | `apps/api/src/services/autopay/setupCompletion.ts` | Prerequisite invoice-bound token consumption exception |
 | `apps/api/src/services/autopay/enrollmentViews.ts` | Prerequisite authorized latest-charge and attention projection |
 | `apps/api/src/services/autopay/customerViews.ts` | Prerequisite skip/confirm purpose admission and lifecycle checks |
-| `apps/api/src/services/autopay/staffNotifications.ts` | Prerequisite C9 event union and recipient policy |
+| `apps/api/src/services/autopay/staffNotifications.ts` | Prerequisite C9 event union, invoice destinations and recipient policy |
+| `apps/api/src/services/autopay/staffNotifications.test.ts` (prerequisite) | Accessible payment-attention destinations |
 | `apps/api/src/services/stripeReconcile.ts` | Preserve unapplied captures without false payment failure |
 | `apps/api/src/services/stripeReconcile.test.ts` | Ledger refusal and late-success regressions |
 | `apps/api/src/services/invoiceService.issue.integration.test.ts` | Manual issue schedule transaction proof |
@@ -184,9 +202,9 @@ Paths marked “prerequisite” exist after W1–W3. Test paths labelled new are
 | `apps/portal/src/lib/runAction.ts` | Read-only prerequisite portal response adapter |
 | `apps/portal/src/pages/invoice/[token].astro` | Existing public invoice shell composing the changed view |
 | `apps/portal/src/pages/invoices/[id].astro` | Existing authenticated invoice shell composing the changed view |
-| `apps/web/src/components/billing/InvoiceWorkspace.tsx` | Existing invoice shell renders changed InvoiceDetail |
+| `apps/web/src/components/billing/InvoiceWorkspace.tsx` | Existing invoice shell renders detail and ungated unresolved-money banner |
 | `apps/web/src/components/billing/InvoiceWorkspace.test.tsx` | Page-level real-child autopay composition |
-| `apps/web/src/components/billing/autopayClient.ts` | Prerequisite last-charge and attention DTO fields |
+| `apps/web/src/components/billing/autopayClient.ts` | Prerequisite last-charge and delivery-attention DTO fields (no money-banner source) |
 | `apps/web/src/components/contracts/ContractWorkspace.tsx` | Pass server feature flag into ContractEditor |
 | `apps/web/src/lib/api/contracts.ts` | Contract exclusion field and feature projection types |
 | `apps/web/src/pages/billing/autopay.astro` | Prerequisite list page composition |
@@ -398,7 +416,7 @@ Validate all appended URLs through W1’s existing safe URL checks; only `buildB
 
 ### Task 3: Fenced notice delivery and re-notice (W4a)
 **Files:** Create `apps/api/src/services/autopay/chargingNotice.ts`, `apps/api/src/services/autopay/chargingNotice.test.ts`; Modify prerequisite `apps/api/src/jobs/autopayWorker.ts`.
-**Interfaces:** Consumes C4 `mintBillingLinkToken`, `buildBillingLinkUrl`, `enqueueBillingNotice`, `registerNoticeSentHandler`, `renderBillingNotice`; produces `AutopayTerms`, `enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<void>`, `invoiceAutopayNoticeSent: NoticeSentHandler`, `registerAutopayNoticeHandlers(): void`. `AutopayTerms` is a W4-private JSON shape, not a new database type.
+**Interfaces:** Consumes C4 `mintBillingLinkToken`, `buildBillingLinkUrl`, `enqueueBillingNotice`, `registerNoticeSentHandler`, `renderBillingNotice`; produces `AutopayTerms`, `enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<void>`, `invoiceAutopayNoticeSent: NoticeSentHandler`, `registerAutopayNoticeHandlers(): void`. `AutopayTerms` is a W4-private JSON shape, not a new database type. Both notice enqueue and sent callbacks refuse a null schedule enrollment before using C4’s non-null token/outbox inputs.
 
 - [ ] **Step 1: Write the failing test** — standalone Drizzle mock matching `.select().from().where().limit().for()`:
 ```ts
@@ -407,13 +425,13 @@ const { emit } = vi.hoisted(() => ({ emit: vi.fn() }));
 vi.mock('../invoiceEvents', () => ({ emitInvoiceEvent: emit }));
 import { invoiceAutopayNoticeSent } from './chargingNotice';
 import type { NoticeSentHandler } from './noticeOutbox';
-it.each(['old-outbox', 'cancelled', 'new-generation'])(
+it.each(['old-outbox', 'cancelled', 'new-generation', 'cleared-authority'])(
   'does not revive authority after %s', async reason => {
     const writes: unknown[] = [];
     const responses = [
       [{ id: '10000000-0000-4000-8000-000000000001', partnerId: 'p', orgId: 'o' }],
       reason === 'old-outbox' ? [] : [{ id: 's', state: reason === 'cancelled' ? 'cancelled' : 'awaiting_notice',
-        enrollmentGeneration: 1, enrollmentId: 'e' }],
+        enrollmentGeneration: 1, enrollmentId: reason === 'cleared-authority' ? null : 'e' }],
       [{ generation: 2, status: 'active' }],
     ];
     const chain: Record<string, any> = {};
@@ -425,6 +443,18 @@ it.each(['old-outbox', 'cancelled', 'new-generation'])(
     } as Parameters<NoticeSentHandler>[1]);
     expect(writes).toEqual([]);
   });
+```
+Also import `enqueueAutopayNotice` and add this complete guard case:
+```ts
+it('does not mint or enqueue notices for a cleared enrollment',async()=>{
+  const chain:Record<string,any>={};
+  for(const name of ['select','from','where','limit'])chain[name]=()=>chain;
+  chain.then=(resolve:(value:unknown)=>unknown)=>Promise.resolve([{id:'schedule',eligible:true,state:'awaiting_notice',enrollmentId:null}]).then(resolve);
+  chain.insert=vi.fn(()=>{throw new Error('Unexpected write');});
+  chain.update=vi.fn(()=>{throw new Error('Unexpected write');});
+  await enqueueAutopayNotice(chain as Parameters<typeof enqueueAutopayNotice>[0],'schedule');
+  expect(chain.insert).not.toHaveBeenCalled();expect(chain.update).not.toHaveBeenCalled();
+});
 ```
 Add the successful delayed-send case using the same chain: responses are invoice, current awaiting schedule with lead 10/date `2026-10-03`, matching active enrollment, update result, invoice update result. Assert schedule becomes `scheduled` with `collectOn='2026-10-15'`, invoice gets `sentAt`, and emitted event is `invoice.sent`. Repeat callback and assert no second stamp. This assertion must precede the implementation.
 - [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/chargingNotice.test.ts`; module missing.
@@ -456,7 +486,7 @@ export interface AutopayTerms {
 export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<void> {
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.id, scheduleId)).limit(1);
-  if (!schedule?.eligible || schedule.state !== 'awaiting_notice') return;
+  if (!schedule?.eligible || !schedule.enrollmentId || schedule.state !== 'awaiting_notice') return;
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, schedule.invoiceId)).limit(1);
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, schedule.orgId)).limit(1);
   const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice!.partnerId)).limit(1);
@@ -508,10 +538,11 @@ export const invoiceAutopayNoticeSent: NoticeSentHandler = async (tx, row) => {
   const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.noticeOutboxId, row.id),
   )).limit(1).for('update');
-  if (!schedule || schedule.state !== 'awaiting_notice') return;
+  if (!schedule?.enrollmentId || schedule.state !== 'awaiting_notice') return;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
-  if (!enrollment || enrollment.status !== 'active' || enrollment.generation !== schedule.enrollmentGeneration) return;
+  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+    || enrollment.generation !== schedule.enrollmentGeneration) return;
   const terms = schedule.termsSnapshot as AutopayTerms;
   const earliest = addUtcDays(row.sentAt.toISOString().slice(0, 10), terms.noticeLeadDays);
   await tx.update(invoiceAutopaySchedules).set({ noticeSentAt: row.sentAt, state: 'scheduled',
@@ -728,7 +759,7 @@ Extend the existing `runAction` response types with `reason?: string`. Insert th
 
 ### Task 6: Skip, exclusions, and issued due-date re-notice (W4a)
 **Files:** Create `apps/api/src/services/autopay/invoiceControls.ts`, `apps/api/src/services/autopay/invoiceControls.test.ts`; Modify `apps/api/src/services/invoiceService.ts`, `packages/shared/src/validators/contracts.ts`, `apps/api/src/services/contractService.ts`, prerequisite `apps/api/src/services/autopay/staffNotifications.ts`; Test `apps/api/src/services/invoiceService.test.ts`, `apps/api/src/routes/contracts/contracts.test.ts`.
-**Interfaces:** Consumes C4 `assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void>`, `resolveBillingLinkToken(db: Tx, token: string, purpose: BillingLinkPurpose)`, `requireInvoiceAccess(actor, invoice)`; produces `skipInvoice(tx: Tx, token: string): Promise<void>`, `setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, excluded: boolean, actor: InvoiceActor): Promise<void>`, `renoticeSchedule(tx: Tx, invoiceId: string): Promise<void>`.
+**Interfaces:** Consumes C4 `assertNoActiveCollection(tx: Tx, invoiceId: string): Promise<void>`, `resolveBillingLinkToken(db: Tx, token: string, purpose: BillingLinkPurpose)`, `requireInvoiceAccess(actor, invoice)`; produces `skipInvoice(tx: Tx, token: string): Promise<void>`, `setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, excluded: boolean, actor: InvoiceActor): Promise<void>`, `renoticeSchedule(tx: Tx, invoiceId: string): Promise<void>`. Nullable enrollment links are terminal history, never token or re-notice authority.
 
 - [ ] **Step 1: Write the failing test** — in `invoiceControls.test.ts`:
 ```ts
@@ -741,6 +772,18 @@ it('refuses skip or exclusion while money is reserved', async () => {
   active.mockRejectedValueOnce(error);
   await expect(assertControllable({} as never, '10000000-0000-4000-8000-000000000001'))
     .rejects.toMatchObject({ code: 'COLLECTION_IN_PROGRESS' });
+});
+```
+Add `renoticeSchedule` to the control imports and this regression:
+```ts
+it('does not restore a merged schedule with no enrollment',async()=>{
+  const rows=[[{id:'invoice',orgId:'survivor'}],[{id:'schedule',state:'scheduled',enrollmentId:null}]];
+  const chain:Record<string,any>={};
+  for(const name of ['select','from','where','limit','for'])chain[name]=()=>chain;
+  chain.then=(resolve:(value:unknown)=>unknown)=>Promise.resolve(rows.shift()).then(resolve);
+  chain.update=vi.fn(()=>{throw new Error('Unexpected authority write');});
+  await renoticeSchedule(chain as Parameters<typeof renoticeSchedule>[0],'invoice');
+  expect(chain.update).not.toHaveBeenCalled();
 });
 ```
 Add route cases for cross-org/site, malformed UUID, nonboolean exclusion, missing invoice and terminal schedule. Add a due-date test with `state='skipped_by_client'`: updating due date preserves the skip; the same edit on `scheduled` clears notice authority, increments seq, and enqueues one replacement.
@@ -769,7 +812,7 @@ export async function renoticeSchedule(tx: Tx, invoiceId: string): Promise<void>
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)).limit(1).for('update');
-  if (!invoice || !schedule || schedule.state !== 'scheduled') return;
+  if (!invoice || !schedule?.enrollmentId || schedule.state !== 'scheduled') return;
   const terms = schedule.termsSnapshot as AutopayTerms;
   const collectOn = computeCollectOn({ issueDate: invoice.issueDate!, dueDate: invoice.dueDate!,
     offsetDays: terms.offsetDays, rule: terms.rule,
@@ -784,13 +827,13 @@ export async function renoticeSchedule(tx: Tx, invoiceId: string): Promise<void>
 }
 export async function skipInvoice(tx: Tx, token: string): Promise<void> {
   const link = await resolveBillingLinkToken(tx, token, 'skip_invoice');
-  if (!link?.invoiceId) throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
+  if (!link?.invoiceId || !link.enrollmentId) throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
   const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId),
     eq(invoices.orgId, link.orgId))).limit(1).for('update');
   if (!invoice) throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
   await assertControllable(tx, invoice.id);
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
-    .where(eq(orgAutopayEnrollments.id, link.enrollmentId!)).limit(1);
+    .where(eq(orgAutopayEnrollments.id, link.enrollmentId)).limit(1);
   if (!enrollment || enrollment.generation !== link.generation || enrollment.status !== 'active') {
     throw new InvoiceServiceError('Link unavailable', 404, 'INVOICE_NOT_FOUND');
   }
@@ -798,6 +841,7 @@ export async function skipInvoice(tx: Tx, token: string): Promise<void> {
     clientSkippedAt: new Date(), stateReason: 'client_request' }).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id),
     eq(invoiceAutopaySchedules.enrollmentGeneration, enrollment.generation),
+    eq(invoiceAutopaySchedules.enrollmentId, enrollment.id),
     inArray(invoiceAutopaySchedules.state, ['awaiting_notice', 'scheduled', 'retry_scheduled']),
   )).returning();
   if (!changed.length) throw new InvoiceServiceError('Invoice cannot be skipped', 409, 'INVALID_STATE');
@@ -830,11 +874,12 @@ export async function setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, exclu
     ));
     return;
   }
-  if (schedule.state !== 'excluded_by_msp') return;
+  if (!schedule.enrollmentId || schedule.state !== 'excluded_by_msp') return;
   if (!schedule.eligible && schedule.ineligibleReason !== 'excluded_invoice') return;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
-  if (!enrollment || enrollment.status !== 'active' || enrollment.generation !== schedule.enrollmentGeneration) return;
+  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+    || enrollment.generation !== schedule.enrollmentGeneration) return;
   const [excludedContract] = await tx.select({ id: contracts.id }).from(invoiceLines).innerJoin(contracts,
     and(eq(invoiceLines.sourceContractId, contracts.id), eq(invoiceLines.orgId, contracts.orgId)))
     .where(and(eq(invoiceLines.invoiceId, invoiceId), eq(contracts.autopayExcluded, true))).limit(1);
@@ -1280,47 +1325,112 @@ A network error, 429, permission error, or unknown provider response is **not** 
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/failureClassifier.ts apps/api/src/services/autopay/failureClassifier.test.ts apps/api/src/services/autopay/retryDates.ts apps/api/src/services/autopay/retryDates.test.ts`; `git commit -m "feat(billing): classify collection failures and bound retries"`.
 
 ### Task 9: Account-bound reconciliation and disconnect fencing (W4b)
-**Files:** Modify `apps/api/src/services/partnerStripe.ts`, `apps/api/src/services/stripeCredentialArchive.ts`; Test existing `apps/api/src/services/partnerStripe.test.ts`; Create `apps/api/src/services/stripeCredentialArchive.test.ts` for retention coverage.
-**Interfaces:** Preserve one-argument `getPartnerStripeClient(partnerId: string)`; add optional reconciliation options `{ stripeAccountId: string; credentialId?: string | null; invoiceStripePaymentId?: string; reason: string }`. Consumes verified `getSupersededStripeCredential(credentialId, {reason,invoiceStripePaymentId?})` and `findLatestArchivedCredentialForAccount(partnerId,stripeAccountId)` in `stripeCredentialArchive.ts`.
+**Files:** Modify prerequisite `apps/api/src/services/partnerStripeClient.ts`, `apps/api/src/services/partnerStripe.ts`, `apps/api/src/services/stripeCredentialArchive.ts`, existing `apps/api/src/services/partnerStripe.test.ts` and `apps/api/src/services/stripeCredentialArchive.test.ts`; Create `apps/api/src/services/partnerStripeClient.test.ts` for factory overload coverage.
+**Interfaces:** Extend the implementation in W1’s `partnerStripeClient.ts`, retaining the re-export in `partnerStripe.ts`. Preserve `CandidateSource { candidateApiKey:string }`, `ArchivedSource { archivedCredentialId:string; invoiceStripePaymentId?:string; reason?:'payment_intent_settlement'|'autopay_org_merge_detach' }`, and the one-argument stored-key form. Add `ReconciliationSource { reconciliationAccountId:string; archivedCredentialId?:string|null; invoiceStripePaymentId?:string; reason:'payment_intent_settlement'|'autopay_recovery'|'autopay_outcome'|'client_confirmation'|'financial_event_poll' }`, returning `StoredClient`. New collection still requires live readiness; reconciliation never grants new authority. Archive tests are W1-owned existing files, modified here.
 
-- [ ] **Step 1: Write the failing test** — in the existing partner Stripe fixture suite, test the actual client boundary:
+- [ ] **Step 1: Write the failing test** — create `partnerStripeClient.test.ts`; these tests exercise the factory itself, so the SDK constructor is mocked and no provider HTTP is made:
 ```ts
-const { oldStripe, findLatestArchivedCredentialForAccount, getSupersededStripeCredential } = vi.hoisted(() => ({
-  oldStripe: { paymentIntents: { retrieve: vi.fn() } },
-  findLatestArchivedCredentialForAccount: vi.fn(), getSupersededStripeCredential: vi.fn(),
-}));
-vi.mock('./stripeCredentialArchive', async importOriginal => ({
-  ...(await importOriginal<typeof import('./stripeCredentialArchive')>()),
-  findLatestArchivedCredentialForAccount, getSupersededStripeCredential,
-}));
-it('cannot reinterpret a payment as belonging to the replacement account', async () => {
-  dbMocks.selectResults.push([{ status: 'connected', apiKey: 'cipher', stripeAccountId: 'acct_new', defaultCurrency: 'USD' }]);
-  findLatestArchivedCredentialForAccount.mockResolvedValue({ id: 'old-credential' });
-  getSupersededStripeCredential.mockResolvedValue({ stripe: oldStripe, partnerId: PARTNER_A, stripeAccountId: 'acct_old' });
-  const result = await getPartnerStripeClient(PARTNER_A, { stripeAccountId: 'acct_old', reason: 'autopay_reconcile' });
-  expect(result.stripe).toBe(oldStripe);
-  expect(result.stripeAccountId).toBe('acct_old');
+import {beforeEach,expect,it,vi} from 'vitest';
+const h=vi.hoisted(()=>({rows:[] as unknown[],latest:vi.fn(),archived:vi.fn(),decrypt:vi.fn(),construct:vi.fn()}));
+vi.mock('../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>h.rows})})})}}));
+vi.mock('./partnerStripe',()=>({PartnerStripeError:class extends Error {constructor(message:string,readonly code:string){super(message);}}}));
+vi.mock('./secretCrypto',()=>({decryptSecret:h.decrypt}));
+vi.mock('./stripeCredentialArchive',()=>({findLatestArchivedCredentialForAccount:h.latest,getSupersededStripeCredential:h.archived}));
+vi.mock('stripe',()=>({default:class { constructor(key:string){h.construct(key);} }}));
+import {getPartnerStripeClient} from './partnerStripeClient';
+beforeEach(()=>{vi.clearAllMocks();h.rows=[];h.decrypt.mockReturnValue('synthetic_live');});
+it('preserves candidate, stored and explicit archive overloads',async()=>{
+  await getPartnerStripeClient('p',{candidateApiKey:'synthetic_candidate'});
+  expect(h.construct).toHaveBeenCalledWith('synthetic_candidate');
+  h.rows=[{status:'connected',apiKey:'cipher',stripeAccountId:'acct_live',defaultCurrency:'USD'}];
+  expect(await getPartnerStripeClient('p')).toMatchObject({stripeAccountId:'acct_live',defaultCurrency:'USD'});
+  h.archived.mockResolvedValue({stripe:{},partnerId:'p',stripeAccountId:'acct_old'});
+  expect(await getPartnerStripeClient('p',{archivedCredentialId:'old',reason:'autopay_org_merge_detach'}))
+    .toMatchObject({stripeAccountId:'acct_old'});
+  expect(h.archived).toHaveBeenCalledWith('old',{reason:'autopay_org_merge_detach',invoiceStripePaymentId:undefined});
+});
+it('uses the original account and checks both archive identities',async()=>{
+  h.rows=[{status:'connected',apiKey:'cipher',stripeAccountId:'acct_new',defaultCurrency:'USD'}];
+  h.latest.mockResolvedValue({id:'old'});
+  h.archived.mockResolvedValue({stripe:{},partnerId:'p',stripeAccountId:'acct_old'});
+  const source={reconciliationAccountId:'acct_old',reason:'autopay_outcome' as const};
+  expect(await getPartnerStripeClient('p',source)).toMatchObject({stripeAccountId:'acct_old'});
+  expect(h.construct).not.toHaveBeenCalled();
+  for(const mismatch of [{partnerId:'other',stripeAccountId:'acct_old'},{partnerId:'p',stripeAccountId:'acct_wrong'}]){
+    h.archived.mockResolvedValue({stripe:{},...mismatch});
+    await expect(getPartnerStripeClient('p',source)).rejects.toThrow('Stripe account mismatch');
+  }
+});
+it('honors a pinned archive even with a connected same-account live key',async()=>{
+  h.rows=[{status:'connected',apiKey:'cipher',stripeAccountId:'acct_old'}];
+  h.archived.mockResolvedValue({stripe:{},partnerId:'p',stripeAccountId:'acct_old'});
+  await getPartnerStripeClient('p',{reconciliationAccountId:'acct_old',archivedCredentialId:'pinned',
+    invoiceStripePaymentId:'mapping',reason:'payment_intent_settlement'});
+  expect(h.latest).not.toHaveBeenCalled();expect(h.construct).not.toHaveBeenCalled();
+  expect(h.archived).toHaveBeenCalledWith('pinned',{reason:'payment_intent_settlement',invoiceStripePaymentId:'mapping'});
 });
 ```
-Use the suite’s hoisted mocks for these imported archive functions. Add cases: active enrollment/no payments blocks account switch; same-account reconnect clears only Stripe-related attention; unusable method attention remains; a revoked key refuses new attempts; archived credential mismatch throws. Retention test seeds an unresolved reserved attempt without a mapping and asserts `eraseExpiredStripeCredentials` does not erase its matching account credential, including after 400 days.
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts`.
-- [ ] **Step 3: Implement** — before the existing live-key guard in `getPartnerStripeClient`, insert this branch and extend its signature with the options above:
+In the existing `partnerStripe.test.ts` fixture suite, add cases: active enrollment/no payments blocks account switch; same-account reconnect clears only Stripe-related attention; unusable method attention remains; a revoked key refuses new attempts; archived credential mismatch throws. Retention test seeds an unresolved reserved attempt without a mapping and asserts `eraseExpiredStripeCredentials` does not erase its matching account credential, including after 400 days.
+In W1’s existing `stripeCredentialArchive.test.ts`, add `leftJoin` to its mocked chain methods and retain `h`, `expired`, `now`, and both original tests. Append:
 ```ts
-if (reconciliation && (reconciliation.credentialId || !row?.apiKey
-  || row.status !== 'connected' || row.stripeAccountId !== reconciliation.stripeAccountId)) {
-  const credentialId = reconciliation.credentialId ??
-    (await findLatestArchivedCredentialForAccount(partnerId, reconciliation.stripeAccountId))?.id;
-  if (!credentialId) throw new PartnerStripeError('Original Stripe credential unavailable', 'NO_STRIPE_KEY');
-  const archived = await getSupersededStripeCredential(credentialId, {
-    reason: reconciliation.reason, invoiceStripePaymentId: reconciliation.invoiceStripePaymentId,
-  });
-  if (archived.partnerId !== partnerId || archived.stripeAccountId !== reconciliation.stripeAccountId) {
-    throw new PartnerStripeError('Stripe account mismatch', 'STRIPE_CONNECTION_CHANGED');
+it.each(['reserved','requires_action','unapplied'])('retains %s history beyond the hard cap',async state=>{
+  h.rows.push([expired],[{id:'attempt',state,paymentMethodId:state==='unapplied'?null:'method'}]);
+  expect(await eraseExpiredStripeCredentials(now)).toBe(0);
+  expect(h.updates).toHaveLength(0);
+});
+```
+Task 20’s merge/refund coverage exercises actual nullable history; this unit case pins erasure orchestration with the existing fixture. The joined account predicate must be reviewed as well: an unbound source method is never required for a mapped unapplied attempt.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/partnerStripeClient.test.ts src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts`.
+- [ ] **Step 3: Implement** — in `partnerStripeClient.ts`, retain W1’s imports, types and `API_VERSION`, add `findLatestArchivedCredentialForAccount` to the archive import, and replace the overloads/function with the following. Keep `CandidateSource` and `ArchivedSource` byte-for-byte as defined by W1:
+```ts
+type ReconciliationSource = {
+  reconciliationAccountId: string; archivedCredentialId?: string | null; invoiceStripePaymentId?: string;
+  reason: 'payment_intent_settlement' | 'autopay_recovery' | 'autopay_outcome' | 'client_confirmation' | 'financial_event_poll';
+};
+export function getPartnerStripeClient(partnerId: string, source: CandidateSource): Promise<{stripe: Stripe}>;
+export function getPartnerStripeClient(partnerId: string, source: ReconciliationSource): Promise<StoredClient>;
+export function getPartnerStripeClient(partnerId: string, source?: ArchivedSource): Promise<StoredClient>;
+export async function getPartnerStripeClient(partnerId: string,
+  source?: CandidateSource | ArchivedSource | ReconciliationSource): Promise<StoredClient | {stripe: Stripe}> {
+  if (source && 'candidateApiKey' in source) {
+    return {stripe: new Stripe(source.candidateApiKey, {apiVersion: API_VERSION})};
   }
-  return { stripe: archived.stripe, stripeAccountId: archived.stripeAccountId, defaultCurrency: null };
+  const reconciliation = source && 'reconciliationAccountId' in source ? source : null;
+  if (source && !reconciliation && 'archivedCredentialId' in source && source.archivedCredentialId) {
+    const archived = await getSupersededStripeCredential(source.archivedCredentialId, {
+      reason: source.reason ?? 'payment_intent_settlement', invoiceStripePaymentId: source.invoiceStripePaymentId,
+    });
+    if (archived.partnerId !== partnerId) throw new PartnerStripeError('Archived credential belongs to another partner', 'STRIPE_CONNECTION_CHANGED');
+    return {stripe: archived.stripe, stripeAccountId: archived.stripeAccountId, defaultCurrency: null};
+  }
+  const [row] = await db.select({apiKey:stripeConnectAccounts.apiKey,status:stripeConnectAccounts.status,
+    stripeAccountId:stripeConnectAccounts.stripeAccountId,defaultCurrency:stripeConnectAccounts.defaultCurrency})
+    .from(stripeConnectAccounts).where(eq(stripeConnectAccounts.partnerId,partnerId)).limit(1);
+  if (reconciliation && (reconciliation.archivedCredentialId || !row?.apiKey
+    || row.status !== 'connected' || row.stripeAccountId !== reconciliation.reconciliationAccountId)) {
+    const credentialId = reconciliation.archivedCredentialId ??
+      (await findLatestArchivedCredentialForAccount(partnerId,reconciliation.reconciliationAccountId))?.id;
+    if (!credentialId) throw new PartnerStripeError('Original Stripe credential unavailable','NO_STRIPE_KEY');
+    const archived = await getSupersededStripeCredential(credentialId, {
+      reason:reconciliation.reason,invoiceStripePaymentId:reconciliation.invoiceStripePaymentId,
+    });
+    if (archived.partnerId !== partnerId || archived.stripeAccountId !== reconciliation.reconciliationAccountId) {
+      throw new PartnerStripeError('Stripe account mismatch','STRIPE_CONNECTION_CHANGED');
+    }
+    return {stripe:archived.stripe,stripeAccountId:archived.stripeAccountId,defaultCurrency:null};
+  }
+  if (!row || row.status !== 'connected' || !row.apiKey) throw new PartnerStripeError('Online payment is not available — connect Stripe first.','NO_STRIPE_KEY');
+  let key: string | null;
+  try { key = decryptSecret(row.apiKey); }
+  catch (error) {
+    console.error('[partnerStripe] failed to decrypt stored key',{partnerId,message:error instanceof Error?error.message:String(error)});
+    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.','STRIPE_KEY_UNREADABLE');
+  }
+  if (!key) throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.','STRIPE_KEY_UNREADABLE');
+  return {stripe:new Stripe(key,{apiVersion:API_VERSION}),stripeAccountId:row.stripeAccountId,defaultCurrency:row.defaultCurrency};
 }
 ```
-Leave live decryption/auditing and API version pin intact. New money always uses the one-argument form; archival access is reconciliation-only.
+`partnerStripe.ts` remains the key lifecycle owner and re-export only; do not recreate its removed factory. No candidate/stored/archive caller is silently converted to reconciliation. Task 12 deliberately replaces settlement’s duplicated fallback with the account-bound overload; Task 15 uses it only for historical polling.
 
 In the locked account-switch branch of `savePartnerStripeKey`, add the enrollment condition to the existing “payments exist” block:
 ```ts
@@ -1332,20 +1442,25 @@ if (activeEnrollment && current.stripeAccountId !== accountId) {
 ```
 Place this code inside the existing `if (current && current.stripeAccountId !== accountId)` block in `savePartnerStripeKey`. It uses the existing `STRIPE_ACCOUNT_CHANGE_BLOCKED` error code. On disconnect or confirmed missing permissions, set affected enrollments’ `needsAttentionReason` to `stripe_account_changed` or `key_missing_permissions` without deleting customer/method/account identity. Preserve generation and all active attempts. Reconnect only clears these two reasons for matching account + successful probes; it never clears `method_unusable` or restores removed methods.
 
-Extend `archiveSupersededCredential`’s mapping pin predicate to `(checkout_session pending) OR (payment_intent unresolved)`. Extend `eraseExpiredStripeCredentials` with this SQL guard **outside** its age/hard-cap OR, so the hard cap cannot override it:
+In W1’s existing PaymentIntent pin update in `archiveSupersededCredential`, replace its active-state `inArray` with `inArray(invoiceCollectionAttempts.state,['reserved','created','confirming','processing','requires_action','unapplied'])`; preserve its mapping-ID/PI-ID linkage and Checkout update. Add `invoices` to the schema imports; all shown Drizzle predicates are already imported or added by W1. Replace W1’s `activeAttempt` check at the start of each erasure candidate iteration with this complete check, **before** computing `pastHardCap`:
 ```ts
-sql`NOT EXISTS (
-  SELECT 1 FROM invoice_collection_attempts a
-  JOIN org_payment_methods m ON m.id = a.payment_method_id
-  JOIN org_autopay_enrollments e ON e.id = m.enrollment_id
-  WHERE e.partner_id = ${stripeConnectCredentials.partnerId}
-    AND e.stripe_account_id = ${stripeConnectCredentials.stripeAccountId}
-    AND a.state IN ('reserved','created','confirming','processing','requires_action','unapplied')
-)`
+const [unresolved] = await db.select({id:invoiceCollectionAttempts.id}).from(invoiceCollectionAttempts)
+  .innerJoin(invoices,eq(invoices.id,invoiceCollectionAttempts.invoiceId))
+  .leftJoin(invoiceStripePayments,eq(invoiceStripePayments.id,invoiceCollectionAttempts.invoiceStripePaymentId))
+  .leftJoin(orgPaymentMethods,eq(orgPaymentMethods.id,invoiceCollectionAttempts.paymentMethodId))
+  .leftJoin(orgAutopayEnrollments,eq(orgAutopayEnrollments.id,orgPaymentMethods.enrollmentId))
+  .where(and(eq(invoices.partnerId,candidate.partnerId),
+    inArray(invoiceCollectionAttempts.state,['reserved','created','confirming','processing','requires_action','unapplied']),
+    or(eq(invoiceStripePayments.stripeAccountId,candidate.stripeAccountId),
+      and(isNull(invoiceCollectionAttempts.invoiceStripePaymentId),eq(orgAutopayEnrollments.partnerId,candidate.partnerId),
+        eq(orgAutopayEnrollments.stripeAccountId,candidate.stripeAccountId))),
+  )).limit(1);
+if (unresolved) continue;
 ```
-For mapped attempts use `invoice_stripe_payments.stripe_account_id` as the primary account binding; the enrollment join covers reserved attempts without mappings. Preserve W1’s required retention for late returns after resolved captures. Key destruction by Stripe itself remains an operational blocker: show attention and keep ledger evidence; an archived ciphertext cannot make a revoked key valid.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts`.
-- [ ] **Step 5: Commit** — `git add apps/api/src/services/partnerStripe.ts apps/api/src/services/partnerStripe.test.ts apps/api/src/services/stripeCredentialArchive.ts apps/api/src/services/stripeCredentialArchive.test.ts`; `git commit -m "fix(billing): retain original Stripe authority for in-flight payments"`.
+
+For mapped attempts use `invoice_stripe_payments.stripe_account_id` as the primary account binding; the enrollment join covers reserved attempts without mappings. Extend the archive test’s mock chain with `leftJoin` without removing W1’s existing `innerJoin` method. Preserve W1’s required retention for late returns after resolved captures. Key destruction by Stripe itself remains an operational blocker: show attention and keep ledger evidence; an archived ciphertext cannot make a revoked key valid.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/partnerStripeClient.test.ts src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts`.
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/partnerStripeClient.ts apps/api/src/services/partnerStripeClient.test.ts apps/api/src/services/partnerStripe.ts apps/api/src/services/partnerStripe.test.ts apps/api/src/services/stripeCredentialArchive.ts apps/api/src/services/stripeCredentialArchive.test.ts`; `git commit -m "fix(billing): retain original Stripe authority for in-flight payments"`.
 
 ### Task 10: Revoke Checkout and reserve under the invoice lock (W4b)
 **Files:** Create `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/services/autopay/collectionEngine.test.ts`; Modify `apps/api/src/services/stripeSessionRevocation.ts`.
@@ -1422,7 +1537,8 @@ export async function reserveCollection(input: CollectionInput)
     )).limit(1).for('update') : [];
     if (input.initiatedBy !== 'client_on_session' && !schedule) return refuse('schedule_required');
     if (input.initiatedBy === 'client_on_session' && input.scheduleId) return refuse('unexpected_schedule');
-    if (schedule && (!schedule.eligible || !['scheduled','retry_scheduled'].includes(schedule.state)
+    if (schedule && (!schedule.enrollmentId || schedule.enrollmentId !== enrollment.id
+      || !schedule.eligible || !['scheduled','retry_scheduled'].includes(schedule.state)
       || schedule.enrollmentGeneration !== enrollment.generation || invoice.autopayExcluded)) return refuse('schedule_inactive');
     if (schedule) {
       const [excluded] = await db.select({ id: contracts.id }).from(invoiceLines).innerJoin(contracts,
@@ -1488,7 +1604,7 @@ Do not carry a DB transaction through the outer invocation. The row lock is also
 
 ### Task 11: Create, persist, confirm, and recover one PaymentIntent (W4b)
 **Files:** Modify `apps/api/src/services/autopay/collectionEngine.ts`; Test `apps/api/src/services/autopay/collectionEngine.test.ts` and real-DB crash case in `apps/api/src/services/autopay/charging.integration.test.ts` (Task 20).
-**Interfaces:** Produces C4 `attemptCollection(input: { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string }): Promise<{ attemptId: string | null; outcome: 'created' | 'deferred' | 'refused'; reason?: string }>` and private `resumeCollectionAttempt(attemptId: string): Promise<void>`; consumes C4 `applyAttemptOutcome(partnerId: string, attemptId: string): Promise<void>` defined in Task 12.
+**Interfaces:** Produces separate `loadAttempt` (non-null live authority) and `loadAttemptForReconciliation` (mapping-bound money history, no method/enrollment dependency), plus C4 `attemptCollection(input: { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string }): Promise<{ attemptId: string | null; outcome: 'created' | 'deferred' | 'refused'; reason?: string }>` and private `resumeCollectionAttempt(attemptId: string): Promise<void>`; consumes C4 `applyAttemptOutcome(partnerId: string, attemptId: string): Promise<void>` defined in Task 12.
 
 - [ ] **Step 1: Write the failing test** — assert provider parameters at the required boundary:
 ```ts
@@ -1518,30 +1634,57 @@ export function paymentIntentCreateParams(attempt: typeof invoiceCollectionAttem
     metadata: { invoice_id: attempt.invoiceId, org_id: attempt.orgId, partner_id: partnerId,
       attempt_id: attempt.id, principal_minor: String(principal), fee_minor: String(fee) } };
 }
+async function loadAttemptRecord(attemptId: string) {
+  const [attempt] = await db.select().from(invoiceCollectionAttempts)
+    .where(eq(invoiceCollectionAttempts.id,attemptId)).limit(1);
+  if (!attempt) throw new Error('Collection attempt not found');
+  const [invoice] = await db.select().from(invoices).where(eq(invoices.id,attempt.invoiceId)).limit(1);
+  const [mapping] = attempt.invoiceStripePaymentId ? await db.select().from(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.id,attempt.invoiceStripePaymentId)).limit(1) : [];
+  if (!invoice || invoice.orgId !== attempt.orgId) throw new Error('Attempt invoice mismatch');
+  return {attempt,invoice,mapping};
+}
+// Only create/confirm and client-control paths may demand live collection authority.
 export async function loadAttempt(attemptId: string) {
   return withSystemDbAccessContext(async () => {
-    const [attempt] = await db.select().from(invoiceCollectionAttempts)
-      .where(eq(invoiceCollectionAttempts.id, attemptId)).limit(1);
-    if (!attempt) throw new Error('Collection attempt not found');
-    const [invoice] = await db.select().from(invoices).where(eq(invoices.id, attempt.invoiceId)).limit(1);
-    const [method] = await db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id, attempt.paymentMethodId)).limit(1);
+    const data = await loadAttemptRecord(attemptId);
+    if (!data.attempt.paymentMethodId) throw new Error('Collection authority cleared');
+    const [method] = await db.select().from(orgPaymentMethods)
+      .where(eq(orgPaymentMethods.id,data.attempt.paymentMethodId)).limit(1);
+    if (!method) throw new Error('Collection authority missing');
     const [enrollment] = await db.select().from(orgAutopayEnrollments)
-      .where(eq(orgAutopayEnrollments.id, method!.enrollmentId)).limit(1);
-    const [mapping] = attempt.invoiceStripePaymentId ? await db.select().from(invoiceStripePayments)
-      .where(eq(invoiceStripePayments.id, attempt.invoiceStripePaymentId)).limit(1) : [];
-    if (!invoice || !method || !enrollment || invoice.orgId !== method.orgId || enrollment.orgId !== invoice.orgId) {
-      throw new Error('Collection authority mismatch');
+      .where(eq(orgAutopayEnrollments.id,method.enrollmentId)).limit(1);
+    if (!enrollment || method.orgId !== data.invoice.orgId || enrollment.orgId !== data.invoice.orgId
+      || enrollment.partnerId !== data.invoice.partnerId || !enrollment.stripeAccountId
+      || !enrollment.stripeCustomerId) throw new Error('Collection authority mismatch');
+    return {...data,method,enrollment:{...enrollment,stripeAccountId:enrollment.stripeAccountId,
+      stripeCustomerId:enrollment.stripeCustomerId}};
+  },'autopay.loadAuthority');
+}
+export async function loadAttemptForReconciliation(attemptId: string) {
+  return withSystemDbAccessContext(async () => {
+    const data = await loadAttemptRecord(attemptId);
+    const m = data.mapping;
+    if (!m || m.source !== 'autopay' || m.stripeObjectType !== 'payment_intent'
+      || m.invoiceId !== data.invoice.id || m.orgId !== data.invoice.orgId
+      || m.stripeObjectId !== data.attempt.stripePaymentIntentId
+      || m.stripePaymentIntentId !== data.attempt.stripePaymentIntentId
+      || m.amount !== data.attempt.principalAmount || m.feeAmount !== data.attempt.feeAmount
+      || m.currency !== data.attempt.currency || !m.stripeAccountId
+      || (m.paymentMethodType !== 'card' && m.paymentMethodType !== 'us_bank_account')) {
+      throw new Error('Historical payment binding mismatch');
     }
-    return { attempt, invoice, method, enrollment, mapping };
-  }, 'autopay.loadAttempt');
+    return {...data,mapping:m,methodType:m.paymentMethodType};
+  },'autopay.loadHistory');
 }
 export async function resumeCollectionAttempt(attemptId: string): Promise<void> {
   assertNoHeldDbContextForStripe('resumeCollectionAttempt');
-  let data = await loadAttempt(attemptId);
-  if (!['reserved','created','confirming'].includes(data.attempt.state)) {
-    await applyAttemptOutcome(data.invoice.partnerId, attemptId);
+  const record = await withSystemDbAccessContext(() => loadAttemptRecord(attemptId));
+  if (!['reserved','created','confirming'].includes(record.attempt.state)) {
+    await applyAttemptOutcome(record.invoice.partnerId,attemptId);
     return;
   }
+  let data = await loadAttempt(attemptId);
   if (!data.attempt.stripePaymentIntentId && Date.now() - data.attempt.createdAt.getTime() >= 23 * 3_600_000) {
     await withSystemDbAccessContext(async () => {
       if (data.attempt.scheduleId) await db.update(invoiceAutopaySchedules).set({ stateReason: 'provider_create_unknown' })
@@ -1550,8 +1693,8 @@ export async function resumeCollectionAttempt(attemptId: string): Promise<void> 
     return; // Reservation intentionally retained; attention notification is Task 14.
   }
   const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(data.invoice.partnerId, {
-    stripeAccountId: data.mapping?.stripeAccountId ?? data.enrollment.stripeAccountId,
-    credentialId: data.mapping?.revocationCredentialId,
+    reconciliationAccountId: data.mapping?.stripeAccountId ?? data.enrollment.stripeAccountId!,
+    archivedCredentialId: data.mapping?.revocationCredentialId,
     invoiceStripePaymentId: data.mapping?.id, reason: 'autopay_recovery',
   }));
   let pi: Stripe.PaymentIntent;
@@ -1648,7 +1791,7 @@ export async function attemptCollection(input: CollectionInput): Promise<Collect
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/collectionEngine.ts apps/api/src/services/autopay/collectionEngine.test.ts`; `git commit -m "feat(billing): persist intents before confirm and recover stable attempts"`.
 
 ### Task 12: Apply authoritative outcomes without losing captured money (W4b)
-**Files:** Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/services/stripeReconcile.ts`; Test `apps/api/src/services/autopay/collectionEngine.test.ts`, `apps/api/src/services/stripeReconcile.test.ts`.
+**Files:** Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/services/stripeReconcile.ts`, `apps/api/src/services/stripeSettle.ts`; Test `apps/api/src/services/autopay/collectionEngine.test.ts`, `apps/api/src/services/stripeReconcile.test.ts`, existing `apps/api/src/services/stripeSettle.test.ts`. Read-only dependency: `apps/api/src/services/orgMerge.ts#resolveMergedOrgIds`.
 **Interfaces:** Produces C4 `applyAttemptOutcome(partnerId: string, attemptId: string): Promise<void>`; consumes C4 `settlePaymentIntent(partnerId: string, paymentIntentId: string): Promise<{ settled: boolean; status: Stripe.PaymentIntent.Status; invoiceId: string | null }>`, `markPaymentMethodUnusable(tx: Tx, methodId: string, reason: string): Promise<void>`; private `enqueueAttemptNotice` and `notifyPaymentAttention` are defined completely in Tasks 13–14.
 
 - [ ] **Step 1: Write the failing test** — table-test the state reducer before adding network orchestration:
@@ -1664,7 +1807,27 @@ it.each([
 });
 ```
 In the `getPartnerStripeClient`-mocked orchestration case return PI `succeeded`, mock W1 settlement to return `settled:true`, then supply a mapping with no `invoicePaymentId` and status `failed`. Assert attempt `unapplied`, schedule `failed` with `stateReason='payment_unapplied'`, one `payment.unapplied` notice, zero `payment_failed` and zero receipt. Replay the same outcome; notification dedupe key remains unchanged. The real refusal path is mandatory in Task 20, not replaced by this mock.
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/collectionEngine.test.ts src/services/stripeReconcile.test.ts`.
+Update W1’s retained case `uses the mapping archive when the partner disconnected, without checking rollout`: replace its old `h.client` assertion with:
+```ts
+expect(h.client).toHaveBeenCalledWith('partner',{
+  reconciliationAccountId:'acct_original',archivedCredentialId:'archive-id',
+  invoiceStripePaymentId:mapping.id,reason:'payment_intent_settlement',
+});
+```
+In W1’s `stripeSettle.test.ts`, mock the Task 13 receipt helper (`vi.mock('./autopay/paymentNotices',()=>({enqueueOnlineReceipt:vi.fn()}))`) and preserve its existing settlement fixture. Add this case before replacing its fallback:
+```ts
+it('passes the mapping account and pinned archive deliberately to settlement',async()=>{
+  h.rows.push([{...mapping,revocationCredentialId:'archive-original'}],
+    [{invoicePaymentId:'33333333-3333-4333-8333-333333333333'}],[]);
+  await settlePaymentIntent('44444444-4444-4444-8444-444444444444','pi_test');
+  expect(h.client).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444',{
+    reconciliationAccountId:'acct_original',archivedCredentialId:'archive-original',
+    invoiceStripePaymentId:mapping.id,reason:'payment_intent_settlement',
+  });
+  expect(h.archive).not.toHaveBeenCalled();
+});
+```
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/collectionEngine.test.ts src/services/stripeReconcile.test.ts src/services/stripeSettle.test.ts`.
 - [ ] **Step 3: Implement** — append to the engine:
 ```ts
 import { settlePaymentIntent } from '../stripeSettle';
@@ -1696,28 +1859,38 @@ export async function readProviderFailure(stripe: Stripe, pi: Stripe.PaymentInte
   return {code,declineCode,achReturnCode:methodType === 'us_bank_account'
     ? raw ?? normalized[declineCode ?? code ?? ''] ?? null : null};
 }
+import {resolveMergedOrgIds} from '../orgMerge';
+export async function assertOriginalOrgProvenance(originalOrgId: string | undefined,currentOrgId: string,partnerId: string): Promise<void> {
+  if (!originalOrgId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(originalOrgId)) {
+    throw new Error('PaymentIntent organization provenance missing');
+  }
+  const chain = await resolveMergedOrgIds(originalOrgId,partnerId);
+  if (!chain.includes(currentOrgId)) throw new Error('PaymentIntent organization provenance mismatch');
+}
 export async function applyAttemptOutcome(partnerId: string, attemptId: string): Promise<void> {
   assertNoHeldDbContextForStripe('applyAttemptOutcome');
-  const data = await loadAttempt(attemptId);
+  const data = await loadAttemptForReconciliation(attemptId);
   if (data.invoice.partnerId !== partnerId) throw new Error('Attempt partner mismatch');
   if (!data.attempt.stripePaymentIntentId || data.attempt.failureCode === 'unapplied_refunded') return;
-  const accountId = data.mapping?.stripeAccountId ?? data.enrollment.stripeAccountId;
+  const accountId = data.mapping.stripeAccountId;
   const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
-    stripeAccountId: accountId, credentialId: data.mapping?.revocationCredentialId,
+    reconciliationAccountId: accountId, archivedCredentialId: data.mapping?.revocationCredentialId,
     invoiceStripePaymentId: data.mapping?.id, reason: 'autopay_outcome',
   }));
   const pi = await runOutsideDbContext(() => stripe.paymentIntents.retrieve(data.attempt.stripePaymentIntentId!));
-  if (pi.metadata.attempt_id !== attemptId || pi.metadata.invoice_id !== data.invoice.id
-    || pi.metadata.org_id !== data.invoice.orgId || pi.metadata.partner_id !== partnerId
+  if (pi.id !== data.mapping.stripeObjectId || pi.metadata.attempt_id !== attemptId || pi.metadata.invoice_id !== data.invoice.id
+    || pi.metadata.partner_id !== partnerId
     || pi.currency.toUpperCase() !== data.attempt.currency
     || pi.amount !== toMinorUnits(data.attempt.principalAmount, data.attempt.currency)
       + toMinorUnits(data.attempt.feeAmount, data.attempt.currency)) throw new Error('PaymentIntent binding mismatch');
-  const failure = await readProviderFailure(stripe, pi, data.method.type);
+  await assertOriginalOrgProvenance(pi.metadata.org_id,data.invoice.orgId,partnerId);
+  const failure = await readProviderFailure(stripe,pi,data.methodType);
   const state = outcomeState(pi.status, failure.code);
   if (state === 'created') return; // Recovery owns confirmation; outcome application cannot start money.
   if (state === 'succeeded') await settlePaymentIntent(partnerId, pi.id);
   const event = await withSystemDbAccessContext(async () => {
-    await lockInvoiceForCollection(db, data.invoice.id);
+    const locked = await lockInvoiceForCollection(db,data.invoice.id);
+    await assertOriginalOrgProvenance(pi.metadata.org_id,locked.invoice.orgId,partnerId);
     const [attempt] = await db.select().from(invoiceCollectionAttempts)
       .where(eq(invoiceCollectionAttempts.id, attemptId)).limit(1).for('update');
     if (!attempt) throw new Error('Attempt disappeared');
@@ -1727,10 +1900,13 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
       .where(eq(invoiceStripePayments.id, attempt.invoiceStripePaymentId!)).limit(1);
     const [schedule] = attempt.scheduleId ? await db.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.id, attempt.scheduleId)).limit(1).for('update') : [];
-    const [enrollment] = await db.select().from(orgAutopayEnrollments)
-      .where(eq(orgAutopayEnrollments.id, data.enrollment.id)).limit(1);
-    const mayAdvance = !!schedule && schedule.attemptCount === attempt.attemptNo
-      && schedule.enrollmentGeneration === enrollment?.generation && enrollment.status === 'active'
+    const [method] = attempt.paymentMethodId ? await db.select().from(orgPaymentMethods)
+      .where(and(eq(orgPaymentMethods.id,attempt.paymentMethodId),eq(orgPaymentMethods.orgId,locked.invoice.orgId))).limit(1) : [];
+    const [enrollment] = method ? await db.select().from(orgAutopayEnrollments)
+      .where(and(eq(orgAutopayEnrollments.id,method.enrollmentId),eq(orgAutopayEnrollments.orgId,locked.invoice.orgId))).limit(1) : [];
+    const mayAdvance = !!schedule?.enrollmentId && !!enrollment && !!method
+      && schedule.enrollmentId === enrollment.id && schedule.attemptCount === attempt.attemptNo
+      && schedule.enrollmentGeneration === enrollment.generation && enrollment.status === 'active'
       && ['collecting','retry_scheduled','action_required'].includes(schedule.state);
     if (state !== 'succeeded' && attempt.updatedAt.getTime() !== data.attempt.updatedAt.getTime()) return null;
     if (state === 'succeeded') {
@@ -1743,8 +1919,11 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
         stateReason: applied ? (reversed ? 'payment_reversed' : null) : 'payment_unapplied', nextAttemptAt: null,
       }).where(eq(invoiceAutopaySchedules.id, schedule.id));
       if (applied && !reversed) await enqueueAttemptNotice(db, attemptId, 'receipt');
-      return applied ? null : 'payment.unapplied' as const;
+      return applied ? null : {event:'payment.unapplied' as const,orgId:locked.invoice.orgId};
     }
+    // W1 clears authority on merged terminal history. Never restore processing/action/retry
+    // states (their CHECK constraints require authority), nor mutate a survivor's method.
+    if (!method || !enrollment) return null;
     if (state === 'processing') {
       await db.update(invoiceCollectionAttempts).set({ state: 'processing', updatedAt: new Date() })
         .where(eq(invoiceCollectionAttempts.id, attemptId));
@@ -1757,7 +1936,7 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
         .where(eq(invoiceAutopaySchedules.id, schedule!.id));
       return null;
     }
-    const failureClass = classifyCollectionFailure({ methodType: data.method.type,
+    const failureClass = classifyCollectionFailure({ methodType: data.methodType,
       code: failure.code, declineCode: failure.declineCode,
       achReturnCode: failure.achReturnCode, piStatus: pi.status });
     const authRequired = failureClass === 'auth_required';
@@ -1771,22 +1950,22 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
     const [first] = await db.select({ createdAt: invoiceCollectionAttempts.createdAt }).from(invoiceCollectionAttempts)
       .where(attempt.scheduleId ? eq(invoiceCollectionAttempts.scheduleId, attempt.scheduleId)
         : eq(invoiceCollectionAttempts.id, attempt.id)).orderBy(asc(invoiceCollectionAttempts.createdAt)).limit(1);
-    const next = schedule ? sameFailure && schedule.state === 'retry_scheduled' && schedule.attemptCount === attempt.attemptNo
+    const next = mayAdvance && schedule ? sameFailure && schedule.state === 'retry_scheduled' && schedule.attemptCount === attempt.attemptNo
       ? schedule.nextAttemptAt : retryAt(first!.createdAt, failureAt, failureClass, attempt.attemptNo) : null;
     if (mayAdvance) await db.update(invoiceAutopaySchedules).set({
       state: authRequired ? 'action_required' : next ? 'retry_scheduled' : 'failed',
       stateReason: failureClass, nextAttemptAt: next,
     }).where(eq(invoiceAutopaySchedules.id, schedule!.id));
     if (failureClass === 'hard' || failureClass === 'revoked') {
-      await markPaymentMethodUnusable(db, data.method.id, pi.last_payment_error?.code ?? failureClass);
+      await markPaymentMethodUnusable(db, method.id, pi.last_payment_error?.code ?? failureClass);
     }
     await enqueueAttemptNotice(db, attemptId, authRequired ? 'confirm'
       : failureClass === 'hard' || failureClass === 'revoked' ? 'update' : 'pay');
-    return authRequired ? 'autopay.needs_attention' as const
-      : next ? null : 'payment.failed_final' as const;
+    return authRequired ? {event:'autopay.needs_attention' as const,orgId:locked.invoice.orgId}
+      : next ? null : {event:'payment.failed_final' as const,orgId:locked.invoice.orgId};
   }, 'autopay.applyOutcome');
-  if (event) await notifyPaymentAttention({ partnerId, orgId: data.invoice.orgId,
-    invoiceId: data.invoice.id, attemptId, event });
+  if (event) await notifyPaymentAttention({partnerId,orgId:event.orgId,
+    invoiceId:data.invoice.id,attemptId,event:event.event});
 }
 ```
 Persist the **first observed failure time** once, rather than moving NSF’s three-business-day clock on every poll. For a retry schedule already set for the same failed attempt, retain its `nextAttemptAt`; the same PI may later succeed, but a stale failure cannot postpone the retry indefinitely. The `readProviderFailure` adapter reads structured Charge/PaymentIntent fields. The [Stripe network-code table](https://docs.stripe.com/declines/network-codes) maps normalized bank codes to the same retry classes; a normalized R01 representative is used only when Stripe omits the raw R01/R09 distinction, which has identical policy. Unknown codes fail closed. Never parse translated messages.
@@ -1798,21 +1977,34 @@ if (outcome.source !== 'autopay') {
     orgId: outcome.orgId, partnerId: outcome.partnerId });
 }
 ```
-Mapping status may remain `failed` because that existing enum describes ledger application; the attempt is the explicit `unapplied` money state. W1 must already permit a late success to re-enter a failed `payment_intent` mapping. Preserve all Checkout behavior. `settlePaymentIntent` must also use the Task 9 account-bound client internally; a live-key-only settlement would defeat archival recovery.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/collectionEngine.test.ts src/services/stripeReconcile.test.ts` and the unapplied real-DB case in Task 20.
-- [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/collectionEngine.ts apps/api/src/services/autopay/collectionEngine.test.ts apps/api/src/services/stripeReconcile.ts apps/api/src/services/stripeReconcile.test.ts apps/api/src/services/stripeSettle.ts`; `git commit -m "feat(billing): reconcile autopay outcomes and preserve unapplied captures"`.
+Mapping status may remain `failed` because that existing enum describes ledger application; the attempt is the explicit `unapplied` money state. W1 must already permit a late success to re-enter a failed `payment_intent` mapping. Preserve all Checkout behavior. In W1’s `settlePaymentIntent`, keep its mapping→invoice partner-qualified query and replace the entire `archived` helper/`let client`/fallback/account-check block with:
+```ts
+const client = await withSystemDbAccessContext(() => getPartnerStripeClient(partnerId, {
+  reconciliationAccountId:mapping.stripeAccountId,archivedCredentialId:mapping.revocationCredentialId,
+  invoiceStripePaymentId:mapping.id,reason:'payment_intent_settlement',
+}));
+```
+Retain retrieval outside the context, payment-ID check, `recordStripePayment`, and the applied mapping check. Remove the now-unused `PartnerStripeError` and `findLatestArchivedCredentialForAccount` imports. Preserve W1’s `{settled:Boolean(applied?.invoicePaymentId),status,invoiceId}` return contract. Historical PI validation in the engine uses the mapping’s account, rail, amount and PI identity plus partner-scoped `org_merge_events` provenance; it never searches for or transfers a survivor’s collection authority.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/collectionEngine.test.ts src/services/stripeReconcile.test.ts src/services/stripeSettle.test.ts` and the unapplied real-DB case in Task 20.
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/collectionEngine.ts apps/api/src/services/autopay/collectionEngine.test.ts apps/api/src/services/stripeReconcile.ts apps/api/src/services/stripeReconcile.test.ts apps/api/src/services/stripeSettle.ts apps/api/src/services/stripeSettle.test.ts`; `git commit -m "feat(billing): reconcile autopay outcomes and preserve unapplied captures"`.
 
-### Task 13: Receipts for every online payment and failure variants (W4b)
+### Task 13: Receipts, failure variants, and returned-payment notices (W4b)
 **Files:** Create `apps/api/src/services/autopay/paymentNotices.ts`, `apps/api/src/services/autopay/paymentNotices.test.ts`; Modify prerequisite `apps/api/src/services/autopay/renderBillingNotice.ts`, `packages/shared/src/utils/emailTemplates.ts`, `apps/api/src/services/emailTemplates/defaults.ts`, `apps/api/src/services/stripeSettle.ts`, `apps/web/src/components/settings/EmailTemplatesTab.tsx`; Test `apps/api/src/__tests__/integration/stripeSettle.integration.test.ts`, shared catalog tests, renderer tests.
-**Interfaces:** Produces `enqueueAttemptNotice(tx: Tx, attemptId: string, variant: 'receipt' | 'confirm' | 'update' | 'pay'): Promise<void>`, `enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<void>`; consumes C4 renderer/outbox/token contracts. C6 IDs and variables are byte-for-byte unchanged.
+**Interfaces:** Produces `enqueueAttemptNotice(tx: Tx, attemptId: string, variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned', returnIdentity?: string): Promise<void>`, `enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<void>`; consumes C4 renderer/outbox/token contracts. C6 IDs and variables are byte-for-byte unchanged. `returned` requires an applied mapping/return identity, uses the invoice pay link without method/enrollment authority, and cannot share the earlier failure dedupe key.
 
 - [ ] **Step 1: Write the failing test**:
 ```ts
 import { expect, it } from 'vitest';
-import { noticeDedupeKey } from './paymentNotices';
+import { noticeDedupeKey, returnedNoticeDedupeKey } from './paymentNotices';
 it('shares a receipt identity between return, sweep, and event replay', () => {
   expect(noticeDedupeKey('mapping-1', 'payment_receipt')).toBe('mapping-1:payment_receipt:1');
   expect(noticeDedupeKey('attempt-1', 'payment_failed')).toBe('attempt-1:payment_failed:1');
+});
+it('does not let an earlier failure suppress a returned-payment notice',()=>{
+  const first=returnedNoticeDedupeKey('attempt-1','mapping-1:dp_1');
+  expect(first).not.toBe(noticeDedupeKey('attempt-1','payment_failed'));
+  expect(first).toBe(returnedNoticeDedupeKey('attempt-1','mapping-1:dp_1'));
+  expect(first).not.toBe(returnedNoticeDedupeKey('attempt-1','mapping-1:dp_2'));
 });
 ```
 In the existing settlement tests mock `getPartnerStripeClient`, return a paid Checkout, apply a mapping, and assert exactly one `payment_receipt` outbox insert on replay. Unpaid checkout, unapplied mapping, and manual cash payment produce none. Renderer assertions pin both closed lists below and that hostile template overrides cannot remove the fee disclosure.
@@ -1878,6 +2070,10 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 type Tx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 export function noticeDedupeKey(id: string, kind: string): string { return `${id}:${kind}:1`; }
+export function returnedNoticeDedupeKey(attemptId: string,returnIdentity: string): string {
+  if (!returnIdentity) throw new Error('Returned payment requires an applied return identity');
+  return `${attemptId}:payment_failed:returned:${returnIdentity}`;
+}
 export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<void> {
   const [mapping] = await tx.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id, mappingId)).limit(1);
   if (!mapping?.invoicePaymentId || mapping.status !== 'succeeded') return;
@@ -1899,7 +2095,7 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
 }
 export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
-  variant: 'receipt' | 'confirm' | 'update' | 'pay'): Promise<void> {
+  variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned', returnIdentity?: string): Promise<void> {
   const [attempt] = await tx.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id, attemptId)).limit(1);
   if (!attempt) throw new Error('Attempt not found for notice');
   if (variant === 'receipt') {
@@ -1909,26 +2105,33 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, attempt.invoiceId)).limit(1);
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, attempt.orgId)).limit(1);
   const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice!.partnerId)).limit(1);
-  const [method] = await tx.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id, attempt.paymentMethodId)).limit(1);
+  const [method] = attempt.paymentMethodId ? await tx.select().from(orgPaymentMethods)
+    .where(eq(orgPaymentMethods.id,attempt.paymentMethodId)).limit(1) : [];
   const email = resolveBillingEmail(org!.billingContact);
   if (!email) return;
-  const dedupeKey = noticeDedupeKey(attemptId, 'payment_failed');
+  if (variant === 'returned' && !returnIdentity) throw new Error('Returned payment identity missing');
+  const dedupeKey = variant === 'returned' ? returnedNoticeDedupeKey(attemptId,returnIdentity!)
+    : noticeDedupeKey(attemptId,'payment_failed');
   const [existingNotice] = await tx.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
     .where(eq(billingNoticeOutbox.dedupeKey,dedupeKey)).limit(1);
   if (existingNotice) return;
-  const [enrollment] = await tx.select().from(orgAutopayEnrollments)
-    .where(eq(orgAutopayEnrollments.id,method!.enrollmentId)).limit(1);
-  if (!enrollment) throw new Error('Enrollment missing for notice');
+  const [enrollment] = method ? await tx.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.id,method.enrollmentId)).limit(1) : [];
+  const hasAuthority = !!method && !!enrollment && method.orgId === invoice!.orgId
+    && enrollment.orgId === invoice!.orgId && enrollment.status === 'active';
+  // A merged history row may receive money notices but cannot mint collection controls.
+  if ((variant === 'confirm' || variant === 'update') && !hasAuthority) return;
   let tokenId: string | null = null;
   let actionLink: string;
-  if (variant === 'pay') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!)).token);
+  if (variant === 'pay' || variant === 'returned') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!)).token);
   else {
     const token = await mintBillingLinkToken(tx, { orgId: attempt.orgId, invoiceId: invoice!.id,
-      enrollmentId: method!.enrollmentId, generation: enrollment.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
+      enrollmentId: method!.enrollmentId, generation: enrollment!.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
     tokenId = token.id;
     actionLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
   }
-  const failureText = variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
+  const failureText = variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
+    : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
     : variant === 'update' ? 'This payment method cannot be used. Please update it or pay this invoice.'
     : attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
     : 'Payment could not be completed. You can pay this invoice now.';
@@ -1936,9 +2139,9 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
     amount_due: `${invoice!.currencyCode} ${invoice!.balance}`, failure_text: failureText,
     action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : variant === 'update' ? 'Update payment method' : 'Pay invoice' };
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
-    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId } } });
+    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null } } });
   await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
-    kind: 'payment_failed', seq: 1, dedupeKey: noticeDedupeKey(attemptId, 'payment_failed'), toEmail: email, rendered });
+    kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }
 ```
 Before minting, check the existing dedupe key, so replay cannot mint unreferenced tokens. Include the enrollment generation on both confirm/update tokens, loaded from the method’s enrollment. Confirm resolution binds to the **exact attempt** via the existing outbox’s `rendered.frozen.attemptId` and the rendered action token’s stored row ID; add `tokenId` to `frozen` at creation. Never resolve a confirm token by “latest attempt for invoice”, because a stale token could then confirm a later charge.
@@ -1948,8 +2151,8 @@ In `settleCheckoutSession`, after `recordStripePayment` commits, use a short sys
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/paymentNotices.ts apps/api/src/services/autopay/paymentNotices.test.ts apps/api/src/services/autopay/renderBillingNotice.ts apps/api/src/services/autopay/renderBillingNotice.test.ts apps/api/src/services/stripeSettle.ts apps/api/src/__tests__/integration/stripeSettle.integration.test.ts packages/shared/src/utils/emailTemplates.ts packages/shared/src/utils/emailTemplates.test.ts apps/api/src/services/emailTemplates/defaults.ts apps/web/src/components/settings/EmailTemplatesTab.tsx`; `git commit -m "feat(billing): send online receipts and actionable payment failures"`.
 
 ### Task 14: MSP attention notifications and late ACH returns (W4b)
-**Files:** Modify `apps/api/src/services/autopay/paymentNotices.ts`, prerequisite `apps/api/src/services/autopay/staffNotifications.ts`, `apps/api/src/services/stripeReversalState.ts`; Test `apps/api/src/services/autopay/paymentNotices.test.ts`, `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`.
-**Interfaces:** Produces private `notifyPaymentAttention(input: {partnerId:string;orgId:string;invoiceId:string;attemptId:string;event:'payment.failed_final'|'payment.ach_returned'|'payment.unapplied'|'autopay.needs_attention'}): Promise<void>`; consumes W2 `notifyAutopayStaff(input: AutopayStaffNotice): Promise<void>` in `services/autopay/staffNotifications.ts`; extend its event union with C9 `autopay.skipped`, `payment.failed_final`, `payment.ach_returned`, and `payment.unapplied` without changing its signature.
+**Files:** Modify `apps/api/src/services/autopay/paymentNotices.ts`, prerequisite `apps/api/src/services/autopay/staffNotifications.ts`, `apps/api/src/services/stripeReversalState.ts`; Test `apps/api/src/services/autopay/paymentNotices.test.ts`, prerequisite `apps/api/src/services/autopay/staffNotifications.test.ts`, `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`.
+**Interfaces:** Produces private `notifyPaymentAttention(input: {partnerId:string;orgId:string;invoiceId:string;attemptId:string;returnIdentity?:string;event:'payment.failed_final'|'payment.ach_returned'|'payment.unapplied'|'autopay.needs_attention'}): Promise<void>`; consumes W2 `notifyAutopayStaff(input: AutopayStaffNotice): Promise<void>` in `services/autopay/staffNotifications.ts`; extend its event union with C9 `autopay.skipped`, `payment.failed_final`, `payment.ach_returned`, and `payment.unapplied` without changing its call signature; add optional `invoiceId` for payment destinations. Applied return identity is required for returned notices and propagated to both customer and staff dedupe keys.
 
 - [ ] **Step 1: Write the failing test** — pin notification identity and reversal method:
 ```ts
@@ -1959,11 +2162,26 @@ it('dedupes each attempt outcome independently', () => {
   expect(attentionDedupeKey('a', 'payment.ach_returned')).not.toBe(attentionDedupeKey('a', 'payment.unapplied'));
 });
 ```
-Extend the existing `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`, whose real local helpers are `seed(linkPayment=true,invoiceAmount=100)` and `financialEvent(f,overrides)`. Add the three W1 table imports and this complete fixture/test before modifying the reducer:
+In W2’s existing `staffNotifications.test.ts`, retain its `h` fixture and add:
 ```ts
+it('links payment attention to its invoice independently of enrollment rollout',async()=>{
+  const invoiceId='55555555-5555-4555-8555-555555555555';
+  h.rows.push([{userId:'11111111-1111-4111-8111-111111111111'}],[],[{billingEmail:null}]);
+  await notifyAutopayStaff({orgId:'33333333-3333-4333-8333-333333333333',partnerId:'44444444-4444-4444-8444-444444444444',
+    invoiceId,event:'payment.unapplied',dedupeKey:'attempt:unapplied',message:'Review captured money.'});
+  expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({link:`/billing/invoices/${invoiceId}`,priority:'high',
+    dedupeKey:'attempt:unapplied:11111111-1111-4111-8111-111111111111'})]);
+});
+```
+Extend the existing `apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`, whose real local helpers are `seed(linkPayment=true,invoiceAmount=100)` and `financialEvent(f,overrides)`. Add `orgAutopayEnrollments`, `orgPaymentMethods`, `invoiceCollectionAttempts`, `billingNoticeOutbox`, and `organizations` schema imports, plus `and` from Drizzle, and this complete fixture/test before modifying the reducer:
+```ts
+const returnedStaff=vi.hoisted(()=>vi.fn(async()=>undefined));
+vi.mock('../../services/autopay/staffNotifications',()=>({notifyAutopayStaff:returnedStaff}));
+import {enqueueAttemptNotice} from '../../services/autopay/paymentNotices';
 async function seedAutopayBank(linkPayment=true) {
   const f=await seed(linkPayment);
   return withSystemDbAccessContext(async()=>{
+    await db.update(organizations).set({billingContact:{email:'billing@example.test'}}).where(eq(organizations.id,f.orgId));
     const [mapping]=await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId));
     const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:f.orgId,partnerId:f.partnerId,
@@ -1982,21 +2200,35 @@ async function seedAutopayBank(linkPayment=true) {
       scheduleId:null,attemptNo:1,paymentMethodId:method!.id,stripePaymentIntentId:f.paymentIntentId,
       invoiceStripePaymentId:mapping!.id,idempotencyKey:`autopay_return_${f.invoiceId}`,principalAmount:'100.00',
       feeAmount:'0.00',currency:'USD',state:linkPayment?'succeeded':'unapplied',initiatedBy:'client_on_session'}).returning();
-    return {...f,attemptId:attempt!.id};
+    return {...f,attemptId:attempt!.id,mappingId:mapping!.id};
   });
 }
 runDb('returns and restores bank principal once, preserving ach_debit',async()=>{
+  returnedStaff.mockClear();
   const f=await seedAutopayBank();
+  await withSystemDbAccessContext(()=>enqueueAttemptNotice(db,f.attemptId,'pay'));
   const withdrawal=financialEvent(f,{stripeEventId:`evt_out_${f.invoiceId}`,eventType:'charge.dispute.funds_withdrawn',
     providerCreated:300,refundedAmountMinor:null,disputeId:`dp_${f.invoiceId}`,disputeAmountMinor:10000,disputeFundsWithdrawn:true});
   await ingestStripeFinancialEvent(withdrawal);await ingestStripeFinancialEvent(withdrawal);
   const [open]=await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoiceId)));
   expect(open!.balance).toBe('100.00');
+  const failures=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId,f.invoiceId),eq(billingNoticeOutbox.kind,'payment_failed'))));
+  expect(failures).toHaveLength(2); // prior failure cannot suppress the late-return variant
+  const returned=failures.filter(row=>(row.rendered as {frozen:{variant?:string}}).frozen.variant==='returned');
+  expect(returned).toHaveLength(1);
+  expect(returned[0]!.dedupeKey).toBe(`${f.attemptId}:payment_failed:returned:${f.mappingId}:dp_${f.invoiceId}`);
+  expect(returned[0]!.rendered).toMatchObject({frozen:{attemptId:f.attemptId,variant:'returned',tokenId:null}});
+  expect((returned[0]!.rendered as {text:string}).text).toContain('returned a previously completed payment');
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  expect(returnedStaff).toHaveBeenCalledWith(expect.objectContaining({event:'payment.ach_returned',invoiceId:f.invoiceId,
+    dedupeKey:`autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}`}));
   const restore=financialEvent(f,{stripeEventId:`evt_back_${f.invoiceId}`,eventType:'charge.dispute.funds_reinstated',
     providerCreated:301,refundedAmountMinor:null,disputeId:`dp_${f.invoiceId}`,disputeAmountMinor:10000,disputeFundsWithdrawn:false});
   await ingestStripeFinancialEvent(restore);await ingestStripeFinancialEvent(restore);
   const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
   expect(payments).toHaveLength(1);expect(payments[0]).toMatchObject({amount:'100.00',method:'ach_debit'});
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
 });
 runDb('closes a full refund of unapplied capture without inventing a ledger payment',async()=>{
   const f=await seedAutopayBank(false);
@@ -2009,16 +2241,16 @@ runDb('closes a full refund of unapplied capture without inventing a ledger paym
   expect(payments).toHaveLength(0);
 });
 ```
-Use a hoisted mock of `notifyPaymentAttention` from `../../services/autopay/paymentNotices` to assert exactly one `payment.ach_returned` for the withdrawal, none for event replay or reinstatement. Keep the real ledger reducer. Real-DB command: `pnpm test-stack up`, then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/paymentNotices.test.ts`; then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
+Keep `paymentNotices` and the outbox/reducer real; only the external staff dispatcher is mocked above. The assertions prove customer insertion plus staff delivery on the first withdrawal and no additional dispatch on replay/reinstatement. Real-DB command: `pnpm test-stack up`, then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/paymentNotices.test.ts src/services/autopay/staffNotifications.test.ts`; then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
 - [ ] **Step 3: Implement** — append to `paymentNotices.ts`:
 ```ts
 import { notifyAutopayStaff } from './staffNotifications';
-export function attentionDedupeKey(attemptId: string, event: string): string {
-  return `autopay:${attemptId}:${event}`;
+export function attentionDedupeKey(attemptId: string,event: string,returnIdentity?: string): string {
+  return `autopay:${attemptId}:${event}${returnIdentity ? `:${returnIdentity}` : ''}`;
 }
 export async function notifyPaymentAttention(input: {
-  partnerId: string; orgId: string; invoiceId: string; attemptId: string;
+  partnerId: string; orgId: string; invoiceId: string; attemptId: string; returnIdentity?: string;
   event: 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'autopay.needs_attention';
 }): Promise<void> {
   const message = input.event === 'payment.unapplied'
@@ -2026,8 +2258,8 @@ export async function notifyPaymentAttention(input: {
     : input.event === 'payment.ach_returned' ? 'A bank payment was returned. The invoice balance has reopened.'
     : input.event === 'payment.failed_final' ? 'Automatic payment has stopped retrying. The client can pay the invoice directly.'
     : 'Automatic payment needs attention. Review the invoice before trying again.';
-  await notifyAutopayStaff({partnerId:input.partnerId,orgId:input.orgId,event:input.event,
-    dedupeKey:attentionDedupeKey(input.attemptId,input.event),
+  await notifyAutopayStaff({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
+    dedupeKey:attentionDedupeKey(input.attemptId,input.event,input.returnIdentity),
     message:`${message} Invoice: ${input.invoiceId}`});
 }
 ```
@@ -2036,6 +2268,12 @@ Extend W2’s `AutopayStaffNotice.event` union exactly:
 event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.skipped' | 'autopay.needs_attention'
   | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
 ```
+Add `invoiceId?: string` to `AutopayStaffNotice`. Replace the notification row’s fixed destination with the following field:
+```ts
+link: input.invoiceId ? `/billing/invoices/${input.invoiceId}` : '/billing/autopay',
+```
+ Only server-authorized invoice identities are supplied; do not accept arbitrary notification URLs. All calls from `notifyPaymentAttention` pass the invoice ID, so payment attention remains actionable when C7 disables the enrollment page. Existing enrollment notices keep their gated destination.
+
 In `notifyAutopayStaff`, compute `const urgent = input.event === 'autopay.needs_attention' || input.event.startsWith('payment.');` and use `priority: urgent ? 'high' as const : 'normal' as const`. Use `title: input.event === 'autopay.enrolled' ? 'Automatic payments enabled' : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : input.event === 'autopay.skipped' ? 'Automatic payment skipped' : 'Payment needs attention'`. Preserve W2’s combined organization/partner recipient policy and per-user dedupe suffix. Preserve `purpose:'staff.autopay'`, including when no staff user exists but the partner has a billing email. Staff email is best-effort and may repeat on retry; in-app notifications dedupe, customer notices remain durable.
 
 In `applyStripeFinancialEvent` in `stripeReversalState.ts`, preserve its existing invoice → mapping → event lock order, charge/account/currency validation, cumulative reversal calculation, and accounting push/delete hooks. Change the restore insert to:
@@ -2061,15 +2299,49 @@ if(mapping.source==='autopay' && !mapping.invoicePaymentId && !mapping.paymentRe
 ```
 A partial refund retains `unapplied` and the attention banner until the captured balance is resolved; it must not create an invoice payment. The attempt outcome path's `unapplied_refunded` guard prevents later PI-success replay from restoring that banner.
 
-After an **applied** reversal whose mapping is an autopay bank debit, load the mapped attempt, call `notifyPaymentAttention` with `payment.ach_returned` after commit, and call `markPaymentMethodUnusable` inside a short transaction for revoked/hard return codes. NSF stays eligible only for future invoice policy; do not resurrect the succeeded schedule for a late return. Set its `stateReason='payment_reversed'` for operator visibility. Refunds of unapplied money close that attempt as `canceled` with `failureCode='unapplied_refunded'`; they do not fabricate an `invoice_payments` row.
+Own the late-return handoff in the reducer, not in optional W3 reminders. Import `enqueueAttemptNotice` and `notifyPaymentAttention` from `./autopay/paymentNotices`. Extend the applied arm of `ApplyResult` with:
+```ts
+returnAttention?: {partnerId:string;orgId:string;invoiceId:string;attemptId:string;returnIdentity:string;
+  event:'payment.ach_returned'};
+```
+After `recomputeInvoiceStatus(mapping.invoiceId)` and before the event’s applied-status update, insert this block inside the same invoice→mapping→event transaction:
+```ts
+let returnAttention: Extract<ApplyResult,{state:'applied'}>['returnAttention'];
+if (mapping.source === 'autopay' && mapping.paymentMethodType === 'us_bank_account'
+  && event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
+  const [attempt] = await db.select().from(invoiceCollectionAttempts)
+    .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId,mapping.id)).limit(1).for('update');
+  if (!attempt) throw new Error('Returned autopay mapping has no attempt');
+  const returnIdentity = `${mapping.id}:${event.disputeId ?? event.stripeEventId}`;
+  await enqueueAttemptNotice(db,attempt.id,'returned',returnIdentity);
+  if (attempt.scheduleId) await db.update(invoiceAutopaySchedules).set({stateReason:'payment_reversed',nextAttemptAt:null})
+    .where(eq(invoiceAutopaySchedules.id,attempt.scheduleId));
+  returnAttention = {partnerId:invoice.partnerId,orgId:invoice.orgId,invoiceId:invoice.id,
+    attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
+}
+```
+Add `returnAttention` to that transaction’s final applied-result object, and import `invoiceAutopaySchedules`. At the start of the existing post-commit `if (outcome.state === 'applied')` block, append:
+```ts
+if (outcome.returnAttention) {
+  try { await notifyPaymentAttention(outcome.returnAttention); }
+  catch (error) {
+    console.error('[stripeReversalState] staff return notification failed after commit',{
+      invoiceId:outcome.invoiceId,error:error instanceof Error?error.message:String(error),
+    });
+  }
+}
+```
+The current return/dispute normalizer represents a bank return as withdrawn dispute funds; ordinary voluntary `charge.refunded` events and dispute reinstatements do not claim a bank return. Customer enqueue and the applied inbox marker commit together. Staff delivery errors must not prevent the existing post-commit accounting, audit, or invoice-event hooks from running. Duplicate withdrawal events for the same dispute share the mapping/return key; an earlier `payment_failed` attempt notice has a different key. Event replay cannot re-reduce the ledger or insert another customer notice; staff in-app dedupe also includes that return identity. The existing staff transport remains best-effort, not a newly promised durable staff-mail queue.
+
+Keep existing hard/revoked method reevaluation, but guard `attempt.paymentMethodId` before loading/marking a method and require its org to equal the current invoice org. Cleared merge authority must stay cleared. Do not resurrect the succeeded/cancelled schedule after a late return. Refunds of unapplied money use the full-refund block above; partial refunds retain attention without a fabricated payment row.
 
 No nonzero-fee reversal allocation ships here; W1 keeps fee writes closed and W5 owns that extension. Receipt/ledger principal is unchanged by whether a notification can be delivered.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/paymentNotices.test.ts`; then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
-- [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/paymentNotices.ts apps/api/src/services/autopay/paymentNotices.test.ts apps/api/src/services/autopay/staffNotifications.ts apps/api/src/services/stripeReversalState.ts apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`; `git commit -m "feat(billing): surface unapplied payments and returned bank debits"`.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/services/autopay/paymentNotices.test.ts src/services/autopay/staffNotifications.test.ts`; then `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/stripeReversalState.integration.test.ts`.
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/paymentNotices.ts apps/api/src/services/autopay/paymentNotices.test.ts apps/api/src/services/autopay/staffNotifications.ts apps/api/src/services/autopay/staffNotifications.test.ts apps/api/src/services/stripeReversalState.ts apps/api/src/__tests__/integration/stripeReversalState.integration.test.ts`; `git commit -m "feat(billing): surface unapplied payments and returned bank debits"`.
 
 ### Task 15: Durable PI polling and collection job registration (W4b)
-**Files:** Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/jobs/stripeReconcileSweep.ts`, `apps/api/src/services/stripeFinancialEventPoller.ts`, `apps/api/src/services/stripeReversalState.ts`, prerequisite `apps/api/src/jobs/autopayWorker.ts`, `apps/api/src/jobs/scheduleRegistry.ts`; Create `apps/api/src/jobs/stripeReconcileSweep.test.ts`; Test `apps/api/src/services/stripeFinancialEventPoller.test.ts`, prerequisite `apps/api/src/jobs/autopayWorker.test.ts`, `apps/api/src/services/autopay/collectionEngine.test.ts`, `apps/api/src/jobs/scheduleRegistry.contract.test.ts`, `apps/api/src/services/workerEntrypointClosure.contract.test.ts`. Registration verification: `apps/api/src/services/workerRegistry.ts`, `apps/api/src/index.ts`, `apps/api/src/worker.ts`.
-**Interfaces:** Produces C4 `runAutopayCollection(now?: Date): Promise<{ attempted: number; deferred: number }>`; consumes `resumeCollectionAttempt`, `applyAttemptOutcome`; C5 queue remains `autopay-jobs`, schedule key `autopay-collection-run`, cron `15 * * * *`, job `collection-run`.
+**Files:** Modify `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/jobs/stripeReconcileSweep.ts`, `apps/api/src/services/stripeFinancialEventPoller.ts`, `apps/api/src/services/stripeReversalState.ts`, prerequisite `apps/api/src/jobs/autopayWorker.ts`, `apps/api/src/jobs/scheduleRegistry.ts`; Create `apps/api/src/jobs/stripeReconcileSweep.test.ts`; Test `apps/api/src/services/stripeFinancialEventPoller.test.ts`, prerequisite `apps/api/src/jobs/autopayWorker.test.ts`, `apps/api/src/services/autopay/collectionEngine.test.ts`, `apps/api/src/jobs/scheduleRegistry.contract.test.ts`, `apps/api/src/services/workerEntrypointClosure.contract.test.ts`. Real-DB test: `apps/api/src/services/autopay/charging.integration.test.ts` (owned by Task 20). Registration verification: `apps/api/src/services/workerRegistry.ts`, `apps/api/src/index.ts`, `apps/api/src/worker.ts`.
+**Interfaces:** Produces C4 `runAutopayCollection(now?: Date): Promise<{ attempted: number; deferred: number }>`; consumes `resumeCollectionAttempt`, `applyAttemptOutcome`; Global pending replay consumes charge and PI events; per-payment replay stays charge-only. C5 queue remains `autopay-jobs`, schedule key `autopay-collection-run`, cron `15 * * * *`, job `collection-run`.
 
 - [ ] **Step 1: Write the failing test**:
 ```ts
@@ -2130,6 +2402,11 @@ it('recovers beyond 200 blocked attempts even with no Checkout candidates',async
 ```
 Add event-poller cases for all four PI event types using its actual `base` fixture and `normalizeStripeFinancialEvent`. Each normalized row retains `paymentIntentId`, account, mode, amount, and currency. Real event-before-mapping, duplicate, and reversal tests use the existing integration inbox suite; none can acknowledge a missing mapping as applied.
 - [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/jobs/stripeReconcileSweep.test.ts src/services/stripeFinancialEventPoller.test.ts src/jobs/autopayWorker.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerEntrypointClosure.contract.test.ts`.
+Run the Task 20 early-PI fixture red before this selector change (Task 20 registers it):
+```bash
+pnpm test-stack up
+cd apps/api && npx vitest run -c vitest.integration.config.ts src/services/autopay/charging.integration.test.ts -t 'replays a PI event globally'
+```
 - [ ] **Step 3: Implement** — engine sweep:
 ```ts
 export async function runAutopayCollection(now = new Date()): Promise<{ attempted: number; deferred: number }> {
@@ -2198,9 +2475,86 @@ if (event.type.startsWith('payment_intent.')) {
     currency: pi.currency, chargeAmountMinor: pi.amount };
 }
 ```
-`ingestStripeFinancialEvent` remains the durable insert and cursor advancement boundary. In `applyStripeFinancialEvent`, detect a PI inbox row **before** the existing “no refund/dispute data → ignored” transaction. In a short context join its account+PI to mapping→attempt→invoice and validate partner/org. If missing, leave `pending` with the existing retry update; never acknowledge an event that arrived before mapping insertion. Outside the context call `applyAttemptOutcome`, then mark the inbox row `applied` in a short context. Never call it recursively from inside `recordStripePayment`’s `processPendingStripeFinancialEventsForPayment`; that post-capture replay path must filter to reversal event types to avoid settle → inbox → settle recursion.
+`ingestStripeFinancialEvent` remains the durable insert and cursor advancement boundary. In `stripeReversalState.ts`, retain W2’s `like` import. Replace **only** the global `processPendingStripeFinancialEvents` selector’s charge-only predicate with:
+```ts
+or(like(stripeFinancialEvents.eventType,'charge.%'),like(stripeFinancialEvents.eventType,'payment_intent.%')),
+```
+Keep all pending/due/order/limit/retry predicates and the global loop unchanged. In `processPendingStripeFinancialEventsForPayment`, explicitly retain:
+```ts
+like(stripeFinancialEvents.eventType,'charge.%'),
+```
+This separation prevents settle → per-payment inbox → settle recursion without stranding early or failed terminal PI events.
 
-Archived accounts must remain poll candidates while unresolved attempts exist. A disconnected row retains the account cursor; obtain its client via Task 9’s reconciliation options and keep existing event account/livemode validation. The existing “historical payments block account switching” rule prevents a single cursor being reinterpreted across a different account.
+Import `applyAttemptOutcome` from `./autopay/collectionEngine`. Add this helper and invoke it at the very start of `applyStripeFinancialEvent`, before opening the reversal transaction:
+```ts
+const intentResult = await applyPaymentIntentInboxEvent(stripeEventId);
+if (intentResult) return intentResult;
+```
+Complete helper (all Stripe retrieval/settlement occurs after its read transaction exits):
+```ts
+async function applyPaymentIntentInboxEvent(stripeEventId:string):Promise<ApplyResult|null> {
+  const admission = await withSystemDbAccessContext(async()=>{
+    const [event]=await db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId,stripeEventId)).limit(1);
+    if (!event || !event.eventType.startsWith('payment_intent.')) return null;
+    if (event.status === 'applied' || event.status === 'ignored') return {done:true as const};
+    if (event.status !== 'pending') return {blocked:true as const};
+    const rows=await db.select({attempt:invoiceCollectionAttempts,mapping:invoiceStripePayments,invoice:invoices})
+      .from(invoiceStripePayments).innerJoin(invoiceCollectionAttempts,
+        eq(invoiceCollectionAttempts.invoiceStripePaymentId,invoiceStripePayments.id))
+      .innerJoin(invoices,eq(invoices.id,invoiceStripePayments.invoiceId)).where(and(
+        eq(invoiceStripePayments.stripeAccountId,event.stripeAccountId),
+        eq(invoiceStripePayments.stripeObjectType,'payment_intent'),
+        eq(invoiceStripePayments.stripeObjectId,event.paymentIntentId!),
+      )).limit(2);
+    if (!rows.length) {
+      await db.update(stripeFinancialEvents).set(pendingRetryUpdate(event,'payment_mapping_not_ready'))
+        .where(and(eq(stripeFinancialEvents.id,event.id),eq(stripeFinancialEvents.status,'pending')));
+      return {pending:true as const};
+    }
+    const row=rows[0]!;
+    if (rows.length !== 1 || row.invoice.partnerId !== event.partnerId
+      || row.attempt.invoiceId !== row.invoice.id || row.attempt.orgId !== row.invoice.orgId
+      || row.mapping.orgId !== row.invoice.orgId || row.mapping.currency !== event.currency
+      || row.attempt.stripePaymentIntentId !== event.paymentIntentId) throw new Error('PI inbox binding mismatch');
+    return {event,row};
+  });
+  if (!admission) return null;
+  if ('done' in admission) return {state:'already_processed'};
+  if ('blocked' in admission) return {state:'blocked'};
+  if ('pending' in admission) return {state:'pending'};
+  await applyAttemptOutcome(admission.event.partnerId,admission.row.attempt.id);
+  await withSystemDbAccessContext(()=>db.update(stripeFinancialEvents).set({status:'applied',
+    processedAt:new Date(),nextAttemptAt:null,lastError:null,updatedAt:new Date()})
+    .where(and(eq(stripeFinancialEvents.id,admission.event.id),eq(stripeFinancialEvents.status,'pending'))));
+  return {state:'applied',invoiceId:admission.row.invoice.id,orgId:admission.row.invoice.orgId,
+    partnerId:admission.event.partnerId,change:'unchanged'};
+}
+```
+Task 20 supplies a full real-DB early-event/global-replay test using an eventually failed terminal attempt; the global inbox, not active-attempt polling, must recover its later success. Retain the existing poller integration tests for cursor advancement and mode/account validation.
+
+Archived accounts must remain poll candidates while unresolved attempts exist. In `stripeFinancialEventPoller.ts`, add `or` to Drizzle imports and define this shared read-only SQL predicate:
+```ts
+function canPollFinancialEvents() {
+  return or(and(eq(stripeConnectAccounts.status,'connected'),isNotNull(stripeConnectAccounts.apiKey)),
+    sql`EXISTS (
+      SELECT 1 FROM invoice_collection_attempts a
+      JOIN invoices i ON i.id=a.invoice_id
+      JOIN invoice_stripe_payments m ON m.id=a.invoice_stripe_payment_id
+      WHERE i.partner_id=${stripeConnectAccounts.partnerId}
+        AND m.stripe_account_id=${stripeConnectAccounts.stripeAccountId}
+        AND a.state IN ('created','confirming','processing','requires_action','unapplied')
+    )`);
+}
+```
+In `readConnection`, replace the two status/key predicates with `canPollFinancialEvents()` and retain the partner-ID predicate. In `pollStripeFinancialEvents`, replace its status/key `and(...)` with `canPollFinancialEvents()`, keeping ordering, limit and global pending replay. In `pollPartnerStripeFinancialEvents`, replace the existing client acquisition with:
+```ts
+const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(partnerId,{
+  reconciliationAccountId:connection.stripeAccountId,reason:'financial_event_poll',
+}));
+```
+Preserve the account equality guard, event livemode/account validation, provider call outside the context, and cursor boundaries. The disconnected row retains the original account cursor; this factory source does not grant enrollment or charging admission. Reserved attempts without a mapping remain the recovery sweep’s responsibility. The existing historical-payments account-switch guard prevents a cursor from being reused for a different account.
+
 
 Registration edits:
 ```ts
@@ -2221,11 +2575,12 @@ await queue.add('collection-run', { type: 'collection-run' }, {
 ```
 Verify W1’s `WORKER_REGISTRY` already has one global autopay entry and both entrypoints use `startRegisteredWorkers`. Do not create a second worker instance in `index.ts`. The contract tests must resolve the literal cron callsite and prove both entrypoints reach the same registry entry.
 - [ ] **Step 4: Run it, expect PASS** — `cd apps/api && npx vitest run src/jobs/stripeReconcileSweep.test.ts src/services/stripeFinancialEventPoller.test.ts src/jobs/autopayWorker.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerEntrypointClosure.contract.test.ts`, plus `cd apps/api && npx vitest run src/services/autopay/collectionEngine.test.ts`.
+Repeat the same integration command after Step 4; the pending event must become applied with one ledger row and no recursive settlement.
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/collectionEngine.ts apps/api/src/services/autopay/collectionEngine.test.ts apps/api/src/jobs/stripeReconcileSweep.ts apps/api/src/jobs/stripeReconcileSweep.test.ts apps/api/src/services/stripeFinancialEventPoller.ts apps/api/src/services/stripeFinancialEventPoller.test.ts apps/api/src/services/stripeReversalState.ts apps/api/src/jobs/autopayWorker.ts apps/api/src/jobs/autopayWorker.test.ts apps/api/src/jobs/scheduleRegistry.ts`; `git commit -m "feat(billing): register collection and reconcile PaymentIntents without age cutoff"`.
 
 ### Task 16: Explicit, invoice-bound bank setup and pay (W4b)
 **Files:** Create `apps/api/src/services/autopay/bankPayment.ts`, `apps/api/src/services/autopay/bankPayment.test.ts`, `apps/api/src/services/autopay/clientPaymentAuthority.ts`; Modify prerequisite `apps/api/src/services/autopay/setupSession.ts`, `apps/api/src/services/autopay/setupCompletion.ts`, `apps/api/src/services/autopay/collectionEngine.ts`, `apps/api/src/routes/invoicesPublic.ts`, `apps/api/src/routes/portal/invoices.ts`, prerequisite `apps/api/src/routes/portal/paymentMethods.ts`.
-**Interfaces:** Preserves C4 `createAutopaySetupSession(input: { orgId: string; methodType: AutopayPaymentMethodType; consentAccepted: true; returnTo: 'public' | 'portal'; tokenId?: string; contactEmail: string; ip: string | null; userAgent: string | null }): Promise<{ url: string }>` and `attemptCollection`. Produces private request-scoped `withClientPaymentAuthority`, `getClientPaymentAuthority`; existing pay endpoints accept a discriminated body `{ methodType:'us_bank_account'; phase:'setup'|'collect'; consentAccepted:true; setupSessionId?:string }`.
+**Interfaces:** Preserves C4 `createAutopaySetupSession(input: { orgId: string; methodType: AutopayPaymentMethodType; consentAccepted: true; returnTo: 'public' | 'portal'; tokenId?: string; contactEmail: string; ip: string | null; userAgent: string | null }): Promise<{ url: string }>` and `attemptCollection`. Produces private request-scoped `withClientPaymentAuthority`, `getClientPaymentAuthority`; existing pay endpoints accept a discriminated body `{ methodType:'us_bank_account'; phase:'setup'|'collect'; consentAccepted:true; setupSessionId?:string }`. `getBankAutopayOffer` consumes W2’s derived `AutopayDisclosure.achMode`; C3 persisted ACH settings remain unchanged.
 
 - [ ] **Step 1: Write the failing test** — prove the authority cannot leak across concurrent calls:
 ```ts
@@ -2243,7 +2598,7 @@ it('isolates each client authorization and restores the empty context', async ()
   expect(getClientPaymentAuthority()).toBeUndefined();
 });
 ```
-Bank service tests mock only the Stripe boundary and use real DB in Task 20 for token consumption. Cases: pending microdeposits refuses collection, setup-return replay consumes one token once, wrong invoice/org/account/generation/method refuses, amount or fee above authorization refuses, background setup sweep never calls `attemptCollection`. Two concurrent collect POSTs create one attempt.
+The isolated disclosure-admission unit case below mocks its DB and policy dependencies. Task 20 uses the real database for authorization and token consumption, mocking provider calls only at the Stripe boundary. Cases: pending microdeposits refuses collection, setup-return replay consumes one token once, wrong invoice/org/account/generation/method refuses, amount or fee above authorization refuses, background setup sweep never calls `attemptCollection`. Two concurrent collect POSTs create one attempt.
 Pin the strict body before adding the bank route branches:
 ```ts
 import {bankPaySchema} from './bankPayment';
@@ -2254,6 +2609,32 @@ it('requires consent, an unchanged disclosure, decimal amounts, and a session fo
     expect(bankPaySchema.safeParse({...base,...patch}).success).toBe(false);
   }
   expect(bankPaySchema.safeParse({...base,phase:'collect',setupSessionId:'cs_test_1'}).success).toBe(true);
+});
+```
+Add `vi` to that suite’s Vitest import and the following hoisted boundary mocks and admission tests. The disclosure determines availability even when persisted settings remain `ach_preferred`:
+```ts
+const bank=vi.hoisted(()=>({rows:[] as unknown[][],disclosure:vi.fn(),quote:vi.fn()}));
+vi.mock('../../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>bank.rows.shift()})})})},
+  withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>fn(),runOutsideDbContext:async(fn:()=>Promise<unknown>)=>fn()}));
+vi.mock('./autopayGate',()=>({isAutopayEnabledForPartner:vi.fn(async()=>true)}));
+vi.mock('./stripeCapabilities',()=>({getAutopayStripeReadiness:vi.fn(async()=>({ready:true,accountCountry:'US',stripeAccountId:'acct_test'}))}));
+vi.mock('./billingPaymentSettings',()=>({resolveBillingPaymentSettings:vi.fn(async()=>({achMode:{value:'ach_preferred'},
+  cardFeeBps:{value:0},achFeeAmount:{value:'0.00'},feeAttested:false}))}));
+vi.mock('./consentText',()=>({buildAutopayDisclosure:bank.disclosure,withAcceptedAutopayDisclosure:vi.fn()}));
+vi.mock('./processingFee',()=>({quoteProcessingFee:bank.quote}));
+vi.mock('./paymentMethods',()=>({getAutopayMethod:vi.fn(async()=>null)}));
+vi.mock('./enrollmentService',()=>({createAutopaySetupSession:vi.fn(),completeAutopaySetup:vi.fn()}));
+import {getBankAutopayOffer} from './bankPayment';
+it.each(['card_only','ach_preferred','ach_only'] as const)('admits bank pay using derived %s availability',async achMode=>{
+  vi.clearAllMocks();
+  bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'100.00'}],
+    [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null,currencyCode:achMode==='card_only'?'EUR':'USD'}]];
+  bank.disclosure.mockResolvedValue({achMode,hash:'a'.repeat(64),text:'Accepted bank terms'});
+  bank.quote.mockReturnValue({feeAmount:'0.00'});
+  const offer=await getBankAutopayOffer('invoice','org');
+  expect(bank.disclosure).toHaveBeenCalledOnce();
+  if(achMode==='card_only') {expect(offer).toBeNull();expect(bank.quote).not.toHaveBeenCalled();}
+  else {expect(offer).toMatchObject({available:true,fee:'0.00',disclosureHash:'a'.repeat(64)});}
 });
 ```
 - [ ] **Step 2: Run it, expect FAIL** — `cd apps/api && npx vitest run src/services/autopay/bankPayment.test.ts`.
@@ -2328,11 +2709,11 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string){
     if(!org||org.deletedAt||!['active','trial'].includes(org.status)||!enrollment||!['requested','active'].includes(enrollment.status)
       ||!ready.ready||ready.accountCountry!=='US'||ready.stripeAccountId!==enrollment.stripeAccountId)return null;
     const settings=await resolveBillingPaymentSettings(db,{partnerId:invoice.partnerId,orgId});
-    if(settings.achMode.value==='card_only')return null;
+    const disclosure=await buildAutopayDisclosure(db,orgId,'us_bank_account');
+    if(disclosure.achMode==='card_only')return null;
     const quote=quoteProcessingFee({methodType:'us_bank_account',cardFunding:null,principal:invoice.balance,currency:'USD',
       stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
       cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
-    const disclosure=await buildAutopayDisclosure(db,orgId,'us_bank_account');
     const method=await getAutopayMethod(db,orgId);
     return {available:true,principal:invoice.balance,fee:quote.feeAmount,currency:'USD',disclosureHash:disclosure.hash,
       consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
@@ -2495,7 +2876,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../../db';
 import { billingNoticeOutbox, billingLinkTokens, invoiceCollectionAttempts, invoices } from '../../db/schema';
 import { resolveBillingLinkToken } from './linkTokens';
-import { loadAttempt, applyAttemptOutcome } from './collectionEngine';
+import { loadAttempt, loadAttemptForReconciliation, applyAttemptOutcome } from './collectionEngine';
 import { getPartnerStripeClient } from '../partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -2503,7 +2884,7 @@ export async function confirmInvoicePayment(token: string): Promise<{url?:string
   assertNoHeldDbContextForStripe('confirmInvoicePayment');
   const binding = await withSystemDbAccessContext(async () => {
     const link = await resolveBillingLinkToken(db, token, 'confirm_payment');
-    if (!link?.invoiceId) throw new Error('Link unavailable');
+    if (!link?.invoiceId || !link.enrollmentId) throw new Error('Link unavailable');
     const [notice] = await db.select().from(billingNoticeOutbox).where(and(
       eq(billingNoticeOutbox.invoiceId, link.invoiceId), eq(billingNoticeOutbox.orgId, link.orgId),
       eq(billingNoticeOutbox.kind, 'payment_failed'),
@@ -2519,14 +2900,14 @@ export async function confirmInvoicePayment(token: string): Promise<{url?:string
   }
   if (data.attempt.invoiceId !== binding.link.invoiceId || data.attempt.orgId !== binding.link.orgId) throw new Error('Link unavailable');
   const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(data.invoice.partnerId, {
-    stripeAccountId: data.mapping!.stripeAccountId, credentialId: data.mapping!.revocationCredentialId,
+    reconciliationAccountId: data.mapping!.stripeAccountId, archivedCredentialId: data.mapping!.revocationCredentialId,
     invoiceStripePaymentId: data.mapping!.id, reason: 'client_confirmation',
   }));
   const pi = await runOutsideDbContext(() => stripe.paymentIntents.retrieve(data.attempt.stripePaymentIntentId!));
   if (pi.status === 'succeeded' || pi.status === 'processing') {
     await applyAttemptOutcome(data.invoice.partnerId, data.attempt.id);
     if (pi.status === 'processing') return { processing: true };
-    const settled = await loadAttempt(data.attempt.id);
+    const settled = await loadAttemptForReconciliation(data.attempt.id);
     if (settled.attempt.state === 'unapplied') throw new Error('Payment received but needs billing review');
     return { paid: !!settled.mapping?.invoicePaymentId };
   }
@@ -2555,7 +2936,7 @@ The existing W2 public router owns the `/confirm` GET/POST. Its GET returns `{st
 publicAutopayRoutes.get('/:token/confirm',boundary('confirm_payment'),gate,async c=>{
   const result=await withSystemDbAccessContext(async()=>{
     const link=await resolveBillingLinkToken(db,c.req.param('token'),'confirm_payment');
-    if(!link?.invoiceId)return null;
+    if(!link?.invoiceId||!link.enrollmentId)return null;
     const [notice]=await db.select().from(billingNoticeOutbox).where(and(
       eq(billingNoticeOutbox.invoiceId,link.invoiceId),eq(billingNoticeOutbox.orgId,link.orgId),
       eq(billingNoticeOutbox.kind,'payment_failed'),sql`${billingNoticeOutbox.rendered}->'frozen'->>'tokenId'=${link.id}`)).limit(1);
@@ -2656,8 +3037,8 @@ Disable while the request is pending to prevent duplicate clicks; the DB reserva
 - [ ] **Step 5: Commit** — `git add apps/api/src/routes/invoices/autopay.ts apps/api/src/routes/autopay/mount.test.ts apps/api/src/middleware/selfManagedDbContextRoutes.ts apps/api/src/middleware/selfManagedDbContextRoutes.test.ts apps/api/src/services/invoiceService.ts apps/web/src/components/billing/InvoiceDetail.tsx apps/web/src/components/billing/InvoiceDetail.autopay.test.tsx apps/web/src/components/billing/InvoiceWorkspace.test.tsx`; `git commit -m "feat(billing): mount notice-gated Charge now"`.
 
 ### Task 19: Compose bank payment, list status, and partner attention UI (W4b)
-**Files:** Create `apps/portal/src/components/portal/BankAutopayPayment.tsx`, `apps/portal/src/components/portal/BankAutopayPayment.test.tsx`; Modify prerequisite `apps/portal/src/pages/autopay/return.astro`, `apps/portal/src/pages/autopay/actions.test.ts`; Modify `apps/portal/src/lib/api.ts`, `apps/portal/src/components/portal/PublicInvoiceView.tsx`, `apps/portal/src/components/portal/InvoiceDetailView.tsx`, prerequisite `apps/web/src/components/billing/AutopayListPage.tsx`, prerequisite `apps/api/src/services/autopay/enrollmentViews.ts`, `apps/web/src/components/billing/autopayClient.ts`, `apps/web/src/components/billing/InvoiceDetail.tsx`; Test `apps/portal/src/components/portal/PublicInvoiceView.autopay.test.tsx` (new), `apps/portal/src/components/portal/InvoiceDetailView.test.tsx`, prerequisite `apps/web/src/components/billing/AutopayListPage.test.tsx`. Composition pages: `apps/portal/src/pages/invoice/[token].astro`, `apps/portal/src/pages/invoices/[id].astro`, prerequisite `apps/web/src/pages/billing/autopay.astro`. Modify the eight billing and eight settings locale paths enumerated individually in the File map; preserve existing W2 group copy and add only W4 keys.
-**Interfaces:** Bank pay phases from Task 16; C9 attention event names; existing C7 GET `/billing/autopay` gains lastCharge `{state,createdAt,principalAmount,currency}` and awaitingNotice `{count,oldestCreatedAt,reason,invoiceId}`. No additional settings home or query-param tab state.
+**Files:** Modify `apps/api/src/services/invoiceService.ts`, `apps/api/src/services/invoiceService.test.ts`, `apps/web/src/components/billing/InvoiceWorkspace.tsx`, `apps/web/src/components/billing/InvoiceWorkspace.test.tsx`, `apps/web/src/components/billing/invoiceTypes.ts`; Create `apps/portal/src/components/portal/BankAutopayPayment.tsx`, `apps/portal/src/components/portal/BankAutopayPayment.test.tsx`; Modify prerequisite `apps/portal/src/pages/autopay/return.astro`, `apps/portal/src/pages/autopay/actions.test.ts`; Modify `apps/portal/src/lib/api.ts`, `apps/portal/src/components/portal/PublicInvoiceView.tsx`, `apps/portal/src/components/portal/InvoiceDetailView.tsx`, prerequisite `apps/web/src/components/billing/AutopayListPage.tsx`, prerequisite `apps/api/src/services/autopay/enrollmentViews.ts`, `apps/web/src/components/billing/autopayClient.ts`, `apps/web/src/components/billing/InvoiceDetail.tsx`; Test `apps/portal/src/components/portal/PublicInvoiceView.autopay.test.tsx` (new), `apps/portal/src/components/portal/InvoiceDetailView.test.tsx`, prerequisite `apps/web/src/components/billing/AutopayListPage.test.tsx`. Composition pages: `apps/portal/src/pages/invoice/[token].astro`, `apps/portal/src/pages/invoices/[id].astro`, prerequisite `apps/web/src/pages/billing/autopay.astro`. Modify the eight billing and eight settings locale paths enumerated individually in the File map; preserve existing W2 group copy and add only W4 keys.
+**Interfaces:** Bank pay phases from Task 16; C9 attention event names; existing C7 GET `/billing/autopay` gains lastCharge `{state,createdAt,principalAmount,currency}` and awaitingNotice `{count,oldestCreatedAt,reason,invoiceId}`. Existing ungated GET `/invoices/:id` gains `unappliedCount:number` after invoice authorization; `InvoiceWorkspace` owns the persistent banner. Preserve C7’s list/enrollment gate and all existing invoice route permissions. No additional settings home or query-param tab state.
 
 - [ ] **Step 1: Write the failing test** — add to existing portal fixture tests before rendering the new button:
 ```tsx
@@ -2669,7 +3050,7 @@ it('mounts bank pay only when the server offers it', () => {
 ```
 Add public view tests with mocked GET invoice data and `bankAutopay.available:true`; click invokes setup phase only after the existing consent control is checked. Pending verification response displays `autopay-bank-pending` and has no charge button. A newly active method displays `autopay-bank-confirm-pay`, and clicking it sends collect with the server-verified setup session ID. The app never posts `client_on_session` directly.
 
-Autopay list page tests: last-charge processing row, final failure row, unapplied banner, and a 24-hour-old awaiting-notice row. Assert `autopay-last-charge`, `autopay-notice-stuck`, and `autopay-unapplied-banner` on the real page, not a mocked child. A cross-org caller never receives another org’s last charge.
+Autopay list page tests: last-charge processing row, final failure row, and a 24-hour-old awaiting-notice row. Assert `autopay-last-charge` and `autopay-notice-stuck` on the real page, not a mocked child. Persistent unresolved money is tested on `InvoiceWorkspace`, below. A cross-org caller never receives another org’s last charge.
 Before implementation, create this component test (in addition to the parent-page tests above):
 ```tsx
 // @vitest-environment jsdom
@@ -2713,7 +3094,30 @@ it('pending verification has no charge button or mutation on refresh',async()=>{
 ```
 Run `cd apps/portal && npx vitest run src/components/portal/BankAutopayPayment.test.tsx` and observe the missing component failure before creating it.
 
-- [ ] **Step 2: Run it, expect FAIL** — `cd apps/portal && npx vitest run src/components/portal/BankAutopayPayment.test.tsx src/components/portal/PublicInvoiceView.autopay.test.tsx src/components/portal/InvoiceDetailView.test.tsx`; `cd apps/web && npx vitest run src/components/billing/AutopayListPage.test.tsx`.
+Add this full case to `InvoiceWorkspace.test.tsx`, using its existing `fetchMock`, `json`, `invoice` helpers and real children:
+```tsx
+it('keeps unresolved-money attention visible with enrollment disabled, until resolution',async()=>{
+  let count=1;
+  fetchMock.mockImplementation(async(input:string)=>{
+    if(input==='/billing/autopay')return json({error:'autopay_not_enabled'},false,404);
+    if(input==='/invoices/inv-1')return json({data:{...invoice({status:'sent',invoiceNumber:'INV-1'}),
+      autopay:null,unappliedCount:count}});
+    if(input==='/invoices/inv-1/payments')return json({data:[]});
+    return json({data:[]});
+  });
+  const first=render(<InvoiceWorkspace id="inv-1"/>);
+  expect(await screen.findByTestId('autopay-unapplied-banner')).toBeVisible();
+  fireEvent.click(screen.getByTestId('invoice-tab-preview'));
+  expect(screen.getByTestId('autopay-unapplied-banner')).toBeVisible();
+  expect(fetchMock.mock.calls.some(([path])=>path==='/billing/autopay')).toBe(false);
+  first.unmount();count=0;
+  render(<InvoiceWorkspace id="inv-1"/>);
+  await screen.findByTestId('invoice-workspace-title');
+  expect(screen.queryByTestId('autopay-unapplied-banner')).not.toBeInTheDocument();
+});
+```
+Task 20’s real-DB count test proves rollout-off authorization and foreign-org refusal; this component test must not mock the workspace or banner.
+- [ ] **Step 2: Run it, expect FAIL** — `cd apps/portal && npx vitest run src/components/portal/BankAutopayPayment.test.tsx src/components/portal/PublicInvoiceView.autopay.test.tsx src/components/portal/InvoiceDetailView.test.tsx`; `cd apps/web && npx vitest run src/components/billing/AutopayListPage.test.tsx`. `cd apps/web && npx vitest run src/components/billing/InvoiceWorkspace.test.tsx`; `cd apps/api && npx vitest run src/services/invoiceService.test.ts`. The new banner assertion must fail before the ungated projection is implemented.
 - [ ] **Step 3: Implement** — extend the existing typed API methods with optional bank input; default `{}` preserves the card callers. Keep `apiPost` rather than raw portal fetch so cookies/CSRF remain intact:
 ```ts
 export type BankPayInput = {
@@ -2847,7 +3251,7 @@ const latest = await db.selectDistinctOn([invoiceCollectionAttempts.orgId], { or
 const lastByOrg = new Map<string, (typeof latest)[number]>();
 for (const attempt of latest) if (!lastByOrg.has(attempt.orgId)) lastByOrg.set(attempt.orgId, attempt);
 ```
-Compute the other two projections in the same authorized-org scope:
+Compute notice attention in the same authorized-org scope:
 ```ts
 const waiting=await db.select({orgId:invoiceAutopaySchedules.orgId,invoiceId:invoiceAutopaySchedules.invoiceId,
   reason:invoiceAutopaySchedules.stateReason,createdAt:billingNoticeOutbox.createdAt,
@@ -2862,62 +3266,76 @@ for(const row of waiting){
   if(prior)prior.count++;
   else attentionByOrg.set(row.orgId,{count:1,oldestCreatedAt:(row.createdAt??new Date()).toISOString(),reason:row.reason,invoiceId:row.invoiceId});
 }
-const unapplied=await db.select({orgId:invoiceCollectionAttempts.orgId,n:sql<number>`count(*)::int`})
-  .from(invoiceCollectionAttempts).where(and(inArray(invoiceCollectionAttempts.orgId,authorizedOrgIds),
-    eq(invoiceCollectionAttempts.state,'unapplied'))).groupBy(invoiceCollectionAttempts.orgId);
-const unappliedByOrg=new Map(unapplied.map(row=>[row.orgId,row.n]));
-```
-Add `invoiceCollectionAttempts`, `invoiceAutopaySchedules`, `billingNoticeOutbox` schema imports and `asc`, `desc`, `sql` Drizzle imports. In each row’s final object include `lastCharge:lastByOrg.get(org.id)??null`, `awaitingNotice:attentionByOrg.get(org.id)??null`, and `unappliedCount:unappliedByOrg.get(org.id)??0`. No unscoped aggregate is joined back into a scoped list.
 
-The query uses one latest row per authorized org; retain the leading org-ID ordering required by `DISTINCT ON`. Join `billing_notice_outbox` for `awaiting_notice` age: “stuck” means oldest pending/failed notice is at least **24 hours** old, or `stateReason='no_billing_contact'` immediately. Do not infer age from `collectOn`. Return failure reason and an invoice link so staff can fix delivery. Add an org-filtered unapplied count and banner link to those invoices; keep the banner visible until refund/reconciliation closes the attempt, even if the rollout gate is disabled afterward.
+```
+Add `invoiceCollectionAttempts`, `invoiceAutopaySchedules`, `billingNoticeOutbox` schema imports and `asc`, `desc`, `sql` Drizzle imports. In each row’s final object include `lastCharge:lastByOrg.get(org.id)??null`, `awaitingNotice:attentionByOrg.get(org.id)??null`. No unscoped aggregate is joined back into a scoped list.
+
+The query uses one latest row per authorized org; retain the leading org-ID ordering required by `DISTINCT ON`. Join `billing_notice_outbox` for `awaiting_notice` age: “stuck” means oldest pending/failed notice is at least **24 hours** old, or `stateReason='no_billing_contact'` immediately. Do not infer age from `collectOn`. Return failure reason and an invoice link so staff can fix delivery. Persistent unresolved-money attention is supplied by the ungated invoice read below, never by this C7-gated enrollment query.
 
 Extend `AutopayRow` in prerequisite `apps/web/src/components/billing/autopayClient.ts` with the following fields. In `listAutopayEnrollments` use `lastCharge: lastByOrg.get(org.id) ?? null` in each already-scoped returned row; serialize Dates through the existing JSON response.
 ```ts
 lastCharge: {state:string;createdAt:string;principalAmount:string;currency:string}|null;
 awaitingNotice: {count:number;oldestCreatedAt:string;reason:string|null;invoiceId:string}|null;
-unappliedCount: number;
 ```
-Compute the banner count in the list component as `const unappliedCount = rows.reduce((sum,row) => sum + row.unappliedCount,0);`. Keep W2's temporary `lastChargeResult:null` until its existing consumers are migrated, then remove that private placeholder property in the same task.
+Keep W2's temporary `lastChargeResult:null` until its existing consumers are migrated, then remove that private placeholder property in the same task.
 
-Concrete list cells and banner:
+Concrete gated enrollment-list cells:
 ```tsx
 <td data-testid="autopay-last-charge">{row.lastCharge
   ? t(`autopay.attemptStates.${row.lastCharge.state}`, { defaultValue: row.lastCharge.state })
   : t('autopay.noCharge')}</td>
 {row.awaitingNotice?.count > 0 && <a data-testid="autopay-notice-stuck"
   href={`/billing/invoices/${row.awaitingNotice.invoiceId}`}>{t('autopay.noticeStuck')}</a>}
-{unappliedCount > 0 && <div role="status" data-testid="autopay-unapplied-banner">
-  {t('autopay.unapplied', { count: unappliedCount })}
+```
+Expose persistent money attention through existing **ungated** `GET /invoices/:id`. In `invoiceService.ts#getInvoice`, after `getOwnedInvoiceOr404` and `requireInvoiceAccess` have succeeded, add this query immediately before its final return (add `invoiceCollectionAttempts` to schema imports; `and`, `eq`, `sql` already exist):
+```ts
+const [attention] = await db.select({count:sql<number>`count(*)::int`}).from(invoiceCollectionAttempts).where(and(
+  eq(invoiceCollectionAttempts.invoiceId,inv.id),eq(invoiceCollectionAttempts.orgId,inv.orgId),
+  eq(invoiceCollectionAttempts.state,'unapplied'),
+));
+```
+Add `unappliedCount: attention?.count ?? 0` to the existing returned detail object. Keep it outside every autopay-enabled branch, under the caller’s existing authorized context/RLS, and do not filter by enrollment or only the latest attempt. The route’s existing `{data:{...detail,branding}}` already forwards it. Retain `requireScope('partner','system')`, `INVOICES_READ`, and `requireInvoiceAccess` org/site checks. Do not add a public/portal projection or widen invoice permissions. In existing `invoiceService.test.ts` getInvoice fixtures, append `queueResult([{count:0}])` immediately after each final detail-query result and before any later `listInvoices` result; this extra read must not consume that next call’s fixture.
+
+Extend the web `InvoiceDetail` response interface in `invoiceTypes.ts` with `unappliedCount?: number` (older API responses default to zero). As the first child of `DocumentWorkspace` in `InvoiceWorkspace.tsx`, before its tab-dependent content, render:
+```tsx
+{(detail.unappliedCount ?? 0) > 0 && <div role="status" data-testid="autopay-unapplied-banner">
+  {t('autopay.unapplied',{count:detail.unappliedCount})}
 </div>}
 ```
+This is the persistent banner’s sole owner; the gated `AutopayListPage` no longer supplies a count or banner. Invoice attention links from Task 14 target this same accessible detail. It remains visible on all workspace tabs until refunds/reconciliation change all unapplied attempts, independent of rollout or reminder settings.
+
 Add these English keys to each existing billing locale: `failed`, `chargeFailed`, `chargeStarted`, `chargeNow`, `noCharge`, `noticeStuck`, `unapplied`, plus all attempt-state labels. Use English values in non-English locales; `localeParity.test.ts` requires equal keys, so runtime fallback alone is insufficient. Keep existing page/sidebar mounts; no new settings registry entry is warranted because these are operational screens already registered by W2.
-- [ ] **Step 4: Run it, expect PASS** — `cd apps/portal && npx vitest run src/components/portal/BankAutopayPayment.test.tsx src/components/portal/PublicInvoiceView.autopay.test.tsx src/components/portal/InvoiceDetailView.test.tsx`; `cd apps/web && npx vitest run src/components/billing/AutopayListPage.test.tsx`; `cd apps/web && npx vitest run src/lib/i18n/localeParity.test.ts src/lib/i18n/keyUsage.test.ts src/lib/__tests__/no-silent-mutations.test.ts`.
-- [ ] **Step 5: Commit** — `git add apps/portal/src/components/portal/BankAutopayPayment.tsx apps/portal/src/components/portal/BankAutopayPayment.test.tsx apps/portal/src/pages/autopay/return.astro apps/portal/src/pages/autopay/actions.test.ts apps/portal/src/lib/api.ts apps/portal/src/components/portal/PublicInvoiceView.tsx apps/portal/src/components/portal/PublicInvoiceView.autopay.test.tsx apps/portal/src/components/portal/InvoiceDetailView.tsx apps/portal/src/components/portal/InvoiceDetailView.test.tsx apps/web/src/components/billing/AutopayListPage.tsx apps/web/src/components/billing/AutopayListPage.test.tsx apps/api/src/services/autopay/enrollmentViews.ts apps/web/src/components/billing/autopayClient.ts apps/web/src/components/billing/InvoiceDetail.tsx apps/web/src/locales`; `git commit -m "feat(billing): compose bank payment and collection attention views"`.
+- [ ] **Step 4: Run it, expect PASS** — `cd apps/portal && npx vitest run src/components/portal/BankAutopayPayment.test.tsx src/components/portal/PublicInvoiceView.autopay.test.tsx src/components/portal/InvoiceDetailView.test.tsx`; `cd apps/web && npx vitest run src/components/billing/AutopayListPage.test.tsx src/components/billing/InvoiceWorkspace.test.tsx`; `cd apps/api && npx vitest run src/services/invoiceService.test.ts`; `cd apps/web && npx vitest run src/lib/i18n/localeParity.test.ts src/lib/i18n/keyUsage.test.ts src/lib/__tests__/no-silent-mutations.test.ts`.
+- [ ] **Step 5: Commit** — `git add apps/api/src/services/invoiceService.ts apps/api/src/services/invoiceService.test.ts apps/web/src/components/billing/InvoiceWorkspace.tsx apps/web/src/components/billing/InvoiceWorkspace.test.tsx apps/web/src/components/billing/invoiceTypes.ts apps/portal/src/components/portal/BankAutopayPayment.tsx apps/portal/src/components/portal/BankAutopayPayment.test.tsx apps/portal/src/pages/autopay/return.astro apps/portal/src/pages/autopay/actions.test.ts apps/portal/src/lib/api.ts apps/portal/src/components/portal/PublicInvoiceView.tsx apps/portal/src/components/portal/PublicInvoiceView.autopay.test.tsx apps/portal/src/components/portal/InvoiceDetailView.tsx apps/portal/src/components/portal/InvoiceDetailView.test.tsx apps/web/src/components/billing/AutopayListPage.tsx apps/web/src/components/billing/AutopayListPage.test.tsx apps/api/src/services/autopay/enrollmentViews.ts apps/web/src/components/billing/autopayClient.ts apps/web/src/components/billing/InvoiceDetail.tsx apps/web/src/locales`; `git commit -m "feat(billing): compose bank payment and collection attention views"`.
 
-### Task 20: Prove locks, crash recovery, generation fencing, and all issue producers (W4b)
+### Task 20: Prove locks, recovery, merged history, durable replay, and issue producers (W4b)
 **Files:** Create `apps/api/src/services/autopay/charging.integration.test.ts`; Modify `apps/api/vitest.integration.config.ts`, `apps/api/vitest.config.ts`, `apps/api/src/services/invoiceService.issue.integration.test.ts`, `apps/api/src/__tests__/integration/quoteAccept.integration.test.ts`, `apps/api/src/__tests__/integration/contractWorker.integration.test.ts`.
-**Interfaces:** Uses actual `createPartner(options?)`, `createOrganization({partnerId})` from `src/__tests__/integration/db-utils.ts`; never imports local helpers from another test file. Tests C4 functions against real Postgres with provider calls mocked at `getPartnerStripeClient` only.
+**Interfaces:** Uses actual `createPartner(options?)`, `createOrganization({partnerId})`, and `createUser({partnerId,email})` from `src/__tests__/integration/db-utils.ts`; never imports local helpers from another test file. Tests C4 functions, the real `executeOrgMerge` history, and global PI replay against real Postgres with provider calls mocked at `getPartnerStripeClient` only. Actual invoice authorization remains active; no live method is supplied to historical reconciliation.
 
-- [ ] **Step 1: Write the failing test** — author these assertions before implementing their owning collection stages (Tasks 10–12); this task groups their real-DB execution and fixture ownership, not test-after-code development:
+- [ ] **Step 1: Write the failing test** — author these assertions before implementing their owning collection/history/inbox/attention stages (Tasks 10–15 and 19); this task groups their real-DB execution and fixture ownership, not test-after-code development:
 ```ts
 import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext, hasDbAccessContext } from '../../db';
-import { createPartner, createOrganization } from '../../__tests__/integration/db-utils';
+import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
 import { partners, invoices, orgAutopayEnrollments, orgPaymentMethods, invoiceAutopaySchedules,
-  invoiceCollectionAttempts, invoiceStripePayments, stripeConnectAccounts } from '../../db/schema';
+  invoiceCollectionAttempts, invoiceStripePayments, stripeConnectAccounts, invoicePayments,
+  organizations, billingNoticeOutbox, stripeFinancialEvents, orgMergeEvents } from '../../db/schema';
 import { encryptSecret } from '../secretCrypto';
 import { attemptCollection, resumeCollectionAttempt, applyAttemptOutcome } from './collectionEngine';
-import { recordPayment } from '../invoiceService';
+import {recordPayment,getInvoice} from '../invoiceService';
+import {executeOrgMerge} from '../orgMerge';
+import {ingestStripeFinancialEvent,processPendingStripeFinancialEvents,processPendingStripeFinancialEventsForPayment} from '../stripeReversalState';
+import {enqueueAutopayNotice} from './chargingNotice';
 import { createInvoicePayLink } from '../invoiceCheckout';
 const provider = vi.hoisted(() => ({ create: vi.fn(), retrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(),
-  sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn() }));
+  sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn(), methodRetrieve:vi.fn(),methodDetach:vi.fn() }));
 vi.mock('../partnerStripe', async importOriginal => ({
   ...(await importOriginal<typeof import('../partnerStripe')>()),
   getPartnerStripeClient: vi.fn(async () => ({ stripeAccountId: 'acct_autopay_test', defaultCurrency: 'USD',
-    stripe: { paymentIntents: { create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
+    stripe: { paymentMethods:{retrieve:provider.methodRetrieve,detach:provider.methodDetach}, paymentIntents: { create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
       checkout: { sessions: { create: provider.sessionCreate, expire: provider.sessionExpire, retrieve: provider.sessionRetrieve } } } })),
 }));
 vi.mock('../invoiceEvents', () => ({ emitInvoiceEvent: vi.fn() }));
@@ -2940,6 +3358,8 @@ beforeEach(() => {
     currentPi = { ...currentPi, status: 'processing' }; return currentPi;
   });
   provider.cancel.mockImplementation(async () => { currentPi = { ...currentPi, status: 'canceled' }; return currentPi; });
+  provider.methodRetrieve.mockResolvedValue({customer:'cus_autopay_test'});
+  provider.methodDetach.mockResolvedValue({customer:null});
   currentPi = null;
 });
 async function fixture() {
@@ -3055,6 +3475,100 @@ it('does not confirm an old enrollment generation after create', async () => {
   expect(provider.confirm).not.toHaveBeenCalled();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
 });
+it.each([false,true])('reconciles original-org late success after real merge (unapplied=%s), then refunds once',async unapplied=>{
+  const f=await fixture();
+  const survivor=await withSystemDbAccessContext(()=>createOrganization({partnerId:f.partner.id}));
+  const user=await withSystemDbAccessContext(()=>createUser({partnerId:f.partner.id,email:`merge-${randomUUID()}@example.test`}));
+  provider.confirm.mockImplementationOnce(async()=>{
+    currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{code:'card_declined',decline_code:'do_not_honor'}};
+    return currentPi;
+  });
+  const result=await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('failed');
+  if(unapplied)await withSystemDbAccessContext(()=>db.update(invoices).set({status:'void'}).where(eq(invoices.id,f.invoice.id)));
+  await executeOrgMerge({loserOrgId:f.org.id,survivorOrgId:survivor.id,partnerId:f.partner.id,performedBy:user.id});
+  const merged=(await attempts(f.invoice.id))[0]!;
+  expect(merged).toMatchObject({orgId:survivor.id,paymentMethodId:null,state:'failed'});
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,f.schedule.id)));
+  expect(schedule).toMatchObject({orgId:survivor.id,enrollmentId:null});
+  const history=await withSystemDbAccessContext(()=>db.select().from(orgMergeEvents).where(eq(orgMergeEvents.loserOrgId,f.org.id)));
+  expect(history[0]).toMatchObject({partnerId:f.partner.id,survivorOrgId:survivor.id});
+  const [loserAuthority]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,f.enrollment.id)));
+  expect(loserAuthority).toMatchObject({orgId:f.org.id,status:'cancelled'});
+  const beforeNotices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id)));
+  await withSystemDbAccessContext(()=>enqueueAutopayNotice(db,f.schedule.id));
+  expect(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id))))
+    .toHaveLength(beforeNotices.length);
+  const unrelated=await withSystemDbAccessContext(()=>createOrganization({partnerId:f.partner.id}));
+  currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null,
+    metadata:{...currentPi.metadata,org_id:unrelated.id}};
+  await expect(applyAttemptOutcome(f.partner.id,result.attemptId!)).rejects.toThrow('provenance mismatch');
+  currentPi={...currentPi,metadata:{...currentPi.metadata,org_id:f.org.id}};
+  await applyAttemptOutcome(f.partner.id,result.attemptId!);
+  await applyAttemptOutcome(f.partner.id,result.attemptId!);
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({orgId:survivor.id,paymentMethodId:null,state:unapplied?'unapplied':'succeeded'});
+  const paid=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoice.id)));
+  expect(paid).toHaveLength(unapplied?0:1);
+  if(!unapplied)expect(paid[0]).toMatchObject({orgId:survivor.id,amount:'100.00'});
+  const refund={partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',stripeEventId:`evt_merge_refund_${f.invoice.id}`,
+    eventType:'charge.refunded',livemode:false,providerCreated:Math.floor(Date.now()/1000),
+    paymentIntentId:currentPi.id,currency:'USD',chargeAmountMinor:10000,refundedAmountMinor:10000};
+  await ingestStripeFinancialEvent(refund);await ingestStripeFinancialEvent(refund);
+  await applyAttemptOutcome(f.partner.id,result.attemptId!);
+  expect(await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoice.id)))).toHaveLength(0);
+  const final=(await attempts(f.invoice.id))[0]!;
+  expect(final.paymentMethodId).toBeNull();
+  if(unapplied)expect(final).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+  const [finalSchedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,f.schedule.id)));
+  expect(finalSchedule!.enrollmentId).toBeNull();expect(finalSchedule!.nextAttemptAt).toBeNull();
+  expect(['scheduled','retry_scheduled','awaiting_notice','collecting']).not.toContain(finalSchedule!.state);
+  expect(provider.create).toHaveBeenCalledTimes(1);expect(provider.confirm).toHaveBeenCalledTimes(1);
+});
+it('replays a PI event globally after its mapping arrives, even for a failed terminal attempt',async()=>{
+  const f=await fixture();
+  const eventId=`evt_early_${f.invoice.id}`;
+  const early={partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',stripeEventId:eventId,
+    eventType:'payment_intent.succeeded',livemode:false,providerCreated:Math.floor(Date.now()/1000),
+    paymentIntentId:'pi_autopay_test',currency:'USD',chargeAmountMinor:10000};
+  expect(await ingestStripeFinancialEvent(early)).toMatchObject({state:'pending'});
+  provider.confirm.mockImplementationOnce(async()=>{
+    currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{code:'card_declined',decline_code:'do_not_honor'}};
+    return currentPi;
+  });
+  const result=await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('failed');
+  currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null};
+  await withSystemDbAccessContext(()=>db.update(stripeFinancialEvents).set({nextAttemptAt:new Date(0)})
+    .where(eq(stripeFinancialEvents.stripeEventId,eventId)));
+  await processPendingStripeFinancialEventsForPayment('acct_autopay_test',currentPi.id);
+  let [event]=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents).where(eq(stripeFinancialEvents.stripeEventId,eventId)));
+  expect(event!.status).toBe('pending'); // per-payment replay must stay charge-only
+  await processPendingStripeFinancialEvents();await processPendingStripeFinancialEvents();
+  [event]=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents).where(eq(stripeFinancialEvents.stripeEventId,eventId)));
+  expect(event!.status).toBe('applied');
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({id:result.attemptId,state:'succeeded'});
+  expect(await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoice.id)))).toHaveLength(1);
+  expect(provider.create).toHaveBeenCalledTimes(1);
+});
+it('shows unresolved money through authorized invoice reads after rollout is disabled',async()=>{
+  const f=await fixture();
+  const result=await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
+  await withSystemDbAccessContext(()=>db.update(invoices).set({status:'void'}).where(eq(invoices.id,f.invoice.id)));
+  currentPi={...currentPi,status:'succeeded',amount_received:10000};
+  await applyAttemptOutcome(f.partner.id,result.attemptId!);
+  await withSystemDbAccessContext(()=>db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id)));
+  const actor={userId:randomUUID(),partnerId:f.partner.id,accessibleOrgIds:[f.org.id]};
+  const detail=await withDbAccessContext({scope:'partner',orgId:null,accessibleOrgIds:[f.org.id],accessiblePartnerIds:[f.partner.id]},()=>getInvoice(f.invoice.id,actor));
+  expect(detail.unappliedCount).toBe(1);
+  const other=await withSystemDbAccessContext(()=>createOrganization({partnerId:f.partner.id}));
+  await expect(withDbAccessContext({scope:'partner',orgId:null,accessibleOrgIds:[other.id],accessiblePartnerIds:[f.partner.id]},
+    ()=>getInvoice(f.invoice.id,{...actor,accessibleOrgIds:[other.id]}))).rejects.toMatchObject({status:404});
+  await ingestStripeFinancialEvent({partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',stripeEventId:`evt_attention_${f.invoice.id}`,
+    eventType:'charge.refunded',livemode:false,providerCreated:Math.floor(Date.now()/1000),paymentIntentId:currentPi.id,
+    currency:'USD',chargeAmountMinor:10000,refundedAmountMinor:10000});
+  expect((await withDbAccessContext({scope:'partner',orgId:null,accessibleOrgIds:[f.org.id],accessiblePartnerIds:[f.partner.id]},()=>getInvoice(f.invoice.id,actor))).unappliedCount).toBe(0);
+});
+
 ```
 Do not skip this suite when `DATABASE_URL` is missing: the explicit integration runner/setup must fail to start. Extend the same fixture with row-lock barriers for manual-first, autopay-first, and a Checkout mapping inserted after revocation but before reservation. A race assertion checks the losing producer never calls Stripe, not just that only one ledger payment was booked after two real charges.
 
@@ -3091,7 +3605,7 @@ The three existing issue suites are already registered. Fix the owning implement
 - [ ] **Step 5: Commit** — `git add apps/api/src/services/autopay/charging.integration.test.ts apps/api/vitest.integration.config.ts apps/api/src/services/invoiceService.issue.integration.test.ts apps/api/src/__tests__/integration/quoteAccept.integration.test.ts apps/api/src/__tests__/integration/contractWorker.integration.test.ts`; `git commit -m "test(billing): prove autopay races recovery and issuance contracts"`.
 
 ### Task 21: Verification and Stripe test-mode lab
-**Files:** Create `e2e-tests/tests/autopay-charging.spec.ts`; verify all implementation files above. No production migration, secret, real customer, or infrastructure address is added.
+**Files:** Create `e2e-tests/tests/autopay-charging.spec.ts`; verify all implementation files above, including retained factory/settlement/archive/staff tests and the rollout-off invoice workspace. No production migration, secret, real customer, or infrastructure address is added.
 **Interfaces:** Uses existing Playwright `test, expect` from `e2e-tests/fixtures`, `authedPage`, and all W04 `autopay-*` test IDs. The application and worker both use the production mounts/registry.
 
 - [ ] **Step 1: Write the failing test** — stack smoke is written before final composition. The test consumes explicit test-mode fixture URLs supplied by the lab; absent fixture data is a failure, not a skip:
@@ -3121,6 +3635,17 @@ test('invoice panel and scanner-safe public action are mounted', async ({authedP
   await client.close();
 });
 ```
+Add the rollout-off money-attention fixture case to the same smoke suite:
+```ts
+test('captured-money attention remains reachable with enrollment rollout disabled',async({authedPage:page})=>{
+  await page.goto(`/billing/invoices/${required('AUTOPAY_DISABLED_UNAPPLIED_INVOICE_ID')}`);
+  await expect(page.getByTestId('autopay-unapplied-banner')).toBeVisible();
+  await page.getByTestId('invoice-tab-preview').click();
+  await expect(page.getByTestId('autopay-unapplied-banner')).toBeVisible();
+});
+```
+The disposable lab fixture must have `partners.autopayEnabled=false` and an unresolved captured attempt; absence of that fixture is a failure. Do not enable rollout just to make the banner test pass.
+
 Add list, contract, public invoice bank button, logged-in bank button, and confirm page cases using their actual test IDs. Seed via W2’s enrollment setup in a Stripe **test-mode** partner on the isolated worktree stack; never hardcode invoice IDs or public tokens in source. The final lab below supplies these disposable fixture values.
 - [ ] **Step 2: Run it, expect FAIL** — `cd e2e-tests && npx playwright test tests/autopay-charging.spec.ts --project=chromium`; before final composition the missing mounted ID is the expected failure.
 - [ ] **Step 3: Implement** — complete any missing production mount identified by the smoke. Exact verification commands, run from repo root unless a command explicitly changes directory:
@@ -3134,7 +3659,7 @@ pnpm --filter @breeze/shared exec tsc --noEmit
 ```
 Targeted unit suites:
 ```bash
-cd apps/api && npx vitest run src/services/autopay/scheduler.test.ts src/services/autopay/chargingNotice.test.ts src/services/autopay/renderBillingNotice.test.ts src/services/autopay/invoiceControls.test.ts src/services/autopay/failureClassifier.test.ts src/services/autopay/retryDates.test.ts src/services/autopay/collectionEngine.test.ts src/services/autopay/paymentNotices.test.ts src/services/autopay/bankPayment.test.ts src/services/autopay/confirmPayment.test.ts src/services/invoiceService.test.ts src/services/quoteAcceptService.test.ts src/services/invoiceResend.test.ts src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts src/services/stripeReconcile.test.ts src/services/stripeFinancialEventPoller.test.ts src/jobs/stripeReconcileSweep.test.ts src/jobs/contractWorker.test.ts src/jobs/autopayWorker.test.ts src/routes/autopay/mount.test.ts src/routes/invoicesPublic.test.ts src/routes/portal/invoices.test.ts src/routes/contracts/contracts.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerEntrypointClosure.contract.test.ts
+cd apps/api && npx vitest run src/services/autopay/scheduler.test.ts src/services/autopay/chargingNotice.test.ts src/services/autopay/renderBillingNotice.test.ts src/services/autopay/invoiceControls.test.ts src/services/autopay/failureClassifier.test.ts src/services/autopay/retryDates.test.ts src/services/autopay/collectionEngine.test.ts src/services/autopay/paymentNotices.test.ts src/services/autopay/bankPayment.test.ts src/services/autopay/confirmPayment.test.ts src/services/invoiceService.test.ts src/services/quoteAcceptService.test.ts src/services/invoiceResend.test.ts src/services/partnerStripeClient.test.ts src/services/partnerStripe.test.ts src/services/stripeCredentialArchive.test.ts src/services/stripeSettle.test.ts src/services/autopay/staffNotifications.test.ts src/services/stripeReconcile.test.ts src/services/stripeFinancialEventPoller.test.ts src/jobs/stripeReconcileSweep.test.ts src/jobs/contractWorker.test.ts src/jobs/autopayWorker.test.ts src/routes/autopay/mount.test.ts src/routes/invoicesPublic.test.ts src/routes/portal/invoices.test.ts src/routes/contracts/contracts.test.ts src/middleware/selfManagedDbContextRoutes.test.ts src/jobs/scheduleRegistry.contract.test.ts src/services/workerEntrypointClosure.contract.test.ts
 ```
 ```bash
 cd apps/web && npx vitest run src/components/billing/InvoiceDetail.autopay.test.tsx src/components/billing/InvoiceWorkspace.test.tsx src/components/billing/InvoiceActions.test.tsx src/components/contracts/ContractEditor.test.tsx src/components/billing/AutopayListPage.test.tsx src/lib/i18n/localeParity.test.ts src/lib/i18n/keyUsage.test.ts src/lib/__tests__/no-silent-mutations.test.ts src/lib/__tests__/settingsPageRegistry.test.ts
@@ -3152,7 +3677,7 @@ pnpm --filter @breeze/api test:integration-suite-coverage
 pnpm db:check-drift
 cd apps/api && npx vitest run
 ```
-Check that all expected files ran; no silent `runIf` skips, no “No test files found”, no tests of an empty fake app. Use `pnpm wt-stack up` for the UI/Stripe lab, then:
+Verify the six cross-wave regressions explicitly: preserved factory overloads/account-bound settlement; real merge→late-success/refund with cleared authority and rejected foreign provenance; global early-PI replay with charge-only per-payment selection; disclosure-derived card-only refusal; rollout-off invoice attention with foreign-org denial; and return-specific customer outbox plus staff notification on replay. Check that all expected files ran; no silent `runIf` skips, no “No test files found”, no tests of an empty fake app. Use `pnpm wt-stack up` for the UI/Stripe lab, then:
 ```bash
 cd e2e-tests && npx playwright test tests/autopay-charging.spec.ts --project=chromium
 ```
@@ -3169,13 +3694,14 @@ Run on a disposable partner whose key and account are in test mode. Keep `autopa
 - [ ] **ACH success:** Stripe test bank success account/Financial Connections flow; confirm method type and individual/company classification, USD restriction, correct 10/1-day notice, processing reservation, then settlement after closing the browser. No Checkout payment session accepts ACH.
 - [ ] **ACH NSF return:** use Stripe’s current test-bank insufficient-funds scenario; verify structured R01/R09 classification, one retry after three banking days, no third attempt, failed-final notification.
 - [ ] **Microdeposits:** select manual verification; pending method never charges. Complete verification, then return and make an explicit bank-pay POST; a background setup completion alone must not charge.
-- [ ] **Late return/dispute:** successful bank payment, then test return/dispute; invoice reopens, existing reversal ledger changes once, payment method re-evaluates, `payment.ach_returned` arrives. W4 fee is zero; repeat proportional principal/fee cases only when W5 enables fees.
+- [ ] **Late return/dispute:** successful bank payment, then test return/dispute; invoice reopens, existing reversal ledger changes once, payment method re-evaluates, `payment.ach_returned` reaches staff with the invoice detail link and a `payment_failed` returned variant reaches the customer. Replay the withdrawal: one customer outbox and one in-app staff row for that return, even if an earlier failure notice exists. W4 fee is zero; repeat proportional principal/fee cases only when W5 enables fees.
 - [ ] **Notice replacement:** change card to individual bank after notice; old callback cannot authorize it, new notice has ten days, old Skip remains invoice-scoped but cannot reach another generation. Due-date edit re-notices only scheduled rows.
 - [ ] **Stop/disable/disconnect:** pause/stop or disable rollout during processing, rotate the key, then disconnect. No new setup or attempt; original PI still settles by account-bound archived credential. Reconnect same account clears only Stripe attention; different account with active enrollments is blocked.
 - [ ] **Failure of permissions:** replace key with one lacking PaymentIntents permission. UI shows exact missing capability, no new PI, retained attempts remain visible. Restore a usable same-account key and verify recovery.
 - [ ] **Crash boundaries:** stop worker after provider create and before mapping persistence, then after mapping persistence and before confirm. Restart; same attempt/key/PI resumes. An unknown create older than 23 hours is quarantined without a second PI.
-- [ ] **Unapplied:** arrange a controlled test-only ledger conflict after capture; attempt becomes unapplied, banner + `payment.unapplied` appear, client gets no false failure/receipt. Refund in Stripe; poller closes the unapplied item.
+- [ ] **Unapplied:** arrange a controlled test-only ledger conflict after capture; attempt becomes unapplied, invoice-workspace banner + `payment.unapplied` appear, client gets no false failure/receipt. Disable rollout: the enrollment list returns C7’s 404, but the authorized invoice and notification destination still show money attention. Refund in Stripe; poller closes the unapplied item.
 - [ ] **Race:** hold a Checkout session open while collection runs; completion wins and autopay defers, or revocation wins and Checkout cannot pay. Race manual payment and collection in both orders. Count actual Stripe charges, not just ledger rows.
+- [ ] **Merged money:** fail a PI, merge its org, then apply a late provider success and refund. The original org metadata remains unchanged; history/account binding reconciles it without restoring enrollment/method links, minting controls, or starting another attempt.
 - [ ] **Tenant/generation:** stale enrollment/setup/skip/confirm token never operates after re-enrollment, and no org/user can view or charge another org’s invoice.
 
 Open rollout risks: W1–W3 have not landed in this authoring checkout, so their implementation-specific context shapes must be verified before coding; provider access can be permanently lost when a key is revoked; staff-email delivery retains the existing staff path’s limitation; legal approval of notice/consent wording and W5’s nonzero-fee allocation remain separate gates. These risks do not justify widening token authority, bypassing notice lead, or charging through a different Stripe account.

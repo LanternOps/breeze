@@ -26,6 +26,8 @@
 7. **Status and currency are existing primitives.** Use `sqlOpenAr` in `apps/api/src/db/schema/invoices.ts`, and `buildAutomationEligibleOrgPredicate` in `apps/api/src/services/tenantStatus.ts`, not an active-only approximation. `invoices.dueDate` is nullable; skip null dates. `formatMoney` in `packages/shared/src/utils/currency.ts` receives the decimal balance and invoice currency, never total or partner currency.
 8. **No new settings URL or schema.** `SETTINGS_CATALOG` in `apps/web/src/lib/settingsCatalog.ts` already points at `/settings/billing`; W2b plans a separate `billing-payments` hash entry. Task 7 removes its `requiresAutopay` gate and updates the reachability assertion in `settingsPageRegistry.test.ts`. W03 creates no table, column, token type or route. C1 reserves no W03 migration. Cascade, merge, export, RLS, audit-admin and encryption registrations belong to W1 and are verified again in Task 8, not duplicated here.
 
+9. **CW-10 — preserve the shared editor composition.** C6 adds reminder entries to W2 Task 4's existing group. Task 7 retains `autopay-email-template-group`, `email-template-other-group`, enrollment buttons `autopay-email-template-${id}`, and W2's `emailTemplates.labels.${id}` translation branch and group-label keys. Only reminder buttons gain `autopay-template-${id}`. Tasks 7–8 retain W2's mounted-editor test and verify translated enrollment labels alongside reminder launch behavior.
+
 ## Global Constraints
 
 - Money: `numeric(12,2)` decimal strings in services; Stripe in integer minor units via the existing
@@ -64,6 +66,8 @@
 4. **Lifecycle fences and fallback** must exclude archived/purging/merging orgs and all four active schedule states, while failed/action-required/skipped schedules and autopay-disabled partners still receive reminders. Tasks 3–4 cover both SQL and real fixtures.
 5. **False and blank overrides, failed saves and permissions** must preserve explicit false, show actual inherited values, retain unsaved input on failure, preserve tax/address saves when payment settings cannot load, and leave Payments reachable with autopay off. Tasks 4, 6 and 7 own these assertions.
 
+6. **Shared email-editor compatibility (CW-10)** preserves W2 Task 4's group and enrollment row IDs, translated enrollment/group labels, legacy row IDs and editor navigation. Tasks 7–8 verify reminders alongside the retained W2 regression.
+
 ## File map
 
 Paths marked W1/W2b are future prerequisite files, not existing files verified in this checkout.
@@ -83,7 +87,7 @@ Paths marked W1/W2b are future prerequisite files, not existing files verified i
 - Modify `apps/web/src/components/billing/PaymentsSettingsTab.tsx` and `apps/web/src/components/billing/OrgPaymentsSettingsSection.tsx` (W2b), plus `apps/web/src/components/billing/PaymentsSettingsTab.test.tsx` (W2b) — shared form composition and existing Save integration.
 - Modify `apps/web/src/lib/settingsCatalog.ts` and `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts` — remove the W2b Payments navigation rollout gate.
 - Modify `apps/web/src/components/billing/PartnerBillingSettingsPage.tsx` and `apps/web/src/components/billing/OrgBillingSettings.tsx`, plus their `.test.tsx` siblings — unconditional Payments reachability and conditional Autopay.
-- Modify `apps/web/src/components/settings/EmailTemplatesTab.tsx` and `apps/web/src/components/settings/EmailTemplatesTab.test.tsx` — reminder editor entries under Billing & payments.
+- Modify `apps/web/src/components/settings/EmailTemplatesTab.tsx` and `apps/web/src/components/settings/EmailTemplatesTab.test.tsx` — extend W2 Task 4's Billing & payments composition with reminder entries; retain enrollment/group identifiers, translated labels and mounted-editor tests.
 - Modify `apps/web/src/locales/en/billing.json`, `apps/web/src/locales/de-DE/billing.json`, `apps/web/src/locales/es-419/billing.json`, `apps/web/src/locales/fr-CA/billing.json`, `apps/web/src/locales/fr-FR/billing.json`, `apps/web/src/locales/it-IT/billing.json`, `apps/web/src/locales/pt-BR/billing.json`, `apps/web/src/locales/tr-TR/billing.json` — identical new key structure, English fallbacks outside English.
 - Create `e2e-tests/tests/autopay-reminders.spec.ts` — real-stack settings smoke.
 
@@ -1278,8 +1282,8 @@ git commit -m "feat(web): add inherited reminder cadence fields"
 
 ### Task 7: Compose Payments shells, inherited API projection and page behavior
 
-**Files:** Modify W2b `apps/api/src/services/autopay/paymentSettingsView.ts` and `apps/api/src/services/autopay/paymentSettingsView.test.ts`, W1 `apps/api/src/index.autopayRoutes.test.ts`, W2b `apps/web/src/components/billing/PaymentsSettingsTab.tsx` and `PaymentsSettingsTab.test.tsx`, W2b `apps/web/src/components/billing/OrgPaymentsSettingsSection.tsx`, page/shell `apps/web/src/components/billing/PartnerBillingSettingsPage.tsx` and its `.test.tsx`, page/shell `apps/web/src/components/billing/OrgBillingSettings.tsx` and its `.test.tsx`, `apps/web/src/lib/settingsCatalog.ts`, `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts`, `apps/web/src/components/settings/EmailTemplatesTab.tsx` and its `.test.tsx`, and the eight billing catalogs; Create/Test `e2e-tests/tests/autopay-reminders.spec.ts`.
-**Interfaces:** Consumes W2b's planned `usePaymentSettings(orgId?: string)`, `PaymentSettingsView`, `PaymentValues`, `PaymentFields`, and C7 `{ values, effective, inherited, autopayEnabled }` GET view; consumes Task 6 `ReminderDraft`/`ReminderEffective` helpers · Produces the same settings model with `reminders` and `setReminders`, mounted Reminders modules in both C8 shells, one existing Save per page, and unconditional Payments navigation. No new API route.
+**Files:** Modify W2b `apps/api/src/services/autopay/paymentSettingsView.ts` and `apps/api/src/services/autopay/paymentSettingsView.test.ts`, W1 `apps/api/src/index.autopayRoutes.test.ts`, W2b `apps/web/src/components/billing/PaymentsSettingsTab.tsx` and `PaymentsSettingsTab.test.tsx`, W2b `apps/web/src/components/billing/OrgPaymentsSettingsSection.tsx`, page/shell `apps/web/src/components/billing/PartnerBillingSettingsPage.tsx` and its `.test.tsx`, page/shell `apps/web/src/components/billing/OrgBillingSettings.tsx` and its `.test.tsx`, `apps/web/src/lib/settingsCatalog.ts`, `apps/web/src/lib/__tests__/settingsPageRegistry.test.ts`, `apps/web/src/components/settings/EmailTemplatesTab.tsx` and its `.test.tsx` (extend W2 Task 4's composition and retain its mounted-editor regression), and the eight billing catalogs; Create/Test `e2e-tests/tests/autopay-reminders.spec.ts`.
+**Interfaces:** Consumes W2b's planned `usePaymentSettings(orgId?: string)`, `PaymentSettingsView`, `PaymentValues`, `PaymentFields`, and C7 `{ values, effective, inherited, autopayEnabled }` GET view; consumes Task 6 `ReminderDraft`/`ReminderEffective` helpers · Produces the same settings model with `reminders` and `setReminders`, mounted Reminders modules in both C8 shells, one existing Save per page, and unconditional Payments navigation. Preserves W2 Task 4's `autopay-email-template-group`, `email-template-other-group`, `autopay-email-template-${id}` enrollment buttons and translated enrollment/group labels; adds `autopay-template-${id}` reminder buttons in the same group. No new API route.
 
 - [ ] **Step 1: Write the failing test** — add this standalone block to W2b `PaymentsSettingsTab.test.tsx` using its existing `fetchWithAuth` mock and Vitest/RTL imports. Add `renderHook` and `act` from RTL and import `usePaymentSettings` from the component. Each test supplies a fresh Response.
 
@@ -1489,19 +1493,76 @@ it.each([true, false])('preserves tax/address Save when payments cannot load (pe
 });
 ```
 
-Append to `EmailTemplatesTab.test.tsx` with its existing `routeFetch` helper:
+Append to `EmailTemplatesTab.test.tsx` with its existing `routeFetch` helper and W2's `within` import. Retain W2 Task 4's dedicated mounted-enrollment-editor test unchanged. Add these imports for the isolated translation regression:
+
+```tsx
+import { createInstance } from 'i18next';
+import { I18nextProvider } from 'react-i18next';
+```
 
 ```tsx
 it.each(['payment_reminder', 'payment_overdue'])('opens the %s editor from Billing & payments', async id => {
   routeFetch(); render(<EmailTemplatesTab />);
   const row = await screen.findByTestId(`autopay-template-${id}`);
-  expect(screen.getByTestId('autopay-template-group-billing')).toContainElement(row);
+  expect(screen.getByTestId('autopay-email-template-group')).toContainElement(row);
   fireEvent.click(row);
   expect(await screen.findByTestId('email-template-editor')).toBeTruthy();
 });
 ```
 
-Extend its existing exact catalog-array assertion with the two IDs, preserving W2's entries. In the existing loop, compute the new reminder-button test ID as `id === 'payment_reminder' || id === 'payment_overdue' ? \`autopay-template-${id}\` : \`email-template-row-${id}\``; legacy IDs stay unchanged.
+Add this regression so catalog English labels cannot silently replace W2's translation branch:
+
+```tsx
+it('retains translated enrollment and group labels alongside reminder rows', async () => {
+  const translated = createInstance();
+  const labels = {
+    autopay_request: 'Demande de paiement automatique',
+    autopay_enrolled: 'Paiements automatiques confirmés',
+    autopay_stopped: 'Paiements automatiques arrêtés',
+    card_expiring: 'Expiration de la carte enregistrée',
+  };
+  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
+    resources: { fr: { settings: { emailTemplates: {
+      billingPayments: 'Facturation et paiements', supportPortal: 'Assistance et portail', labels,
+    } } } }, interpolation: { escapeValue: false } });
+  routeFetch();
+  render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
+  const group = await screen.findByTestId('autopay-email-template-group');
+  expect(group.textContent).toContain('Facturation et paiements');
+  expect(screen.getByTestId('email-template-other-group').textContent).toContain('Assistance et portail');
+  for (const [id, label] of Object.entries(labels)) {
+    expect(within(group).getByTestId(`autopay-email-template-${id}`).textContent).toContain(label);
+  }
+  for (const id of ['payment_reminder', 'payment_overdue']) {
+    expect(within(group).getByTestId(`autopay-template-${id}`)).toBeTruthy();
+  }
+});
+```
+
+Extend the existing exact catalog-array assertion with the two IDs after W2's entries (retain any later-wave IDs if already landed):
+
+```ts
+expect([...EMAIL_TEMPLATE_IDS]).toEqual([
+  'ticket_comment_notification', 'ticket_autoresponse', 'ticket_resolved',
+  'quote_send', 'invoice_send', 'portal_invite',
+  'autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring',
+  'payment_reminder', 'payment_overdue',
+]);
+```
+
+Replace the existing catalog test's loop with this complete loop; preserve both W2 enrollment IDs and legacy IDs while adding reminder selectors:
+
+```tsx
+const enrollmentIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring']);
+for (const id of EMAIL_TEMPLATE_IDS) {
+  const row = screen.getByTestId(enrollmentIds.has(id) ? `autopay-email-template-${id}`
+    : id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}`
+    : `email-template-row-${id}`);
+  expect(row.textContent).toContain(emailTemplateLabel(id));
+  expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
+}
+```
+
 
 Create the Playwright test before the mounts. It uses the verified `authedPage` fixture from `e2e-tests/fixtures.ts` and only `data-testid` DOM selectors. Run it only on the disposable worktree stack with mail transport configured as a sink. It preserves and restores the original form values and never enables reminders.
 
@@ -1714,30 +1775,47 @@ Replace W2b's `billing-payments` entry in `SETTINGS_CATALOG` with the complete e
   requiredPermission: { resource: 'billing', action: 'manage' } },
 ```
 
-In `EmailTemplatesTab`, replace the existing catalog `<ul>` block with this complete block; it preserves the existing editor, loading and saving paths. Common group labels use billing locale keys so only the listed catalogs change:
+In `EmailTemplatesTab`, extend W2 Task 4's existing composition. Keep its `AUTOPAY_TEMPLATE_IDS` unchanged (the four enrollment IDs) and retain all existing `BILLING_TEMPLATE_IDS` members, including any later-wave additions. Add these statements immediately after those module constants:
+
+```ts
+BILLING_TEMPLATE_IDS.add('payment_reminder');
+BILLING_TEMPLATE_IDS.add('payment_overdue');
+```
+
+Replace W2's `email-templates-list` composition with this complete additive composition. Keep the existing settings namespace, group-label keys, enrollment translation branch, status markers and editor/loading/saving paths:
 
 ```tsx
-<div data-testid="email-templates-list" className="space-y-4">
-  {([
-    { id: 'billing', label: 'billing:reminders.templateGroup', ids: EMAIL_TEMPLATE_IDS.filter(id =>
-      ['quote_send', 'invoice_send', 'autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring',
-        'payment_reminder', 'payment_overdue', 'invoice_autopay', 'payment_receipt', 'payment_failed'].includes(id)) },
-    { id: 'other', label: 'billing:reminders.otherTemplates', ids: EMAIL_TEMPLATE_IDS.filter(id =>
-      !['quote_send', 'invoice_send', 'autopay_request', 'autopay_enrolled', 'autopay_stopped', 'card_expiring',
-        'payment_reminder', 'payment_overdue', 'invoice_autopay', 'payment_receipt', 'payment_failed'].includes(id)) },
-  ]).map(group => <section key={group.id} data-testid={`autopay-template-group-${group.id}`}>
-    <h3 className="mb-2 text-sm font-semibold">{t(/* i18n-dynamic */ group.label)}</h3>
-    <ul className="divide-y rounded-lg border">{group.ids.map(id => <li key={id}>
-      <button type="button" onClick={() => setSelectedId(id)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
-        data-testid={id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`}>
-        <span className="text-sm font-medium">{emailTemplateLabel(id)}</span>
-        <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
-          {isCustom(templates[id]) ? t('emailTemplates.custom') : t('emailTemplates.usingDefault')}
-        </span>
-      </button>
-    </li>)}</ul>
-  </section>)}
+<div className="space-y-4" data-testid="email-templates-list">
+  {[
+    { billing: false, ids: EMAIL_TEMPLATE_IDS.filter(id => !BILLING_TEMPLATE_IDS.has(id)) },
+    { billing: true, ids: EMAIL_TEMPLATE_IDS.filter(id => BILLING_TEMPLATE_IDS.has(id)) },
+  ].map(group => (
+    <section key={String(group.billing)}
+      data-testid={group.billing ? 'autopay-email-template-group' : 'email-template-other-group'}>
+      <h3 className="mb-2 text-sm font-semibold">
+        {group.billing ? t('emailTemplates.billingPayments') : t('emailTemplates.supportPortal')}
+      </h3>
+      <ul className="divide-y rounded-lg border">
+        {group.ids.map(id => (
+          <li key={id}>
+            <button type="button" onClick={() => setSelectedId(id)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/40"
+              data-testid={AUTOPAY_TEMPLATE_IDS.has(id) ? `autopay-email-template-${id}`
+                : id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}`
+                : `email-template-row-${id}`}>
+              <span className="text-sm font-medium">
+                {AUTOPAY_TEMPLATE_IDS.has(id)
+                  ? t(/* i18n-dynamic */ `emailTemplates.labels.${id}`) : emailTemplateLabel(id)}
+              </span>
+              <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
+                {isCustom(templates[id]) ? t('emailTemplates.custom') : t('emailTemplates.usingDefault')}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  ))}
 </div>
 ```
 
@@ -1750,9 +1828,7 @@ Add these exact fields to `reminders` in all eight billing catalogs:
 "saveFailed": "Could not save reminder settings",
 "loadFailed": "Could not load reminder settings",
 "retry": "Retry",
-"loading": "Loading payment settings…",
-"templateGroup": "Billing & payments",
-"otherTemplates": "Tickets & portal"
+"loading": "Loading payment settings…"
 ```
 
 
@@ -1773,9 +1849,9 @@ git commit -m "feat(web): expose payment reminders independently of autopay"
 ### Task 8: Verification
 
 **Files:** Test all files named below; no new production files or migrations.
-**Interfaces:** Consumes the complete W03 change plus landed W1/W2b · Produces the one-PR verification record, test counts, stack cleanup and explicit rollout evidence. This is an acceptance gate over tests written before implementation in Tasks 1–7, not a new test-after-code task.
+**Interfaces:** Consumes the complete W03 change plus landed W1/W2b · Produces the one-PR verification record, test counts, stack cleanup and explicit rollout evidence, including preservation of W2's editor IDs and translated labels with W3 reminder entries. This is an acceptance gate over tests written before implementation in Tasks 1–7, not a new test-after-code task.
 
-- [ ] **Step 1: Establish the assertions** — verify the prewritten tests are present and that the integration runner owns both real-DB suites. Do not add skips to make this gate green. The acceptance assertions are: both kinds render; partner and org updates retain inheritance; all four active schedules and frozen orgs are skipped; concurrent sweeps/dispatchers allocate/send once in the tested no-crash case; Payments remains reachable when autopay is off; every new mounted module has its page-level marker. Review the W1/W2b integration assumptions against the landed source before declaring the gate runnable.
+- [ ] **Step 1: Establish the assertions** — verify the prewritten tests are present and that the integration runner owns both real-DB suites. Do not add skips to make this gate green. The acceptance assertions are: both kinds render; partner and org updates retain inheritance; all four active schedules and frozen orgs are skipped; concurrent sweeps/dispatchers allocate/send once in the tested no-crash case; Payments remains reachable when autopay is off; every new mounted module has its page-level marker; W2's unchanged mounted-enrollment-editor test, W3's two reminder editor cases, and the isolated translated-label regression all pass against the same composition. Review the W1/W2b integration assumptions against the landed source before declaring the gate runnable.
 - [ ] **Step 2: Run the required checks** — from the repository root, use subshells so each command has an unambiguous working directory:
 
 ```sh
@@ -1798,7 +1874,7 @@ pnpm wt-stack down
 `noticeOutbox.integration.test.ts` and `index.autopayRoutes.test.ts` are verified W1-plan prerequisite paths, not existing implementation files on this checkout. All other existing contract paths above were read in the current repository. The root `wt-stack test` command is implemented by `scripts/dev/wt-stack/cli.ts`; it supplies the private stack descriptor, credentials and Redis settings to the real Playwright runner. Do not replace it with an invented test fixture or production URL.
 
 - [ ] **Step 3: Resolve failures in their owning task** — a missing test file or `No test files found` is a failure of this gate. Fix runner registration or the prerequisite; an integration test must execute against PostgreSQL with RLS, not against a mocked DB. Capture the actual file/test counts and commands in the PR description. Verify W1 table registrations still pass: `CORE_ORG_CASCADE_DELETE_ORDER`/`AUDIT_ADMIN_REQUIRED_TABLES` in `tenantCascade.ts`, policy entries in `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY` in `tenantExportPolicyRegistry.ts`, coverage allowlists in `rls-coverage.integration.test.ts`, and `encryptedColumnRegistry` in `encryptedColumnRegistry.ts`. W03 adds no table/column, so no registration edits or SQL belong in this PR.
-- [ ] **Step 4: Confirm PASS and smoke behavior** — all targeted and integration checks above must pass with zero skipped W03 cases. On the disposable stack, confirm `#payments` survives reload, partner and org forms show inherited value/source, a disabled rollout hides only Autopay controls, and the template editor shows both kinds under Billing & payments. Verify the jobs list contains one `reminder-sweep` registration at `18 6 * * *` on `autopay-jobs`. Tear down both stacks even if a check fails; no process or container is intentionally left running.
+- [ ] **Step 4: Confirm PASS and smoke behavior** — all targeted and integration checks above must pass with zero skipped W03 cases. On the disposable stack, confirm `#payments` survives reload, partner and org forms show inherited value/source, a disabled rollout hides only Autopay controls, and the template editor shows both reminder kinds under `autopay-email-template-group`, retains all four `autopay-email-template-${id}` enrollment buttons and their editor navigation, and renders enrollment/group labels through W2's settings translation keys. Verify the jobs list contains one `reminder-sweep` registration at `18 6 * * *` on `autopay-jobs`. Tear down both stacks even if a check fails; no process or container is intentionally left running.
 - [ ] **Step 5: Commit and open one reviewable PR** — no verification-only empty commit. If a check required a fix, commit only its exact owning task paths with that task's conventional message after rerunning the relevant checks. The PR description states the home, level, resolver and 0 → 1 configuration-location count, and records the deliberate cadence refinements. All eight tasks ship together; do not split the job from its templates or the visibility change from inherited settings.
 
 **Stripe test-mode lab checklist**
