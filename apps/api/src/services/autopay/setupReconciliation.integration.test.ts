@@ -7,7 +7,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { orgAutopayEnrollments, orgPaymentMethods, stripeConnectAccounts, stripeFinancialEvents, invoices, invoicePayments, invoiceStripePayments } from '../../db/schema';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { createOrganization, createPartner } from '../../__tests__/integration/db-utils';
-const m = vi.hoisted(() => ({ client: vi.fn(), retrieve: vi.fn(), list: vi.fn(), complete: vi.fn(), finish: vi.fn(), notify: vi.fn() }));
+const m = vi.hoisted(() => ({ client: vi.fn(), retrieve: vi.fn(), list: vi.fn(), session: vi.fn(), complete: vi.fn(), finish: vi.fn(), notify: vi.fn() }));
 vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: m.client }));
 vi.mock('./setupCompletion', () => ({ completeAutopaySetup: m.complete }));
 vi.mock('./payAndSave', () => ({ finishCardPayAndSave: m.finish }));
@@ -17,7 +17,8 @@ import { processPendingStripeFinancialEvents, processPendingStripeFinancialEvent
 
 beforeEach(() => {
   vi.resetAllMocks();
-  m.client.mockResolvedValue({ stripeAccountId: 'acct_test', stripe: { events: { retrieve: m.retrieve }, checkout: { sessions: { list: m.list } } } });
+  m.client.mockResolvedValue({ stripeAccountId: 'acct_test', stripe: { events: { retrieve: m.retrieve }, checkout: { sessions: { list: m.list, retrieve: m.session } } } });
+  m.session.mockImplementation(async(id:string)=>({id,mode:'payment',status:'complete',payment_status:'paid',customer:'cus_test'}));
   m.complete.mockResolvedValue({ outcome: 'activated' });
   m.finish.mockResolvedValue({ outcome: 'not_saved' });
 });
@@ -177,8 +178,23 @@ it('caps capture recovery with growing backoff and one terminal staff notice',as
  await reconcileAutopaySetups();expect(m.finish).toHaveBeenCalledTimes(8);expect(m.notify).toHaveBeenCalledTimes(1);
  expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({message:'Payment booked, card not saved. Please request a new payment method.'}));
 });
-it('does not claim an unpaid abandoned capture was booked when retries expire',async()=>{
+it('abandons an unpaid capture only after Stripe confirms expiry',async()=>{
  const f=await fixture();await withSystemDbAccessContext(()=>db.insert(autopaySetupAttempts).values(setup(f,{source:'pay_and_save',captureAttemptCount:7,createdAt:new Date(Date.now()-25*60*60_000)})));
+ m.session.mockResolvedValue({mode:'payment',status:'expired',payment_status:'unpaid',customer:'cus_test'});
  m.finish.mockResolvedValue({outcome:'not_saved'});await reconcileAutopaySetups();
  const [row]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts));expect(row?.outcome).toBe('abandoned');expect(m.notify).not.toHaveBeenCalled();
+});
+
+it.each(['open','complete','unavailable'])('does not consume capture failures while payment is %s',async state=>{
+ const f=await fixture();const row=setup(f,{source:'pay_and_save',captureAttemptCount:7});
+ await withSystemDbAccessContext(()=>db.insert(autopaySetupAttempts).values(row));
+ if(state==='unavailable')m.session.mockRejectedValue(new Error('Provider temporarily unavailable'));
+ else m.session.mockResolvedValue({mode:'payment',status:state,payment_status:'unpaid',customer:'cus_test'});
+ for(let i=0;i<10;i++){
+  await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({captureNextAttemptAt:new Date(0)}));
+  await reconcileAutopaySetups();
+ }
+ const [saved]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts));
+ expect(saved).toMatchObject({outcome:null,completedAt:null,captureAttemptCount:7});
+ expect(m.finish).not.toHaveBeenCalled();expect(m.notify).not.toHaveBeenCalled();
 });

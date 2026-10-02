@@ -121,13 +121,33 @@ export async function reconcileAutopaySetups():Promise<number>{
   const attemptCount=attempt.captureAttemptCount+1;
   let claimedCapture=false;
   try{
-   // Persist the next turn before external work: crashes and permanent no-ops
-   // move behind untried rows instead of monopolizing the oldest batch.
+   // Waiting and provider lookup failures yield their place without consuming
+   // the paid-capture failure budget.
    const claimed=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts)
-    .set({captureAttemptCount:attemptCount,captureNextAttemptAt:new Date(Date.now()+Math.min(360,5*2**(attemptCount-1))*60_000)})
+    .set({captureNextAttemptAt:new Date(Date.now()+10*60_000)})
     .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt),
      sql`${autopaySetupAttempts.captureNextAttemptAt} <= NOW()`)).returning({id:autopaySetupAttempts.id}));
    if(!claimed.length)continue;
+   const [booked]=await withSystemDbAccessContext(()=>db.select({id:invoiceStripePayments.id}).from(invoiceStripePayments).where(and(
+    eq(invoiceStripePayments.orgId,attempt.orgId),eq(invoiceStripePayments.stripeAccountId,attempt.stripeAccountId),eq(invoiceStripePayments.stripeObjectId,attempt.checkoutSessionId!),isNotNull(invoiceStripePayments.invoicePaymentId))).limit(1));
+   if(!booked){
+    const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));
+    if(stripeAccountId!==attempt.stripeAccountId)throw new Error('Stripe capture account changed');
+    const session=await runOutsideDbContext(()=>stripe.checkout.sessions.retrieve(attempt.checkoutSessionId!));
+    const customer=typeof session.customer==='string'?session.customer:session.customer?.id;
+    if(session.mode!=='payment'||customer!==attempt.stripeCustomerId)throw new Error('Stripe capture binding mismatch');
+    if(session.payment_status!=='paid'){
+     if(session.status==='expired')await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts)
+      .set({outcome:'abandoned',completedAt:new Date()}).where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt))));
+     continue;
+    }
+   }
+   // Only confirmed payment starts the bounded recovery budget. Persist before
+   // capture work so a crash still backs off and cannot loop forever.
+   const capturing=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts)
+    .set({captureAttemptCount:attemptCount,captureNextAttemptAt:new Date(Date.now()+Math.min(360,5*2**Math.min(attemptCount-1,7))*60_000)})
+    .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt))).returning({id:autopaySetupAttempts.id}));
+   if(!capturing.length)continue;
    claimedCapture=true;
    const result=await finishCardPayAndSave(attempt.partnerId,attempt.checkoutSessionId!);
    if(result.outcome==='activated')completed++;
@@ -138,7 +158,7 @@ export async function reconcileAutopaySetups():Promise<number>{
   if(claimedCapture&&attemptCount>=8){
    const [booked]=await withSystemDbAccessContext(()=>db.select({id:invoiceStripePayments.id}).from(invoiceStripePayments).where(and(
     eq(invoiceStripePayments.orgId,attempt.orgId),eq(invoiceStripePayments.stripeAccountId,attempt.stripeAccountId),eq(invoiceStripePayments.stripeObjectId,attempt.checkoutSessionId!),isNotNull(invoiceStripePayments.invoicePaymentId))).limit(1));
-   const terminal=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({outcome:booked?'failed':'abandoned',completedAt:new Date()})
+   const terminal=await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({outcome:'failed',completedAt:new Date()})
     .where(and(eq(autopaySetupAttempts.id,attempt.id),isNull(autopaySetupAttempts.completedAt))).returning({id:autopaySetupAttempts.id}));
    if(terminal.length&&booked)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.needs_attention',dedupeKey:`${attempt.id}:capture_failed`,message:'Payment booked, card not saved. Please request a new payment method.'});
   }

@@ -28,7 +28,7 @@ describe('public autopay token boundaries',()=>{
     expect(h.page).not.toHaveBeenCalled();
   });
   it('feature-off rejects setup and return but allows withdrawing authorization',async()=>{
-    for(const [path,body] of [['/token',null],['/token/setup-session',{methodType:'card',consentAccepted:true,disclosureHash:'a'.repeat(64)}],['/setup-return',{token:'token',checkoutSessionId:'cs_test'}],['/token/stop',{}]] as const){
+    for(const [path,body] of [['/token',null],['/token/setup-session',{methodType:'card',consentAccepted:true,disclosureHash:'a'.repeat(64)}],['/setup-return',{token:'token',checkoutSessionId:'cs_test'}],['/token/stop',null],['/token/stop',{}]] as const){
       const res=await app.request(`/autopay/public${path}`,{method:body?'POST':'GET',headers:{...headers,'x-disabled':'1'},body:body?JSON.stringify(body):undefined});
       expect(res.status).toBe(path==='/token/stop'?200:404);
     }

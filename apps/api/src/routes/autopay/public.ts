@@ -42,7 +42,7 @@ publicAutopayRoutes.post('/:token/setup-session',boundary('enroll'),gate,zValida
     contactEmail:page.contactEmail,ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null,
   })));
 });
-publicAutopayRoutes.get('/:token/stop',boundary('stop_autopay'),gate,async c=>{
+publicAutopayRoutes.get('/:token/stop',boundary('stop_autopay'),async c=>{
   const page=await getAutopayCustomerPage(c.get('autopayIdentity').orgId);
   return c.json({partnerName:page.partnerName,orgName:page.orgName,processingWarning:page.processingWarning});
 });

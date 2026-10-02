@@ -24,14 +24,17 @@ it('ACH-only never offers card, requires consent, and reports stale terms', asyn
     { methodType: 'us_bank_account', consentAccepted: true, disclosureHash: disclosure.hash }, { redirectOnUnauthorized: false }));
   expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Terms changed');
 });
-it('a scanner mounting the stop page never stops payments', async () => {
+it('renders the ungated stop confirmation without a setup feature request and stops only on click', async () => {
   vi.mocked(apiGet).mockResolvedValue({ data: { partnerName: 'Example MSP', orgName: 'Example client', processingWarning: true } });
   render(<AutopaySetupPage token="stop-token" mode="stop" />);
-  expect(await screen.findByTestId('autopay-stop-confirm')).toBeTruthy();
+  expect(await screen.findByTestId('autopay-stop-confirm')).toHaveTextContent('Stop automatic payments to Example MSP?');
+  expect(apiGet).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', { redirectOnUnauthorized: false });
   expect(apiPost).not.toHaveBeenCalled();
   vi.mocked(apiPost).mockResolvedValue({ data: { success: true } });
   fireEvent.click(screen.getByTestId('autopay-stop-submit'));
-  await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(apiPost).toHaveBeenCalledExactlyOnceWith('/autopay/public/stop-token/stop', {}, { redirectOnUnauthorized: false }));
+  expect(await screen.findByTestId('autopay-feedback')).toHaveTextContent('Automatic payments stopped');
+  expect(screen.getByTestId('autopay-stop-submit')).toBeDisabled();
 });
 it('a return page does not activate on mount and distinguishes debit fee outcome', async () => {
   window.history.replaceState({}, '', '/autopay/return?target=public&session_id=cs_test_1');

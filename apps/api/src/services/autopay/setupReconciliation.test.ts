@@ -1,7 +1,7 @@
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import {PgDialect} from 'drizzle-orm/pg-core';
 import type {SQL} from 'drizzle-orm';
-const m=vi.hoisted(()=>({rows:[] as unknown[][],updates:[] as Record<string,unknown>[],client:vi.fn(),event:vi.fn(),mandate:vi.fn(),unusable:vi.fn(),notify:vi.fn(),complete:vi.fn(),finish:vi.fn(),list:vi.fn(),held:false,queries:[] as SQL[],inserts:[] as Record<string,unknown>[]}));
+const m=vi.hoisted(()=>({rows:[] as unknown[][],updates:[] as Record<string,unknown>[],client:vi.fn(),event:vi.fn(),mandate:vi.fn(),unusable:vi.fn(),notify:vi.fn(),complete:vi.fn(),finish:vi.fn(),list:vi.fn(),session:vi.fn(),held:false,queries:[] as SQL[],inserts:[] as Record<string,unknown>[]}));
 vi.mock('../../db',()=>{
  const chain=()=>{const c:any={};for(const name of ['from','innerJoin','limit','orderBy','returning'])c[name]=()=>c;
   c.where=(value:SQL)=>{m.queries.push(value);return c;};
@@ -20,7 +20,8 @@ const partnerId='11111111-1111-4111-8111-111111111111';
 const orgId='22222222-2222-4222-8222-222222222222';
 beforeEach(()=>{vi.resetAllMocks();m.rows.length=0;m.updates.length=0;m.queries.length=0;m.inserts.length=0;m.held=false;
  m.complete.mockResolvedValue({outcome:'activated'});m.finish.mockResolvedValue({outcome:'activated'});
- m.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{checkout:{sessions:{list:m.list}},events:{retrieve:m.event},mandates:{retrieve:m.mandate}}});});
+ m.session.mockResolvedValue({mode:'payment',status:'complete',payment_status:'paid',customer:'cus_one'});
+ m.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{checkout:{sessions:{list:m.list,retrieve:m.session}},events:{retrieve:m.event},mandates:{retrieve:m.mandate}}});});
 describe('enrollment event dispatch',()=>{
  it('has exactly W2 events and does not steal money events',()=>{
   expect(AUTOPAY_STRIPE_EVENT_TYPES).toEqual(['setup_intent.succeeded','setup_intent.setup_failed','mandate.updated','payment_method.detached']);
@@ -48,7 +49,7 @@ describe('enrollment event dispatch',()=>{
 });
 
 const inbox=(extra:Record<string,unknown>={})=>({id:'inbox',stripeEventId:'evt_one',partnerId,stripeAccountId:'acct_one',eventType:'payment_method.detached',livemode:false,attemptCount:0,...extra});
-const attempt=(extra:Record<string,unknown>={})=>({id:'33333333-3333-4333-8333-333333333333',partnerId,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',checkoutSessionId:'cs_one',source:'setup_page',createdAt:new Date(),...extra});
+const attempt=(extra:Record<string,unknown>={})=>({id:'33333333-3333-4333-8333-333333333333',partnerId,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',checkoutSessionId:'cs_one',source:'setup_page',captureAttemptCount:0,createdAt:new Date(),...extra});
 const query=(value:SQL)=>new PgDialect().sqlToQuery(value);
 describe('durable replay retries',()=>{
  it('backs off a failed event and still applies the following event',async()=>{
@@ -125,7 +126,7 @@ describe('abandoned setup recovery',()=>{
   expect(await reconcileAutopaySetups()).toBe(0);expect(m.list).not.toHaveBeenCalled();
  });
  it.each(['activated','not_saved','stale_generation'])('counts only saved late captures (%s)',async outcome=>{
-  m.rows.push([],[attempt({source:'pay_and_save',createdAt:new Date(0)})],[{id:attempt().id}]);
+  m.rows.push([],[attempt({source:'pay_and_save',createdAt:new Date(0)})],[{id:attempt().id}],[],[{id:attempt().id}]);
   m.finish.mockResolvedValue({outcome});
   expect(await reconcileAutopaySetups()).toBe(outcome==='activated'?1:0);
   expect(m.finish).toHaveBeenCalledWith(partnerId,'cs_one');expect(m.list).not.toHaveBeenCalled();
@@ -153,4 +154,15 @@ describe('enrollment inbox ingestion',()=>{
   await expect(ingestAutopayStripeEvent(partnerId,'acct_one',{type:'payment_method.detached',...mismatch} as any)).rejects.toThrow('account mismatch');
   expect(m.inserts).toEqual([]);
  });
+});
+
+it('counts provider failures after durable booking and still reaches the capture cap',async()=>{
+ m.rows.push([],[attempt({source:'pay_and_save',captureAttemptCount:7})],[{id:attempt().id}],[{id:'booked'}],[{id:attempt().id}],[{id:'booked'}],[{id:attempt().id}]);
+ m.session.mockRejectedValue(new Error('Stripe unavailable'));
+ m.finish.mockRejectedValue(new Error('Stripe unavailable'));
+ expect(await reconcileAutopaySetups()).toBe(0);
+ expect(m.finish).toHaveBeenCalledWith(partnerId,'cs_one');
+ expect(m.updates).toContainEqual(expect.objectContaining({captureAttemptCount:8}));
+ expect(m.updates).toContainEqual(expect.objectContaining({outcome:'failed',completedAt:expect.any(Date)}));
+ expect(m.notify).toHaveBeenCalledOnce();
 });

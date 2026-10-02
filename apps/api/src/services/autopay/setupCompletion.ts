@@ -61,8 +61,12 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   }
   if((attempt.completedAt&&attempt.outcome==='activated')||(attempt.outcome==='pending_verification'&&outcome==='pending_verification'))return {outcome:attempt.outcome,orgId:attempt.orgId};
   if(outcome==='failed'){
-   await db.update(orgPaymentMethods).set({status:'unusable',unusableReason:'verification_failed'})
-    .where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.stripeSetupIntentId,setupIntentId??''),eq(orgPaymentMethods.status,'pending_verification')));
+   // Stripe can clear payment_method on failure. Retire and queue the stored
+   // pending methods in this transaction, preserving their provider identities.
+   const failedMethods=await db.update(orgPaymentMethods).set({status:'unusable',unusableReason:'verification_failed',
+    isAutopayMethod:false,removedAt:new Date(),detachStripeAccountId:attempt.stripeAccountId,detachStripeCustomerId:attempt.stripeCustomerId})
+    .where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.stripeSetupIntentId,setupIntentId??''),eq(orgPaymentMethods.status,'pending_verification'))).returning({id:orgPaymentMethods.id,stripePaymentMethodId:orgPaymentMethods.stripePaymentMethodId});
+   for(const failed of failedMethods)runAfterDbContextExit('autopay.detachFailedVerification',()=>detachPaymentMethodPostCommit(attempt.partnerId,failed.id));
    const [working]=await db.select({id:orgPaymentMethods.id}).from(orgPaymentMethods).where(and(eq(orgPaymentMethods.enrollmentId,enrollment.id),eq(orgPaymentMethods.isAutopayMethod,true),eq(orgPaymentMethods.status,'active'))).limit(1);
    if(!working)await db.update(orgAutopayEnrollments).set({needsAttentionReason:'verification_failed'}).where(eq(orgAutopayEnrollments.id,enrollment.id));
    await db.update(autopaySetupAttempts).set({outcome:'failed',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
@@ -71,7 +75,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
     if(committed?.outcome==='failed')await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.needs_attention',
      dedupeKey:`${attempt.id}:verification_failed`,message:'Automatic payments need a verified payment method.'});
    });
-   await enqueueRejectedAutopayMethod(db,attempt,method);
+   if(!failedMethods.some(failed=>failed.stripePaymentMethodId===method?.id))await enqueueRejectedAutopayMethod(db,attempt,method);
    return {outcome,orgId:attempt.orgId};
   }
   if(!method)throw new Error('Completed setup has no payment method');

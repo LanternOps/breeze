@@ -193,3 +193,15 @@ it('queues a late provider capture after the attempt was terminally failed',asyn
  expect(enqueueRejectedAutopayMethod).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({id:attempt().id}),expect.objectContaining({id:'pm_one'}));
  expect(m.writes).toEqual([]);
 });
+
+it('queues stored pending methods when a failed SetupIntent omits payment_method',async()=>{
+ const {runAfterDbContextExit}=await import('../../db');
+ queueAuthority(attempt({methodType:'us_bank_account',outcome:'pending_verification'}));
+ m.rows.push([{id:'stored_bank'}],[]);
+ m.intent.mockResolvedValue({...await m.intent(),status:'requires_payment_method',last_setup_error:{code:'verification_failed'},payment_method:null});
+ expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('failed');
+ expect(m.writes).toContainEqual(expect.objectContaining({status:'unusable',unusableReason:'verification_failed',isAutopayMethod:false,
+  removedAt:expect.any(Date),detachStripeAccountId:'acct_one',detachStripeCustomerId:'cus_one'}));
+ expect(runAfterDbContextExit).toHaveBeenCalledWith('autopay.detachFailedVerification',expect.any(Function));
+ expect(m.method).not.toHaveBeenCalled();
+});
