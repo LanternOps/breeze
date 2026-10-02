@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
   dbInsert: vi.fn(),
   dbUpdate: vi.fn(),
   decryptForColumn: vi.fn(),
-  redactUrlForLogs: vi.fn(),
   queueDelivery: vi.fn(),
 }));
 
@@ -88,10 +87,6 @@ vi.mock('./secretCrypto', () => ({
   decryptForColumn: mocks.decryptForColumn,
 }));
 
-vi.mock('./notificationSenders/webhookSender', () => ({
-  redactUrlForLogs: mocks.redactUrlForLogs,
-}));
-
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -107,20 +102,6 @@ import { registerIntegrationTools } from './aiToolsIntegrations';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 const WEBHOOK_ID = '22222222-2222-2222-2222-222222222222';
 const DELIVERY_ID = '44444444-4444-4444-4444-444444444444';
-
-/** Real redactUrlForLogs behaviour — strip userinfo/query/hash */
-function realRedact(rawUrl: string): string {
-  try {
-    const parsed = new URL(rawUrl);
-    parsed.username = '';
-    parsed.password = '';
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString().replace(/\/$/, '');
-  } catch {
-    return '[invalid-url]';
-  }
-}
 
 function makeAuth(): AuthContext {
   return {
@@ -182,8 +163,6 @@ describe('aiToolsIntegrations — query_webhooks credential masking', () => {
 
     // Default: decryptForColumn returns its input unchanged (plaintext path).
     mocks.decryptForColumn.mockImplementation((_table: string, _col: string, val: string) => val);
-    // Default: redactUrlForLogs strips userinfo and query.
-    mocks.redactUrlForLogs.mockImplementation((url: string) => realRedact(url));
   });
 
   it('masks credential-bearing URL — secret substring absent from JSON output', async () => {
@@ -259,13 +238,8 @@ describe('aiToolsIntegrations — query_webhooks credential masking', () => {
       throw new Error('decryption failed: invalid tag');
     });
 
-    // On decrypt failure the code falls back to the stored string, which is
-    // then passed to redactUrlForLogs. redactUrlForLogs on a non-URL returns
-    // [invalid-url] — we still must not emit the raw ciphertext.
-    mocks.redactUrlForLogs.mockImplementation((val: string) => {
-      // A real URL parse of enc:v1:… will throw; return a safe placeholder.
-      return realRedact(val);
-    });
+    // On decrypt failure a fixed placeholder is returned — never the stored
+    // ciphertext.
 
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
       {
@@ -303,7 +277,6 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     toolMap = buildToolMap();
 
     mocks.decryptForColumn.mockImplementation((_table: string, _col: string, val: string) => val);
-    mocks.redactUrlForLogs.mockImplementation((url: string) => realRedact(url));
     mocks.queueDelivery.mockResolvedValue('worker-delivery-id');
   });
 
@@ -382,7 +355,6 @@ describe('aiToolsIntegrations — test_webhook credential masking', () => {
     mocks.decryptForColumn.mockImplementation(() => {
       throw new Error('bad decrypt');
     });
-    mocks.redactUrlForLogs.mockImplementation((val: string) => realRedact(val));
 
     mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
       { id: WEBHOOK_ID, orgId: ORG_ID, name: 'Broken Hook', url: encryptedUrl },
@@ -484,7 +456,6 @@ describe('aiToolsIntegrations — query_webhooks shows the endpoint host, not th
     vi.clearAllMocks();
     toolMap = buildToolMap();
     mocks.decryptForColumn.mockImplementation((_table: string, _col: string, val: string) => val);
-    mocks.redactUrlForLogs.mockImplementation((url: string) => realRedact(url));
   });
 
   it('Slack, Discord and Teams style URLs keep only scheme and host', async () => {
@@ -535,6 +506,16 @@ describe('aiToolsIntegrations — query_webhooks shows the endpoint host, not th
     ]));
     const parsed = JSON.parse(await toolMap.get('query_webhooks')!.handler({}, makeAuth()));
     expect(parsed.webhooks[0].url).toBe('https://hooks.example.com:8443');
+  });
+
+  it('a URL without a host-based origin is replaced by a placeholder', async () => {
+    mocks.dbSelect.mockReturnValueOnce(makeSelectChain([
+      webhookRow('e1111111-1111-1111-1111-111111111111', 'mailto:ops@example.com?subject=pathPart'),
+    ]));
+    const result = await toolMap.get('query_webhooks')!.handler({}, makeAuth());
+    expect(JSON.parse(result).webhooks[0].url).toBe('[invalid-url]');
+    expect(result).not.toContain('pathPart');
+    expect(result).not.toContain('ops@');
   });
 
   it('an unparseable stored value is replaced by a placeholder', async () => {
