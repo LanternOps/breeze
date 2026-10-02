@@ -651,15 +651,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // 2026-10-27-130100 (#3198 W01; it was NO ACTION before and raised 23503),
   // and report_run_deliveries / service_deliverable_evidence cascade from
   // the runs in turn — so run history would be lost SILENTLY. The custom
-  // executor re-homes report_runs (and recipients) onto the survivor's
-  // definition BEFORE deleting the duplicate, so nothing cascades. Same shape
+  // executor re-homes report_runs (and recipients, deliverable evidence and
+  // auto-evidence bindings, #7443) onto the survivor's definition BEFORE
+  // deleting the duplicate, so nothing cascades. Same shape
   // as plugin_installations/plugin_logs, so the same remedy.
   //
   // Narrative definitions dedupe by non-NULL source_ai_agent_schedule_id.
   // Portal self-service definitions have a second pass keyed by type and
   // explicitly restricted to portal_self_service=true on both sides, so
   // ordinary reports of the same type remain independent.
-  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id, dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed: their runs may be deliverable evidence, and sd_evidence_report_run_fk (report_run_id, report_id) is non-deferrable with no ON UPDATE action, so moving a run would abort the merge with 23503; their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
+  reports: { kind: 'custom', note: "dedupe narrative-schedule definitions by source_ai_agent_schedule_id, portal-self-service definitions by type, and ai_fleet_design definitions by type (Fleet Designer W01, #5651); in all three passes re-home report_runs.report_id, re-point service_deliverable_evidence.report_id and service_deliverables.auto_evidence_report_id (#7443 — evidence would otherwise CASCADE away with the duplicate and the auto-evidence binding SET NULL; sd_evidence_report_run_fk is DEFERRABLE since 2026-12-03-120200 so the run/evidence pair may mismatch until commit), dedupe report_schedule_recipients by (report_id, contact_id), and re-home remaining recipients before deleting duplicate definitions. Multi-org report series children (W02) colliding on reports_series_active_child_uniq (org_id, series_id) are ARCHIVED in place, never deleted and never re-homed (their runs and evidence stay attached to the archived child); their recipient overrides are unioned onto the survivor's child with removes winning. NEVER delete report runs or recipient rows except recipient-key collisions; partner-owned definitions (org_id NULL, #3198) are never touched by an org merge — the pass keys on org_id = loser" },
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
