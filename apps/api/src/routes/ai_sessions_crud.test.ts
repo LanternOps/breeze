@@ -5,6 +5,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../services/aiModels/sessionModel', () => ({
   resolveSessionTurn: vi.fn(),
 }));
+// W05 (#7603): the messages route runs the model-transition gate before it
+// reserves. Not under test here: a session with no previous chat turn.
+vi.mock('../services/aiModels/modelTransition', async (orig) => ({
+  ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
+  readPreviousTurn: vi.fn(async () => null),
+  planModelTransition: vi.fn(async () => ({ kind: 'fresh' })),
+  readSessionOfferingId: vi.fn(async () => undefined),
+}));
 import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedModel';
 import { Hono } from 'hono';
 
@@ -134,6 +142,7 @@ vi.mock('../services/aiBudgetReservations', () => ({
   markAiBudgetReservationIndeterminate: vi.fn(async () => ({
     kind: 'indeterminate', reservationId: '66666666-6666-4666-8666-666666666666',
   })),
+  AiBudgetSessionBusyError: class AiBudgetSessionBusyError extends Error {},
 }));
 
 vi.mock('../services/streamingSessionManager', () => ({

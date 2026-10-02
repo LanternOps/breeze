@@ -94,8 +94,14 @@ vi.mock('../../services/partnerLlmConfig', () => {
   }
   return { PartnerLlmError, savePartnerLlmKey: vi.fn(), updatePartnerLlmEndpoint: vi.fn(), deletePartnerLlmConfig: vi.fn() };
 });
+// W05 (#7603): the user-scoped pickers mount under this router (see the last describe).
+vi.mock('../../services/aiModels/modelChoices', () => ({
+  listModelChoices: vi.fn(async (i: { surface: string }) => ({ surface: i.surface, allowUserChoice: true, defaultOfferingId: null, choices: [], current: null })),
+}));
+vi.mock('../../services/aiAgent', () => ({ getSession: vi.fn() }));
 
 import { aiModelsRoutes } from './index';
+import { listModelChoices } from '../../services/aiModels/modelChoices';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { buildOrgModelDefaults } from '../../services/aiModels/registryView';
@@ -258,5 +264,22 @@ describe('usage route', () => {
     authState.value = { ...baseAuth(), scope: 'system', partnerId: null, accessibleOrgIds: null, canAccessOrg: () => true };
     expect((await call('GET', '/usage?groupBy=user')).status).toBe(200);
     expect(queryAiUsageBreakdown).toHaveBeenCalledWith(expect.objectContaining({ accessibleOrgIds: null }));
+  });
+});
+
+describe('W05 model pickers mounted at /choices', () => {
+  it('run behind the router-wide authMiddleware (auth comes from it) with the caller as the user', async () => {
+    authState.value = { ...orgToken };
+    const res = await call('GET', '/choices/chat');
+    expect(res.status).toBe(200);
+    expect(vi.mocked(listModelChoices)).toHaveBeenCalledWith({
+      partnerId: P, orgId: ORG, userId: orgToken.user.id, surface: 'chat', current: null,
+    });
+  });
+  it('an org-scope token never reaches another org through the picker', async () => {
+    authState.value = { ...orgToken };
+    const res = await call('GET', `/choices/ai-agents?orgId=${A}`);
+    expect(res.status).toBe(404);
+    expect(vi.mocked(listModelChoices)).not.toHaveBeenCalled();
   });
 });

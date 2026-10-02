@@ -35,3 +35,5 @@ export {
 } from './resolveModel';
 export { defaultTransport, transportCarries, type DispatchTransport, type TransportCarriage } from './transport';
 export type { ResolveFailureReason } from './eligibility';
+export * from './modelChoices';
+export * from './permissionRoles';

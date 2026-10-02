@@ -300,10 +300,11 @@ async function assertOrgRowNarrows(
   }
 
   if (row.options) {
-    // clampOrgOptions only emits the two clamp warnings; zod already rejected malformed options.
+    // clampOrgOptions only emits the three clamp warnings; zod already rejected malformed options.
     const { warnings } = clampOrgOptions((p?.options ?? {}) as OfferingOptions, row.options);
     if (warnings.includes('org_effort_clamped')) widens(surface, 'options', { key: 'effort' });
     if (warnings.includes('org_speed_clamped')) widens(surface, 'options', { key: 'speed' });
+    if (warnings.includes('org_budget_thinking_clamped')) widens(surface, 'options', { key: 'budgetThinking' });
     if (effectiveDefault) assertOptionsSupported(surface, effectiveDefault, row.options);
   }
 }

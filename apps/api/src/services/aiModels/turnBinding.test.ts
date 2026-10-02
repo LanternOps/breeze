@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 import type { ResolvedModel } from './resolveModel';
-import { liveQueryKey, parseTurnBinding, rateForServedModel, stableJson, turnBindingFrom } from './turnBinding';
+import {
+  MAX_CARRIED_RATES,
+  liveQueryKey,
+  parseTurnBinding,
+  rateForServedModel,
+  stableJson,
+  turnBindingFrom,
+  withCarriedRates,
+} from './turnBinding';
 
 const STD = { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 };
 const FB = { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 };
@@ -99,5 +108,42 @@ describe('rateForServedModel', () => {
 describe('stableJson', () => {
   it('is key-order independent and drops undefined', () => {
     expect(stableJson({ b: 1, a: [{ d: 2, c: undefined, e: 'x' }] })).toBe(stableJson({ a: [{ e: 'x', d: 2 }], b: 1 }));
+  });
+});
+
+describe('carriedRates (W05)', () => {
+  const HAIKU_RATE = { source: 'linked_platform' as const, standard: { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 } };
+  const b = () => turnBindingFrom(makeResolvedModel('anthropic_byok'));   // wire claude-sonnet-5-5
+
+  it('a W03 binding without carriedRates still parses (absent, not [])', () => {
+    const parsed = parseTurnBinding(JSON.parse(JSON.stringify(b())));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.carriedRates).toBeUndefined();
+  });
+  it('carriedRates round-trip through the jsonb parse (the schema must not strip them)', () => {
+    const withCarried = withCarriedRates(b(), [{ wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE }]);
+    expect(parseTurnBinding(JSON.parse(JSON.stringify(withCarried)))!.carriedRates)
+      .toEqual([{ wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE }]);
+  });
+  it('excludes the bound model, de-duplicates (latest wins), caps the list, and never emits []', () => {
+    const base = b();
+    expect(withCarriedRates(base, [])).toBe(base);
+    expect(withCarriedRates(base, [{ wireModel: base.wireModel, rateSnapshot: HAIKU_RATE }])).toBe(base);
+    const newer = { ...HAIKU_RATE, standard: { ...HAIKU_RATE.standard, inputCentsPerM: 120 } };
+    const out = withCarriedRates(base, [
+      { wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE },
+      { wireModel: 'claude-haiku-4-5', rateSnapshot: newer },
+    ]);
+    expect(out.carriedRates).toEqual([{ wireModel: 'claude-haiku-4-5', rateSnapshot: newer }]);
+    const many = Array.from({ length: 12 }, (_, i) => ({ wireModel: `m-${i}`, rateSnapshot: HAIKU_RATE }));
+    expect(withCarriedRates(base, many).carriedRates!.map((c) => c.wireModel)).toEqual(many.slice(-MAX_CARRIED_RATES).map((c) => c.wireModel));
+  });
+  it('rateForServedModel prices a carried model at its carried rate', () => {
+    const out = withCarriedRates(b(), [{ wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE }]);
+    expect(rateForServedModel(out, 'claude-haiku-4-5')).toBe(HAIKU_RATE);
+  });
+  it('carriedRates never change the live-query key (a price is not a reason to recreate)', () => {
+    const base = b();
+    expect(liveQueryKey(withCarriedRates(base, [{ wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE }]))).toBe(liveQueryKey(base));
   });
 });

@@ -160,14 +160,6 @@ describe.skipIf(!RUN)('session creation (chooseSessionModel) against real rows â
     expect(String((err as Error).message)).not.toContain('Partner B');
   });
 
-  it('a legacy model id of another partner\'s offering is invalid_model (lookup is partner-scoped)', async () => {
-    const a = await seedRegistryPartner('platform');
-    const b = await seedRegistryPartner('byok');
-    await expect(chooseSessionModel({
-      partnerId: a.partnerId, orgId: a.orgId, userId: a.userId, surface: 'chat', legacyModel: b.modelId,
-    })).rejects.toMatchObject({ status: 400, code: 'invalid_model' });
-  });
-
   it('a disabled own offering requested by id is refused (400), never stored', async () => {
     const a = await seedRegistryPartner('platform');
     const other = await seedOffering({ partnerId: a.partnerId, platformModelId: await seedPricedPlatformModel(), enabled: false });

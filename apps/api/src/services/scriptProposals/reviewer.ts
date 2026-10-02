@@ -375,7 +375,7 @@ export async function runScriptReview(job: ScriptReviewJobData): Promise<ScriptP
       ? (dispatchFailed ? messagesUsageAfterDispatchError(binding, attempts) : messagesUsage(binding, attempts))
       : {
           usage: [],
-          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: binding.wireModel, providerModel: null, sdkReportedCostUsd: null },
+          outcome: { stopReason: 'error', refused: false, refusalCategory: null, fallbackUsed: false, servedModel: binding.wireModel, providerModel: null, sdkReportedCostUsd: null, fastDowngraded: false },
         }),
     reservationId,
   });

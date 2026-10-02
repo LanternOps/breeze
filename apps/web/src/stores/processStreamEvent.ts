@@ -1,4 +1,4 @@
-import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation } from '@breeze/shared';
+import type { AiStreamEvent, AiApprovalMode, AiApprovalScope, ActionPlanStep, AiScriptRunContext, AiRunResultArtifactRef, AiTopologyProgressPhase, TopologyAiExplanation, AiTurnModel } from '@breeze/shared';
 // Subpath, not the barrel: this module loads on the topology island, whose CSP
 // forbids the barrel's JIT-compiled schemas (see topologyImports.test.ts).
 import { topologyAiExplanationSchema } from '@breeze/shared/validators/topologyAi';
@@ -150,6 +150,12 @@ export interface StreamableState {
   topologyPhase?: AiTopologyProgressPhase | null;
   /** Topology M4: accepted run of an approved diagnostic proposal (aiStore only). */
   topologyRunId?: string | null;
+  /** W05: offering ids the server suggests after a refusal (set by Task 13). */
+  refusalAlternatives?: string[];
+  /** W05: the model is reasoning (thinking_state). */
+  thinking?: boolean;
+  /** W05: what actually ran the last turn. */
+  turnModel?: AiTurnModel | null;
 }
 
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
@@ -170,7 +176,7 @@ export function processStreamEvent(
         isStreaming: true,
         createdAt: new Date()
       };
-      set((s) => ({ messages: [...s.messages, msg] }));
+      set((s) => ({ messages: [...s.messages, msg], refusalAlternatives: [], turnModel: null }));
       return event.messageId;
     }
 
@@ -430,7 +436,7 @@ export function processStreamEvent(
     }
 
     case 'done':
-      set(() => ({ isStreaming: false }));
+      set(() => ({ isStreaming: false, thinking: false }));
       return null;
 
     // Topology M4 (#6000): progress phases are status only; the explanation
@@ -486,7 +492,14 @@ export function processStreamEvent(
     // §9.1a: the refusal explanation already streamed as ordinary
     // message_start/content_delta/message_end events and renders as the
     // assistant message. This structured twin is for the W05 model picker.
+    case 'thinking_state':
+      set(() => ({ thinking: event.state === 'started' }));
+      return currentAssistantId;
+    case 'turn_model':
+      set(() => ({ turnModel: event.turnModel }));
+      return currentAssistantId;
     case 'model_refusal':
+      set(() => ({ refusalAlternatives: event.alternatives.map((a) => a.offeringId) }));
       return currentAssistantId;
 
     default: {

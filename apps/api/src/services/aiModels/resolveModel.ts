@@ -7,6 +7,7 @@
  */
 import {
   AI_SURFACE_ROLES,
+  type AiModelChoiceDto,
   type AiSurface,
   type OfferingOptions,
   type OptionSupport,
@@ -147,7 +148,7 @@ function requestedOptions(
   fromAssignment: Partial<OfferingOptions> | undefined,
 ): OfferingOptions {
   const out: Record<string, unknown> = {};
-  for (const key of ['effort', 'thinkingDisplay', 'speed'] as const) {
+  for (const key of ['effort', 'thinkingDisplay', 'speed', 'budgetThinking'] as const) {
     const value = fromRequest?.[key] ?? fromAssignment?.[key] ?? c.defaultOptions?.[key];
     if (value !== undefined) out[key] = value;
   }
@@ -166,10 +167,13 @@ function wireFor(
   maxTokens: number | undefined,
   carriage: TransportCarriage,
 ): WireParams {
+  // W05: an option is never applied — or reported as applied — unless the
+  // dispatch transport will actually send it.
+  const carried: OfferingOptions = carriage.budgetThinking ? requested : { ...requested, budgetThinking: undefined };
   return buildWireParams({
     thinkingMode: c.capabilities.thinkingMode,
     optionSupport: clampSupport(c, carriage),
-    requested,
+    requested: carried,
     inferenceGeo: c.facts.inferenceGeo,
     maxTokens: maxTokens ?? c.limits.maxOutputTokens ?? DEFAULT_MAX_TOKENS,
   });
@@ -270,6 +274,68 @@ async function finalize(
   };
 }
 
+/**
+ * The eligibility context resolveModel uses for a partner surface. Exported
+ * (W05) so read models — the chat and agent pickers — judge an offering with
+ * exactly the rules a dispatch will (spec §9 step 2), never a second copy.
+ */
+export async function eligibilityContextFor(input: {
+  partnerId: string;
+  orgId: string | null;
+  userId?: string | null;
+  surface: AiSurface;
+  transport: DispatchTransport;
+}): Promise<EligibilityContext> {
+  const userInitiated = typeof input.userId === 'string' && input.userId.length > 0;
+  const [partnerFacts, userHoldsPermission] = await Promise.all([
+    loadPartnerFacts(input.partnerId),
+    userInitiated
+      ? loadUserPermissionPredicate(input.userId!, input.partnerId, input.orgId)
+      : Promise.resolve((_key: string) => false),
+  ]);
+  return {
+    partnerId: input.partnerId,
+    surface: input.surface,
+    partnerPlan: partnerFacts.plan,
+    hosted: isHosted(),
+    residencyRequired: partnerFacts.residencyRequired,
+    geoCarriable: transportCarries(input.transport).inferenceGeo,
+    userInitiated,
+    userHoldsPermission,
+  };
+}
+
+/**
+ * W05: what a picker may offer for this offering on this transport. The SAME
+ * clamp dispatch applies (clampSupport: allowed_options, a fast rate, and
+ * transport carriage; budget thinking only where the transport carries it),
+ * so the picker can never offer an option the resolver would strip.
+ */
+export function pickerOptionSupport(c: LoadedCandidate, transport: DispatchTransport): AiModelChoiceDto['options'] {
+  const carriage = transportCarries(transport);
+  const support = clampSupport(c, carriage);
+  return {
+    // buildWireParams applies effort only on an adaptive model.
+    effort: c.capabilities.thinkingMode === 'adaptive' ? support.effort : [],
+    speed: support.speed,
+    budgetThinking: c.capabilities.thinkingMode === 'budget' && carriage.budgetThinking,
+  };
+}
+
+/**
+ * W05: the options a turn gets with no user choice — assignment → offering
+ * default, clamped exactly as dispatch would (the same requestedOptions +
+ * wireFor path finalize runs, with no request options and the model's own
+ * output cap).
+ */
+export function defaultOptionsFor(
+  c: LoadedCandidate,
+  assignmentOptions: Partial<OfferingOptions> | undefined,
+  transport: DispatchTransport,
+): OfferingOptions {
+  return wireFor(c, requestedOptions(c, undefined, assignmentOptions), undefined, transportCarries(transport)).applied;
+}
+
 export async function resolveModel(input: ResolveModelInput): Promise<ResolveModelResult> {
   const role = input.role ?? 'default';
   if (!(AI_SURFACE_ROLES[input.surface] as readonly string[]).includes(role)) {
@@ -303,25 +369,27 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
     () => getEffectiveAssignment({ partnerId, orgId: input.orgId, surface: input.surface, role }),
   ));
 
-  const userInitiated = typeof input.userId === 'string' && input.userId.length > 0;
-  const [partnerFacts, userHoldsPermission] = await Promise.all([
-    loadPartnerFacts(partnerId),
-    userInitiated
-      ? loadUserPermissionPredicate(input.userId!, partnerId, input.orgId)
-      : Promise.resolve((_key: string) => false),
-  ]);
-  const ctx: EligibilityContext = {
-    partnerId,
-    surface: input.surface,
-    partnerPlan: partnerFacts.plan,
-    hosted: isHosted(),
-    residencyRequired: partnerFacts.residencyRequired,
-    geoCarriable,
-    userInitiated,
-    userHoldsPermission,
-  };
+  const ctx = await eligibilityContextFor({
+    partnerId, orgId: input.orgId, userId: input.userId, surface: input.surface, transport,
+  });
 
   const origin: RequestOrigin = input.requested?.origin ?? 'user';
+  // W05 (spec §11): a locked surface hides the menu AND the option controls.
+  // Hiding is not the gate — a user-origin request may not carry options,
+  // and options stored on the session by an earlier (unlocked) turn no
+  // longer apply. Agent policies (origin 'policy') are configuration, not a
+  // per-turn choice, and are unaffected. A user-origin request for a
+  // NON-default offering on a locked surface is refused below (W03 rule).
+  const requestedOpts = input.requested?.options;
+  const carriesOptions = requestedOpts !== undefined
+    && Object.values(requestedOpts).some((v) => v !== undefined);
+  if (!assignment.allowUserChoice && carriesOptions && origin === 'user') {
+    return unavailable('not_permitted', input.requested?.offeringId ?? null);
+  }
+  // Every later use of the request's options goes through `effective`.
+  const effective: ResolveModelInput = !assignment.allowUserChoice && carriesOptions && origin === 'session'
+    ? { ...input, requested: { ...input.requested, options: undefined } }
+    : input;
   const requestedId = input.requested?.offeringId;
   const defaultId = assignment.defaultOfferingId;
   const permitted = (id: string) => isPermitted(assignment.permitted, id);
@@ -340,7 +408,7 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
     if (!fallback || !sameRoute || checkEligibility(fallback.facts, ctx) !== null) {
       return unavailable(storedReason, requestedId ?? null, storedName);
     }
-    return finalize(fallback, input, role, assignment.options, ctx, true, transport);
+    return finalize(fallback, effective, role, assignment.options, ctx, true, transport);
   };
 
   if (requestedId && requestedId !== defaultId) {
@@ -355,7 +423,7 @@ export async function resolveModel(input: ResolveModelInput): Promise<ResolveMod
   if (!primaryId) return unavailable('no_eligible_model', null);
   const primary = await loadOfferingCandidate(primaryId, partnerId);
   const reason: ResolveFailureReason | null = primary ? checkEligibility(primary.facts, ctx) : 'not_permitted';
-  if (primary && reason === null) return finalize(primary, input, role, assignment.options, ctx, false, transport);
+  if (primary && reason === null) return finalize(primary, effective, role, assignment.options, ctx, false, transport);
   if (!requestedId || origin === 'user' || requestedId === defaultId) {
     return unavailable(reason!, primaryId, primary?.displayName);
   }

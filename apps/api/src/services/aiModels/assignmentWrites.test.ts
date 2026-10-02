@@ -293,6 +293,7 @@ describe('putOrgAssignments — the org write rejects every widening', () => {
     ['a narrowed set that excludes the inherited partner default', { permittedOfferingIds: [B] }, 'defaultOfferingId'],
     ['an effort above the partner', { options: { effort: 'high' } }, 'options'],
     ['fast when the partner has no fast', { options: { speed: 'fast' } }, 'options'],
+    ['budget thinking on when the partner has not turned it on (W05)', { options: { budgetThinking: 'on' } }, 'options'],
     ['user choice the partner did not lock (runtime guard behind zod)', { allowUserChoice: true }, 'allowUserChoice'],
   ])('rejects %s', async (_l, over, field) => {
     const err = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow(over) as never] }).catch((e) => e);
@@ -307,6 +308,8 @@ describe('putOrgAssignments — the org write rejects every widening', () => {
     expect(e2.details.key).toBe('effort');
     const e3 = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { speed: 'fast' } })] }).catch((e) => e);
     expect(e3.details.key).toBe('speed');
+    const e4 = await putOrgAssignments({ partnerId: P, orgId: ORG, rows: [orgRow({ options: { budgetThinking: 'on' } })] }).catch((e) => e);
+    expect(e4.details.key).toBe('budgetThinking');
   });
 
   it('accepts a narrowing (subset, default inside it, lower effort, user choice locked)', async () => {

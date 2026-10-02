@@ -115,13 +115,13 @@ describe('createSession device binding', () => {
     }));
   });
 
-  it('passes an explicit model as the legacy lookup key', async () => {
+  it('passes no legacyModel to chooseSessionModel (W05)', async () => {
     const valuesSpy = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'sess-1' }]) });
     insertMock.mockReturnValueOnce({ values: valuesSpy });
 
-    await createSession(auth, { model: 'claude-haiku-4-5' });
+    await createSession(auth, {});
 
-    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.objectContaining({ legacyModel: 'claude-haiku-4-5' }));
+    expect(vi.mocked(chooseSessionModel)).toHaveBeenCalledWith(expect.not.objectContaining({ legacyModel: expect.anything() }));
   });
 
   it('throws ai_unavailable before insert when the registry has no usable model', async () => {

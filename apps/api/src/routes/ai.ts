@@ -63,7 +63,8 @@ import {
   approveToolSchema,
   approvePlanSchema,
   pauseAiSchema,
-  aiSessionQuerySchema
+  aiSessionQuerySchema,
+  continueAiSessionSchema,
 } from '@breeze/shared/validators';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
@@ -83,14 +84,19 @@ import { messagesUsage, messagesUsageAfterDispatchError } from '../services/aiMo
 import { oneShotUnavailableAnswer } from '../services/aiModels/oneShotUnavailable';
 import { settleInvocation } from '../services/aiModels/settleInvocation';
 import { resolveSessionTurn } from '../services/aiModels/sessionModel';
+import { loadContinuationSummary, withContinuationContext } from '../services/aiModels/continuation';
 import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredError } from '../services/llm/llmAvailability';
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
-import { liveQueryKey, turnBindingFrom } from '../services/aiModels/turnBinding';
+import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
+import { continuationMessage, planModelTransition, readPreviousTurn, readSessionOfferingId } from '../services/aiModels/modelTransition';
+import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 // Loaded lazily, only for a topology session: its tool/transport graph must not
 // load for every chat route (and every route unit test's partial mocks).
 const loadTopologyTurn = () => import('./aiTopologyTurn');
+// W05 (#7603): the continuation handler, loaded on first use for the same reason.
+const loadSessionContinuation = () => import('./aiSessionContinue');
 /** Topology sessions get a fixed title: no model or evidence text ever names a session. */
 const TOPOLOGY_SESSION_TITLE = 'Topology investigation';
 import {
@@ -118,11 +124,12 @@ function topologyAuditSessionCondition(visibility: TopologySessionVisibility): S
     ),
   );
 }
-import { createTicketFromChatSchema, type AiTicketDraft } from '@breeze/shared';
+import { createTicketFromChatSchema, type AiContinuationRequired, type AiTicketDraft } from '@breeze/shared';
 import { deviceInSiteScope } from './tickets/siteScope';
 import { timeActorFrom } from './timeEntries/timeEntries';
 import { pageContextWriteDefaultOrgId } from '../services/aiSessionOrgAnchor';
 import {
+  AiBudgetSessionBusyError,
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
   releaseUnusedAiBudgetReservation,
@@ -358,7 +365,12 @@ aiRoutes.get(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    return c.json(result);
+    // W05: what ran the last turn, persisted on the (owner-bound) session row
+    // — no extra query, and never a guess from ledger rows (D13). Parsed, so
+    // an unrecognised stored value reads as absent; the web store reads it
+    // off `session`, the plan's contract names the top-level field.
+    const lastTurnModel = lastTurnModelOf(result.session);
+    return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
   }
 );
 
@@ -662,6 +674,28 @@ aiRoutes.post(
   }
 );
 
+// POST /sessions/:id/continue — W05 (#7603; spec §9.2, §15 #4): a model
+// switch that cannot resume continues in a NEW chat on the target offering,
+// linked back to this one and seeded with a summary the TARGET writes.
+// D12: registered in selfManagedDbContextRoutes (it makes a provider call).
+// The handler (routes/aiSessionContinue.ts) loads lazily, like the topology
+// turn: its resolver / candidate-loader graph must not load for every route.
+aiRoutes.post(
+  '/sessions/:id/continue',
+  requireScope('organization', 'partner', 'system'),
+  requireAiUse,
+  requireMfa(),
+  zValidator('json', continueAiSessionSchema),
+  async (c) => {
+    const { continueAiSession } = await loadSessionContinuation();
+    return continueAiSession(c, {
+      auth: c.get('auth'),
+      sessionId: c.req.param('id')!,
+      choice: c.req.valid('json').model,
+    });
+  }
+);
+
 aiRoutes.post(
   '/sessions/:id/ticket',
   requireScope('organization', 'partner', 'system'),
@@ -751,7 +785,7 @@ aiRoutes.post(
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
     const preflight = await inRequestDb(() =>
-      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c),
+      runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c, body.model),
     );
     if (!preflight.ok) {
       const err = preflight.error;
@@ -940,6 +974,24 @@ aiRoutes.post(
     }
     // ---- End OpenAI-compatible path ----
 
+    // W05 (#7603): a continuation's FIRST turn (no SDK transcript yet) is
+    // seeded with the summary its creation stored; later turns resume the SDK
+    // transcript, which already contains it. The summary is model output over
+    // tool results, so it is untrusted: it is only ever prefixed to this user
+    // turn (below), never the system prompt. Read here, in its own short
+    // caller-scoped context, before anything is reserved or claimed.
+    const continuationSummary = !topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId
+      ? await inRequestDb(() => loadContinuationSummary(sessionId))
+      : null;
+    if (!topology && dbSession.continuedFromSessionId && !dbSession.sdkSessionId && continuationSummary === null) {
+      // The continuation was created with a summary; it is gone (or unreadable).
+      // The turn proceeds without the prior context — report it, never content.
+      console.warn('[AI] continuation summary missing on the first turn; sending without prior context', {
+        orgId: dbSession.orgId, sessionId, continuedFromSessionId: dbSession.continuedFromSessionId,
+      });
+      captureException(new Error('continuation summary missing on first turn'), undefined, { org_id: dbSession.orgId });
+    }
+
     // A Claude SDK query's maxBudgetUsd is immutable after creation. Finish any
     // approval-only prior turn, then rotate the idle query so this turn is
     // created with the exact durable reservation ceiling.
@@ -972,10 +1024,60 @@ aiRoutes.post(
     // Off the env OpenAI-compatible path preflight always resolves a model.
     if (!resolvedModel) throw new Error('chat preflight returned no resolved model on the Agent SDK path');
     const model = resolvedModel;
+    // W05 (spec §9.2; spike constraints 1–3): every model change passes ONE
+    // gate before anything is reserved. Same model → W03 reuse; another
+    // connection or funding, a transcript too large for the target, or one
+    // whose fit can't be proven → the client offers a continuation.
+    // #3127: both reads open their own system contexts; no request DB
+    // context is held here (between inRequestDb phases).
+    let previous: Awaited<ReturnType<typeof readPreviousTurn>>;
+    let transition: Awaited<ReturnType<typeof planModelTransition>>;
+    try {
+      previous = await readPreviousTurn({ orgId: dbSession.orgId, sessionId });
+      // The preflight's session row predates resolveModel's lazy partner
+      // cutover, which stamps a pre-W03 session's offering_id: re-read it so a
+      // plain same-offering message is not refused as fit_unverifiable.
+      const freshOfferingId = await readSessionOfferingId({ orgId: dbSession.orgId, sessionId });
+      transition = await planModelTransition({
+        orgId: dbSession.orgId,
+        sdkSessionId: dbSession.sdkSessionId,
+        sessionOfferingId: freshOfferingId === undefined ? (dbSession.offeringId ?? null) : freshOfferingId,
+        previous,
+        target: model,
+        systemPrompt: topology ? topology.systemPrompt : systemPrompt,
+        pendingUserTurn: topology ? topology.prompt : sanitizedContent,
+      });
+    } catch (err) {
+      // Nothing is reserved yet; release the topology lease like every other refusal.
+      await abortTopology();
+      throw err;
+    }
+    if (transition.kind === 'continuation_required') {
+      await abortTopology();
+      // A continuation (routes/aiSessionContinue.ts) refuses topology
+      // sessions, so offering one here would be a dead end.
+      if (topology) {
+        return c.json({
+          error: 'The AI model for this investigation changed. Start a new investigation to continue.',
+          code: 'topology_model_changed',
+          recoverable: true,
+        }, 409);
+      }
+      const answer: AiContinuationRequired = {
+        error: continuationMessage(transition.reason, model.offering.displayName),
+        code: 'continuation_required',
+        reason: transition.reason,
+        recoverable: true,
+        target: { offeringId: model.offering.id, displayName: model.offering.displayName },
+      };
+      return c.json(answer, 409);
+    }
     // Spec §9.2: the turn binding (offering, options, rate, connection
     // identity, wire model) is written onto the reservation in its own
     // transaction; funding is the resolved offering's, decided before admission.
-    const binding = turnBindingFrom(model);
+    // W05: a resumed session also carries the rates of the models it switched
+    // away from, so their late deltas bill at their own rate (spike Q6).
+    const binding = withCarriedRates(turnBindingFrom(model), transition.kind === 'fresh' ? [] : transition.carriedRates);
     // S8: no stable request identity reaches this surface — the client sends
     // no message/draft id — so the key is random per dispatch. The unique
     // (org_id, idempotency_key) index is therefore a structural guarantee
@@ -991,9 +1093,13 @@ aiRoutes.post(
         sessionId,
         idempotencyKey: `chat:${sessionId}:${crypto.randomUUID()}`,
         binding,
+        // W05 spike constraint 3: claimed only against the turn this plan
+        // read, and never re-stamped mid-turn.
+        sessionSwitchGuard: { expectedPreviousChatReservationId: previous?.reservationId ?? null },
       });
     } catch (err) {
       await abortTopology();
+      if (err instanceof AiBudgetSessionBusyError) return c.json({ error: err.message, code: 'turn_in_progress' }, 409);
       if (isAiBudgetLockTimeout(err)) return c.json({ error: 'AI_BUDGET_LOCK_TIMEOUT' }, 503);
       throw err;
     }
@@ -1036,10 +1142,10 @@ aiRoutes.post(
           topology ? topology.allowedMcpTools : undefined,
           topology && topologyTurn ? topologyTurn.topologyMcpServerFactory : undefined,
           topology
-            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false, ledgerUserId: auth.user.id }
+            ? { budgetReservationId: budgetDispatch.reservationId, injectApprovalModeInstructions: false, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' }
             // A-W04: only a full-registry chat turn may defer tools behind
             // ToolSearch; the host/budget/operator policy decides the rest.
-            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id },
+            : { budgetReservationId: budgetDispatch.reservationId, toolSearch: true, ledgerUserId: auth.user.id, modelSwitch: transition.kind === 'switch_resume' },
         );
       } catch (err) {
         return { kind: 'failed', error: err };
@@ -1047,7 +1153,7 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1) — same as the OpenAI branch.
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 
@@ -1092,7 +1198,13 @@ aiRoutes.post(
       // with no SSE subscriber, so the assistant's reply would never reach the
       // browser.
       const pendingRunResults = drainPendingRunResults(activeSession);
-      const turnContent = topology ? topology.prompt : sanitizedContent;
+      // W05 (#7603): a continuation's FIRST turn carries the summary (read
+      // above) as delimited, sanitised, untrusted background — never the
+      // system prompt. The persisted user row above keeps the plain text, so
+      // the prefix reaches only the model.
+      const turnContent = topology
+        ? topology.prompt
+        : continuationSummary ? withContinuationContext(continuationSummary, sanitizedContent) : sanitizedContent;
       activeSession.inputController.pushMessage(
         pendingRunResults && !topology ? `${pendingRunResults}\n\n${turnContent}` : turnContent,
       );

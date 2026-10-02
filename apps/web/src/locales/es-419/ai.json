@@ -506,5 +506,48 @@
       "expired": "expirado",
       "skipped": "omitido"
     }
+  },
+  "aiModelPicker": {
+    "chooseModel": "Elegir un modelo",
+    "default": "(predeterminado)",
+    "suggested": "Sugerido",
+    "context": "Contexto de {{size}}",
+    "price": "{{input}} de entrada / {{output}} de salida por M de tokens",
+    "requiresRole": "Requiere {{roles}}",
+    "requiresPermission": "Requiere el permiso de modelos de IA premium",
+    "effort": "Esfuerzo",
+    "effortDefault": "Predeterminado",
+    "effortLevels": {
+      "low": "Bajo",
+      "medium": "Medio",
+      "high": "Alto",
+      "xhigh": "Muy alto",
+      "max": "Máximo"
+    },
+    "fast": "Rápido ({{input}} de entrada / {{output}} de salida por M)",
+    "thinking": "Razonamiento"
+  },
+  "aiThinking": {
+    "label": "Pensando… {{seconds}} s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Respondido por {{model}}",
+    "fast": "Rápido",
+    "fellBack": "{{requested}} rechazó la solicitud; respondió otro modelo",
+    "fastDowngraded": "El modo rápido no estaba disponible; se ejecutó a velocidad estándar"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} funciona en otra conexión de IA, por lo que este chat no puede cambiar a él.",
+      "connection_changed": "La conexión de IA cambió desde la última respuesta, por lo que este chat no puede cambiar de modelo.",
+      "transcript_too_large": "Esta conversación es demasiado larga para {{model}}.",
+      "fit_unverifiable": "Breeze no pudo confirmar que esta conversación quepa en {{model}}."
+    },
+    "messageKept": "Tu mensaje se conserva. Continúa en un chat nuevo que parte de un resumen de este, o conserva el modelo actual.",
+    "continue": "Continuar con {{model}} en un chat nuevo",
+    "keep": "Conservar el modelo actual",
+    "created": "Se inició un chat nuevo en {{model}} a partir de un resumen.",
+    "failed": "No se pudo iniciar el chat nuevo. Inténtalo de nuevo.",
+    "openFailed": "El chat nuevo se creó pero no se pudo abrir. Encuéntralo en tu historial de chats; tu mensaje no se envió."
   }
 }

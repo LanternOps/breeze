@@ -57,6 +57,7 @@ function boundModels(binding: TurnBinding): Set<string> {
 /**
  * Price each usage row by the model its tokens are attributed to:
  * - the bound model → the bound snapshot; its refusal fallback → that snapshot;
+ * - a model this session switched away from (W05 `carriedRates`) → its carried snapshot;
  * - any other key (the CLI's own refusal switch, W05 spike) → that model's
  *   current platform rate when the turn is platform-funded and the registry
  *   prices it (`platformRates`, pre-fetched by settleInvocation and re-checked
@@ -80,6 +81,11 @@ export function priceUsage(
       rate = binding.rateSnapshot;
     } else if (binding.refusalFallback && u.model === binding.refusalFallback.wireModel) {
       rate = binding.refusalFallback.rateSnapshot;
+    } else if (binding.carriedRates?.some((c) => c.wireModel === u.model)) {
+      // W05: a model this session switched away from on the SAME connection
+      // (funding is unchanged by construction): its late deltas bill at its
+      // own bound rate. Not a fallback, so not `unboundModel`.
+      rate = binding.carriedRates.find((c) => c.wireModel === u.model)!.rateSnapshot;
     } else {
       unboundModel = true;
       const platform = binding.funding === 'platform' ? opts.platformRates?.get(u.model) : undefined;

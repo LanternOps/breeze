@@ -27,6 +27,7 @@ export type AssignmentMergeWarning =
   | 'org_fallbacks_not_permitted'
   | 'org_effort_clamped'
   | 'org_speed_clamped'
+  | 'org_budget_thinking_clamped'
   | 'invalid_partner_options'
   | 'invalid_org_options';
 
@@ -91,6 +92,16 @@ export function clampOrgOptions(
 
   const thinkingDisplay = o.thinkingDisplay ?? partner.thinkingDisplay;
   if (thinkingDisplay !== undefined) out.thinkingDisplay = thinkingDisplay;
+
+  // W05: tighten-only. An org may turn manual-budget thinking OFF; it may
+  // turn it ON only where the partner already did (it costs output tokens).
+  let budgetThinking = partner.budgetThinking;
+  if (o.budgetThinking === 'off') budgetThinking = 'off';
+  else if (o.budgetThinking === 'on') {
+    if (partner.budgetThinking === 'on') budgetThinking = 'on';
+    else warnings.push('org_budget_thinking_clamped');
+  }
+  if (budgetThinking !== undefined) out.budgetThinking = budgetThinking;
 
   return { options: out, warnings };
 }

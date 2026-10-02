@@ -36,7 +36,8 @@ import {
   __resetSettleInvocationReportsForTests,
   type SettleInvocationInput,
 } from './settleInvocation';
-import type { TurnBinding } from './turnBinding';
+import { turnBindingFrom, withCarriedRates, type TurnBinding } from './turnBinding';
+import { makeResolvedModel } from './__fixtures__/resolvedModel';
 
 const STD = { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 };
 const FAST = { inputCentsPerM: 1200, outputCentsPerM: 6000, cacheReadCentsPerM: 120, cacheWriteCentsPerM: 1500 };
@@ -53,7 +54,7 @@ const B: TurnBinding = {
 const T = { input: 1_000_000, output: 100_000, cacheRead: 0, cacheWrite: 0 };
 const OK: TurnOutcome = {
   stopReason: 'end_turn', refused: false, refusalCategory: null, fallbackUsed: false,
-  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99,
+  servedModel: 'claude-sonnet-5-5', providerModel: null, sdkReportedCostUsd: 9.99, fastDowngraded: false,
 };
 const use = (model: string, over: Partial<BilledUsage> = {}): BilledUsage => ({
   model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null, ...over,
@@ -439,5 +440,21 @@ describe('SDK usage snapshot (W05 spike)', () => {
     expect(m.captureMessage).not.toHaveBeenCalled();
     expect(warn.mock.calls.flat().join(' ')).toContain('ai_usage_unconfirmed');
     warn.mockRestore();
+  });
+});
+
+describe('priceUsage: carried rates across a switch (W05 spike constraint 4)', () => {
+  const HAIKU_RATE = { source: 'linked_platform' as const, standard: { inputCentsPerM: 100, outputCentsPerM: 500, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 } };
+  it('a BYOK delta under the previous model\'s key is billed at the previous model\'s rate, not the bound one', () => {
+    const binding = withCarriedRates(turnBindingFrom(makeResolvedModel('anthropic_byok')), [
+      { wireModel: 'claude-haiku-4-5', rateSnapshot: HAIKU_RATE },
+    ]);
+    const [row] = priceUsage(binding, [{
+      model: 'claude-haiku-4-5', tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+      webSearchRequests: 0, speedServed: 'standard', providerModel: null,
+    }]);
+    expect(row!.rate).toBe(HAIKU_RATE);
+    expect(row!.costCents).toBe(100);
+    expect(row!.unboundModel).toBe(false);   // a carried model is not a fallback
   });
 });

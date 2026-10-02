@@ -8,13 +8,12 @@
  * offering is a fresh USER choice, so it is strict — no fallback, and an
  * ineligible / foreign / not-permitted id is a 400 that stores nothing.
  */
-import type { AiSurface, OfferingOptions } from '@breeze/shared';
+import type { AiModelChoice, AiSurface, OfferingOptions } from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import { isPlatformLlmConfigured, LlmNotConfiguredError } from '../llm/llmAvailability';
 import { LlmUnavailableError } from '../llm/llmUnavailableError';
-import { findOfferingIdByModel, readOrgPartnerId, readSessionModelRow } from './candidateLoader';
+import { readOrgPartnerId, readSessionModelRow } from './candidateLoader';
 import { InvalidSessionModelError } from './invalidSessionModelError';
-import { ensurePartnerCutover } from './registryCutover';
 import { resolveModel, unavailableMessage, type ResolvedModel, type ResolveModelResult } from './resolveModel';
 import type { DispatchTransport } from './transport';
 
@@ -26,6 +25,8 @@ export async function resolveSessionTurn(input: {
   userId: string | null;
   maxTokens?: number;
   transport?: DispatchTransport;
+  /** W05: the composer's choice on this message (a fresh USER request). */
+  choice?: AiModelChoice;
 }): Promise<ResolveModelResult> {
   const row = await readSessionModelRow(input.sessionId);
   if (!row) throw new Error(`AI session ${input.sessionId} not found`);
@@ -37,13 +38,22 @@ export async function resolveSessionTurn(input: {
     };
   }
   const options = row.options;
-  const requested = row.offeringId || options
+  // W05: a composer choice is a fresh USER request — strict (no bounded
+  // fallback), subject to allow_user_choice and the permitted set. Without
+  // one, the stored offering + options are a SESSION request (W03).
+  const requested = input.choice
     ? {
-        ...(row.offeringId ? { offeringId: row.offeringId } : {}),
-        ...(options ? { options } : {}),
-        origin: 'session' as const,
+        offeringId: input.choice.offeringId,
+        ...(input.choice.options ? { options: input.choice.options } : {}),
+        origin: 'user' as const,
       }
-    : undefined;
+    : row.offeringId || options
+      ? {
+          ...(row.offeringId ? { offeringId: row.offeringId } : {}),
+          ...(options ? { options } : {}),
+          origin: 'session' as const,
+        }
+      : undefined;
   return resolveModel({
     partnerId,
     orgId: row.orgId,
@@ -79,22 +89,8 @@ export async function chooseSessionModel(input: {
   surface: AiSurface;
   offeringId?: string;
   options?: Partial<OfferingOptions>;
-  /** @deprecated W03: the old free-form `model` body field, used only as a lookup key. */
-  legacyModel?: string;
 }): Promise<SessionModelChoice> {
-  let offeringId = input.offeringId;
-  if (!offeringId && input.legacyModel) {
-    // The lookup reads assignments: never against a partner not yet cut over (Task 6A).
-    if (!(await ensurePartnerCutover(input.partnerId))) {
-      throw new LlmUnavailableError(unavailableMessage('registry_unavailable'));
-    }
-    offeringId = (await findOfferingIdByModel({
-      partnerId: input.partnerId, orgId: input.orgId, surface: input.surface, modelId: input.legacyModel,
-    })) ?? undefined;
-    if (!offeringId) {
-      throw new InvalidSessionModelError(`Model "${input.legacyModel}" is not available for AI sessions.`, 'invalid_model');
-    }
-  }
+  const offeringId = input.offeringId;
   const requested = offeringId || input.options
     ? { ...(offeringId ? { offeringId } : {}), ...(input.options ? { options: input.options } : {}), origin: 'user' as const }
     : undefined;

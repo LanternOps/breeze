@@ -199,6 +199,20 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
+// W05 (#7603): the transition gate. Typed against the real signatures (Codex
+// review finding 21): an inferred `{ kind: string }` return would reject the
+// later `reason` / `carriedRates` mocks.
+const tr = vi.hoisted(() => ({
+  readPreviousTurn: vi.fn<(...a: unknown[]) => Promise<import('../services/aiModels/modelTransition').PreviousTurn | null>>(async () => null),
+  planModelTransition: vi.fn<(...a: unknown[]) => Promise<import('../services/aiModels/modelTransition').ModelTransition>>(async () => ({ kind: 'fresh' })),
+}));
+vi.mock('../services/aiModels/modelTransition', async (orig) => ({
+  ...(await orig<typeof import('../services/aiModels/modelTransition')>()),
+  readPreviousTurn: tr.readPreviousTurn,
+  planModelTransition: tr.planModelTransition,
+  readSessionOfferingId: vi.fn(async () => undefined),
+}));
+
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import { streamingSessionManager } from '../services/streamingSessionManager';

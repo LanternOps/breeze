@@ -142,6 +142,15 @@ const bindAgentModel = vi.hoisted(() => vi.fn(async (_owner: unknown, model: str
   model, offeringId: model === null ? null : 'off-default', offeringPartnerId: model === null ? null : 'p1',
 })));
 vi.mock('./agentModelBinding', () => ({ bindAgentModel }));
+// W05 (#7603): the picker's path — an offering id, judged for the WRITER.
+// Its own suite is agentOfferingBinding.test.ts.
+const bindAgentOffering = vi.hoisted(() => vi.fn(async (
+  _owner: unknown, offeringId: string | null, _writer?: unknown,
+): Promise<{ model: string | null; offeringId: string | null; offeringPartnerId: string | null }> => (
+  offeringId === null
+    ? { model: null, offeringId: null, offeringPartnerId: null }
+    : { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' })));
+vi.mock('./agentOfferingBinding', () => ({ bindAgentOffering }));
 // NOT mocked on purpose. Stubbing isSupportedAgentMode made the "rejects the
 // DB-legal act mode" test assert the STUB's opinion — adding 'act' (the wave-4
 // autonomous-execution mode) to the real SUPPORTED_AGENT_MODES would have been
@@ -1103,7 +1112,7 @@ describe('policy model binding (AI model registry W03, Step 7A)', () => {
   it('create with a model inserts the bound offering beside it', async () => {
     state.returnedRow = storedRow;
     await createAgent(auth(), { orgId: 'o1', partnerId: null }, { ...createInput, model: 'claude-opus-5-5' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5');
+    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5', { userId: 'u1' });
     expect(state.insertedValues).toMatchObject({ model: 'claude-opus-5-5', offeringId: 'off-2', offeringPartnerId: 'p1' });
   });
 
@@ -1144,7 +1153,7 @@ describe('policy model binding (AI model registry W03, Step 7A)', () => {
       return { model, offeringId: 'off-2', offeringPartnerId: 'p1' };
     });
     await updateAgent(auth(), 'a1', { model: 'claude-opus-5-5' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5');
+    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'claude-opus-5-5', { userId: 'u1' });
     // The registry read (and any cutover it runs, which rebinds ai_agents rows)
     // never happens under this agent's FOR UPDATE lock.
     expect(lockedWhenBound).toBeUndefined();
@@ -1171,8 +1180,102 @@ describe('policy model binding (AI model registry W03, Step 7A)', () => {
     state.currentRow = { ...storedRow, offeringId: null, offeringPartnerId: null };
     state.returnedRow = storedRow;
     await updateAgent(auth(), 'a1', { model: 'model-1' } as never);
-    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'model-1');
+    expect(bindAgentModel).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, 'model-1', { userId: 'u1' });
     expect(state.updatedValues).toMatchObject({ offeringId: 'off-2' });
+  });
+});
+
+describe('agent policy model by offering (AI model registry W05, #7603)', () => {
+  const owner = { orgId: 'o1', partnerId: null };
+
+  it('create with offeringId binds it for the writer and stores offering + provenance model', async () => {
+    state.returnedRow = storedRow;
+    await createAgent(auth(), owner, { ...createInput, offeringId: 'opus' } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith(owner, 'opus', { userId: 'u1' });
+    expect(bindAgentModel).not.toHaveBeenCalled();
+    expect(state.insertedValues).toMatchObject({ offeringId: 'opus', offeringPartnerId: 'p1', model: 'logical-opus' });
+  });
+
+  it('create with a model string binds it for the writer too (D11: both paths permission-checked)', async () => {
+    state.returnedRow = storedRow;
+    await createAgent(auth(), owner, { ...createInput, model: 'claude-opus-5-5' } as never);
+    expect(bindAgentModel).toHaveBeenCalledWith(owner, 'claude-opus-5-5', { userId: 'u1' });
+    expect(bindAgentOffering).not.toHaveBeenCalled();
+  });
+
+  it('offeringId together with a non-null model is a 400 invalid_model, nothing written, nothing bound', async () => {
+    state.returnedRow = storedRow;
+    await expect(createAgent(auth(), owner, { ...createInput, offeringId: 'opus', model: 'x' } as never))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_model' });
+    expect(state.insertedValues).toBeNull();
+
+    state.currentRow = storedRow;
+    await expect(updateAgent(auth(), 'a1', { offeringId: 'opus', model: 'x' } as never))
+      .rejects.toMatchObject({ status: 400, code: 'invalid_model' });
+    expect(state.updatedValues).toBeNull();
+    expect(bindAgentOffering).not.toHaveBeenCalled();
+    expect(bindAgentModel).not.toHaveBeenCalled();
+  });
+
+  it('a permission refusal for the writer writes nothing (403 passes through)', async () => {
+    const { AgentModelNotAllowedError } = await import('./agentModelErrors');
+    bindAgentOffering.mockRejectedValueOnce(new AgentModelNotAllowedError('Your role does not allow this AI model.', 'permission_required'));
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+    await expect(updateAgent(auth(), 'a1', { offeringId: 'opus' } as never)).rejects.toMatchObject({ status: 403, code: 'permission_required' });
+    expect(state.updatedValues).toBeNull();
+  });
+
+  it('update without offeringId or model never binds', async () => {
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+    await updateAgent(auth(), 'a1', { name: 'renamed' } as never);
+    expect(bindAgentOffering).not.toHaveBeenCalled();
+    expect(bindAgentModel).not.toHaveBeenCalled();
+  });
+
+  it('update binds BEFORE the row lock (no registry reads under it), then writes the binding (Codex review finding 6)', async () => {
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+    let lockedWhenBound: unknown = 'not-called';
+    bindAgentOffering.mockImplementationOnce(async (_owner: unknown, offeringId: string | null) => {
+      lockedWhenBound = state.selectFor;
+      return { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' };
+    });
+    await updateAgent(auth(), 'a1', { offeringId: 'opus' } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith(owner, 'opus', { userId: 'u1' });
+    expect(lockedWhenBound).toBeUndefined();
+    expect(state.selectFor).toBe('update');
+    expect(state.updatedValues).toMatchObject({ model: 'logical-opus', offeringId: 'opus', offeringPartnerId: 'p1' });
+  });
+
+  it('update with offeringId null clears the binding and the provenance model (agent follows the assignment)', async () => {
+    state.currentRow = { ...storedRow, offeringId: 'opus', offeringPartnerId: 'p1' };
+    state.returnedRow = storedRow;
+    await updateAgent(auth(), 'a1', { offeringId: null } as never);
+    expect(state.updatedValues).toMatchObject({ model: null, offeringId: null, offeringPartnerId: null });
+  });
+
+  it('re-saving the SAME offering is a no-op for the binding (an unrelated edit never 403s on it)', async () => {
+    state.currentRow = { ...storedRow, offeringId: 'opus', offeringPartnerId: 'p1' };
+    state.returnedRow = storedRow;
+    await updateAgent(auth(), 'a1', { offeringId: 'opus', name: 'Renamed' } as never);
+    expect(bindAgentOffering).not.toHaveBeenCalled();
+    expect(state.updatedValues).not.toHaveProperty('offeringId');
+  });
+
+  it('an owner change between the binding and the lock writes nothing (the bound owner is re-checked)', async () => {
+    const { AgentModelNotAllowedError } = await import('./agentModelErrors');
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+    bindAgentOffering.mockImplementationOnce(async (_owner: unknown, offeringId: string | null) => {
+      // A concurrent org merge re-points the row before the lock is taken.
+      state.currentRow = { ...storedRow, orgId: 'o2' };
+      return { model: 'logical-opus', offeringId, offeringPartnerId: 'p1' };
+    });
+    await expect(updateAgent(auth({ canAccessOrg: () => true }), 'a1', { offeringId: 'opus' } as never))
+      .rejects.toBeInstanceOf(AgentModelNotAllowedError);
+    expect(state.updatedValues).toBeNull();
   });
 });
 

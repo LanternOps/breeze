@@ -788,6 +788,12 @@ export interface AiAgentDto {
   enabled: boolean;
   mode: AiAgentMode;
   model: string | null;
+  /**
+   * AI model registry W05: the registry offering the policy model is bound to
+   * (`ai_agents.offering_id`); null = the agent follows the `ai_agents`
+   * assignment default. `model` is its provenance snapshot.
+   */
+  offeringId: string | null;
   orgId: string | null;
   partnerId: string | null;
   /** Derived from the owner columns; always consistent with them. */

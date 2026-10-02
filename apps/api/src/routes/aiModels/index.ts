@@ -8,6 +8,7 @@ import { Hono } from 'hono';
 import { authMiddleware } from '../../middleware/auth';
 import { buildPartnerModelsSnapshot } from '../../services/aiModels/registryView';
 import { aiModelAssignmentRoutes } from './assignments';
+import { aiModelChoiceRoutes } from './choices';
 import { aiModelConnectionRoutes } from './connections';
 import { aiModelOfferingRoutes } from './offerings';
 import { aiModelOrgAssignmentRoutes } from './orgAssignments';
@@ -29,3 +30,4 @@ aiModelsRoutes.route('/assignments', aiModelAssignmentRoutes);
 aiModelsRoutes.route('/residency', aiModelResidencyRoutes);
 aiModelsRoutes.route('/orgs', aiModelOrgAssignmentRoutes);
 aiModelsRoutes.route('/usage', aiModelUsageRoutes);
+aiModelsRoutes.route('/choices', aiModelChoiceRoutes);   // W05 (#7603): user-scoped pickers; their own gates, not partnerRead

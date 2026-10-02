@@ -37,6 +37,7 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/NeedsConversionPanel.tsx',
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
+  'src/components/ai/AiContinuationPrompt.tsx', // W05 #7603: POST /ai/sessions/:id/continue via runAction
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -885,7 +886,8 @@ describe('no silent mutations in targeted set', () => {
     // Task 12 adds aiModels/{ModelsCard,OfferingDrawer}.tsx: 208 → 210.
     // Task 13 adds aiModels/FeatureDefaultsCard.tsx: 210 → 211.
     // Task 14 adds aiModels/OrgModelDefaultsCard.tsx: 211 → 212.
-    expect(absoluteFiles.length).toBe(212);
+    // W05 #7603 Task 13 adds ai/AiContinuationPrompt.tsx: 212 -> 213.
+    expect(absoluteFiles.length).toBe(213);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

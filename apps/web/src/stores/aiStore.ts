@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection } from '@breeze/shared';
+import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { RECOVERABLE_MODEL_CODES, noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
@@ -86,6 +87,12 @@ interface AiState {
   m365Connections: M365Connection[];
   selectedM365ConnectionId: string | null;
   boundM365ConnectionId: string | null;
+  /** W05: the model is thinking (budget/adaptive thinking indicator). */
+  thinking: boolean;
+  /** W05: what actually ran the last turn (provenance badge). */
+  turnModel: AiTurnModel | null;
+  /** W05: offering ids suggested after a model refusal. */
+  refusalAlternatives: string[];
 
   // Actions
   toggle: () => void;
@@ -97,7 +104,7 @@ interface AiState {
    * (topology "Explain this", M4 #6000). A topology context is sent alone: the
    * server pins the session to its site and refuses a device or M365 binding.
    */
-  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext }) => Promise<void>;
+  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice }) => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -167,7 +174,23 @@ const CLEARED_SESSION = {
   isStreaming: false,
   isInterrupting: false,
   isPaused: false,
+  thinking: false,
+  turnModel: null as AiTurnModel | null,
+  refusalAlternatives: [] as string[],
 } as const;
+
+/** A cleared session has no stamped model: drop the picker, then reload the default menu. */
+function resetModelPicker(): void {
+  const picker = useAiModelPickerStore.getState();
+  picker.reset();
+  // orgStore is read lazily (the way helpStore is above) so this store does not
+  // pull the org/auth graph in at import time.
+  const pageContext = useAiStore.getState().pageContext;
+  void import('./orgStore')
+    .then(({ useOrgStore }) => useOrgStore.getState().currentOrgId)
+    .catch(() => null)
+    .then((selectedOrgId) => picker.load({ orgId: noSessionOrgId(pageContext, selectedOrgId) }));
+}
 
 /**
  * Identifies the stream `sendMessage` currently owns. A rebind (or any later
@@ -257,6 +280,9 @@ export const useAiStore = create<AiState>()(
   m365Connections: [],
   selectedM365ConnectionId: null,
   boundM365ConnectionId: null,
+  thinking: false,
+  turnModel: null,
+  refusalAlternatives: [],
 
   toggle: () => {
     const opening = !get().isOpen;
@@ -275,12 +301,15 @@ export const useAiStore = create<AiState>()(
   setPageContext: (ctx) =>
     set((s) =>
       pageContextOrgMismatch(ctx, s.sessionOrgId)
-        ? { pageContext: ctx, ...CLEARED_SESSION }
+        ? (resetModelPicker(), { pageContext: ctx, ...CLEARED_SESSION })
         : { pageContext: ctx },
     ),
 
   createSession: async (opts) => {
     const ownsSession = claimSessionOwnership();
+    // A different chat begins: the previous chat's pick must not ride along.
+    // (A pick handed in via opts.model is the one this create commits.)
+    if (!opts?.model) useAiModelPickerStore.getState().clearSelection();
     set({ isLoading: true, error: null, errorCode: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
@@ -342,7 +371,10 @@ export const useAiStore = create<AiState>()(
           pageContext: pageContext ?? undefined,
           delegantM365ConnectionId: selectedM365ConnectionId ?? undefined,
           deviceId: opts?.deviceId ?? undefined,
-          approvalMode
+          approvalMode,
+          // W05 (Codex review finding 12): a model picked before the first
+          // message creates the session ON that model (W03 create contract).
+          ...(opts?.model ? { offeringId: opts.model.offeringId, options: opts.model.options } : {}),
         })
       });
       if (!res.ok) {
@@ -365,6 +397,8 @@ export const useAiStore = create<AiState>()(
         topologyPhase: null,
         topologyRunId: null,
       });
+      if (opts?.model) useAiModelPickerStore.getState().commitSelection();
+      void useAiModelPickerStore.getState().load({ sessionId: data.id });
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -379,6 +413,7 @@ export const useAiStore = create<AiState>()(
   // device-scoped session, and — when an initial message is supplied — auto-sends it
   // so the tech gets an answer without retyping the context.
   startDeviceTask: async (deviceId, ctx, initialMessage) => {
+    useAiModelPickerStore.getState().clearSelection();
     set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
     await get().createSession({ deviceId });
     // Only send if the session was actually created — createSession leaves
@@ -390,6 +425,8 @@ export const useAiStore = create<AiState>()(
 
   loadSession: async (sessionId: string) => {
     const ownsSession = claimSessionOwnership();
+    // Another chat's pick must never ride on this chat's next message.
+    if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
     set({ isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
@@ -415,6 +452,7 @@ export const useAiStore = create<AiState>()(
       const restoredOrgId: string | null = data.session.orgId ?? null;
       if (pageContextOrgMismatch(get().pageContext, restoredOrgId)) {
         set({ ...CLEARED_SESSION, isLoading: false });
+        resetModelPicker();
         return;
       }
 
@@ -429,8 +467,16 @@ export const useAiStore = create<AiState>()(
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
         boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+        turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
+        thinking: false,
+        refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
       });
+      // A parked continuation message belongs to the chat it came from; it must
+      // not linger once the active chat changes.
+      const parked = useAiModelPickerStore.getState().continuation;
+      if (parked && parked.sourceSessionId !== sessionId) useAiModelPickerStore.getState().dismissContinuation();
+      void useAiModelPickerStore.getState().load({ sessionId });
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -465,8 +511,13 @@ export const useAiStore = create<AiState>()(
 
     if (isStreaming || isLoading) return;
 
+    // W05: the composer's pending choice rides on this message — or, for the
+    // first message of a new chat, on the session create.
+    const model = useAiModelPickerStore.getState().pendingChoice();
+    const createdNow = !sessionId;
+
     if (!sessionId) {
-      await get().createSession();
+      await get().createSession(model ? { model } : undefined);
     }
 
     const currentSessionId = get().sessionId;
@@ -500,7 +551,7 @@ export const useAiStore = create<AiState>()(
       const { pageContext } = get();
       const res = await fetchWithAuth(`/ai/sessions/${currentSessionId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content: trimmedContent, pageContext: pageContext ?? undefined })
+        body: JSON.stringify({ content: trimmedContent, pageContext: pageContext ?? undefined, ...(model && !createdNow ? { model } : {}) })
       });
 
       if (!res.ok) {
@@ -508,6 +559,32 @@ export const useAiStore = create<AiState>()(
 
         const code = data && typeof data === 'object' && typeof (data as { code?: unknown }).code === 'string'
           ? (data as { code: string }).code : null;
+
+        if (res.status === 409 && code === 'continuation_required') {
+          // W05: the switch cannot resume. The message is parked for the
+          // continuation prompt, not lost or errored.
+          useAiModelPickerStore.getState().requireContinuation(data as AiContinuationRequired, trimmedContent, currentSessionId);
+          set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
+          return;
+        }
+        if (res.status === 409 && code && (RECOVERABLE_MODEL_CODES.has(code) || code === 'topology_model_changed')) {
+          // The chosen / stored model is no longer usable: refresh the menu so
+          // the tech can pick another (spec §9.1 "choose another").
+          void useAiModelPickerStore.getState().load({ sessionId: currentSessionId });
+        }
+
+        // A coded 409 that is not the continuation prompt rejected this turn
+        // before it ran: drop the optimistic bubble so the transcript matches
+        // the server's (turn_in_progress keeps the pick for the retry).
+        if (res.status === 409 && code && (code === 'turn_in_progress' || code === 'topology_model_changed' || RECOVERABLE_MODEL_CODES.has(code))) {
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            error: extractApiError(data, 'Failed to send message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
+          return;
+        }
 
         if (res.status === 409 && !code) {
           set((s) => ({
@@ -530,7 +607,10 @@ export const useAiStore = create<AiState>()(
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          if (ownsStream()) useAiModelPickerStore.getState().commitSelection();
+          break;
+        }
         // The chat can rebind to another org mid-response (#5684). Drop the
         // rest of this stream rather than replay it into whatever session is
         // live now — its content belongs to the previous tenant.
@@ -691,6 +771,7 @@ export const useAiStore = create<AiState>()(
         return;
       }
       set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null });
+      resetModelPicker();
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });

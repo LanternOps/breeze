@@ -264,6 +264,10 @@ export const aiAgentPolicyFieldsSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(AI_AGENT_MODES).default('off'),
   model: z.string().trim().min(1).max(100).nullable().default(null),
+  // AI model registry W05: the picker binds by registry offering id (null =
+  // clear → the ai_agents assignment default). No default: absent means the
+  // write does not choose by offering. Sent with a non-null `model` → 400.
+  offeringId: z.string().uuid().nullable().optional(),
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).default([]),
   protectedResources: aiAgentProtectedResourcesSchema.prefault({}),
   limits: aiAgentLimitsSchema.prefault({}),
@@ -305,6 +309,7 @@ export const updateAiAgentSchema = z.object({
   enabled: z.boolean().optional(),
   mode: z.enum(AI_AGENT_MODES).optional(),
   model: z.string().trim().min(1).max(100).nullable().optional(),
+  offeringId: z.string().uuid().nullable().optional(),
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
   protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),
   limits: aiAgentLimitsPatchSchema.optional(),

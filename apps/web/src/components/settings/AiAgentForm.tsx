@@ -23,6 +23,7 @@ import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
 import { useAgentToolCatalog } from './aiAgents/useAgentToolCatalog';
 import ModeChoice from './aiAgents/ModeChoice';
+import AgentModelSelect from './aiAgents/AgentModelSelect';
 import { useAgentFormLists } from './aiAgents/useAgentFormLists';
 import { AGENT_ERROR_COPY, agentSaveIssuesFromError } from './aiAgents/agentErrors';
 import WhatItDoesStep from './aiAgents/steps/WhatItDoesStep';
@@ -475,6 +476,12 @@ export default function AiAgentForm({
               onDirtyChange={setScheduleDirty}
             />
           )}
+
+          <AgentModelSelect
+            orgId={draft.ownerScope === 'partner' ? null : (agent.orgId ?? orgScope.orgId)}
+            value={draft.offeringId}
+            onChange={(offeringId) => patch({ offeringId, offeringIdTouched: true })}
+          />
 
           <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
