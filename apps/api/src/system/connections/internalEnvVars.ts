@@ -489,6 +489,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   USER_RISK_WORKER_CONCURRENCY: 'worker throughput knob',
   // VIEWER_*
   VIEWER_BINARY_DIR: 'filesystem path',
+  // VITEST
+  VITEST: 'test-runner hook (skips server bootstrap on import)',
   // WINGET_*
   WINGET_BOOTSTRAP_ARTIFACT_DIR: 'filesystem path',
   // WIN_*

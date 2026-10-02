@@ -1911,7 +1911,7 @@
       "bank_transfer": "Banküberweisung",
       "card": "Karte",
       "other": "Andere",
-      "ach_debit": "ACH debit"
+      "ach_debit": "ACH-Lastschrift"
     },
     "payments": {
       "amount": "Betrag",

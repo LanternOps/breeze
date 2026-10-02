@@ -1911,7 +1911,7 @@
       "bank_transfer": "Transferência bancária",
       "card": "Cartão",
       "other": "Outro",
-      "ach_debit": "ACH debit"
+      "ach_debit": "Débito ACH"
     },
     "payments": {
       "amount": "Valor",

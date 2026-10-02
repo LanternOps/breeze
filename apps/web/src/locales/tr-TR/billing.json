@@ -1911,7 +1911,7 @@
       "bank_transfer": "Banka havalesi",
       "card": "Kart",
       "other": "Diğer",
-      "ach_debit": "ACH debit"
+      "ach_debit": "ACH banka çekimi"
     },
     "payments": {
       "amount": "Tutar",

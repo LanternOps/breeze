@@ -1911,7 +1911,7 @@
       "bank_transfer": "Virement bancaire",
       "card": "Carte",
       "other": "Autre",
-      "ach_debit": "ACH debit"
+      "ach_debit": "Prélèvement ACH"
     },
     "payments": {
       "amount": "Montant",

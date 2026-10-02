@@ -1911,7 +1911,7 @@
       "bank_transfer": "Bonifico bancario",
       "card": "Carta",
       "other": "Altro",
-      "ach_debit": "ACH debit"
+      "ach_debit": "Addebito ACH"
     },
     "payments": {
       "amount": "Importo",
