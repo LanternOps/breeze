@@ -258,7 +258,7 @@ describe('backupTile', () => {
     rows(K.branding, [{ enableBackups: true }]);
     rows(K.providerCounts, [{ linkedOnly: 2, unlinked: 1 }]);
 
-    await expect(backupTile(ORG_ID, NOW)).resolves.toMatchObject({ configured: 5, total: 10 });
+    await expect(backupTile(ORG_ID, NOW)).resolves.toMatchObject({ configured: 6, total: 11 });
 
     const providerQuery = compiledWheres().find(({ sql }) => sql.includes('"backup_provider_devices"."org_id"'));
     expect(providerQuery?.params).toEqual([ORG_ID]);
@@ -278,7 +278,7 @@ describe('backupTile', () => {
     rows(K.providerCounts, [{ linkedOnly: 0, unlinked: 3 }]);
 
     await expect(backupTile(ORG_ID, NOW)).resolves.toMatchObject({
-      status: 'no_data', completedAt: null, verificationType: null, configured: 0, total: 4,
+      status: 'no_data', completedAt: null, verificationType: null, configured: 3, total: 7,
     });
   });
 });
@@ -312,9 +312,10 @@ describe('backupOverview', () => {
     await expect(backupOverview(ORG_ID, { timezone: 'America/Denver', now: NOW })).resolves.toEqual({
       asOf: '2026-09-02T12:00:00.000Z',
       dataStatus: 'ok',
-      protected: 2,
+      // 3 managed devices + 1 unlinked third-party row = the 4 table rows (#7505).
+      protected: 3,
       unprotected: 1,
-      total: 3,
+      total: 4,
       lastPassedVerification: { completedAt: '2026-09-02T09:00:00.000Z', verificationType: 'integrity' },
       lastTestRestoreAt: '2026-09-01T09:00:00.000Z',
       lastTestRestoreStatus: 'failed',
