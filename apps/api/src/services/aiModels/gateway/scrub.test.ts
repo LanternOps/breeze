@@ -33,6 +33,64 @@ describe('scrubSecrets', () => {
     expect(scrubSecrets('banana', ['a', '', null])).toBe('banana');
   });
 
+  describe('derived forms of a known secret', () => {
+    const key = 'gk_Live+9f/A1b2C3d4E5f6G7h8I9j0KLmNoPqRsT=';
+    it('redacts every substring of 12+ characters (prefixes and middles, not just the tail)', () => {
+      for (const part of [key.slice(0, 12), key.slice(5, 21), key.slice(10, 22), key.slice(0, -3)]) {
+        const out = scrubSecrets(`echo [${part}] end`, [key]);
+        expect(out).not.toContain(part);
+        expect(out).toContain('[redacted]');
+        expect(out).toMatch(/^echo \[.*\] end$/);
+      }
+    });
+    it('uses the whole secret as the window for secrets shorter than 12 characters', () => {
+      const short = 'abcd-efgh-1';
+      expect(scrubSecrets(`x ${short} y`, [short])).toBe('x [redacted] y');
+      expect(scrubSecrets('x abcd-efgh y', [short])).toBe('x abcd-efgh y');
+    });
+    it('redacts percent-encoding in either hex case, including mixed and partial encodings', () => {
+      const upper = encodeURIComponent(key);
+      const lower = upper.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
+      const mixed = key.replace('+', '%2b').replace('/', '%2F');
+      const everyChar = [...key].map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+      for (const form of [upper, lower, mixed, everyChar]) {
+        const out = scrubSecrets(`q=${form}&x=1`, [key]);
+        expect(out).toBe('q=[redacted]&x=1');
+      }
+    });
+    it('redacts hex encoding in lower and upper case', () => {
+      const hex = Buffer.from(key).toString('hex');
+      for (const form of [hex, hex.toUpperCase()]) expect(scrubSecrets(`h=${form}.`, [key])).toBe('h=[redacted].');
+    });
+    it('redacts base64/base64url of the secret and of the ":<secret>" Basic-auth form, padded or not', () => {
+      for (const raw of [key, `:${key}`]) {
+        const b64 = Buffer.from(raw).toString('base64');
+        for (const form of [b64, b64.replace(/=+$/, ''), Buffer.from(raw).toString('base64url')]) {
+          expect(scrubSecrets(`Authorization: Basic ${form}`, [key])).not.toContain(form.slice(0, 16));
+          expect(scrubSecrets(`b=${form};`, [key])).not.toContain(form.slice(0, 16));
+        }
+      }
+    });
+    it('leaves unrelated text alone', () => {
+      expect(scrubSecrets('HTTP 401: invalid api key provided', [key])).toBe('HTTP 401: invalid api key provided');
+    });
+    it('stays fast: a 600-char message with a 64-char secret scrubs in well under 5 ms on average', () => {
+      const secret = Array.from({ length: 64 }, (_, i) => 'abcdefghijklmnopqrstuvwxyz0123456789'[(i * 7) % 36]).join('');
+      const text = `${'error detail '.repeat(40)}${secret.slice(3, 40)}`.slice(0, 600);
+      scrubSecrets(text, [secret]);
+      const runs = 200;
+      const t0 = performance.now();
+      for (let i = 0; i < runs; i += 1) scrubSecrets(text, [secret]);
+      expect((performance.now() - t0) / runs).toBeLessThan(5);
+    });
+    it('stays bounded for a long secret against a long text', () => {
+      const secret = 'Z'.repeat(250) + 'q'.repeat(250);
+      const t0 = performance.now();
+      scrubSecrets('%5A'.repeat(20_000), [secret], 100);
+      expect(performance.now() - t0).toBeLessThan(250);
+    });
+  });
+
   it('redacts a secret that straddles the truncation point (scrub before truncating)', () => {
     const key = 'qq-straddle-0123456789';
     const out = scrubSecrets(`${'x'.repeat(40)}${key}`, [key], 50);
