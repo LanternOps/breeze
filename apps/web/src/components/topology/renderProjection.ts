@@ -42,7 +42,7 @@ function canonicalNode(node: GraphNode, parent?: string, member?: { stale: boole
 function groupNode(group: PresentationNode): RenderNode {
   const g = group.group!;
   if (g.kind === 'gateway') {
-    return { id: group.id, label: group.label, detail: `Reported by ${g.observerCount} ${g.observerCount === 1 ? 'device' : 'devices'}`, kind: 'gateway', glyph: 'router',
+    return { id: group.id, label: g.address ?? group.label, detail: `Gateway for ${g.observerCount} ${g.observerCount === 1 ? 'device' : 'devices'}`, kind: 'gateway', glyph: 'router',
       presence: null, health: null, stale: false, unverified: false, networkClass: null, memberCount: group.memberCount };
   }
   const devices = `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`;

@@ -52,7 +52,8 @@ describe('compileTopologyRender', () => {
     const visible = new Set(render.nodes.map((n) => n.id));
     for (const folded of [ids.netA, ids.netB, ids.gwA, ids.gwB, ids.ll]) expect(visible.has(folded)).toBe(false);
     expect(render.nodes.find((n) => n.id === P('net-lan'))).toMatchObject({ kind: 'group', label: '10.1.2.0/24' });
-    expect(render.nodes.find((n) => n.id === P('gw-1'))).toMatchObject({ kind: 'gateway', label: 'Reported gateway 10.1.2.100' });
+    // The address is the title (never clipped mid-address); the role and reporters go underneath.
+    expect(render.nodes.find((n) => n.id === P('gw-1'))).toMatchObject({ kind: 'gateway', label: '10.1.2.100', detail: 'Gateway for 2 devices' });
     expect(visible.has(P('net-ll'))).toBe(false);
   });
 
