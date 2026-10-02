@@ -192,6 +192,7 @@ import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentity
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import { issueMtlsCertForDevice } from './helpers';
+import { rateLimiter } from '../../services/rate-limit';
 import {
   devices as devicesTable,
   enrollmentKeys as enrollmentKeysTable,
@@ -3391,5 +3392,48 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
       expect.anything(),
       { orgId: 'org-count', expectedPartnerId: 'partner-count' },
     );
+  });
+});
+
+describe('POST /agents/enroll — configurable per-IP rate limit (#7472)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_ENROLL_RATE_LIMIT;
+    delete process.env.AGENT_ENROLL_RATE_WINDOW_SECONDS;
+    process.env.NODE_ENV = 'test';
+  });
+  afterEach(() => {
+    delete process.env.AGENT_ENROLL_RATE_LIMIT;
+    delete process.env.AGENT_ENROLL_RATE_WINDOW_SECONDS;
+  });
+
+  const post = () => buildApp().request('/agents/enroll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(baseEnrollBody),
+  });
+
+  it('uses 10 per 60s by default and does not count rejected attempts', async () => {
+    await post();
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(), 'agent-enroll:127.0.0.1', 10, 60, 1, { refundOnReject: true },
+    );
+  });
+
+  it('uses AGENT_ENROLL_RATE_LIMIT / AGENT_ENROLL_RATE_WINDOW_SECONDS when set', async () => {
+    process.env.AGENT_ENROLL_RATE_LIMIT = '200';
+    process.env.AGENT_ENROLL_RATE_WINDOW_SECONDS = '30';
+    await post();
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(), 'agent-enroll:127.0.0.1', 200, 30, 1, { refundOnReject: true },
+    );
+  });
+
+  it('returns 429 with Retry-After when the limiter denies', async () => {
+    (rateLimiter as Mock).mockResolvedValueOnce({ allowed: false, resetAt: new Date(Date.now() + 45000) });
+    const resp = await post();
+    expect(resp.status).toBe(429);
+    expect(Number(resp.headers.get('Retry-After'))).toBeGreaterThan(0);
   });
 });

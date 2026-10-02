@@ -17,6 +17,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: 'agent edition migration toggle',
+  AGENT_ENROLL_RATE_LIMIT: 'rate limit knob',
+  AGENT_ENROLL_RATE_WINDOW_SECONDS: 'rate limit knob',
   AGENT_EVENTLOG_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_EVENTLOG_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_EVENTLOG_MAX_ROWS_PER_ORG_PER_DAY: 'agent ingest quota knob',
