@@ -5,6 +5,9 @@ import {
   AI_ASSIGNMENT_WRITE_ROLES,
   AI_USAGE_GROUP_BYS,
   aiUsageQueryBaseSchema,
+  AI_QUALITY_GROUP_BYS,
+  aiQualityQuerySchema,
+  aiPromptVariantReportQuerySchema,
   type AiAssignmentWriteRole,
   type AiUsageGroupBy,
   CONFIGURABLE_AI_SURFACES,
@@ -166,5 +169,28 @@ describe('AI_ASSIGNMENT_WRITE_ROLES', () => {
     expect(partnerAssignmentsPutSchema.safeParse({ assignments: [{ ...row, role: 'default' }] }).success).toBe(true);
     expect(partnerAssignmentsPutSchema.safeParse({ assignments: [{ ...row, role: 'fallback' }] }).success).toBe(false);
     expectTypeOf<AiAssignmentRowDto['role']>().toEqualTypeOf<AiAssignmentWriteRole>();
+  });
+});
+describe('W11 quality contract', () => {
+  it('aiUsageQuerySchema behaves exactly as before (range rules re-applied through withUsageRangeRules)', () => {
+    expect(aiUsageQuerySchema.safeParse({ groupBy: 'model' }).success).toBe(true);
+    expect(aiUsageQuerySchema.safeParse({ groupBy: 'model', from: '2026-10-01' }).success).toBe(false);
+    expect(aiUsageQuerySchema.safeParse({ groupBy: 'model', from: '2026-10-02', to: '2026-10-01' }).success).toBe(false);
+    expect(aiUsageQuerySchema.safeParse({ groupBy: 'model', from: '2026-01-01', to: '2026-06-01' }).success).toBe(false);
+  });
+  it('aiQualityQuerySchema accepts the quality groupings and rejects spend-only ones', () => {
+    for (const g of AI_QUALITY_GROUP_BYS) expect(aiQualityQuerySchema.safeParse({ groupBy: g }).success).toBe(true);
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'user' }).success).toBe(false);
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'prompt_variant' }).success).toBe(false);
+  });
+  it('aiQualityQuerySchema keeps the usage range rules (both-or-neither, ordered, ≤ 92 days)', () => {
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', to: '2026-10-01' }).success).toBe(false);
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', from: '2026-07-01', to: '2026-10-01' }).success).toBe(true);
+    expect(aiQualityQuerySchema.safeParse({ groupBy: 'surface', from: '2026-06-01', to: '2026-10-01' }).success).toBe(false);
+  });
+  it('the prompt variant report caps the range at 31 days', () => {
+    expect(aiPromptVariantReportQuerySchema.safeParse({}).success).toBe(true);
+    expect(aiPromptVariantReportQuerySchema.safeParse({ from: '2026-09-01', to: '2026-10-01' }).success).toBe(true);
+    expect(aiPromptVariantReportQuerySchema.safeParse({ from: '2026-08-01', to: '2026-10-01' }).success).toBe(false);
   });
 });
