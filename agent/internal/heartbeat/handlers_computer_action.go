@@ -14,6 +14,9 @@ func init() {
 
 func handleComputerAction(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+	if refusal := h.supportOneShotScreenAccessRefusal(tools.CmdComputerAction, start); refusal != nil {
+		return *refusal
+	}
 
 	// Service/headless mode: route through IPC to user helper which has a display.
 	// Linux is excluded: no IPC helper on Linux in Phase 1, so take the direct
