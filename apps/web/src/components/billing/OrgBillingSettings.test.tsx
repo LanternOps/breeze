@@ -482,3 +482,45 @@ describe('OrgBillingSettings — payment terms override', () => {
     expect(findPatch()).toBeUndefined();
   });
 });
+
+describe('OrgBillingSettings resolved card AI usage', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const aiApi = (assignment: string | null, ai: Record<string, unknown>) => {
+    fetchMock.mockImplementation(async (url) => {
+      if (url === '/billing-profiles') return json({ profiles: [
+        { ...standardProfile, ...ai },
+        { ...standardProfile, id: 'silver', name: 'Silver', isDefault: false, aiCoverage: 'included', aiMarkupPercent: null, aiRates: [] },
+      ] });
+      if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
+      if (String(url).endsWith('/billing-profile')) return json({ assignment: assignment ? { billingProfileId: assignment } : null });
+      return orgPayload();
+    });
+  };
+
+  it('shows the inherited default card AI terms read-only under the resolved card', async () => {
+    aiApi(null, { aiCoverage: 'billable', aiMarkupPercent: '25.00', aiRates: [] });
+    render(<OrgBillingSettings orgId="org-1" />);
+    const line = await screen.findByTestId('org-billing-profile-ai');
+    expect(line).toHaveTextContent('AI usage: Billable · cost +25%');
+    expect(line.closest('[data-testid="org-billing-profile-rates"]')).not.toBeNull();
+    expect(line.querySelector('input, select, button')).toBeNull();
+  });
+
+  it('describes a price-list card and follows a staged assignment without any request', async () => {
+    aiApi(null, { aiCoverage: 'billable', aiMarkupPercent: null, aiRates: [
+      { modelId: 'a', inputPricePerM: '3', outputPricePerM: '15', cacheReadPricePerM: '0.3', cacheWritePricePerM: '3.75' },
+      { modelId: 'b', inputPricePerM: '1', outputPricePerM: '5', cacheReadPricePerM: '0.1', cacheWritePricePerM: '1.25' },
+    ] });
+    render(<OrgBillingSettings orgId="org-1" />);
+    expect(await screen.findByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Billable · price list (2 models)');
+    fireEvent.change(screen.getByTestId('org-billing-profile'), { target: { value: 'silver' } });
+    expect(screen.getByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Included');
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
+  });
+
+  it('reads a profile without AI fields as Not billed', async () => {
+    aiApi('standard', {});
+    render(<OrgBillingSettings orgId="org-1" />);
+    expect(await screen.findByTestId('org-billing-profile-ai')).toHaveTextContent('AI usage: Not billed');
+  });
+});
