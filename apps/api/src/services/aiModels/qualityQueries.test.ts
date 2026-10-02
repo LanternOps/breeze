@@ -46,6 +46,11 @@ describe('buildQualityQuery', () => {
     expect(sql).toMatch(/i\.surface IN \(\$\d+, \$\d+\)/);
     expect(params).toEqual(expect.arrayContaining(['chat', 'ai_agents']));
   });
+  it('conversationsOnly drops sessionless calls (ticket drafts never get a variant)', () => {
+    expect(render(base({ groupBy: 'prompt_variant', conversationsOnly: true })).sql)
+      .toContain('AND (i.session_id IS NOT NULL OR i.agent_run_id IS NOT NULL)');
+    expect(render(base({ groupBy: 'prompt_variant' })).sql).not.toContain('i.session_id IS NOT NULL OR');
+  });
   it('automatic flags are recognised by the writers\' reason prefixes', () => {
     const { sql, params } = render(base());
     expect(sql).toMatch(/starts_with\(s\.flag_reason, \$\d+\)/);

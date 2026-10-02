@@ -488,7 +488,13 @@ describe('W11 prompt provenance', () => {
     const rows = rowsOf(input({ binding: { ...B, surface: 'helper' }, prompt: { profile: 'claude-frontier', variant: 'chat/claude-frontier@1' } }));
     expect(rows[0]).toMatchObject({ promptProfile: 'claude-frontier', promptVariant: null });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('prompt variant does not match'), expect.anything());
+    // Gate G3 reads Sentry: the drop must be reported there, not only logged.
+    expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'ai_prompt_variant_mismatch' }));
     warn.mockRestore();
+  });
+  it('a matching variant reports nothing to Sentry', () => {
+    rowsOf(input({ prompt: { profile: 'claude-standard', variant: 'chat/claude-standard@1' } }));
+    expect(m.captureMessage).not.toHaveBeenCalled();
   });
   it.each([
     ['another profile', 'chat/claude-small@1', 'chat', 'claude-frontier'],

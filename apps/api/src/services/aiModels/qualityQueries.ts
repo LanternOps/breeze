@@ -64,6 +64,12 @@ export interface QualityQueryInput extends LedgerScopeInput {
   groupBy: QualityGroupKey;
   /** Narrow to these surfaces (the platform variant report passes the prompt-hook surfaces). */
   surfaces?: readonly AiSurface[] | null;
+  /**
+   * Only calls that belong to a session or an agent run. The variant report
+   * sets it: sessionless calls on a hook surface (ticket drafts on `chat`)
+   * never pass through renderSystemPrompt, so they would pad the base arm.
+   */
+  conversationsOnly?: boolean;
 }
 
 export class QualityQueryTimeoutError extends Error {
@@ -104,7 +110,10 @@ export function buildQualityQuery(input: QualityQueryInput, sources: QualitySour
   const surfaceFilter = input.surfaces && input.surfaces.length > 0
     ? sql`AND i.surface IN (${sql.join(input.surfaces.map((s) => sql`${s}`), sql`, `)})`
     : sql``;
-  const autoFlag = sql`(${sql.join(AUTO_FLAG_REASON_PREFIXES.map((p) => sql`starts_with(s.flag_reason, ${p})`), sql` OR `)})`;
+  const conversationFilter = input.conversationsOnly
+    ? sql`AND (i.session_id IS NOT NULL OR i.agent_run_id IS NOT NULL)`
+    : sql``;
+  const autoFlag =sql`(${sql.join(AUTO_FLAG_REASON_PREFIXES.map((p) => sql`starts_with(s.flag_reason, ${p})`), sql` OR `)})`;
   const continued = sources.continuation
     ? sql`EXISTS (SELECT 1 FROM ai_sessions cs WHERE cs.continued_from_session_id = f.session_id)`
     : sql`NULL::boolean`;
@@ -134,7 +143,7 @@ WITH ledger AS (
     ${groupKey(input.groupBy, sources)} AS gkey,
     COALESCE('s:' || i.session_id::text, 'r:' || i.agent_run_id::text) AS conv
   FROM ai_invocations i
-  WHERE ${ledgerWhere(input)} ${surfaceFilter}
+  WHERE ${ledgerWhere(input)} ${surfaceFilter} ${conversationFilter}
 ),
 calls AS (
   SELECT gkey,

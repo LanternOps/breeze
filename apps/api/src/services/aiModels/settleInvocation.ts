@@ -208,6 +208,13 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
   const b = input.binding;
   const promptProfile = input.prompt?.profile ?? b.promptProfile ?? null;
   const promptVariant = consistentPromptVariant(input.prompt?.variant ?? null, b.surface as AiSurface, promptProfile);
+  // A dropped variant mislabels a treated call as the base prompt in the
+  // variant comparison; post-deploy gate G3 watches Sentry for it.
+  if (input.prompt?.variant && promptVariant === null && shouldReport('ai_prompt_variant_mismatch', input.orgId)) {
+    captureMessage('AI prompt variant did not match the settled surface/profile; recorded as the base prompt', {
+      eventCode: 'ai_prompt_variant_mismatch',
+    });
+  }
   // One instant per settlement, taken when the turn is first settled. A
   // deferred settlement persists these rows and replays them later; the
   // replay's INSERT gets a late created_at, but occurredAt keeps turn order.
@@ -287,7 +294,8 @@ async function loadUnboundPlatformRates(binding: TurnBinding, usage: readonly Bi
   return rates;
 }
 
-type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted';
+type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted'
+  | 'ai_prompt_variant_mismatch';
 const lastReportedAt = new Map<string, number>();
 const MAX_THROTTLE_KEYS = 10_000;
 

@@ -32,7 +32,7 @@ export async function buildPromptVariantReport(
   sources?: QualitySources,
 ): Promise<AiPromptVariantReportDto> {
   const result = await queryAiQuality({
-    groupBy: 'prompt_variant', from: range.from, to: range.to, orgId: null, accessibleOrgIds: null, surfaces: PROMPT_VARIANT_SURFACES,
+    groupBy: 'prompt_variant', from: range.from, to: range.to, orgId: null, accessibleOrgIds: null, surfaces: PROMPT_VARIANT_SURFACES, conversationsOnly: true,
   }, sources);
   const zero = toQualityMetrics(EMPTY_QUALITY_ROW, { failover: result.sources.failovers, continuation: result.sources.continuations });
   const byKey = new Map(result.rows.map((r) => [r.key, r]));

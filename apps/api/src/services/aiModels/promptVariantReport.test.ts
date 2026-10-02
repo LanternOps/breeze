@@ -19,7 +19,7 @@ describe('buildPromptVariantReport', () => {
     m.queryAiQuality.mockResolvedValue({ rows: [], totals: metrics(0), sources: { failovers: true, continuations: true } });
     await buildPromptVariantReport({ from: '2026-09-01', to: '2026-09-28' }, [v('chat/claude-small@1', 1, 'active')], ON);
     expect(m.queryAiQuality).toHaveBeenCalledWith({
-      groupBy: 'prompt_variant', from: '2026-09-01', to: '2026-09-28', orgId: null, accessibleOrgIds: null, surfaces: PROMPT_VARIANT_SURFACES,
+      groupBy: 'prompt_variant', from: '2026-09-01', to: '2026-09-28', orgId: null, accessibleOrgIds: null, surfaces: PROMPT_VARIANT_SURFACES, conversationsOnly: true,
     }, ON);
   });
 
