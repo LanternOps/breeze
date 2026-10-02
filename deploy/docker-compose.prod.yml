@@ -165,6 +165,7 @@ x-api-env: &api-env
   EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: ${EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   AI_PLATFORM_INFERENCE_GEO: ${AI_PLATFORM_INFERENCE_GEO:-}
+  AI_GATEWAY_HEADERS_TIMEOUT_SECONDS: ${AI_GATEWAY_HEADERS_TIMEOUT_SECONDS:-}
   # Hardware warranty lookups (all optional, OFF unless set). See
   # https://docs.breezermm.com/deploy/environment/#warranty-lookups
   DELL_CLIENT_ID: ${DELL_CLIENT_ID:-}
