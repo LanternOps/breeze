@@ -46,7 +46,10 @@ function orgScope(accessibleOrgIds: string[] | null): SQL {
   return sql`AND i.org_id IN (${sql.join(accessibleOrgIds.map((id) => sql`${id}::uuid`), sql`, `)})`;
 }
 
-function where(input: UsageQueryInput): SQL {
+/** The ledger scope every AI-usage read shares (spend here, quality in qualityQueries.ts). */
+export type LedgerScopeInput = Pick<UsageQueryInput, 'from' | 'to' | 'orgId' | 'accessibleOrgIds'>;
+
+export function ledgerWhere(input: LedgerScopeInput): SQL {
   return sql`i.ledger_mode = 'authoritative'
     AND i.created_at >= ${`${input.from}T00:00:00.000Z`}::timestamptz
     AND i.created_at < ${nextDayIso(input.to)}::timestamptz
@@ -104,7 +107,7 @@ function buildModelQuery(input: UsageQueryInput): SQL {
         ${AGGREGATES},
         SUM(i.cost_cents) AS sort_cost, COUNT(*) AS sort_count
       FROM ai_invocations i
-      WHERE ${where(input)}
+      WHERE ${ledgerWhere(input)}
       GROUP BY i.funding_source, i.connection_id, i.served_model
       ORDER BY SUM(i.cost_cents) DESC NULLS LAST, COUNT(*) DESC
       LIMIT 200
@@ -130,7 +133,7 @@ export function buildUsageQuery(input: UsageQueryInput): SQL {
     SELECT ${g.key} AS key, ${g.label} AS label, ${AGGREGATES}
     FROM ai_invocations i
     ${g.join}
-    WHERE ${where(input)}
+    WHERE ${ledgerWhere(input)}
     GROUP BY 1
     ${ORDER_AND_LIMIT}`;
 }
@@ -169,7 +172,7 @@ const EMPTY: RawRow = { invocations: '0', cost_cents: null, input_tokens: null, 
 
 export async function queryAiUsageBreakdown(input: UsageQueryInput): Promise<AiUsageBreakdownDto> {
   const rows = await db.execute<RawRow>(buildUsageQuery(input));
-  const [total] = await db.execute<RawRow>(sql`SELECT ${AGGREGATES} FROM ai_invocations i WHERE ${where(input)}`);
+  const [total] = await db.execute<RawRow>(sql`SELECT ${AGGREGATES} FROM ai_invocations i WHERE ${ledgerWhere(input)}`);
   const { key: _k, label: _l, ...totals } = toUsageRow(total ?? EMPTY);
   return { groupBy: input.groupBy, from: input.from, to: input.to, orgId: input.orgId, rows: [...rows].map(toUsageRow), totals };
 }
