@@ -166,11 +166,14 @@ function packCard(group: LayoutBox, members: LayoutBox[], fixed: Map<string, Lay
 
 function groupedStages(request: LayoutRequest) {
   const fixed = fixedPositions(request);
+  // Inside a card only real pins hold a member: unpinned saved coordinates (an old flat layout, or a
+  // previous grouped arrangement) must not stretch or freeze the card; it re-packs deterministically.
+  const pinnedOnly = new Map([...fixed].filter(([, p]) => p.pinned));
   const groupIds = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
   const membersOf = new Map<string, LayoutBox[]>();
   for (const node of request.nodes) if (node.groupId && groupIds.has(node.groupId)) membersOf.set(node.groupId, [...(membersOf.get(node.groupId) ?? []), node]);
   const cards = new Map<string, Card>();
-  for (const group of request.nodes) if (groupIds.has(group.id) && membersOf.has(group.id)) cards.set(group.id, packCard(group, membersOf.get(group.id)!, fixed));
+  for (const group of request.nodes) if (groupIds.has(group.id) && membersOf.has(group.id)) cards.set(group.id, packCard(group, membersOf.get(group.id)!, pinnedOnly));
   const homeOf = new Map<string, string>();
   for (const [group, members] of membersOf) if (cards.has(group)) for (const member of members) homeOf.set(member.id, group);
   const topNodes: LayoutBox[] = request.nodes.filter((node) => !homeOf.has(node.id) && !(groupIds.has(node.id) && !cards.has(node.id)))
@@ -184,11 +187,11 @@ function groupedStages(request: LayoutRequest) {
     ...[...cards.values()].filter((card) => card.fixed).map((card) => ({ nodeId: card.id, ...card.fixed!, pinned: true })),
   ];
   const top: LayoutRequest = { ...request, nodes: topNodes, edges: topEdges, positions: topPositions };
-  return { top, cards, homeOf, fixed };
+  return { top, cards, homeOf, fixed, pinnedOnly };
 }
 
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
-  const { top, cards, homeOf, fixed } = groupedStages(request);
+  const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
   // Cards that hold pins are fixed obstacles; their pins are reported, not "pinned overlap" of the card itself.
   const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
@@ -196,7 +199,7 @@ function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { 
   for (const point of placed.positions) if (!cards.has(point.nodeId)) positions.push({ ...point, pinned: fixed.get(point.nodeId)?.pinned ?? false });
   for (const [member, group] of homeOf) {
     const card = cards.get(group)!, c = centre.get(group)!, local = card.local.get(member)!;
-    const pin = fixed.get(member);
+    const pin = pinnedOnly.get(member);
     positions.push(pin ? { ...pin } : { nodeId: member, x: c.x - card.width / 2 + local.x, y: c.y - card.height / 2 + local.y, pinned: false });
   }
   const { requestId, graphRevision, layoutRevision, measurementRevision, algorithmVersion } = request;

@@ -72,7 +72,9 @@ function emptyGraph(ctx: TopologyRequestContext, query: GraphQuery, authority: A
     coverage: { state: 'unknown', reasons: [{ code: 'topology_preparing', message: 'No topology snapshot has been published.' }] },
     frontier: [], permissions: { canEdit: authority.canEdit, canDiagnose: false, canConfigureMonitoring: false } };
 }
-async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuery, authority: Authority, claims?: GraphTokenClaims, groupOnly = false): Promise<GraphResponse> {
+/** `presentationGroups: false` skips the complete-site grouping read for callers that never render cards (AI reads). */
+export type GraphReadOptions = { presentationGroups?: boolean };
+async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuery, authority: Authority, claims?: GraphTokenClaims, groupOnly = false, options: GraphReadOptions = {}): Promise<GraphResponse> {
   const graph = emptyGraph(ctx, query, authority);
   const state = await readState(tx, ctx, claims);
   if (!state) {
@@ -179,7 +181,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
         frontierToken: token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId: outside } }) };
     });
   }
-  if (!groupOnly && query.view !== 'physical' && ids.length) {
+  if (!groupOnly && options.presentationGroups !== false && query.view !== 'physical' && ids.length) {
     // Grouped overview: inferred site+prefix cards over the COMPLETE site, listing only
     // this page's canonical ids. Presentation only — never authority (D:50, C:19).
     const groups = buildPresentationGroups(await readPresentationGroupInput(tx, ctx.scope, query.view, exposure), {
@@ -196,9 +198,9 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
   }
   return response(graph, authority, { query, after: claims?.after, edgeAfter: claims?.edgeAfter, boundaryAfter: claims?.boundaryAfter, boundaryOnly: claims?.boundaryOnly });
 }
-export async function getTopologyGraph(ctx: TopologyRequestContext, query: GraphQuery): Promise<GraphResponse> {
+export async function getTopologyGraph(ctx: TopologyRequestContext, query: GraphQuery, options: GraphReadOptions = {}): Promise<GraphResponse> {
   const parsed = input(graphQuerySchema, query); const authority = await graphAuthority(ctx);
-  return db.transaction((tx) => project(tx, ctx, parsed, authority));
+  return db.transaction((tx) => project(tx, ctx, parsed, authority, undefined, false, options));
 }
 export async function expandTopologyGraph(ctx: TopologyRequestContext, encoded: string): Promise<GraphResponse> {
   const authority = await graphAuthority(ctx);

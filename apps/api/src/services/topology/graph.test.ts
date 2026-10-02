@@ -387,6 +387,13 @@ describe('grouped overview presentation (2026-10-02)', () => {
     expect(read.sql).not.toMatch(/\b(insert|update|delete)\b/i);
   });
 
+  it('skips the complete-site group read when the caller does not render groups (AI reads)', async () => {
+    rows();
+    const graph = await getTopologyGraph(ctx, { ...twoNodes, view: 'overview' }, { presentationGroups: false });
+    expect(graph.presentation.nodes.some((entry) => entry.group)).toBe(false);
+    expect(groupRead()).toBeUndefined();
+  });
+
   it('never groups the physical view and never re-reads groups for a group-member read', async () => {
     rows();
     const graph = await getTopologyGraph(ctx, { ...twoNodes, view: 'physical' });

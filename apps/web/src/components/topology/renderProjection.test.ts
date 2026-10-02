@@ -78,7 +78,8 @@ describe('compileTopologyRender', () => {
   it('shows link-local and other non-LAN cards only when asked, never as a member’s primary home', () => {
     const { graph: g, ids } = lan();
     const render = compileTopologyRender(g, { showAllNetworks: true });
-    expect(render.nodes.find((n) => n.id === P('net-ll'))).toMatchObject({ kind: 'group', networkClass: 'link_local' });
+    // Its only device lives in the LAN card, so it is drawn as a summary tile, never as an empty compound card.
+    expect(render.nodes.find((n) => n.id === P('net-ll'))).toMatchObject({ kind: 'network', networkClass: 'link_local' });
     expect(render.nodes.find((n) => n.id === ids.a)?.parent).toBe(P('net-lan'));
     expect(render.hiddenNetworkCount).toBe(0);
     expect(compileTopologyRender(g, { showAllNetworks: false }).hiddenNetworkCount).toBe(1);
@@ -109,5 +110,17 @@ describe('compileTopologyRender', () => {
     const render = compileTopologyRender(graph([node(a!, 'endpoint', 'pc')], [], [outside], [edge]), { showAllNetworks: false });
     expect(render.nodes.find((n) => n.id === P('outside'))).toMatchObject({ kind: 'outside' });
     expect(render.edges).toMatchObject([{ id: P('edge-x'), style: 'inferred' }]);
+  });
+
+  it('draws a LAN whose only devices live in another card (dual-homed host) as a summary tile linked by its shared edge', () => {
+    const { graph: g, ids } = lan();
+    g.presentation.nodes.push(group(P('net-lan2'), '10.9.9.0/24', net('10.9.9.0/24', 'lan', [{ nodeId: ids.a, primary: false }], [])));
+    g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
+      meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
+    const render = compileTopologyRender(g, { showAllNetworks: false });
+    expect(render.nodes.find((n) => n.id === P('net-lan2'))).toMatchObject({ kind: 'network', label: '10.9.9.0/24', detail: '1 device' });
+    expect(render.nodes.some((n) => n.parent === P('net-lan2'))).toBe(false);
+    expect(render.edges.find((e) => e.id === P('sd-1'))).toMatchObject({ style: 'shared', target: P('net-lan2') });
+    expect(render.nodes.find((n) => n.id === ids.a)?.parent).toBe(P('net-lan'));
   });
 });

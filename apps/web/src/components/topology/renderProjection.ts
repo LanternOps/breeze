@@ -52,29 +52,41 @@ function groupNode(group: PresentationNode): RenderNode {
     networkClass: g.networkClass, memberCount: group.memberCount };
 }
 
+/** A network whose devices are all drawn in other cards: a compact tile, never an empty compound card. */
+function summaryNode(group: PresentationNode): RenderNode {
+  return { id: group.id, label: group.label, detail: `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`, kind: 'network', glyph: 'network',
+    presence: null, health: null, stale: false, unverified: false, networkClass: group.group!.networkClass, memberCount: group.memberCount };
+}
+
 export function compileTopologyRender(graph: GraphResponse, { showAllNetworks }: { showAllNetworks: boolean }): TopologyRender {
   const groups = graph.presentation.nodes.filter((node) => node.group);
   const shownGroup = (group: PresentationNode) => group.group!.kind !== 'network' || showAllNetworks || group.group!.networkClass === 'lan';
   const folded = new Set(groups.flatMap((group) => group.group!.canonicalNodeIds));
   const visibleGroups = groups.filter(shownGroup);
-  const visibleGroupIds = new Set(visibleGroups.map((group) => group.id));
-  // Gateways of hidden networks disappear with them: a gateway group is shown only when a shown network routes via it.
-  const routes = graph.presentation.edges.filter((edge) => edge.meaning === 'aggregate' && edge.role === 'routes_via');
-  const shownGateways = new Set(routes.filter((edge) => visibleGroupIds.has(edge.sourceNodeId)).map((edge) => edge.targetNodeId));
-  const renderedGroups = visibleGroups.filter((group) => group.group!.kind !== 'gateway' || shownGateways.has(group.id));
-  const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
-
-  // Each member has exactly one visual home: its primary group when shown, otherwise the first shown group listing it.
+  // Each member has exactly one visual home: its primary card when shown, otherwise the first shown card listing it.
   const home = new Map<string, { group: string; stale: boolean; placement: string }>();
+  const cards = visibleGroups.filter((group) => group.group!.kind !== 'gateway');
   for (const pass of [true, false]) {
-    for (const group of renderedGroups) {
+    for (const group of cards) {
       for (const member of group.group!.members) {
         if (member.primary === pass && !home.has(member.nodeId)) home.set(member.nodeId, { group: group.id, stale: member.stale, placement: member.placement });
       }
     }
   }
+  // A card with nothing homed in it (a dual-homed host's second LAN, or members on another page) has no
+  // bounds to draw; its gateways disappear with it unless another drawn card routes via them.
+  const homed = new Set([...home.values()].map((entry) => entry.group));
+  const drawnCards = new Set(cards.filter((group) => homed.has(group.id)).map((group) => group.id));
+  const routes = graph.presentation.edges.filter((edge) => edge.meaning === 'aggregate' && edge.role === 'routes_via');
+  const shownGateways = new Set(routes.filter((edge) => drawnCards.has(edge.sourceNodeId)).map((edge) => edge.targetNodeId));
+  // Shown cards with nothing homed in them become summary tiles (no compound bounds to draw).
+  const summaries = new Set(cards.filter((group) => !drawnCards.has(group.id)).map((group) => group.id));
+  const routedFrom = new Set([...drawnCards, ...summaries]);
+  for (const edge of routes) if (routedFrom.has(edge.sourceNodeId)) shownGateways.add(edge.targetNodeId);
+  const renderedGroups = visibleGroups.filter((group) => group.group!.kind === 'gateway' ? shownGateways.has(group.id) : true);
+  const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
   const nodes: RenderNode[] = [];
-  for (const group of renderedGroups) nodes.push(groupNode(group));
+  for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group) : groupNode(group));
   for (const node of graph.nodes) {
     if (folded.has(node.id)) continue;
     const member = home.get(node.id);

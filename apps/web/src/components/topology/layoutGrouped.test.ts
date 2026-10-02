@@ -78,10 +78,20 @@ describe('grouped two-stage layout', () => {
     expect(findOverlaps(result, request)).toEqual([]);
   });
 
-  it('reflow ignores unpinned saved positions; incremental keeps them', async () => {
+  it('never anchors a card on unpinned saved positions (old flat layouts); only real pins hold a member in place', async () => {
     const saved = { nodeId: 'pc-07', x: -9_000, y: -9_000, pinned: false };
-    expect((await computeTopologyLayout(groupedRequest('reflow', [saved]), new ELK())).positions.find((p) => p.nodeId === 'pc-07')).not.toEqual(saved);
-    expect((await computeTopologyLayout(groupedRequest('incremental', [saved]), new ELK())).positions.find((p) => p.nodeId === 'pc-07')).toEqual(saved);
+    for (const mode of ['reflow', 'incremental'] as const) {
+      const request = groupedRequest(mode, [saved]);
+      const result = await computeTopologyLayout(request, new ELK());
+      expect(result.positions.find((p) => p.nodeId === 'pc-07')).not.toEqual(saved);
+      const lan = bounds(result, request, members(request, 'lan'));
+      expect(lan.x2 - lan.x1).toBeLessThan(3_000);
+    }
+  });
+
+  it('keeps a saved top-level position on incremental placement (existing contract for ungrouped tiles)', async () => {
+    const saved = { nodeId: 'loose', x: 7_000, y: 7_000, pinned: false };
+    expect((await computeTopologyLayout(groupedRequest('incremental', [saved]), new ELK())).positions.find((p) => p.nodeId === 'loose')).toEqual(saved);
   });
 
   it('falls back without ELK yet keeps cards together and collision-free', () => {
