@@ -1,3 +1,6 @@
+const collectionAvailable = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('../autopay/reservation', () => ({ assertCollectionAmountAvailable: collectionAvailable }));
+import { InvoiceServiceError } from '../invoiceTypes';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
@@ -517,6 +520,19 @@ describe('paymentMappingRemoteId', () => {
 });
 
 describe('applyAccountingPayment', () => {
+it('holds an imported payment for retry when an active attempt owns its balance', async () => {
+  collectionAvailable.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));
+  await expect(applyAccountingPayment(conn(), LINE, runCtx, REALM_FP)).rejects.toMatchObject({ code: 'COLLECTION_IN_PROGRESS' });
+  expect(currentPayments).toHaveLength(0);
+  expect(currentMappings.filter(row => row.breezeEntityType === 'payment')).toHaveLength(0);
+});
+it('checks only the increase when replacing an imported payment', async () => {
+  currentPayments = [paymentRow()];
+  currentMappings.push(paymentMappingRow({ remoteSyncToken: 'old' }));
+  await applyAccountingPayment(conn(), { ...LINE, remotePaymentVersion: 'new' }, runCtx, REALM_FP);
+  expect(collectionAvailable).toHaveBeenCalledWith(db, INVOICE_ID, '150.00', currentPayments[0]!.id);
+});
+
   it('refuses to run inside an ambient DB access context', async () => {
     await expect(runCtx(() => applyAccountingPayment(conn(), LINE, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);

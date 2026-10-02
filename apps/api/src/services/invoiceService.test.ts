@@ -1,3 +1,8 @@
+vi.mock('./autopay/reservation', () => ({
+  assertCollectionAmountAvailable: vi.fn().mockResolvedValue(undefined),
+  assertNoActiveCollection: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Controllable Drizzle chain mock: every builder method returns the same

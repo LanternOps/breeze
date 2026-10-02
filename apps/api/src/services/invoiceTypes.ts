@@ -86,6 +86,7 @@ export type InvoiceServiceErrorCode =
   | 'OVERPAYMENT'
   | 'INVALID_STATE'
   | 'INVALID_AMOUNT'
+  | 'COLLECTION_IN_PROGRESS'
   | 'LINE_NOT_FOUND'
   | 'PAYMENT_NOT_FOUND'
   // The payment came from the connected accounting provider, which is its

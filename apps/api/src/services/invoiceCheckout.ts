@@ -1,3 +1,5 @@
+import { assertNoActiveCollection, lockInvoiceForCollection } from './autopay/reservation';
+import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
 import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -36,6 +38,21 @@ export function checkoutSessionExpiry(now: Date = new Date()): { expiresAt: numb
 // Statuses whose balance can be collected online. Mirrors the customer-portal
 // PAYABLE set (routes/portal/invoices.ts) — drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+
+/** Internal publication gate shared by the portal and partner Checkout producers.
+ * Caller must keep this transaction open through mapping and revocation intent.
+ */
+export async function checkCheckoutPublicationInTx(
+  tx: Tx, inv: Pick<typeof invoices.$inferSelect, 'id' | 'currencyCode'>, chargeMinor: number,
+): Promise<{ racedCollection: boolean; racedBalance: boolean }> {
+  const collection = await lockInvoiceForCollection(tx, inv.id);
+  return {
+    racedCollection: collection.reservedAmount !== '0.00',
+    racedBalance: !PAYABLE.has(collection.invoice.status)
+      || collection.invoice.currencyCode !== inv.currencyCode
+      || toMinorUnits(computeChargeNow({ depositDue: collection.invoice.depositDue, amountPaid: collection.invoice.amountPaid, balance: collection.invoice.balance }, collection.invoice.currencyCode).amount, collection.invoice.currencyCode) !== chargeMinor,
+  };
+}
 
 /**
  * Partner-initiated "Send payment link": open a Stripe Checkout session on the
@@ -82,6 +99,7 @@ export async function createInvoicePayLink(
   // Site-axis guard: a site-restricted caller must not mint a pay link for an
   // out-of-site invoice. No-op for unrestricted (partner/system/portal) actors.
   requireSiteAccess(actor, inv.siteId);
+  await withSystemDbAccessContext(() => assertNoActiveCollection(db, inv.id));
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
   // SEC-150 producer gate. Once a transition has recorded revocation intent for
   // this invoice, minting another session would re-open the very window the
@@ -196,7 +214,10 @@ export async function createInvoicePayLink(
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
   let raced = false;
+  let racedCollection = false;
+  let racedBalance = false;
   await withSystemDbAccessContext(async () => {
+    ({ racedCollection, racedBalance } = await checkCheckoutPublicationInTx(db, inv, chargeMinor));
     // Serialize the final mapping insert against account replacement. If the
     // key changed during the external Checkout call, never return an orphaned
     // payment URL whose future reversals cannot be observed.
@@ -222,7 +243,7 @@ export async function createInvoicePayLink(
         eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
-    raced = racedRevocation !== undefined;
+    raced = racedRevocation !== undefined || racedCollection || racedBalance;
     await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
@@ -245,6 +266,9 @@ export async function createInvoicePayLink(
     }
   });
 
+  if (racedCollection) {
+    throw new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS');
+  }
   if (raced) {
     throw new InvoiceServiceError(
       'A payment link for this invoice is still being revoked — try again in a moment.',

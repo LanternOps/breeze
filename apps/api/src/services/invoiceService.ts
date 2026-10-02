@@ -1,3 +1,4 @@
+import { assertCollectionAmountAvailable, assertNoActiveCollection } from './autopay/reservation';
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } from 'drizzle-orm';
 import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -1760,6 +1761,7 @@ export async function recordPayment(invoiceId: string, input: RecordPaymentInput
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Cannot record payment on a draft', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Cannot record payment on a void invoice', 409, 'INVALID_STATE');
+    await assertCollectionAmountAvailable(tx, invoiceId, String(input.amount));
     // SEC-150 phase 3, under the invoice lock so a session minted between phase
     // 2 and here cannot slip through. Refuses with 503 STRIPE_REVOCATION_PENDING
     // and rolls the whole payment back; the durable intent stays and the sweep
@@ -2241,6 +2243,7 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     requireInvoiceAccess(actor, inv);
     if (inv.status === 'draft') throw new InvoiceServiceError('Delete drafts instead of voiding', 409, 'INVALID_STATE');
     if (inv.status === 'void') throw new InvoiceServiceError('Already void', 409, 'INVALID_STATE');
+    await assertNoActiveCollection(db, invoiceId);
 
     // 1b. APPLIED PAYMENTS BLOCK THE VOID (#5180).
     //

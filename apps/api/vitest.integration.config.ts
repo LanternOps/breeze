@@ -11,6 +11,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
+      'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',
       'src/routes/integrationConnectionScope.integration.test.ts',
@@ -388,7 +389,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      include: ['src/**/*.ts'],
+      include: [
+      'src/services/autopay/**/*.integration.test.ts','src/**/*.ts'],
       exclude: [
         'src/**/*.test.ts',
         'src/__tests__/**',

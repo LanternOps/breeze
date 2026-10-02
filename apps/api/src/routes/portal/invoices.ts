@@ -1,3 +1,4 @@
+import { assertNoActiveCollection } from '../../services/autopay/reservation';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -23,7 +24,7 @@ import { HeldDbContextForStripeError, settleCheckoutSession } from '../../servic
 import { toMinorUnits } from '../../services/stripeMoney';
 import { computeChargeNow } from '@breeze/shared';
 import { mapStripeCheckoutError, CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../../services/stripeCheckoutErrors';
-import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
+import { checkoutSessionExpiry, checkCheckoutPublicationInTx } from '../../services/invoiceCheckout';
 import {
   assertNoPendingRevocation,
   markSessionRevocationRequestedInTx,
@@ -225,10 +226,11 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // the customer is asked to retry rather than handed a link nobody can kill.
   // Elects its own system scope — never wrap it in a bare context here (#5611).
   try {
+    await withSystemDbAccessContext(() => assertNoActiveCollection(db, inv.id));
     await assertNoPendingRevocation(inv.id);
   } catch (err) {
-    if (err instanceof InvoiceServiceError && err.code === REVOCATION_PENDING_CODE) {
-      return c.json({ error: err.message, code: REVOCATION_PENDING_CODE }, 409);
+    if (err instanceof InvoiceServiceError && (err.code === REVOCATION_PENDING_CODE || err.code === 'COLLECTION_IN_PROGRESS')) {
+      return c.json({ error: err.message, code: err.code }, 409);
     }
     throw err;
   }
@@ -348,7 +350,10 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // Fresh short context so the pending-mapping write isn't a contextless 0-row
   // no-op under forced-RLS breeze_app (#1375).
   let raced = false;
+  let racedCollection = false;
+  let racedBalance = false;
   const mappingPersisted = await withSystemDbAccessContext(async () => {
+    ({ racedCollection, racedBalance } = await checkCheckoutPublicationInTx(db, inv, chargeMinor));
     const [currentConnection] = await db.select({ id: stripeConnectAccounts.id })
       .from(stripeConnectAccounts).where(and(
         eq(stripeConnectAccounts.partnerId, inv.partnerId),
@@ -369,7 +374,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
         eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
-    raced = racedRevocation !== undefined;
+    raced = racedRevocation !== undefined || racedCollection || racedBalance;
     await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
@@ -392,6 +397,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     }
     return true;
   });
+  if (racedCollection) return c.json({ error: 'A payment is already processing', code: 'COLLECTION_IN_PROGRESS' }, 409);
   if (raced) {
     return c.json({
       error: 'A payment link for this invoice is still being revoked — try again in a moment.',

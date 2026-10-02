@@ -250,6 +250,9 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
+      if (err.code === 'COLLECTION_IN_PROGRESS') {
+        return c.json({ error: 'A payment is already processing', code: err.code }, 409);
+      }
       // Customer-facing wording for the benign 409s.
       if (err.code === 'STRIPE_NOT_CONNECTED') {
         return c.json({ error: 'Online payment is not available for this invoice — please contact the sender', code: err.code }, 409);

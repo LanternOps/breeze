@@ -369,7 +369,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
 
   runDb('a later payment clears the payment-pull marker but never a push-originated one (finding G)', async () => {
     const fx = await seedFixture();
-    const invoiceId = await seedInvoice(fx, { total: '150.00' });
+    const invoiceId = await seedInvoice(fx, { total: '300.00' });
     const mappingId = await seedInvoiceMapping(fx, invoiceId, '145');
 
     // A payment-originated marker (a currency mismatch that has since been fixed).
