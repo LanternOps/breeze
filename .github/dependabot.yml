@@ -125,6 +125,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # Tauri JS packages move together. They must also track the
+      # `tauri` / `tauri-plugin-*` crates' major.minor in each app's
+      # Cargo.lock (the Tauri CLI refuses a mismatched build). Cargo and npm
+      # bumps cannot share one Dependabot PR here, so
+      # scripts/check-tauri-versions.mjs (ci.yml lint job) reds the half-bump
+      # PR and the other side gets bumped in the same PR before merging.
+      tauri:
+        patterns:
+          - "@tauri-apps/*"
     labels:
       - "dependencies"
       - "npm"
@@ -255,6 +264,12 @@ updates:
           - "cipher"
           - "aes*"
           - "crypto-common"
+      # tauri + tauri-plugin-* + tauri-build move together; the matching
+      # @tauri-apps/* npm bump is enforced by scripts/check-tauri-versions.mjs.
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
     labels:
       - "dependencies"
       - "rust"
@@ -285,6 +300,12 @@ updates:
           - "cipher"
           - "aes*"
           - "crypto-common"
+      # tauri + tauri-plugin-* + tauri-build move together; the matching
+      # @tauri-apps/* npm bump is enforced by scripts/check-tauri-versions.mjs.
+      tauri:
+        patterns:
+          - "tauri"
+          - "tauri-*"
     labels:
       - "dependencies"
       - "rust"
