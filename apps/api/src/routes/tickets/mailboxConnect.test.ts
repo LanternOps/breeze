@@ -725,8 +725,8 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(mocks.writeAuditEvent).not.toHaveBeenCalled();
   });
 
-  it('never binds tenant ownership when the stored mailbox probe fails', async () => {
-    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'Graph leaked body' });
+  it('never binds tenant ownership when the probe fails for an auth/consent reason (re-consent is the right next step)', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, kind: 'auth', error: 'Graph leaked body' });
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });
@@ -744,8 +744,55 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(JSON.stringify(mocks.writeAuditEvent.mock.calls)).not.toContain('Graph leaked body');
   });
 
+  it.each([
+    ['policy not yet propagated (403)', 'policy', 'Graph 403 (ErrorAccessDenied)'],
+    ['mailbox not found yet (404)', 'policy', 'Graph 404 (ErrorInvalidUser)'],
+    ['transient Graph outage (503)', 'transient', 'Graph 503'],
+  ] as const)('#7569: %s keeps the verified tenant bound in `error` so the Application Access step stays visible', async (_l, kind, reason) => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, kind, error: 'x', reason });
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=needs_policy');
+    expect(mocks.bindVerifiedTenant).toHaveBeenCalledWith(
+      CONNECTION_ID, PARTNER_ID, ATTEMPT_ID, TENANT_ID,
+      { microsoftOid: MICROSOFT_OID, breezeUserId: USER_ID },
+      { status: 'error', lastError: `Mailbox verification failed: ${reason}` },
+    );
+    expect(mocks.markPendingConsentFailed).not.toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'ticket_mailbox.verification_failed',
+      details: expect.objectContaining({ outcome: 'probe_failed', probeReason: reason }),
+    }));
+  });
+
+  it('#7569: falls back to reauth_required when the tenant cannot be bound after a non-auth probe failure', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, kind: 'policy', error: 'x', reason: 'Graph 403' });
+    mocks.bindVerifiedTenant.mockRejectedValue(new Error('Mailbox tenant is already owned by another partner'));
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=error');
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalled();
+    expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ outcome: 'ownership_conflict' }),
+    }));
+  });
+
+  it('#7569: an absent probe kind fails closed to reauth_required (no tenant bind)', async () => {
+    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'x' });
+    await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(mocks.bindVerifiedTenant).not.toHaveBeenCalled();
+    expect(mocks.markPendingConsentFailed).toHaveBeenCalled();
+  });
+
   it('carries the sanitized probe reason into lastError and the audit details', async () => {
-    mocks.probeMailbox.mockResolvedValue({ ok: false, error: 'Graph returned 403', reason: 'Graph 403 (ErrorAccessDenied)' });
+    mocks.probeMailbox.mockResolvedValue({ ok: false, kind: 'auth', error: 'Graph returned 401', reason: 'Graph 403 (ErrorAccessDenied)' });
     await app.request('/callback?state=identity-state&code=authorization-code', {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });

@@ -458,6 +458,10 @@ export async function bindVerifiedTenant(
   consentAttemptId: string,
   tenantId: string,
   evidence: { microsoftOid: string; breezeUserId: string | null },
+  /** Bind the verified tenant but land in `error` (carrying lastError) rather than
+   * `connected` — used when the post-consent probe failed for a non-auth reason
+   * (#7569), so Re-test and the Application Access step stay available. */
+  probeFailure?: { status: 'error'; lastError: string },
 ): Promise<void> {
   const normalizedTenantId = tenantId.toLowerCase();
   const normalizedMicrosoftOid = evidence.microsoftOid.toLowerCase();
@@ -485,8 +489,8 @@ export async function bindVerifiedTenant(
     const updated = await tx.update(ticketMailboxConnections)
       .set({
         tenantId: normalizedTenantId,
-        status: 'connected',
-        lastError: null,
+        status: probeFailure?.status ?? 'connected',
+        lastError: probeFailure?.lastError ?? null,
         updatedAt: new Date(),
       })
       .where(and(
@@ -660,8 +664,15 @@ export async function resetDeltaCursor(snapshot: MailboxConnectionSnapshot): Pro
   }));
 }
 
+/** Why a probe failed. `auth`: the app cannot get/use a token in the tenant
+ * (consent missing or revoked) — re-consent is the fix. `policy`: Graph reached
+ * the mailbox and refused/could not find it (Application Access Policy not
+ * applied or not yet propagated). `transient`: throttling, outage, network. */
+export type MailboxProbeFailureKind = 'auth' | 'policy' | 'transient';
+
 export interface MailboxProbeResult {
   ok: boolean;
+  kind?: MailboxProbeFailureKind;
   error?: string;
   /** Operator-safe diagnostic: HTTP status + Graph `error.code` only, never message bodies. */
   reason?: string;
@@ -679,10 +690,18 @@ export async function probeMailbox(tenantId: string, mailboxAddress: string): Pr
       ok: false,
       error: err instanceof Error ? err.message : 'token acquisition failed',
       reason: 'token acquisition failed',
+      kind: 'auth',
     };
   }
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailboxAddress)}/messages?${encodeURIComponent('$top')}=1`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' });
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' });
+  } catch (err) {
+    // Name only — messages can echo URL fragments.
+    console.warn('[ticketMailbox] Graph probe request failed', { errorName: err instanceof Error ? err.name : typeof err });
+    return { ok: false, kind: 'transient', error: 'Graph request failed', reason: 'Graph request failed' };
+  }
   if (res.ok) return { ok: true };
   let code: string | undefined;
   try {
@@ -695,8 +714,12 @@ export async function probeMailbox(tenantId: string, mailboxAddress: string): Pr
     // which can echo a fragment of the response body.
     console.warn('[ticketMailbox] failed to parse Graph error body', { status: res.status });
   }
+  const kind: MailboxProbeFailureKind = res.status === 401 ? 'auth'
+    : res.status === 403 || res.status === 404 ? 'policy'
+    : 'transient';
   return {
     ok: false,
+    kind,
     error: `Graph returned ${res.status}`,
     reason: code ? `Graph ${res.status} (${code})` : `Graph ${res.status}`,
   };
