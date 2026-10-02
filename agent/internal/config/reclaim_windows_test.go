@@ -360,7 +360,8 @@ func lockOutAgent(t *testing.T, dir, path string) {
 		t.Fatal(err)
 	}
 	p16, _ := windows.UTF16PtrFromString(path)
-	h, err := windows.CreateFile(p16, windows.WRITE_DAC, shareAll, nil, windows.OPEN_EXISTING,
+	// SetSecurityInfo reads the current descriptor too, so READ_CONTROL.
+	h, err := windows.CreateFile(p16, windows.WRITE_DAC|windows.READ_CONTROL, shareAll, nil, windows.OPEN_EXISTING,
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		t.Fatalf("open %s to lock it: %v", path, err)
@@ -496,14 +497,15 @@ func takeOverEntryForTest(path string) error {
 	}
 	owner, _, _ := sd.Owner()
 	dacl, _, _ := sd.DACL()
-	release, err := enableTokenPrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege")
+	release, err := enableTokenPrivileges("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege")
 	if err != nil {
 		return err
 	}
 	defer release()
 	set := func(access uint32, info windows.SECURITY_INFORMATION, o *windows.SID, d *windows.ACL) error {
 		p16, _ := windows.UTF16PtrFromString(path)
-		h, err := windows.CreateFile(p16, access, shareAll, nil, windows.OPEN_EXISTING,
+		// READ_CONTROL too: SetSecurityInfo reads the current descriptor.
+		h, err := windows.CreateFile(p16, access|windows.READ_CONTROL, shareAll, nil, windows.OPEN_EXISTING,
 			windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 		if err != nil {
 			return err
