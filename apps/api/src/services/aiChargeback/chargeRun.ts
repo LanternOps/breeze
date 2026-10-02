@@ -66,6 +66,12 @@ function candidates(orgId: string, period: ChargePeriod) {
 
 const USAGE_MONTH = sql`date_trunc('month', i.created_at AT TIME ZONE 'UTC')::date`;
 
+/** The UTC month before `period`. */
+function previousMonth(period: ChargePeriod): ChargePeriod {
+  const start = new Date(`${period.periodStart}T00:00:00Z`);
+  return monthPeriod(new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() - 1, 1)).toISOString().slice(0, 10));
+}
+
 export async function runOrgChargePeriod(input: { orgId: string; periodStart: string; now?: Date }): Promise<ChargeRunResult> {
   if (getCurrentDbAccessContext()?.scope !== 'system') {
     throw new Error('runOrgChargePeriod must run inside a system DB context');
@@ -171,10 +177,15 @@ export async function runOrgChargePeriod(input: { orgId: string; periodStart: st
     WHERE id = ${run.id}::uuid`);
 
   // 6. Rows that aged past the lookback unclaimed are never billed — count and
-  //    say so (Codex review finding 13), never silently.
+  //    say so (Codex review finding 13), never silently. Only the month that
+  //    newly aged out at THIS close is scanned (the previous month's run counted
+  //    the one before), so the scan stays one month of rows instead of the
+  //    org's whole retained history inside a transaction whose FK checks hold
+  //    FOR KEY SHARE on the org row.
   const [expiredRow] = rowsOf<{ n: number }>(await db.execute(sql`
     SELECT count(*)::int AS n FROM ai_invocations i
     WHERE i.org_id = ${input.orgId}::uuid AND i.chargeable AND i.ledger_mode = 'authoritative'
+      AND i.created_at >= ${lookbackStartIso(previousMonth(period))}::timestamptz
       AND i.created_at < ${lookbackStartIso(period)}::timestamptz
       AND NOT EXISTS (SELECT 1 FROM ai_usage_charge_claims c WHERE c.invocation_id = i.id)`));
   const expired = expiredRow?.n ?? 0;

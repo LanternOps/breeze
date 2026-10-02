@@ -219,6 +219,17 @@ describe.runIf(RUN)('runOrgChargePeriod (#7608)', () => {
     expect(await claimCount(f.orgId)).toBe(1);
   });
 
+  it('counts only rows that newly aged out this period (the scan is bounded to one month before the lookback)', async () => {
+    const f = await fixture();
+    // October's lookback started 2026-07-01, so this row already aged out at October's close.
+    await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-06-15T00:00:00Z' });
+    // November's lookback starts 2026-08-01: this row ages out at November's close.
+    await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-07-15T00:00:00Z' });
+    await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-11-05T00:00:00Z' });
+    const result = await run(f.orgId);
+    expect(result).toMatchObject({ kind: 'charged', invocationCount: 1, expiredInvocationCount: 1 });
+  });
+
   it('the lookback start (UTC midnight 92 days back) is inclusive: that row is a labelled straggler', async () => {
     const f = await fixture();
     await seedChargeableInvocation({ orgId: f.orgId, cardId: f.card, createdAt: '2026-08-01T00:00:00Z' });
