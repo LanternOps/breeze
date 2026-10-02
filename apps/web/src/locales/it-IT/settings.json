@@ -267,7 +267,29 @@
       "geoProviderDefault": "Predefinito del provider",
       "supportedGeos": "Supporta: {{geos}}",
       "refreshQueued": "Aggiornamento dei modelli in coda",
-      "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli."
+      "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli.",
+      "alreadyConnected": "Già connessa",
+      "addKind": {
+        "anthropic_byok": "Chiave API Anthropic",
+        "openai_compatible": "Endpoint compatibile con OpenAI"
+      },
+      "openai": {
+        "name": "Nome",
+        "baseUrl": "URL di base",
+        "baseUrlHelp": "L'URL che termina prima di /chat/completions, ad es. https://llm.example.com/v1. Breeze ospitato si connette solo a endpoint https pubblici.",
+        "apiKey": "Chiave API (facoltativa)",
+        "apiKeyHelp": "Salvata cifrata e mai più mostrata. I server locali come Ollama o vLLM di solito non ne richiedono una.",
+        "optional": "Facoltativa",
+        "keepKey": "Lascia vuoto per mantenere la chiave attuale",
+        "removeKey": "Rimuovi la chiave salvata",
+        "keyTooShort": "La chiave deve contenere almeno {{min}} caratteri.",
+        "envManaged": "Questa connessione è gestita dall'ambiente dell'istanza (impostazioni MCP_LLM_*). Modificala lì; qui non è modificabile.",
+        "envManagedBadge": "Gestita dall'ambiente",
+        "noKey": "Nessuna chiave",
+        "discovered_one": "{{count}} modello trovato · {{when}}",
+        "discovered_other": "{{count}} modelli trovati · {{when}}",
+        "partialSaved": "L'endpoint o la chiave sono stati salvati, ma il nome no. Riapri la connessione per rinominarla."
+      }
     },
     "drawer": {
       "titleCreate": "Aggiungi connessione",
@@ -338,7 +360,13 @@
       "approvals_decide_required": "Per cambiare il modello del revisore di script serve il permesso approvals:decide.",
       "queue_unavailable": "La coda delle richieste non è disponibile. Riprova tra un momento.",
       "registry_busy": "È in corso un'altra modifica alla configurazione IA. Riprova tra un momento.",
-      "crossesFunding": "Quel modello di riserva è pagato da un’altra fonte. Consenti prima il passaggio tra crediti Breeze e la tua chiave API."
+      "crossesFunding": "Quel modello di riserva è pagato da un’altra fonte. Consenti prima il passaggio tra crediti Breeze e la tua chiave API.",
+      "egress_blocked": "Questo indirizzo non è consentito.",
+      "invalid_url": "Questo URL non è valido.",
+      "managed_by_env": "Questa connessione è gestita dall'ambiente dell'istanza e non può essere modificata qui.",
+      "connection_in_use": "Una funzione usa ancora un modello di questa connessione. Scegli prima un altro modello predefinito.",
+      "duplicate_model": "Questo ID modello esiste già su questa connessione.",
+      "geo_not_supported": "Questo tipo di connessione non può impostare una regione di inferenza."
     },
     "org": {
       "title": "Modelli predefiniti",
@@ -399,7 +427,27 @@
       "disableTitle": "Disabilitare {{name}}?",
       "disableMessage": "Queste funzioni usano questo modello come predefinito. Resteranno senza modello finché non ne scegli un altro:",
       "disableAnyway": "Disabilita comunque",
-      "orgOverrides": "Override di organizzazione interessati: {{count}}"
+      "orgOverrides": "Override di organizzazione interessati: {{count}}",
+      "verification": {
+        "verified": "Verificato",
+        "unverified": "Non verificato",
+        "failed": "Verifica non riuscita",
+        "failedWithSummary": "Verifica non riuscita: {{summary}}",
+        "stale": "Da riverificare: endpoint modificato"
+      },
+      "setPriceToEnable": "Imposta un prezzo per attivarlo",
+      "manual": {
+        "add": "Aggiungi modello",
+        "empty": "Ancora nessun modello. Aggiungine uno a mano o aggiorna la connessione per rilevarli.",
+        "title": "Aggiungi un modello",
+        "modelId": "ID del modello",
+        "modelIdHelp": "Esattamente come lo richiede l'endpoint, ad es. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Usa solo lettere, cifre e . _ : / @ + -, senza spazi.",
+        "displayName": "Nome visualizzato (facoltativo)",
+        "pricesHint": "Facoltativo. Centesimi per 1 milione di token. Compila tutti e quattro i campi, oppure lasciali vuoti e imposta un prezzo prima di attivare.",
+        "added": "Modello aggiunto",
+        "failed": "Impossibile aggiungere il modello."
+      }
     },
     "offering": {
       "displayName": "Nome visualizzato",
@@ -453,7 +501,8 @@
       "saveFailed": "Impossibile salvare il modello. Riprova.",
       "verify": "Verifica",
       "verifyQueued": "Verifica del modello in coda",
-      "verifyFailed": "Impossibile mettere in coda la verifica del modello."
+      "verifyFailed": "Impossibile mettere in coda la verifica del modello.",
+      "verifyGatewayHint": "Esegue un breve test di chiamata degli strumenti sul tuo endpoint (usa alcune migliaia di token)."
     },
     "defaults": {
       "title": "Predefiniti per funzionalità",

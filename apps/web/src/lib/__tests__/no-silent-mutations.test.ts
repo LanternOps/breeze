@@ -79,6 +79,7 @@ const TARGET_GLOBS = [
   'src/components/settings/aiModels/ResidencySwitch.tsx',
   'src/components/settings/aiModels/ModelsCard.tsx',
   'src/components/settings/aiModels/OfferingDrawer.tsx',
+  'src/components/settings/aiModels/ManualModelForm.tsx', // W06 #7604: POST manual model via runAction
   'src/components/settings/aiModels/FeatureDefaultsCard.tsx',
   'src/components/settings/aiModels/OrgModelDefaultsCard.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
@@ -887,7 +888,9 @@ describe('no silent mutations in targeted set', () => {
     // Task 13 adds aiModels/FeatureDefaultsCard.tsx: 210 → 211.
     // Task 14 adds aiModels/OrgModelDefaultsCard.tsx: 211 → 212.
     // W05 #7603 Task 13 adds ai/AiContinuationPrompt.tsx: 212 -> 213.
-    expect(absoluteFiles.length).toBe(213);
+    // W06 #7604 Task 14 adds aiModels/ManualModelForm.tsx: 213 → 214.
+    // (connectionForms/*.tsx hold no fetch calls: ConnectionDrawer performs the connection mutations.)
+    expect(absoluteFiles.length).toBe(214);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

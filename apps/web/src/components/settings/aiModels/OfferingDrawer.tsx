@@ -385,6 +385,10 @@ export default function OfferingDrawer({ offering, offerings, onClose, onSaved }
           <p className="text-xs text-muted-foreground">{t('aiModels.offering.refusalHint')}</p>
         </div>
 
+        {canVerify && offering.verification !== null && (
+          <p data-testid="ai-offering-verify-hint" className="text-xs text-muted-foreground">{t('aiModels.offering.verifyGatewayHint')}</p>
+        )}
+
         <div className="flex items-center justify-between gap-2 border-t pt-4">
           <div>
             {canVerify && (

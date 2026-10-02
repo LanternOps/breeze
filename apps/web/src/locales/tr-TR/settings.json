@@ -267,7 +267,29 @@
       "geoProviderDefault": "Sağlayıcı varsayılanı",
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
-      "refreshFailed": "Model yenileme sıraya alınamadı."
+      "refreshFailed": "Model yenileme sıraya alınamadı.",
+      "alreadyConnected": "Zaten bağlı",
+      "addKind": {
+        "anthropic_byok": "Anthropic API anahtarı",
+        "openai_compatible": "OpenAI uyumlu uç nokta"
+      },
+      "openai": {
+        "name": "Ad",
+        "baseUrl": "Temel URL",
+        "baseUrlHelp": "/chat/completions öncesinde biten URL, örn. https://llm.example.com/v1. Barındırılan Breeze yalnızca herkese açık https uç noktalarına bağlanır.",
+        "apiKey": "API anahtarı (isteğe bağlı)",
+        "apiKeyHelp": "Şifreli saklanır ve bir daha gösterilmez. Ollama veya vLLM gibi yerel sunucular genellikle anahtar gerektirmez.",
+        "optional": "İsteğe bağlı",
+        "keepKey": "Mevcut anahtarı korumak için boş bırakın",
+        "removeKey": "Kayıtlı anahtarı kaldır",
+        "keyTooShort": "Anahtar en az {{min}} karakter olmalıdır.",
+        "envManaged": "Bu bağlantı örneğin ortamı (MCP_LLM_* ayarları) tarafından yönetiliyor. Orada değiştirin; burada düzenlenemez.",
+        "envManagedBadge": "Ortam tarafından yönetiliyor",
+        "noKey": "Anahtar yok",
+        "discovered_one": "{{count}} model bulundu · {{when}}",
+        "discovered_other": "{{count}} model bulundu · {{when}}",
+        "partialSaved": "Uç nokta veya anahtar kaydedildi, ancak ad kaydedilmedi. Yeniden adlandırmak için bağlantıyı tekrar açın."
+      }
     },
     "drawer": {
       "titleCreate": "Bağlantı ekle",
@@ -338,7 +360,13 @@
       "approvals_decide_required": "Betik gözden geçirici modelini değiştirmek için approvals:decide izni gerekir.",
       "queue_unavailable": "İstek kuyruğu kullanılamıyor. Biraz sonra tekrar deneyin.",
       "registry_busy": "Başka bir yapay zeka yapılandırma değişikliği sürüyor. Birazdan tekrar deneyin.",
-      "crossesFunding": "Bu yedek model farklı bir kaynaktan ödeniyor. Önce Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin verin."
+      "crossesFunding": "Bu yedek model farklı bir kaynaktan ödeniyor. Önce Breeze kredileri ile kendi API anahtarınız arasında yedeğe geçişe izin verin.",
+      "egress_blocked": "Bu adrese izin verilmiyor.",
+      "invalid_url": "Bu URL geçerli değil.",
+      "managed_by_env": "Bu bağlantı örneğin ortamı tarafından yönetiliyor ve burada değiştirilemez.",
+      "connection_in_use": "Bir özellik hâlâ bu bağlantıdaki bir modeli kullanıyor. Önce başka bir varsayılan seçin.",
+      "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",
+      "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -399,7 +427,27 @@
       "disableTitle": "{{name}} devre dışı bırakılsın mı?",
       "disableMessage": "Bu özellikler bu modeli varsayılan olarak kullanıyor. Başka bir model seçene kadar modelsiz kalacaklar:",
       "disableAnyway": "Yine de devre dışı bırak",
-      "orgOverrides": "Etkilenen kuruluş geçersiz kılmaları: {{count}}"
+      "orgOverrides": "Etkilenen kuruluş geçersiz kılmaları: {{count}}",
+      "verification": {
+        "verified": "Doğrulandı",
+        "unverified": "Doğrulanmadı",
+        "failed": "Doğrulama başarısız",
+        "failedWithSummary": "Doğrulama başarısız: {{summary}}",
+        "stale": "Yeniden doğrulayın: uç nokta değişti"
+      },
+      "setPriceToEnable": "Etkinleştirmek için bir fiyat belirleyin",
+      "manual": {
+        "add": "Model ekle",
+        "empty": "Henüz model yok. Elle bir tane ekleyin veya modelleri bulmak için bağlantıyı yenileyin.",
+        "title": "Model ekle",
+        "modelId": "Model kimliği",
+        "modelIdHelp": "Uç noktanın beklediği şekilde tam olarak, örn. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Yalnızca harf, rakam ve . _ : / @ + - kullanın, boşluk olmasın.",
+        "displayName": "Görünen ad (isteğe bağlı)",
+        "pricesHint": "İsteğe bağlı. 1 milyon token başına cent. Dördünü de doldurun ya da hepsini boş bırakıp etkinleştirmeden önce bir fiyat belirleyin.",
+        "added": "Model eklendi",
+        "failed": "Model eklenemedi."
+      }
     },
     "offering": {
       "displayName": "Görünen ad",
@@ -453,7 +501,8 @@
       "saveFailed": "Model kaydedilemedi. Tekrar deneyin.",
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
-      "verifyFailed": "Model denetimi sıraya alınamadı."
+      "verifyFailed": "Model denetimi sıraya alınamadı.",
+      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır)."
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",

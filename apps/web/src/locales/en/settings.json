@@ -267,7 +267,29 @@
       "geoProviderDefault": "Provider default",
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
-      "refreshFailed": "Couldn't queue a model refresh."
+      "refreshFailed": "Couldn't queue a model refresh.",
+      "alreadyConnected": "Already connected",
+      "addKind": {
+        "anthropic_byok": "Anthropic API key",
+        "openai_compatible": "OpenAI-compatible endpoint"
+      },
+      "openai": {
+        "name": "Name",
+        "baseUrl": "Base URL",
+        "baseUrlHelp": "The URL that ends before /chat/completions, e.g. https://llm.example.com/v1. Hosted Breeze connects to public https endpoints only.",
+        "apiKey": "API key (optional)",
+        "apiKeyHelp": "Stored encrypted and never shown again. Local servers such as Ollama or vLLM usually need none.",
+        "optional": "Optional",
+        "keepKey": "Leave blank to keep the current key",
+        "removeKey": "Remove the stored key",
+        "keyTooShort": "A key must be at least {{min}} characters.",
+        "envManaged": "This connection is managed by the instance environment (MCP_LLM_* settings). Change it there; it cannot be edited here.",
+        "envManagedBadge": "Managed by environment",
+        "noKey": "No key",
+        "discovered_one": "Found {{count}} model · {{when}}",
+        "discovered_other": "Found {{count}} models · {{when}}",
+        "partialSaved": "The endpoint or key was saved, but the name was not. Reopen the connection to rename it."
+      }
     },
     "drawer": {
       "titleCreate": "Add connection",
@@ -338,7 +360,13 @@
       "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
       "queue_unavailable": "The request queue is unavailable. Try again in a moment.",
       "registry_busy": "Another AI configuration change is in progress. Try again in a moment.",
-      "crossesFunding": "That backup model is paid from a different source. Allow failover between Breeze credits and your own API key first."
+      "crossesFunding": "That backup model is paid from a different source. Allow failover between Breeze credits and your own API key first.",
+      "egress_blocked": "That address is not allowed.",
+      "invalid_url": "That URL is not valid.",
+      "managed_by_env": "This connection is managed by the instance environment and cannot be changed here.",
+      "connection_in_use": "A feature still uses a model on this connection. Choose another default first.",
+      "duplicate_model": "That model id is already on this connection.",
+      "geo_not_supported": "This kind of connection cannot set an inference region."
     },
     "org": {
       "title": "Model defaults",
@@ -399,7 +427,27 @@
       "disableTitle": "Disable {{name}}?",
       "disableMessage": "These features use this model as their default. They will have no model until you choose another:",
       "disableAnyway": "Disable anyway",
-      "orgOverrides": "Organization overrides affected: {{count}}"
+      "orgOverrides": "Organization overrides affected: {{count}}",
+      "verification": {
+        "verified": "Verified",
+        "unverified": "Not verified",
+        "failed": "Verification failed",
+        "failedWithSummary": "Verification failed: {{summary}}",
+        "stale": "Re-verify: endpoint changed"
+      },
+      "setPriceToEnable": "Set a price to enable",
+      "manual": {
+        "add": "Add model",
+        "empty": "No models yet. Add one by hand or refresh the connection to discover them.",
+        "title": "Add a model",
+        "modelId": "Model id",
+        "modelIdHelp": "Exactly as the endpoint expects it, e.g. qwen2.5-coder:7b.",
+        "modelIdInvalid": "Use letters, digits and . _ : / @ + - only, with no spaces.",
+        "displayName": "Display name (optional)",
+        "pricesHint": "Optional. Cents per 1M tokens. Fill in all four, or leave all blank and set a price before enabling.",
+        "added": "Model added",
+        "failed": "Couldn't add the model."
+      }
     },
     "offering": {
       "displayName": "Display name",
@@ -453,7 +501,8 @@
       "saveFailed": "Couldn’t save the model. Try again.",
       "verify": "Verify",
       "verifyQueued": "Model check queued",
-      "verifyFailed": "Couldn't queue the model check."
+      "verifyFailed": "Couldn't queue the model check.",
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
     },
     "defaults": {
       "title": "Defaults by feature",

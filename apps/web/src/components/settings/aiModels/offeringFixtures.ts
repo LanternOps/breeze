@@ -12,7 +12,7 @@ export function offeringRow(over: Partial<AiOfferingDto> = {}): AiOfferingDto {
     priceSource: 'platform', ownPrices: null, pricesEditable: true, thinkingMode: 'adaptive', supportsTools: true,
     contextTokens: 200000, optionSupport: { effort: [], thinkingDisplay: [], speed: ['standard'], inferenceGeo: [] },
     defaultOptions: null, allowedOptions: null, requiredPermission: null, refusalFallbackOfferingId: null,
-    enableBlocker: null, defaultFor: [], updatedAt: '2026-10-01T00:00:00.000Z', ...over,
+    enableBlocker: null, defaultFor: [], updatedAt: '2026-10-01T00:00:00.000Z', verification: null, ...over,
   };
 }
 

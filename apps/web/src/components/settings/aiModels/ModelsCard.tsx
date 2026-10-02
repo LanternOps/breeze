@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import type { AiModelsSnapshotDto, AiOfferingDto } from '@breeze/shared';
+import type { AiModelsSnapshotDto, AiOfferingDto, OfferingVerificationState } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { formatCurrency, formatNumber } from '../../../lib/i18n/format';
@@ -9,6 +9,7 @@ import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import OfferingDrawer from './OfferingDrawer';
+import ManualModelForm from './ManualModelForm';
 import { ENABLE_BLOCKER_KEYS, SURFACE_LABEL_KEYS, registryFriendly } from './surfaceLabels';
 
 type DefaultFor = AiOfferingDto['defaultFor'];
@@ -30,7 +31,29 @@ function surfaceSummary(inUse: DefaultFor, t: TFunction<'settings'>): { surfaces
   return { surfaces: surfaces.join(', '), orgCount: inUse.filter((u) => u.level === 'org').length };
 }
 
-interface Group { key: string; name: string; offerings: AiOfferingDto[] }
+interface Group { key: string; name: string; offerings: AiOfferingDto[]; /** Set for a gateway connection the admin can add models to by hand. */ manualConnectionId: string | null }
+
+const VERIFICATION_CLASS: Record<OfferingVerificationState, string> = {
+  verified: 'bg-success/10 text-success',
+  unverified: 'bg-muted text-muted-foreground',
+  failed: 'bg-destructive/10 text-destructive',
+  stale: 'bg-warning/10 text-warning',
+};
+
+function verificationLabel(v: NonNullable<AiOfferingDto['verification']>, t: TFunction<'settings'>): string {
+  switch (v.state) {
+    case 'verified': return t('aiModels.models.verification.verified');
+    case 'unverified': return t('aiModels.models.verification.unverified');
+    case 'failed': return v.summary
+      ? t('aiModels.models.verification.failedWithSummary', { summary: v.summary })
+      : t('aiModels.models.verification.failed');
+    case 'stale': return t('aiModels.models.verification.stale');
+    default: {
+      const unreachable: never = v.state;
+      return String(unreachable);
+    }
+  }
+}
 
 /** Platform first (snapshot order), then each own connection; offerings of an unknown connection trail. */
 function groupOfferings(snapshot: AiModelsSnapshotDto, fallbackName: string): Group[] {
@@ -38,11 +61,13 @@ function groupOfferings(snapshot: AiModelsSnapshotDto, fallbackName: string): Gr
     key: c.id ?? 'platform',
     name: c.name,
     offerings: snapshot.offerings.filter((o) => (o.connectionId ?? null) === c.id),
+    // Env-managed endpoints are read-only; so is anything not live.
+    manualConnectionId: c.id !== null && c.kind === 'openai_compatible' && c.managedBy !== 'env' ? c.id : null,
   }));
   const known = new Set(snapshot.connections.map((c) => c.id));
   const stray = snapshot.offerings.filter((o) => !known.has(o.connectionId ?? null));
-  if (stray.length > 0) groups.push({ key: 'other', name: fallbackName, offerings: stray });
-  return groups.filter((g) => g.offerings.length > 0);
+  if (stray.length > 0) groups.push({ key: 'other', name: fallbackName, offerings: stray, manualConnectionId: null });
+  return groups.filter((g) => g.offerings.length > 0 || g.manualConnectionId !== null);
 }
 
 export default function ModelsCard({
@@ -56,6 +81,7 @@ export default function ModelsCard({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ offering: AiOfferingDto; inUse: DefaultFor } | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [addingManualTo, setAddingManualTo] = useState<string | null>(null);
   const editing = editingId ? snapshot.offerings.find((o) => o.id === editingId) ?? null : null;
   const baseFriendly = registryFriendly(t);
 
@@ -112,8 +138,18 @@ export default function ModelsCard({
 
       {groups.map((g) => (
         <div key={g.key} data-testid={`ai-models-group-${g.key}`} className="space-y-1">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{g.name}</h4>
-          <ul className="divide-y rounded-md border">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{g.name}</h4>
+            {g.manualConnectionId !== null && (
+              <button type="button" data-testid={`ai-models-add-manual-${g.manualConnectionId}`}
+                onClick={() => setAddingManualTo(g.manualConnectionId)}
+                className="rounded-md border px-3 py-1 text-xs font-medium transition-colors hover:bg-muted">
+                {t('aiModels.models.manual.add')}
+              </button>
+            )}
+          </div>
+          {g.offerings.length === 0 && <p className="text-xs text-muted-foreground">{t('aiModels.models.manual.empty')}</p>}
+          {g.offerings.length > 0 && <ul className="divide-y rounded-md border">
             {g.offerings.map((o) => {
               const key = rowKey(o);
               const blocked = o.enableBlocker !== null && o.enableBlocker !== 'connection_unavailable';
@@ -123,7 +159,12 @@ export default function ModelsCard({
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium">{o.displayName}</span>
-                      {o.thinkingMode === 'unknown' && (
+                      {o.verification && (
+                        <span data-testid={`ai-model-verification-${key}`} className={`rounded-full px-2 py-0.5 text-xs ${VERIFICATION_CLASS[o.verification.state]}`}>
+                          {verificationLabel(o.verification, t)}
+                        </span>
+                      )}
+                      {o.thinkingMode === 'unknown' && o.verification === null && (
                         <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t('aiModels.models.unverified')}</span>
                       )}
                       {o.lifecycle === 'missing' && (
@@ -145,7 +186,9 @@ export default function ModelsCard({
                     </div>
                     {o.enableBlocker !== null && (
                       <p data-testid={`ai-offering-blocker-${key}`} className={`text-xs ${blocked ? 'text-muted-foreground' : 'text-warning'}`}>
-                        {t(/* i18n-dynamic */ ENABLE_BLOCKER_KEYS[o.enableBlocker])}
+                        {o.enableBlocker === 'unpriced' && o.verification !== null
+                          ? t('aiModels.models.setPriceToEnable')
+                          : t(/* i18n-dynamic */ ENABLE_BLOCKER_KEYS[o.enableBlocker])}
                       </p>
                     )}
                   </div>
@@ -175,13 +218,17 @@ export default function ModelsCard({
                 </li>
               );
             })}
-          </ul>
+          </ul>}
         </div>
       ))}
 
       {editing && (
         <OfferingDrawer key={editing.id} offering={editing} offerings={snapshot.offerings}
           onClose={() => setEditingId(null)} onSaved={onChanged} />
+      )}
+
+      {addingManualTo !== null && (
+        <ManualModelForm connectionId={addingManualTo} onClose={() => setAddingManualTo(null)} onSaved={onChanged} />
       )}
 
       <ConfirmDialog

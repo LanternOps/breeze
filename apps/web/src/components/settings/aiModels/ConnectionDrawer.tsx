@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, RefreshCw, Save, Unplug } from 'lucide-react';
 import type { AiConnectionDto, AiModelsSnapshotDto } from '@breeze/shared';
@@ -9,6 +9,9 @@ import { navigateTo } from '@/lib/navigation';
 import { Drawer } from '../../shared/Drawer';
 import { ConfirmDialog } from '../../shared/ConfirmDialog';
 import { registryFriendly } from './surfaceLabels';
+import { ConnectionKindForm, type KindDraft } from './connectionForms/ConnectionKindForm';
+import type { OpenAiDraft as OpenAiDraftT } from './connectionForms/OpenAiCompatibleConnectionForm';
+import type { AddableConnectionKind } from './connectionForms/connectionKinds';
 
 type CatalogEntry = AiModelsSnapshotDto['catalog'][number];
 
@@ -17,14 +20,21 @@ export interface ConnectionDrawerProps {
   connection: AiConnectionDto | null;
   catalog: CatalogEntry[];
   catalogEnabled: boolean;
+  /** Kind for the Add form (ignored when editing: the stored kind wins). Defaults to anthropic_byok. */
+  initialKind?: AddableConnectionKind;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }
 
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
 
-export default function ConnectionDrawer({ connection, catalog, catalogEnabled, onClose, onSaved }: ConnectionDrawerProps) {
+export default function ConnectionDrawer({ connection, catalog, catalogEnabled, initialKind, onClose, onSaved }: ConnectionDrawerProps) {
   const { t } = useTranslation('settings');
+  const kind: AddableConnectionKind = connection?.kind === 'openai_compatible' ? 'openai_compatible'
+    : connection === null ? initialKind ?? 'anthropic_byok' : 'anthropic_byok';
+  const isGateway = kind === 'openai_compatible';
+  const [kindDraft, setKindDraft] = useState<KindDraft | null>(null);
+  const onDraftChange = useCallback((d: KindDraft) => setKindDraft(d), []);
   const [name, setName] = useState(connection?.name ?? '');
   const [geo, setGeo] = useState<string | null>(connection?.inferenceGeo ?? null);
   const [apiKey, setApiKey] = useState('');
@@ -54,7 +64,16 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const consentMissing = endpointDirty && !!selectedEntry?.dataNote && !consent;
   const nameInvalid = connection !== null && name.trim() === '';
 
-  const canSave = connection === null
+  const gatewayDraft = kindDraft?.kind === 'openai_compatible' ? kindDraft.draft : null;
+  const gatewayDirty = gatewayDraft !== null && (connection === null
+    || gatewayDraft.name.trim() !== connection.name
+    || gatewayDraft.baseUrl.trim() !== (connection.baseUrl ?? '')
+    || gatewayDraft.apiKey.trim() !== ''
+    || gatewayDraft.removeKey);
+
+  const canSave = isGateway
+    ? gatewayDraft !== null && gatewayDraft.valid && gatewayDirty
+    : connection === null
     ? keyDirty
     : (keyDirty || endpointDirty || nameDirty || geoDirty) && !bothCredentialsDirty && !consentMissing && !nameInvalid;
 
@@ -68,8 +87,79 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const showEndpointSection = connection !== null && (catalog.length > 0 || storedEndpoint !== null);
   const selectableEntries = catalogEnabled ? catalog : catalog.filter((e) => e.entryId === storedEndpoint);
 
+  const handleGatewaySave = async (d: OpenAiDraftT) => {
+    setSaving(true);
+    // Set once the endpoint/key PATCH committed, so a later failure can reload the new configVersion.
+    let gatewaySaved = false;
+    try {
+      if (connection === null) {
+        await runAction({
+          request: () => fetchWithAuth('/ai/models/connections', {
+            method: 'POST',
+            body: JSON.stringify({
+              kind: 'openai_compatible',
+              name: d.name.trim(),
+              baseUrl: d.baseUrl.trim(),
+              ...(d.apiKey.trim() ? { apiKey: d.apiKey.trim() } : {}),
+            }),
+          }),
+          successMessage: t('aiModels.connections.created'),
+          errorFallback: t('aiModels.connections.saveFailed'),
+          friendly,
+          onUnauthorized,
+        });
+      } else {
+        const base = `/ai/models/connections/${connection.id}`;
+        const gatewayPatch: Record<string, unknown> = {};
+        if (d.baseUrl.trim() !== (connection.baseUrl ?? '')) gatewayPatch.baseUrl = d.baseUrl.trim();
+        if (d.removeKey) gatewayPatch.apiKey = null;
+        else if (d.apiKey.trim()) gatewayPatch.apiKey = d.apiKey.trim();
+        if (Object.keys(gatewayPatch).length > 0) {
+          await runAction({
+            request: () => fetchWithAuth(`${base}/gateway`, {
+              method: 'PATCH',
+              body: JSON.stringify({ ...gatewayPatch, expectedConfigVersion: connection.configVersion ?? 1 }),
+            }),
+            errorFallback: t('aiModels.connections.saveFailed'),
+            friendly,
+            onUnauthorized,
+          });
+          gatewaySaved = true;
+        }
+        if (d.name.trim() !== connection.name) {
+          await runAction({
+            request: () => fetchWithAuth(base, { method: 'PATCH', body: JSON.stringify({ name: d.name.trim() }) }),
+            errorFallback: t('aiModels.connections.saveFailed'),
+            friendly,
+            onUnauthorized,
+          });
+        }
+        showToast({ type: 'success', message: t('aiModels.connections.saved') });
+      }
+      await onSaved();
+      onClose();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiModels.connections.saveFailed') });
+      // non-401 ActionError already toasted by runAction; the drawer stays open
+      if (gatewaySaved) {
+        // The endpoint/key committed (configVersion moved) before the rename failed: reload and close so a
+        // retry starts from the fresh version instead of failing as a stale write.
+        showToast({ type: 'warning', message: t('aiModels.connections.openai.partialSaved') });
+        try { await onSaved(); } catch (reloadErr) { console.error('[ConnectionDrawer] reload after partial save failed', reloadErr); }
+        onClose();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!canSave || busy) return;
+    if (isGateway) {
+      if (gatewayDraft) await handleGatewaySave(gatewayDraft);
+      return;
+    }
     setSaving(true);
     // Which credential step (key or endpoint) already committed in THIS Save.
     let credentialSaved = false;
@@ -213,6 +303,9 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           </div>
         )}
 
+        {isGateway && <ConnectionKindForm kind={kind} connection={connection} onDraftChange={onDraftChange} />}
+
+        {!isGateway && (<>
         <div className="space-y-1">
           <label className="text-sm font-medium" htmlFor="ai-connection-name">{t('aiModels.drawer.name')}</label>
           <input id="ai-connection-name" data-testid="ai-connection-name" className={inputClass} value={name} maxLength={80}
@@ -286,6 +379,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
             {t('aiModels.drawer.oneCredentialChange')}
           </p>
         )}
+        </>)}
 
         <div className="flex items-center justify-between gap-2 border-t pt-4">
           <div className="flex flex-wrap gap-2">
@@ -296,7 +390,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
                 {t('aiModels.drawer.refresh')}
               </button>
             )}
-            {connection !== null && (
+            {connection !== null && connection.managedBy !== 'env' && (
               <button type="button" data-testid="ai-connection-disconnect" onClick={() => setConfirmDisconnect(true)} disabled={busy}
                 className="inline-flex items-center gap-2 rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
                 <Unplug className="h-4 w-4" />
