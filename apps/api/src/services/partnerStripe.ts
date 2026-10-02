@@ -1,8 +1,10 @@
+import { getPartnerStripeClient } from './partnerStripeClient';
+export { getPartnerStripeClient } from './partnerStripeClient';
 import Stripe from 'stripe';
 import { and, eq, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoiceStripePayments, stripeConnectAccounts } from '../db/schema/stripePayments';
-import { encryptSecret, decryptSecret } from './secretCrypto';
+import { encryptSecret } from './secretCrypto';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { stripeSessionRevocationMode } from '../config/env';
 import { archiveSupersededCredential } from './stripeCredentialArchive';
@@ -442,52 +444,6 @@ export async function savePartnerStripeKey(input: {
     defaultCurrency,
     accountCountry,
     accountRefreshedAt: now,
-  };
-}
-
-/**
- * Build a Stripe client bound to the partner's own key AND return their account id
- * in a single row read (callers that need both — e.g. createInvoicePayLink for the
- * payment mapping — avoid a second query). Throws NO_STRIPE_KEY if unconfigured,
- * STRIPE_KEY_UNREADABLE if the stored ciphertext can't be decrypted.
- */
-export async function getPartnerStripeClient(partnerId: string): Promise<{
-  stripe: Stripe;
-  stripeAccountId: string;
-  defaultCurrency: string | null;
-}> {
-  const [row] = await db
-    .select({
-      apiKey: stripeConnectAccounts.apiKey,
-      status: stripeConnectAccounts.status,
-      stripeAccountId: stripeConnectAccounts.stripeAccountId,
-      defaultCurrency: stripeConnectAccounts.defaultCurrency,
-    })
-    .from(stripeConnectAccounts)
-    .where(eq(stripeConnectAccounts.partnerId, partnerId))
-    .limit(1);
-  if (!row || row.status !== 'connected' || !row.apiKey) {
-    throw new PartnerStripeError('Online payment is not available — connect Stripe first.', 'NO_STRIPE_KEY');
-  }
-  // A connected row whose ciphertext can't be decrypted is a CORRUPT-KEY fault (DB
-  // corruption, or KEK rotated away), NOT "not connected". decryptSecret throws on
-  // a bad payload/auth-tag and returns null only on empty input — handle both, and
-  // log: a wave of these means an APP_ENCRYPTION_KEY misconfig, a platform incident.
-  let key: string | null;
-  try {
-    key = decryptSecret(row.apiKey);
-  } catch (err) {
-    console.error('[partnerStripe] failed to decrypt stored key for connected partner', { partnerId, message: err instanceof Error ? err.message : String(err) });
-    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
-  }
-  if (!key) {
-    console.error('[partnerStripe] decrypt returned empty for connected partner', { partnerId });
-    throw new PartnerStripeError('Stored Stripe key could not be read — please reconnect Stripe.', 'STRIPE_KEY_UNREADABLE');
-  }
-  return {
-    stripe: new Stripe(key, { apiVersion: API_VERSION }),
-    stripeAccountId: row.stripeAccountId,
-    defaultCurrency: row.defaultCurrency,
   };
 }
 

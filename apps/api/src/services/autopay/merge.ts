@@ -1,8 +1,9 @@
+import { findLatestArchivedCredentialForAccount } from '../stripeCredentialArchive';
 import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { extractRowCount } from '../../db/rowCount';
 import type { CustomMergeExecutor, MergeTableOutcome } from '../orgMergeCustomExecutors';
-import { getPartnerStripeClient } from '../partnerStripe';
+import { getPartnerStripeClient, PartnerStripeError } from '../partnerStripe';
 
 export function autopayMergeBlockerCount(loser: string): SQL {
   return sql`SELECT count(*)::int AS n FROM invoice_collection_attempts
@@ -50,8 +51,17 @@ export async function drainAutopayMethodDetaches(): Promise<void> {
       ORDER BY m.detach_next_attempt_at,m.removed_at,m.id LIMIT 100`));
     for (const row of rows as unknown as Array<{id:string;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {
       try {
-        const client=await withSystemDbAccessContext(()=>getPartnerStripeClient(row.partner_id));
-        if(client.stripeAccountId!==row.stripe_account_id) throw new Error('original Stripe account credential unavailable');
+        const client = await withSystemDbAccessContext(async () => {
+          let live: Awaited<ReturnType<typeof getPartnerStripeClient>> | null = null;
+          try { live = await getPartnerStripeClient(row.partner_id); }
+          catch (error) { if (!(error instanceof PartnerStripeError) || error.code !== 'NO_STRIPE_KEY') throw error; }
+          if (live?.stripeAccountId === row.stripe_account_id) return live;
+          const archived = await findLatestArchivedCredentialForAccount(row.partner_id, row.stripe_account_id);
+          if (!archived) throw new Error('original Stripe account credential unavailable');
+          const original = await getPartnerStripeClient(row.partner_id, { archivedCredentialId: archived.id, reason: 'autopay_org_merge_detach' });
+          if (original.stripeAccountId !== row.stripe_account_id) throw new Error('archived Stripe credential account mismatch');
+          return original;
+        });
         const method=await client.stripe.paymentMethods.retrieve(row.stripe_payment_method_id);
         const customer=typeof method.customer==='string'?method.customer:method.customer?.id;
         if(customer && customer!==row.stripe_customer_id) throw new Error('payment method customer changed');
