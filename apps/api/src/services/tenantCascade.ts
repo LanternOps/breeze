@@ -364,6 +364,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // NULL for intent_id), so topologicalCascadeOrder()'s runtime pg_constraint
   // read is what actually orders the DELETE, not this list's alphabetization.
   'ai_unattended_exposure',
+  // ai_usage_charge_* (AI chargeback W10, #7608): shape 1. claims → charges is
+  // the only FK between them (claims first; NO ACTION, so the order matters);
+  // run_id is a snapshot id (no FK). Neither is append-only, so neither is in
+  // AUDIT_ADMIN_REQUIRED_TABLES.
+  'ai_usage_charge_claims',
+  'ai_usage_charge_runs',
+  'ai_usage_charges',
   'alert_correlation_groups',
   'alert_correlation_members',
   'alert_rules',
