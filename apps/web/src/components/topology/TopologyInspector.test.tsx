@@ -194,7 +194,7 @@ describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => 
   it('explains a neighbor_seen placement by observer and confirmation time, never as verified', () => {
     render(<TopologyInspector graph={withPhone({})} selection={{ kind: 'node', id: PHONE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
     const note = screen.getByTestId('topology-neighbor-seen');
-    expect(note).toHaveTextContent(/^Matching IP\/MAC in FRONT-DESK's neighbour cache; last confirmed .+/);
+    expect(note).toHaveTextContent(/^Matching IP\/MAC in FRONT-DESK's neighbor cache; last confirmed .+/);
     expect(note.textContent).not.toMatch(/verified/i);
     expect(screen.queryByText('Placed here because its address is in this range. Membership not verified.')).toBeNull();
   });
@@ -211,10 +211,10 @@ describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => 
     const graph = withPhone({}, { neighborCoverage: 'limited', conflict: true, conflictBasis: ['gateway_mac'] });
     render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
     const summary = screen.getByTestId('topology-group-summary');
-    expect(summary).toHaveTextContent("1 device is placed here from a matching IP/MAC in another device's neighbour cache.");
-    expect(summary).toHaveTextContent('neighbour cache');
+    expect(summary).toHaveTextContent("1 device is placed here from a matching IP/MAC in another device's neighbor cache.");
+    expect(summary).toHaveTextContent('neighbor cache');
     expect(summary).not.toHaveTextContent('unverified');
-    expect(summary).toHaveTextContent('Neighbour-cache evidence is incomplete for this network');
+    expect(summary).toHaveTextContent('Neighbor-cache evidence is incomplete for this network');
     expect(summary).toHaveTextContent('different gateway MAC addresses');
     expect(summary).not.toHaveTextContent('Devices on this range report different gateways');
   });
@@ -227,7 +227,7 @@ describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => 
         gatewayMacs: [{ address: '10.1.2.1', mac: '00:00:5e:00:01:01', observerCount: 2, confirmedAt: '2026-10-02T11:55:00.000Z', expiresAt: '2026-10-02T12:10:00.000Z' }] } }];
     render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
     const macs = screen.getByTestId('topology-gateway-macs');
-    expect(macs).toHaveTextContent(/Gateway MAC 00:00:5e:00:01:01: in 2 devices' neighbour caches; last confirmed .+/);
+    expect(macs).toHaveTextContent(/Gateway MAC 00:00:5e:00:01:01: in 2 devices' neighbor caches; last confirmed .+/);
     expect(macs.textContent).not.toMatch(/verified/i);
   });
 });

@@ -669,17 +669,17 @@
     "moreOutside_one": "{{count}} more outside this view",
     "moreOutside_other": "{{count}} more outside this view",
     "gatewayAddressMatch": "A discovered device uses this address (address match only, not verified):",
-    "neighborSeen": "neighbour cache",
-    "neighborSeenNote": "Matching IP/MAC in {{observer}}'s neighbour cache; last confirmed {{when}}.",
+    "neighborSeen": "neighbor cache",
+    "neighborSeenNote": "Matching IP/MAC in {{observer}}'s neighbor cache; last confirmed {{when}}.",
     "neighborState": {
       "permanent": "Static cache entry.",
       "unknown": "Reachability unknown."
     },
-    "neighborSeenCount_one": "{{count}} device is placed here from a matching IP/MAC in another device's neighbour cache.",
-    "neighborSeenCount_other": "{{count}} devices are placed here from a matching IP/MAC in other devices' neighbour caches.",
-    "neighborCoverageLimited": "Neighbour-cache evidence is incomplete for this network: a device missing from a cache is not evidence that it is absent.",
-    "conflictGatewayMac": "Devices on this range report the same gateway address, but their neighbour caches show different gateway MAC addresses, so it is split into separate cards.",
-    "gatewayMac_one": "Gateway MAC {{mac}}: in {{count}} device's neighbour cache; last confirmed {{when}}",
-    "gatewayMac_other": "Gateway MAC {{mac}}: in {{count}} devices' neighbour caches; last confirmed {{when}}"
+    "neighborSeenCount_one": "{{count}} device is placed here from a matching IP/MAC in another device's neighbor cache.",
+    "neighborSeenCount_other": "{{count}} devices are placed here from a matching IP/MAC in other devices' neighbor caches.",
+    "neighborCoverageLimited": "Neighbor-cache evidence is incomplete for this network: a device missing from a cache is not evidence that it is absent.",
+    "conflictGatewayMac": "Devices on this range report the same gateway address, but their neighbor caches show different gateway MAC addresses, so it is split into separate cards.",
+    "gatewayMac_one": "Gateway MAC {{mac}}: in {{count}} device's neighbor cache; last confirmed {{when}}",
+    "gatewayMac_other": "Gateway MAC {{mac}}: in {{count}} devices' neighbor caches; last confirmed {{when}}"
   }
 }
