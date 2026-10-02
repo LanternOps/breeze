@@ -140,6 +140,24 @@ describe('buildPresentationGroups', () => {
     expect(unidentified(nodes)[0]!.group!.members.map((m) => m.nodeId).sort()).toEqual([E(40), E(41), E(42)].sort());
   });
 
+  it('puts an endpoint whose only membership targets an unparseable prefix into the unidentified group (#7821)', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], {
+      networks: [{ id: N(50), prefix: 'not-a-prefix' }, { id: N(51), prefix: null }],
+      memberships: [
+        { id: M(50), endpointId: E(50), networkId: N(50), interfaceId: I(50), fresh: true },
+        { id: M(51), endpointId: E(51), networkId: N(51), interfaceId: I(51), fresh: true },
+        // A second, parseable membership still places the endpoint normally.
+        { id: M(52), endpointId: E(52), networkId: N(50), interfaceId: I(52), fresh: true },
+        { id: M(53), endpointId: E(52), networkId: N(1), interfaceId: I(53), fresh: true },
+      ],
+    });
+    const { nodes } = build(input, { visible: [N(1), N(50), N(51), E(1), E(50), E(51), E(52), G(1)] });
+    expect(unidentified(nodes)).toHaveLength(1);
+    expect(unidentified(nodes)[0]!.group!.members.map((m) => m.nodeId).sort()).toEqual([E(50), E(51)].sort());
+    expect(unidentified(nodes)[0]!.memberCount).toBe(2);
+    expect(networks(nodes)[0]!.group!.members.map((m) => m.nodeId).sort()).toEqual([E(1), E(52)].sort());
+  });
+
   it('places an unmembered endpoint by address only when exactly one LAN candidate contains it', () => {
     const unique = build(lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '2001:db8:1::/64', gateway: 'fe80::1' }], {
       unplaced: [{ endpointId: E(40), addresses: ['10.1.2.50'] }, { endpointId: E(41), addresses: ['2001:db8:1::99'] }],

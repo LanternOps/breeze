@@ -224,7 +224,13 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   const lanCandidates = [...candidates.values()].filter((candidate) => candidate.networkClass === 'lan');
   const observers = (candidate: Candidate) => new Set(candidate.memberships.map((m) => m.endpointId)).size;
   const unidentified: string[] = [];
-  for (const row of input.unplaced) {
+  // #7821: a membership whose target prefix is unparseable places nothing, so an endpoint
+  // whose every membership is like that is treated exactly as one with no membership.
+  const unplaced = new Map(input.unplaced.map((row) => [row.endpointId, row]));
+  for (const row of input.memberships) {
+    if (!memberEndpoints.has(row.endpointId) && !unplaced.has(row.endpointId)) unplaced.set(row.endpointId, { endpointId: row.endpointId, addresses: [] });
+  }
+  for (const row of unplaced.values()) {
     if (memberEndpoints.has(row.endpointId)) continue;
     const ranges = new Map<string, Candidate[]>();
     for (const address of row.addresses) {
