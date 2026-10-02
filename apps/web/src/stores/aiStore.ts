@@ -455,8 +455,15 @@ export const useAiStore = create<AiState>()(
         isFlagged: !!data.session.flaggedAt,
         flagReason: data.session.flagReason ?? null,
         boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+        turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
+        thinking: false,
+        refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
       });
+      // A parked continuation message belongs to the chat it came from; it must
+      // not linger once the active chat changes.
+      const parked = useAiModelPickerStore.getState().continuation;
+      if (parked && parked.sourceSessionId !== sessionId) useAiModelPickerStore.getState().dismissContinuation();
       void useAiModelPickerStore.getState().load({ sessionId });
     } catch (err) {
       if (!ownsSession()) return;

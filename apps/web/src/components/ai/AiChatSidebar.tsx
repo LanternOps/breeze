@@ -15,6 +15,9 @@ import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
 import AiModelPicker from "./AiModelPicker";
+import AiThinkingIndicator from "./AiThinkingIndicator";
+import AiTurnModelBadge from "./AiTurnModelBadge";
+import AiContinuationPrompt from "./AiContinuationPrompt";
 import { useAiModelPickerStore } from "@/stores/aiModelPickerStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
@@ -33,6 +36,8 @@ export default function AiChatSidebar() {
     messages,
     chatRuns,
     isStreaming,
+    thinking,
+    turnModel,
     isLoading,
     error,
     pageContext,
@@ -382,7 +387,10 @@ export default function AiChatSidebar() {
               onIntentDecided={clearPendingApproval}
             />
 
-            {/* Model menu (W05) */}
+            {/* Continuation prompt, what ran, thinking, model menu (W05) */}
+            <AiContinuationPrompt />
+            <AiTurnModelBadge turnModel={turnModel} />
+            <AiThinkingIndicator thinking={isStreaming && !!thinking} />
             <AiModelPicker disabled={isStreaming} />
 
             {/* Input */}

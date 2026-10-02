@@ -526,5 +526,28 @@
     },
     "fast": "Veloce ({{input}} in ingresso / {{output}} in uscita per M)",
     "thinking": "Ragionamento"
+  },
+  "aiThinking": {
+    "label": "Sto ragionando… {{seconds}} s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Risposta di {{model}}",
+    "fast": "Veloce",
+    "fellBack": "{{requested}} ha rifiutato; ha risposto un altro modello",
+    "fastDowngraded": "La modalità veloce non era disponibile; eseguito a velocità standard"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} usa un'altra connessione IA, quindi questa chat non può passare a quel modello.",
+      "connection_changed": "La connessione IA è cambiata dall'ultima risposta, quindi questa chat non può cambiare modello.",
+      "transcript_too_large": "Questa conversazione è troppo lunga per {{model}}.",
+      "fit_unverifiable": "Breeze non ha potuto confermare che questa conversazione rientri in {{model}}."
+    },
+    "messageKept": "Il tuo messaggio è conservato. Continua in una nuova chat che parte da un riepilogo di questa, oppure mantieni il modello attuale.",
+    "continue": "Continua con {{model}} in una nuova chat",
+    "keep": "Mantieni il modello attuale",
+    "created": "Nuova chat su {{model}} avviata da un riepilogo.",
+    "failed": "Impossibile avviare la nuova chat. Riprova.",
+    "openFailed": "La nuova chat è stata creata ma non è stato possibile aprirla. Trovala nella cronologia delle chat; il tuo messaggio non è stato inviato."
   }
 }

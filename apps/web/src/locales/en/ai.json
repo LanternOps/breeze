@@ -526,5 +526,28 @@
     },
     "fast": "Fast ({{input}} in / {{output}} out per M)",
     "thinking": "Thinking"
+  },
+  "aiThinking": {
+    "label": "Thinking… {{seconds}}s"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Answered by {{model}}",
+    "fast": "Fast",
+    "fellBack": "{{requested}} declined; another model answered",
+    "fastDowngraded": "Fast was unavailable; ran at standard speed"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} runs on a different AI connection, so this chat can't switch to it.",
+      "connection_changed": "The AI connection changed since the last reply, so this chat can't switch models.",
+      "transcript_too_large": "This conversation is too long for {{model}}.",
+      "fit_unverifiable": "Breeze couldn't confirm this conversation fits {{model}}."
+    },
+    "messageKept": "Your message is kept. Continue in a new chat that starts from a summary of this one, or keep the current model.",
+    "continue": "Continue with {{model}} in a new chat",
+    "keep": "Keep the current model",
+    "created": "New chat on {{model}} started from a summary.",
+    "failed": "Couldn't start the new chat. Try again.",
+    "openFailed": "The new chat was created but couldn't be opened. Find it in your chat history; your message was not sent."
   }
 }

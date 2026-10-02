@@ -526,5 +526,28 @@
     },
     "fast": "Hızlı (milyon başına {{input}} giriş / {{output}} çıkış)",
     "thinking": "Düşünme"
+  },
+  "aiThinking": {
+    "label": "Düşünüyor… {{seconds}} sn"
+  },
+  "aiTurnModel": {
+    "answeredBy": "Yanıtlayan: {{model}}",
+    "fast": "Hızlı",
+    "fellBack": "{{requested}} reddetti; başka bir model yanıtladı",
+    "fastDowngraded": "Hızlı mod kullanılamadı; standart hızda çalıştı"
+  },
+  "aiContinuation": {
+    "reason": {
+      "cross_connection": "{{model}} farklı bir yapay zekâ bağlantısı kullanıyor, bu nedenle bu sohbet ona geçemez.",
+      "connection_changed": "Yapay zekâ bağlantısı son yanıttan beri değişti, bu nedenle bu sohbet model değiştiremez.",
+      "transcript_too_large": "Bu konuşma {{model}} için çok uzun.",
+      "fit_unverifiable": "Breeze bu konuşmanın {{model}} modeline sığdığını doğrulayamadı."
+    },
+    "messageKept": "Mesajınız saklandı. Bu sohbetin özetinden başlayan yeni bir sohbette devam edin veya mevcut modeli koruyun.",
+    "continue": "{{model}} ile yeni bir sohbette devam et",
+    "keep": "Mevcut modeli koru",
+    "created": "{{model}} üzerinde yeni sohbet bir özetten başlatıldı.",
+    "failed": "Yeni sohbet başlatılamadı. Tekrar deneyin.",
+    "openFailed": "Yeni sohbet oluşturuldu ancak açılamadı. Sohbet geçmişinizde bulabilirsiniz; mesajınız gönderilmedi."
   }
 }
