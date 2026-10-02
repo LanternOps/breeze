@@ -26,11 +26,11 @@ const offering = (id: string, name: string) => ({
 
 type SurfaceOver = { inherited?: Partial<AiOrgSurfaceDefaultsDto['inherited']>; org?: AiAssignmentRowDto | null; effective?: Partial<AiOrgSurfaceDefaultsDto['effective']> };
 
-function surface(s: AiSurface, over: SurfaceOver = {}): AiOrgSurfaceDefaultsDto {
+function surface(s: AiSurface, over: SurfaceOver = {}, role = 'default'): AiOrgSurfaceDefaultsDto {
   const inherited = { defaultOfferingId: A, permittedOfferingIds: null, allowUserChoice: true, options: {}, fallbackOfferingIds: [] as string[], fallbackMayCrossFunding: false, ...over.inherited };
   const org = over.org ?? null;
   return {
-    surface: s, role: 'default', requiresTools: false, inherited, org,
+    surface: s, role, requiresTools: false, inherited, org,
     effective: { defaultOfferingId: org?.defaultOfferingId ?? inherited.defaultOfferingId, defaultSource: org?.defaultOfferingId ? 'org' : 'partner', permittedOfferingIds: null, allowUserChoice: true, options: {}, fallbackOfferingIds: [] as string[], fallbackMayCrossFunding: false, ...over.effective },
   };
 }
@@ -39,7 +39,7 @@ function orgDefaults(over: { chat?: SurfaceOver; canEdit?: boolean; canEditRevie
   return {
     orgId: ORG,
     offerings: [offering(A, 'Model A'), offering(B, 'Model B'), offering(C, 'Model C')],
-    surfaces: [surface('chat', over.chat), surface('script_reviewer')],
+    surfaces: [surface('chat', over.chat), surface('script_reviewer'), surface('ai_agents'), surface('ai_agents', {}, 'triage'), surface('ai_agents', {}, 'analysis'), surface('ai_agents', {}, 'remediation')],
     canEdit: over.canEdit ?? true,
     canEditReviewer: over.canEditReviewer ?? true,
   };
@@ -87,7 +87,8 @@ describe('OrgModelDefaultsCard', () => {
     fireEvent.change(await screen.findByTestId('org-model-defaults-default-chat'), { target: { value: '' } });
     fireEvent.click(screen.getByTestId('org-model-defaults-save'));
     await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[1][1].body)).toEqual({ assignments: [{
-      surface: 'chat', role: 'default', defaultOfferingId: null, permittedOfferingIds: null, allowUserChoice: null, options: null, expectedUpdatedAt: T,
+      surface: 'chat', role: 'default', defaultOfferingId: null, permittedOfferingIds: null, allowUserChoice: null, options: null,
+      fallbackOfferingIds: null, fallbackMayCrossFunding: null, expectedUpdatedAt: T,
     }] }));
     expect(fetchWithAuth.mock.calls[1][0]).toBe(`/ai/models/orgs/${ORG}/assignments`);
     expect(fetchWithAuth.mock.calls[1][1].method).toBe('PUT');
@@ -233,5 +234,47 @@ describe('OrgModelDefaultsCard', () => {
     fireEvent.click(screen.getByTestId('org-model-defaults-discard'));
     expect((screen.getByTestId('org-model-defaults-default-chat') as HTMLSelectElement).value).toBe('');
     expect(screen.queryByTestId('org-model-defaults-save')).toBeNull();
+  });
+
+  it('an org can narrow the inherited fallback list and switch cross-funding failover off', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { fallbackOfferingIds: [B, C], fallbackMayCrossFunding: true } } })))
+      .mockResolvedValueOnce(jsonRes({ assignments: [] }))
+      .mockResolvedValueOnce(jsonRes(orgDefaults()));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    await screen.findByTestId('org-model-defaults-row-chat');
+    fireEvent.click(screen.getByTestId('org-model-defaults-fallback-remove-chat-1'));
+    fireEvent.click(screen.getByTestId('org-model-defaults-no-cross-funding-chat'));
+    fireEvent.click(screen.getByTestId('org-model-defaults-save'));
+    await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[1][1].body).assignments[0]).toMatchObject({
+      surface: 'chat', role: 'default', fallbackOfferingIds: [B], fallbackMayCrossFunding: false,
+    }));
+  });
+
+  it('emptying the list sends [] (no backups), never null', async () => {
+    fetchWithAuth
+      .mockResolvedValueOnce(jsonRes(orgDefaults({ chat: { inherited: { fallbackOfferingIds: [B] } } })))
+      .mockResolvedValueOnce(jsonRes({ assignments: [] }))
+      .mockResolvedValueOnce(jsonRes(orgDefaults()));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    await screen.findByTestId('org-model-defaults-row-chat');
+    fireEvent.click(screen.getByTestId('org-model-defaults-fallback-remove-chat-0'));
+    fireEvent.click(screen.getByTestId('org-model-defaults-save'));
+    await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[1][1].body).assignments[0].fallbackOfferingIds).toEqual([]));
+  });
+
+  it('cross-funding stays locked when the partner does not allow it', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults()));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    const box = (await screen.findByTestId('org-model-defaults-no-cross-funding-chat')) as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(true);
+  });
+
+  it('shows the ai_agents role sub-rows with their inherited model and source', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes(orgDefaults()));
+    render(<OrgModelDefaultsCard orgId={ORG} />);
+    expect(await screen.findByTestId('org-model-defaults-row-ai_agents-triage')).toBeTruthy();
+    expect(screen.getByTestId('org-model-defaults-inherited-ai_agents-triage').textContent).toMatch(/partner/i);
   });
 });

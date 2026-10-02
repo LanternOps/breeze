@@ -228,7 +228,10 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
                 <th className="px-3 py-2 text-right font-medium">{t('aiModels.usage.inputTokens')}</th>
                 <th className="px-3 py-2 text-right font-medium">{t('aiModels.usage.outputTokens')}</th>
                 <th className="px-3 py-2 text-right font-medium">{t('aiModels.usage.refusals')}</th>
-                <th className="px-6 py-2 text-right font-medium">{t('aiModels.usage.fallbacks')}</th>
+                <th className="px-3 py-2 text-right font-medium">{t('aiModels.usage.fallbacks')}</th>
+                <th className="px-6 py-2 text-right font-medium" data-testid="ai-usage-col-failovers" title={t('aiModels.usage.failoversHelp')}>
+                  {t('aiModels.usage.failovers')}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -251,7 +254,8 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumber(r.inputTokens)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumber(r.outputTokens)}</td>
                   <td className="px-3 py-2 text-right tabular-nums" data-testid={`ai-usage-breakdown-refusals-${r.key}`}>{formatRefusals(r)}</td>
-                  <td className="px-6 py-2 text-right tabular-nums">{formatNumber(r.fallbacks)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatNumber(r.fallbacks)}</td>
+                  <td className="px-6 py-2 text-right tabular-nums" data-testid={`ai-usage-breakdown-failovers-${r.key}`}>{formatNumber(r.failovers)}</td>
                 </tr>
               ))}
             </tbody>
@@ -263,7 +267,8 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
                 <td className="px-3 py-2 text-right tabular-nums">{formatNumber(data.totals.inputTokens)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{formatNumber(data.totals.outputTokens)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{formatRefusals(data.totals)}</td>
-                <td className="px-6 py-2 text-right tabular-nums">{formatNumber(data.totals.fallbacks)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatNumber(data.totals.fallbacks)}</td>
+                <td className="px-6 py-2 text-right tabular-nums">{formatNumber(data.totals.failovers)}</td>
               </tr>
             </tfoot>
           </table>

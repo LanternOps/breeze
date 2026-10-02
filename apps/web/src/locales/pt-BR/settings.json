@@ -337,7 +337,8 @@
       "registry_unavailable": "A configuração de IA está sendo atualizada. Tente novamente em instantes.",
       "approvals_decide_required": "Alterar o modelo do revisor de scripts exige a permissão approvals:decide.",
       "queue_unavailable": "A fila de solicitações está indisponível. Tente novamente em instantes.",
-      "registry_busy": "Outra alteração na configuração de IA está em andamento. Tente novamente em instantes."
+      "registry_busy": "Outra alteração na configuração de IA está em andamento. Tente novamente em instantes.",
+      "crossesFunding": "Esse modelo de backup é pago por outra fonte. Permita primeiro o failover entre créditos do Breeze e sua própria chave de API."
     },
     "org": {
       "title": "Modelos padrão",
@@ -364,7 +365,13 @@
         "org": "Substituição da organização",
         "partner": "Padrão do parceiro",
         "none": "Sem padrão"
-      }
+      },
+      "noCrossFunding": "Não fazer failover entre créditos do Breeze e a chave própria do parceiro",
+      "crossFundingLocked": "Não permitido pelo parceiro",
+      "fallbackInherit_one": "Herdar — {{count}} modelo de backup (parceiro)",
+      "fallbackInherit_other": "Herdar — {{count}} modelos de backup (parceiro)",
+      "fallbackOnlyThese": "Somente estes modelos de backup",
+      "noBackups": "Nenhum modelo de backup"
     },
     "models": {
       "title": "Modelos",
@@ -489,7 +496,18 @@
         "fast": "Rápido"
       },
       "unavailableModel": "{{model}} (indisponível)",
-      "unavailableUnknown": "Modelo indisponível"
+      "unavailableUnknown": "Modelo indisponível",
+      "roleInherit": "Igual ao padrão dos agentes de IA",
+      "fallbacks": "Modelos de backup, em ordem",
+      "addFallback": "Adicionar um modelo de backup…",
+      "moveUp": "Mover para cima",
+      "moveDown": "Mover para baixo",
+      "removeFallback": "Remover",
+      "fallbackUnavailable": "Um modelo que não está mais disponível",
+      "crossFunding": "Permitir failover entre créditos do Breeze e sua própria chave de API",
+      "crossFundingHelp": "Quando ativado, um backup pago pela outra fonte pode atender a uma solicitação. Ela é cobrada da fonte que de fato a atendeu.",
+      "fundingPlatform": "Créditos do Breeze",
+      "fundingOwnKey": "Sua chave de API"
     },
     "usage": {
       "title": "Uso de IA por modelo",
@@ -522,7 +540,9 @@
         "label": "Mostrar",
         "spend": "Gastos",
         "quality": "Qualidade"
-      }
+      },
+      "failovers": "Acionamentos de backup",
+      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível"
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -583,6 +603,11 @@
       "error": "Não foi possível carregar a visão de qualidade.",
       "timeout": "Este intervalo é grande demais para resumir rapidamente. Escolha um intervalo menor.",
       "footnote": "Uma conversa conta para o último modelo que usou, e uma troca conta para o modelo que ela deixou. Chamadas atendidas por um fallback ou modelo de reserva contam para o modelo escolhido. As contagens começam quando o acompanhamento de qualidade entrou em operação. Interprete números pequenos com cuidado."
+    },
+    "roles": {
+      "triage": "Triagem (primeira análise)",
+      "analysis": "Análise (investigar e planejar)",
+      "remediation": "Correção (agir nos dispositivos)"
     }
   },
   "partnerDefaults": {

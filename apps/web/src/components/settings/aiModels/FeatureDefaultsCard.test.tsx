@@ -16,6 +16,7 @@ const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const A2 = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const K = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const UPDATED = '2026-10-01T00:00:00.000Z';
 const LATER = '2026-10-03T00:00:00.000Z';
 
@@ -31,13 +32,18 @@ function defaultsFor(surface: AiSurface, defaultOfferingId: string, over: Partia
   return { surface, role: 'default', requiresTools: surface === 'chat', partner: assignment(surface, defaultOfferingId, updatedAt), orgOverrideCount: surface === 'helper' ? 2 : 0, ...rest };
 }
 
-function snapWithDefaults(over: { offerings?: AiOfferingDto[]; helperDefault?: string; chatUpdatedAt?: string; extra?: AiSurfaceDefaultsDto[] } = {}): AiModelsSnapshotDto {
+function snapWithDefaults(over: { offerings?: AiOfferingDto[]; helperDefault?: string; chatUpdatedAt?: string; extra?: AiSurfaceDefaultsDto[]; chatFallbacks?: string[]; chatCrossFunding?: boolean } = {}): AiModelsSnapshotDto {
+  const chat = defaultsFor('chat', A, { updatedAt: over.chatUpdatedAt });
+  if (over.chatFallbacks) chat.partner = { ...chat.partner!, fallbackOfferingIds: over.chatFallbacks, fallbackMayCrossFunding: over.chatCrossFunding ?? false };
+  const roleEntry = (role: string): AiSurfaceDefaultsDto => ({ surface: 'ai_agents', role, requiresTools: true, partner: null, orgOverrideCount: 0 });
   return {
     ...SNAPSHOT,
-    offerings: over.offerings ?? [off(A), off(B), off(A2)],
+    offerings: over.offerings ?? [off(A), off(B), off(A2), off(K, { funding: 'partner_key', displayName: 'Own key K' })],
     defaults: [
-      defaultsFor('chat', A, { updatedAt: over.chatUpdatedAt }),
+      chat,
       defaultsFor('helper', over.helperDefault ?? A),
+      defaultsFor('ai_agents', A),
+      roleEntry('triage'), roleEntry('analysis'), roleEntry('remediation'),
       ...(over.extra ?? []),
     ],
   };
@@ -59,7 +65,7 @@ describe('FeatureDefaultsCard', () => {
     expect(fetchWithAuth.mock.calls[0][1].method).toBe('PUT');
     expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body)).toEqual({ assignments: [{
       surface: 'chat', role: 'default', defaultOfferingId: B, permittedOfferingIds: null, allowUserChoice: true, options: null,
-      expectedUpdatedAt: UPDATED,
+      fallbackOfferingIds: [], fallbackMayCrossFunding: false, expectedUpdatedAt: UPDATED,
     }] });
   });
 
@@ -227,8 +233,58 @@ describe('FeatureDefaultsCard', () => {
     });
   });
 
-  it('renders no fallback controls (W09)', () => {
+  it('renders the three ai_agents escalation sub-rows', () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
-    expect(screen.queryByText(/fallback/i)).toBeNull();
+    for (const role of ['triage', 'analysis', 'remediation']) expect(screen.getByTestId(`ai-defaults-row-ai_agents-${role}`)).toBeTruthy();
+  });
+
+  it('a role sub-row starts on "Same as AI agents default" and is not dirty', () => {
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    const sel = screen.getByTestId('ai-defaults-default-ai_agents-triage') as HTMLSelectElement;
+    expect(sel.value).toBe('');
+    expect(sel.options[0].textContent).toBe('Same as AI agents default');
+    expect(screen.queryByTestId('ai-defaults-fallbacks-ai_agents-triage')).toBeNull();
+    expect(screen.queryByTestId('ai-defaults-dirty')).toBeNull();
+  });
+
+  it('choosing a triage model saves a triage row; the fallback list and crossing switch ride along', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ assignments: [] }));
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: B } });
+    fireEvent.change(screen.getByTestId('ai-defaults-fallback-add-ai_agents-triage'), { target: { value: A } });
+    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
+      surface: 'ai_agents', role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false, expectedUpdatedAt: null,
+    })]));
+  });
+
+  it('clearing a stored role row saves it as a clear (null default, no list)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ assignments: [] }));
+    const s = snapWithDefaults();
+    const triage = s.defaults.find((d) => d.role === 'triage')!;
+    triage.partner = { ...assignment('ai_agents', B), role: 'triage' };
+    render(<FeatureDefaultsCard snapshot={s} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
+      surface: 'ai_agents', role: 'triage', defaultOfferingId: null, permittedOfferingIds: null, options: null, fallbackOfferingIds: null, expectedUpdatedAt: UPDATED,
+    })]));
+  });
+
+  it('switching cross-funding off drops the entries that cross', () => {
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults({ chatFallbacks: [B, K], chatCrossFunding: true })} onSaved={vi.fn()} />);
+    expect(screen.getByTestId('ai-defaults-fallback-chat-1')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('ai-defaults-cross-funding-chat'));
+    expect(screen.queryByTestId('ai-defaults-fallback-chat-1')).toBeNull();
+    expect(screen.getByTestId('ai-defaults-fallback-chat-0').textContent).toContain('Model b');
+  });
+
+  it('a 422 crosses_funding highlights the role row named in details', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x', code: 'crosses_funding', details: { surface: 'ai_agents', role: 'triage', field: 'fallbackOfferingIds' } }, 422));
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: B } });
+    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await waitFor(() => expect(screen.getByTestId('ai-defaults-row-ai_agents-triage').getAttribute('aria-invalid')).toBe('true'));
+    expect(screen.getByTestId('ai-defaults-row-ai_agents').getAttribute('aria-invalid')).not.toBe('true');
   });
 });

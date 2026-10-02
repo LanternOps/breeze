@@ -16,6 +16,12 @@ export const SURFACE_LABEL_KEYS: Record<AiSurface, string> = {
   patch_test: 'aiModels.surfaces.patch_test',
 };
 
+export const ROLE_LABEL_KEYS = {
+  triage: 'aiModels.roles.triage',
+  analysis: 'aiModels.roles.analysis',
+  remediation: 'aiModels.roles.remediation',
+} as const;
+
 export const ENABLE_BLOCKER_KEYS: Record<OfferingEnableBlocker, string> = {
   model_unavailable: 'aiModels.blockers.model_unavailable',
   unpriced: 'aiModels.blockers.unpriced',
@@ -35,6 +41,7 @@ export const REGISTRY_ERROR_KEYS: Record<string, string> = {
   invalid: 'aiModels.errors.invalid',
   tools_unsupported: 'aiModels.errors.tools_unsupported',
   widens_partner: 'aiModels.errors.widens_partner',
+  crosses_funding: 'aiModels.errors.crossesFunding',
   write_failed: 'aiModels.errors.write_failed',
   registry_unavailable: 'aiModels.errors.registry_unavailable',
   registry_busy: 'aiModels.errors.registry_busy',

@@ -337,7 +337,8 @@
       "registry_unavailable": "La configuration de l'IA est en cours de mise à niveau. Réessayez dans un instant.",
       "approvals_decide_required": "Modifier le modèle du réviseur de scripts nécessite l'autorisation approvals:decide.",
       "queue_unavailable": "La file d'attente des requêtes est indisponible. Réessayez dans un instant.",
-      "registry_busy": "Une autre modification de la configuration IA est en cours. Réessayez dans un instant."
+      "registry_busy": "Une autre modification de la configuration IA est en cours. Réessayez dans un instant.",
+      "crossesFunding": "Ce modèle de secours est payé par une autre source. Autorisez d’abord le basculement entre les crédits Breeze et votre propre clé API."
     },
     "org": {
       "title": "Modèles par défaut",
@@ -364,7 +365,13 @@
         "org": "Remplacement de l'organisation",
         "partner": "Valeur par défaut du partenaire",
         "none": "Aucune valeur par défaut"
-      }
+      },
+      "noCrossFunding": "Ne pas basculer entre les crédits Breeze et la clé propre du partenaire",
+      "crossFundingLocked": "Non autorisé par le partenaire",
+      "fallbackInherit_one": "Hériter — {{count}} modèle de secours (partenaire)",
+      "fallbackInherit_other": "Hériter — {{count}} modèles de secours (partenaire)",
+      "fallbackOnlyThese": "Seulement ces modèles de secours",
+      "noBackups": "Aucun modèle de secours"
     },
     "models": {
       "title": "Modèles",
@@ -489,7 +496,18 @@
         "fast": "Rapide"
       },
       "unavailableModel": "{{model}} (indisponible)",
-      "unavailableUnknown": "Modèle indisponible"
+      "unavailableUnknown": "Modèle indisponible",
+      "roleInherit": "Identique au modèle par défaut des agents IA",
+      "fallbacks": "Modèles de secours, dans l’ordre",
+      "addFallback": "Ajouter un modèle de secours…",
+      "moveUp": "Monter",
+      "moveDown": "Descendre",
+      "removeFallback": "Retirer",
+      "fallbackUnavailable": "Un modèle qui n’est plus disponible",
+      "crossFunding": "Permettre le basculement entre les crédits Breeze et votre propre clé API",
+      "crossFundingHelp": "Lorsque cette option est activée, un modèle de secours payé par l’autre source peut traiter une requête. Elle est facturée à la source qui l’a réellement traitée.",
+      "fundingPlatform": "Crédits Breeze",
+      "fundingOwnKey": "Votre clé API"
     },
     "usage": {
       "title": "Utilisation de l'IA par modèle",
@@ -522,7 +540,9 @@
         "label": "Afficher",
         "spend": "Dépenses",
         "quality": "Qualité"
-      }
+      },
+      "failovers": "Basculements",
+      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible"
     },
     "link": {
       "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
@@ -583,6 +603,11 @@
       "error": "Impossible de charger la vue Qualité.",
       "timeout": "Cette période est trop longue pour être résumée rapidement. Choisissez une période plus courte.",
       "footnote": "Une conversation compte pour le dernier modèle utilisé, et un changement pour le modèle quitté. Les appels servis par un modèle de secours comptent pour le modèle choisi. Les chiffres démarrent à l'activation du suivi de la qualité. Interprétez les petits nombres avec prudence."
+    },
+    "roles": {
+      "triage": "Triage (premier regard)",
+      "analysis": "Analyse (enquêter et planifier)",
+      "remediation": "Correction (agir sur les appareils)"
     }
   },
   "partnerDefaults": {

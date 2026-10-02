@@ -12,10 +12,10 @@ import AiUsageBreakdown from './AiUsageBreakdown';
 const A = 'platform:platform:claude-sonnet-x';
 const ORG = '22222222-2222-4222-8222-222222222222';
 
-const totals = { invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1 };
+const totals = { invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1, failovers: 2 };
 const emptyBreakdown = (groupBy: string) => ({
   groupBy, from: '2026-10-01', to: '2026-10-17', orgId: null, rows: [],
-  totals: { invocations: 0, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0 },
+  totals: { invocations: 0, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0, failovers: 0 },
 });
 
 beforeEach(() => {
@@ -27,7 +27,7 @@ describe('AiUsageBreakdown', () => {
   it('loads month-to-date by model and renders rows with refusal rate, footer totals and footnote', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({
       groupBy: 'model', from: '2026-10-01', to: '2026-10-17', orgId: null,
-      rows: [{ key: A, label: 'Model A', invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1 }],
+      rows: [{ key: A, label: 'Model A', invocations: 80, costCents: 1234, inputTokens: 1, outputTokens: 2, refusals: 2, refusalRate: 0.025, fallbacks: 1, failovers: 2 }],
       totals,
     }));
     render(<AiUsageBreakdown orgId={null} />);
@@ -38,6 +38,8 @@ describe('AiUsageBreakdown', () => {
     expect(screen.getByTestId('ai-usage-breakdown-totals').textContent).toMatch(/\$12\.34/);
     expect(screen.getByTestId('ai-usage-breakdown').textContent).toMatch(/Refusal rate is per model call/);
     expect((screen.getByTestId('ai-usage-range-from') as HTMLInputElement).value).toBe('2026-10-01');
+    expect(screen.getByTestId('ai-usage-col-failovers')).toBeTruthy();
+    expect(screen.getByTestId(`ai-usage-breakdown-failovers-${A}`).textContent).toBe('2');
   });
 
   it('switches grouping, passes the org filter, and writes the hash', async () => {
@@ -76,7 +78,7 @@ describe('AiUsageBreakdown', () => {
     window.location.hash = '#usage-by-user';
     fetchWithAuth.mockResolvedValue(jsonRes({
       ...emptyBreakdown('user'),
-      rows: [{ key: 'system', label: 'system', invocations: 1, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0 }],
+      rows: [{ key: 'system', label: 'system', invocations: 1, costCents: 0, inputTokens: 0, outputTokens: 0, refusals: 0, refusalRate: 0, fallbacks: 0, failovers: 0 }],
     }));
     render(<AiUsageBreakdown orgId={null} />);
     expect((await screen.findByTestId('ai-usage-breakdown-row-system')).textContent).toMatch(/System \/ agents/);
@@ -86,7 +88,7 @@ describe('AiUsageBreakdown', () => {
     const GONE = 'partner_key:dddddddd-dddd-4ddd-8ddd-dddddddddddd:claude-sonnet-x';
     const LIVE = 'partner_key:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee:claude-sonnet-x';
     const row = (key: string, connectionDisconnected: boolean) => ({
-      key, label: 'Sonnet X', invocations: 1, costCents: 10, inputTokens: 1, outputTokens: 1, refusals: 0, refusalRate: 0, fallbacks: 0, connectionDisconnected,
+      key, label: 'Sonnet X', invocations: 1, costCents: 10, inputTokens: 1, outputTokens: 1, refusals: 0, refusalRate: 0, fallbacks: 0, failovers: 0, connectionDisconnected,
     });
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ ...emptyBreakdown('model'), rows: [row(GONE, true), row(LIVE, false)], totals }));
     render(<AiUsageBreakdown orgId={null} />);

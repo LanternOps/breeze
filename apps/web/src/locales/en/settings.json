@@ -337,7 +337,8 @@
       "registry_unavailable": "AI configuration is being upgraded. Try again in a moment.",
       "approvals_decide_required": "Changing the script reviewer’s model needs the approvals:decide permission.",
       "queue_unavailable": "The request queue is unavailable. Try again in a moment.",
-      "registry_busy": "Another AI configuration change is in progress. Try again in a moment."
+      "registry_busy": "Another AI configuration change is in progress. Try again in a moment.",
+      "crossesFunding": "That backup model is paid from a different source. Allow failover between Breeze credits and your own API key first."
     },
     "org": {
       "title": "Model defaults",
@@ -364,7 +365,13 @@
         "org": "Organization override",
         "partner": "Partner default",
         "none": "No default"
-      }
+      },
+      "noCrossFunding": "Don’t fail over between Breeze credits and the partner’s own key",
+      "crossFundingLocked": "Not allowed by the partner",
+      "fallbackInherit_one": "Inherit — {{count}} backup model (partner)",
+      "fallbackInherit_other": "Inherit — {{count}} backup models (partner)",
+      "fallbackOnlyThese": "Only these backup models",
+      "noBackups": "No backup models"
     },
     "models": {
       "title": "Models",
@@ -489,7 +496,18 @@
         "fast": "Fast"
       },
       "unavailableModel": "{{model}} (unavailable)",
-      "unavailableUnknown": "Unavailable model"
+      "unavailableUnknown": "Unavailable model",
+      "roleInherit": "Same as AI agents default",
+      "fallbacks": "Backup models, in order",
+      "addFallback": "Add a backup model…",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeFallback": "Remove",
+      "fallbackUnavailable": "A model that is no longer available",
+      "crossFunding": "Allow failover between Breeze credits and your own API key",
+      "crossFundingHelp": "When on, a backup paid from the other source may serve a request. It is billed to whichever source actually served it.",
+      "fundingPlatform": "Breeze credits",
+      "fundingOwnKey": "Your API key"
     },
     "usage": {
       "title": "AI usage by model",
@@ -522,7 +540,9 @@
         "label": "Show",
         "spend": "Spend",
         "quality": "Quality"
-      }
+      },
+      "failovers": "Failovers",
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -583,6 +603,11 @@
       "error": "Couldn't load the quality view.",
       "timeout": "This range is too large to summarize quickly. Choose a shorter range.",
       "footnote": "A conversation counts toward the model it last used, and a switch toward the model it left. Calls served by a fallback or a backup model count toward the model that was chosen. Counts start when quality tracking went live. Read small numbers with care."
+    },
+    "roles": {
+      "triage": "Triage (first look)",
+      "analysis": "Analysis (investigate and plan)",
+      "remediation": "Remediation (act on devices)"
     }
   },
   "partnerDefaults": {

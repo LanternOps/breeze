@@ -337,7 +337,8 @@
       "registry_unavailable": "La configuración de IA se está actualizando. Inténtalo de nuevo en un momento.",
       "approvals_decide_required": "Cambiar el modelo del revisor de scripts requiere el permiso approvals:decide.",
       "queue_unavailable": "La cola de solicitudes no está disponible. Inténtelo de nuevo en un momento.",
-      "registry_busy": "Hay otro cambio de configuración de IA en curso. Inténtalo de nuevo en un momento."
+      "registry_busy": "Hay otro cambio de configuración de IA en curso. Inténtalo de nuevo en un momento.",
+      "crossesFunding": "Ese modelo de respaldo se paga con otra fuente. Primero permita la conmutación entre créditos de Breeze y su propia clave de API."
     },
     "org": {
       "title": "Modelos predeterminados",
@@ -364,7 +365,13 @@
         "org": "Anulación de la organización",
         "partner": "Predeterminado del socio",
         "none": "Sin predeterminado"
-      }
+      },
+      "noCrossFunding": "No conmutar entre créditos de Breeze y la clave propia del socio",
+      "crossFundingLocked": "No permitido por el socio",
+      "fallbackInherit_one": "Heredar — {{count}} modelo de respaldo (socio)",
+      "fallbackInherit_other": "Heredar — {{count}} modelos de respaldo (socio)",
+      "fallbackOnlyThese": "Solo estos modelos de respaldo",
+      "noBackups": "Sin modelos de respaldo"
     },
     "models": {
       "title": "Modelos",
@@ -489,7 +496,18 @@
         "fast": "Rápido"
       },
       "unavailableModel": "{{model}} (no disponible)",
-      "unavailableUnknown": "Modelo no disponible"
+      "unavailableUnknown": "Modelo no disponible",
+      "roleInherit": "Igual que el predeterminado de los agentes de IA",
+      "fallbacks": "Modelos de respaldo, en orden",
+      "addFallback": "Agregar un modelo de respaldo…",
+      "moveUp": "Subir",
+      "moveDown": "Bajar",
+      "removeFallback": "Quitar",
+      "fallbackUnavailable": "Un modelo que ya no está disponible",
+      "crossFunding": "Permitir la conmutación entre créditos de Breeze y su propia clave de API",
+      "crossFundingHelp": "Si está activado, un respaldo pagado con la otra fuente puede atender una solicitud. Se factura a la fuente que realmente la atendió.",
+      "fundingPlatform": "Créditos de Breeze",
+      "fundingOwnKey": "Su clave de API"
     },
     "usage": {
       "title": "Uso de IA por modelo",
@@ -522,7 +540,9 @@
         "label": "Mostrar",
         "spend": "Gasto",
         "quality": "Calidad"
-      }
+      },
+      "failovers": "Conmutaciones",
+      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible"
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -583,6 +603,11 @@
       "error": "No se pudo cargar la vista de calidad.",
       "timeout": "Este rango es demasiado grande para resumirlo rápido. Elige un rango más corto.",
       "footnote": "Una conversación cuenta para el último modelo que usó, y un cambio cuenta para el modelo que dejó. Las llamadas atendidas por un respaldo cuentan para el modelo elegido. Los conteos empiezan cuando se activó el seguimiento de calidad. Interpreta con cuidado los números pequeños."
+    },
+    "roles": {
+      "triage": "Triaje (primera revisión)",
+      "analysis": "Análisis (investigar y planificar)",
+      "remediation": "Corrección (actuar en los dispositivos)"
     }
   },
   "partnerDefaults": {

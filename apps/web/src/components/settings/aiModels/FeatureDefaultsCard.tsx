@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  CONFIGURABLE_AI_SURFACES,
+  CONFIGURABLE_AI_SURFACE_ROLES,
   type AiModelsSnapshotDto,
   type AiOfferingDto,
   type AiSurface,
@@ -12,7 +12,8 @@ import { fetchWithAuth } from '../../../stores/auth';
 import { runAction, ActionError } from '../../../lib/runAction';
 import { showToast } from '../../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { SURFACE_LABEL_KEYS, registryFriendly, unavailableIds, unavailableModelLabel } from './surfaceLabels';
+import { ROLE_LABEL_KEYS, SURFACE_LABEL_KEYS, registryFriendly, unavailableIds, unavailableModelLabel } from './surfaceLabels';
+import { FallbackListEditor } from './FallbackListEditor';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const onUnauthorized = () => { void navigateTo('/login', { replace: true }); };
@@ -47,9 +48,17 @@ interface RowDraft {
   effort: Effort | '';
   display: Display | '';
   speed: Speed | '';
+  /** Ordered backup models (order matters). */
+  fallbacks: string[];
+  crossFunding: boolean;
 }
 
-const roleKey = (surface: AiSurface) => `${surface}/default`;
+/** Drafts are keyed by (surface, role): `ai_agents` carries the three escalation roles beside `default`. */
+const roleKey = (surface: AiSurface, role: string) => `${surface}/${role}`;
+const entryKey = (d: AiSurfaceDefaultsDto) => roleKey(d.surface, d.role);
+/** Test-id suffix: `${surface}` for a default row (W04's form), `${surface}-${role}` for a role sub-row. */
+const idOf = (d: AiSurfaceDefaultsDto) => (d.role === 'default' ? d.surface : `${d.surface}-${d.role}`);
+const isRoleRow = (d: AiSurfaceDefaultsDto) => d.role !== 'default';
 
 function fromSnapshot(d: AiSurfaceDefaultsDto): RowDraft {
   const p = d.partner;
@@ -61,6 +70,8 @@ function fromSnapshot(d: AiSurfaceDefaultsDto): RowDraft {
     effort: p?.options?.effort ?? '',
     display: p?.options?.thinkingDisplay ?? '',
     speed: p?.options?.speed ?? '',
+    fallbacks: p?.fallbackOfferingIds ?? [],
+    crossFunding: p?.fallbackMayCrossFunding ?? false,
   };
 }
 
@@ -68,7 +79,8 @@ const sameList = (a: string[], b: string[]) => a.length === b.length && a.every(
 
 function rowEquals(a: RowDraft, b: RowDraft): boolean {
   return a.defaultOfferingId === b.defaultOfferingId && a.mode === b.mode && sameList(a.permitted, b.permitted)
-    && a.allowUserChoice === b.allowUserChoice && a.effort === b.effort && a.display === b.display && a.speed === b.speed;
+    && a.allowUserChoice === b.allowUserChoice && a.effort === b.effort && a.display === b.display && a.speed === b.speed
+    && a.crossFunding === b.crossFunding && a.fallbacks.length === b.fallbacks.length && a.fallbacks.every((v, i) => v === b.fallbacks[i]);
 }
 
 /** Enabled offerings a surface may use (tool-capable when the surface calls tools). */
@@ -94,8 +106,16 @@ function optionChoices(model: AiOfferingDto | undefined): OptionChoices {
   return { effort, display, speed };
 }
 
-/** After an edit, keep the draft internally valid: default inside the choices, options inside the default's support. */
-function normalize(draft: RowDraft, eligible: AiOfferingDto[]): RowDraft {
+const BLANK_ROLE_DRAFT: RowDraft = {
+  defaultOfferingId: '', mode: 'all', permitted: [], allowUserChoice: true, effort: '', display: '', speed: '', fallbacks: [], crossFunding: false,
+};
+
+const fundingOf = (snapshot: AiModelsSnapshotDto, id: string) => snapshot.offerings.find((o) => o.id === id)?.funding;
+
+/** After an edit, keep the draft internally valid: default inside the choices, options inside the default's support, backups legal. */
+function normalize(draft: RowDraft, eligible: AiOfferingDto[], d: AiSurfaceDefaultsDto, snapshot: AiModelsSnapshotDto): RowDraft {
+  // A role row left on "Same as AI agents default" carries nothing else (saves as a clear).
+  if (isRoleRow(d) && draft.defaultOfferingId === '') return { ...BLANK_ROLE_DRAFT, allowUserChoice: draft.allowUserChoice };
   const choices = defaultChoices(eligible, draft);
   let next = draft;
   if (draft.defaultOfferingId && !choices.some((o) => o.id === draft.defaultOfferingId) && choices.length > 0) {
@@ -103,27 +123,34 @@ function normalize(draft: RowDraft, eligible: AiOfferingDto[]): RowDraft {
   }
   const model = eligible.find((o) => o.id === next.defaultOfferingId);
   const opts = optionChoices(model);
+  const refFunding = model?.funding ?? null;
+  const fallbacks = next.fallbacks.filter((id) =>
+    id !== next.defaultOfferingId && (next.crossFunding || refFunding === null || fundingOf(snapshot, id) === undefined || fundingOf(snapshot, id) === refFunding));
   return {
     ...next,
+    fallbacks,
     effort: next.effort && opts.effort.includes(next.effort) ? next.effort : '',
     display: next.display && opts.display.includes(next.display) ? next.display : '',
     speed: next.speed && opts.speed.includes(next.speed) ? next.speed : '',
   };
 }
 
-function toInput(surface: AiSurface, draft: RowDraft, d: AiSurfaceDefaultsDto): PartnerAssignmentInput {
+function toInput(draft: RowDraft, d: AiSurfaceDefaultsDto): PartnerAssignmentInput {
   const options = {
     ...(draft.effort ? { effort: draft.effort } : {}),
     ...(draft.display ? { thinkingDisplay: draft.display } : {}),
     ...(draft.speed ? { speed: draft.speed } : {}),
   };
+  const set = draft.defaultOfferingId !== '';
   return {
-    surface,
-    role: 'default',
-    defaultOfferingId: draft.defaultOfferingId,
-    permittedOfferingIds: draft.mode === 'all' ? null : draft.permitted,
+    surface: d.surface,
+    role: d.role as PartnerAssignmentInput['role'],
+    defaultOfferingId: draft.defaultOfferingId || null, // '' on a role sub-row = clear (inherit)
+    permittedOfferingIds: set ? (draft.mode === 'all' ? null : draft.permitted) : null,
     allowUserChoice: draft.allowUserChoice,
-    options: Object.keys(options).length > 0 ? options : null,
+    options: set && Object.keys(options).length > 0 ? options : null,
+    fallbackOfferingIds: set ? draft.fallbacks : null,
+    fallbackMayCrossFunding: draft.crossFunding,
     expectedUpdatedAt: d.partner?.updatedAt ?? null,
   };
 }
@@ -136,8 +163,8 @@ interface Tracked {
 }
 
 function rowsOf(snapshot: AiModelsSnapshotDto): AiSurfaceDefaultsDto[] {
-  return CONFIGURABLE_AI_SURFACES
-    .map((s) => snapshot.defaults.find((d) => d.surface === s))
+  return CONFIGURABLE_AI_SURFACE_ROLES
+    .map((r) => snapshot.defaults.find((d) => d.surface === r.surface && d.role === r.role))
     .filter((d): d is AiSurfaceDefaultsDto => d !== undefined);
 }
 
@@ -145,8 +172,8 @@ function initial(snapshot: AiModelsSnapshotDto): Tracked {
   const base: Tracked['base'] = {};
   const stamps: Tracked['stamps'] = {};
   for (const d of rowsOf(snapshot)) {
-    base[roleKey(d.surface)] = fromSnapshot(d);
-    stamps[roleKey(d.surface)] = d.partner?.updatedAt ?? null;
+    base[entryKey(d)] = fromSnapshot(d);
+    stamps[entryKey(d)] = d.partner?.updatedAt ?? null;
   }
   return { base, stamps, drafts: { ...base }, conflicts: {} };
 }
@@ -179,7 +206,7 @@ export default function FeatureDefaultsCard({
   const { t } = useTranslation('settings');
   const [state, setState] = useState<Tracked>(() => initial(snapshot));
   const [saving, setSaving] = useState(false);
-  const [invalidSurface, setInvalidSurface] = useState<string | null>(null);
+  const [invalidRow, setInvalidRow] = useState<string | null>(null);
   const seen = useRef(snapshot);
 
   useEffect(() => {
@@ -190,28 +217,28 @@ export default function FeatureDefaultsCard({
 
   const rows = rowsOf(snapshot);
   const dirtyRows = rows.filter((d) => {
-    const k = roleKey(d.surface);
+    const k = entryKey(d);
     return state.drafts[k] && state.base[k] && !rowEquals(state.drafts[k], state.base[k]);
   });
   const friendly = registryFriendly(t);
 
   const edit = (d: AiSurfaceDefaultsDto, patch: Partial<RowDraft>) => {
     const eligible = eligibleOfferings(snapshot, d.requiresTools);
-    const k = roleKey(d.surface);
+    const k = entryKey(d);
     setState((prev) => ({
       ...prev,
-      drafts: { ...prev.drafts, [k]: normalize({ ...prev.drafts[k], ...patch }, eligible) },
+      drafts: { ...prev.drafts, [k]: normalize({ ...prev.drafts[k], ...patch }, eligible, d, snapshot) },
     }));
   };
 
   const handleDiscard = () => {
-    setInvalidSurface(null);
+    setInvalidRow(null);
     setState((prev) => ({ ...prev, drafts: { ...prev.base }, conflicts: {} }));
   };
 
   const handleSave = async () => {
-    const inputs = dirtyRows.map((d) => toInput(d.surface, state.drafts[roleKey(d.surface)], d));
-    if (dirtyRows.some((d) => !state.drafts[roleKey(d.surface)].defaultOfferingId)) {
+    const inputs = dirtyRows.map((d) => toInput(state.drafts[entryKey(d)], d));
+    if (dirtyRows.some((d) => !isRoleRow(d) && !state.drafts[entryKey(d)].defaultOfferingId)) {
       showToast({ type: 'error', message: t('aiModels.defaults.needsDefault') });
       return;
     }
@@ -219,9 +246,9 @@ export default function FeatureDefaultsCard({
       showToast({ type: 'error', message: t('aiModels.defaults.needsPermitted') });
       return;
     }
-    const savedKeys = dirtyRows.map((d) => roleKey(d.surface));
+    const savedKeys = dirtyRows.map(entryKey);
     setSaving(true);
-    setInvalidSurface(null);
+    setInvalidRow(null);
     try {
       await runAction({
         request: () => fetchWithAuth('/ai/models/assignments', { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ assignments: inputs }) }),
@@ -241,8 +268,8 @@ export default function FeatureDefaultsCard({
       if (err instanceof ActionError && err.status === 401) return;
       if (err instanceof ActionError) {
         // Already toasted by runAction.
-        const surface = (err.body as { details?: { surface?: string } } | undefined)?.details?.surface;
-        if (surface) setInvalidSurface(surface);
+        const details = (err.body as { details?: { surface?: string; role?: string } } | undefined)?.details;
+        if (details?.surface) setInvalidRow(roleKey(details.surface as AiSurface, details.role ?? 'default'));
         if (err.code === 'stale_write') await onSaved();
         return;
       }
@@ -261,15 +288,16 @@ export default function FeatureDefaultsCard({
 
       <ul className="space-y-3">
         {rows.map((d) => {
-          const k = roleKey(d.surface);
+          const k = entryKey(d);
           const draft = state.drafts[k];
           if (!draft) return null;
+          const roleRow = isRoleRow(d);
           const eligible = eligibleOfferings(snapshot, d.requiresTools);
           const choices = defaultChoices(eligible, draft);
           const model = eligible.find((o) => o.id === draft.defaultOfferingId);
           const opts = optionChoices(model);
-          const invalid = invalidSurface === d.surface;
-          const id = d.surface;
+          const invalid = invalidRow === k;
+          const id = idOf(d);
           const nameOf = (offeringId: string) => snapshot.offerings.find((o) => o.id === offeringId)?.displayName;
           // Stored ids that are no longer enabled/eligible stay listed so they can be unticked (the API accepts them as stored).
           const stale = unavailableIds(state.base[k]?.permitted ?? [], draft.permitted, new Set(eligible.map((o) => o.id as string)));
@@ -277,16 +305,20 @@ export default function FeatureDefaultsCard({
           const togglePermitted = (offeringId: string, on: boolean) => edit(d, {
             permitted: on ? [...draft.permitted, offeringId] : draft.permitted.filter((p) => p !== offeringId),
           });
-          // W09 (#7607): role sub-rows (triage/analysis/remediation) and the ordered fallback list render here.
+          const setBlank = roleRow && draft.defaultOfferingId === '';
+          const fallbackOptions = eligible.filter((o) => o.id !== draft.defaultOfferingId);
+          const toggleCrossFunding = (on: boolean) => edit(d, { crossFunding: on });
           return (
             <li
               key={k}
               data-testid={`ai-defaults-row-${id}`}
               aria-invalid={invalid ? 'true' : undefined}
-              className={`space-y-3 rounded-md border p-3 ${invalid ? 'border-destructive' : ''}`}
+              className={`space-y-3 rounded-md border p-3 ${roleRow ? 'ml-6 ' : ''}${invalid ? 'border-destructive' : ''}`}
             >
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">{t(/* i18n-dynamic */ SURFACE_LABEL_KEYS[d.surface])}</span>
+                <span className="text-sm font-medium">
+                  {roleRow ? t(/* i18n-dynamic */ ROLE_LABEL_KEYS[d.role as keyof typeof ROLE_LABEL_KEYS]) : t(/* i18n-dynamic */ SURFACE_LABEL_KEYS[d.surface])}
+                </span>
                 {d.requiresTools && (
                   <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t('aiModels.defaults.needsTools')}</span>
                 )}
@@ -318,7 +350,10 @@ export default function FeatureDefaultsCard({
                     onChange={(e) => edit(d, { defaultOfferingId: e.target.value })}
                     className="h-9 w-full rounded-md border bg-background px-2 text-sm font-normal"
                   >
-                    {draft.defaultOfferingId === '' && <option value="">{t('aiModels.defaults.chooseDefault')}</option>}
+                    {draft.defaultOfferingId === '' && (
+                      <option value="">{roleRow ? t('aiModels.defaults.roleInherit') : t('aiModels.defaults.chooseDefault')}</option>
+                    )}
+                    {roleRow && draft.defaultOfferingId !== '' && <option value="">{t('aiModels.defaults.roleInherit')}</option>}
                     {staleDefault && (
                       <option value={draft.defaultOfferingId}>{unavailableModelLabel(t, nameOf(draft.defaultOfferingId))}</option>
                     )}
@@ -326,6 +361,7 @@ export default function FeatureDefaultsCard({
                   </select>
                 </label>
 
+                {!setBlank && (
                 <label className="space-y-1 text-xs font-medium">
                   <span>{t('aiModels.defaults.permitted')}</span>
                   <select
@@ -338,9 +374,10 @@ export default function FeatureDefaultsCard({
                     <option value="list">{t('aiModels.defaults.permittedList')}</option>
                   </select>
                 </label>
+                )}
               </div>
 
-              {draft.mode === 'list' && (
+              {!setBlank && draft.mode === 'list' && (
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   {eligible.map((o) => (
                     <label key={o.id as string} className="flex items-center gap-2 text-sm">
@@ -367,6 +404,7 @@ export default function FeatureDefaultsCard({
                 </div>
               )}
 
+              {!setBlank && (
               <div className="grid gap-3 sm:grid-cols-3">
                 <label className="space-y-1 text-xs font-medium">
                   <span>{t('aiModels.defaults.effort')}</span>
@@ -405,16 +443,46 @@ export default function FeatureDefaultsCard({
                   </select>
                 </label>
               </div>
+              )}
 
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  data-testid={`ai-defaults-user-choice-${id}`}
-                  checked={draft.allowUserChoice}
-                  onChange={(e) => edit(d, { allowUserChoice: e.target.checked })}
-                />
-                {t('aiModels.defaults.userChoice')}
-              </label>
+              {!roleRow && (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    data-testid={`ai-defaults-user-choice-${id}`}
+                    checked={draft.allowUserChoice}
+                    onChange={(e) => edit(d, { allowUserChoice: e.target.checked })}
+                  />
+                  {t('aiModels.defaults.userChoice')}
+                </label>
+              )}
+
+              {!setBlank && (
+                <div className="space-y-2">
+                  <span className="text-xs font-medium">{t('aiModels.defaults.fallbacks')}</span>
+                  <FallbackListEditor
+                    rowKey={id}
+                    value={draft.fallbacks}
+                    options={fallbackOptions}
+                    referenceFunding={model?.funding ?? null}
+                    crossFunding={draft.crossFunding}
+                    onChange={(next) => edit(d, { fallbacks: next })}
+                  />
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      data-testid={`ai-defaults-cross-funding-${id}`}
+                      checked={draft.crossFunding}
+                      onChange={(e) => toggleCrossFunding(e.target.checked)}
+                    />
+                    <span>
+                      {t('aiModels.defaults.crossFunding')}
+                      <span className="block text-xs text-muted-foreground">{t('aiModels.defaults.crossFundingHelp')}</span>
+                    </span>
+                  </label>
+                </div>
+              )}
             </li>
           );
         })}
