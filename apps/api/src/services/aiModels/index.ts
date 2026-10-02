@@ -41,3 +41,5 @@ export { promptProvenanceFor, renderSystemPrompt, toPromptProfile, type PromptPr
 export { PROMPT_VARIANTS, PROMPT_VARIANT_SURFACES, selectPromptVariant, type PromptVariant } from './promptVariants';
 export { queryAiQuality, queryAiQualityBreakdown, QualityQueryTimeoutError, type QualityQueryInput } from './qualityQueries';
 export { detectQualitySources, type QualitySources } from './qualitySources';
+export * from './failover';
+export * from './offeringHealth';
