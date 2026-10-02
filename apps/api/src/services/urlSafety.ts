@@ -18,6 +18,7 @@ import type { LookupAddress } from 'dns';
 import https from 'https';
 import http from 'http';
 import type { LookupFunction } from 'net';
+import type { Duplex } from 'stream';
 import { assertOutsideHeldDbContext } from '../db';
 import {
   canonicalIpLiteral,
@@ -584,13 +585,45 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     // settled), so it has to be raised on the body instead.
     let failStream: ((err: Error) => void) | null = null;
 
+    /**
+     * Build and resolve the caller's `Response`. The constructor throws for a
+     * status outside 200-599 and for any body on a null-body status, and this
+     * runs inside socket callbacks where a throw would escape as an uncaught
+     * exception. So a null-body status always gets a null body, and anything
+     * else that throws becomes an ordinary rejection.
+     */
+    const respond = (res: http.IncomingMessage, body: BodyInit | null): void => {
+      const status = res.statusCode ?? 0;
+      try {
+        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : body, {
+          status,
+          statusText: res.statusMessage ?? '',
+          headers: toResponseHeaders(res.headers)
+        }));
+      } catch (err) {
+        req.destroy();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+
+    // True once the response callback has run (the promise is then settled or
+    // about to be, by `respond` or by a body error).
+    let responded = false;
+
     const req = requester(reqOptions, (res) => {
+      responded = true;
       // Follow no redirects by default — caller gets the raw response and can
       // re-invoke safeFetch if they want to trust the Location header.
       const status = res.statusCode ?? 0;
 
+      if (!Number.isInteger(status) || status < 200 || status > 599) {
+        // Not representable as a `Response`; refuse it as a transport failure.
+        req.destroy();
+        reject(new Error(`upstream answered with an invalid HTTP status (${status})`));
+        return;
+      }
+
       if (init.streamResponse) {
-        const headers = toResponseHeaders(res.headers);
         // 204/304 and friends may not carry a body at all; draining is the only
         // correct thing to do with the (empty) stream.
         if (NULL_BODY_STATUSES.has(status)) {
@@ -610,13 +643,13 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
           res.on('error', noteLateError);
           failStream = noteLateError;
           res.resume();
-          resolve(new Response(null, { status, statusText: res.statusMessage ?? '', headers }));
+          respond(res, null);
           return;
         }
         const body = streamedResponseBody(req, res, init.maxBytes, (fail) => {
           failStream = fail;
         });
-        resolve(new Response(body, { status, statusText: res.statusMessage ?? '', headers }));
+        respond(res, body);
         return;
       }
 
@@ -640,16 +673,34 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       });
       res.on('end', () => {
         if (aborted) return;
-        const bodyBytes = Buffer.concat(chunks);
-        resolve(
-          new Response(bodyBytes, {
-            status: res.statusCode ?? 0,
-            statusText: res.statusMessage ?? '',
-            headers: toResponseHeaders(res.headers)
-          })
-        );
+        respond(res, Buffer.concat(chunks));
       });
       res.on('error', reject);
+      // A peer that drops mid-body may emit only 'close'; never resolve or
+      // hang on a truncated buffer.
+      res.on('close', () => {
+        if (!res.complete) reject(new Error('response closed before the body was complete'));
+      });
+    });
+
+    // A 101 (protocol upgrade) or a CONNECT tunnel never reaches the response
+    // callback: Node hands over the raw socket on these events instead, or
+    // destroys it when nobody listens, leaving the promise pending forever.
+    // Neither is an HTTP response this function can return, so refuse both.
+    const refuseRawSocket = (kind: string) => (_res: http.IncomingMessage, socket: Duplex): void => {
+      // Node detaches its own socket listeners on hand-over; keep one so a
+      // queued socket error cannot surface as an unhandled 'error' event.
+      socket.on('error', () => {});
+      socket.destroy();
+      req.destroy();
+      reject(new Error(`upstream attempted a ${kind}, which is not supported`));
+    };
+    req.on('upgrade', refuseRawSocket('protocol upgrade'));
+    req.on('connect', refuseRawSocket('CONNECT tunnel (protocol upgrade)'));
+    // The request closed without ever producing a response (and without an
+    // 'error' carrying a more specific reason): settle rather than hang.
+    req.once('close', () => {
+      if (!responded) reject(new Error('connection closed before a response was received'));
     });
 
     req.on('error', (err) => {
@@ -673,14 +724,18 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     }
 
     if (init.signal) {
+      // Abort settles the promise directly: an already-closed request emits no
+      // further 'error', so relying on destroy() alone could leave it pending.
+      // Once a response is out, a live body is failed through req's 'error'.
+      const onAbort = (): void => {
+        const err = new Error('aborted');
+        if (!responded) reject(err);
+        req.destroy(err);
+      };
       if (init.signal.aborted) {
-        req.destroy(new Error('aborted'));
+        onAbort();
       } else {
-        init.signal.addEventListener(
-          'abort',
-          () => req.destroy(new Error('aborted')),
-          { once: true }
-        );
+        init.signal.addEventListener('abort', onAbort, { once: true });
       }
     }
 
