@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { AI_SURFACES, offeringOptionsSchema, type AiSurface, type OfferingOptions } from '@breeze/shared';
+import { AI_SURFACES, PROMPT_PROFILES, offeringOptionsSchema, type AiSurface, type OfferingOptions, type PromptProfile } from '@breeze/shared';
 import type { AiBillingSource } from '../aiCostTracker';
 import type { ThinkingMode } from './capabilities';
 import type { RateSnapshot } from './pricing';
@@ -45,6 +45,14 @@ export interface TurnBinding {
    * that never switched.
    */
   carriedRates?: CarriedRate[];
+  /**
+   * W11 (#7609): the model's prompt profile at resolve time. The ledger
+   * records it on every row of every surface. Optional (`v` stays 1): a
+   * binding persisted before W11 parses without it. Deliberately NOT part of
+   * liveQueryKey: a profile change (the emergency Generic switch) applies to
+   * the next new live query instead of rotating an idle one.
+   */
+  promptProfile?: PromptProfile;
 }
 
 /** Key-order-independent JSON, for fingerprints and rate comparisons. */
@@ -91,6 +99,7 @@ export function turnBindingFrom(r: ResolvedModel): TurnBinding {
           rateSnapshot: r.refusalFallback.rateSnapshot,
         }
       : null,
+    promptProfile: r.promptProfile,
   };
 }
 
@@ -145,6 +154,9 @@ const turnBindingSchema = z.object({
   }).nullable(),
   carriedRates: z.array(z.object({ wireModel: z.string().min(1), rateSnapshot: rateSnapshotSchema }))
     .max(MAX_CARRIED_RATES).optional(),
+  // W11: must round-trip, or aiBudgetReservations' stored-vs-new binding
+  // comparison would see every stable-key retry as a re-bind.
+  promptProfile: z.enum(PROMPT_PROFILES).optional(),
 });
 
 export function parseTurnBinding(raw: unknown): TurnBinding | null {

@@ -8,6 +8,7 @@ import { exchangeRateAdminRoutes } from './exchangeRates';
 import { llmProviderCatalogAdminRoutes } from './llmProviderCatalog';
 import { aiModelsAdminRoutes } from './aiModels';
 import { aiKillStateAdminRoutes } from './aiKillState';
+import { aiPromptVariantAdminRoutes } from './aiPromptVariants';
 import { aiToolUsageAdminRoutes } from './aiToolUsage';
 import { trustAdminRoutes } from './trust';
 import { trustActionAdminRoutes } from './trustAct';
@@ -46,6 +47,10 @@ adminRoutes.route('/ai-models', aiModelsAdminRoutes);
 adminRoutes.route('/ai-kill-state', aiKillStateAdminRoutes);
 // A-W01 (#6148): read-only cross-tenant AI tool-usage report.
 adminRoutes.route('/ai', aiToolUsageAdminRoutes);
+// AI model registry W11 (#7609): read-only, cross-tenant prompt variant
+// comparison (aggregates by variant only). UI: the Prompt variants card on
+// /admin/ai-models. Runbook: docs/deploy/ai-prompt-variants.md.
+adminRoutes.route('/ai', aiPromptVariantAdminRoutes);
 // Partner sending domains W03: cross-partner list plus the kill switch
 // (suspend / unsuspend / force-release, spec §9.1). Mounted UNDER the
 // platform-admin gate above; the router adds its own requireMfa() on each

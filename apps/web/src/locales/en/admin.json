@@ -704,6 +704,33 @@
         "save": "Couldn't save the model.",
         "refresh": "Couldn't queue a model refresh.",
         "invalidRates": "Enter all four prices as non-negative numbers, or leave all four blank."
+      },
+      "variants": {
+        "title": "Prompt variants",
+        "subtitle": "Guidance appended to a feature's system prompt for one model family, compared with the base prompt across every partner. Variants change by release.",
+        "range": "{{from}} to {{to}}.",
+        "base": "Base prompt",
+        "columns": {
+          "variant": "Variant",
+          "state": "State",
+          "conversations": "Conversations",
+          "flagRate": "Flag rate",
+          "refusalRate": "Refusal rate",
+          "leftRate": "Left for another model",
+          "turns": "Turns to resolve",
+          "costPerConversation": "Cost / conversation"
+        },
+        "states": {
+          "staged": "Staged",
+          "candidate": "Candidate",
+          "active": "Active",
+          "retired": "Retired"
+        },
+        "lowSample": "Fewer than {{min}} conversations — too few to compare",
+        "incumbent": "Incumbent",
+        "loading": "Loading prompt variants…",
+        "empty": "No prompt variants are registered.",
+        "error": "Couldn't load the prompt variant report."
       }
     }
   },

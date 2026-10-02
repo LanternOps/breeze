@@ -85,6 +85,10 @@ vi.mock('../../services/aiModels/usageQueries', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../services/aiModels/usageQueries')>();
   return { defaultUsageRange: real.defaultUsageRange, queryAiUsageBreakdown: vi.fn() };
 });
+vi.mock('../../services/aiModels/qualityQueries', () => {
+  class QualityQueryTimeoutError extends Error {}
+  return { QualityQueryTimeoutError, queryAiQualityBreakdown: vi.fn() };
+});
 vi.mock('../../services/llm/llmConfigResolver', () => ({ isLlmProviderCatalogEnabled: vi.fn(() => true) }));
 vi.mock('../../services/partnerLlmConfig', () => {
   class PartnerLlmError extends Error {
@@ -108,11 +112,13 @@ import { buildOrgModelDefaults } from '../../services/aiModels/registryView';
 import { readOrgPartnerId as readOrgPartnerIdMock } from '../../services/aiModels/candidateLoader';
 import { putOrgAssignments as putOrgAssignmentsMock } from '../../services/aiModels/assignmentWrites';
 import { queryAiUsageBreakdown as queryAiUsageBreakdownMock } from '../../services/aiModels/usageQueries';
+import { QualityQueryTimeoutError, queryAiQualityBreakdown as queryAiQualityBreakdownMock } from '../../services/aiModels/qualityQueries';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
 
 const readOrgPartnerId = vi.mocked(readOrgPartnerIdMock);
 const putOrgAssignments = vi.mocked(putOrgAssignmentsMock);
 const queryAiUsageBreakdown = vi.mocked(queryAiUsageBreakdownMock);
+const queryAiQualityBreakdown = vi.mocked(queryAiQualityBreakdownMock);
 
 const orgChatRow = {
   surface: 'chat', role: 'default', defaultOfferingId: A, permittedOfferingIds: null,
@@ -281,5 +287,53 @@ describe('W05 model pickers mounted at /choices', () => {
     const res = await call('GET', `/choices/ai-agents?orgId=${A}`);
     expect(res.status).toBe(404);
     expect(vi.mocked(listModelChoices)).not.toHaveBeenCalled();
+  });
+});
+
+describe('quality route (W11)', () => {
+  beforeEach(() => queryAiQualityBreakdown.mockResolvedValue({
+    groupBy: 'model', from: '2026-10-01', to: '2026-10-17', orgId: null, rows: [],
+    totals: {} as never, sources: { failovers: false, continuations: false },
+  }));
+  it('needs ai_sessions:read_all', async () => {
+    authGates.permissionDenied = true;
+    expect((await call('GET', '/usage/quality?groupBy=model')).status).toBe(403);
+    expect(queryAiQualityBreakdown).not.toHaveBeenCalled();
+  });
+  it('rejects org-scope tokens (partner/system only)', async () => {
+    authState.value = { ...orgToken };
+    expect((await call('GET', '/usage/quality?groupBy=model')).status).toBe(403);
+  });
+  it('403s an orgId the caller cannot access', async () => {
+    authState.value.canAccessOrg = () => false;
+    expect((await call('GET', `/usage/quality?groupBy=model&orgId=${ORG}`)).status).toBe(403);
+    expect(queryAiQualityBreakdown).not.toHaveBeenCalled();
+  });
+  it.each(['user', 'org', 'prompt_variant', 'nope'])('400s groupBy=%s', async (g) => {
+    expect((await call('GET', `/usage/quality?groupBy=${g}`)).status).toBe(400);
+  });
+  it('400s a range over 92 days', async () => {
+    expect((await call('GET', '/usage/quality?groupBy=model&from=2026-01-01&to=2026-06-01')).status).toBe(400);
+  });
+  it('defaults to month-to-date and passes the caller\'s accessible orgs', async () => {
+    expect((await call('GET', '/usage/quality?groupBy=prompt_profile')).status).toBe(200);
+    expect(queryAiQualityBreakdown).toHaveBeenCalledWith(expect.objectContaining({
+      groupBy: 'prompt_profile', orgId: null, accessibleOrgIds: [ORG], from: expect.stringMatching(/-01$/),
+    }));
+  });
+  it('passes an explicit range and org filter', async () => {
+    await call('GET', `/usage/quality?groupBy=surface&from=2026-09-01&to=2026-09-30&orgId=${ORG}`);
+    expect(queryAiQualityBreakdown).toHaveBeenCalledWith({ groupBy: 'surface', from: '2026-09-01', to: '2026-09-30', orgId: ORG, accessibleOrgIds: [ORG] });
+  });
+  it('system callers are unrestricted (accessibleOrgIds null)', async () => {
+    authState.value = { ...baseAuth(), scope: 'system', partnerId: null, accessibleOrgIds: null, canAccessOrg: () => true };
+    expect((await call('GET', '/usage/quality?groupBy=model')).status).toBe(200);
+    expect(queryAiQualityBreakdown).toHaveBeenCalledWith(expect.objectContaining({ accessibleOrgIds: null }));
+  });
+  it('a statement timeout is a 503 quality_timeout, never a 500', async () => {
+    queryAiQualityBreakdown.mockRejectedValueOnce(new QualityQueryTimeoutError());
+    const res = await call('GET', '/usage/quality?groupBy=model');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'quality_timeout' });
   });
 });

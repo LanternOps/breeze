@@ -517,7 +517,12 @@
       "error": "Não foi possível carregar o detalhamento de uso.",
       "disconnected": "Desconectada",
       "disconnectedHint": "A conexão que atendeu estas chamadas foi desconectada desde então.",
-      "footnote": "A taxa de recusa é calculada por chamada de modelo. As contagens começam quando o registro de modelos entrou em operação; o uso anterior está nos totais acima."
+      "footnote": "A taxa de recusa é calculada por chamada de modelo. As contagens começam quando o registro de modelos entrou em operação; o uso anterior está nos totais acima.",
+      "view": {
+        "label": "Mostrar",
+        "spend": "Gastos",
+        "quality": "Qualidade"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -525,6 +530,59 @@
       "noDefault": "nenhum padrão definido",
       "partner": "Padrões do parceiro",
       "org": "Substituição desta organização"
+    },
+    "quality": {
+      "title": "Qualidade dos modelos",
+      "subtitleAll": "Como as conversas se saem em cada modelo em todas as organizações: recusas, sinalizações, trocas para outro modelo e turnos até a resolução.",
+      "subtitleOrg": "Como as conversas se saem em cada modelo na organização selecionada.",
+      "groupBy": {
+        "model": "Modelo",
+        "surface": "Recurso",
+        "prompt_profile": "Família de modelos"
+      },
+      "columns": {
+        "conversations": "Conversas",
+        "costPerConversation": "Custo / conversa",
+        "refusalRate": "Taxa de recusa",
+        "failoverRate": "Taxa de failover",
+        "flagRate": "Taxa de sinalização",
+        "leftRate": "Saiu para outro modelo",
+        "turnsToResolution": "Turnos até resolver",
+        "agentCompletion": "Execuções de agente concluídas"
+      },
+      "help": {
+        "conversations": "Sessões de chat e execuções de agente cuja última chamada de modelo neste período foi nesta linha.",
+        "costPerConversation": "Gasto médio nesta linha por conversa que a utilizou.",
+        "refusalRate": "Chamadas de modelo recusadas pelo modelo, por chamada.",
+        "failoverRate": "Chamadas que passaram para um modelo de reserva porque este falhou ou estava indisponível.",
+        "flagRate": "Sessões sinalizadas por uma pessoa. Sinalizações automáticas após um erro de ferramenta são contadas separadamente.",
+        "leftRate": "Conversas que trocaram para outro modelo ou continuaram em uma nova sessão em outro modelo.",
+        "turnsToResolution": "Mediana de mensagens enviadas por um técnico em sessões que terminaram sem sinalização de uma pessoa nem mudança para uma nova sessão. Inclui a sessão da qual continuou.",
+        "agentCompletion": "Execuções de agente concluídas, entre as execuções finalizadas."
+      },
+      "profiles": {
+        "claude-frontier": "Claude de ponta",
+        "claude-standard": "Claude padrão",
+        "claude-small": "Claude pequeno",
+        "generic": "Outros modelos"
+      },
+      "unrecorded": "Não registrado",
+      "unattributed": "Não atribuído a um modelo",
+      "removedModel": "Modelo removido",
+      "platformConnection": "Plataforma Breeze",
+      "notRecorded": "Ainda não registrado neste servidor",
+      "switchesOnly": "Somente trocas",
+      "few": "Poucas conversas",
+      "autoFlagged_one": "{{count}} sinalizada automaticamente",
+      "autoFlagged_other": "{{count}} sinalizadas automaticamente",
+      "leftBreakdown": "{{switched}} trocaram, {{continued}} continuaram",
+      "resolvedCount_one": "{{count}} resolvida",
+      "resolvedCount_other": "{{count}} resolvidas",
+      "loading": "Carregando qualidade…",
+      "empty": "Nenhuma chamada de modelo neste período.",
+      "error": "Não foi possível carregar a visão de qualidade.",
+      "timeout": "Este intervalo é grande demais para resumir rapidamente. Escolha um intervalo menor.",
+      "footnote": "Uma conversa conta para o último modelo que usou, e uma troca conta para o modelo que ela deixou. Chamadas atendidas por um fallback ou modelo de reserva contam para o modelo escolhido. As contagens começam quando o acompanhamento de qualidade entrou em operação. Interprete números pequenos com cuidado."
     }
   },
   "partnerDefaults": {

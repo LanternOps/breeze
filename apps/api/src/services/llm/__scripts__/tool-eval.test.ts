@@ -46,6 +46,13 @@ vi.mock('../toolEval/agentGoldenTasks', () => ({
     { id: 'b01', title: 'cpu', surface: 'agent-analysis', context: { profile: 'analysis', tag: 'b01' }, expect: [{ tool: 'export_dataset' }] },
   ],
 }));
+vi.mock('../../aiModels/promptVariants', async (orig) => ({
+  ...(await orig<typeof import('../../aiModels/promptVariants')>()),
+  PROMPT_VARIANTS: [
+    { id: 'chat/claude-small@1', surface: 'chat', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Small guidance.', hypothesis: 'h' },
+    { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'staged', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
+  ],
+}));
 vi.mock('../../aiAgents/runnerPrompt', () => ({
   buildAgentRunSystemPrompt: (ctx: { tag: string }) => `system:${ctx.tag}`,
   buildAgentRunTaskPrompt: (ctx: { tag: string }) => `task:${ctx.tag}`,
@@ -205,6 +212,37 @@ describe('--suite agent (#7428)', () => {
     [['--suite', 'agent', '--cases', 'g01']], [['--suite', 'agent', '--surface', 'chat']],
     [['--suite', 'nope']], [['--surface-search', 'maybe']], [['--cases', 'a01']],
   ])('rejects %j with exit 2', async (args) => {
+    expect(await runCli(args)).toBe(2);
+    expect(runSurfaceCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('--prompt-variant (W11)', () => {
+  it('appends the variant to the surface prompt and records it in the report', async () => {
+    expect(await runCli(['--cases', 'g01', '--model', 'claude-haiku-4-5', '--prompt-variant', 'chat/claude-small@1'])).toBe(0);
+    expect(runSurfaceCapture).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: 'complete prompt — index and tail\n\n## Model Guidance\nSmall guidance.',
+    }));
+    const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
+    expect(report.promptVariant).toBe('chat/claude-small@1');
+    expect(report.systemPromptBytes).toBe(Buffer.byteLength('complete prompt — index and tail\n\n## Model Guidance\nSmall guidance.', 'utf8'));
+    expect(vi.mocked(writeFile).mock.calls[1]![1]).toEqual(expect.stringContaining('prompt: chat/claude-small@1'));
+  });
+  it('agent suite: appends to each task\'s own production prompt', async () => {
+    expect(await runCli(['--suite', 'agent', '--model', 'claude-haiku-4-5', '--prompt-variant', 'ai_agents/claude-small@1'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls.map((c) => c[0].systemPrompt))
+      .toEqual(['system:a01\n\n## Model Guidance\nAgent guidance.', 'system:b01\n\n## Model Guidance\nAgent guidance.']);
+  });
+  it('without the flag the report says base and the prompt is untouched', async () => {
+    expect(await runCli(['--cases', 'g01'])).toBe(0);
+    expect(vi.mocked(runSurfaceCapture).mock.calls[0]![0].systemPrompt).toBeUndefined();
+    expect(JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1])).promptVariant).toBeNull();
+  });
+  it.each([
+    ['an unknown id', ['--prompt-variant', 'chat/claude-small@9', '--model', 'claude-haiku-4-5']],
+    ['a model of another profile', ['--prompt-variant', 'chat/claude-small@1', '--model', 'claude-sonnet-5-5']],
+    ['a variant of another surface', ['--suite', 'agent', '--prompt-variant', 'chat/claude-small@1', '--model', 'claude-haiku-4-5']],
+  ])('exits 2 on %s', async (_n, args) => {
     expect(await runCli(args)).toBe(2);
     expect(runSurfaceCapture).not.toHaveBeenCalled();
   });

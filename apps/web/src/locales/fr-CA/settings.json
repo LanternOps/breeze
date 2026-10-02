@@ -517,7 +517,12 @@
       "error": "Impossible de charger la répartition de l'utilisation.",
       "disconnected": "Déconnectée",
       "disconnectedHint": "La connexion qui a servi ces appels a depuis été déconnectée.",
-      "footnote": "Le taux de refus est calculé par appel de modèle. Les compteurs démarrent à la mise en service du registre de modèles ; l'utilisation antérieure figure dans les totaux ci-dessus."
+      "footnote": "Le taux de refus est calculé par appel de modèle. Les compteurs démarrent à la mise en service du registre de modèles ; l'utilisation antérieure figure dans les totaux ci-dessus.",
+      "view": {
+        "label": "Afficher",
+        "spend": "Dépenses",
+        "quality": "Qualité"
+      }
     },
     "link": {
       "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
@@ -525,6 +530,59 @@
       "noDefault": "aucune valeur par défaut",
       "partner": "Valeurs par défaut du partenaire",
       "org": "Remplacement de cette organisation"
+    },
+    "quality": {
+      "title": "Qualité des modèles",
+      "subtitleAll": "Comment se déroulent les conversations sur chaque modèle pour toutes les organisations : refus, signalements, passages à un autre modèle et tours jusqu'à la résolution.",
+      "subtitleOrg": "Comment se déroulent les conversations sur chaque modèle pour l'organisation sélectionnée.",
+      "groupBy": {
+        "model": "Modèle",
+        "surface": "Fonctionnalité",
+        "prompt_profile": "Famille de modèles"
+      },
+      "columns": {
+        "conversations": "Conversations",
+        "costPerConversation": "Coût / conversation",
+        "refusalRate": "Taux de refus",
+        "failoverRate": "Taux de basculement",
+        "flagRate": "Taux de signalement",
+        "leftRate": "Passées à un autre modèle",
+        "turnsToResolution": "Tours jusqu'à la résolution",
+        "agentCompletion": "Exécutions d'agent terminées"
+      },
+      "help": {
+        "conversations": "Sessions de chat et exécutions d'agent dont le dernier appel de modèle de la période concernait cette ligne.",
+        "costPerConversation": "Dépense moyenne sur cette ligne pour chaque conversation qui l'a utilisée.",
+        "refusalRate": "Appels de modèle refusés par le modèle, par appel.",
+        "failoverRate": "Appels passés à un modèle de secours parce que celui-ci a échoué ou était indisponible.",
+        "flagRate": "Sessions signalées par une personne. Les signalements automatiques après une erreur d'outil sont comptés séparément.",
+        "leftRate": "Conversations passées à un autre modèle, ou poursuivies dans une nouvelle session sur un autre modèle.",
+        "turnsToResolution": "Médiane des messages envoyés par un technicien dans les sessions terminées sans signalement d'une personne ni passage à une nouvelle session. Inclut la session dont elle découle.",
+        "agentCompletion": "Exécutions d'agent terminées, parmi les exécutions achevées."
+      },
+      "profiles": {
+        "claude-frontier": "Claude de pointe",
+        "claude-standard": "Claude standard",
+        "claude-small": "Claude léger",
+        "generic": "Autres modèles"
+      },
+      "unrecorded": "Non enregistré",
+      "unattributed": "Non attribué à un modèle",
+      "removedModel": "Modèle supprimé",
+      "platformConnection": "Plateforme Breeze",
+      "notRecorded": "Pas encore enregistré sur ce serveur",
+      "switchesOnly": "Changements uniquement",
+      "few": "Peu de conversations",
+      "autoFlagged_one": "{{count}} signalée automatiquement",
+      "autoFlagged_other": "{{count}} signalées automatiquement",
+      "leftBreakdown": "{{switched}} passées, {{continued}} poursuivies",
+      "resolvedCount_one": "{{count}} résolue",
+      "resolvedCount_other": "{{count}} résolues",
+      "loading": "Chargement de la qualité…",
+      "empty": "Aucun appel de modèle sur cette période.",
+      "error": "Impossible de charger la vue Qualité.",
+      "timeout": "Cette période est trop longue pour être résumée rapidement. Choisissez une période plus courte.",
+      "footnote": "Une conversation compte pour le dernier modèle utilisé, et un changement pour le modèle quitté. Les appels servis par un modèle de secours comptent pour le modèle choisi. Les chiffres démarrent à l'activation du suivi de la qualité. Interprétez les petits nombres avec prudence."
     }
   },
   "partnerDefaults": {

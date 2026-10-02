@@ -7,7 +7,7 @@
  *    `openai_compatible`, W07 adds `bedrock` | `vertex` | `foundry`.
  *  - assignment `role` is `'default'` only; W09 widens it to AI_SURFACE_ROLES.
  *  - assignment writes never carry fallback fields; W09 adds them.
- *  - aiUsageQuerySchema.groupBy; W10/W11 add groupings.
+ *  - aiUsageQuerySchema.groupBy; W10/W11 add groupings (W11: a sibling aiQualityQuerySchema over the same base and range rules).
  */
 import { z } from 'zod';
 import { AI_SURFACES, type AiSurface } from '../constants/aiSurfaces';
@@ -148,11 +148,41 @@ export const aiUsageQueryBaseSchema = z.object({
   to: isoDate.optional(),
   orgId: uuid.optional(),
 });
-export const aiUsageQuerySchema = aiUsageQueryBaseSchema.refine((q) => (q.from === undefined) === (q.to === undefined), { message: 'Give both `from` and `to`, or neither.' })
-  .refine((q) => !q.from || !q.to || q.from <= q.to, { message: '`from` must not be after `to`.' })
-  .refine((q) => {
-    if (!q.from || !q.to) return true;
-    const days = (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / 86_400_000;
-    return days <= MAX_AI_USAGE_RANGE_DAYS;
-  }, { message: `Choose a range of at most ${MAX_AI_USAGE_RANGE_DAYS} days.` });
+/**
+ * The usage range rules on any schema with optional from/to: both or
+ * neither, ordered, and at most `maxDays` apart. zod 4 forbids `.extend()`
+ * after a refine, so every usage-shaped schema builds its object first and
+ * applies these last.
+ */
+export function withUsageRangeRules<T extends z.ZodType<{ from?: string | undefined; to?: string | undefined }>>(
+  schema: T,
+  maxDays: number = MAX_AI_USAGE_RANGE_DAYS,
+): T {
+  return schema
+    .refine((q) => (q.from === undefined) === (q.to === undefined), { message: 'Give both `from` and `to`, or neither.' })
+    .refine((q) => !q.from || !q.to || q.from <= q.to, { message: '`from` must not be after `to`.' })
+    .refine((q) => {
+      if (!q.from || !q.to) return true;
+      const days = (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / 86_400_000;
+      return days <= maxDays;
+    }, { message: `Choose a range of at most ${maxDays} days.` });
+}
+
+export const aiUsageQuerySchema = withUsageRangeRules(aiUsageQueryBaseSchema);
 export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema>;
+
+/** W11 (#7609): the quality view's groupings (spec §13: by model, surface and prompt profile). */
+export const AI_QUALITY_GROUP_BYS = ['model', 'surface', 'prompt_profile'] as const;
+export type AiQualityGroupBy = (typeof AI_QUALITY_GROUP_BYS)[number];
+
+export const aiQualityQuerySchema = withUsageRangeRules(
+  aiUsageQueryBaseSchema.omit({ groupBy: true }).extend({ groupBy: z.enum(AI_QUALITY_GROUP_BYS) }),
+);
+export type AiQualityQuery = z.infer<typeof aiQualityQuerySchema>;
+
+/** The platform prompt-variant report reads every partner's ledger: a tighter range than the partner view. */
+export const PROMPT_VARIANT_REPORT_MAX_DAYS = 31;
+export const aiPromptVariantReportQuerySchema = withUsageRangeRules(
+  z.object({ from: isoDate.optional(), to: isoDate.optional() }),
+  PROMPT_VARIANT_REPORT_MAX_DAYS,
+);

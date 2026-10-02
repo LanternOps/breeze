@@ -4,7 +4,7 @@
 // AUDIT_ADMIN_REQUIRED_TABLES. No FKs on provenance ids (see the migration).
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, char, index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
-import type { AiSurface } from '@breeze/shared';
+import type { AiSurface, PromptProfile } from '@breeze/shared';
 import { organizations } from './orgs';
 
 export const AI_INVOCATION_LEDGER_MODES = ['shadow', 'authoritative'] as const;
@@ -55,6 +55,12 @@ export const aiInvocations = pgTable('ai_invocations', {
   chargeCurrency: char('charge_currency', { length: 3 }),
   // String mode on purpose: client money is never a JS float (W10 rounding rules).
   chargeAmount: numeric('charge_amount', { precision: 20, scale: 6 }),
+  /** W11 (#7609): the prompt profile the call was dispatched under; NULL before W11. CHECK ai_invocations_prompt_provenance_chk. */
+  promptProfile: text('prompt_profile').$type<PromptProfile>(),
+  /** W11: the prompt variant appended to the system prompt (`surface/profile@n`); NULL = the surface's base prompt. */
+  promptVariant: text('prompt_variant'),
+  /** W11: when the turn was first settled; survives a deferred replay (created_at does not). Ordering only, never a billing period. */
+  occurredAt: timestamp('occurred_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('ai_invocations_org_created_idx').on(t.orgId, t.createdAt.desc()),

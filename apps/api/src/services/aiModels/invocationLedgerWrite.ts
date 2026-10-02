@@ -4,7 +4,7 @@
  * shadow listener's dependencies (#7601 W03). One append-only row, written
  * through the AMBIENT db: inside a settlement it joins that transaction.
  */
-import type { AiSurface, OfferingOptions } from '@breeze/shared';
+import type { AiSurface, OfferingOptions, PromptProfile } from '@breeze/shared';
 import { db } from '../../db';
 import { aiInvocations } from '../../db/schema';
 import { NO_CARD_CHARGE, type InvocationCharge } from '../aiChargeback/chargeTerms';
@@ -40,6 +40,12 @@ export interface NewInvocation {
   sdkReportedCostUsd?: number | null;
   ledgerMode: 'shadow' | 'authoritative';
   legacyCostCents?: number | null;
+  /** W11 (#7609): the prompt profile the call was dispatched under. */
+  promptProfile?: PromptProfile | null;
+  /** W11: the prompt variant appended to the system prompt; null = the surface's base prompt. */
+  promptVariant?: string | null;
+  /** W11: when the turn was first settled. A string after the pending-settlement JSON round trip. */
+  occurredAt?: Date | string | null;
 }
 
 export async function recordInvocation(row: NewInvocation): Promise<string> {
@@ -85,6 +91,9 @@ export async function recordInvocation(row: NewInvocation): Promise<string> {
     sdkReportedCostUsd: row.sdkReportedCostUsd ?? null,
     ledgerMode: row.ledgerMode,
     legacyCostCents: row.ledgerMode === 'shadow' ? row.legacyCostCents ?? null : null,
+    promptProfile: row.promptProfile ?? null,
+    promptVariant: row.promptVariant ?? null,
+    occurredAt: row.occurredAt ? new Date(row.occurredAt) : null,
   }).returning({ id: aiInvocations.id });
   return inserted!.id;
 }

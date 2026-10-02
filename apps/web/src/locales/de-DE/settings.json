@@ -517,7 +517,12 @@
       "error": "Die Nutzungsaufschlüsselung konnte nicht geladen werden.",
       "disconnected": "Getrennt",
       "disconnectedHint": "Die Verbindung, über die diese Aufrufe liefen, wurde inzwischen getrennt.",
-      "footnote": "Die Ablehnungsquote bezieht sich auf einen Modellaufruf. Die Zählung beginnt mit dem Start der Modellregistrierung; frühere Nutzung ist in den Summen oben enthalten."
+      "footnote": "Die Ablehnungsquote bezieht sich auf einen Modellaufruf. Die Zählung beginnt mit dem Start der Modellregistrierung; frühere Nutzung ist in den Summen oben enthalten.",
+      "view": {
+        "label": "Anzeigen",
+        "spend": "Kosten",
+        "quality": "Qualität"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -525,6 +530,59 @@
       "noDefault": "kein Standard festgelegt",
       "partner": "Partnerstandards",
       "org": "Überschreibung dieser Organisation"
+    },
+    "quality": {
+      "title": "Modellqualität",
+      "subtitleAll": "Wie Unterhaltungen mit jedem Modell in allen Organisationen verlaufen: Ablehnungen, Markierungen, Wechsel zu einem anderen Modell und Schritte bis zur Lösung.",
+      "subtitleOrg": "Wie Unterhaltungen mit jedem Modell in der ausgewählten Organisation verlaufen.",
+      "groupBy": {
+        "model": "Modell",
+        "surface": "Funktion",
+        "prompt_profile": "Modellfamilie"
+      },
+      "columns": {
+        "conversations": "Unterhaltungen",
+        "costPerConversation": "Kosten / Unterhaltung",
+        "refusalRate": "Ablehnungsrate",
+        "failoverRate": "Failover-Rate",
+        "flagRate": "Markierungsrate",
+        "leftRate": "Zu anderem Modell gewechselt",
+        "turnsToResolution": "Schritte bis zur Lösung",
+        "agentCompletion": "Abgeschlossene Agent-Läufe"
+      },
+      "help": {
+        "conversations": "Chat-Sitzungen und Agent-Läufe, deren letzter Modellaufruf in diesem Zeitraum auf diese Zeile entfiel.",
+        "costPerConversation": "Durchschnittliche Kosten in dieser Zeile je Unterhaltung, die sie genutzt hat.",
+        "refusalRate": "Modellaufrufe, die das Modell abgelehnt hat, pro Aufruf.",
+        "failoverRate": "Aufrufe, die auf ein Ersatzmodell wechselten, weil dieses Modell ausfiel oder nicht verfügbar war.",
+        "flagRate": "Von einer Person markierte Sitzungen. Automatische Markierungen nach einem Tool-Fehler werden separat gezählt.",
+        "leftRate": "Unterhaltungen, die zu einem anderen Modell gewechselt haben oder in einer neuen Sitzung mit einem anderen Modell fortgesetzt wurden.",
+        "turnsToResolution": "Median der von einem Techniker gesendeten Nachrichten in Sitzungen, die ohne Markierung durch eine Person und ohne Wechsel in eine neue Sitzung endeten. Enthält die Sitzung, aus der fortgesetzt wurde.",
+        "agentCompletion": "Abgeschlossene Agent-Läufe, bezogen auf beendete Läufe."
+      },
+      "profiles": {
+        "claude-frontier": "Claude Frontier",
+        "claude-standard": "Claude Standard",
+        "claude-small": "Claude Klein",
+        "generic": "Andere Modelle"
+      },
+      "unrecorded": "Nicht erfasst",
+      "unattributed": "Keinem Modell zugeordnet",
+      "removedModel": "Entferntes Modell",
+      "platformConnection": "Breeze-Plattform",
+      "notRecorded": "Auf diesem Server noch nicht erfasst",
+      "switchesOnly": "Nur Wechsel",
+      "few": "Wenige Unterhaltungen",
+      "autoFlagged_one": "{{count}} automatisch markiert",
+      "autoFlagged_other": "{{count}} automatisch markiert",
+      "leftBreakdown": "{{switched}} gewechselt, {{continued}} fortgesetzt",
+      "resolvedCount_one": "{{count}} gelöst",
+      "resolvedCount_other": "{{count}} gelöst",
+      "loading": "Qualität wird geladen…",
+      "empty": "Keine Modellaufrufe in diesem Zeitraum.",
+      "error": "Die Qualitätsansicht konnte nicht geladen werden.",
+      "timeout": "Dieser Zeitraum ist zu groß, um schnell zusammengefasst zu werden. Wählen Sie einen kürzeren Zeitraum.",
+      "footnote": "Eine Unterhaltung zählt für das Modell, das sie zuletzt genutzt hat, ein Wechsel für das verlassene Modell. Aufrufe, die ein Ersatzmodell bedient hat, zählen für das gewählte Modell. Die Zählung beginnt mit dem Start der Qualitätserfassung. Kleine Zahlen mit Vorsicht lesen."
     }
   },
   "partnerDefaults": {

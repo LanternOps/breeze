@@ -372,6 +372,14 @@ vi.mock('../aiModels/settleInvocation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiModels/settleInvocation')>()),
   settleInvocation,
 }));
+// W11: an active ai_agents/claude-small variant; the fixture's default profile
+// (claude-standard) has none, so every other test sends the base agent prompt.
+vi.mock('../aiModels/promptVariants', async (orig) => ({
+  ...(await orig<typeof import('../aiModels/promptVariants')>()),
+  PROMPT_VARIANTS: [
+    { id: 'ai_agents/claude-small@1', surface: 'ai_agents', profile: 'claude-small', version: 1, state: 'active', canaryPercent: 0, guidance: 'Agent guidance.', hypothesis: 'h' },
+  ],
+}));
 const grantCatalogSdkEgress = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<{ proxyUrl: string; revoke: () => void } | null>>(async () => null));
 vi.mock('../aiModels/connectionFactory', async (importOriginal) => ({
@@ -770,6 +778,23 @@ describe('executeAgentRun', () => {
       orgId: ORG_ID, agentRunId: RUN_ID, userId: null, sessionId: null, sourceRef: null,
       reservationId: '00000000-0000-4000-8000-0000000000e1',
     }));
+  });
+
+  it('W11: an agent run on a claude-small model sends the ai_agents variant and settles with it', async () => {
+    seedRows();
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', promptProfile: 'claude-small' }));
+    await executeAgentRun(RUN_ID);
+    expect(String(lastQueryOptions!.systemPrompt)).toMatch(/\n\n## Model Guidance\nAgent guidance\.$/);
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      agentRunId: RUN_ID, prompt: { profile: 'claude-small', variant: 'ai_agents/claude-small@1' },
+    }));
+  });
+
+  it('W11: the default profile sends the unchanged agent prompt', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    expect(String(lastQueryOptions!.systemPrompt)).not.toContain('## Model Guidance');
+    expect(settleInvocation).toHaveBeenCalledWith(expect.objectContaining({ prompt: { profile: 'claude-standard', variant: null } }));
   });
 
   // -------------------------------------------------------------------------

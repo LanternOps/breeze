@@ -7,7 +7,7 @@
  * idempotency key. The provider's own cost is copied onto the ledger as
  * telemetry, never billed.
  */
-import type { AiSurface } from '@breeze/shared';
+import type { AiSurface, PromptProfile } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import {
   creditDebitIdempotencyKey,
@@ -23,6 +23,8 @@ import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutc
 import type { NewInvocation } from './invocationLedgerWrite';
 import { getPlatformModelByModelId } from './platformModels';
 import { platformRateSnapshot, priceInvocation, type RateSnapshot } from './pricing';
+import type { PromptProvenance } from './promptProfiles';
+import { parsePromptVariantId } from './promptVariants';
 import type { ResolvedModel } from './resolveModel';
 import { safeErrorMessage } from './safeDbError';
 import type { TurnBinding } from './turnBinding';
@@ -149,6 +151,19 @@ export interface SettleInvocationInput {
      */
     baseSnapshot?: SdkUsageSnapshot | null;
   };
+  /**
+   * W11 (#7609): the prompt the turn's system prompt was built with. The
+   * Agent SDK surfaces pass the LIVE QUERY's provenance (a reused query keeps
+   * the prompt it was created with, even if the binding's profile has since
+   * changed). Absent: the binding's profile, no variant.
+   */
+  prompt?: PromptProvenance | null;
+  /**
+   * W11: when the turn happened. Omitted in production (stamped once in
+   * toNewInvocations); the built rows carry it through a deferred
+   * settlement's JSON, so a late replay keeps turn order.
+   */
+  occurredAt?: Date;
 }
 
 export interface SettledInvocation {
@@ -175,8 +190,35 @@ export async function quoteInvocationCents(binding: TurnBinding, usage: BilledUs
   return sumCostCents(priceUsage(binding, usage, { platformRates }));
 }
 
+/**
+ * ai_invocations_prompt_provenance_chk rejects a variant whose surface or
+ * profile disagrees with its row. A settlement must never fail on
+ * provenance (the turn already ran and is owed), so a mismatch is recorded
+ * as the base prompt and logged.
+ */
+export function consistentPromptVariant(variant: string | null, surface: AiSurface, profile: PromptProfile | null): string | null {
+  if (variant === null) return null;
+  const parsed = parsePromptVariantId(variant);
+  if (parsed && profile !== null && profile !== 'generic' && parsed.surface === surface && parsed.profile === profile) return variant;
+  console.warn('[settleInvocation] prompt variant does not match the bound surface/profile; recorded as the base prompt', { variant, surface, profile });
+  return null;
+}
+
 export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsage[]): NewInvocation[] {
   const b = input.binding;
+  const promptProfile = input.prompt?.profile ?? b.promptProfile ?? null;
+  const promptVariant = consistentPromptVariant(input.prompt?.variant ?? null, b.surface as AiSurface, promptProfile);
+  // A dropped variant mislabels a treated call as the base prompt in the
+  // variant comparison; post-deploy gate G3 watches Sentry for it.
+  if (input.prompt?.variant && promptVariant === null && shouldReport('ai_prompt_variant_mismatch', input.orgId)) {
+    captureMessage('AI prompt variant did not match the settled surface/profile; recorded as the base prompt', {
+      eventCode: 'ai_prompt_variant_mismatch',
+    });
+  }
+  // One instant per settlement, taken when the turn is first settled. A
+  // deferred settlement persists these rows and replays them later; the
+  // replay's INSERT gets a late created_at, but occurredAt keeps turn order.
+  const occurredAt = input.occurredAt ?? new Date();
   return priced.map((p, index): NewInvocation => {
     // Refusal / fallback labels belong to ONE createMessage call's attempts: a
     // row from a multi-call settlement (a retry loop) is labelled from its own
@@ -226,6 +268,9 @@ export function toNewInvocations(input: SettleInvocationInput, priced: PricedUsa
       // billing record, and rollups are derived from these rows only.
       ledgerMode: 'authoritative',
       legacyCostCents: null,
+      promptProfile,
+      promptVariant,
+      occurredAt,
     };
   });
 }
@@ -249,7 +294,8 @@ async function loadUnboundPlatformRates(binding: TurnBinding, usage: readonly Bi
   return rates;
 }
 
-type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted';
+type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted'
+  | 'ai_prompt_variant_mismatch';
 const lastReportedAt = new Map<string, number>();
 const MAX_THROTTLE_KEYS = 10_000;
 

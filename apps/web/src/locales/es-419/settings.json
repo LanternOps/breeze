@@ -517,7 +517,12 @@
       "error": "No se pudo cargar el desglose de uso.",
       "disconnected": "Desconectada",
       "disconnectedHint": "La conexión que atendió estas llamadas ya se desconectó.",
-      "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba."
+      "footnote": "La tasa de rechazo se calcula por llamada al modelo. Los conteos comienzan cuando el registro de modelos entró en funcionamiento; el uso anterior está en los totales de arriba.",
+      "view": {
+        "label": "Mostrar",
+        "spend": "Gasto",
+        "quality": "Calidad"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -525,6 +530,59 @@
       "noDefault": "sin valor predeterminado",
       "partner": "Valores predeterminados del socio",
       "org": "Anulación de esta organización"
+    },
+    "quality": {
+      "title": "Calidad de los modelos",
+      "subtitleAll": "Cómo van las conversaciones en cada modelo en todas las organizaciones: rechazos, marcas, cambios a otro modelo y turnos hasta resolver.",
+      "subtitleOrg": "Cómo van las conversaciones en cada modelo para la organización seleccionada.",
+      "groupBy": {
+        "model": "Modelo",
+        "surface": "Función",
+        "prompt_profile": "Familia de modelos"
+      },
+      "columns": {
+        "conversations": "Conversaciones",
+        "costPerConversation": "Costo / conversación",
+        "refusalRate": "Tasa de rechazo",
+        "failoverRate": "Tasa de failover",
+        "flagRate": "Tasa de marcado",
+        "leftRate": "Pasó a otro modelo",
+        "turnsToResolution": "Turnos hasta resolver",
+        "agentCompletion": "Ejecuciones de agente completadas"
+      },
+      "help": {
+        "conversations": "Sesiones de chat y ejecuciones de agente cuya última llamada de modelo en este período fue en esta fila.",
+        "costPerConversation": "Gasto promedio en esta fila por cada conversación que la usó.",
+        "refusalRate": "Llamadas de modelo que el modelo rechazó, por llamada.",
+        "failoverRate": "Llamadas que pasaron a un modelo de respaldo porque este falló o no estaba disponible.",
+        "flagRate": "Sesiones que una persona marcó. Las marcas automáticas tras un error de herramienta se cuentan por separado.",
+        "leftRate": "Conversaciones que cambiaron a otro modelo o continuaron en una sesión nueva con otro modelo.",
+        "turnsToResolution": "Mediana de mensajes enviados por un técnico en sesiones que terminaron sin marca de una persona ni paso a una sesión nueva. Incluye la sesión de la que continuó.",
+        "agentCompletion": "Ejecuciones de agente completadas, del total de ejecuciones finalizadas."
+      },
+      "profiles": {
+        "claude-frontier": "Claude de frontera",
+        "claude-standard": "Claude estándar",
+        "claude-small": "Claude pequeño",
+        "generic": "Otros modelos"
+      },
+      "unrecorded": "Sin registrar",
+      "unattributed": "No atribuido a un modelo",
+      "removedModel": "Modelo eliminado",
+      "platformConnection": "Plataforma Breeze",
+      "notRecorded": "Aún no se registra en este servidor",
+      "switchesOnly": "Solo cambios",
+      "few": "Pocas conversaciones",
+      "autoFlagged_one": "{{count}} marcada automáticamente",
+      "autoFlagged_other": "{{count}} marcadas automáticamente",
+      "leftBreakdown": "{{switched}} cambiaron, {{continued}} continuaron",
+      "resolvedCount_one": "{{count}} resuelta",
+      "resolvedCount_other": "{{count}} resueltas",
+      "loading": "Cargando calidad…",
+      "empty": "No hay llamadas de modelo en este período.",
+      "error": "No se pudo cargar la vista de calidad.",
+      "timeout": "Este rango es demasiado grande para resumirlo rápido. Elige un rango más corto.",
+      "footnote": "Una conversación cuenta para el último modelo que usó, y un cambio cuenta para el modelo que dejó. Las llamadas atendidas por un respaldo cuentan para el modelo elegido. Los conteos empiezan cuando se activó el seguimiento de calidad. Interpreta con cuidado los números pequeños."
     }
   },
   "partnerDefaults": {
