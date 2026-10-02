@@ -21,8 +21,9 @@
 --      alerts_open_rule_device_subject_uidx once re-pointed is resolved
 --      (reason source_retired); the survivor's own open alert, else the
 --      oldest, stays open;
---   b. alerts and ai_agent_fix_watches.rule_id (a plain copy of the alert's
---      rule id, used to classify recurrences) move to the survivor;
+--   b. alerts, ai_agent_fix_watches.rule_id (a plain copy of the alert's
+--      rule id, used to classify recurrences) and any configuration-policy
+--      alert_rule feature link move to the survivor;
 --   c. if any copy was switched off, the survivor is switched off — the
 --      operator's last explicit action on that rule was "off";
 --   d. the losers are deleted (monitor_conversion_outputs.source_rule_id is
@@ -41,6 +42,7 @@ DECLARE
   n_closed integer;
   n_alerts integer;
   n_watches integer;
+  n_links integer;
   n_off integer;
   n_deleted integer;
 BEGIN
@@ -119,6 +121,21 @@ BEGIN
   GET DIAGNOSTICS n_watches = ROW_COUNT;
   IF n_watches > 0 THEN
     RAISE WARNING '#7650: re-pointed % ai_agent_fix_watches row(s) to the surviving rule', n_watches;
+  END IF;
+
+  -- A configuration policy's alert_rule feature link names its rule by id
+  -- with no FK; the AFTER DELETE validator on alert_rules
+  -- (2026-08-01-a-serialize-feature-policy-references.sql) would abort this
+  -- migration on a link left pointing at a deleted loser. Links are unique
+  -- per (policy, feature_type), so re-pointing cannot collide.
+  UPDATE config_policy_feature_links l
+  SET feature_policy_id = m.survivor_id
+  FROM breeze_7650_rule_merge m
+  WHERE l.feature_type = 'alert_rule'
+    AND l.feature_policy_id = m.loser_id;
+  GET DIAGNOSTICS n_links = ROW_COUNT;
+  IF n_links > 0 THEN
+    RAISE WARNING '#7650: re-pointed % config-policy alert_rule link(s) to the surviving rule', n_links;
   END IF;
 
   -- c. "Off" wins: an operator who switched any copy off meant the rule.

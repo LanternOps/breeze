@@ -31,7 +31,14 @@ import postgres from 'postgres';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { afterAll, describe, expect, it } from 'vitest';
 import { db, withSystemDbAccessContext } from '../../db';
-import { alertRules, alertTemplates, alerts, devices } from '../../db/schema';
+import {
+  alertRules,
+  alertTemplates,
+  alerts,
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  devices,
+} from '../../db/schema';
 import { ensurePatchJobFailureRule, ensureRebootPendingRule } from '../../services/patchAlerts';
 import { ensureRule as ensurePolicyRule } from '../../services/policyAlertBridge';
 import {
@@ -295,6 +302,74 @@ describe(`migration ${MIGRATION}`, () => {
     const after = await liveRules(orgId, 'Patch job failures');
     expect(after.map((r) => r.id)).toContain(survivor);
     expect(after).toHaveLength(3);
+  });
+
+  runDb('merges acknowledged/suppressed and subject-keyed alerts by the open-alert key, and re-points fix watches and config-policy links', async () => {
+    await adminSql.unsafe(`DROP INDEX IF EXISTS ${INDEX_NAME}`);
+
+    const { orgId, siteId } = await seedOrg();
+    const device = await seedDevice(orgId, siteId);
+    const templateId = await builtInTemplate();
+    const t0 = Date.now() - 60_000;
+    const name = `Policy Violation Rule:${randomUUID()}`;
+    const survivor = await insertRule({ orgId, templateId, name, source: 'policy-evaluation', createdAt: new Date(t0) });
+    const loser = await insertRule({ orgId, templateId, name, source: 'policy-evaluation', createdAt: new Date(t0 + 1_000) });
+
+    const seed = async (ruleId: string, status: 'acknowledged' | 'suppressed' | 'active', subjectKey: string | null) => {
+      const [a] = await withSystemDbAccessContext(() => db
+        .insert(alerts)
+        .values({ orgId, ruleId, deviceId: device, status, severity: 'medium', title: 't', message: 'm', subjectKey })
+        .returning({ id: alerts.id }));
+      return a!.id;
+    };
+    // No subject: survivor suppressed vs loser acknowledged → collide; loser's resolved.
+    const survivorSuppressed = await seed(survivor, 'suppressed', null);
+    const loserAcked = await seed(loser, 'acknowledged', null);
+    // Same subject on both → collide; loser's resolved.
+    const survivorDisk = await seed(survivor, 'active', 'disk:0');
+    const loserDisk = await seed(loser, 'active', 'disk:0');
+    // A subject only the loser has → no collision; stays open, moves.
+    const loserOnlyDisk = await seed(loser, 'active', 'disk:1');
+
+    // ai_agent_fix_watches.rule_id is a plain copy (no FK); seed it with FK
+    // triggers off rather than building a whole AI agent run.
+    const watchId = randomUUID();
+    await adminSql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL session_replication_role = replica`);
+      await tx`INSERT INTO ai_agent_fix_watches (id, org_id, partner_id, agent_id, run_id, device_id, rule_id)
+        VALUES (${watchId}, ${orgId}, ${randomUUID()}, ${randomUUID()}, ${randomUUID()}, ${device}, ${loser})`;
+    });
+
+    // A configuration policy that links the loser rule as its alert_rule feature.
+    const [policy] = await withSystemDbAccessContext(() => db
+      .insert(configurationPolicies)
+      .values({ orgId, name: `cp ${randomUUID()}`, status: 'active' })
+      .returning({ id: configurationPolicies.id }));
+    const [link] = await withSystemDbAccessContext(() => db
+      .insert(configPolicyFeatureLinks)
+      .values({ configPolicyId: policy!.id, featureType: 'alert_rule', featurePolicyId: loser })
+      .returning({ id: configPolicyFeatureLinks.id }));
+
+    await adminSql.unsafe(migrationSql());
+
+    const rows = new Map((await alertRows([survivorSuppressed, loserAcked, survivorDisk, loserDisk, loserOnlyDisk])).map((a) => [a.id, a]));
+    for (const a of rows.values()) expect(a.ruleId).toBe(survivor);
+    expect(rows.get(survivorSuppressed)!.status).toBe('suppressed');
+    expect(rows.get(loserAcked)!.status).toBe('resolved');
+    expect(rows.get(survivorDisk)!.status).toBe('active');
+    expect(rows.get(loserDisk)!.status).toBe('resolved');
+    expect(rows.get(loserOnlyDisk)!.status).toBe('active');
+
+    const [watch] = await adminSql<{ rule_id: string }[]>`SELECT rule_id FROM ai_agent_fix_watches WHERE id = ${watchId}`;
+    expect(watch!.rule_id).toBe(survivor);
+    const [linkRow] = await withSystemDbAccessContext(() => db
+      .select({ featurePolicyId: configPolicyFeatureLinks.featurePolicyId })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, link!.id)));
+    expect(linkRow!.featurePolicyId).toBe(survivor);
+    expect(await liveRules(orgId, name)).toHaveLength(1);
+
+    await adminSql`DELETE FROM ai_agent_fix_watches WHERE id = ${watchId}`;
   });
 
   runDb('the index covers exactly the built-in sources the creators write', async () => {
