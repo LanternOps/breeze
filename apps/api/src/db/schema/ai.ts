@@ -6,6 +6,7 @@ import { devices } from './devices';
 import { portalUsers } from './portal';
 import { actionIntents } from './actionIntents';
 import { partnerAiModels } from './aiModelRegistry';
+import type { AiTurnModel } from '@breeze/shared';
 
 // ============================================
 // Enums
@@ -104,6 +105,11 @@ export const aiSessions = pgTable('ai_sessions', {
   // settlement transaction, as a component-wise high-water mark — except a
   // regressed turn's re-baseline, which is stored as-is (#7700 finding 3).
   sdkUsageSnapshot: jsonb('sdk_usage_snapshot').$type<Record<string, unknown> | null>(),
+  // AI model registry W05 (#7603): what ran the session's last turn (an
+  // AiTurnModel: served model + applied options), written when `turn_model`
+  // is published. The object-only CHECK lives in SQL:
+  // 2026-11-22-100100-ai-sessions-last-turn-model.sql.
+  lastTurnModel: jsonb('last_turn_model').$type<AiTurnModel | null>(),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),

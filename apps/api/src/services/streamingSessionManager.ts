@@ -43,6 +43,7 @@ import { carriesQueryValues, safeErrorMessage } from './aiModels/safeDbError';
 import { priceUsage, quoteInvocationCents, settleInvocation, sumCostCents } from './aiModels/settleInvocation';
 import { liveQueryKey, turnBindingFrom, type TurnBinding } from './aiModels/turnBinding';
 import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type RefusalAlternative } from './aiModels/refusals';
+import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
@@ -503,6 +504,18 @@ export interface ActiveSession {
    * recreating the query (the price is not part of `liveKey`).
    */
   turnBinding: TurnBinding;
+  /**
+   * W05: display names of the current turn's bound model and its refusal
+   * fallback (for `turn_model`). Seeded at creation, re-bound by the winner of
+   * `tryTransitionToProcessing` alongside `turnBinding`.
+   */
+  turnDisplay: TurnDisplay;
+  /**
+   * W05: index of the thinking content block the model is in, while a
+   * `thinking_state: started` is outstanding; null otherwise. On the session
+   * (not the processor) so the turn timeout can close it too.
+   */
+  thinkingBlockIndex?: number | null;
   /** The Breeze users.id the ledger attributes turns to; null for helper / Office / system. */
   readonly ledgerUserId: string | null;
   /** Refusal-fallback system messages seen during the current turn (W03 Task 5). */
@@ -844,7 +857,7 @@ export class StreamingSessionManager {
   tryTransitionToProcessing(
     session: ActiveSession,
     budgetReservationId?: string,
-    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding },
+    turn?: { topologyInvestigation?: TopologyTurnRuntime; turnBinding?: TurnBinding; turnDisplay?: TurnDisplay },
   ): boolean {
     if (session.state === 'processing' || session.state === 'closing' || session.state === 'closed') {
       return false;
@@ -865,6 +878,10 @@ export class StreamingSessionManager {
     // reservation carries; settlement bills exactly that.
     if (turn?.turnBinding) {
       session.turnBinding = turn.turnBinding;
+    }
+    // W05: and the display names `turn_model` reports for that binding.
+    if (turn?.turnDisplay) {
+      session.turnDisplay = turn.turnDisplay;
     }
     session.refusalObservation = newSdkTurnObservation();
     // The state and its staleness clock move together: eviction reads
@@ -1102,6 +1119,7 @@ export class StreamingSessionManager {
       deviceId,
       liveKey: key,
       turnBinding: binding,
+      turnDisplay: turnDisplayFrom(resolved),
       ledgerUserId: options?.ledgerUserId ?? null,
       refusalObservation: newSdkTurnObservation(),
       forceRecreate: false,
@@ -1454,6 +1472,7 @@ export class StreamingSessionManager {
           this.remove(session.breezeSessionId);
           return;
         }
+        this.stopThinking(session);
         session.eventBus.publish({ type: 'error', message: 'AI request timed out. Please try again.' });
         session.eventBus.publish({ type: 'done' });
         session.state = 'idle';
@@ -1597,7 +1616,10 @@ export class StreamingSessionManager {
               session.lastActivityAt = Date.now();
               session.eventBus.publish({ type: 'message_start', messageId: currentMessageId });
             } else if (event.type === 'content_block_delta') {
-              if ('delta' in event && event.delta.type === 'text_delta') {
+              if ('delta' in event && (event.delta.type === 'thinking_delta' || event.delta.type === 'signature_delta')) {
+                // W05: a long think is stream progress, not a wedged turn.
+                session.lastActivityAt = Date.now();
+              } else if ('delta' in event && event.delta.type === 'text_delta') {
                 // Stream progress keeps the turn alive for eviction purposes.
                 session.lastActivityAt = Date.now();
                 // Topology M4: raw provider text goes to the server-only output
@@ -1606,7 +1628,20 @@ export class StreamingSessionManager {
                 else session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
               }
             } else if (event.type === 'content_block_start') {
-              if ('content_block' in event && event.content_block.type === 'text') {
+              if ('content_block' in event
+                && (event.content_block.type === 'thinking' || event.content_block.type === 'redacted_thinking')) {
+                // W05: never a silent pause while the model reasons (spec §11).
+                // The block's text is empty without `thinkingDisplay` (W01 D1),
+                // so the stream carries a state, not text. Topology turns
+                // publish fixed phases only and are excluded.
+                session.lastActivityAt = Date.now();
+                if (!session.topologyInvestigation) {
+                  if (session.thinkingBlockIndex == null) {
+                    session.eventBus.publish({ type: 'thinking_state', state: 'started' });
+                  }
+                  session.thinkingBlockIndex = event.index;
+                }
+              } else if ('content_block' in event && event.content_block.type === 'text') {
                 // #5106: every text content_block_start AFTER the first one in
                 // this assistant message means a tool_use block sat between
                 // two text blocks (text -> tool_use -> text). Emit a
@@ -1654,6 +1689,8 @@ export class StreamingSessionManager {
                     input: {},
                   });
               }
+            } else if (event.type === 'content_block_stop' && event.index === session.thinkingBlockIndex) {
+              this.stopThinking(session);
             } else if (event.type === 'message_delta') {
               if (messageStarted) {
                 session.eventBus.publish({
@@ -1818,6 +1855,12 @@ export class StreamingSessionManager {
           case 'result': {
             // Clear per-turn timeout on result
             this.clearTurnTimeout(session);
+            // W05: a turn that ends mid-thought still closes the indicator.
+            this.stopThinking(session);
+            // The binding/display this turn ran under (read before anything
+            // awaits; nothing can re-bind them while the turn is processing).
+            const turnBinding = session.turnBinding;
+            const turnDisplay = session.turnDisplay;
             // Topology M4: validate BEFORE anything is persisted or streamed.
             const topologyTurn = Boolean(session.topologyInvestigation);
             if (topologyTurn) {
@@ -1868,6 +1911,13 @@ export class StreamingSessionManager {
               await this.publishRefusal(session, turn.outcome.refusalCategory);
             }
 
+            // W05 (spike constraint 5): what actually ran — the served model and
+            // applied options from the turn's OUTCOME, never the request — then
+            // persisted so a reload shows exactly what was published.
+            if (!topologyTurn) {
+              await this.publishTurnModel(session, turnBinding, turnDisplay, turn.outcome);
+            }
+
             // Signal this turn is done, but DON'T close the event bus —
             // session stays alive for follow-up messages. Carries usage so
             // client surfaces can render turn cost (turn_complete).
@@ -1890,10 +1940,14 @@ export class StreamingSessionManager {
     } catch (err) {
       captureException(reportableError(err));
       console.error('[StreamingSessionManager] Query error:', safeErrorMessage(err));
+      this.stopThinking(session);
       await this.abortTopologyTurn(session);
       session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
       session.eventBus.publish({ type: 'done' });
     } finally {
+      // W05: a turn that ended without a `result` mid-thought (teardown,
+      // crash) still closes the indicator.
+      this.stopThinking(session);
       // A turn that ended without a `result` (teardown, crash) discards any
       // unvalidated topology output and releases its lease.
       await this.abortTopologyTurn(session);
@@ -2065,6 +2119,45 @@ export class StreamingSessionManager {
         reservationId, error: safeErrorMessage(err),
       });
       (session.unsettledReservationIds ??= []).push(reservationId);
+    }
+  }
+
+  /**
+   * W05: close an outstanding `thinking_state: started` (idempotent). Every
+   * turn end — result, error, timeout, teardown — calls this, so a client is
+   * never left showing "Thinking…" over a finished turn.
+   */
+  private stopThinking(session: ActiveSession): void {
+    if (session.thinkingBlockIndex == null) return;
+    session.thinkingBlockIndex = null;
+    session.eventBus.publish({ type: 'thinking_state', state: 'stopped' });
+  }
+
+  /**
+   * W05 (spike constraint 5): publish the turn's `turn_model` and persist it as
+   * ai_sessions.last_turn_model. Provenance is informative: a failure here is
+   * reported loudly but never fails the turn (`done` still follows).
+   */
+  private async publishTurnModel(
+    session: ActiveSession,
+    binding: TurnBinding,
+    display: TurnDisplay,
+    outcome: TurnOutcome,
+  ): Promise<void> {
+    let turnModel;
+    try {
+      turnModel = await describeTurnModel({ binding, outcome, display });
+    } catch (err) {
+      captureException(err);
+      console.error('[StreamingSessionManager] Failed to describe the turn model:', safeErrorMessage(err));
+      return;
+    }
+    session.eventBus.publish({ type: 'turn_model', turnModel });
+    try {
+      await persistLastTurnModel({ orgId: session.orgId, sessionId: session.breezeSessionId, turnModel });
+    } catch (err) {
+      captureException(reportableError(err), undefined, { org_id: session.orgId });
+      console.error('[StreamingSessionManager] Failed to persist last_turn_model; a reload will not show what ran this turn:', safeErrorMessage(err));
     }
   }
 

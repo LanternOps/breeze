@@ -87,6 +87,7 @@ import { AI_NOT_CONFIGURED_BODY, isOpenAICompatibleProvider, LlmNotConfiguredErr
 import type { ResolvedModel } from '../services/aiModels/resolveModel';
 import { liveQueryKey, turnBindingFrom, withCarriedRates } from '../services/aiModels/turnBinding';
 import { continuationMessage, planModelTransition, readPreviousTurn } from '../services/aiModels/modelTransition';
+import { lastTurnModelOf, turnDisplayFrom } from '../services/aiModels/turnModel';
 import { TopologyAiSessionError } from '../services/topology/aiToolGate';
 import type { PreparedTopologyInvestigation } from '../services/topology/aiInvestigation';
 // Loaded lazily, only for a topology session: its tool/transport graph must not
@@ -360,7 +361,12 @@ aiRoutes.get(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    return c.json(result);
+    // W05: what ran the last turn, persisted on the (owner-bound) session row
+    // — no extra query, and never a guess from ledger rows (D13). Parsed, so
+    // an unrecognised stored value reads as absent; the web store reads it
+    // off `session`, the plan's contract names the top-level field.
+    const lastTurnModel = lastTurnModelOf(result.session);
+    return c.json({ ...result, session: { ...result.session, lastTurnModel }, lastTurnModel });
   }
 );
 
@@ -1090,7 +1096,7 @@ aiRoutes.post(
 
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1) — same as the OpenAI branch.
-      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding })) {
+      if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
         return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
       }
 

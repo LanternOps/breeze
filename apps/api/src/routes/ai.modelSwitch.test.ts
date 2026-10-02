@@ -222,6 +222,7 @@ import { makeResolvedModel } from '../services/aiModels/__fixtures__/resolvedMod
 import { turnBindingFrom } from '../services/aiModels/turnBinding';
 import { AiBudgetSessionBusyError } from '../services/aiBudgetReservations';
 import { withCarriedRates } from '../services/aiModels/turnBinding';
+import { getSessionMessages } from '../services/aiAgent';
 
 /**
  * W05 (#7603) — the composer's model choice rides on the message (D1) and
@@ -363,5 +364,31 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     const res = await postWithModel(app, { model: 'claude-opus-5-5' });
     expect(res.status).toBe(400);
     expect(runPreFlightChecks).not.toHaveBeenCalled();
+  });
+
+  it('the turn claim binds the display names turn_model reports (W05 Task 9)', async () => {
+    await (await postWithModel(app, { offeringId: OFF })).text();
+    expect(streamingSessionManager.tryTransitionToProcessing).toHaveBeenCalledWith(
+      expect.anything(), RESERVATION_ID,
+      expect.objectContaining({ turnDisplay: { requestedDisplayName: 'Haiku 4.5', fallbackDisplayName: null } }),
+    );
+  });
+
+  it('GET /sessions/:id returns the persisted lastTurnModel (W05)', async () => {
+    const lastTurnModel = { requestedModel: 'claude-opus-5-5', requestedDisplayName: 'Opus 5.5', servedModel: 'claude-opus-4-8', servedDisplayName: 'Claude Opus 4.8', fallbackUsed: true, appliedOptions: {}, fastDowngraded: false };
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({ session: { ...DB_SESSION, lastTurnModel }, messages: [] } as never);
+    const res = await app.request(`/ai/sessions/${SESSION_ID}`, { headers: { Authorization: 'Bearer token' } });
+    const body = await res.json();
+    expect(body.lastTurnModel).toEqual(lastTurnModel);
+    // The web store reads it off the session object (aiStore.loadSession).
+    expect(body.session.lastTurnModel).toEqual(lastTurnModel);
+  });
+
+  it('GET /sessions/:id never passes an unparseable stored value through (W05)', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({ session: { ...DB_SESSION, lastTurnModel: { servedModel: 1 } }, messages: [] } as never);
+    const res = await app.request(`/ai/sessions/${SESSION_ID}`, { headers: { Authorization: 'Bearer token' } });
+    const body = await res.json();
+    expect(body.lastTurnModel).toBeNull();
+    expect(body.session.lastTurnModel).toBeNull();
   });
 });
