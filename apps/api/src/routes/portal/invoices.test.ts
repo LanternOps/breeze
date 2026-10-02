@@ -158,6 +158,12 @@ function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>
 import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
 
 describe('portal invoices routes', () => {
+it('portal invoice pay rejects missing authorization before Stripe', async () => {
+  const res = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ saveForAutopay: true }) });
+  expect(res.status).toBe(400); expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
+
   beforeEach(() => {
     reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' })); vi.clearAllMocks(); reservation.inFlight.mockResolvedValue({ inProgress: false, amount: '0.00' }); dbResults.length = 0; insertValuesMock.mockReset(); onlinePayMock.mockResolvedValue(true); });
 
@@ -679,4 +685,13 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     const res = await settle('cs_123');
     expect(res.status).toBe(500);
   });
+});
+
+vi.mock('../../services/autopay/payAndSave', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../services/autopay/payAndSave')>();
+  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null),
+    prepareCardPayAndSave: vi.fn(async (_invoiceId: string, _orgId: string, input: { saveForAutopay?: boolean }) => {
+      if (input.saveForAutopay) throw new Error('Unexpected accepted save in ordinary-payment fixture');
+      return null;
+    }) };
 });

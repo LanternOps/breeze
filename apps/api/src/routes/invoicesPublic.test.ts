@@ -466,3 +466,24 @@ it('public pay returns the reservation conflict without exposing a payment URL',
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({ error: 'A payment is already processing', code: 'COLLECTION_IN_PROGRESS' });
 });
+
+vi.mock('../services/autopay/payAndSave', async importOriginal => {
+  const actual = await importOriginal<typeof import('../services/autopay/payAndSave')>();
+  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null) };
+});
+it('public invoice pay forwards only explicit card authorization', async () => {
+  resolveMock.mockResolvedValue(invoice()); payLinkMock.mockResolvedValue({ url: 'https://checkout.stripe.com/c/cs_saved' });
+  const res = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }) });
+  expect(res.status).toBe(200);
+  expect(payLinkMock).toHaveBeenCalledWith(INV_ID, expect.anything(), expect.objectContaining({
+    saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
+  }));
+});
+it('public invoice pay refuses an unaccepted save request before Checkout', async () => {
+  resolveMock.mockResolvedValue(invoice());
+  const res = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ saveForAutopay: true }) });
+  expect(res.status).toBe(400); expect(payLinkMock).not.toHaveBeenCalled();
+});

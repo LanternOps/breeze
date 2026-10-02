@@ -1,3 +1,5 @@
+import { getTrustedClientIpOrUndefined } from '../services/clientIp';
+import { payAndSaveSchema, getInvoiceAutopayOffer } from '../services/autopay/payAndSave';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
@@ -173,6 +175,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
         && await isPartnerOnlinePaymentAvailable(inv.partnerId),
+      autopay: await getInvoiceAutopayOffer(inv.orgId),
       branding: brandingBlock(inv, partner, brand),
     };
   }));
@@ -241,6 +244,8 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
   if (!(c.req.header('content-type') ?? '').includes('application/json')) {
     return c.json({ error: 'Invalid request' }, 400);
   }
+  const parsed = payAndSaveSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid automatic-payment authorization' }, 400);
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
@@ -254,6 +259,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
       successUrl: `${returnBase}?session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: `${returnBase}?canceled=1&session_id={CHECKOUT_SESSION_ID}`,
       idempotencySuffix: '_pub',
+      ...parsed.data, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
     });
     return c.json({ data: { url: link.url } });
   } catch (err) {

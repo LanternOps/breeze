@@ -1,3 +1,4 @@
+import { finishCardPayAndSave } from './autopay/payAndSave';
 import type Stripe from 'stripe';
 import { and, eq } from 'drizzle-orm';
 import { invoices, invoiceStripePayments } from '../db/schema';
@@ -96,6 +97,14 @@ export async function settleCheckoutSession(
     markChargedRepairIfRevoked: true,
   });
 
+  try {
+    await finishCardPayAndSave(partnerId, session.id);
+  } catch (err) {
+    if (err instanceof HeldDbContextForStripeError) throw err;
+    // Payment is committed. Leave the durable setup attempt unfinished so the
+    // setup reconciler can retry saving without charging the customer again.
+    console.error('[stripeSettle] booked payment card capture failed', { partnerId, sessionId: session.id, err });
+  }
   return { settled: true, invoiceId: res.invoiceId };
 }
 

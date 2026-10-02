@@ -1,3 +1,11 @@
+const { prepareSaveMock } = vi.hoisted(() => ({ prepareSaveMock: vi.fn(async (
+  _invoiceId: string, _orgId: string, _input: { saveForAutopay?: boolean }, _checkoutKey: string,
+): Promise<{ id: string; stripeCustomerId: string } | null> => null) }));
+vi.mock('./autopay/payAndSave', async importOriginal => {
+  const actual = await importOriginal<typeof import('./autopay/payAndSave')>();
+  return { ...actual, prepareCardPayAndSave: prepareSaveMock };
+});
+
 const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), invoice: null as Record<string, unknown> | null }));
 vi.mock('./autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -29,7 +37,7 @@ vi.mock('./stripeSessionRevocation', () => ({
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'limit', 'for']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'where', 'limit', 'for', 'update', 'set']) chain[m] = vi.fn(() => chain);
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       const first = rows[0];
@@ -104,11 +112,35 @@ function expectedIdempotencyKey(base: string): string {
 }
 
 describe('createInvoicePayLink', () => {
+it('checked card payments retain card-only Checkout and a stable save-enabled retry family', async () => {
+  const captureId = '33333333-3333-4333-8333-333333333333';
+  prepareSaveMock.mockResolvedValue({ id: captureId, stripeCustomerId: 'cus_saved' });
+  getPartnerStripeClientMock.mockResolvedValue(partnerClient());
+  sessionsCreateMock.mockResolvedValue({ id: 'cs_saved', url: 'https://checkout.stripe.com/c/cs_saved', payment_intent: 'pi_saved' });
+  for (let replay = 0; replay < 2; replay++) {
+    dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: actor.partnerId, status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00', currencyCode: 'USD', invoiceNumber: 'INV-SAVE' }],
+      [{ id: '44444444-4444-4444-8444-444444444444' }], []);
+    await createInvoicePayLink(INV_ID, actor, {
+      saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
+    });
+  }
+  expect(sessionsCreateMock).toHaveBeenCalledTimes(2);
+  for (const [params, options] of sessionsCreateMock.mock.calls) {
+    expect(params).toMatchObject({ mode: 'payment', payment_method_types: ['card'], customer: 'cus_saved',
+      metadata: { autopay_setup_attempt_id: captureId },
+      payment_intent_data: { setup_future_usage: 'off_session', metadata: { autopay_setup_attempt_id: captureId } } });
+    expect(options.idempotencyKey).toBe(expectedIdempotencyKey(`inv_${INV_ID}_10000_bal_save_${captureId}`));
+  }
+  expect(prepareSaveMock.mock.calls[0]?.[3]).toBe(prepareSaveMock.mock.calls[1]?.[3]);
+});
+
   beforeEach(() => {
     reservation.invoice = null; reservation.assert.mockResolvedValue(undefined); reservation.lock.mockImplementation(async () => ({ invoice: reservation.invoice, reservedAmount: '0.00' }));
     vi.clearAllMocks();
     dbResults.length = 0;
     insertValuesMock.mockReset();
+    prepareSaveMock.mockResolvedValue(null);
   });
 
 it('refuses a reserved invoice before calling Stripe', async () => {
