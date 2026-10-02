@@ -101,6 +101,48 @@ describe('selection never leaks across chats', () => {
   });
 });
 
+describe('opening another chat from History (#7769)', () => {
+  const choicesFor = (offeringId: string): AiModelChoicesDto => ({ ...CHOICES, current: { offeringId, options: {} } });
+  const sessionBody = (id: string, lastTurnModel: unknown = null) =>
+    json({ session: { id, status: 'active', orgId: 'o1', lastTurnModel }, messages: [] });
+  const currentId = () => useAiModelPickerStore.getState().choices?.current?.offeringId;
+
+  it('reloads the menu for the chosen chat, drops the previous pick, and sets the label model', async () => {
+    useAiModelPickerStore.setState({ choices: choicesFor('haiku') });
+    useAiModelPickerStore.getState().select('def');
+    route({
+      '/ai/sessions/B': () => sessionBody('B', { offeringId: 'def', displayName: 'Sonnet' }),
+      '/ai/models/choices/chat?sessionId=B': () => json({ data: choicesFor('def') }),
+    });
+    await useAiStore.getState().switchSession('B');
+    expect(useAiModelPickerStore.getState().selection).toBeNull();
+    await vi.waitFor(() => expect(currentId()).toBe('def'));
+    expect(useAiStore.getState().turnModel).toEqual({ offeringId: 'def', displayName: 'Sonnet' });
+  });
+
+  it('a load for the old chat still in flight cannot overwrite the new chat\'s choices', async () => {
+    let releaseA!: () => void;
+    route({
+      '/ai/models/choices/chat?sessionId=A': () => new Promise<Response>((r) => { releaseA = () => r(json({ data: choicesFor('haiku') })); }),
+      '/ai/sessions/B': () => sessionBody('B'),
+      '/ai/models/choices/chat?sessionId=B': () => json({ data: choicesFor('def') }),
+    });
+    const loadA = useAiModelPickerStore.getState().load({ sessionId: 'A' });
+    await useAiStore.getState().switchSession('B');
+    await vi.waitFor(() => expect(currentId()).toBe('def'));
+    releaseA();
+    await loadA;
+    expect(currentId()).toBe('def');
+  });
+
+  it('dismisses a continuation parked for another chat', async () => {
+    useAiModelPickerStore.getState().requireContinuation({} as never, 'hello', 'A');
+    route({ '/ai/sessions/B': () => sessionBody('B'), '/ai/models/choices/chat': () => json({ data: CHOICES }) });
+    await useAiStore.getState().switchSession('B');
+    expect(useAiModelPickerStore.getState().continuation).toBeNull();
+  });
+});
+
 describe('coded 409s remove the optimistic user bubble', () => {
   it.each(['turn_in_progress', 'model_unavailable', 'topology_model_changed'])('%s', async (code) => {
     useAiModelPickerStore.setState({ choices: CHOICES });

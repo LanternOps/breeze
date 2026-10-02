@@ -193,6 +193,20 @@ function resetModelPicker(): void {
 }
 
 /**
+ * The chat on screen just became `sessionId` (reload, History pick,
+ * continuation): dismiss a continuation parked
+ * for another chat, and reload that chat's menu. `load` bumps its request token,
+ * so a still-in-flight load for the old chat can no longer overwrite this one
+ * (#7769).
+ */
+function adoptSessionModelPicker(sessionId: string): void {
+  const picker = useAiModelPickerStore.getState();
+  const parked = picker.continuation;
+  if (parked && parked.sourceSessionId !== sessionId) picker.dismissContinuation();
+  void picker.load({ sessionId });
+}
+
+/**
  * Identifies the stream `sendMessage` currently owns. A rebind (or any later
  * send) supersedes an in-flight one: the superseded reader must stop appending
  * into the store, or another tenant's assistant output lands in the new chat
@@ -472,11 +486,7 @@ export const useAiStore = create<AiState>()(
         refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
       });
-      // A parked continuation message belongs to the chat it came from; it must
-      // not linger once the active chat changes.
-      const parked = useAiModelPickerStore.getState().continuation;
-      if (parked && parked.sourceSessionId !== sessionId) useAiModelPickerStore.getState().dismissContinuation();
-      void useAiModelPickerStore.getState().load({ sessionId });
+      adoptSessionModelPicker(sessionId);
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -822,6 +832,8 @@ export const useAiStore = create<AiState>()(
 
   switchSession: async (sessionId: string) => {
     const ownsSession = claimSessionOwnership();
+    // Another chat's pick must never ride on this chat's next message.
+    if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
     set({ showHistory: false, isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
@@ -843,8 +855,12 @@ export const useAiStore = create<AiState>()(
         isFlagged: !!data.session?.flaggedAt,
         flagReason: data.session?.flagReason ?? null,
         boundM365ConnectionId: data.session?.delegantM365ConnectionId ?? null,
+        turnModel: (data.session?.lastTurnModel ?? null) as AiTurnModel | null,
+        thinking: false,
+        refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
       });
+      adoptSessionModelPicker(sessionId);
     } catch (err) {
       if (!ownsSession()) return;
       set({
