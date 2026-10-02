@@ -360,10 +360,20 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
 };
 
+/**
+ * Tables whose `partner_id` is NOT ownership, so a write to them is never a
+ * partner-wide configuration write. Each entry needs a reason; keep this tiny.
+ */
+const NON_OWNERSHIP_PARTNER_ID_TABLES: Record<string, string> = {
+  auditLogs:
+    'append-only audit trail (#7696): partner_id is attribution on partner-scoped (org_id NULL) events, stamped by the writer from the request — no caller ever edits or "owns" an audit row, and UPDATE/DELETE are revoked + trigger-blocked',
+};
+
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */
 function partnerAxisTableNames(): string[] {
   const names: string[] = [];
   for (const [exportName, value] of Object.entries(schema)) {
+    if (exportName in NON_OWNERSHIP_PARTNER_ID_TABLES) continue;
     if (!value || typeof value !== 'object') continue;
     if (!is(value as never, PgTable)) continue;
     let columns: Record<string, { notNull: boolean }>;

@@ -16,6 +16,11 @@ export const initiatedByEnum = pgEnum('initiated_by_type', ['manual', 'ai', 'aut
 export const auditLogs = pgTable('audit_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => organizations.id),
+  // Partner attribution for partner-scoped events (#7696). Set ONLY when
+  // org_id IS NULL (CHECK audit_logs_partner_only_without_org_chk); read by the
+  // SELECT-only `audit_logs_partner_scope_select` policy. Deliberately no FK to
+  // partners — see migration 2026-12-03-110600-audit-logs-partner-scope.sql.
+  partnerId: uuid('partner_id'),
   timestamp: timestamp('timestamp').defaultNow().notNull(),
   actorType: actorTypeEnum('actor_type').notNull(),
   actorId: uuid('actor_id').notNull(),

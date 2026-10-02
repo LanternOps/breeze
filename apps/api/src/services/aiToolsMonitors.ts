@@ -51,6 +51,7 @@ import {
 import { listMonitorDeviceActivity, listMonitorEpisodes } from './monitors/episodeQueries';
 import { resetMonitorEscalation } from './monitors/episodeReset';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { auditPartnerScopeId } from './auditReadScope';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
@@ -101,6 +102,9 @@ function auditMonitorToolEvent(
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: entry.orgId,
+      // The snapshot shim carries no auth, so attribute explicitly — same rule
+      // as the HTTP route (partner-scope callers only, #7696).
+      partnerId: auditPartnerScopeId(auth),
       actorId: auth.user.id,
       actorEmail: auth.user.email,
       action: entry.action,

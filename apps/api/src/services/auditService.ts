@@ -11,6 +11,12 @@ export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'sched
 export interface CreateAuditLogParams {
   trigger?: RemediationTrigger;
   orgId?: string | null;
+  /**
+   * Partner attribution for a partner-scoped (org_id NULL) row (#7696). Dropped
+   * when `orgId` is set — org rows stay on the org axis (DB CHECK
+   * audit_logs_partner_only_without_org_chk).
+   */
+  partnerId?: string | null;
   actorType?: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
   actorId: string;
   actorEmail?: string;
@@ -76,7 +82,7 @@ async function persistAuditLog(params: CreateAuditLogParams): Promise<void> {
   // transaction on its own pooled connection.
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const { actorType = 'user', trigger, ...rest } = params;
+      const { actorType = 'user', trigger, partnerId, ...rest } = params;
       // Audit writes commit independently and async retries can exhaust after
       // three attempts. The feed is a convenience view; reports read typed
       // execution columns. Never rewrite historical checksum-chain rows.
@@ -86,7 +92,12 @@ async function persistAuditLog(params: CreateAuditLogParams): Promise<void> {
         triggerRefId: trigger.refId ?? null,
         triggerKey: trigger.key ?? null,
       } : rest.details;
-      await db.insert(auditLogs).values({ actorType, ...rest, ...(trigger ? { details } : {}) });
+      await db.insert(auditLogs).values({
+        actorType,
+        ...rest,
+        partnerId: rest.orgId ? null : (partnerId ?? null),
+        ...(trigger ? { details } : {}),
+      });
     })
   );
 }

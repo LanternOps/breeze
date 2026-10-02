@@ -7,6 +7,7 @@ import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import { auditLogs as auditLogsTable, users, devices } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { auditLogReadCondition, auditPartnerScopeId } from '../services/auditReadScope';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { csvRow } from '../services/spreadsheetExport';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
@@ -384,6 +385,7 @@ async function queryRows(where: SQL | undefined, limit: number, offset: number):
 interface LateralAuditRow extends Record<string, unknown> {
   id: string;
   org_id: string | null;
+  partner_id: string | null;
   timestamp: Date | string;
   actor_type: ActorType;
   actor_id: string;
@@ -407,7 +409,11 @@ interface LateralAuditRow extends Record<string, unknown> {
 async function queryLatestPerOrg(
   orgIds: string[],
   limit: number,
-  excludeActions: string[] = []
+  excludeActions: string[] = [],
+  // Partner-scope callers only (auditPartnerScopeId): also merge in the newest
+  // partner-scoped rows (org_id NULL, partner_id = this) via their own partial
+  // index (audit_logs_partner_scope_idx, #7696).
+  partnerId: string | null = null
 ): Promise<DbRow[]> {
   const orgIdsSql = sql.join(orgIds.map((id) => sql`${id}::uuid`), sql`, `);
   // Apply the exclude filter INSIDE the LATERAL subquery so the per-org
@@ -416,21 +422,34 @@ async function queryLatestPerOrg(
   const excludeFilter = excludeActions.length > 0
     ? sql` AND audit_logs.action <> ALL(ARRAY[${sql.join(excludeActions.map((a) => sql`${a}`), sql`, `)}]::text[])`
     : sql``;
+  const partnerBranch = partnerId
+    ? sql`
+      UNION ALL
+      (
+        SELECT * FROM audit_logs
+        WHERE audit_logs.org_id IS NULL
+          AND audit_logs.partner_id = ${partnerId}::uuid${excludeFilter}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      )`
+    : sql``;
   const rows = await db.execute<LateralAuditRow>(sql`
     SELECT
-      al.id, al.org_id, al.timestamp, al.actor_type, al.actor_id,
+      al.id, al.org_id, al.partner_id, al.timestamp, al.actor_type, al.actor_id,
       al.actor_email, al.action, al.resource_type, al.resource_id,
       al.resource_name, al.details, al.ip_address, al.user_agent,
       al.result, al.error_message, al.checksum, al.initiated_by,
       u.name AS user_name,
       d.hostname AS device_hostname,
       d.display_name AS device_display_name
-    FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
-    CROSS JOIN LATERAL (
-      SELECT * FROM audit_logs
-      WHERE audit_logs.org_id = o.org_id${excludeFilter}
-      ORDER BY timestamp DESC
-      LIMIT ${limit}
+    FROM (
+      SELECT per_org.* FROM unnest(ARRAY[${orgIdsSql}]::uuid[]) AS o(org_id)
+      CROSS JOIN LATERAL (
+        SELECT * FROM audit_logs
+        WHERE audit_logs.org_id = o.org_id${excludeFilter}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      ) per_org${partnerBranch}
     ) al
     LEFT JOIN users u ON al.actor_id = u.id
     LEFT JOIN devices d
@@ -443,6 +462,7 @@ async function queryLatestPerOrg(
     log: {
       id: r.id,
       orgId: r.org_id,
+      partnerId: r.partner_id,
       timestamp: r.timestamp instanceof Date ? r.timestamp : dateFromSqlValue(r.timestamp),
       actorType: r.actor_type,
       actorId: r.actor_id,
@@ -601,9 +621,13 @@ function paginatedListHandler(
     // list intentionally does not. (Site-scope review decision, 2026-05-31.)
     // A pinned ?orgId= narrows to that single (accessible) org; otherwise the
     // standard condition spans every accessible org.
+    //
+    // Unpinned, a partner-scope caller also gets its own partner-scoped rows
+    // (org_id NULL, partner_id = caller's partner — #7696). A pinned org is an
+    // explicit "this org's events" filter, so partner rows are not included.
     const orgCond = query.orgId
       ? eq(auditLogsTable.orgId, query.orgId)
-      : auth.orgCondition(auditLogsTable.orgId);
+      : auditLogReadCondition(auth);
     const where = buildFilterConditions(orgCond, query);
     // count(*) on audit_logs is 2-3s under RLS even with the org_timestamp
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
@@ -625,10 +649,11 @@ function paginatedListHandler(
       !hasFilters &&
       fastPathOrgIds !== null &&
       fastPathOrgIds.length > 0;
+    const fastPathPartnerId = query.orgId ? null : auditPartnerScopeId(auth);
     const [total, rows] = await Promise.all([
       skipCount ? Promise.resolve(-1) : countRows(where),
       canUseFastPath
-        ? queryLatestPerOrg(fastPathOrgIds as string[], limit, excludeActions)
+        ? queryLatestPerOrg(fastPathOrgIds as string[], limit, excludeActions, fastPathPartnerId)
         : queryRows(where, limit, offset)
     ]);
 
@@ -671,7 +696,7 @@ auditLogRoutes.get(
     const auth = c.get('auth');
     const { id } = c.req.valid('param');
 
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const conditions: SQL[] = [eq(auditLogsTable.id, id)];
     if (orgCond) conditions.push(orgCond);
 
@@ -718,7 +743,7 @@ auditLogRoutes.get(
     const query = c.req.valid('query');
     const { page, limit, offset } = getPagination(query);
 
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const filterWhere = buildFilterConditions(orgCond, query);
     const searchCond = buildSearchCondition(query.q);
     const where = filterWhere ? and(filterWhere, searchCond) : searchCond;
@@ -751,7 +776,7 @@ auditLogRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const where = buildFilterConditions(orgCond, {
       ...(body.filters ?? {}),
       from: body.dateRange?.from,
@@ -803,7 +828,7 @@ auditLogRoutes.get(
   zValidator('query', exportGetSchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
 
     const { userId, columns, includeDetails: includeDetailsRaw } = c.req.valid('query');
     const includeDetails = includeDetailsRaw !== 'false';
@@ -846,7 +871,7 @@ auditLogRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const rows = await fetchAllForReports(orgCond, query);
 
     const actionsPerUser = summarizeUsers(rows);
@@ -870,7 +895,7 @@ auditLogRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const allRows = await fetchAllForReports(orgCond, query);
 
     const securityRows = allRows.filter((r) => securityActions.has(r.log.action));
@@ -898,7 +923,7 @@ auditLogRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const allRows = await fetchAllForReports(orgCond, query);
 
     const complianceRows = allRows.filter((r) =>
@@ -928,7 +953,7 @@ auditLogRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCond = auth.orgCondition(auditLogsTable.orgId);
+    const orgCond = auditLogReadCondition(auth);
     const rows = await fetchAllForReports(orgCond, query);
 
     const byCategory = summarizeCategories(rows);

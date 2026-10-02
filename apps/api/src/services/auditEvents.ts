@@ -32,6 +32,15 @@ export function requestLikeFromSnapshot(snapshot: { ip?: string; userAgent?: str
 
 export interface AuditEventInput {
   orgId: string | null | undefined;
+  /**
+   * Partner attribution for a partner-scoped (org_id NULL) event (#7696) — what
+   * makes the row visible in that partner's Audit Trail. Ignored (persisted as
+   * NULL) whenever `orgId` is set: org rows stay on the org axis. When omitted
+   * (`undefined`) on a NULL-org event, it is derived from a partner-scope
+   * request's auth (see `derivePartnerAttribution`); pass `null` explicitly for
+   * a NULL-org event that is platform-wide even though a partner user caused it.
+   */
+  partnerId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;
@@ -57,6 +66,42 @@ export interface AuditEventInput {
 
 function isUuid(value: string | null | undefined): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+type PartnerScopeAuth = { scope?: unknown; partnerId?: unknown };
+
+function readRequestAuth(c: RequestLike): PartnerScopeAuth | undefined {
+  // RequestLike is structural: route callers pass the Hono context (which has
+  // `get`), services pass a `requestLikeFromSnapshot` shim (which does not).
+  const get = (c as { get?: (key: string) => unknown }).get;
+  if (typeof get !== 'function') return undefined;
+  try {
+    const auth = get.call(c, 'auth');
+    return auth && typeof auth === 'object' ? (auth as PartnerScopeAuth) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The partner_id to persist for this event (#7696).
+ *
+ * - Org rows never carry one (the DB CHECK
+ *   audit_logs_partner_only_without_org_chk enforces the same invariant).
+ * - An explicit `event.partnerId` (including `null`) wins.
+ * - Otherwise a NULL-org event written from a PARTNER-scope request is
+ *   attributed to the caller's partner. Gated on scope, not on `partnerId`
+ *   alone: organization-scope tokens carry their MSP's partnerId too, and a
+ *   NULL-org row an org user causes must not land in the MSP's trail.
+ */
+export function derivePartnerAttribution(c: RequestLike, event: Pick<AuditEventInput, 'orgId' | 'partnerId'>): string | null {
+  if (event.orgId) return null;
+  if (event.partnerId !== undefined) return isUuid(event.partnerId) ? event.partnerId : null;
+  const auth = readRequestAuth(c);
+  if (auth?.scope === 'partner' && typeof auth.partnerId === 'string' && isUuid(auth.partnerId)) {
+    return auth.partnerId;
+  }
+  return null;
 }
 
 export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Promise<void> {
@@ -101,6 +146,9 @@ export function writeAuditEventAsync(c: RequestLike, event: AuditEventInput): Pr
 
   return createAuditLogAsync({
     orgId: event.orgId ?? undefined,
+    // Resolved now, not at persist time: a failed write is replayed from the
+    // retry queue long after the request (and its auth) is gone.
+    partnerId: derivePartnerAttribution(c, event),
     actorType: resolvedActorType,
     actorId,
     actorEmail: event.actorEmail ?? undefined,
@@ -128,6 +176,8 @@ export function writeAuditEvent(c: RequestLike, event: AuditEventInput): void {
  */
 export interface RouteAuditInput {
   orgId: string | null | undefined;
+  /** See AuditEventInput.partnerId. */
+  partnerId?: string | null;
   action: string;
   resourceType: string;
   resourceId?: string | null;
