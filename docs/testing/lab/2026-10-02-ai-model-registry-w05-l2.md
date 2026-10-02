@@ -127,3 +127,28 @@ With `allow_user_choice=false` on the `chat` assignment:
 ## Clean-up
 
 Stack torn down (`pnpm wt-stack down`; compose project and containers verified gone). The worktree's `.env` copy (it held the API key) was deleted. Nothing left running.
+
+## Re-check 2026-10-02 (post-#7774)
+
+**Verdict: PASS** — scenario 1 through the real composer, no workaround; #7768 and #7769 are fixed.
+
+- **Build:** `origin/main` @ `202252ee7c` (contains #7774), fresh worktree and stack, real platform key in the stack env only (worktree `.env` deleted afterwards). Opus 5.5 offered to the partner by SQL again. Stale Playwright route shims from the first run were cleared (`unrouteAll`) before starting, so nothing masked the fix.
+- **Spend:** USD **0.22** from the ledger (cap 5).
+
+**Scenario 1 (no workaround).** Three Sonnet 5.5 turns (two with tool calls). The model picker was present and labelled "Claude Sonnet 5.5" after every message, then Opus 5.5 was picked in the composer and a recall question sent.
+- **Resume, not continuation:** same session; `ai_sessions.model` and `last_turn_model.servedModel` = `claude-opus-5-5`; the UI says "Answered by Claude Opus 5.5".
+- **History intact:** asked for the number remembered two turns earlier — Opus answered `7421`.
+- **No 400s:** every `GET /ai/models/choices/chat?sessionId=…` in the run returned 200 (previously 400, #7768).
+
+| turn | served | in | out | cache-read | cache-write | cost ¢ | SDK cumulative $ | Δ SDK $ |
+|---|---|---|---|---|---|---|---|---|
+| 1 | sonnet-5-5 | 4 | 81 | 18,326 | 18,570 | 5.09082 | 0.051868 | 0.051868 |
+| 2 | sonnet-5-5 | 6 | 203 | 56,288 | 757 | 1.51921 | 0.067060 | 0.015192 |
+| 3 | sonnet-5-5 | 2 | 4 | 19,327 | 86 | 0.41244 | 0.071185 | 0.004125 |
+| 4 (after switch) | **opus-5-5** | 2 | 4 | 0 | 19,515 | **9.7663** | 0.168848 | 0.097663 |
+
+One row per turn, per-turn deltas, and turn 4 hand-checks at Opus rates: 2×400 + 4×2000 + 19,515×500 = 9,766,300 → 9.7663¢, equal to the SDK delta.
+
+**#7769 (stale picker after a History switch).** Two active chats: B on Sonnet 5.5 and C on Opus 5.5. Opening them from History in the order C, B, C, B, the picker read **Opus, Sonnet, Opus, Sonnet**, and each pick fired a fresh `choices?sessionId=<that chat>` request (200). Before the fix no request was sent and the label stayed on the previous chat's model.
+
+**Deviation from the brief.** "New conversation" closes the previous chat, which removes it from History, so the original first chat could not be reopened. The Opus-chat half of the check used a second chat (C) that I created and switched to Opus through the API; the History hopping and picker labels were all driven through the UI.
