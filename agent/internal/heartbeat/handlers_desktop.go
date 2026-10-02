@@ -141,7 +141,8 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// before the consent prompt, before capture — so a superseded or
 	// post-terminal start cannot spawn a helper, show a banner, or take a
 	// lease on its way to being refused.
-	if _, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start); refusal != nil {
+	fenceInput, refusal := h.admitDesktopStartAtFence(sessionID, cmd, start)
+	if refusal != nil {
 		return *refusal
 	}
 
@@ -301,6 +302,14 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 				h.setDesktopTarget(sessionID, targetSession)
 			}
 		}
+	}
+
+	// Name the viewer for the Quick Support indicator only now that this
+	// start has passed the consent gate and is still the session's current
+	// start, as the WebSocket path does: a denied or superseded start never
+	// renames the indicator of a viewing already on screen.
+	if ok, _ := h.desktopStartFence.stillCurrent(sessionID, fenceInput); ok {
+		h.noteSupportViewer(prompt)
 	}
 
 	// Route through IPC helper when running headless (no display access).
@@ -734,6 +743,10 @@ func handleDesktopStreamStart(h *Heartbeat, cmd Command) tools.CommandResult {
 		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
 
+	// Name the viewer for the Quick Support indicator only once this start has
+	// passed consent and the fence, so a denied or stale start never relabels
+	// the indicator of a stream that is already running.
+	h.noteSupportViewer(prompt)
 	startSession := h.wsDesktopStart
 	if startSession == nil {
 		startSession = h.wsDesktopMgr.StartSession

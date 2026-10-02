@@ -345,6 +345,7 @@ func registerBannerClass() {
 func showBannerOS(label string, startedAtUnixMs int64) bool {
 	u16, err := syscall.UTF16FromString(label)
 	if err != nil {
+		log.Warn("banner label is not representable; banner not shown", "error", err.Error())
 		return false
 	}
 	bannerMu.Lock()
@@ -375,6 +376,7 @@ func showBannerOS(label string, startedAtUnixMs int64) bool {
 		return false
 	}
 	if hwnd == 0 {
+		log.Warn("banner window creation failed; banner not shown")
 		return false
 	}
 	bannerMu.Lock()

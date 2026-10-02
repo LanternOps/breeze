@@ -1983,20 +1983,78 @@ jobs:
       # state); they skip on a filtered token, so assert zero skips. Only these
       # tests run, not the whole package: its serverurl TTL test is flaky on
       # Windows (1ns TTL vs the Windows clock).
+      # The eight TestUserWorkspace* tests are the #7620 regression: Quick
+      # Support run by a standard user. They impersonate a filtered token
+      # (Administrators deny-only, no privileges) to secure the support
+      # workspace and run SaveEnrollment as that user, refuse a planted
+      # junction, file or foreign-owned directory, and check the machine-wide
+      # config policy is unchanged. The foreign-owner test plants its owner
+      # with SeRestorePrivilege, so it too needs this elevated runner.
+      # Nine more TestUserWorkspace* tests are the #7629 regression: support
+      # sessions keep all files in their private folder. The config, data and
+      # log dirs resolve there; once the session binds its agent.yaml, token
+      # rotation, mTLS renewal and every other config persist land there (also
+      # as a standard user); an installed agent's config at the default path
+      # is untouched; an outside-path persist is refused; and the H.264 codec
+      # in the folder passes the trust check with real ACLs as a standard
+      # user, but not once BUILTIN\Users can write it, and not in an elevated
+      # session (needs this elevated runner).
       - name: Run Windows config owner/DACL tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/config -run '^Test(ApplyWindowsDACL|AssignOwnerWithFallback)' -v 2>&1
+          $out = go test ./internal/config -run '^Test(ApplyWindowsDACL|AssignOwnerWithFallback|UserWorkspace)' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
-          if ($passes -ne 7) { throw "expected exactly 7 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 24) { throw "expected exactly 24 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
+      # #7629: a support session's executable and private folder are removed
+      # after it exits, even when it still held files in the folder when it
+      # ended (technician End, closed console window). Runs the real cmd.exe
+      # cleanup against a running copy of the test binary; heartbeat is not
+      # in the Windows package list above, so only this test runs.
+      - name: Run Windows support-session cleanup test (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/heartbeat -run '^TestSupportSelfCleanupRemovesExecutableAndFolderAfterExit$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
+
+      # #7629: the agent re-secures its config folder if another account
+      # created it, before reading anything from it. The tests plant
+      # C:\ProgramData\Breeze-shaped folders as a simulated standard user
+      # (filtered token) and take them back with this elevated runner's token,
+      # as SYSTEM or an elevated `breeze-agent enroll` would. The
+      # MachineConfigTrust tests check that the shared config loader refuses
+      # a machine config another account could have written. They skip on a
+      # non-elevated token, so assert zero skips. A separate step (not the -run
+      # filter above) so it does not collide with other changes to that one.
+      - name: Run Windows config folder reclaim tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/config -run '^Test(ReclaimConfigDir|AdminGroupMember|MachineConfigTrust)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the reclaim tests SKIPPED - the runner token is not elevated" }
+          if ($passes -ne 19) { throw "expected exactly 19 top-level PASS lines, got $passes - a reclaim test was renamed, removed, or added without updating this count" }
 
       # The helper-scoped token must never sit in a file a standard Windows user
       # can read: it reaches the console-session Breeze Assist over IPC only,

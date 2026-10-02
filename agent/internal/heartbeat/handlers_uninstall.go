@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,6 +54,17 @@ const uninstallHelperDelaySeconds = 5
 // must not count this device as cleanly uninstalled.
 func handleSelfUninstall(h *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
+
+	// A support session is not the installed agent: uninstalling would
+	// remove the installed agent on this machine, never the session. Refuse
+	// before touching anything (#7629).
+	if h != nil && h.supportMode {
+		log.Warn("REFUSED self_uninstall: this is a Quick Support session, not the installed agent", "commandId", cmd.ID)
+		return tools.NewErrorResult(
+			errors.New("self_uninstall refused: this is a Quick Support session, not the installed agent; nothing was removed"),
+			time.Since(start).Milliseconds(),
+		)
+	}
 
 	removeConfig := tools.GetPayloadBool(cmd.Payload, "removeConfig", true)
 

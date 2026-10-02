@@ -35,8 +35,9 @@ var (
 )
 
 // handleBannerShow shows (or relabels) the active-session banner. One banner
-// window exists at a time; the most recent session owns it.
-func handleBannerShow(req ipc.BannerShowRequest) {
+// window exists at a time; the most recent session owns it. Reports whether a
+// banner is now up.
+func handleBannerShow(req ipc.BannerShowRequest) bool {
 	label := stripControl(trimNotifyField(req.Label, maxNotifyTitleBytes))
 	if label == "" {
 		label = "A technician is connected"
@@ -44,9 +45,10 @@ func handleBannerShow(req ipc.BannerShowRequest) {
 	bannerOpMu.Lock()
 	defer bannerOpMu.Unlock()
 	if !showBannerFn(label, req.StartedAtUnixMs) {
-		return // platform has no banner surface (macOS/Linux fallback)
+		return false // no banner surface (macOS/Linux), or window creation failed
 	}
 	bannerSessionID = req.SessionID
+	return true
 }
 
 // handleBannerHide hides the banner if the given session owns it. An empty
@@ -79,4 +81,22 @@ func (c *Client) handleBannerHideEnvelope(env *ipc.Envelope) {
 		return
 	}
 	handleBannerHide(payload.SessionID)
+}
+
+// ShowSessionBanner shows (or relabels) the on-screen session pill from inside
+// this process. For a process that already runs in the user's desktop session
+// and has no helper to ask — the Quick Support client (#7684). Same single
+// banner and ownership rules as banner_show over IPC. No-op where the
+// platform has no native banner (macOS/Linux).
+// Reports whether the pill is up, so the caller can retry and say so.
+func ShowSessionBanner(sessionID, label string, startedAtUnixMs int64) bool {
+	return handleBannerShow(ipc.BannerShowRequest{SessionID: sessionID, Label: label, StartedAtUnixMs: startedAtUnixMs})
+}
+
+// HideSessionBanner hides the pill if sessionID owns it. See ShowSessionBanner.
+func HideSessionBanner(sessionID string) {
+	if sessionID == "" {
+		return // "" would force-hide someone else's banner; never from here
+	}
+	handleBannerHide(sessionID)
 }

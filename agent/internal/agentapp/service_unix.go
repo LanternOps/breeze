@@ -90,7 +90,7 @@ func redirectStderr(f *os.File) {
 // Unlike Windows, there is no SCM handshake. We load config, wait for
 // enrollment if needed, then start components and block on SIGTERM.
 // cfgFile is the path to the agent config file (same as the global cfgFile var).
-func runAsService(cfgFile string) error {
+func runAsService(cfgFile string, _ ProcessStartup) error {
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)

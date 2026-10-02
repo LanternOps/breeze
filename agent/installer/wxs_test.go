@@ -374,3 +374,26 @@ func TestHardenProgramDataAclReplacesPreexistingLinks(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoveryActionsAlsoCoverNonCrashFailures: every custom action that
+// arms the services' restart-on-failure actions also sets the failure-actions
+// flag, so a service that stops with an error exit code (not only one that
+// crashes) is restarted too.
+func TestRecoveryActionsAlsoCoverNonCrashFailures(t *testing.T) {
+	wxs := readWxs(t)
+	for _, id := range []string{"ConfigureBreezeFailureActions", "RollbackServiceRecovery", "RecoverBreezeAfterUpgrade"} {
+		ca := customActionAttrs(wxs, id)
+		if ca == nil {
+			t.Fatalf("no <CustomAction Id=%q>", id)
+		}
+		cmd := ca["ExeCommand"]
+		for _, svc := range []string{"BreezeAgent", "BreezeWatchdog"} {
+			if !strings.Contains(cmd, "sc failure "+svc+" reset= 86400 actions= restart/") {
+				t.Errorf("%s does not arm %s's restart actions: %s", id, svc, cmd)
+			}
+			if !strings.Contains(cmd, "sc failureflag "+svc+" 1") {
+				t.Errorf("%s arms %s's restart actions without `sc failureflag %s 1`", id, svc, svc)
+			}
+		}
+	}
+}

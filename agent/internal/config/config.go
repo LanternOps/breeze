@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	mathrand "math/rand"
@@ -319,6 +320,10 @@ func IsEnrolled(cfg *Config) bool {
 
 // defaultLogFile returns the platform-specific default log file path.
 func defaultLogFile() string {
+	// A support session logs inside its private folder (#7629).
+	if root := registeredUserWorkspace(); root != "" {
+		return filepath.Join(root, "logs", "agent.log")
+	}
 	switch runtime.GOOS {
 	case "windows":
 		return filepath.Join(configDir(), "logs", "agent.log")
@@ -433,10 +438,35 @@ func Load(cfgFile string) (*Config, error) {
 // ApplyManifestKeyDelegation) can hold the lock across BOTH halves instead of
 // dropping it between the read and the write.
 func loadLocked(cfgFile string) (*Config, error) {
+	// Checked before viper is touched: a refused load must not rebind the
+	// process to a config outside its user workspace, since every later
+	// persist follows the bound file (#7629).
+	if err := checkConfigTarget(cfgFile); err != nil {
+		return nil, err
+	}
 	cfg := Default()
 
+	// The machine-wide agent.yaml is read only through the trust check (see
+	// machine_config_trust.go): the file and folder must be ones no other
+	// account can have written, and what viper parses is what was read from
+	// the checked handle.
+	trustedFile := ""
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
+		if machineConfigFileNeedsTrust(cfgFile) {
+			trustedFile = cfgFile
+		}
+	} else if p := defaultConfigFilePath(); machineConfigFileNeedsTrust(p) {
+		if _, err := os.Lstat(p); err == nil {
+			viper.SetConfigFile(p)
+			trustedFile = p
+		} else {
+			// No machine config yet: look only in the working directory,
+			// never for some other agent.* in the machine folder.
+			viper.SetConfigName("agent")
+			viper.SetConfigType("yaml")
+			viper.AddConfigPath(".")
+		}
 	} else {
 		viper.SetConfigName("agent")
 		viper.SetConfigType("yaml")
@@ -447,7 +477,20 @@ func loadLocked(cfgFile string) (*Config, error) {
 	viper.AutomaticEnv()
 	viper.SetEnvPrefix("BREEZE")
 
-	if err := viper.ReadInConfig(); err != nil {
+	if trustedFile != "" {
+		data, err := readTrustedMachineConfigFileFn(trustedFile)
+		switch {
+		case errors.Is(err, os.ErrNotExist) && cfgFile == "":
+			// Removed since the Lstat above: a fresh host, as below.
+		case err != nil:
+			return nil, err
+		default:
+			viper.SetConfigType("yaml")
+			if err := viper.ReadConfig(bytes.NewReader(data)); err != nil {
+				return nil, fmt.Errorf("reading %s: %w", trustedFile, err)
+			}
+		}
+	} else if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, err
 		}
@@ -469,12 +512,11 @@ func loadLocked(cfgFile string) (*Config, error) {
 	// Old-format configs with inline secrets still work via the unmarshal
 	// above; the secrets file values take precedence when present.
 	secretsPath := secretsFilePathFor(viper.ConfigFileUsed())
-	if _, err := os.Stat(secretsPath); err == nil {
-		sv := viper.New()
-		sv.SetConfigFile(secretsPath)
-		if err := sv.ReadInConfig(); err != nil {
-			return nil, fmt.Errorf("reading secrets file: %w", err)
-		}
+	sv, err := readSecretsFile(secretsPath)
+	if err != nil {
+		return nil, err
+	}
+	if sv != nil {
 		// IMPORTANT: this read-back is a hardcoded list and CANNOT be driven by
 		// isSecretYAMLKey (there's no generic config-key -> struct-field mapping
 		// at this layer). When you add a new secret field, update BOTH
@@ -581,6 +623,9 @@ func SetAllAndPersist(kv map[string]any) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 
 	if path != "" {
 		if err := migrateInlineSecretsToSecretFile(path); err != nil {
@@ -622,6 +667,9 @@ func SetAndPersist(key string, value any) error {
 	persistMu.Lock()
 	defer persistMu.Unlock()
 	path := viper.ConfigFileUsed()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 
 	// SECURITY: move any legacy inline secrets out of the on-disk agent.yaml into
 	// root-only secrets.yaml BEFORE re-serializing viper, and clear them from
@@ -704,6 +752,9 @@ func SetSecretAndPersist(key string, value any) error {
 // persistMu.
 func setSecretAndPersistLocked(key string, value any) error {
 	path := secretsFilePath()
+	if err := checkConfigTarget(path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -858,6 +909,11 @@ func PrepareSaveDir(cfgFile string) error {
 }
 
 func prepareSaveDir(cfgPath string) error {
+	// Also the first step of every SaveTo / SaveEnrollment, so this one check
+	// keeps both inside a registered user workspace (#7629).
+	if err := checkConfigTarget(cfgPath); err != nil {
+		return err
+	}
 	dir := filepath.Dir(cfgPath)
 	if dir == "." {
 		return nil
@@ -1187,6 +1243,11 @@ func isSecretConfigKey(key string) bool {
 
 // GetDataDir returns the platform-specific data directory for the agent
 func GetDataDir() string {
+	// A support session keeps its data (audit log, state stores, the
+	// downloaded codec) inside its private folder (#7629).
+	if root := registeredUserWorkspace(); root != "" {
+		return filepath.Join(root, "data")
+	}
 	switch runtime.GOOS {
 	case "windows":
 		return filepath.Join(configDir(), "data")
@@ -1425,6 +1486,35 @@ func writeYAMLFile(path string, values map[string]any, mode os.FileMode) error {
 
 func secretsFilePath() string {
 	return secretsFilePathFor(viper.ConfigFileUsed())
+}
+
+// readSecretsFile reads the secrets file at path into a new viper instance,
+// or returns nil when it does not exist. The machine-wide secrets.yaml is
+// read only through the trust check.
+func readSecretsFile(path string) (*viper.Viper, error) {
+	sv := viper.New()
+	sv.SetConfigFile(path)
+	sv.SetConfigType("yaml")
+	if machineConfigFileNeedsTrust(path) {
+		data, err := readTrustedMachineConfigFileFn(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := sv.ReadConfig(bytes.NewReader(data)); err != nil {
+			return nil, fmt.Errorf("reading secrets file: %w", err)
+		}
+		return sv, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, nil
+	}
+	if err := sv.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("reading secrets file: %w", err)
+	}
+	return sv, nil
 }
 
 func secretsFilePathFor(cfgFile string) string {

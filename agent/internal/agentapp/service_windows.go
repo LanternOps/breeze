@@ -94,15 +94,17 @@ func ensureSASPolicy() {
 // breezeService implements svc.Handler for the Windows SCM.
 type breezeService struct {
 	cfgFile string
+	startup ProcessStartup
 }
 
 // runAsService runs the agent under the Windows Service Control Manager.
 // It takes the cfgFile path instead of a startFn closure so Execute can
 // load config synchronously and decide whether to use the enrolled
 // (synchronous) or unenrolled (async-after-Running) start path.
-func runAsService(cfgFile string) error {
+func runAsService(cfgFile string, startup ProcessStartup) error {
 	h := &breezeService{
 		cfgFile: cfgFile,
+		startup: startup,
 	}
 	return svc.Run("BreezeAgent", h)
 }
@@ -130,6 +132,19 @@ func (s *breezeService) Execute(args []string, r <-chan svc.ChangeRequest, chang
 	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange | svc.AcceptPowerEvent
 
 	changes <- svc.Status{State: svc.StartPending}
+
+	// Take the config folder back and the instance guard, staying
+	// registered and answering the service manager while that waits.
+	guard, code, ok := s.prepare(r, changes, accepted)
+	if !ok {
+		if code != 0 {
+			changes <- svc.Status{State: svc.StopPending}
+			return true, code
+		}
+		changes <- svc.Status{State: svc.StopPending}
+		return false, 0
+	}
+	defer func() { _ = guard.Close() }()
 
 	cfg, err := config.Load(s.cfgFile)
 	if err != nil {
@@ -290,4 +305,42 @@ func extractSessionID(eventData uintptr) uint32 {
 // run or a scheduled task is not the service, even as SYSTEM.
 func runningUnderServiceManager(cfg *config.Config) bool {
 	return cfg.IsService
+}
+
+// prepare runs prepareServiceStart while answering the service manager: it
+// reports Running (with accepted) if prepareServiceStart starts waiting, and
+// a Stop or Shutdown request ends the wait.
+func (s *breezeService) prepare(r <-chan svc.ChangeRequest, changes chan<- svc.Status, accepted svc.Accepted) (mainAgentGuard, uint32, bool) {
+	type result struct {
+		guard mainAgentGuard
+		code  uint32
+		ok    bool
+	}
+	stop := make(chan struct{})
+	done := make(chan result, 1)
+	go func() {
+		g, c, ok := prepareServiceStart(s.startup, stop, func() {
+			changes <- svc.Status{State: svc.Running, Accepts: accepted}
+		})
+		done <- result{g, c, ok}
+	}()
+	for {
+		select {
+		case res := <-done:
+			return res.guard, res.code, res.ok
+		case cr := <-r:
+			switch cr.Cmd {
+			case svc.Interrogate:
+				changes <- cr.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				log.Info("SCM stop while waiting for the config folder")
+				close(stop)
+				res := <-done
+				if res.guard != nil {
+					_ = res.guard.Close()
+				}
+				return nil, 0, false
+			}
+		}
+	}
 }

@@ -1666,8 +1666,12 @@ func resolveJournalDir(stagingDir string) (dir string, ok bool) {
 	if strings.TrimSpace(stagingDir) != "" {
 		return stagingDir, true
 	}
-	if homeDir, err := journalHomeDirFn(); err == nil && strings.TrimSpace(homeDir) != "" {
-		return filepath.Join(homeDir, ".breeze", "backup-journal"), true
+	// A support session keeps all files in its private folder (the data dir
+	// resolves there), not the per-user ~/.breeze dir that outlives it (#7629).
+	if !config.UserWorkspaceActive() {
+		if homeDir, err := journalHomeDirFn(); err == nil && strings.TrimSpace(homeDir) != "" {
+			return filepath.Join(homeDir, ".breeze", "backup-journal"), true
+		}
 	}
 	if dataDir := strings.TrimSpace(journalDataDirFn()); dataDir != "" {
 		return filepath.Join(dataDir, "backup-journal"), true

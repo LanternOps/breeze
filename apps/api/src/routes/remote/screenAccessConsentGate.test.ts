@@ -37,6 +37,7 @@ function gateInput(overrides: Partial<Parameters<typeof checkScreenAccessConsent
     hostname: 'pc-1',
     surface: 'take_screenshot' as const,
     actor: userActor,
+    isEphemeral: false,
     ...overrides,
   };
 }
@@ -109,6 +110,28 @@ describe('checkScreenAccessConsentGate', () => {
       },
     }));
   });
+
+  it.each(['take_screenshot', 'analyze_screen', 'computer_control', 'device_diagnose'] as const)(
+    'refuses %s with 409 SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT on a Quick Support device, whatever its prompt mode, and audits it',
+    async (surface) => {
+      resolveRemoteSessionPromptConfig.mockResolvedValue(config('off'));
+      const result = await checkScreenAccessConsentGate(gateInput({ surface, isEphemeral: true }));
+      expect(result).toEqual({
+        ok: false,
+        status: 409,
+        body: {
+          code: 'SCREEN_ACCESS_UNAVAILABLE_IN_QUICK_SUPPORT',
+          error: expect.stringMatching(/Quick Support/),
+        },
+      });
+      expect(resolveRemoteSessionPromptConfig).not.toHaveBeenCalled();
+      expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+        action: SCREEN_ACCESS_CONSENT_BLOCKED_AUDIT_ACTION,
+        result: 'denied',
+        details: { deviceId: DEVICE_ID, surface, reason: 'quick_support_session', promptMode: null },
+      }));
+    },
+  );
 
   it('rethrows an unexpected error rather than allowing screen access', async () => {
     resolveRemoteSessionPromptConfig.mockRejectedValueOnce(new TypeError('boom'));
