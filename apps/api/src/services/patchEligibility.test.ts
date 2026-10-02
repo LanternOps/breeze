@@ -140,7 +140,9 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
     const releasedTwoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
     mockEvaluatorReads([row({ patchId: P1, releaseDate: releasedTwoDaysAgo })], []);
     const held = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
-    expect(held.ineligible).toEqual([{ patchId: P1, reason: 'held_by_deferral' }]);
+    // #7625: the deferral denial carries when the window ends (release + 7 days).
+    const sevenDaysAfterRelease = new Date(new Date(releasedTwoDaysAgo).getTime() + 7 * 86_400_000).toISOString();
+    expect(held.ineligible).toEqual([{ patchId: P1, reason: 'held_by_deferral', holdUntil: sevenDaysAfterRelease }]);
 
     const releasedTenDaysAgo = new Date(Date.now() - 10 * 86_400_000).toISOString();
     vi.mocked(db.select).mockReset();
@@ -155,9 +157,12 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
       sources: ['os', 'third_party'],
       autoApprove: { enabled: true, severities: ['critical'], thirdPartyApps: true, deferralDays: 7 },
     });
-    mockEvaluatorReads([row({ patchId: P1, source: 'third_party', releaseDate: null, firstSeenAt: new Date(Date.now() - 2 * 86_400_000) })], []);
+    const firstSeen = new Date(Date.now() - 2 * 86_400_000);
+    mockEvaluatorReads([row({ patchId: P1, source: 'third_party', releaseDate: null, firstSeenAt: firstSeen })], []);
     const held = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
-    expect(held.ineligible).toEqual([{ patchId: P1, reason: 'held_by_deferral' }]);
+    expect(held.ineligible).toEqual([{
+      patchId: P1, reason: 'held_by_deferral', holdUntil: new Date(firstSeen.getTime() + 7 * 86_400_000).toISOString(),
+    }]);
 
     vi.mocked(db.select).mockReset();
     mockEvaluatorReads([row({ patchId: P1, source: 'third_party', releaseDate: null, firstSeenAt: new Date(Date.now() - 10 * 86_400_000) })], []);
@@ -170,7 +175,8 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
     mockEvaluatorReads([row({ patchId: P1, releaseDate: null, firstSeenAt: null })], []);
     const res = await evaluatePatchInstallEligibility({ deviceId: DEV, orgId: ORG, config });
     expect(res.eligible).toEqual([]);
-    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'held_by_deferral' }]);
+    // No usable age anchor: held, with no end date to report.
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'held_by_deferral', holdUntil: null }]);
   });
 
   it('reports blocked_by_category for an excluded category and blocked_by_app_rule for a denied app', async () => {
@@ -336,7 +342,7 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG, patchIds: [P1, P2, P3] });
     expect(res.ringId).toBe(RING);
     expect(res.ineligible).toEqual(expect.arrayContaining([
-      { patchId: P1, reason: 'held_by_deferral' },
+      { patchId: P1, reason: 'held_by_deferral', holdUntil: expect.any(String) },
       { patchId: P2, reason: 'superseded' },
     ]));
     expect(res.eligible.map((e) => e.patchId)).toEqual([P3]);

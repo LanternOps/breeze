@@ -105,7 +105,8 @@
     "securityScans": "IOC-Scans",
     "system": "System",
     "monitorConversion": "Monitor-Konvertierung",
-    "timeSync": "Zeitsynchronisierung"
+    "timeSync": "Zeitsynchronisierung",
+    "aiModels": "KI-Modelle"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

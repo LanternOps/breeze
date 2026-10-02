@@ -234,14 +234,29 @@ func (c *Console) Run(ctx context.Context) error {
 		return gateErr
 	}
 
-	disk, err := c.chooseDisk(ctx, ci, answers)
-	if err != nil {
-		return err
-	}
-
 	snapshotID := bs.SnapshotID
 	if snapshotID == "" && bs.Snapshot != nil {
 		snapshotID = bs.Snapshot.SnapshotID
+	}
+
+	// The bootstrap's snapshot integrity expectation: a block this media
+	// cannot read, or one for another snapshot, refuses the recovery here,
+	// before a disk is chosen or anything is written. The engine checks the
+	// snapshot's control objects and files against it.
+	expectation, err := bmr.BootstrapIntegrity(bs)
+	if err == nil {
+		err = expectation.CheckSnapshot(snapshotID)
+	}
+	if err != nil {
+		reason := "snapshot integrity expectation refused: " + err.Error()
+		c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "refused", Reason: reason})
+		c.IO.Print("Recovery cannot proceed: %s\n", reason)
+		return err
+	}
+
+	disk, err := c.chooseDisk(ctx, ci, answers)
+	if err != nil {
+		return err
 	}
 
 	identity := rebuild.IdentityNew
@@ -287,6 +302,7 @@ func (c *Console) Run(ctx context.Context) error {
 		// manifest) must apply its OS state; the engine refuses at
 		// preflight when it is missing rather than completing files-only.
 		ExpectSystemState: bmr.SnapshotExpectsSystemState(bs.Snapshot),
+		Integrity:         expectation,
 	}
 
 	for {

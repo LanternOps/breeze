@@ -26,9 +26,9 @@ import (
 // world-readable (0644) for exactly this reason. helper_auth_token is NOT:
 // on Unix it lives in a separate, group-scoped helper_token.yaml (see
 // helpertoken_unix.go) that only breeze-group members — the console/GUI
-// users the installer adds — can read; on Windows it still comes from
-// agent.yaml (see secretKeyAllowedInAgentYAML and the permissions_windows.go
-// comment) pending an equivalent narrower delivery there. This function
+// users the installer adds — can read; on Windows no user-readable file
+// carries it at all (see helpertoken_windows.go), so HelperAuthToken is empty
+// there unless an older agent's agent.yaml still has it. This function
 // returns those layered over Default(), without the global-viper mutation or
 // secrets.yaml dependency of Load(). It mirrors PersistedServerURL's
 // partial-decode approach (PR #2477): no viper singleton, no ValidateTiered
@@ -80,7 +80,7 @@ func LoadHelperConfig(cfgFile string) (*Config, error) {
 	// installer added) can read but other local accounts cannot. A read
 	// failure here (missing file, group not yet granted, ...) is not fatal:
 	// the caller already treats an empty HelperAuthToken as "not ready yet".
-	// No-op on Windows, where the field still comes from agent.yaml above.
+	// No-op on Windows, where the token is delivered over IPC instead.
 	if fileToken, err := readHelperTokenFileFor(path); err == nil && fileToken != "" {
 		cfg.HelperAuthToken = fileToken
 	}

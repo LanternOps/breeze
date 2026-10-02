@@ -740,7 +740,7 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
   // #6818: the agent holds its answer until the end user answers the consent
   // dialog, so the viewer needs the start's prompt mode and answer budget.
   it.each([
-    ['consent', 77_000],
+    ['consent', 87_000],
     ['notify', 45_000],
     ['off', 15_000],
     [null, 15_000],

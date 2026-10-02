@@ -296,11 +296,11 @@ func TestRestore_AppliesDirectorySecurityDescriptor(t *testing.T) {
 	}
 }
 
-// TestRestore_SecurityDescriptorApplyFailureIsWarningNotFailure proves R39:
-// an invalid SD (applySecurity rejects it) degrades the restored file to a
-// warning, and the file still counts as restored — a corrupt security
-// descriptor must never turn a successful content restore into a failure.
-func TestRestore_SecurityDescriptorApplyFailureIsWarningNotFailure(t *testing.T) {
+// TestRestore_InvalidSecurityDescriptorIsQuarantined: a recorded descriptor
+// that does not validate still restores the content, but the file is
+// restricted (owner Administrators; SYSTEM and Administrators only) and
+// listed, never left with the target's inherited ACL.
+func TestRestore_InvalidSecurityDescriptorIsQuarantined(t *testing.T) {
 	provider, snapshotID := setupRestoreTestSnapshotWithSD(t,
 		[]sdTestFile{{name: "probe.txt", content: "x", sourcePath: `C:\probe.txt`, sdIndex: 1}},
 		[]string{base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})}, // not a valid SECURITY_DESCRIPTOR
@@ -312,17 +312,16 @@ func TestRestore_SecurityDescriptorApplyFailureIsWarningNotFailure(t *testing.T)
 		t.Fatalf("RestoreFromSnapshot: %v", err)
 	}
 	if result.FilesRestored != 1 || result.FilesFailed != 0 {
-		t.Fatalf("result = %+v, want 1 restored, 0 failed (SD apply failure is a warning)", result)
+		t.Fatalf("result = %+v, want 1 restored, 0 failed", result)
 	}
-	found := false
-	for _, w := range result.Warnings {
-		if strings.Contains(w, "could not reapply security descriptor") {
-			found = true
-		}
+	if result.SecurityDescriptorQuarantined != 1 || len(result.SecurityDescriptorQuarantinedPaths) != 1 || result.SecurityDescriptorQuarantinedPaths[0] != `C:\probe.txt` {
+		t.Fatalf("quarantined = %d %v, want the probe restricted", result.SecurityDescriptorQuarantined, result.SecurityDescriptorQuarantinedPaths)
 	}
-	if !found {
-		t.Errorf("warnings = %v, want a 'could not reapply security descriptor' entry", result.Warnings)
+	r, err := restoreRelativePath(`C:\probe.txt`)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertQuarantinedForTest(t, filepath.Join(target, r))
 }
 
 // sdBytesToSDDLForTest renders a self-relative descriptor's owner, group and

@@ -14,13 +14,13 @@ import (
 
 // The Breeze Helper ("Breeze Assist") runs in the logged-in user's session,
 // while the agent (SYSTEM) writes these files. The config dir and agent.yaml
-// grant BUILTIN\Users read so the Helper can read the server URL, agent ID, and
-// helper-scoped token — restoring the default ProgramData ACL that #568's
-// PROTECTED DACL stripped. SYSTEM and Administrators keep full control. The
-// directory's Users ACE is read+traverse (FRFX) and intentionally NOT
-// inheritable, so it never propagates to secrets.yaml. The full agent/watchdog
-// tokens and mTLS keys live ONLY in secrets.yaml, which stays SYSTEM +
-// Administrators (never Users).
+// grant BUILTIN\Users read so the Helper can read the server URL and agent ID —
+// restoring the default ProgramData ACL that #568's PROTECTED DACL stripped.
+// SYSTEM and Administrators keep full control. The directory's Users ACE is
+// read+traverse (FRFX) and intentionally NOT inheritable, so it never
+// propagates to secrets.yaml. Every token (agent, watchdog and helper) and the
+// mTLS keys live ONLY in secrets.yaml, which stays SYSTEM + Administrators
+// (never Users); the Helper receives its token over IPC.
 const (
 	// windowsConfigDirSDDL carries an explicit O:SYG:SY owner/group prefix so
 	// every call to enforceConfigDirPermissions (every config/secret write,

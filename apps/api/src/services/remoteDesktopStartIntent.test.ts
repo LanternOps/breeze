@@ -13,10 +13,11 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { hasDbAccessContextMock, forUpdateMock, returningMock } = vi.hoisted(() => ({
+const { hasDbAccessContextMock, forUpdateMock, returningMock, setMock } = vi.hoisted(() => ({
   hasDbAccessContextMock: vi.fn(() => true),
   forUpdateMock: vi.fn(),
   returningMock: vi.fn(),
+  setMock: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -29,9 +30,10 @@ vi.mock('../db', () => ({
       })),
     })),
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
-        where: vi.fn(() => ({ returning: returningMock })),
-      })),
+      set: vi.fn((values: unknown) => {
+        setMock(values);
+        return { where: vi.fn(() => ({ returning: returningMock })) };
+      }),
     })),
   },
   hasDbAccessContext: hasDbAccessContextMock,
@@ -47,6 +49,7 @@ vi.mock('../db/schema', () => ({
     startedAt: 'remoteSessions.startedAt',
     desktopStartCommandId: 'remoteSessions.desktopStartCommandId',
     desktopPromptMode: 'remoteSessions.desktopPromptMode',
+    desktopConsentUnavailableBehavior: 'remoteSessions.desktopConsentUnavailableBehavior',
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
@@ -66,6 +69,13 @@ const INPUT = {
   promptMode: 'off' as const,
   consentUnavailableBehavior: null,
   offer: 'v=0\r\n',
+};
+
+const STREAM_INPUT = {
+  sessionId: INPUT.sessionId,
+  startCommandId: 'desk-start-11111111-1111-4111-8111-111111111111-33333333-3333-4333-8333-333333333333',
+  promptMode: 'consent' as const,
+  consentUnavailableBehavior: 'block' as const,
 };
 
 describe('boundConsentUnavailableBehavior (#6819)', () => {
@@ -94,7 +104,7 @@ describe('remoteDesktopStartIntent', () => {
     hasDbAccessContextMock.mockReturnValue(false);
 
     await expect(commitDesktopStartIntent(INPUT)).rejects.toThrow(/db access context/i);
-    await expect(commitDesktopStreamStartIntent(INPUT.sessionId)).rejects.toThrow(/db access context/i);
+    await expect(commitDesktopStreamStartIntent(STREAM_INPUT)).rejects.toThrow(/db access context/i);
     expect(forUpdateMock).not.toHaveBeenCalled();
   });
 
@@ -110,7 +120,7 @@ describe('remoteDesktopStartIntent', () => {
     ]);
 
     await expect(commitDesktopStartIntent(INPUT)).resolves.toEqual({ ok: false, reason: 'terminal' });
-    await expect(commitDesktopStreamStartIntent(INPUT.sessionId)).resolves.toEqual({
+    await expect(commitDesktopStreamStartIntent(STREAM_INPUT)).resolves.toEqual({
       ok: false,
       reason: 'terminal',
     });
@@ -124,10 +134,10 @@ describe('remoteDesktopStartIntent', () => {
       reason: 'state_changed',
     });
 
-    // The WS fallback is stricter still: it activates, so 'active' is not a
-    // status it may start from.
+    // The WS fallback is stricter still: 'active' is not a status it may
+    // start from (an active session already has a transport).
     forUpdateMock.mockResolvedValue([{ status: 'active', terminationPhase: 'none', generation: 2n }]);
-    await expect(commitDesktopStreamStartIntent(INPUT.sessionId)).resolves.toEqual({
+    await expect(commitDesktopStreamStartIntent(STREAM_INPUT)).resolves.toEqual({
       ok: false,
       reason: 'state_changed',
     });
@@ -144,6 +154,26 @@ describe('remoteDesktopStartIntent', () => {
       ok: false,
       reason: 'state_changed',
     });
+  });
+
+  it('WS fallback: binds the start to its own command identity and prompt, and stays connecting until the agent accepts', async () => {
+    returningMock.mockResolvedValue([{ generation: 3n }]);
+    const result = await commitDesktopStreamStartIntent(STREAM_INPUT);
+    expect(result).toEqual({ ok: true, generation: 3n, previousStatus: 'pending' });
+    const written = setMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(written).toMatchObject({
+      status: 'connecting',
+      desktopStartCommandId: STREAM_INPUT.startCommandId,
+      desktopPromptMode: 'consent',
+      desktopConsentUnavailableBehavior: 'block',
+      webrtcOffer: null,
+      webrtcAnswer: null,
+    });
+    // Activation belongs to the agent's accepted result, never to the start
+    // decision. startedAt marks this start attempt: the stale-session cutoff
+    // for a connecting row and the lease hard deadline are measured from it,
+    // so a start waiting on its consent prompt is not expired as stale.
+    expect(written.startedAt).toBeInstanceOf(Date);
   });
 
   it('returns the committed generation as a bigint and formats it as a decimal string', async () => {

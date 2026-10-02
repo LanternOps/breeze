@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   calculateCatalogCostCents,
   calculateCostCents,
+  getLegacyModelRates,
+  isPricedModel,
+  OFFERABLE_AI_MODELS,
   checkAiRateLimit,
   checkBillingCredits,
   checkBillingCreditsDetailed,
@@ -21,6 +24,15 @@ import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
 import { captureException, captureMessage } from './sentry';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
+import { clearPlatformModelSnapshot, setPlatformModelSnapshot } from './aiModels/platformModelSnapshot';
+import { __resetLegacyCostListenersForTests, onLegacyCostRecorded, type LegacyCostEvent } from './aiModels/legacyCostEvents';
+import {
+  PARITY_TOKEN_VECTORS,
+  SEEDED_PLATFORM_MODELS,
+  W00_MODEL_PRICING,
+  seededPlatformModel,
+  w00CalculateCostCents,
+} from './aiModels/__fixtures__/seededPlatformModels';
 
 // ============================================
 // Mocks
@@ -327,12 +339,59 @@ describe('calculateCostCents', () => {
     ['claude-haiku-4-5-20251001', 100, 500],
     ['claude-fable-5', 1000, 5000],
     ['claude-sonnet-4-5-20250929', 300, 1500],
+    // #7587 — current models. Without these rows an unknown id silently fell
+    // through to DEFAULT_PRICING ($5/$25) and overcharged AI budgets.
+    ['claude-sonnet-5-5', 200, 1000],
+    ['claude-opus-5-5', 400, 2000],
+    ['claude-fable-5-1', 1000, 5000],
   ])('prices %s from MODEL_PRICING (no DEFAULT fallthrough)', (model, inCents, outCents) => {
+    // Input and output separately, so swapped or mis-split rates fail.
+    expect(calculateCostCents(model, 1_000_000, 0)).toBe(inCents);
+    expect(calculateCostCents(model, 0, 1_000_000)).toBe(outCents);
     // 1M in / 1M out should equal exactly the per-MTok rates summed.
     const expected = inCents + outCents;
     expect(calculateCostCents(model, 1_000_000, 1_000_000)).toBe(expected);
     // And it must be a non-zero, finite number.
     expect(calculateCostCents(model, 1_000_000, 1_000_000)).toBeGreaterThan(0);
+  });
+
+  it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1'])(
+    'prices %s without hitting the DEFAULT_PRICING warning (#7587)',
+    (model) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      calculateCostCents(model, 1_000, 1_000);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    },
+  );
+
+  // #7587 review: Opus 5.5 and Fable 5.1 bill cache reads BELOW the standard
+  // 0.1x-of-input (SDK 0.3.286 tiers `tier_4_20_cache_read_0_20` and
+  // `tier_10_50_cache_read_0_25`). This token path prices every aborted turn
+  // (total_cost_usd 0), so a flat 0.1x would over-bill cache-heavy sessions.
+  it.each([
+    // [model, cache-read cents per MTok, cache-write cents per MTok]
+    ['claude-sonnet-5-5', 20, 250],
+    ['claude-opus-5-5', 20, 500],
+    ['claude-fable-5-1', 25, 1250],
+  ])('prices %s cache reads/writes at the model rate', (model, readCents, writeCents) => {
+    expect(calculateCostCents(model, 0, 0, 1_000_000, 0)).toBe(readCents);
+    expect(calculateCostCents(model, 0, 0, 0, 1_000_000)).toBe(writeCents);
+  });
+
+  it('offers the current models and keeps the already-offered 4.x ids (#7587)', () => {
+    for (const model of [
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-haiku-4-5',
+      'claude-fable-5-1',
+      'claude-opus-4-8',
+      'claude-sonnet-4-6',
+      'claude-fable-5',
+    ]) {
+      expect(OFFERABLE_AI_MODELS).toContain(model);
+      expect(isPricedModel(model)).toBe(true);
+    }
   });
 
   it('falls back to DEFAULT_PRICING and warns for an unknown model', () => {
@@ -2047,5 +2106,233 @@ describe('updateBudget', () => {
 
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(capture.updateSet?.approvalMode).toBe('action_plan');
+  });
+});
+
+describe('token pricing reads the platform model registry (W01 #7599)', () => {
+  afterEach(() => clearPlatformModelSnapshot());
+
+  describe.each([
+    ['cold snapshot (bootstrap MODEL_PRICING)', () => clearPlatformModelSnapshot()],
+    ['registry = seed', () => setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS)],
+  ] as const)('%s', (_label, arrange) => {
+    it('prices every W00 id exactly as W00 did, for every parity vector', () => {
+      arrange();
+      for (const model of Object.keys(W00_MODEL_PRICING)) {
+        for (const [input, output, cacheRead, cacheWrite] of PARITY_TOKEN_VECTORS) {
+          expect(calculateCostCents(model, input, output, cacheRead, cacheWrite), `${model} ${input}/${output}/${cacheRead}/${cacheWrite}`)
+            .toBe(w00CalculateCostCents(model, input, output, cacheRead, cacheWrite));
+        }
+      }
+    });
+
+    it('isPricedModel matches W00 for every W00 id and an unknown id', () => {
+      arrange();
+      for (const model of Object.keys(W00_MODEL_PRICING)) expect(isPricedModel(model), model).toBe(true);
+      expect(isPricedModel('some-unreleased-model')).toBe(false);
+    });
+  });
+
+  it('an operator price edit is what the fallback charges', () => {
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-opus-4-8'),
+      rates: { inputCentsPerM: 450, outputCentsPerM: 2250, cacheReadCentsPerM: 45, cacheWriteCentsPerM: 560 } }]);
+    expect(calculateCostCents('claude-opus-4-8', 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBe(450 + 2250 + 45 + 560);
+  });
+
+  it('a newly discovered model the operator priced is priced (no release needed)', () => {
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-sonnet-5-5'), modelId: 'vendor-new-model', isPlatformDefault: false }]);
+    expect(isPricedModel('vendor-new-model')).toBe(true);
+    expect(calculateCostCents('vendor-new-model', 1_000_000, 0)).toBe(200);
+  });
+
+  it('a registry row with no price is unpriced: isPricedModel false, DEFAULT_PRICING charged with the warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot([{ ...seededPlatformModel('claude-haiku-4-5'), rates: null, platformOffered: false }]);
+    expect(isPricedModel('claude-haiku-4-5')).toBe(false);
+    expect(calculateCostCents('claude-haiku-4-5', 1_000_000, 1_000_000)).toBe(3000);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a loaded snapshot without a row for a W00 id still prices it from bootstrap MODEL_PRICING', () => {
+    setPlatformModelSnapshot([]);
+    expect(isPricedModel('claude-sonnet-4-6')).toBe(true);
+    expect(calculateCostCents('claude-sonnet-4-6', 1_000_000, 1_000_000)).toBe(1800);
+  });
+
+  // W00 coerced a runtime null cache count (the SDK usage object types them
+  // `number | null`; destructuring defaults only replace undefined) to 0.
+  // computeInvocationCents throws on non-finite input, so calculateCostCents
+  // clamps at its boundary: a usage record is never lost to a RangeError.
+  it('reports a non-null invalid token count to Sentry, but not a null one (W00 coerced null)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS);
+    vi.mocked(captureMessage).mockClear();
+    calculateCostCents('claude-sonnet-5-5', 1_000_000, 0, null as unknown as number, undefined);
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
+    calculateCostCents('claude-sonnet-5-5', Number.NaN, 0);
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'ai_usage_invalid_token_count' }),
+    );
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['negative', -5],
+  ])('a %s token count prices as 0 instead of throwing', (_label, bad) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setPlatformModelSnapshot(SEEDED_PLATFORM_MODELS);
+    const value = bad as unknown as number;
+    expect(calculateCostCents('claude-sonnet-5-5', 1_000_000, 0, value, value)).toBe(200);
+    expect(calculateCostCents('claude-sonnet-5-5', value, 1_000_000)).toBe(1000);
+    warn.mockRestore();
+  });
+});
+
+describe('getLegacyModelRates (#7600 W02)', () => {
+  beforeEach(() => clearPlatformModelSnapshot()); // cold snapshot → W00 MODEL_PRICING bootstrap, deterministic
+
+  it('returns the bootstrap MODEL_PRICING rates with the standard cache multipliers', () => {
+    expect(getLegacyModelRates('claude-sonnet-5-5')).toEqual({
+      source: 'priced',
+      rates: { inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250 },
+    });
+  });
+
+  it('honours a per-model cache-read override', () => {
+    expect(getLegacyModelRates('claude-opus-5-5').rates.cacheReadCentsPerM).toBe(20);
+    expect(getLegacyModelRates('claude-fable-5-1').rates.cacheReadCentsPerM).toBe(25);
+  });
+
+  it.each(['my-gateway-model', 'constructor', '__proto__', 'toString'])(
+    'falls back to DEFAULT_PRICING for an unknown or prototype-named id (%s)',
+    (model) => {
+      expect(getLegacyModelRates(model)).toEqual({
+        source: 'default_pricing',
+        rates: { inputCentsPerM: 500, outputCentsPerM: 2500, cacheReadCentsPerM: 50, cacheWriteCentsPerM: 625 },
+      });
+    },
+  );
+
+  it.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-4-5', 'my-gateway-model'])(
+    'prices one million of each token class exactly as calculateCostCents does (%s), cold or warm snapshot',
+    (model) => {
+      const { rates } = getLegacyModelRates(model);
+      const expected = rates.inputCentsPerM + rates.outputCentsPerM + rates.cacheReadCentsPerM + rates.cacheWriteCentsPerM;
+      expect(calculateCostCents(model, 1_000_000, 1_000_000, 1_000_000, 1_000_000)).toBeCloseTo(expected, 2);
+    },
+  );
+});
+
+const withoutClock = (value: unknown) =>
+  JSON.parse(JSON.stringify(value, (key, v) => (key === 'updatedAt' || key === 'lastActivityAt' ? undefined : v)));
+
+describe('legacy cost events (#7600 W02) — billing is byte-identical with or without the ledger listener', () => {
+  afterEach(() => __resetLegacyCostListenersForTests());
+
+  it('recordUsage: same writes with a listener; one event carrying the token cost and the ledger context', async () => {
+    const call = () => recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 0, false, 'platform', undefined, undefined, 5, { surface: 'chat', sourceRef: 'ticket_draft' });
+    const without = setupDbMocks(null);
+    const withoutResult = await call();
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    const withListener = setupDbMocks(null);
+    const withResult = await call();
+    expect(withResult).toEqual(withoutResult);
+    expect(withoutClock(withListener)).toEqual(withoutClock(without));
+    expect(events).toEqual([expect.objectContaining({
+      orgId: 'org-1', sessionId: 'sess-1', model: 'claude-sonnet-4-6', billingSource: 'platform',
+      legacyCostCents: 300, legacyAdditionalCostCents: 5, legacyCostSource: 'model_pricing',
+      tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+      ledger: { surface: 'chat', sourceRef: 'ticket_draft' },
+    })]);
+  });
+
+  it('recordUsageFromSdkResult and recordSessionlessSdkUsage: same writes with a listener', async () => {
+    const sdk = () => recordUsageFromSdkResult('sess-b', 'org-1', {
+      total_cost_usd: 0.02, model: 'claude-sonnet-4-6', num_turns: 2,
+      usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 },
+    }, 'partner_key');
+    const sessionless = () => recordSessionlessSdkUsage('org-1', {
+      costCents: 0, usage: { input_tokens: 1_000_000, output_tokens: 0 }, numTurns: 1, model: 'claude-sonnet-4-6',
+    }, 'partner_key', undefined, { surface: 'ai_agents', agentRunId: 'run-b' });
+    for (const call of [sdk, sessionless]) {
+      __resetLegacyCostListenersForTests();
+      const without = setupDbMocks(null);
+      const withoutResult = await call();
+      const events: LegacyCostEvent[] = [];
+      onLegacyCostRecorded((e) => events.push(e));
+      const withListener = setupDbMocks(null);
+      const withResult = await call();
+      expect(withResult).toEqual(withoutResult);
+      expect(withoutClock(withListener)).toEqual(withoutClock(without));
+      expect(events).toHaveLength(1);
+    }
+  });
+
+  it('emits only after the legacy write succeeds: a failed session write rejects as before and emits nothing', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    mockDb.update.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn().mockRejectedValue(new Error('db down')) })),
+    });
+    await expect(recordUsage('sess-x', 'org-1', 'claude-sonnet-4-6', 10, 10, false, 'platform', undefined, undefined, 0, { surface: 'chat' }))
+      .rejects.toThrow('db down');
+    await expect(recordUsageFromSdkResult('sess-x', 'org-1', {
+      total_cost_usd: 0.02, model: 'claude-sonnet-4-6', num_turns: 1, usage: { input_tokens: 10, output_tokens: 10 },
+    }, 'platform')).rejects.toThrow('db down');
+    expect(events).toEqual([]);
+    error.mockRestore();
+  });
+
+  it('a throwing listener cannot fail or alter recordUsage', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    onLegacyCostRecorded(() => { throw new Error('ledger down'); });
+    const captured = setupDbMocks(null);
+    await expect(recordUsage('sess-2', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, false, 'platform')).resolves.toBeUndefined();
+    expect(recordedCostCents(captured.sessionSet)).toBe(1800);
+    error.mockRestore();
+  });
+
+  it.each([
+    ['sdk', { total_cost_usd: 0.02, model: 'claude-sonnet-4-6' }, undefined, 'sdk', 2],
+    ['model_pricing fallback', { total_cost_usd: 0, model: 'claude-sonnet-4-6' }, undefined, 'model_pricing', 300],
+    ['catalog', { total_cost_usd: 0.02, model: 'claude-sonnet-4-6' }, { catalogEntryId: 'c', revisionId: 'r', inputCentsPerM: 100, outputCentsPerM: 100, cacheReadCentsPerM: 10, cacheWriteCentsPerM: 125 }, 'catalog', 100],
+  ] as const)('recordUsageFromSdkResult reports its legacy cost source: %s', async (_l, sdk, catalogPricing, source, cents) => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordUsageFromSdkResult('sess-3', 'org-1', {
+      total_cost_usd: sdk.total_cost_usd, model: sdk.model, num_turns: 1,
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+    }, 'platform', catalogPricing as never);
+    expect(events[0]).toMatchObject({ legacyCostSource: source, legacyCostCents: cents, sdkReportedCostUsd: sdk.total_cost_usd, ledger: null });
+  });
+
+  it('recordSessionlessSdkUsage forwards the agent ledger context', async () => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordSessionlessSdkUsage('org-1', {
+      costCents: 12, usage: { input_tokens: 10, output_tokens: 10 }, numTurns: 1, model: 'claude-sonnet-4-6',
+    }, 'platform', undefined, { surface: 'ai_agents', agentRunId: 'run-1' });
+    expect(events[0]).toMatchObject({ legacyCostSource: 'precomputed', legacyCostCents: 12, ledger: { surface: 'ai_agents', agentRunId: 'run-1' } });
+  });
+
+  it('the event payload carries only cost-record fields (no raw error or prompt content)', async () => {
+    const events: LegacyCostEvent[] = [];
+    onLegacyCostRecorded((e) => events.push(e));
+    setupDbMocks(null);
+    await recordUsage('sess-4', 'org-1', 'claude-sonnet-4-6', 10, 10, false, 'platform', undefined, undefined, 0, { surface: 'chat' });
+    expect(Object.keys(events[0]!).sort()).toEqual([
+      'billingSource', 'catalogPricing', 'ledger', 'legacyAdditionalCostCents', 'legacyCostCents',
+      'legacyCostSource', 'model', 'orgId', 'sdkReportedCostUsd', 'sessionId', 'tokens',
+    ]);
   });
 });

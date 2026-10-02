@@ -9,6 +9,7 @@ import (
 	"path"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/integrity"
 	"github.com/breeze-rmm/agent/internal/backup/layout"
 	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
@@ -17,20 +18,32 @@ import (
 // object or an unsupported schema version is a RefusalError, not a plain
 // error — preflight surfaces it verbatim as the operator-facing refusal
 // reason.
-func fetchLayout(ctx context.Context, provider providers.BackupProvider, snapshotID string) (*layout.Manifest, error) {
-	tmp, err := os.CreateTemp("", "breeze-layout-*.json")
-	if err != nil {
-		return nil, err
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := provider.Download(path.Join("snapshots", snapshotID, "layout.json"), tmpPath); err != nil {
-		return nil, &RefusalError{Reason: layout.ReasonNilManifest + " for snapshot " + snapshotID + " (was the backup taken with the whole-machine profile?)"}
-	}
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return nil, err
+//
+// In attested mode (e) the bytes must match the attested layout object
+// before they are parsed; a mismatch, or an attestation without a layout,
+// is a RefusalError naming the integrity failure code.
+func fetchLayout(ctx context.Context, provider providers.BackupProvider, snapshotID string, e *integrity.Expectation) (*layout.Manifest, error) {
+	var data []byte
+	if e.Attested() {
+		verified, err := fetchAttestedControlObject(ctx, provider, e, integrity.RoleLayout, snapshotID)
+		if err != nil {
+			return nil, err
+		}
+		data = verified
+	} else {
+		tmp, err := os.CreateTemp("", "breeze-layout-*.json")
+		if err != nil {
+			return nil, err
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		defer func() { _ = os.Remove(tmpPath) }()
+		if err := provider.Download(path.Join("snapshots", snapshotID, "layout.json"), tmpPath); err != nil {
+			return nil, &RefusalError{Reason: layout.ReasonNilManifest + " for snapshot " + snapshotID + " (was the backup taken with the whole-machine profile?)"}
+		}
+		if data, err = os.ReadFile(tmpPath); err != nil {
+			return nil, err
+		}
 	}
 	var m layout.Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -45,26 +58,61 @@ func fetchLayout(ctx context.Context, provider providers.BackupProvider, snapsho
 // fetchManifest downloads and decodes snapshots/<id>/manifest.json — the
 // ordinary whole-machine file backup manifest (same shape as
 // backup.downloadManifest's own snapshots/<id>/manifest.json read).
-func fetchManifest(ctx context.Context, provider providers.BackupProvider, snapshotID string) (*backup.Snapshot, error) {
-	tmp, err := os.CreateTemp("", "breeze-manifest-*.json")
-	if err != nil {
-		return nil, err
-	}
-	tmpPath := tmp.Name()
-	_ = tmp.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := provider.Download(path.Join("snapshots", snapshotID, "manifest.json"), tmpPath); err != nil {
-		return nil, &RefusalError{Reason: "snapshot manifest not found for " + snapshotID}
-	}
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return nil, err
+//
+// In attested mode (e) the bytes must match the attested manifest object
+// before they are parsed; a mismatch is a RefusalError.
+func fetchManifest(ctx context.Context, provider providers.BackupProvider, snapshotID string, e *integrity.Expectation) (*backup.Snapshot, error) {
+	var data []byte
+	if e.Attested() {
+		verified, err := fetchAttestedControlObject(ctx, provider, e, integrity.RoleManifest, snapshotID)
+		if err != nil {
+			return nil, err
+		}
+		data = verified
+	} else {
+		tmp, err := os.CreateTemp("", "breeze-manifest-*.json")
+		if err != nil {
+			return nil, err
+		}
+		tmpPath := tmp.Name()
+		_ = tmp.Close()
+		defer func() { _ = os.Remove(tmpPath) }()
+		if err := provider.Download(path.Join("snapshots", snapshotID, "manifest.json"), tmpPath); err != nil {
+			return nil, &RefusalError{Reason: "snapshot manifest not found for " + snapshotID}
+		}
+		if data, err = os.ReadFile(tmpPath); err != nil {
+			return nil, err
+		}
 	}
 	var s backup.Snapshot
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("decode manifest.json: %w", err)
 	}
 	return &s, nil
+}
+
+// fetchAttestedControlObject downloads one of the snapshot's control
+// objects and checks it against the attestation (integrity.FetchControlObject)
+// before returning its bytes. Any integrity failure — bytes that differ, or
+// an attestation that does not cover the object — is a RefusalError naming
+// the failure code, so the run stops before any disk operation. A plain
+// download failure keeps its error.
+func fetchAttestedControlObject(ctx context.Context, provider providers.BackupProvider, e *integrity.Expectation, role, snapshotID string) ([]byte, error) {
+	key, err := integrity.ControlObjectKey(snapshotID, role)
+	if err != nil {
+		return nil, err
+	}
+	data, _, err := integrity.FetchControlObject(ctx, provider, e, role, key, "")
+	if err != nil {
+		if code := integrity.FailureCode(err); code != "" {
+			return nil, &RefusalError{Reason: fmt.Sprintf("snapshot %s failed its integrity check (%s): %v", role, code, err)}
+		}
+		if errors.Is(err, providers.ErrObjectNotFound) {
+			return nil, &RefusalError{Reason: fmt.Sprintf("snapshot %s not found for %s", role, snapshotID)}
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 // SnapshotAdvertisesSystemState reports whether the snapshot in storage

@@ -23,7 +23,8 @@
  * Immediately before the command is handed to the agent the caller re-reads
  * with `assertDesktopStartIntentCurrent`. That narrows the publish window to
  * microseconds; it does NOT close it, and it is not meant to — closing it is
- * the endpoint's job in W04/W05.
+ * the endpoint's job: the agent's start fence refuses a start that is not
+ * newer than everything it has seen, or that arrives after a stop.
  *
  * **How much the re-read can actually see depends on the caller's transaction
  * boundary, and the three start sites differ.** `authMiddleware` wraps a JWT
@@ -233,32 +234,61 @@ export async function commitDesktopStartIntent(
   return { ok: true, generation: BigInt(updated.generation ?? 0), previousStatus };
 }
 
+export interface CommitDesktopStreamStartIntentInput {
+  sessionId: string;
+  /** The one-off command identity this exact stream start is bound to. */
+  startCommandId: string;
+  promptMode: SessionPromptMode;
+  /** As for {@link CommitDesktopStartIntentInput.consentUnavailableBehavior}. */
+  consentUnavailableBehavior: ConsentUnavailableBehavior | null;
+}
+
 /**
  * Commit a WS-fallback desktop start decision (`desktop_stream_start`).
  *
- * The fallback transport carries no SDP offer and no per-start command
- * identity; it activates the row directly. It still takes the same row lock,
- * still refuses a terminal session, and still bumps the same generation, so the
- * endpoint fence orders it against every other start and every terminal.
+ * Same contract as the WebRTC start: row lock, terminal refusal, generation
+ * bump, and a one-off command identity plus the prompt mode and consent
+ * fallback this start ships. The row moves to `connecting`, NOT `active`: it
+ * becomes active only when the agent's result for this exact command arrives
+ * with a consent marker it is entitled to (routes/agentWs.ts), and a consent
+ * denial or a failed start finalizes it through the same finalizers the WebRTC
+ * path uses. The relay forwards nothing before that (routes/desktopWs.ts).
+ *
+ * The agent refuses a start whose generation is not current, or that arrives
+ * after a stop, only on builds that fence this path; older fence-capable
+ * builds ignore the generation on the WebSocket fallback. For those the
+ * handshake above is what keeps a late start from reaching a viewer.
  */
 export async function commitDesktopStreamStartIntent(
-  sessionId: string,
+  input: CommitDesktopStreamStartIntentInput,
 ): Promise<DesktopStartIntentResult> {
   requireDbAccessContext('commitDesktopStreamStartIntent');
 
   const allowed = ['pending', 'connecting'] as const;
-  const locked = classifyLocked(await lockSessionForStart(sessionId), allowed);
+  const locked = classifyLocked(await lockSessionForStart(input.sessionId), allowed);
   if (!locked.ok) return locked;
 
   const [updated] = await db
     .update(remoteSessions)
     .set({
-      status: 'active',
-      startedAt: new Date(),
+      // No SDP on this transport; clear any left by an abandoned WebRTC
+      // attempt so nothing can mistake it for this start's.
+      webrtcOffer: null,
+      webrtcAnswer: null,
+      desktopStartCommandId: input.startCommandId,
+      desktopPromptMode: input.promptMode,
+      desktopConsentUnavailableBehavior: input.consentUnavailableBehavior,
       desktopStartGeneration: sql`${remoteSessions.desktopStartGeneration} + 1`,
+      status: 'connecting',
+      // The start attempt's clock. The stale-session cutoff for a connecting
+      // row (remoteSessionStaleness.ts) runs from it, so a start waiting on
+      // its consent prompt is not expired just because the session row was
+      // created earlier; the lease hard deadline is measured from it too, as
+      // it was when this path activated the row at commit time.
+      startedAt: new Date(),
     })
     .where(and(
-      eq(remoteSessions.id, sessionId),
+      eq(remoteSessions.id, input.sessionId),
       eq(remoteSessions.terminationPhase, 'none'),
       inArray(remoteSessions.status, [...allowed]),
     ))

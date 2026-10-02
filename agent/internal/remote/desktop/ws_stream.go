@@ -44,6 +44,12 @@ type WsStreamSession struct {
 	cursor   *cursorOverlay
 	metrics  *StreamMetrics
 	adaptive *adaptiveQuality
+
+	// leaseState is the stream's revocation lease (see ws_lease.go). Set
+	// before the watchdog starts and never replaced.
+	leaseState *revocationLeaseState
+	// skipWallpaper leaves the host wallpaper alone (test streams only).
+	skipWallpaper bool
 }
 
 // newWsStreamSession creates a new streaming session (called by WsSessionManager)
@@ -65,8 +71,10 @@ func newWsStreamSession(id string, capturer ScreenCapturer, inputHandler InputHa
 
 // Start begins the capture loop and metrics logger in goroutines
 func (s *WsStreamSession) Start() {
-	if err := GetWallpaperManager().Suppress(); err != nil {
-		slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err.Error())
+	if !s.skipWallpaper {
+		if err := GetWallpaperManager().Suppress(); err != nil {
+			slog.Warn("Failed to suppress wallpaper", "session", s.id, "error", err.Error())
+		}
 	}
 	go s.captureLoop()
 	go s.metricsLogger()
@@ -270,8 +278,10 @@ func (s *WsStreamSession) Stop() {
 		s.capturer.Close()
 	}
 
-	if err := GetWallpaperManager().Restore(); err != nil {
-		slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
+	if !s.skipWallpaper {
+		if err := GetWallpaperManager().Restore(); err != nil {
+			slog.Warn("Failed to restore wallpaper", "session", s.id, "error", err.Error())
+		}
 	}
 
 	// Log final metrics

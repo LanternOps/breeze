@@ -113,16 +113,30 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
-// SEC-038 W06 (#5537). When on, every remote-desktop start dispatch site
+// Remote desktop start fence (#5537). Every remote-desktop start dispatch site
 // refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
-// durable start/terminal generation fence from W04/W05) with 503
-// agent_upgrade_required — the same fail-closed shape as the #5481
-// revocation-lease gate. Default OFF: the release that introduces the gate is
-// a fleet no-op (old agents stay protected by the lease), and the flag is
-// flipped one release later once agents have auto-updated. Read at CALL time
-// so a test can flip it per-case without vi.resetModules().
+// durable start/terminal generation fence) with 503 agent_upgrade_required —
+// the same fail-closed shape as the #5481 revocation-lease gate. Agents from
+// v0.114.0 on declare it.
+//
+// Required by default. It shipped default off for one release so agents could
+// update first; a recognized false value (false/0/no/off) is the explicit
+// opt-out for a self-hosted fleet that still runs older agents. Like
+// authenticatorAttestationEnforced() below, an UNRECOGNIZED value keeps the
+// fence required rather than reading as off (config/validate.ts also refuses
+// boot on it). Read at CALL time so a test can flip it per-case without
+// vi.resetModules().
 export function remoteDesktopFenceRequired(): boolean {
-  return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
+  const raw = (process.env.REMOTE_DESKTOP_FENCE_REQUIRED ?? '').trim();
+  if (raw === '') return true;
+  const normalized = raw.toLowerCase();
+  if (RECOGNIZED_TRUE_FLAG_VALUES.has(normalized)) return true;
+  if (RECOGNIZED_FALSE_FLAG_VALUES.has(normalized)) return false;
+  console.warn(
+    `[RemoteDesktop] Ignoring unrecognized REMOTE_DESKTOP_FENCE_REQUIRED value ${JSON.stringify(raw)} ` +
+      '— expected true/false, 1/0, yes/no or on/off. Keeping the start fence required.',
+  );
+  return true;
 }
 
 // Approver assurance platform default. A partner that has not chosen an
@@ -251,8 +265,11 @@ export function aiScriptAuthoringEnabled(): boolean {
 // partner — W04) first and falls back to this constant. Unset ⇒ the platform
 // default model (which itself honours ANTHROPIC_MODEL for self-hosted
 // gateways, #1412).
-export const AI_SCRIPT_REVIEWER_MODEL =
-  process.env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel();
+/** The reviewer's platform default from an env (extracted for the #7600 parity oracle). */
+export function resolveReviewerDefaultModel(env: NodeJS.ProcessEnv = process.env): string {
+  return env.BREEZE_AI_SCRIPT_REVIEWER_MODEL?.trim() || resolveDefaultModel(env);
+}
+export const AI_SCRIPT_REVIEWER_MODEL = resolveReviewerDefaultModel();
 
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //

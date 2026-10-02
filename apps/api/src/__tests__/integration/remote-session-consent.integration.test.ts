@@ -56,6 +56,7 @@ async function insertDevice(orgId: string, siteId: string): Promise<string> {
     // `agent_upgrade_required`). This fixture stands in for an up-to-date
     // agent; the gate itself is covered by remoteRevocationLease.integration.
     revocationLeaseProtocolVersion: 1,
+    desktopFenceProtocolVersion: 1,
     enrolledAt: new Date(),
   }).returning({ id: devices.id });
   if (!row) throw new Error('insertDevice: no row returned');

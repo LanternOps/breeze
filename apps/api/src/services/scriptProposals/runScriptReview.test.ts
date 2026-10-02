@@ -231,6 +231,10 @@ describe('runScriptReview — happy path', () => {
     expect(shared.messagesCreateMock).toHaveBeenCalledTimes(1);
     const [createArgs, createOpts] = shared.messagesCreateMock.mock.calls[0]! as [Record<string, unknown>, Record<string, unknown>];
     expect(createArgs).toMatchObject({ model: 'claude-sonnet-4-6', max_tokens: 2_000 });
+    // #7587: Sonnet 4.6 does not think by default on the Messages API, so the
+    // one-shot keeps sending no thinking params (5.x gets a capped effort).
+    expect(createArgs).not.toHaveProperty('thinking');
+    expect(createArgs).not.toHaveProperty('output_config');
     expect(createArgs).not.toHaveProperty('tools');
     expect(createArgs.messages).toHaveLength(1);
     const userText = (createArgs.messages as Array<{ role: string; content: string }>)[0]!.content;
@@ -259,7 +263,7 @@ describe('runScriptReview — happy path', () => {
     // Settled exactly once, at the real token counts, against the reservation.
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
     expect(shared.recordUsageMock).toHaveBeenCalledWith(
-      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID,
+      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' },
     );
     expect(shared.createAuditLogAsyncMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -296,7 +300,7 @@ describe('runScriptReview — happy path', () => {
     await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(shared.recordUsageMock).toHaveBeenCalledWith(
-      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID,
+      null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' },
     );
   });
 
@@ -386,7 +390,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expectFailedClosed('failed');
   });
 
@@ -401,7 +405,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expect(shared.insertValues.at(-1)).toMatchObject({ budgetReservationId: RESERVATION_ID, model: 'claude-sonnet-4-6' });
     expectFailedClosed('failed');
   });
@@ -418,7 +422,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'timeout' });
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expectFailedClosed('timeout');
   });
 
@@ -433,7 +437,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 40, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 40, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expect(shared.insertValues.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 40 });
     expectFailedClosed('failed');
   });
@@ -463,7 +467,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
     const result = await runScriptReview({ proposalId: PROPOSAL_ID, orgId: ORG_ID, attempt: 1 });
 
     expect(result).toMatchObject({ status: 'failed' });
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 2000, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 300, 2000, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expectFailedClosed('failed');
   });
 
@@ -508,7 +512,7 @@ describe('runScriptReview — failure paths (D7: fail closed)', () => {
 
     expect(result).toMatchObject({ id: 'winner-row' });
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 500, 80, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     // Not fail-closed: the winner's completed review stands.
     expect(shared.transitionProposalMock).not.toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, expect.anything(), 'review_failed', expect.anything());
   });
@@ -560,7 +564,7 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
     expect(shared.recordUsageMock).toHaveBeenCalledTimes(1);
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
     expect(shared.transitionProposalMock).toHaveBeenCalledWith(expect.anything(), PROPOSAL_ID, ['proposed'], 'review_failed', expect.anything());
     expect(shared.insertValues.at(-1)).toMatchObject({ summary: expect.stringContaining('Review inputs unavailable') });
   });
@@ -578,7 +582,7 @@ describe('runScriptReview — review-round fixes (#5636)', () => {
 
     expect(result).toMatchObject({ status: 'failed' });
     expect(shared.messagesCreateMock).not.toHaveBeenCalled();
-    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID);
+    expect(shared.recordUsageMock).toHaveBeenCalledWith(null, ORG_ID, 'claude-sonnet-4-6', 0, 0, false, 'platform', undefined, RESERVATION_ID, 0, { surface: 'script_reviewer' });
   });
 
   it("the SDK's own abort/timeout error classes are classified as timeout (not just the DOM TimeoutError name)", async () => {

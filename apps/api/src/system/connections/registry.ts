@@ -731,6 +731,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     id: 'audit-anchor-signing',
     group: 'security-abuse',
     label: 'Audit-chain anchor signing',
+    docsUrl: '/deploy/environment/#anchor-signing',
     vars: [
       { name: 'AUDIT_ANCHOR_SIGNING_KEY', required: true },
     ],

@@ -57,6 +57,9 @@ type RestoreResult struct {
 	FilesRestored int    `json:"filesRestored"`
 	DurationMs    int64  `json:"durationMs"`
 	Error         string `json:"error,omitempty"`
+	// Warnings carries non-fatal notes about the backup file the restore
+	// read (e.g. that it was not checked against a snapshot attestation).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // VerifyResult holds the outcome of a RESTORE VERIFYONLY.
@@ -65,6 +68,9 @@ type VerifyResult struct {
 	Valid      bool   `json:"valid"`
 	Error      string `json:"error,omitempty"`
 	DurationMs int64  `json:"durationMs"`
+	// Warnings carries non-fatal notes about the backup file that was
+	// verified (e.g. that it was not checked against a snapshot attestation).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ChainState tracks LSN chain continuity for differential / log backup chains.

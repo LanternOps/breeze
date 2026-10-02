@@ -1,10 +1,11 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, numeric, smallint, index, uniqueIndex, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, numeric, smallint, index, uniqueIndex, check, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 import { portalUsers } from './portal';
 import { actionIntents } from './actionIntents';
+import { partnerAiModels } from './aiModelRegistry';
 
 // ============================================
 // Enums
@@ -89,6 +90,13 @@ export const aiSessions = pgTable('ai_sessions', {
   // DEFERRABLE INITIALLY IMMEDIATE — all declared in
   // 2026-11-07-110000-ai-sessions-topology-site.sql.
   topologySiteId: uuid('topology_site_id'),
+  // AI model registry W02 (#7600): the offering this session is bound to
+  // (backfilled for live sessions by the boot reconcile; routing reads `model`
+  // until W03). Composite FKs + a cross-partner org-change guard in
+  // 2026-11-14-100400.
+  offeringId: uuid('offering_id'),
+  offeringPartnerId: uuid('offering_partner_id'),
+  options: jsonb('options').$type<Record<string, unknown>>(),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),
@@ -96,6 +104,17 @@ export const aiSessions = pgTable('ai_sessions', {
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
+  offeringFk: foreignKey({
+    columns: [table.offeringId, table.offeringPartnerId],
+    foreignColumns: [partnerAiModels.id, partnerAiModels.partnerId],
+    name: 'ai_sessions_offering_fk',
+  }).onDelete('set null'),
+  offeringOrgPartnerFk: foreignKey({
+    columns: [table.orgId, table.offeringPartnerId],
+    foreignColumns: [organizations.id, organizations.partnerId],
+    name: 'ai_sessions_offering_org_partner_fk',
+  }),
+  offeringIdx: index('ai_sessions_offering_idx').on(table.offeringId).where(sql`${table.offeringId} IS NOT NULL`),
 }));
 
 // ============================================

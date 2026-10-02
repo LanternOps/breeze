@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 )
 
 // Ruling B1: the restore targets the root VOLUME path (r.volumes[root]),
@@ -311,4 +314,26 @@ func phaseCompleted(res *Result, ph Phase) bool {
 		}
 	}
 	return false
+}
+
+// A rebuild restores the machine the recorded principals belong to, from an
+// environment that recognises none of them: descriptors apply as captured.
+// A plain restore never does (the flag is never set from a command payload).
+func TestWinRestoreTree_AppliesSecurityDescriptorsAsCaptured(t *testing.T) {
+	withHostPlatformWindows(t)
+	dir := t.TempDir()
+	opts, _ := winFakeOptions(t, dir)
+	var asCaptured, called bool
+	orig := restoreSnapshotFiles
+	restoreSnapshotFiles = func(ctx context.Context, p providers.BackupProvider, cfg backup.RestoreConfig, fn backup.ProgressFunc) (*backup.RestoreResult, error) {
+		called, asCaptured = true, cfg.SecurityDescriptorsAsCaptured
+		return orig(ctx, p, cfg, fn)
+	}
+	t.Cleanup(func() { restoreSnapshotFiles = orig })
+	if _, err := Run(context.Background(), opts); err != nil && !called {
+		t.Fatal(err)
+	}
+	if !called || !asCaptured {
+		t.Fatalf("called=%v asCaptured=%v, want the Windows rebuild to apply descriptors as captured", called, asCaptured)
+	}
 }

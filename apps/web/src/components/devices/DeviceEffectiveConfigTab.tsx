@@ -190,6 +190,32 @@ function summarizeSettings(
   return items;
 }
 
+// #7625: the patch feature's policy-level auto-approve fields are stored and
+// shown, but the approval evaluator never consults them — with an update ring
+// linked the ring decides, and without one only manual approvals apply. Showing
+// "Auto approve: no" read as the effective setting, so the patch card drops
+// them and states where approval actually comes from instead.
+const PATCH_UNUSED_APPROVAL_KEYS = new Set([
+  "autoApprove",
+  "autoApproveSeverities",
+  "autoApproveDeferralDays",
+]);
+
+function summarizeFeatureSettings(
+  featureType: FeatureType,
+  feature: ResolvedFeature,
+  approvalItem: (ringLinked: boolean) => SettingsSummaryItem,
+): SettingsSummaryItem[] {
+  if (featureType !== "patch") return summarizeSettings(feature.inlineSettings);
+  const settings = feature.inlineSettings;
+  const hasSettings = !!settings && Object.keys(settings).length > 0;
+  if (!hasSettings && !feature.featurePolicyId) return [];
+  const remaining = Object.fromEntries(
+    Object.entries(settings ?? {}).filter(([key]) => !PATCH_UNUSED_APPROVAL_KEYS.has(key)),
+  );
+  return [approvalItem(!!feature.featurePolicyId), ...summarizeSettings(remaining)].slice(0, 4);
+}
+
 // ── Component ────────────────────────────────────────────────────────
 
 type DeviceEffectiveConfigTabProps = {
@@ -347,7 +373,12 @@ export default function DeviceEffectiveConfigTab({
           {enforcedTypes.map((ft) => {
             const feature = features[ft]!;
             const { label, Icon } = FEATURE_META[ft];
-            const settings = summarizeSettings(feature.inlineSettings);
+            const settings = summarizeFeatureSettings(ft, feature, (ringLinked) => ({
+              label: t("deviceEffectiveConfigTab.patchApproval.label"),
+              value: ringLinked
+                ? t("deviceEffectiveConfigTab.patchApproval.byRing")
+                : t("deviceEffectiveConfigTab.patchApproval.manualOnly"),
+            }));
 
             return (
               <div key={ft} className="rounded-lg border bg-card p-5 shadow-xs">

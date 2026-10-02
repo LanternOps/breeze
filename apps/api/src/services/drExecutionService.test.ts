@@ -946,6 +946,24 @@ describe('BARE_METAL_REBUILD dispatch and reconcile', () => {
       expect(group!.status).toBe('failed');
     });
 
+    // #7087: a group saved with the default wait budget (key absent here, so the
+    // schema default applies) must not cancel a rebuild that is still running
+    // after 5h23m, the lab time for a 133k-file Windows whole-machine rebuild.
+    it('a default-budget recovery still restoring after 5h23m is not timed out (#7087)', () => {
+      const defaultBudgetGroup = bmrGroup({
+        restoreConfig: { commandType: 'BARE_METAL_REBUILD', snapshotSelection: 'latest_restorable', rebuildHostDeviceId: HOST_ID },
+      });
+      const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
+      const rows = new Map([[REC_1, recoveryRow(REC_1, DEVICE_ID, 'restoring')], [REC_2, recoveryRow(REC_2, DEVICE_2, 'restoring')]]);
+
+      const [running] = computeGroupResults([defaultBudgetGroup as any], [], queued, [], new Map(), rows, at(5 * 60 + 23));
+      expect(running!.devices.every((d) => d.status === 'running' && d.reason === undefined)).toBe(true);
+      expect(running!.status).toBe('running');
+
+      const [expired] = computeGroupResults([defaultBudgetGroup as any], [], queued, [], new Map(), rows, at(24 * 60 + 1));
+      expect(expired!.devices[0]).toMatchObject({ status: 'failed', reason: 'timeout', error: 'Recovery did not complete within 1440 minutes' });
+    });
+
     it('a terminal recovery is never re-flagged as a timeout', () => {
       const late = new Date(T0.getTime() + 61 * 60_000);
       const [group] = compute([recoveryRow(REC_1, DEVICE_ID, 'checked_in', { checkedInAt: tenMinutesLater }), recoveryRow(REC_2, DEVICE_2, 'completed', { completedAt: tenMinutesLater })], late);

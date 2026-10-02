@@ -2,47 +2,13 @@ import '@fontsource-variable/inter';
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import App from './App';
-import { ConsentDialog } from './windows/ConsentDialog';
-import type { ConsentRequest } from './windows/ConsentDialog';
+import { ConsentWindow } from './windows/ConsentWindow';
 import { SessionBanner } from './windows/SessionBanner';
 import { initTheme } from './lib/theme';
 
 // Initialize theme before rendering
 initTheme();
-
-// ── Consent window ──────────────────────────────────────────────────────────
-
-function ConsentWindow() {
-  const [req, setReq] = useState<ConsentRequest | null>(null);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<ConsentRequest>('consent-request', (e) => {
-      setReq(e.payload);
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
-  }, []);
-
-  const handleDecision = (allow: boolean, reason: 'user' | 'timeout') => {
-    if (!req) return;
-    if (reason === 'user') {
-      invoke('submit_consent', {
-        sessionId: req.sessionId,
-        decision: allow ? 'allow' : 'deny',
-      }).catch(() => {});
-    }
-    // On timeout: do NOT call submit_consent — the Go agent runs its own
-    // authoritative timeout and applies the policy fallback with the correct
-    // audit reason. Submitting here would mis-audit as a user decision.
-    getCurrentWindow().close().catch(() => {});
-  };
-
-  if (!req) return null;
-  return <ConsentDialog req={req} onDecision={handleDecision} />;
-}
 
 // ── Banner window ────────────────────────────────────────────────────────────
 

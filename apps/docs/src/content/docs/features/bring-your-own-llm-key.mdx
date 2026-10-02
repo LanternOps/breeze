@@ -78,6 +78,27 @@ While a third-party endpoint is selected, the AI usage page's "billed to your ke
 
 This platform-vetted endpoint list is a hosted-only feature. If you're self-hosting, you point the instance at any Anthropic-compatible or OpenAI-compatible endpoint yourself with environment variables — see [Self-hosted: configure an instance-wide provider](#self-hosted-configure-an-instance-wide-provider) below for the variable matrix. There is no vetting step on self-hosted deployments: you're trusting whatever endpoint you configure.
 
+## Default model and the offered model list
+
+The platform default model is **Claude Sonnet 5.5** (`claude-sonnet-5-5`) with adaptive thinking at medium effort (v0.120.0+; earlier releases defaulted to Sonnet 4.6). A self-hosted `ANTHROPIC_MODEL` still overrides the default. Existing chats keep the model they were started with; only new chats pick up the new default.
+
+A new chat can only use a model the platform offers, the configured default, or (on a vetted endpoint) a model that endpoint maps. Requesting anything else when creating a chat returns `400` with code `invalid_model`, and no chat is created.
+
+## Platform AI models (platform administrators)
+
+Platform administrators manage the models Breeze knows about at **Administration → AI Models** (`/admin/ai-models`, v0.120.0+). Each row shows the model's discovery status (**Available**, **Missing**, or **Retired**), its thinking support, its input and output price per million tokens, whether it is offered, and whether it is the platform default. Open a row to edit:
+
+- **Prices** in US dollars per million tokens (input, output, cache read, cache write). Breeze asks you to confirm any change of more than 10× from the stored value, to catch unit mistakes.
+- **Fast mode prices**, optional. Fast mode can't be selected for a model until all four fast prices are set.
+- **Option support**: effort levels, thinking display, fast mode, and inference geographies.
+- **Minimum plan** that may use the model, and the **prompt profile** Breeze uses with it.
+- **Offered on the platform key**. A model can only be offered once all four standard prices are set.
+- **Platform default**. In v0.120.0 this choice is recorded but does not yet change routing; the deployment default still comes from `ANTHROPIC_MODEL` or the built-in default.
+
+Every change requires MFA. The **AI Provider** settings page and the **LLM Provider Catalog** page read their model lists from this catalog.
+
+**Discovery.** Once a day (06:38 UTC) Breeze lists the models available to the platform Anthropic key. A model it has not seen before appears with a **New** badge and the platform operators are alerted. Discovery only flags models for review: it never offers, prices, or removes a model on its own, and a new model stays unpriced and offered to no one until you set it up. A model that stops appearing is marked **Missing** after several successful checks and two days, and **Retired** after 14 days; a model discovery has never seen is never moved. **Refresh models** queues a discovery run immediately. Discovery is skipped when no platform key is configured or when `ANTHROPIC_BASE_URL` points at a gateway rather than Anthropic.
+
 ## Self-hosted: configure an instance-wide provider
 
 Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings apply across the instance, except for partners that have their own BYOK configuration.

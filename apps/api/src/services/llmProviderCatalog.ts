@@ -6,7 +6,7 @@ import {
   llmProviderVerifications,
   type LlmProviderModelMap,
 } from '../db/schema';
-import { OFFERABLE_AI_MODELS } from './aiCostTracker';
+import { listCatalogMappableModelIds } from './aiModels/platformModels';
 import { assertSafeUrl } from './urlSafety';
 import { FIDELITY_HARNESS_VERSION } from './llm/providerFidelityHarness';
 
@@ -104,25 +104,20 @@ export interface CatalogRevisionLookup {
   modelMap: LlmProviderModelMap;
 }
 
-function assertOfferableModelMap(modelMap: LlmProviderModelMap): void {
+async function assertMappableModelMap(modelMap: LlmProviderModelMap): Promise<void> {
   const modelIds = Object.keys(modelMap);
   // An empty map trivially satisfies the "every mapped model is verified" gate,
   // so a revision with no models could be created, activated and listed having
   // never passed a single fidelity check.
   if (modelIds.length === 0) {
-    throw new LlmProviderCatalogError(
-      'A catalog revision must map at least one model.',
-      400,
-    );
+    throw new LlmProviderCatalogError('A catalog revision must map at least one model.', 400);
   }
-  const unsupported = modelIds.filter(
-    (modelId) => !OFFERABLE_AI_MODELS.includes(modelId),
-  );
+  // Spec §6: model_map keys are ai_platform_models.model_id values (any model
+  // the registry holds that is not retired), not a hard-coded list (W01 #7599).
+  const mappable = new Set(await listCatalogMappableModelIds());
+  const unsupported = modelIds.filter((modelId) => !mappable.has(modelId));
   if (unsupported.length > 0) {
-    throw new LlmProviderCatalogError(
-      `Unsupported catalog model ids: ${unsupported.join(', ')}`,
-      400,
-    );
+    throw new LlmProviderCatalogError(`Unsupported catalog model ids: ${unsupported.join(', ')}`, 400);
   }
 }
 
@@ -365,7 +360,7 @@ export async function createRevision(input: {
   dataNote?: string;
   createdBy: string;
 }): Promise<{ id: string; revision: number }> {
-  assertOfferableModelMap(input.modelMap);
+  await assertMappableModelMap(input.modelMap);
   const baseUrl = await validateBaseUrl(input.baseUrl);
 
   const result = await withSystemDbAccessContext(async () => {

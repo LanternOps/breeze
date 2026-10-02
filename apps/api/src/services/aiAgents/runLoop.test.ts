@@ -698,6 +698,7 @@ describe('executeAgentRun', () => {
       expect.any(Object),
       'platform',
       '00000000-0000-4000-8000-0000000000e1',
+      { surface: 'ai_agents', agentRunId: RUN_ID },
     );
   });
 
@@ -1766,6 +1767,19 @@ describe('executeAgentRun', () => {
     expect(buildClaudeSdkChildEnv).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'platform' }),
     );
+  });
+
+  it.each([
+    ['claude-sonnet-5-5', { type: 'adaptive' }, 'medium'],
+    ['claude-haiku-4-5', { type: 'disabled' }, undefined],
+    ['claude-agent-model', { type: 'disabled' }, undefined],
+  ])('sends the per-model thinking/effort for %s via agentSdkWireOptions (#7587, #7599)', async (model, thinking, effort) => {
+    seedRows({ effective: policy({ model }) });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(lastQueryOptions!.thinking).toEqual(thinking);
+    expect(lastQueryOptions!.effort).toBe(effort);
   });
 
   it('recipients are notified once with dedupeKey agent-run:<id>', async () => {

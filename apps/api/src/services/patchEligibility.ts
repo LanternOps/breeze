@@ -72,9 +72,19 @@ export interface PatchEligibleEntry {
   approvalReason: ApprovalReason;
 }
 
+export interface PatchIneligibleEntry {
+  patchId: string;
+  reason: PatchIneligibleReason;
+  /**
+   * Present only for `held_by_deferral`: ISO time the deferral window ends,
+   * or null when the patch cannot prove its age (#7625).
+   */
+  holdUntil?: string | null;
+}
+
 export interface PatchInstallEligibility {
   eligible: PatchEligibleEntry[];
-  ineligible: Array<{ patchId: string; reason: PatchIneligibleReason }>;
+  ineligible: PatchIneligibleEntry[];
   /** The ring the decision was made against, after the cross-partner guard. */
   ringId: string | null;
   /** ISO — when this verdict was computed. */
@@ -100,7 +110,7 @@ export async function evaluatePatchInstallEligibility(args: {
   const requested = args.patchIds ? [...new Set(args.patchIds)] : null;
   const resolvedAt = new Date().toISOString();
   const eligible: PatchEligibleEntry[] = [];
-  const ineligible: Array<{ patchId: string; reason: PatchIneligibleReason }> = [];
+  const ineligible: PatchIneligibleEntry[] = [];
   const deny = (patchId: string, reason: PatchIneligibleReason) => { ineligible.push({ patchId, reason }); };
 
   // Resolve the device-org's partner. Approvals are partner-scoped; an org
@@ -309,6 +319,12 @@ export async function evaluatePatchInstallEligibility(args: {
         requiresReboot: patch.requiresReboot,
         approvalReason: decision.approved,
       });
+    } else if (decision.denied === 'held_by_deferral') {
+      ineligible.push({
+        patchId: patch.patchId,
+        reason: 'held_by_deferral',
+        holdUntil: decision.holdUntil ? decision.holdUntil.toISOString() : null,
+      });
     } else {
       deny(patch.patchId, decision.denied);
     }
@@ -385,10 +401,21 @@ const NO_POLICY_CONFIG: ApprovalEvaluationConfig = { ringId: null, categoryRules
  * policy's own sources / app rules still apply.
  */
 export async function resolveDevicePatchEvaluationConfig(deviceId: string): Promise<ApprovalEvaluationConfig> {
+  return (await resolveDevicePatchEvaluation(deviceId)).config;
+}
+
+/**
+ * `resolveDevicePatchEvaluationConfig` plus the linked ring's display name,
+ * for read-only views that need to say WHICH ring decided (#7625, the device
+ * Patches tab). `ringName` is null whenever `config.ringId` is.
+ */
+export async function resolveDevicePatchEvaluation(
+  deviceId: string
+): Promise<{ config: ApprovalEvaluationConfig; ringName: string | null }> {
   const resolved = await resolvePatchConfigDetailsForDevice(deviceId);
-  if (!resolved) return NO_POLICY_CONFIG;
+  if (!resolved) return { config: NO_POLICY_CONFIG, ringName: null };
   const policyLocal = await loadPolicyLocalPatchConfig(resolved.configPolicyId);
-  if (!policyLocal) return NO_POLICY_CONFIG;
+  if (!policyLocal) return { config: NO_POLICY_CONFIG, ringName: null };
 
   const { settings, ring } = policyLocal;
   const ringId = ring.valid ? ring.ringId : null;
@@ -435,10 +462,13 @@ export async function resolveDevicePatchEvaluationConfig(deviceId: string): Prom
       const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read — treating as no ring (manual approvals only)`;
       console.warn(message);
       captureException(new Error(message));
-      return { ...NO_POLICY_CONFIG, sources: config.sources, policyAutoApprove: config.policyAutoApprove, apps: config.apps };
+      return {
+        config: { ...NO_POLICY_CONFIG, sources: config.sources, policyAutoApprove: config.policyAutoApprove, apps: config.apps },
+        ringName: null,
+      };
     }
   }
-  return config;
+  return { config, ringName: ringId ? ring.ringName : null };
 }
 
 /**

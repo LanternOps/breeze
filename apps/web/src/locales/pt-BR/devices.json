@@ -320,6 +320,8 @@
     "generateNewToken": "Gerar novo token",
     "generateToken": "Gerar token",
     "cliTokenNotGenerated": "Ainda não há token. Escolha o site, o número de dispositivos e a expiração e, em seguida, gere um token. Cada token é uma chave de registro ativa.",
+    "cliCommandNeedsToken": "Gere um token primeiro. O comando de instalação aparece aqui assim que existir um token; até lá, não há nada para executar.",
+    "copyCommand": "Copiar comando",
     "cliTokenSite": "Os dispositivos registrados com este token entram em {{site}}.",
     "singleUseValidForOneDevice": "Uso único — válido para um dispositivo. Gere um novo token para cada máquina adicional.",
     "linux": "linux",
@@ -993,7 +995,12 @@
     "level": "Nível",
     "policy2": "Política",
     "features": "Recursos",
-    "inheritedFrom": "Herdado de {{name}}"
+    "inheritedFrom": "Herdado de {{name}}",
+    "patchApproval": {
+      "label": "aprovação",
+      "byRing": "definida pelo anel de atualização vinculado",
+      "manualOnly": "somente aprovações manuais (nenhum anel de atualização vinculado)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Falha ao buscar as atividades",
@@ -1913,7 +1920,31 @@
       "badge": "Falha na instalação",
       "noReason": "Nenhum motivo informado pelo agente",
       "failedAt": "Última tentativa de instalação falhou: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Aprovado",
+      "approvedTitle": "Aprovado manualmente.",
+      "autoApproved": "Aprovado automaticamente",
+      "autoApprovedTitle": "Aprovado pelo anel de atualização {{ring}}. A próxima execução agendada de patches o instala.",
+      "deferred": "Adiado",
+      "deferredNoDateTitle": "O anel de atualização {{ring}} tem uma janela de adiamento, mas este patch não tem data de lançamento para medi-la, então continua retido. Aprove-o manualmente para instalá-lo.",
+      "deferredUntil": "Aprovação automática em {{date}}",
+      "deferredUntilTitle": "O anel de atualização {{ring}} retém patches novos durante a janela de adiamento. Este é aprovado em {{date}} e instalado na execução agendada seguinte.",
+      "excluded": "Excluído pela política",
+      "excludedSourceTitle": "As origens da política de patches não incluem este patch, então as execuções agendadas o ignoram.",
+      "excludedCategoryTitle": "O anel de atualização {{ring}} exclui a categoria deste patch, então as execuções agendadas o ignoram.",
+      "excludedAppRuleTitle": "Uma regra de bloqueio ou fixação de aplicativo da política de patches retém este patch, então as execuções agendadas o ignoram.",
+      "pending": "Aprovação pendente",
+      "needsApprovalRingTitle": "O anel de atualização {{ring}} não aprova este patch automaticamente. Aprove-o manualmente para instalá-lo.",
+      "needsApprovalNoRingTitle": "Nenhum anel de atualização está vinculado à política de patches deste dispositivo, então este patch só é instalado após uma aprovação manual.",
+      "unnamedRing": "o anel de atualização vinculado",
+      "ringLine": "As aprovações seguem o anel de atualização: {{ring}}",
+      "noRingLine": "Nenhum anel de atualização se aplica a este dispositivo. Os patches só são instalados após uma aprovação manual.",
+      "unavailable": "Não foi possível avaliar as aprovações do anel de atualização. Os selos mostram apenas aprovações manuais.",
+      "autoApprovedUserScopeTitle": "{{ring}} aprova este patch, mas é uma instalação por usuário que o Breeze ainda não consegue aplicar.",
+      "otherRingApprovalTitle": "Este patch tem uma aprovação manual para outro anel de atualização, que não se aplica a {{ring}}. As execuções agendadas o ignoram aqui; o botão Instalar ainda o aceita."
+    },
+    "installPatchRingManagedTitle": "{{name}} é gerenciado pelo anel de atualização {{ring}} e é instalado na próxima execução agendada de patches. Instalá-lo agora exige uma aprovação manual."
   },
   "devicePerformanceGraphs": {
     "description": "Uso de CPU, RAM e disco e largura de banda da rede ao longo do tempo",

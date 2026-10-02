@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { WHOLE_MACHINE_RESTORE_TIMEOUT_MS } from './commandTimeouts';
 import {
   DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
   DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR_LINUX,
@@ -20,8 +21,16 @@ describe('drBareMetalRebuildConfigSchema', () => {
       commandType: 'BARE_METAL_REBUILD',
       snapshotSelection: 'latest_restorable',
       outputDir: DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
-      waitTimeoutMinutes: 240,
+      waitTimeoutMinutes: 1440,
     });
+  });
+
+  // #7087: a Windows whole-machine rebuild of 133k files / 20.6 GB took 5h23m
+  // in the lab. The step's wait budget must not cancel a rebuild that the
+  // bare_metal_rebuild command's own reaper ceiling would still let run.
+  it('defaults the wait budget to the whole-machine restore command ceiling (#7087)', () => {
+    const { waitTimeoutMinutes } = drBareMetalRebuildConfigSchema.parse({ commandType: 'BARE_METAL_REBUILD' });
+    expect(waitTimeoutMinutes * 60_000).toBe(WHOLE_MACHINE_RESTORE_TIMEOUT_MS);
   });
 
   it.each([
@@ -92,7 +101,7 @@ describe('drRestoreConfigSchema', () => {
       snapshotSelection: 'latest_restorable',
       rebuildHostDeviceId: HOST_ID,
       outputDir: DR_BARE_METAL_REBUILD_DEFAULT_OUTPUT_DIR,
-      waitTimeoutMinutes: 240,
+      waitTimeoutMinutes: 1440,
     });
   });
 

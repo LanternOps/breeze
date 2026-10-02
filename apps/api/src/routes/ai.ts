@@ -31,6 +31,7 @@ import {
   resolveDefaultModel,
   sanitizeErrorForClient,
 } from '../services/aiAgent';
+import { InvalidSessionModelError } from '../services/aiOfferableModels';
 import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } from '../services/aiAgentSdk';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
@@ -265,6 +266,7 @@ aiRoutes.post(
       return c.json(session, 201);
     } catch (err) {
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
+      if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
       if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
       if (err instanceof TopologyAiSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       const message = err instanceof Error ? err.message : 'Failed to create session';
@@ -581,6 +583,8 @@ aiRoutes.post(
               billingSource,
               catalogPricing,
               reservationId,
+              0,
+              { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
             );
           } else {
             await markAiBudgetReservationIndeterminate({ orgId: session.orgId, reservationId });
@@ -610,6 +614,8 @@ aiRoutes.post(
         // list rates.
         catalogPricing,
         reservationId,
+        0,
+        { surface: 'chat', sourceRef: 'ticket_draft', userId: auth.user.id },
       );
     } catch (err) {
       captureException(err);

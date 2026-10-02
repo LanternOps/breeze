@@ -101,6 +101,8 @@ export const JOB_SCHEDULES = {
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
+  // AI model registry W01 (#7599): daily Anthropic model discovery for the platform key.
+  'ai-model-discovery-sync': '38 6 * * *',
   'event-log-retention': '3 7 * * *',
   'hardware-health-retention': '8 7 * * *',
   'time-sync-retention': '18 7 * * *',
@@ -128,6 +130,7 @@ export const JOB_SCHEDULES = {
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
+  'ai-invocation-retention': '13 18 * * *',
   // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
   // the evidence-window's day has fully closed, same lane as its sibling
   // retention slot below (same queue/worker — Deviation #10).

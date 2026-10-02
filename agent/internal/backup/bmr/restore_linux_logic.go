@@ -3,6 +3,7 @@ package bmr
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -218,4 +219,55 @@ func crontabSpoolEntries(spoolDir string) (entries map[string]string, skipped []
 		return nil, nil, err
 	}
 	return entries, skipped, nil
+}
+
+// Package reinstall inputs. packages/rpm.txt and packages/dpkg.txt come
+// from the snapshot, so every entry is checked before it reaches a package
+// manager's argv or stdin: a name must look like a package name (never like
+// an option), and a dpkg selections line must be exactly "<name>[:arch]
+// <state>".
+var (
+	packageNamePattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+:~-]{0,254}$`)
+	dpkgSelectionLinePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]*(:[a-z0-9]+)?\s+(install|hold|deinstall|purge)$`)
+)
+
+// validPackageName reports whether s can be passed to dnf as a package name.
+func validPackageName(s string) bool { return packageNamePattern.MatchString(s) }
+
+// validDpkgSelectionLine reports whether s is one `dpkg --get-selections`
+// line.
+func validDpkgSelectionLine(s string) bool { return dpkgSelectionLinePattern.MatchString(s) }
+
+// dnfInstallArgs builds the `dnf` argv for the package list in data (one
+// name per line, blank lines ignored): "install -y --" followed by every
+// valid name, so nothing after "--" is read as an option. It returns the
+// number of names kept and the number skipped as invalid.
+func dnfInstallArgs(data []byte) (args []string, valid, skipped int) {
+	args = []string{"install", "-y", "--"}
+	for _, line := range strings.Split(string(data), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		if !validPackageName(name) {
+			skipped++
+			continue
+		}
+		args = append(args, name)
+		valid++
+	}
+	return args, valid, skipped
+}
+
+// invalidDpkgSelectionLines counts the non-blank lines of a selections file
+// that are not valid selection lines. A file with any is not applied.
+func invalidDpkgSelectionLines(data []byte) int {
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !validDpkgSelectionLine(line) {
+			n++
+		}
+	}
+	return n
 }

@@ -236,6 +236,32 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.data.lastUser).toBeUndefined();
   });
 
+  // Backup helper protocols: a number is the helper's answer, an explicit
+  // null is "the agent could not ask its helper" (kept distinct from absent,
+  // which an older agent sends), anything else malformed reads as absent.
+  it.each([
+    { name: 'numbers', value: 1, expected: 1 },
+    { name: 'a real 0', value: 0, expected: 0 },
+    { name: 'explicit null (unknown)', value: null, expected: null },
+    { name: 'a string', value: '1', expected: undefined },
+    { name: 'a fraction', value: 1.5, expected: undefined },
+    { name: 'an object', value: { v: 1 }, expected: undefined },
+  ])('keeps the backup helper protocol fields apart: $name', ({ value, expected }) => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      backupReadProtocolVersion: value,
+      backupIntegrityProtocolVersion: value,
+      backupWriteProtocolVersion: value,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    for (const field of ['backupReadProtocolVersion', 'backupIntegrityProtocolVersion', 'backupWriteProtocolVersion'] as const) {
+      expect(result.data[field]).toBe(expected);
+    }
+    const absent = heartbeatSchema.safeParse(minimal);
+    expect(absent.success && absent.data.backupWriteProtocolVersion).toBeUndefined();
+  });
+
   it('drops oversized helperVersion instead of rejecting', () => {
     const payload = {
       ...minimal,

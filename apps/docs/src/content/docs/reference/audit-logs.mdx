@@ -89,6 +89,10 @@ The following actions are flagged as security events and appear in the security 
 - `automation.policy.evaluate`
 - `agent.source.ip.changed` — emitted when an agent's source IP changes between heartbeats; can indicate NAT changes, mobility, or stolen tokens.
 
+### Remote Session Consent Events
+
+Remote desktop consent outcomes are recorded as `session_consent_granted`, `session_consent_denied`, `session_consent_bypassed`, `session_consent_blocked_unanswered`, and `session_consent_blocked_unavailable` entries. Their details carry the `reason` (for example `user`, `timeout`, `no_user_session` when nobody is signed in, or `helper_unreachable` when a signed-in user could not be asked), `consentProtocol` (`1` for older agents, `2` for current ones), and, from protocol 2 agents, `consentOutcome` (whether the prompt was shown and answered) and `consentOccupancy` (whether anyone was signed in). See [Remote Access → Session Consent](/features/remote-access/#session-consent--end-user-notification).
+
 ### Tamper Evidence
 
 Audit log rows are append-only at the database layer. Postgres triggers refuse `UPDATE`, `DELETE`, and `TRUNCATE` against the table — even a superuser cannot rewrite history without explicit administrative privileges.
@@ -97,7 +101,9 @@ The hash chain itself lives in a separate `audit_log_chain` table, not in the `c
 
 A daily worker verifies every organization's chain (04:15 UTC) and raises a P1 security incident the moment any org's chain returns a break, so tampering pages an operator instead of sitting silently detectable-but-unobserved. It can be turned off with `AUDIT_CHAIN_VERIFY_ENABLED=false`, which stops the scheduled sweep entirely (manual verification calls still work).
 
-A separate `audit_chain_anchors` table adds protection against a chain that is rewritten *after* rows are deleted, which could otherwise reconstruct into something internally consistent: it records periodic, append-only snapshots of each org's chain head (position, hash, entry count), optionally signed with an Ed25519 key when anchor signing is configured. A forged chain that is shorter or older than a previously recorded anchor is caught even if the forged chain passes the ordinary walk on its own.
+A separate `audit_chain_anchors` table adds protection against a chain that is rewritten *after* rows are deleted, which could otherwise reconstruct into something internally consistent: it records periodic, append-only snapshots of each org's chain head (position, hash, entry count), signed with an Ed25519 key when `AUDIT_ANCHOR_SIGNING_KEY` is set. A forged chain that is shorter or older than a previously recorded anchor is caught even if the forged chain passes the ordinary walk on its own.
+
+The anchor check runs inside the database and compares chain heads only, so on its own it guards against the API's database role, not against someone who can write to the database directly. The signature is for anchors you keep **outside** the database: each anchor is also logged to the API's stdout with its signature, and a copy forwarded off the server can be checked against the public key. Setup, the public key, and a verification script are in [Environment → Anchor signing](/deploy/environment/#anchor-signing). Breeze has no built-in off-server store for anchors yet; forwarding the log lines is up to you.
 
 Retention pruning is the one supported path that removes audit rows, and it operates by **prefix-cut**: the contiguous oldest segment of the chain that has aged past the retention window is deleted, and the first surviving chain entry becomes the new head. There is **no re-anchoring** — the verifier accepts a null previous-hash on the earliest retained entry as evidence of a pruned prefix rather than a break, so the integrity check continues to pass after old data ages out.
 

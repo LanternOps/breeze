@@ -1,3 +1,4 @@
+import { messagesApiWireOptions } from './aiModels/modelWireOptions';
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { getAnthropicClientForPartner, resolveWireModel } from './llm/llmConfigResolver';
@@ -121,6 +122,7 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
       resp = await client.messages.create({
         model: wireModel,
         max_tokens: maxTokens,
+        ...messagesApiWireOptions(wireModel, maxTokens), // #7587, #7599
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: userContent }],
       });

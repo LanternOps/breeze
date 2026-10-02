@@ -128,7 +128,7 @@ func (h *Heartbeat) consentHelperPossible(sessionID string, winID uint32) bool {
 		return true
 	}
 	if !available {
-		log.Info("target session has no signed-in user; skipping the consent-helper wait",
+		log.Info("target session cannot host the consent helper (nobody signed in, or the session is disconnected); skipping the consent-helper wait",
 			"sessionId", sessionID, "winSession", winID)
 	}
 	return available

@@ -706,6 +706,11 @@ export function captureException(
   err: unknown,
   c?: Context,
   tags?: Record<string, string>,
+  /**
+   * `fingerprint`: group a bursty call site's events under fixed, BOUNDED
+   * values (literals and a SQLSTATE, never an id or a message) — #7600 W02.
+   */
+  options?: { fingerprint?: readonly string[] },
 ): void {
   // Classify BEFORE the init guard. The classifier is no longer only a tag
   // source: it also feeds the rolling CONNECT_TIMEOUT rate that the #3214
@@ -732,6 +737,7 @@ export function captureException(
 
   Sentry.withScope((scope) => {
     setCallerTags(scope, tags);
+    if (options?.fingerprint) scope.setFingerprint([...options.fingerprint]);
     if (c) {
       scope.setTag('method', c.req.method);
       scope.setTag('route_template', safeMatchedRouteLabel(c));

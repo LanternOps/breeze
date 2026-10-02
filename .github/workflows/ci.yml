@@ -1261,17 +1261,22 @@ jobs:
       # pnpm has not migrated to the bulk advisory endpoint at any version, so
       # `pnpm audit` now fails closed everywhere.
       #
-      # Gate stays at `critical`, matching the previous `--audit-level=critical`.
-      # The earlier `--prod` scoping existed to dodge a HIGH `ip@<=2.0.1`
-      # (GHSA-2p57-rm9w-gvfp) pulled in by apps/mobile dev tooling; the
-      # `ip@<=2.0.1: npm:neoip@^3.1.0` override in package.json has since
-      # resolved that, and the tree is now clean at every severity, so the scan
-      # covers dev dependencies too.
+      # The scan covers dev dependencies too. An earlier `--prod` scoping existed
+      # to dodge a HIGH `ip@<=2.0.1` (GHSA-2p57-rm9w-gvfp) pulled in by
+      # apps/mobile dev tooling; the `ip@<=2.0.1: npm:neoip@^3.1.0` override in
+      # package.json resolved that.
       #
       # Gate is HIGH+CRITICAL as of 2026-09-03 (SOC 2 CC7.1). A new dev-only
-      # HIGH advisory blocks PRs until patched or an exception is recorded.
+      # HIGH advisory blocks PRs until patched or until a reviewed, expiring
+      # entry is added to scripts/security/npm-audit-exceptions.json (the bar
+      # and the enforced rules are in that file's header).
       - name: Install osv-scanner
         run: bash scripts/security/install-osv-scanner.sh
+
+      # The exceptions logic is tested first, deliberately: a regression in it
+      # could suppress a real advisory and still read as a passing audit.
+      - name: Test npm-audit exceptions logic
+        run: pnpm test:npm-audit-exceptions
 
       - name: Run dependency audit (high+critical gate)
         run: bash scripts/security/check-npm-audit.sh
@@ -2000,6 +2005,27 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the config owner/DACL tests SKIPPED - the runner token is not elevated, so the #7394 owner path has no live coverage here" }
           if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # The helper-scoped token must never sit in a file a standard Windows user
+      # can read: it reaches the console-session Breeze Assist over IPC only,
+      # and a token an older agent left in agent.yaml is scrubbed and rotated.
+      # The owner/DACL step above runs only its own tests, so none of these —
+      # including the platform-neutral ones that encode the Windows behaviour —
+      # ran on Windows before. Assert every one of them actually PASSED.
+      - name: Run Windows helper token tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/config -run '^Test(WindowsHelperToken|IsSecretYAMLKey$|HelperTokensAreNeverExemptedFromStripping$|PersistSettersNeverWriteLoadedSecretsBack$|FixAgentYAMLPermissionsRecordsRotationOwedForLegacyHelperToken$|RotationOwedSurvivesAnUnwritableMarker$|PromotePendingCredentialsClearsRotationOwed$|SaveToKeepsFullAgentTokensOutOfAgentYAML$|MigrateInlineSecretsToSecretFileScrubsAgentYAML$|FixConfigPermissionsScrubsActiveNonDefaultConfig$|UnparsableAgentYAMLOwesRotationOnlyForARealHelperToken$|PromotePendingCredentialsSucceedsWhenMarkerCannotBeCleared$|ScrubOwesRotationOnlyForAStillValidHelperToken$|StartupLogsAreHeldUntilLoggingIsInitialized$)' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the helper token tests SKIPPED" }
+          if ($passes -ne 15) { throw "expected exactly 15 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # securefs's Windows implementation is the SEC-121 privileged-staging
       # boundary: handle-relative NtCreateFile walks, reparse-point rejection at
       # every component, the atomic FILE_RENAME_INFO publish, and symlink entry
@@ -2046,20 +2072,25 @@ jobs:
       # enables SeBackup/SeRestore only inside its scope and that a partial
       # AcquirePrivileges failure releases what it already enabled — the
       # scope every offline hive load in the rebuild engine runs under.
+      # The restricted-descriptor tests read principals from real
+      # descriptors, resolve the local account domain, read back the
+      # restrictive ACL a restore applies to an entry whose descriptor names
+      # unknown principals or cannot be read, and refuse stream and alias
+      # names in a restore.
       - name: Run Windows security-descriptor capture/apply tests (must not skip)
         working-directory: agent
         env:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_SecurityDescriptorApplyFailureIsWarningNotFailure|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
+          $out = go test ./internal/backup -run '^Test(FileSecurityReturnsSelfRelativeSD|FileSecurityRoundTrip|ApplySecurityRefusesMalformedDescriptor|SDPrivilegeScopesRelease|Restore_AppliesSecurityDescriptor|Restore_AppliesDirectorySecurityDescriptor|Restore_InvalidSecurityDescriptorIsQuarantined|SecurityDescriptorPrincipalsFromRealDescriptor|SecurityDescriptorLocalKnownDomains|SecurityDescriptorQuarantineOnRealRestore|SecurityDescriptorSACLOnlyUnknownDropsTheSACL|RestoreFromSnapshot_RefusesInvalidWindowsNames|AcquireHivePrivileges_ScopesRelease|AcquirePrivileges_PartialFailureReleasesEarlier)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the security-descriptor / hive-privilege tests SKIPPED - the HiveNightmare-class fix or the hive privilege scope has no live coverage here" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 9) { throw "expected exactly 9 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 14) { throw "expected exactly 14 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Whole-machine Windows capture path. internal/backup and
       # internal/backup/systemstate are both excluded from the bare package
@@ -2077,7 +2108,10 @@ jobs:
       # (CreateFile with backup semantics) and reg.exe is never spawned; a run
       # with no run-wide VSS session (pathless system_image, IPC
       # system_state_collect) takes its own system-volume snapshot, and only a
-      # VSS failure reaches reg.exe. The
+      # VSS failure reaches reg.exe. The #7367 tests pin that the loaded hives
+      # are flushed right before either snapshot (never when none is taken),
+      # that a stuck or failing flush never holds up the backup, and that the
+      # real RegFlushKey call flushes a loaded hive. The
       # live counterparts (TestLive_WholeMachineShadowRootIsWalkable,
       # TestLive_CollectRegistryFromRealShadowCopy) stay opt-in behind
       # BREEZE_VSS_LIVE like the other live VSS suites.
@@ -2087,14 +2121,14 @@ jobs:
           CGO_ENABLED: "0"
         shell: pwsh
         run: |
-          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe|CollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot|CollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot|CollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave|CollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased|CollectRegistryHivesForRun_SkipSystemVolumeSnapshot|CollectRegistryHivesFromShadow_MissingDefaultIsBestEffort|NewCollector_DefaultsToOwnSystemVolumeSnapshot)$' -v 2>&1
+          $out = go test ./internal/backup ./internal/backup/systemstate -run '^Test(ShadowDeviceRoot_Classification|CleanBackupRoot_BareShadowDeviceGetsSeparator|CleanBackupRoot_ShadowDeviceRootKeepsItsSeparator|CleanBackupRoot_ChildrenMapBackThroughOriginalPathsForVSS|ShadowConfigDir|ShadowConfigDir_WindowsDevicePath|CollectRegistryHivesForRun_UnderVSSCopiesFromShadowWithoutRegExe|CollectRegistryHivesFromShadow_MissingLogsAreNotAFailure|CollectRegistryHivesForRun_MissingShadowHiveFailsAndIsNamed|CollectRegistryHivesFromShadow_UnreadableLogFailsTheWholeHive|CollectRegistryHivesForRun_WithoutShadowUsesRegSave|CollectRegistryHivesForRun_PrivilegeFailureIsNotFatal|WindowsCollectRegistry_UnderVSSCopiesFromShadowNotRegExe|CollectRegistryHivesForRun_NoRunShadowTakesOwnSystemVolumeSnapshot|CollectRegistryHivesForRun_RunShadowCoveringSystemVolumeTakesNoSnapshot|CollectRegistryHivesForRun_OwnSnapshotFailureFallsBackToRegSave|CollectRegistryHivesForRun_OwnSnapshotMissingSystemVolumeIsReleased|CollectRegistryHivesForRun_SkipSystemVolumeSnapshot|CollectRegistryHivesFromShadow_MissingDefaultIsBestEffort|NewCollector_DefaultsToOwnSystemVolumeSnapshot|RunBackupContext_FlushesRegistryBeforeTheRunsSnapshot|RunBackupContext_NoVSSNoRegistryFlush|CollectRegistryHivesForRun_OwnSnapshotFlushesHivesFirst|CollectRegistryHivesForRun_NoOwnSnapshotNoFlush|FlushRegistryHives_StuckFlushDoesNotBlockTheCaller|FlushRegistryHives_FailureAndPanicAreContained|FlushHiveKey_FlushesALoadedHive|FlushHiveKey_UnloadedHiveIsErrHiveNotLoaded|LoadedUserHives_ListsDefault)$' -v 2>&1
           $exit = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $skips = @($out | Select-String -Pattern '^\s*--- SKIP: Test').Count
           if ($skips -ne 0) { throw "$skips of the whole-machine capture path tests SKIPPED" }
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
-          if ($passes -ne 20) { throw "expected exactly 20 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+          if ($passes -ne 29) { throw "expected exactly 29 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # The real WinSystem (internal/backup/rebuild/winsystem_windows.go) and
       # winhive's RegLoadKeyW/RegUnLoadKeyW are the W06 Windows engine's only
@@ -2353,12 +2387,10 @@ jobs:
           # inside a real debian:bookworm container instead of directly on
           # the runner.
           # This job only ever builds the amd64 leg, so only
-          # grub-efi-amd64-bin is needed — grub-efi-arm64-bin is a
-          # foreign-architecture package (Debian ships it under an arm64
-          # apt architecture, not as arch-agnostic content) that needs
-          # `dpkg --add-architecture arm64` before apt can even see it;
-          # see release.yml's build-recovery-media job, which builds both
-          # legs and does need it.
+          # grub-efi-amd64-bin is needed. The arm64 leg is built only by
+          # release.yml's build-recovery-media job, on a native arm64
+          # runner (live-build cannot bootstrap a foreign architecture
+          # without qemu configuration — see #6731).
           docker run --rm --privileged -v "$PWD":/src -w /src debian:bookworm bash -c '
             apt-get update -qq &&
             apt-get install -y -qq --no-install-recommends live-build debootstrap squashfs-tools xorriso grub-efi-amd64-bin mtools dosfstools ca-certificates cpio >/dev/null &&

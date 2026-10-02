@@ -9,6 +9,6 @@ package userhelper
 // doesn't gate advertisement on display availability here; instead
 // showConsentDialogOS's own error handling distinguishes a genuine user
 // decision from an osascript infra failure (e.g. a headless Mac with no
-// window server), falling through to the onTimeout/unavailable policy in the
-// latter case. See consent_dialog_darwin.go.
+// window server) and reports the latter as "could not be shown", which the
+// agent refuses whenever someone is signed in. See consent_dialog_darwin.go.
 func consentUISupported() bool { return true }

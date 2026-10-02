@@ -105,7 +105,8 @@
     "securityScans": "IOC Taramaları",
     "system": "Sistem",
     "monitorConversion": "İzleyici Dönüşümü",
-    "timeSync": "Saat eşitleme"
+    "timeSync": "Saat eşitleme",
+    "aiModels": "Yapay zeka modelleri"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

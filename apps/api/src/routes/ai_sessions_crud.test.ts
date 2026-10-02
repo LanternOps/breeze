@@ -168,6 +168,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { InvalidSessionModelError } from '../services/aiOfferableModels';
 import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../services/llm/llmAvailability';
 
@@ -244,6 +245,22 @@ describe('AI routes', () => {
 
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    });
+
+    it('returns 400 invalid_model when the requested model is not allowed (#7587)', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(new InvalidSessionModelError('claude-made-up-9'));
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test', model: 'claude-made-up-9' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Model "claude-made-up-9" is not available for AI sessions.',
+        code: 'invalid_model',
+      });
     });
 
     it('returns ai_not_configured as 503 when no model provider is configured', async () => {

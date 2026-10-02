@@ -169,6 +169,9 @@ func snapshotSystemVolumeForHives(systemRoot string, opts CollectOptions) (confi
 		return "", nil, false
 	}
 	volume := strings.ToUpper(systemRoot[:2])
+	// The snapshot holds only what is already on disk; flush the loaded
+	// hives first so recent registry writes are in it (#7367). Best effort.
+	flushHivesBeforeSnapshot()
 	shadows, release, err := opts.SnapshotVolume(volume)
 	if err != nil {
 		slog.Warn("systemstate: VSS shadow copy of the system volume failed; "+fallback, "volume", volume, "error", err.Error())

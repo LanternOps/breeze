@@ -56,6 +56,9 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
     'pam_actuation_results',
     'agent_rollback_events',
     'peripheral_policy_delivery_events',
+    // Table-level UPDATE is revoked; the column-level UPDATE (org_id) grant for
+    // the org-merge repoint is asserted in aiInvocationsAppendOnly.integration.
+    'ai_invocations',
   ])('breeze_app has no UPDATE, DELETE, or TRUNCATE on %s after ensureAppRole runs', async (table) => {
     const p = await tablePrivileges(table);
     expect(p.can_update).toBe(false);

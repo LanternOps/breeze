@@ -25,7 +25,7 @@ func winPreflight(ctx context.Context, r *run) error {
 	}
 	src := lay.SystemDisk()
 
-	man, err := fetchManifest(ctx, r.opts.Provider, r.opts.SnapshotID)
+	man, err := fetchManifest(ctx, r.opts.Provider, r.opts.SnapshotID, r.opts.Integrity)
 	if err != nil {
 		return err
 	}

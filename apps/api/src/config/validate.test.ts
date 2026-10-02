@@ -3553,6 +3553,35 @@ describe('BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED boolean guard (#1374)', () =
   });
 });
 
+// REMOTE_DESKTOP_FENCE_REQUIRED is required by default; a recognized false value
+// is the explicit opt-out. The runtime reader keeps the start fence required for
+// an unrecognized value, so a typo must refuse boot rather than leave an
+// operator believing they opted out.
+describe('REMOTE_DESKTOP_FENCE_REQUIRED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('REMOTE_DESKTOP_FENCE_REQUIRED');
+    expect(
+      buildEnvParseInput({ REMOTE_DESKTOP_FENCE_REQUIRED: 'sentinel' })
+        .REMOTE_DESKTOP_FENCE_REQUIRED,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, REMOTE_DESKTOP_FENCE_REQUIRED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['flase', 'enabled', 'ture'])('refuses boot on the typo %j', (value) => {
+    withEnv({ ...validEnv, REMOTE_DESKTOP_FENCE_REQUIRED: value }, () => {
+      expect(() => validateConfig()).toThrow(/REMOTE_DESKTOP_FENCE_REQUIRED/);
+    });
+  });
+});
+
 describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED');

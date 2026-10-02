@@ -32,6 +32,7 @@ import {
   evaluateAppRule,
   isCategoryAllowed,
   parseRingAutoApprove,
+  decidePatchApproval,
   THIRD_PARTY_PATCH_SOURCES,
   type ApprovalEvaluationConfig,
   type RingConfig,
@@ -2081,5 +2082,39 @@ describe('parseRingAutoApprove — thirdPartyApps compatibility (#spec 2026-08-0
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// #7625: the deferral denial carries WHEN the window ends, from the window
+// that call site actually applied — a swapped override would show the wrong date.
+describe('decidePatchApproval — held_by_deferral reports holdUntil per call site (#7625)', () => {
+  const NOW = new Date('2026-09-30T00:00:00.000Z');
+  const DAY = 86_400_000;
+  const released = new Date(NOW.getTime() - 2 * DAY);
+  const candidate = (o: Record<string, unknown> = {}) => ({
+    patchId: 'p-1', category: 'security', severity: 'critical', releaseDate: released.toISOString(),
+    source: 'microsoft', packageId: null, version: null, firstSeenAt: null, ...o,
+  });
+  const ring = (o: Record<string, unknown> = {}) => ({ ringId: 'ring-1', categoryRules: [], autoApprove: {}, deferralDays: 3, ...o });
+
+  it('category rule: uses deferralDaysOverride, not the ring deferralDays', () => {
+    const rule = { category: 'security', autoApprove: true, deferralDaysOverride: 10 };
+    const d = decidePatchApproval(candidate(), ring() as never, new Set(), new Map([['security', rule]]), parseRingAutoApprove({}), NOW);
+    expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(released.getTime() + 10 * DAY) });
+  });
+
+  it('ring third-party path: uses thirdPartyDeferralDays over deferralDays', () => {
+    const auto = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 7, thirdPartyApps: true, thirdPartyDeferralDays: 14 });
+    const d = decidePatchApproval(
+      candidate({ source: 'third_party', category: 'application', packageId: 'X.Y' }),
+      ring({ sources: ['third_party'] }) as never, new Set(), new Map(), auto, NOW,
+    );
+    expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(released.getTime() + 14 * DAY) });
+  });
+
+  it('ring OS path: uses the ring auto-approve deferralDays', () => {
+    const auto = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 7 });
+    const d = decidePatchApproval(candidate(), ring() as never, new Set(), new Map(), auto, NOW);
+    expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(released.getTime() + 7 * DAY) });
   });
 });

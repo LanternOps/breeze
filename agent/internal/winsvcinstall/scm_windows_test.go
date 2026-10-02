@@ -3,8 +3,11 @@
 package winsvcinstall
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -46,5 +49,24 @@ func TestNeutralStateMapping(t *testing.T) {
 		if got := neutralState(c.in); got != c.want {
 			t.Errorf("neutralState(%d) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// The SCM's ERROR_SERVICE_ALREADY_RUNNING (1056), bare or wrapped, must reach
+// startAndWait as ErrAlreadyRunning; anything else must pass through (#7474).
+func TestStartRequestErrorMapsAlreadyRunning(t *testing.T) {
+	if got := startRequestError(windows.ERROR_SERVICE_ALREADY_RUNNING); !errors.Is(got, ErrAlreadyRunning) {
+		t.Fatalf("startRequestError(ERROR_SERVICE_ALREADY_RUNNING) = %v, want ErrAlreadyRunning", got)
+	}
+	wrapped := fmt.Errorf("start: %w", windows.ERROR_SERVICE_ALREADY_RUNNING)
+	if got := startRequestError(wrapped); !errors.Is(got, ErrAlreadyRunning) {
+		t.Fatalf("startRequestError(wrapped) = %v, want ErrAlreadyRunning", got)
+	}
+	if got := startRequestError(nil); got != nil {
+		t.Fatalf("startRequestError(nil) = %v, want nil", got)
+	}
+	denied := windows.ERROR_ACCESS_DENIED
+	if got := startRequestError(denied); !errors.Is(got, denied) || errors.Is(got, ErrAlreadyRunning) {
+		t.Fatalf("startRequestError(ERROR_ACCESS_DENIED) = %v, want it unchanged", got)
 	}
 }

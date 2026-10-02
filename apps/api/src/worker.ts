@@ -95,6 +95,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
+import { startPlatformModelSnapshotRefresher } from './services/aiModels/platformModels';
 import { partnerTrustMode } from './config/partnerTrustMode';
 import { isPartnerLaneConfigured } from './services/emailDomains/config';
 import { auditChainVerifyEnabled } from './config/auditChainVerify';
@@ -437,6 +438,9 @@ export async function bootWorker(): Promise<void> {
   const { extensionContributionRegistry } = await import('./extensions/contributionRegistry');
   const { createExtensionStateStore } = await import('./extensions/stateStore');
   const { registerAiAgentEnqueuer } = await import('./jobs/aiAgentEnqueuer');
+  // AI model registry W02 (#7600): agents and the script reviewer record AI
+  // cost in this process; shadow those records into the invocation ledger.
+  const { registerInvocationLedgerShadow } = await import('./services/aiModels/invocationLedger');
   const { registerAllEventSubscribers } = await import('./services/eventSubscribers');
   const { buildWebhookFanoutDeps } = await import('./services/webhookFanoutDeps');
   const { startRegisteredWorkers, buildWorkerShutdownTasks } = await import('./services/workerRegistry');
@@ -600,6 +604,7 @@ export async function bootWorker(): Promise<void> {
   // Step 7 — must run before step 8 so a job enqueued mid-worker-boot (or any
   // event published during it) always finds a registered enqueuer/subscriber.
   registerAiAgentEnqueuer();
+  registerInvocationLedgerShadow();
   registerAllEventSubscribers(buildWebhookFanoutDeps());
 
   // Step 8: the registry's `global`-placement workers, then the event-dispatch
@@ -673,6 +678,9 @@ export async function bootWorker(): Promise<void> {
     });
   }, 30_000);
   auditRetryInterval.unref?.();
+  // AI model registry W01 (#7599): same snapshot as the API process. Agent
+  // runs and the cost tracker run here too.
+  startPlatformModelSnapshotRefresher();
 
   // Step 9: signal handlers → phased shutdown.
   let shutdownStarted = false;

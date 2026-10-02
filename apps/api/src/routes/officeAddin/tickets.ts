@@ -301,6 +301,8 @@ async function recordDraftUsage(input: {
   billingSource: AiBillingSource;
   catalogPricing?: CatalogPricingSnapshot;
   reservationId?: string;
+  /** Invocation-ledger attribution only (#7600 W02); does not affect metering. */
+  userId: string | null;
 }): Promise<void> {
   try {
     await recordUsage(
@@ -313,6 +315,8 @@ async function recordDraftUsage(input: {
       input.billingSource,
       input.catalogPricing,
       input.reservationId,
+      0,
+      { surface: 'office_ticket', userId: input.userId },
     );
   } catch (err) {
     console.error('[office-addin] draft usage accounting failed', err);
@@ -486,6 +490,7 @@ officeAddinTicketRoutes.post(
         billingSource,
         catalogPricing: wire.catalogPricing,
         reservationId,
+        userId: auth.userId,
       });
       return c.json({ draft }, 200);
     } catch (err) {
@@ -511,6 +516,7 @@ officeAddinTicketRoutes.post(
             billingSource,
             catalogPricing: wire.catalogPricing,
             reservationId,
+            userId: auth.userId,
           }),
           (lateErr) => lateErr instanceof EmailDraftFailedError
             && (lateErr.inputTokens > 0 || lateErr.outputTokens > 0)
@@ -522,6 +528,7 @@ officeAddinTicketRoutes.post(
                 billingSource,
                 catalogPricing: wire.catalogPricing,
                 reservationId,
+                userId: auth.userId,
               })
             : undefined,
         )).catch((meterErr) => {
@@ -540,6 +547,7 @@ officeAddinTicketRoutes.post(
           billingSource,
           catalogPricing: wire.catalogPricing,
           reservationId,
+          userId: auth.userId,
         });
       } else if (err instanceof EmailDraftFailedError && !err.providerOutcomeUnknown) {
         // The provider answered and nothing was spent: the ONLY case where

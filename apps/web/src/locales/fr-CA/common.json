@@ -105,7 +105,8 @@
     "securityScans": "Balayages IOC",
     "system": "Système",
     "monitorConversion": "Conversion des moniteurs",
-    "timeSync": "Synchronisation de l’heure"
+    "timeSync": "Synchronisation de l’heure",
+    "aiModels": "Modèles d'IA"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",

@@ -811,8 +811,9 @@ export async function renewRevocationLease(
 /**
  * SEC-038: the only desktop start/terminal fence protocol version this server
  * speaks. An agent reporting exactly this value keeps the durable per-session
- * generation fence (W04/W05); anything else is unfenced. Enforced only while
- * REMOTE_DESKTOP_FENCE_REQUIRED is on (default off — owner decision 1).
+ * generation fence (W04/W05); anything else is unfenced. Enforced while
+ * REMOTE_DESKTOP_FENCE_REQUIRED is on, which is the default; agents from
+ * v0.114.0 on declare it.
  */
 export const DESKTOP_FENCE_PROTOCOL_VERSION = 1;
 
@@ -862,9 +863,14 @@ export async function prepareRevocationLeaseForStart(
   if (row.device.revocationLeaseProtocolVersion !== REVOCATION_LEASE_PROTOCOL_VERSION) {
     return { ok: false, reason: 'agent_upgrade_required' };
   }
-  // SEC-038 W06: behind the flag, an agent without the durable start fence is
-  // refused with the same code — the generation in the start payload is only
-  // meaningful when the endpoint honours it.
+  // Start fence gate (on by default): an agent without the durable start fence
+  // is refused with the same code — the generation in the start payload is
+  // only meaningful when the endpoint honours it. Agents that declare the
+  // fence honour it on start_desktop; builds from this release on also honour
+  // it on the WebSocket fallback (desktop_stream_start). Older fence-capable
+  // builds ignore it there, so on that path the server-side handshake in
+  // routes/desktopWs.ts (no frames or input before the agent accepts, relay
+  // closed as soon as a stop is sent) is what orders a late start.
   if (!isDesktopFenceCapable(row.device.desktopFenceProtocolVersion)) {
     return { ok: false, reason: 'agent_upgrade_required' };
   }
@@ -894,10 +900,10 @@ export async function prepareRevocationLeaseForStart(
 }
 
 /**
- * SEC-038 W06 fence admission. Gate off (the default) admits every agent so
- * the release that introduces the gate is a fleet no-op; gate on admits only
- * an agent declaring exactly DESKTOP_FENCE_PROTOCOL_VERSION. Read at call time
- * so the flag can be flipped without a restart-sensitive module constant.
+ * Start fence admission. Gate on (the default) admits only an agent declaring
+ * exactly DESKTOP_FENCE_PROTOCOL_VERSION; REMOTE_DESKTOP_FENCE_REQUIRED=false
+ * (explicit opt-out) admits every agent. Read at call time so the flag can be
+ * flipped without a restart-sensitive module constant.
  */
 export function isDesktopFenceCapable(desktopFenceProtocolVersion: number): boolean {
   if (!remoteDesktopFenceRequired()) return true;

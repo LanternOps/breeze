@@ -320,6 +320,8 @@
     "generateNewToken": "Genera nuovo token",
     "generateToken": "Genera token",
     "cliTokenNotGenerated": "Nessun token. Scegli la sede, il numero di dispositivi e la scadenza, quindi genera un token. Ogni token è una chiave di registrazione attiva.",
+    "cliCommandNeedsToken": "Genera prima un token. Il comando di installazione apparirà qui non appena esiste un token; fino ad allora non c’è nulla da eseguire.",
+    "copyCommand": "Copia comando",
     "cliTokenSite": "I dispositivi registrati con questo token entrano in {{site}}.",
     "singleUseValidForOneDevice": "Monouso — valido per un dispositivo. Genera un nuovo token per ogni computer aggiuntivo.",
     "linux": "Linux",
@@ -993,7 +995,12 @@
     "level": "Livello",
     "policy2": "Criterio",
     "features": "Funzionalità",
-    "inheritedFrom": "Ereditato da {{name}}"
+    "inheritedFrom": "Ereditato da {{name}}",
+    "patchApproval": {
+      "label": "approvazione",
+      "byRing": "definita dall'anello di aggiornamento collegato",
+      "manualOnly": "solo approvazioni manuali (nessun anello di aggiornamento collegato)"
+    }
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossibile recuperare le attività",
@@ -1913,7 +1920,31 @@
       "badge": "Installazione non riuscita",
       "noReason": "Nessun motivo segnalato dall'agente",
       "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
-    }
+    },
+    "approval": {
+      "approved": "Approvato",
+      "approvedTitle": "Approvato manualmente.",
+      "autoApproved": "Approvato automaticamente",
+      "autoApprovedTitle": "Approvato dall'anello di aggiornamento {{ring}}. La prossima esecuzione pianificata delle patch lo installa.",
+      "deferred": "Rinviato",
+      "deferredNoDateTitle": "L'anello di aggiornamento {{ring}} ha una finestra di rinvio, ma questa patch non ha una data di rilascio da cui misurarla, quindi resta trattenuta. Approvala manualmente per installarla.",
+      "deferredUntil": "Approvazione automatica il {{date}}",
+      "deferredUntilTitle": "L'anello di aggiornamento {{ring}} trattiene le nuove patch per la sua finestra di rinvio. Questa viene approvata il {{date}} e installata con la successiva esecuzione pianificata.",
+      "excluded": "Esclusa dal criterio",
+      "excludedSourceTitle": "Le origini del criterio patch non includono questa patch, quindi le esecuzioni pianificate la saltano.",
+      "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
+      "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app del criterio patch trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
+      "pending": "Approvazione in sospeso",
+      "needsApprovalRingTitle": "L'anello di aggiornamento {{ring}} non approva automaticamente questa patch. Approvala manualmente per installarla.",
+      "needsApprovalNoRingTitle": "Nessun anello di aggiornamento è collegato al criterio patch di questo dispositivo, quindi questa patch si installa solo dopo un'approvazione manuale.",
+      "unnamedRing": "l'anello di aggiornamento collegato",
+      "ringLine": "Le approvazioni seguono l'anello di aggiornamento: {{ring}}",
+      "noRingLine": "Nessun anello di aggiornamento si applica a questo dispositivo. Le patch si installano solo dopo un'approvazione manuale.",
+      "unavailable": "Impossibile valutare le approvazioni dell'anello di aggiornamento. I badge mostrano solo le approvazioni manuali.",
+      "autoApprovedUserScopeTitle": "{{ring}} approva questa patch, ma è un'installazione per utente che Breeze non può ancora applicare.",
+      "otherRingApprovalTitle": "Questa patch ha un'approvazione manuale per un altro anello di aggiornamento, che non si applica a {{ring}}. Le esecuzioni pianificate la saltano qui; il pulsante Installa la accetta comunque."
+    },
+    "installPatchRingManagedTitle": "{{name}} è gestita dall'anello di aggiornamento {{ring}} e si installa con la prossima esecuzione pianificata delle patch. Installarla ora richiede un'approvazione manuale."
   },
   "devicePerformanceGraphs": {
     "description": "CPU, RAM, utilizzo del disco e larghezza di banda di rete nel tempo",

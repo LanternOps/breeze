@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { resolveDefaultModel, BREEZE_FALLBACK_MODEL } from './aiAgent';
 
+describe('BREEZE_FALLBACK_MODEL (#7587)', () => {
+  it('defaults the platform to Sonnet 5.5 (dateless id, never a snapshot suffix)', () => {
+    expect(BREEZE_FALLBACK_MODEL).toBe('claude-sonnet-5-5');
+  });
+});
+
 // #1412: ANTHROPIC_MODEL lets a self-hosted operator override the default model
 // id for a raw vLLM backend whose served id differs from the Anthropic alias.
 describe('resolveDefaultModel (#1412)', () => {

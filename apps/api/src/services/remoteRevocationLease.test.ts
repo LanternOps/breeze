@@ -809,9 +809,8 @@ describe('prepareRevocationLeaseForStart', () => {
 });
 
 // SEC-038 W06 (#5537): the desktop-fence capability gate mirrors the #5481
-// lease gate — same denial code, same upgrade message — but sits behind
-// REMOTE_DESKTOP_FENCE_REQUIRED, default OFF, so the release that introduces
-// it is a no-op for the fleet until the flag is flipped one release later.
+// lease gate — same denial code, same upgrade message. REMOTE_DESKTOP_FENCE_REQUIRED
+// is required by default; a recognized false value is the explicit opt-out.
 describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-038 W06)', () => {
   const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
   afterEach(() => {
@@ -819,8 +818,23 @@ describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-
     else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
   });
 
-  it('gate off: admits an unfenced agent (fleet no-op on the introducing release)', async () => {
+  it('default (unset): refuses an agent without the start fence with the agent_upgrade_required code', async () => {
     delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('default (unset): admits a fenced agent', async () => {
+    delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => row(), now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('explicit opt-out (false): admits an agent without the start fence', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'false';
     const r = row();
     r.device.desktopFenceProtocolVersion = 0;
     const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW });

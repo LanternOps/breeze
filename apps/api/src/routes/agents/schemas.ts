@@ -205,13 +205,16 @@ export const heartbeatSchema = z.object({
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
   // Brokered storage-read protocol of the INSTALLED backup helper (the helper
-  // reports it via --protocol-info; the agent omits it when 0). Top-level, not
-  // part of securityCapabilities. Tolerant: anything malformed reads as absent.
-  backupReadProtocolVersion: z.number().int().optional().catch(undefined),
+  // reports it via --protocol-info). Top-level, not part of
+  // securityCapabilities. A number is the helper's answer; an explicit null
+  // means the agent's probe got no answer (unknown, see
+  // services/backupHelperProtocols.ts); absent is an older agent (read as 0).
+  // Tolerant: anything else malformed reads as absent.
+  backupReadProtocolVersion: z.number().int().nullable().optional().catch(undefined),
   // Snapshot integrity and storage write protocols of the same installed
-  // helper. Same contract: top-level, omitted when 0, malformed reads as absent.
-  backupIntegrityProtocolVersion: z.number().int().optional().catch(undefined),
-  backupWriteProtocolVersion: z.number().int().optional().catch(undefined),
+  // helper. Same contract.
+  backupIntegrityProtocolVersion: z.number().int().nullable().optional().catch(undefined),
+  backupWriteProtocolVersion: z.number().int().nullable().optional().catch(undefined),
   rollbackComponentVersions: z.record(
     z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
     z.string().min(1).max(20),
@@ -364,6 +367,11 @@ export const heartbeatSchema = z.object({
     // route treats anything other than exactly 1 as "not capable".
     revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
     desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
+    // The agent also honours the start fence on the WebSocket desktop fallback
+    // (desktop_stream_start). Accepted and parsed only — not recorded and not
+    // gated on yet, so a later server can require it on that path without
+    // another agent release. Same tolerant contract as its siblings.
+    desktopWsFenceProtocolVersion: z.number().int().optional().catch(undefined),
     // Consent/notification prompt capability. Same tolerant contract: a
     // malformed value drops this field alone rather than rejecting the beat.
     consentPromptProtocolVersion: z.number().int().optional().catch(undefined),

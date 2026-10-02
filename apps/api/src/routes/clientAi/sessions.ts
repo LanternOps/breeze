@@ -81,6 +81,7 @@ import {
   type ClientAiAuthContext,
 } from './schemas';
 import { CLIENT_AI_SSE_PING_INTERVAL_MS, toClientSseEvent } from './sse';
+import { legacyOfficeChatModel } from '../../services/aiModels/legacySurfaceModels';
 
 export const clientAiSessionRoutes = new Hono();
 
@@ -299,7 +300,7 @@ clientAiSessionRoutes.post('/', async (c) => {
   }
   const rejection = await runClientPreflight(c, auth, policy, resolved);
   if (rejection) return rejection;
-  const model = policy.allowedModels[0] ?? resolved.model;
+  const model = legacyOfficeChatModel(policy.allowedModels, resolved.model);
   const systemPrompt = buildClientSystemPrompt(host, policy.writeMode);
 
   // #6473 — mirrors createSession in services/aiAgent.ts: without this, every

@@ -400,6 +400,7 @@
       "addEntry": "Anbieter hinzufügen",
       "loading": "Katalog wird geladen…",
       "empty": "Noch keine Katalogeinträge.",
+      "noRevisions": "Noch keine Revisionen.",
       "dismiss": "Verwerfen",
       "platformAdmin": {
         "title": "Plattform-Administratorzugriff erforderlich",
@@ -616,6 +617,93 @@
           "security-abuse": "Sicherheit und Missbrauch",
           "integrations": "Integrationen"
         }
+      }
+    },
+    "aiModels": {
+      "title": "KI-Modelle",
+      "subtitle": "Modelle, die die Plattform aus der Anthropic-Erkennung kennt. Neue Modelle kommen ohne Preis an und werden niemandem angeboten, bis Sie sie bepreisen und anbieten.",
+      "refresh": "Modelle aktualisieren",
+      "requiresPlatformAdmin": "Für die Verwaltung von KI-Modellen sind Plattform-Administratorrechte erforderlich.",
+      "empty": "Noch keine Modelle. Aktualisieren Sie, um Modelle mit dem Plattformschlüssel zu erkennen.",
+      "newBadge": "Neu",
+      "notSeen": "Von der Erkennung noch nicht gesehen",
+      "unpriced": "Ohne Preis",
+      "yes": "Ja",
+      "no": "Nein",
+      "edit": "Bearbeiten",
+      "columns": {
+        "model": "Modell",
+        "status": "Status",
+        "thinking": "Denken",
+        "price": "Eingabe / Ausgabe pro MTok",
+        "offered": "Angeboten",
+        "default": "Plattform-Standard",
+        "actions": "Aktionen"
+      },
+      "lifecycle": {
+        "available": "Verfügbar",
+        "missing": "Fehlt",
+        "retired": "Eingestellt"
+      },
+      "thinkingMode": {
+        "adaptive": "Adaptiv",
+        "budget": "Budget",
+        "none": "Keine",
+        "unknown": "Nicht verifiziert"
+      },
+      "thinkingDisplay": {
+        "omitted": "Ausgelassen",
+        "summarized": "Zusammengefasst",
+        "updates": "Fortschrittsmeldungen"
+      },
+      "promptProfile": {
+        "claude-frontier": "Frontier",
+        "claude-standard": "Standard",
+        "claude-small": "Klein",
+        "generic": "Generisch"
+      },
+      "drawer": {
+        "title": "{{name}} bearbeiten",
+        "prices": "Preise (US-Dollar pro Million Tokens)",
+        "storedPrice": "Gespeichert: {{value}}",
+        "priceChangeTitle": "Große Preisänderung bestätigen",
+        "priceChangeIntro": "Diese Preise weichen um mehr als das 10-Fache von den gespeicherten Werten ab. Prüfen Sie die Einheit: Sie geben US-Dollar pro Million Tokens ein.",
+        "priceChangeRow": "{{field}} ({{group}}): {{stored}} → {{next}}",
+        "priceChangeConfirm": "Bestätigen und speichern",
+        "priceChangeBack": "Zurück",
+        "priceGroupStandard": "Normal",
+        "priceGroupFast": "Schnellmodus",
+        "fastPrices": "Preise im Schnellmodus (optional)",
+        "fastPricesHint": "Der Schnellmodus kann erst ausgewählt werden, wenn alle vier Schnellmodus-Preise gesetzt sind.",
+        "inputCentsPerM": "Eingabe",
+        "outputCentsPerM": "Ausgabe",
+        "cacheReadCentsPerM": "Cache-Lesen",
+        "cacheWriteCentsPerM": "Cache-Schreiben",
+        "effort": "Aufwandsstufen",
+        "thinkingDisplay": "Denkanzeige",
+        "fast": "Schnellmodus unterstützt",
+        "inferenceGeo": "Inferenz-Regionen",
+        "inferenceGeoHint": "Durch Kommas getrennte, gegen die Anthropic-API bestätigte Werte, zum Beispiel us, global.",
+        "minPlan": "Mindesttarif",
+        "allPlans": "Alle Tarife",
+        "promptProfile": "Prompt-Profil",
+        "offered": "Auf dem Plattformschlüssel angeboten",
+        "offeredHint": "Erfordert alle vier Preise.",
+        "isDefault": "Plattform-Standard",
+        "defaultHint": "Vermerkt für den kommenden Modell-Resolver pro Funktion. Bis dahin stammt der Standard der Bereitstellung aus ANTHROPIC_MODEL oder dem integrierten Standard.",
+        "defaultLocked": "Dies ist der Plattform-Standard. Machen Sie ein anderes Modell zum Standard, um ihn zu ändern.",
+        "save": "Speichern",
+        "cancel": "Abbrechen"
+      },
+      "notice": {
+        "saved": "Modell gespeichert.",
+        "refreshQueued": "Modellaktualisierung eingereiht."
+      },
+      "errors": {
+        "load": "KI-Modelle konnten nicht geladen werden.",
+        "save": "Das Modell konnte nicht gespeichert werden.",
+        "refresh": "Die Modellaktualisierung konnte nicht eingereiht werden.",
+        "invalidRates": "Geben Sie alle vier Preise als nicht negative Zahlen ein oder lassen Sie alle vier leer."
       }
     }
   },
