@@ -93,6 +93,7 @@ async function seed() {
     accessibleOrgIds: [allowedOrg.id],
     accessiblePartnerIds: [],
     userId: colleague.id,
+    currentPartnerId: partner.id,
   };
   const otherOrgCtx: DbAccessContext = {
     scope: 'organization',
@@ -100,6 +101,7 @@ async function seed() {
     accessibleOrgIds: [otherOrg.id],
     accessiblePartnerIds: [],
     userId: otherOrgUser.id,
+    currentPartnerId: partner.id,
   };
   const fullPartnerCtx: DbAccessContext = {
     scope: 'partner',
@@ -211,9 +213,16 @@ describe('access_review_items policies follow the parent review owner', () => {
     expect((await adminItem(f.otherColleagueItem.id))?.decision).toBe('approved');
   });
 
-  it('an org session does not read items of a partner-owned review', async () => {
+  it('an org session that can read a partner-owned review does not read or change its items', async () => {
     const f = await seed();
+    const visibleReviews = await withDbAccessContext(f.otherOrgCtx, async () =>
+      (await db.select({ id: accessReviews.id }).from(accessReviews)).map((r) => r.id)
+    );
+    expect(visibleReviews).toContain(f.partnerReview.id);
     expect(await visibleItemIds(f.otherOrgCtx)).not.toContain(f.partnerColleagueItem.id);
+    expect(await setDecision(f.otherOrgCtx, f.partnerColleagueItem.id)).toHaveLength(0);
+    expect(await deleteItem(f.otherOrgCtx, f.partnerColleagueItem.id)).toHaveLength(0);
+    expect((await adminItem(f.partnerColleagueItem.id))?.decision).toBe('pending');
   });
 
   it('a full partner session reads every item and can add, decide and delete', async () => {
