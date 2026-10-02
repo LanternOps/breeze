@@ -3,10 +3,11 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
 import { dispatchPendingBillingNotices } from '../services/autopay/noticeOutbox';
 import { drainAutopayMethodDetaches } from '../services/autopay/merge';
+import { checkExpiringAutopayCards } from '../services/autopay/cardExpiryCheck';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
-type AutopayJobData = { type: 'notice-dispatch' };
+export type AutopayJobData = { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
 let queue: Queue<AutopayJobData> | null = null;
 let worker: Worker<AutopayJobData> | null = null;
 
@@ -31,21 +32,31 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
   return result;
 }
 
+export async function processAutopayJob(data: AutopayJobData) {
+  switch (data.type) {
+    case 'notice-dispatch': return processNoticeDispatch();
+    case 'card-expiry-check': return checkExpiringAutopayCards();
+    default: throw new Error(`Unknown autopay job: ${(data as { type: string }).type}`);
+  }
+}
+
 export async function initializeAutopayWorkers(): Promise<void> {
   if (worker) return;
   let pendingQueue: Queue<AutopayJobData> | null = null;
   let pendingWorker: Worker<AutopayJobData> | null = null;
   try {
     pendingQueue = new Queue<AutopayJobData>('autopay-jobs', { connection: getBullMQConnection() });
-    pendingWorker = new Worker<AutopayJobData>('autopay-jobs', async (job: Job<AutopayJobData>) => {
-      if (job.data.type !== 'notice-dispatch') throw new Error(`Unknown autopay job: ${job.name}`);
-      return processNoticeDispatch();
-    }, { connection: getBullMQConnection(), concurrency: 1 });
+    pendingWorker = new Worker<AutopayJobData>('autopay-jobs', (job: Job<AutopayJobData>) => processAutopayJob(job.data), { connection: getBullMQConnection(), concurrency: 1 });
     attachWorkerObservability(pendingWorker, 'autopayWorker');
     pendingWorker.on('error', error => console.error('[autopayWorker]', error));
     await pendingQueue.add('notice-dispatch', { type: 'notice-dispatch' }, {
       jobId: 'billing-notice-dispatch',
       repeat: { pattern: jobSchedule('billing-notice-dispatch'), tz: 'UTC' },
+      removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
+    });
+    await pendingQueue.add('card-expiry-check', { type: 'card-expiry-check' }, {
+      jobId: 'autopay-card-expiry-check',
+      repeat: { pattern: jobSchedule('autopay-card-expiry-check'), tz: 'UTC' },
       removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
     });
     queue = pendingQueue;

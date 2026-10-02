@@ -20,6 +20,7 @@ export default defineConfig({
       'src/index.autopay.integration.test.ts',
       'src/db/schema/autopaySetupAttempts.integration.test.ts',
       'src/services/autopay/enrollmentService.integration.test.ts',
+      'src/services/autopay/cardExpiryCheck.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',

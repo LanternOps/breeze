@@ -78,6 +78,7 @@ export const DAILY_REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const JOB_SCHEDULES = {
   // Fine-grained billing outbox tick; intentionally outside the coarse collision grid.
   'billing-notice-dispatch': '* * * * *',
+  'autopay-card-expiry-check': '28 6 * * *',
   // ---------------------------------------------------------------- daily tier
   // Minutes ≡ 3 (mod 5), one job per (hour, minute).
   'device-metrics-retention': '3 0 * * *',
