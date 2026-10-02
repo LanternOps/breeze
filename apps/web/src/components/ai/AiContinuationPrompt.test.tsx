@@ -61,4 +61,24 @@ describe('AiContinuationPrompt (spec §9.2, §15 #4)', () => {
     expect(runAction).not.toHaveBeenCalled();
     expect(useAiModelPickerStore.getState().selection).toBeNull();
   });
+  it('keeps the parked continuation (and message) when the new chat cannot be opened, so the tech can retry', async () => {
+    runAction.mockResolvedValueOnce({ data: { sessionId: 's-new', summaryMessageId: 'm1' } });
+    render(<AiContinuationPrompt />);
+    fireEvent.click(screen.getByTestId('ai-continuation-continue'));
+    await waitFor(() => expect(loadSession).toHaveBeenCalledWith('s-new'));
+    await waitFor(() => expect(screen.getByTestId('ai-continuation-continue')).not.toBeDisabled());
+    expect(useAiModelPickerStore.getState().continuation?.pendingContent).toBe('next question');
+  });
+  it('clears the picker selection before opening the new chat', async () => {
+    runAction.mockResolvedValueOnce({ data: { sessionId: 's-new', summaryMessageId: 'm1' } });
+    let selectionAtLoad: unknown = 'unset';
+    loadSession.mockImplementationOnce(async () => {
+      selectionAtLoad = useAiModelPickerStore.getState().selection;
+      currentSessionId = 's-new';
+    });
+    render(<AiContinuationPrompt />);
+    fireEvent.click(screen.getByTestId('ai-continuation-continue'));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    expect(selectionAtLoad).toBeNull();
+  });
 });

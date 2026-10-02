@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 vi.mock('./auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 
-import { useAiModelPickerStore } from './aiModelPickerStore';
+import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 import type { AiModelChoicesDto } from '@breeze/shared';
 
 const CHOICES: AiModelChoicesDto = {
@@ -63,5 +63,54 @@ describe('aiModelPickerStore', () => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) });
     await useAiModelPickerStore.getState().load({ sessionId: 's2' });
     expect(useAiModelPickerStore.getState().choices).toBeNull();
+  });
+  it('with no session, loads for the org (partner scope) and never sends both keys', async () => {
+    await useAiModelPickerStore.getState().load({ orgId: 'o1' });
+    expect(fetchWithAuth).toHaveBeenCalledWith('/ai/models/choices/chat?orgId=o1');
+    await useAiModelPickerStore.getState().load({ sessionId: 's1', orgId: 'o1' });
+    expect(fetchWithAuth).toHaveBeenLastCalledWith('/ai/models/choices/chat?sessionId=s1');
+  });
+  it("noSessionOrgId prefers the page device's org, then the selected org", () => {
+    expect(noSessionOrgId({ type: 'device', id: 'd', hostname: 'h', orgId: 'od' }, 'sel')).toBe('od');
+    expect(noSessionOrgId(null, 'sel')).toBe('sel');
+    expect(noSessionOrgId(null, null)).toBeNull();
+  });
+  it('nothing is pending while a load for another key is in flight', async () => {
+    await useAiModelPickerStore.getState().load({ sessionId: 'A' });
+    useAiModelPickerStore.getState().select('haiku');
+    expect(useAiModelPickerStore.getState().pendingChoice()).toBeDefined();
+    let release!: (v: unknown) => void;
+    fetchWithAuth.mockReturnValueOnce(new Promise((r) => { release = r; }));
+    const inflight = useAiModelPickerStore.getState().load({ sessionId: 'B' });
+    expect(useAiModelPickerStore.getState().pendingChoice()).toBeUndefined();
+    release({ ok: true, json: async () => ({ data: CHOICES }) });
+    await inflight;
+  });
+  it('a late load for the same key keeps a fresh pick that is still selectable', async () => {
+    await useAiModelPickerStore.getState().load({ sessionId: 'A' });
+    let release!: (v: unknown) => void;
+    fetchWithAuth.mockReturnValueOnce(new Promise((r) => { release = r; }));
+    const inflight = useAiModelPickerStore.getState().load({ sessionId: 'A' });
+    useAiModelPickerStore.getState().select('haiku');
+    release({ ok: true, json: async () => ({ data: CHOICES }) });
+    await inflight;
+    expect(useAiModelPickerStore.getState().selection?.offeringId).toBe('haiku');
+  });
+  it('a load for a different key, or one that no longer offers the pick, clears it', async () => {
+    await useAiModelPickerStore.getState().load({ sessionId: 'A' });
+    useAiModelPickerStore.getState().select('haiku');
+    await useAiModelPickerStore.getState().load({ sessionId: 'B' });
+    expect(useAiModelPickerStore.getState().selection).toBeNull();
+    useAiModelPickerStore.getState().select('haiku');
+    fetchWithAuth.mockResolvedValueOnce({ ok: true, json: async () => ({ data: { ...CHOICES, choices: [CHOICES.choices[0]!] } }) });
+    await useAiModelPickerStore.getState().load({ sessionId: 'B' });
+    expect(useAiModelPickerStore.getState().selection).toBeNull();
+  });
+  it('a failed load warns with the status and no body', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 400, json: async () => ({ error: 'x' }) });
+    await useAiModelPickerStore.getState().load({});
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('status'), 400);
+    warn.mockRestore();
   });
 });

@@ -18,7 +18,8 @@ import AiModelPicker from "./AiModelPicker";
 import AiThinkingIndicator from "./AiThinkingIndicator";
 import AiTurnModelBadge from "./AiTurnModelBadge";
 import AiContinuationPrompt from "./AiContinuationPrompt";
-import { useAiModelPickerStore } from "@/stores/aiModelPickerStore";
+import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerStore";
+import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
 import { useTranslation } from "react-i18next";
@@ -124,11 +125,15 @@ export default function AiChatSidebar() {
   }, [isOpen, sessionId, hydratedSessionId, messages.length, isLoading, loadSession]);
 
   // A sidebar opened with no session still offers the model menu (W05).
+  // A partner-scope token has no org of its own, so the menu is fetched for the
+  // org a new chat would land in (page device's org, else the selected org).
+  const selectedOrgId = useOrgStore((s) => s.currentOrgId);
+  const menuOrgId = noSessionOrgId(pageContext, selectedOrgId);
   useEffect(() => {
     if (isOpen && !sessionId && !useAiModelPickerStore.getState().choices) {
-      void useAiModelPickerStore.getState().load({});
+      void useAiModelPickerStore.getState().load({ orgId: menuOrgId });
     }
-  }, [isOpen, sessionId]);
+  }, [isOpen, sessionId, menuOrgId]);
 
   // Load sessions when history panel opens
   useEffect(() => {

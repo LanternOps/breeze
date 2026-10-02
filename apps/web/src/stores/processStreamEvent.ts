@@ -176,7 +176,7 @@ export function processStreamEvent(
         isStreaming: true,
         createdAt: new Date()
       };
-      set((s) => ({ messages: [...s.messages, msg], refusalAlternatives: [] }));
+      set((s) => ({ messages: [...s.messages, msg], refusalAlternatives: [], turnModel: null }));
       return event.messageId;
     }
 

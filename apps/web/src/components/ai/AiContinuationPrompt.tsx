@@ -29,15 +29,18 @@ export default function AiContinuationPrompt() {
         errorFallback: t('aiContinuation.failed'),
         successMessage: t('aiContinuation.created', { model: required.target.displayName }),
       });
-      useAiModelPickerStore.getState().dismissContinuation();
       const newId = result.data.sessionId;
+      // The pick was spent creating the new chat; it must not ride on it again.
+      useAiModelPickerStore.getState().clearSelection();
       await useAiStore.getState().loadSession(newId);
       // Send only into the chat we just created and actually opened: loadSession
       // resolves normally on failure or when superseded (Codex review finding 13).
       if (useAiStore.getState().sessionId !== newId) {
+        // Keep the parked message so the tech can retry or copy it.
         showToast({ type: 'error', message: t('aiContinuation.openFailed') });
         return;
       }
+      useAiModelPickerStore.getState().dismissContinuation();
       await useAiStore.getState().sendMessage(pendingContent);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it

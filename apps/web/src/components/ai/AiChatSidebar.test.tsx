@@ -88,3 +88,22 @@ describe('AiChatSidebar permission gate (#6396)', () => {
     }
   });
 });
+
+describe('AiChatSidebar pre-session model menu (partner scope)', () => {
+  it('loads the menu for the org a new chat would land in, never a sessionId', async () => {
+    const { useAiModelPickerStore } = await import('@/stores/aiModelPickerStore');
+    const load = vi.fn(async () => undefined);
+    const original = useAiModelPickerStore.getState().load;
+    useAiModelPickerStore.setState({ load, choices: null });
+    try {
+      vi.mocked(useAiStore).mockReturnValue({
+        ...baseState, isOpen: true,
+        pageContext: { type: 'device', id: 'd1', hostname: 'h', orgId: 'org-9' },
+      });
+      render(<AiChatSidebar />);
+      expect(load).toHaveBeenCalledWith({ orgId: 'org-9' });
+    } finally {
+      useAiModelPickerStore.setState({ load: original });
+    }
+  });
+});

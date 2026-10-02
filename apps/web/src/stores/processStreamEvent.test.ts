@@ -722,3 +722,12 @@ describe('model_refusal is inert for the transcript', () => {
     expect(patched.messages).toHaveLength(2);
   });
 });
+
+describe('turn_model staleness', () => {
+  it("message_start clears the previous turn's what-ran so a missing turn_model never shows it", () => {
+    const h = { state: { ...makeState(), turnModel: { requestedModel: 'a' } as never } as StreamableState };
+    const set = (fn: (s: StreamableState) => Partial<StreamableState>) => { h.state = { ...h.state, ...fn(h.state) }; };
+    processStreamEvent({ type: 'message_start', messageId: 'm2' } as AiStreamEvent, set, () => h.state, null);
+    expect(h.state.turnModel).toBeNull();
+  });
+});

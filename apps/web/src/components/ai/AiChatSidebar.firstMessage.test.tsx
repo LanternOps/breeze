@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Real sidebar + real store: the bug lives in the interaction between the
 // sidebar's session-restore effect and `sendMessage`'s create-then-append, so
 // neither side may be mocked. Only the network and the heavy children are.
-vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('@/stores/auth', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/stores/auth')>()), fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));

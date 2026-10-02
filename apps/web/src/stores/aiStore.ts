@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
-import { RECOVERABLE_MODEL_CODES, useAiModelPickerStore } from './aiModelPickerStore';
+import { RECOVERABLE_MODEL_CODES, noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
@@ -183,7 +183,13 @@ const CLEARED_SESSION = {
 function resetModelPicker(): void {
   const picker = useAiModelPickerStore.getState();
   picker.reset();
-  void picker.load({});
+  // orgStore is read lazily (the way helpStore is above) so this store does not
+  // pull the org/auth graph in at import time.
+  const pageContext = useAiStore.getState().pageContext;
+  void import('./orgStore')
+    .then(({ useOrgStore }) => useOrgStore.getState().currentOrgId)
+    .catch(() => null)
+    .then((selectedOrgId) => picker.load({ orgId: noSessionOrgId(pageContext, selectedOrgId) }));
 }
 
 /**
@@ -301,6 +307,9 @@ export const useAiStore = create<AiState>()(
 
   createSession: async (opts) => {
     const ownsSession = claimSessionOwnership();
+    // A different chat begins: the previous chat's pick must not ride along.
+    // (A pick handed in via opts.model is the one this create commits.)
+    if (!opts?.model) useAiModelPickerStore.getState().clearSelection();
     set({ isLoading: true, error: null, errorCode: null });
     const { pageContext: storeContext, selectedM365ConnectionId, approvalMode } = get();
     const pageContext = opts?.pageContext ?? storeContext;
@@ -404,6 +413,7 @@ export const useAiStore = create<AiState>()(
   // device-scoped session, and — when an initial message is supplied — auto-sends it
   // so the tech gets an answer without retyping the context.
   startDeviceTask: async (deviceId, ctx, initialMessage) => {
+    useAiModelPickerStore.getState().clearSelection();
     set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
     await get().createSession({ deviceId });
     // Only send if the session was actually created — createSession leaves
@@ -415,6 +425,8 @@ export const useAiStore = create<AiState>()(
 
   loadSession: async (sessionId: string) => {
     const ownsSession = claimSessionOwnership();
+    // Another chat's pick must never ride on this chat's next message.
+    if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
     set({ isLoading: true, error: null });
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
@@ -555,10 +567,23 @@ export const useAiStore = create<AiState>()(
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           return;
         }
-        if (res.status === 409 && code && RECOVERABLE_MODEL_CODES.has(code)) {
+        if (res.status === 409 && code && (RECOVERABLE_MODEL_CODES.has(code) || code === 'topology_model_changed')) {
           // The chosen / stored model is no longer usable: refresh the menu so
           // the tech can pick another (spec §9.1 "choose another").
           void useAiModelPickerStore.getState().load({ sessionId: currentSessionId });
+        }
+
+        // A coded 409 that is not the continuation prompt rejected this turn
+        // before it ran: drop the optimistic bubble so the transcript matches
+        // the server's (turn_in_progress keeps the pick for the retry).
+        if (res.status === 409 && code && (code === 'turn_in_progress' || code === 'topology_model_changed' || RECOVERABLE_MODEL_CODES.has(code))) {
+          set((s) => ({
+            messages: s.messages.filter((m) => m.id !== userMsgId),
+            error: extractApiError(data, 'Failed to send message'),
+            errorCode: code,
+            isStreaming: false,
+          }));
+          return;
         }
 
         if (res.status === 409 && !code) {
