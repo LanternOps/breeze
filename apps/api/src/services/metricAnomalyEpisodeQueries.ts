@@ -14,6 +14,7 @@ import {
 
 import { db } from '../db';
 import { devices, metricAnomalies, metricAnomalyEpisodes, type MetricAnomalyEpisodeRow } from '../db/schema';
+import { EPISODE_PEAK_PREFERRED_METRICS } from './metricAnomalyEpisodeKeys';
 
 /**
  * Read side of the episode API (spec §12). Runs on the ambient request
@@ -142,8 +143,9 @@ async function loadPeakMetricRanges(orgId: string, rows: MetricAnomalyEpisodeRow
     if (r.episodeId) ranges.set(r.episodeId, { min: Number(r.min), max: Number(r.max) });
   }
 
-  // Peak member id (W01's peak rule: score DESC, window_start ASC) for the
-  // web card's remediation lookup, which is keyed by metric_anomalies.id.
+  // Peak member id (W01's peak rule: EPISODE_PEAK_PREFERRED_METRICS first,
+  // then score DESC, window_start ASC) for the web card's remediation lookup,
+  // which is keyed by metric_anomalies.id.
   const peaks = await db
     .selectDistinctOn([metricAnomalies.episodeId], { episodeId: metricAnomalies.episodeId, id: metricAnomalies.id })
     .from(metricAnomalies)
@@ -151,7 +153,12 @@ async function loadPeakMetricRanges(orgId: string, rows: MetricAnomalyEpisodeRow
       eq(metricAnomalies.orgId, orgId),
       inArray(metricAnomalies.episodeId, rows.map((r) => r.id)),
     ))
-    .orderBy(metricAnomalies.episodeId, desc(metricAnomalies.score), asc(metricAnomalies.windowStart));
+    .orderBy(
+      metricAnomalies.episodeId,
+      desc(inArray(metricAnomalies.metricName, [...EPISODE_PEAK_PREFERRED_METRICS])),
+      desc(metricAnomalies.score),
+      asc(metricAnomalies.windowStart),
+    );
   for (const p of peaks) {
     const range = p.episodeId ? ranges.get(p.episodeId) : undefined;
     if (range) range.peakAnomalyId = p.id;

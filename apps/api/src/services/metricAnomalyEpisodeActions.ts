@@ -4,6 +4,7 @@ import type { EpisodeAction } from '@breeze/shared';
 import { db } from '../db';
 import { alerts, metricAnomalies, metricAnomalyEpisodes } from '../db/schema';
 import { resolveAlert } from './alertService';
+import { EPISODE_PEAK_PREFERRED_METRICS } from './metricAnomalyEpisodeKeys';
 import { EPISODE_SNOOZE_DAYS } from './metricAnomalyEpisodes';
 import { promoteMetricAnomalyToAlert } from './metricAnomalyPromotion';
 import { emitAlertStateFeedback, emitAnomalyEpisodeFeedback, emitAnomalyEpisodeMemberFeedback } from './mlFeedbackEmitters';
@@ -283,7 +284,13 @@ async function promoteEpisode(episode: EpisodeRow, input: ApplyEpisodeActionInpu
     .select({ id: metricAnomalies.id })
     .from(metricAnomalies)
     .where(and(memberWhere(episode), inArray(metricAnomalies.status, ['open', 'promoted'])))
-    .orderBy(desc(metricAnomalies.score), asc(metricAnomalies.id))
+    // Same peak rule as the episode card (EPISODE_PEAK_PREFERRED_METRICS
+    // first), so the alert names the metric the technician was shown.
+    .orderBy(
+      desc(inArray(metricAnomalies.metricName, [...EPISODE_PEAK_PREFERRED_METRICS])),
+      desc(metricAnomalies.score),
+      asc(metricAnomalies.id),
+    )
     .limit(1);
   if (!peak) return conflict('no_promotable_member');
 

@@ -100,6 +100,17 @@ const SEASONAL_MIN_BASELINE_ACTIVE_DAYS = 3;
 const MIN_BASELINE_BUCKETS = 12;
 const MIN_SEASONAL_BASELINE_BUCKETS = 8;
 const MIN_TREND_BUCKETS = 6;
+/**
+ * Memory growth novelty window. A RAM growth trend fires only when it ends
+ * above every 5-minute bucket of the same metric in the
+ * GROWTH_NOVELTY_LOOKBACK_DAYS before the trend window. A device that climbs
+ * to the same level every day (a nightly job, a workday working set) is its
+ * own normal; a leak keeps setting new highs and still fires. Prod 2026-10-02:
+ * 48 of 54 RAM growth episodes in 2.4 days ended below the device's own 7-day
+ * high. Disk is NOT gated: disk use does not cycle daily, and a disk filling
+ * back up after a cleanup must still fire.
+ */
+const GROWTH_NOVELTY_LOOKBACK_DAYS = 7;
 
 /**
  * Novelty gate for the upward baseline and process-sample detectors: beat the
@@ -732,6 +743,22 @@ async function detectGrowthTrends(options: MetricAnomalyRange): Promise<void> {
           OR (r.metric_name = 'ram_used_mb' AND r.last_value >= r.first_value * 1.25 AND r.last_value - r.first_value >= 512)
           OR (r.metric_name = 'disk_used_gb' AND r.last_value >= r.first_value * 1.10 AND r.last_value - r.first_value >= 5)
         )
+        -- RAM novelty: a new GROWTH_NOVELTY_LOOKBACK_DAYS high. Strict, like
+        -- the baseline detectors' avg > baseline_max. No history -> fires.
+        AND (r.metric_name NOT IN ('ram_percent', 'ram_used_mb') OR NOT EXISTS (
+          SELECT 1
+          FROM metric_rollups p
+          WHERE p.org_id = r.org_id
+            AND p.device_id = r.device_id
+            AND p.source_table = r.source_table
+            AND p.metric_type = r.metric_type
+            AND p.metric_name = r.metric_name
+            AND p.bucket_seconds = r.bucket_seconds
+            AND p.bucket_start >= r.window_start - (${GROWTH_NOVELTY_LOOKBACK_DAYS}::integer * interval '1 day')
+            AND p.bucket_start < r.window_start
+            AND p.sample_count > 0
+            AND p.avg_value >= r.last_value
+        ))
     )
     INSERT INTO metric_anomalies (
       org_id,
