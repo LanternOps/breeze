@@ -192,6 +192,8 @@ Both price values must be zero or greater.
 
 - **Chat moves to this model only where chat used the platform default.** A partner that picked its own model or connection keeps it.
 - **The old chat-only runtime is removed.** The model now runs through the same verified path as a partner-added connection, so tools work.
+- **Partners cannot change the endpoint, key, prices or models** of an env-managed connection; they can enable or disable its model.
+- **If you remove the variables**, each env-managed connection stays in place, still read-only, and keeps working until a partner admin disconnects it. Setting the variables again picks the same connection back up; chat is not moved a second time.
 - **A model that fails tool verification cannot serve chat.** See [Troubleshooting](#troubleshooting) above; the most common cause is a server started without function calling enabled.
 - The same network rules apply as for a partner-added connection: loopback is never reachable, and private (RFC 1918 / ULA) addresses and cleartext `http` to a private address require `IS_HOSTED=false`. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address, not `localhost`.
 
