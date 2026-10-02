@@ -58,7 +58,9 @@ const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(25
   directness: directnessSchema.default('unknown'), confidence: confidenceSchema.default('asserted'), evidenceClass: evidenceClassSchema.default('manual'), lifecycle: lifecycleSchema.default('active'),
   firstSupportedAt: z.date().nullable().optional(), lastSupportedAt: z.date().nullable().optional(), supportCount: counter.default(0n),
   attributes: z.object({ label: z.string().max(255).optional(), notes: z.string().max(8192).optional(), method: z.enum(['manual', 'legacy', 'os_network_context', ...PHYSICAL_METHODS]).optional(), createdBy: uuid.optional(),
-    physical: physicalAttributes.optional() }).strict().default({}), ...legacy,
+    physical: physicalAttributes.optional(),
+    /** An OS default route made of a VPN half-default pair (0.0.0.0/1 + 128.0.0.0/1, #7820). */
+    halfDefault: z.literal(true).optional() }).strict().default({}), ...legacy,
 }).strict().refine(row => (row.evidenceClass === 'manual') === (row.confidence === 'asserted'), 'Manual evidence requires asserted confidence')
   .superRefine((row, ctx) => {
     const method = row.attributes.method;
@@ -67,6 +69,7 @@ const relationshipSchema = z.object({ ...scoped, canonicalKey: z.string().max(25
     // FDB membership is inference: it never mints a physical link or claims observation.
     if (method === 'fdb' && (row.kind !== 'attachment' || row.evidenceClass !== 'inferred')) ctx.addIssue({ code: 'custom', message: 'FDB evidence publishes inferred attachments only' });
     if (row.attributes.physical && !physicalMethod && method !== 'manual') ctx.addIssue({ code: 'custom', message: 'Physical attributes require a physical method' });
+    if (row.attributes.halfDefault && (row.kind !== 'default_route' || method !== 'os_network_context')) ctx.addIssue({ code: 'custom', message: 'Half-default marks an OS-observed default route only' });
   });
 const bindingSchema = z.object({ ...scoped, nodeId: uuid, deviceId: uuid.nullable().optional(), discoveredAssetId: uuid.nullable().optional(), manualNodeId: uuid.nullable().optional(),
   provenance: z.object({ method: z.enum(['inventory', 'accepted_link', 'manual', 'legacy']).optional(), sourceId: uuid.optional(), createdBy: uuid.optional() }).strict().default({}),
