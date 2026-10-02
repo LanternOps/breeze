@@ -95,6 +95,7 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
 
   const toOai = new Map<string, string>();
   const fromOai = new Map<string, string>();
+  const schemas = new Map<string, Record<string, unknown>>();
   let tools: OaiTool[] | undefined;
   if (req.tools && req.tools.length > 0) {
     if (req.tools.length > GATEWAY_MAX_TOOLS) throw bad('Too many tools for one request.');
@@ -104,6 +105,7 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
       const name = oaiToolName(t.data.name);
       toOai.set(t.data.name, name);
       fromOai.set(name, t.data.name);
+      schemas.set(t.data.name, t.data.input_schema);
       return { type: 'function', function: { name, ...(t.data.description ? { description: t.data.description } : {}), parameters: t.data.input_schema } };
     });
   }
@@ -172,5 +174,5 @@ export function translateMessagesRequest(input: unknown, wireModel: string): Tra
     stream,
     ...(stream ? { stream_options: { include_usage: true as const } } : {}),
   };
-  return { body, tools: { toOai, fromOai }, requestedModel: req.model, stream };
+  return { body, tools: { toOai, fromOai, schemas }, requestedModel: req.model, stream };
 }

@@ -7,8 +7,17 @@ export interface OaiChatRequest {
   tools?: OaiTool[]; tool_choice?: 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
   stream: boolean; stream_options?: { include_usage: true };
 }
-/** Maps OpenAI-legal function names back to the Anthropic tool names the caller sent. */
-export interface ToolNameMap { toOai: ReadonlyMap<string, string>; fromOai: ReadonlyMap<string, string> }
+/**
+ * Maps OpenAI-legal function names back to the Anthropic tool names the caller
+ * sent, and keeps each offered tool's input_schema (keyed by the caller's tool
+ * name) so model-produced arguments can be checked before any tool block is
+ * emitted.
+ */
+export interface ToolNameMap {
+  toOai: ReadonlyMap<string, string>;
+  fromOai: ReadonlyMap<string, string>;
+  schemas: ReadonlyMap<string, Record<string, unknown>>;
+}
 
 export interface OaiChatChoice {
   index: number;

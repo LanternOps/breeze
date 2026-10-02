@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS } from '../limits';
+import { GATEWAY_MAX_TOOL_ARGS_BYTES, GATEWAY_MAX_TOOL_CALLS, GATEWAY_MAX_USAGE_TOKENS } from '../limits';
 import { GatewayError } from '../types';
 import type { OaiChatResponse, OaiUsage, ToolNameMap } from './types';
 
@@ -22,27 +22,111 @@ export interface AnthropicMessage {
 export const UNSAFE_TOOL_CALL_NOTE =
   '[Breeze: the model asked to run a tool in a form Breeze could not verify, so nothing was run. Try rephrasing, or choose a different model.]';
 
-const nonNeg = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
+/** Clamp a token count into [0, GATEWAY_MAX_USAGE_TOKENS]. */
+const clampTokens = (n: number): number => Math.min(Math.max(0, Math.floor(n)), GATEWAY_MAX_USAGE_TOKENS);
+/** A usable reported counter, clamped; null when absent or not a finite non-negative number. */
+const reported = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? clampTokens(n) : null);
 
-export function mapUsage(u: OaiUsage | null | undefined): AnthropicMessage['usage'] {
-  const prompt = nonNeg(u?.prompt_tokens);
-  const cached = Math.min(nonNeg(u?.prompt_tokens_details?.cached_tokens), prompt);
-  return { input_tokens: prompt - cached, output_tokens: nonNeg(u?.completion_tokens), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 };
+/**
+ * Billable usage for one call. The endpoint's counters are untrusted: a counter
+ * that is missing, non-numeric, or zero while the matching side of the exchange
+ * is non-empty (prompt for a non-empty request, completion for a non-empty
+ * answer or tool-call arguments) is replaced by a conservative estimate, and
+ * every counter is clamped to a plausible maximum with cached ≤ prompt.
+ * `est.outputChars` is what the model produced (text plus raw tool-call
+ * arguments, accepted or not), never gateway-authored text.
+ */
+export function resolveUsage(u: OaiUsage | null | undefined, est: { inputTokens: number; outputChars: number }): AnthropicMessage['usage'] {
+  let fellBack = false;
+  let prompt = reported(u?.prompt_tokens);
+  let cached = 0;
+  if (prompt === null || (prompt === 0 && est.inputTokens > 0)) {
+    prompt = clampTokens(Math.max(1, est.inputTokens));
+    fellBack = true;
+  } else {
+    cached = Math.min(reported(u?.prompt_tokens_details?.cached_tokens) ?? 0, prompt);
+  }
+  let output = reported(u?.completion_tokens);
+  if (output === null || (output === 0 && est.outputChars > 0)) {
+    output = clampTokens(Math.ceil(est.outputChars / 3));
+    fellBack = true;
+  }
+  if (fellBack) console.warn('[modelGateway] endpoint reported missing or implausible token usage; billing an estimate');
+  return { input_tokens: prompt - cached, output_tokens: output, cache_read_input_tokens: cached, cache_creation_input_tokens: 0 };
 }
 
-const reported = (n: unknown): boolean => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+const isPlainObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+const isPrimitive = (v: unknown): boolean => v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
+/** Deeper schemas than this are treated as unverifiable (fail closed); also bounds recursion. */
+const SCHEMA_MAX_DEPTH = 64;
 
-/** Estimate missing upstream usage so an omitted counter is never billed as zero. */
-export function resolveUsage(u: OaiUsage | null | undefined, est: { inputTokens: number; outputChars: number }): AnthropicMessage['usage'] {
-  if (u && reported(u.prompt_tokens) && reported(u.completion_tokens)) return mapUsage(u);
-  console.warn('[modelGateway] endpoint reported no usable token usage; billing an estimate');
-  return { input_tokens: Math.max(1, est.inputTokens), output_tokens: Math.ceil(est.outputChars / 3), cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+/** true/false for a recognised JSON-schema type name; null for an unrecognised one (not constraining). */
+function typeMatches(t: string, v: unknown): boolean | null {
+  switch (t) {
+    case 'string': return typeof v === 'string';
+    case 'number': return typeof v === 'number' && Number.isFinite(v);
+    case 'integer': return typeof v === 'number' && Number.isInteger(v);
+    case 'boolean': return typeof v === 'boolean';
+    case 'null': return v === null;
+    case 'object': return isPlainObject(v);
+    case 'array': return Array.isArray(v);
+    default: return null;
+  }
+}
+
+/**
+ * Check a model-produced value against the subset of JSON Schema the gateway
+ * enforces: `type` (name or list, plus OpenAPI `nullable`), `required`,
+ * `properties`, `additionalProperties` (false or a schema), `items`, and
+ * primitive `enum`/`const`. Combinators, `$ref`, formats and patterns are not
+ * evaluated (they never loosen what is checked here). Work is bounded by the
+ * size of the value, and no schema-supplied regex is ever compiled.
+ */
+export function matchesToolSchema(value: unknown, schema: unknown, depth = 0): boolean {
+  if (schema === false) return false;
+  if (!isPlainObject(schema)) return true;
+  if (depth > SCHEMA_MAX_DEPTH) return false;
+  if (!(value === null && schema.nullable === true)) {
+    const t = schema.type;
+    const names = (Array.isArray(t) ? t : [t]).filter((x): x is string => typeof x === 'string');
+    if (names.length > 0) {
+      const results = names.map((n) => typeMatches(n, value));
+      if (!results.includes(null) && !results.includes(true)) return false;
+    }
+  }
+  if (Array.isArray(schema.enum)) {
+    if (isPrimitive(value)) { if (!schema.enum.some((e) => e === value)) return false; }
+    else if (schema.enum.every(isPrimitive)) return false;
+  }
+  if ('const' in schema && isPrimitive(schema.const) && value !== schema.const) return false;
+  if (isPlainObject(value)) {
+    if (Array.isArray(schema.required)) {
+      for (const k of schema.required) if (typeof k === 'string' && !Object.hasOwn(value, k)) return false;
+    }
+    const props = isPlainObject(schema.properties) ? schema.properties : {};
+    // patternProperties would admit keys this check cannot evaluate without compiling a schema regex.
+    const extra = schema.patternProperties === undefined ? schema.additionalProperties : undefined;
+    for (const [k, v] of Object.entries(value)) {
+      if (Object.hasOwn(props, k)) { if (!matchesToolSchema(v, props[k], depth + 1)) return false; }
+      else if (extra === false) return false;
+      else if (isPlainObject(extra) && !matchesToolSchema(v, extra, depth + 1)) return false;
+    }
+  }
+  if (Array.isArray(value) && (isPlainObject(schema.items) || schema.items === false)) {
+    for (const item of value) if (!matchesToolSchema(item, schema.items, depth + 1)) return false;
+  }
+  return true;
 }
 
 export const genToolUseId = (): string => `toolu_gw_${randomBytes(12).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 16).padEnd(16, '0')}`;
 export const genMessageId = (): string => `msg_gw_${randomBytes(12).toString('hex')}`;
 
-/** Validate a complete set of tool calls; any unsafe member rejects the whole batch. */
+/**
+ * Validate a complete set of tool calls; any unsafe member rejects the whole
+ * batch, so a caller never receives (and executes) part of a batch. Each call
+ * must name an offered tool and carry arguments that satisfy that tool's
+ * input_schema; a tool with no retained schema fails closed.
+ */
 export function validateToolCalls(
   calls: ReadonlyArray<{ id?: string; name?: string; arguments?: string }>,
   tools: ToolNameMap,
@@ -52,13 +136,16 @@ export function validateToolCalls(
   const out: Array<Extract<AnthropicContentBlock, { type: 'tool_use' }>> = [];
   const seenIds = new Set<string>();
   for (const c of calls) {
-    const name = c.name ? tools.fromOai.get(c.name) : undefined;
+    const name = typeof c.name === 'string' && c.name ? tools.fromOai.get(c.name) : undefined;
     if (!name) return null;
+    const schema = tools.schemas.get(name);
+    if (!schema) return null;
     const args = c.arguments ?? '';
+    if (typeof args !== 'string') return null;
     if (Buffer.byteLength(args, 'utf8') > GATEWAY_MAX_TOOL_ARGS_BYTES || args.trim() === '') return null;
     let input: unknown;
     try { input = JSON.parse(args); } catch { return null; }
-    if (input === null || typeof input !== 'object' || Array.isArray(input)) return null;
+    if (!isPlainObject(input) || !matchesToolSchema(input, schema)) return null;
     // An untrusted endpoint may repeat an id; a duplicate tool_use id would make the
     // caller's tool_result ambiguous, so any reuse gets a fresh id.
     const id = c.id && /^[A-Za-z0-9_-]{1,128}$/.test(c.id) && !seenIds.has(c.id) ? c.id : genToolUseId();
@@ -86,8 +173,8 @@ export function translateChatResponse(res: unknown, ctx: { model: string; tools:
   if (!choice?.message) throw new GatewayError(502, 'api_error', 'upstream_malformed', 'The endpoint returned no choices.');
   const content: AnthropicContentBlock[] = [];
   if (typeof choice.message.content === 'string' && choice.message.content.length > 0) content.push({ type: 'text', text: choice.message.content });
-  const calls = choice.message.tool_calls ?? [];
-  const toolUses = validateToolCalls(calls.map((c) => ({ id: c.id, name: c.function?.name, arguments: c.function?.arguments })), ctx.tools);
+  const calls = Array.isArray(choice.message.tool_calls) ? choice.message.tool_calls : [];
+  const toolUses = validateToolCalls(calls.map((c) => ({ id: c?.id, name: c?.function?.name, arguments: c?.function?.arguments })), ctx.tools);
   if (toolUses === null) content.push({ type: 'text', text: UNSAFE_TOOL_CALL_NOTE });
   else content.push(...toolUses);
   const emitted = toolUses !== null && toolUses.length > 0;
@@ -98,7 +185,9 @@ export function translateChatResponse(res: unknown, ctx: { model: string; tools:
     ...(stop === 'refusal' ? { stop_details: { type: 'refusal' as const, category: null } } : {}),
     usage: resolveUsage(r.usage, {
       inputTokens: ctx.estimatedInputTokens ?? 1,
-      outputChars: content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : JSON.stringify(b.input).length), 0),
+      // What the model produced: its text and every tool call's raw arguments, accepted or not.
+      outputChars: (typeof choice.message.content === 'string' ? choice.message.content.length : 0)
+        + calls.reduce((n, c) => n + (typeof c?.function?.arguments === 'string' ? c.function.arguments.length : 0), 0),
     }),
   };
 }

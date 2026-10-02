@@ -138,6 +138,15 @@ describe('translateMessagesRequest', () => {
     expect(oaiToolName(long)).toBe(alias);
   });
 
+  it('retains each offered tool input_schema, keyed by the caller tool name, for call validation', () => {
+    const long = `mcp__breeze__${'very_long_tool_name_'.repeat(4)}`;
+    const schema = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] };
+    const t = translateMessagesRequest({ ...base, tools: [{ name: long, input_schema: schema }, { name: 'x', input_schema: { type: 'object' } }] }, 'q');
+    expect(t.tools.schemas.get(long)).toEqual(schema);
+    expect(t.tools.schemas.get('x')).toEqual({ type: 'object' });
+    expect(translateMessagesRequest(base, 'q').tools.schemas.size).toBe(0);
+  });
+
   it('caps the tool list', () => {
     const tools = Array.from({ length: 513 }, (_, i) => ({ name: `t${i}`, input_schema: { type: 'object' } }));
     expect(() => translateMessagesRequest({ ...base, tools }, 'q')).toThrowError(/Too many tools/);
