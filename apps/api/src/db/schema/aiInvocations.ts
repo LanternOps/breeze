@@ -3,7 +3,7 @@
 // the trigger admits nothing but an org-merge re-point. Registered in
 // AUDIT_ADMIN_REQUIRED_TABLES. No FKs on provenance ids (see the migration).
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, char, index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import type { AiSurface } from '@breeze/shared';
 import { organizations } from './orgs';
 
@@ -12,6 +12,10 @@ export type AiInvocationLedgerMode = (typeof AI_INVOCATION_LEDGER_MODES)[number]
 
 const cents = (name: string) => numeric(name, { precision: 20, scale: 6, mode: 'number' });
 const tokens = (name: string) => bigint(name, { mode: 'number' }).notNull().default(0);
+
+// AI chargeback (#7608): the frozen client-price snapshot (2026-11-26-100100).
+export const AI_CHARGE_COVERAGES = ['billable', 'included', 'non_billable', 'not_eligible'] as const;
+export const AI_CHARGE_BASES = ['price_list', 'markup', 'unpriced'] as const;
 
 export const aiInvocations = pgTable('ai_invocations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -45,6 +49,12 @@ export const aiInvocations = pgTable('ai_invocations', {
   sdkReportedCostUsd: cents('sdk_reported_cost_usd'),
   ledgerMode: text('ledger_mode').$type<AiInvocationLedgerMode>().notNull().default('shadow'),
   legacyCostCents: cents('legacy_cost_cents'),
+  chargeBillingProfileId: uuid('charge_billing_profile_id'),
+  chargeCoverage: text('charge_coverage').$type<(typeof AI_CHARGE_COVERAGES)[number]>(),
+  chargeBasis: text('charge_basis').$type<(typeof AI_CHARGE_BASES)[number]>(),
+  chargeCurrency: char('charge_currency', { length: 3 }),
+  // String mode on purpose: client money is never a JS float (W10 rounding rules).
+  chargeAmount: numeric('charge_amount', { precision: 20, scale: 6 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index('ai_invocations_org_created_idx').on(t.orgId, t.createdAt.desc()),
@@ -52,6 +62,8 @@ export const aiInvocations = pgTable('ai_invocations', {
   index('ai_invocations_session_idx').on(t.sessionId).where(sql`${t.sessionId} IS NOT NULL`),
   index('ai_invocations_agent_run_idx').on(t.agentRunId).where(sql`${t.agentRunId} IS NOT NULL`),
   index('ai_invocations_offering_idx').on(t.offeringId, t.createdAt).where(sql`${t.offeringId} IS NOT NULL`),
+  index('ai_invocations_chargeable_idx').on(t.orgId, t.createdAt)
+    .where(sql`${t.chargeable} AND ${t.ledgerMode} = 'authoritative'`),
 ]);
 
 export type AiInvocationRow = typeof aiInvocations.$inferSelect;
