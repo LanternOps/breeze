@@ -329,6 +329,43 @@ function recovery(mapped = false) {
   });
 }
 const currentAttempt = () => h.rows.get(invoiceCollectionAttempts)![0];
+it.each(['ach changed', 'ach absent', 'card changed'] as const)(
+  'scopes unscheduled card recovery authority to the card fee: %s', async change => {
+    recovery();
+    h.rows.set(invoiceAutopaySchedules, []);
+    update(invoiceCollectionAttempts, { scheduleId: null, feeAmount: '1.00' });
+    update(orgAutopayConsents, { feeTerms: { methodType: 'card', currency: 'USD',
+      cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true } });
+    h.create.mockImplementationOnce(async params => {
+      expect(h.depth).toBe(0);
+      const remote = { ...pi, amount: params.amount, metadata: { ...params.metadata } };
+      if (change === 'ach absent') delete remote.metadata.authority_ach_fee;
+      h.settings.mockResolvedValue({ cardFeeBps: { value: change === 'card changed' ? 200 : 300 },
+        achFeeAmount: { value: '2.50' }, feeAttested: true });
+      h.piRetrieve.mockResolvedValue(remote);
+      h.confirm.mockImplementation(async () => {
+        expect(h.depth).toBe(0);
+        const confirmed = { ...remote, status: 'processing' };
+        h.piRetrieve.mockResolvedValue(confirmed);
+        return confirmed;
+      });
+      h.cancel.mockResolvedValue({ ...remote, status: 'canceled' });
+      return remote;
+    });
+    await resumeCollectionAttempt(attempt.id);
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10100,
+      metadata: expect.objectContaining({ authority_card_fee_bps: '300' }) }), expect.anything());
+    if (change === 'card changed') {
+      // Accepted 100 bps keeps the fee at 1.00: only the authority check can cancel this.
+      expect(h.confirm).not.toHaveBeenCalled();
+      expect(h.cancel).toHaveBeenCalledOnce();
+      expect(currentAttempt().state).toBe('canceled');
+    } else {
+      expect(h.confirm).toHaveBeenCalledOnce();
+      expect(h.cancel).not.toHaveBeenCalled();
+      expect(currentAttempt().state).toBe('processing');
+    }
+  });
 it('creates unconfirmed with principal and fee metadata, never confirms before mapping', () => {
   const params = paymentIntentCreateParams({ id: '10000000-0000-4000-8000-000000000001',
     invoiceId: '20000000-0000-4000-8000-000000000001', orgId: '30000000-0000-4000-8000-000000000001',

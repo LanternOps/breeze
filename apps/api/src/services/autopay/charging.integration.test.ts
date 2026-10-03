@@ -1416,6 +1416,38 @@ it.each([
   expect((await attempts(f.invoice.id))[0]).toMatchObject({principalAmount:'100.00', feeAmount:fee});
   expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:gross}),expect.anything());
 });
+it.each(['unchanged', 'card metadata absent', 'ach lowered'] as const)(
+  'bank capture with inherited card 300 bps and accepted ACH 2.50: %s', async change => {
+    const f = await fixture(undefined, { cardFeeBps: 300 });
+    await withSystemDbAccessContext(() => db.update(billingPaymentSettings).set({ achFeeAmount: '2.50' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+    const bank = await bankSetup(f, 'rail-fee', undefined, '2.50'); serveBank([bank]);
+    const create = provider.create.getMockImplementation()!;
+    provider.create.mockImplementationOnce(async (...args) => {
+      const remote = await create(...args);
+      if (change === 'card metadata absent') delete remote.metadata.authority_card_fee_bps;
+      if (change === 'ach lowered') await withSystemDbAccessContext(() => db.update(billingPaymentSettings)
+        .set({ achFeeAmount: '2.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+      return remote;
+    });
+    const result = await collectAfterBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id,
+      setupSessionId: bank.session.id! });
+    expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10250,
+      metadata: expect.objectContaining({ authority_ach_fee: '2.50' }) }), expect.anything());
+    const [saved] = await attempts(f.invoice.id);
+    expect(saved).toMatchObject({ scheduleId: null, principalAmount: '100.00', feeAmount: '2.50' });
+    if (change === 'ach lowered') {
+      expect(result.outcome).toBe('canceled');
+      expect(saved!.state).toBe('canceled');
+      expect(provider.confirm).not.toHaveBeenCalled();
+      expect(provider.cancel).toHaveBeenCalledOnce();
+    } else {
+      expect(result.outcome).toBe('created');
+      expect(saved!.state).toBe('processing');
+      expect(provider.confirm).toHaveBeenCalledOnce();
+      expect(provider.cancel).not.toHaveBeenCalled();
+    }
+  });
 it.each(['2.50', '3.00'])('binds a nonzero bank fee to complete client authorization: %s', async fee => {
   const f = await fixture();
   await withSystemDbAccessContext(async () => {

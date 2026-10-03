@@ -584,8 +584,9 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       || pi.metadata.authority_method !== method.stripePaymentMethodId
       || pi.metadata.authority_holder !== (method.accountHolderType ?? '')
       || pi.metadata.authority_funding !== (method.cardFunding ?? '')
-      || pi.metadata.authority_card_fee_bps !== String(settings.cardFeeBps.value)
-      || pi.metadata.authority_ach_fee !== settings.achFeeAmount.value)
+      // Other-rail fee metadata may be absent on older intents and cannot invalidate this charge.
+      || (method.type === 'card' && pi.metadata.authority_card_fee_bps !== String(settings.cardFeeBps.value))
+      || (method.type === 'us_bank_account' && pi.metadata.authority_ach_fee !== settings.achFeeAmount.value))
       : terms.methodId !== method.id || terms.methodType !== method.type
         || terms.accountHolderType !== method.accountHolderType || terms.noticeLeadDays !== noticeLeadDays(method)
         || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, quote)
