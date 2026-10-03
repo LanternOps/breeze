@@ -123,6 +123,11 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   const summaries = new Set(cards.filter((group) => !drawnCards.has(group.id)).map((group) => group.id));
   const routedFrom = new Set([...drawnCards, ...summaries]);
   for (const edge of routes) if (routedFrom.has(edge.sourceNodeId)) shownGateways.add(edge.targetNodeId);
+  // A VPN gateway no card routes to (no tunnel membership to own it; server presentationGroups step 3b) has
+  // its canonical node folded away, so it shows with the hidden networks rather than never at all.
+  const routed = new Set(routes.map((edge) => edge.targetNodeId));
+  const unroutedOverlay = groups.filter((group) => group.group!.kind === 'gateway' && group.group!.networkClass === 'overlay' && !routed.has(group.id));
+  if (showAllNetworks) for (const group of unroutedOverlay) shownGateways.add(group.id);
   const renderedGroups = visibleGroups.filter((group) => group.group!.kind === 'gateway' ? shownGateways.has(group.id) : true);
   const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
   const nodes: RenderNode[] = [];
@@ -164,7 +169,7 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
       edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'inferred', label: null, layoutSource: edge.sourceNodeId, layoutTarget: edge.targetNodeId });
     }
   }
-  const hiddenNetworkCount = groups.filter((group) => group.group!.kind === 'network' && !renderedGroupIds.has(group.id)).length;
+  const hiddenNetworkCount = [...groups.filter((group) => group.group!.kind === 'network'), ...unroutedOverlay].filter((group) => !renderedGroupIds.has(group.id)).length;
   const hiddenDeviceCount = allGroups.filter((group) => group.group!.kind === 'hidden' && group.group!.basis === 'decommissioned').reduce((sum, group) => sum + group.memberCount, 0);
   const site = linkNetworks(graph, [...drawnCards].map((cardId) => groups.find((group) => group.id === cardId)!), nodes, edges, text);
   return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount, site };

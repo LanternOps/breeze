@@ -170,6 +170,33 @@ describe('buildPresentationGroups', () => {
     }
   });
 
+  it('marks a VPN gateway with no overlay card as an overlay gateway that no card routes to, so the client can show it with the hidden networks', () => {
+    // The tunnel's default route, but the observer reports no membership on the tunnel (no overlay card to own it).
+    for (const marker of [{ interfaceKind: 'tunnel' }, { halfDefault: true }]) {
+      const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+      input.routes.push({ id: R(9), endpointId: E(1), gatewayId: G(9), address: '10.212.134.1', interfaceId: marker.interfaceKind ? I(9) : I(1), fresh: true,
+        ...('halfDefault' in marker ? { halfDefault: true } : {}), ...(marker.interfaceKind ? { interfaceKind: marker.interfaceKind } : {}) });
+      const { nodes, edges } = build(input);
+      expect(networks(nodes).filter((node) => node.group!.networkClass === 'overlay')).toEqual([]);
+      const vpn = gateways(nodes).find((node) => node.group!.address === '10.212.134.1')!;
+      // Folded into its own gateway group (so the canonical node is not drawn), marked overlay so it is never lost.
+      expect(vpn.group!.canonicalNodeIds).toEqual([G(9)]);
+      expect(vpn.group!.networkClass).toBe('overlay');
+      expect(role(edges, 'routes_via').some((edge) => edge.targetNodeId === vpn.id)).toBe(false);
+      // A LAN gateway keeps no class: it is never governed by the hidden-networks toggle.
+      expect(gateways(nodes).find((node) => node.group!.address === '10.1.2.100')!.group!.networkClass).toBeNull();
+    }
+  });
+
+  it('marks a VPN gateway folded under its overlay card as an overlay gateway too', () => {
+    const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+    input.networks.push({ id: N(9), prefix: '10.212.134.0/24' });
+    input.memberships.push({ id: M(9), endpointId: E(1), networkId: N(9), interfaceId: I(9), fresh: true, interfaceKind: 'tunnel' });
+    input.routes.push({ id: R(9), endpointId: E(1), gatewayId: G(9), address: '10.212.134.1', interfaceId: I(9), fresh: true, interfaceKind: 'tunnel' });
+    const { nodes } = build(input);
+    expect(gateways(nodes).find((node) => node.group!.address === '10.212.134.1')!.group!.networkClass).toBe('overlay');
+  });
+
   it('classifies by the membership interface kind first; CIDR only when the kind is unknown (#7819)', () => {
     const input = lan([
       { n: 1, prefix: '10.8.0.0/24', gateway: '10.8.0.1' }, // WireGuard on RFC1918

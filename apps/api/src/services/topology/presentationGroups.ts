@@ -88,7 +88,8 @@ type Candidate = {
   /** Unplaced endpoints corroborated by an in-candidate observer's neighbour cache (#7816). */
   neighborSeen: Map<string, NeighborTuple>;
 };
-type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[] };
+/** `overlay`: a VPN tunnel's gateway (step 3b), shown only with the hidden networks; never a LAN card's gateway. */
+type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[]; overlay: boolean };
 
 const sorted = <T>(values: Iterable<T>) => [...values].sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
 const bySmallest = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -326,7 +327,11 @@ function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
   //     folds under the observer's overlay card on that interface (else its only overlay card of the
   //     family), so it is shown only with the hidden-networks toggle and is never a LAN card's gateway.
   //     With no overlay card to own it, it still folds into its own gateway group, which no card routes to.
+  //     Either way the gateway group is marked overlay (networkClass 'overlay'): the client shows an
+  //     unrouted one with the hidden networks, so the folded canonical gateway is never lost (#7892).
+  const overlayRouteIds = new Set<string>();
   for (const route of [...routesByObserver.values()].flat().filter(overlayRoute)) {
+    overlayRouteIds.add(route.id);
     const own = memberships.filter((m) => m.endpointId === route.endpointId && m.networkClass === 'overlay' && m.family === route.family);
     const owner = (route.interfaceId ? own.find((m) => m.interfaceId === route.interfaceId) : undefined) ?? (own.length === 1 ? own[0] : undefined);
     routeOwner.set(route.id, { route, candidateKey: owner ? membershipCandidate.get(owner.id)! : `overlay-route|${route.family}` });
@@ -334,7 +339,7 @@ function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
   const gatewayGroups = new Map<string, GatewayGroup>();
   for (const { route, candidateKey } of routeOwner.values()) {
     const key = `${candidateKey}|gw|${route.address}${linkLocalAddress(route.address) ? `|${route.gatewayId}` : ''}`;
-    const group = gatewayGroups.get(key) ?? { key, candidateKey, address: route.address, routes: [] };
+    const group = gatewayGroups.get(key) ?? { key, candidateKey, address: route.address, routes: [], overlay: overlayRouteIds.has(route.id) };
     group.routes.push(route);
     gatewayGroups.set(key, group);
   }
@@ -535,7 +540,7 @@ function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions):
     nodeIds.set(group.key, id);
     return { id, view, role: 'gateway_group', label: `Reported gateway ${group.address}`.slice(0, 255), memberCount: canonical.length,
       frontierToken: tokenFor(groupRef('gateway', group.key)), authority: false,
-      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: group.address, gatewayAddresses: [],
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: group.overlay ? 'overlay' : null, prefix: null, address: group.address, gatewayAddresses: [],
         conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds,
         ...(gatewayMacs.length ? { gatewayMacs } : {}) } };
   };

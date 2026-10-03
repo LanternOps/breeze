@@ -136,6 +136,24 @@ describe('compileTopologyRender', () => {
     expect(compileTopologyRender(g, { showAllNetworks: false }).hiddenNetworkCount).toBe(1);
   });
 
+  it('shows an overlay (VPN) gateway that no card routes to with the hidden networks, never losing it', () => {
+    // The server folds the VPN gateway into its own group with no overlay card to route from it (no tunnel membership).
+    const { graph: g } = lan();
+    const vpn = id(60);
+    g.nodes.push(node(vpn, 'gateway', '10.212.134.1'));
+    g.presentation.nodes.push(group(P('gw-vpn'), 'Reported gateway 10.212.134.1', { kind: 'gateway', basis: 'reported_gateway', networkClass: 'overlay', prefix: null,
+      address: '10.212.134.1', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [vpn] }));
+    const hidden = compileTopologyRender(g, { showAllNetworks: false });
+    const hiddenIds = new Set(hidden.nodes.map((n) => n.id));
+    expect(hiddenIds.has(P('gw-vpn'))).toBe(false);
+    expect(hiddenIds.has(vpn)).toBe(false);
+    // Counted with the hidden networks so the toggle that shows it is offered (link-local card + the VPN gateway).
+    expect(hidden.hiddenNetworkCount).toBe(2);
+    const shown = compileTopologyRender(g, { showAllNetworks: true });
+    expect(shown.nodes.find((n) => n.id === P('gw-vpn'))).toMatchObject({ kind: 'gateway', label: '10.212.134.1' });
+    expect(shown.hiddenNetworkCount).toBe(0);
+  });
+
   it('every edge endpoint is a rendered node (no dangling edges after folding)', () => {
     const { graph: g } = lan();
     for (const showAllNetworks of [false, true]) {
