@@ -786,3 +786,13 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided' }));
   });
 });
+
+it('does not emit legacy payment.failed for an unapplied autopay capture', async () => {
+  const mapping = { id: 'm2', invoiceId: 'inv2', invoicePaymentId: null, stripeAccountId: 'acct_1',
+    source: 'autopay', stripeObjectType: 'payment_intent', amount: '100.00', feeAmount: '0.00', currency: 'USD' };
+  queueResult([mapping]);
+  queueResult([{ id: 'inv2', orgId: 'org1', partnerId: 'p1', status: 'void', balance: '100.00', currencyCode: 'USD' }]);
+  queueResult([mapping]); queueResult([]);
+  await recordStripePayment({ stripeObjectId: 'pi_2', stripePaymentIntentId: 'pi_2', stripeAccountId: 'acct_1', amount: '100.00', currency: 'USD' });
+  expect(emit).not.toHaveBeenCalled(); expect(recompute).not.toHaveBeenCalled();
+});

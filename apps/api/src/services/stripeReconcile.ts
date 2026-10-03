@@ -31,7 +31,7 @@ interface CaptureInput {
  *  run only after the reconcile transaction — and its invoice row lock — end. */
 type ReconcileOutcome =
   | { kind: 'noop'; invoiceId: string }
-  | { kind: 'terminal'; invoiceId: string; orgId: string; partnerId: string; reason: string }
+  | { kind: 'terminal'; invoiceId: string; orgId: string; partnerId: string; reason: string; source: (typeof invoiceStripePayments.$inferSelect)['source'] }
   | {
     kind: 'recorded'; invoiceId: string; orgId: string; partnerId: string; paymentId: string; paid: boolean;
     // The accounting mapping row this capture created, owed a `push-payment`
@@ -131,7 +131,7 @@ export async function recordStripePayment(
     // happen after the transaction (no Redis work under the held lock).
     const terminalFail = async (reason: string): Promise<ReconcileOutcome> => {
       await markMapping(mapping.id, 'failed');
-      return { kind: 'terminal', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId, reason };
+      return { kind: 'terminal', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId, reason, source: mapping.source };
     };
 
     if (inv.status === 'draft' || inv.status === 'void') {
@@ -239,7 +239,7 @@ export async function recordStripePayment(
     // mismatch, overpayment, account mismatch, void/draft invoice). That is a money
     // divergence requiring human reconciliation — surface it to Sentry, not just logs.
     captureException(new Error(`[stripeReconcile] terminal payment failure (${outcome.reason}) stripeObjectId=${input.stripeObjectId} invoiceId=${outcome.invoiceId}`));
-    await afterCommit('settle-emit-payment.failed', commitCtx, () => emitInvoiceEvent({
+    if (outcome.source !== 'autopay') await afterCommit('settle-emit-payment.failed', commitCtx, () => emitInvoiceEvent({
       type: 'payment.failed', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId }));
   } else if (outcome.kind === 'recorded') {
     const commitCtx = { partnerId: outcome.partnerId, invoiceId: outcome.invoiceId, stripeObjectId: input.stripeObjectId };

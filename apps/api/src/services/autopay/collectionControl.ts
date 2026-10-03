@@ -1,7 +1,9 @@
+import { db, withSystemDbAccessContext } from '../../db';
+import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { and, eq, inArray } from 'drizzle-orm';
 import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
-  organizations, partners } from '../../db/schema';
+  organizations, partners, orgAutopayEnrollments } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
@@ -31,7 +33,7 @@ export function pendingInvoiceControl(reason: string | null): InvoiceControl | '
   return null;
 }
 
-/** Fence first under the shared invoice lock. This module never calls Stripe or releases money.
+/** Fence first under the shared invoice lock. This request path never calls Stripe or releases money.
  * Batch H's reconciler finalizes pending requests after verified cancellation/settlement.
  */
 export async function requestInvoiceControl(tx: Tx, input: {
@@ -126,4 +128,35 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
     kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
     rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
       html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+}
+
+/** Recover fences using the same mapping-bound, outside-transaction provider path
+ * as crash recovery. Never confirm while reconciling a control. Includes client
+ * attempts without a schedule, discoverable through the invoice/enrollment fence.
+ */
+export async function reconcilePendingControls(): Promise<void> {
+  assertNoHeldDbContextForStripe('reconcilePendingControls');
+  const { resumeCollectionAttempt } = await import('./collectionEngine');
+  const attempts = await withSystemDbAccessContext(() => db.select().from(invoiceCollectionAttempts)
+    .where(inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])), 'autopay.pendingControls');
+  const errors: unknown[] = [];
+  for (const attempt of attempts) {
+    try {
+      const fenced = await withSystemDbAccessContext(async () => {
+        const [invoice] = await db.select().from(invoices).where(eq(invoices.id, attempt.invoiceId)).limit(1);
+        if (!invoice) throw new Error('Control invoice missing');
+        const [schedule] = await db.select().from(invoiceAutopaySchedules)
+          .where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)).limit(1);
+        const [enrollment] = await db.select().from(orgAutopayEnrollments)
+          .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
+        return collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded,
+          enrollmentStatus: enrollment?.status ?? null }) || !!pendingInvoiceControl(schedule?.stateReason ?? null);
+      }, 'autopay.controlFence');
+      if (fenced) await resumeCollectionAttempt(attempt.id, true);
+    } catch (error) {
+      // One unavailable account must not prevent another invoice's control from finishing.
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Pending payment controls need reconciliation');
 }
