@@ -1,3 +1,4 @@
+import { autopayReasonKey } from './autopayReason';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
@@ -27,13 +28,17 @@ export default function AutopayListPage() {
       <button data-testid="autopay-send-now" disabled={busy} onClick={() => void send(unasked.map(row => row.orgId))}>{t('autopay.sendNow')}</button>
       <button data-testid="autopay-dismiss" onClick={() => setDismissed(true)}>{t('autopay.dismiss')}</button></aside>}
     <button data-testid="autopay-bulk-send" disabled={busy || selected.length === 0} onClick={() => void send(selected)}>{t('autopay.request')}</button>
-    <table data-testid="autopay-table"><thead><tr><th>{t('autopay.select')}</th><th>{t('autopay.client')}</th><th>{t('autopay.statusLabel')}</th><th>{t('autopay.method')}</th></tr></thead>
+    <table data-testid="autopay-table"><thead><tr><th>{t('autopay.select')}</th><th>{t('autopay.client')}</th><th>{t('autopay.statusLabel')}</th><th>{t('autopay.method')}</th><th>{t('autopay.lastCharge')}</th><th>{t('autopay.attention')}</th></tr></thead>
       <tbody>{rows.map(row => <tr data-testid={`autopay-row-${row.orgId}`} key={row.orgId}>
         <td><input type="checkbox" aria-label={t('autopay.selectClient', { name: row.orgName })} data-testid={`autopay-select-${row.orgId}`}
           checked={selected.includes(row.orgId)} disabled={busy || row.enrollment?.status === 'active'}
           onChange={e => setSelected(current => e.target.checked ? [...current, row.orgId] : current.filter(id => id !== row.orgId))} /></td>
         <td><a data-testid={`autopay-client-${row.orgId}`} href={`/organizations/${row.orgId}#billing`}>{row.orgName}</a></td>
-        <td>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}{(row.requestNoticeStatus==='failed'||row.requestNoticeStatus==='handler_failed')&&<div><p role="alert" data-testid={`autopay-delivery-${row.orgId}`} className="text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p><button data-testid={`autopay-resend-${row.orgId}`} disabled={busy} onClick={()=>void send([row.orgId])}>{t('autopay.resend')}</button></div>}</td><td>{methodLabel(row.method)}</td></tr>)}</tbody></table>
+        <td>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}{(row.requestNoticeStatus==='failed'||row.requestNoticeStatus==='handler_failed')&&<div><p role="alert" data-testid={`autopay-delivery-${row.orgId}`} className="text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p><button data-testid={`autopay-resend-${row.orgId}`} disabled={busy} onClick={()=>void send([row.orgId])}>{t('autopay.resend')}</button></div>}</td><td>{methodLabel(row.method)}</td>
+        <td data-testid="autopay-last-charge">{row.lastCharge ? t(/* i18n-dynamic */ `autopay.attemptStates.${row.lastCharge.state}`, {defaultValue:row.lastCharge.state}) : t('autopay.noCharge')}</td>
+        <td>{row.awaitingNotice && row.awaitingNotice.count > 0 && <a data-testid="autopay-notice-stuck" href={`/billing/invoices/${row.awaitingNotice.invoiceId}`}>
+          <span>{t('autopay.noticeStuck')}</span>{row.awaitingNotice.reason && <>: {t(/* i18n-dynamic */ autopayReasonKey(row.awaitingNotice.reason),{nsSeparator:false})}</>}
+        </a>}</td></tr>)}</tbody></table>
     {rows.length === 0 && <p data-testid="autopay-empty">{t('autopay.empty')}</p>}
     {result && <section data-testid="autopay-bulk-result" role={result.skipped.length?'alert':'status'} className={result.skipped.length?'text-amber-800 dark:text-amber-200':undefined}><p>{t('autopay.requestedCount', { count: result.requested.length })}</p>
       {result.skipped.map(item => <p key={item.orgId}>{rows.find(row => row.orgId === item.orgId)?.orgName ?? item.orgId}: {skippedAutopayReason(item.reason)}</p>)}</section>}

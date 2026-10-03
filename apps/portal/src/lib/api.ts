@@ -521,7 +521,11 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
     : { saveForAutopay: false };
 }
 
+import type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+export type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+
 export interface InvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
@@ -725,6 +729,7 @@ export interface PublicQuoteDetail {
  *  invoice deliberately carries only identity fields (no amounts), so most
  *  money fields are optional here. */
 export interface PublicInvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
   invoice: {
     id: string;
@@ -986,8 +991,8 @@ export const portalApi = {
     return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
   },
 
-  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ url: string }>> =>
-    apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, autopay, config),
+  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<InvoicePayResult>> =>
+    apiPost<InvoicePayResult>(`/portal/invoices/${id}/pay`, autopay, config),
 
   // Verify-on-return: settle the Checkout session server-side after the customer
   // lands back on the invoice (success_url carries the session id). Idempotent — the
@@ -1193,8 +1198,8 @@ export const portalApi = {
     );
   },
 
-  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ data: { url: string } }>> =>
-    apiPost<{ data: { url: string } }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
+  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
+    apiPost<{ data: InvoicePayResult }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
   // session id for settlement + the canonical public page url (the return urls

@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 
 function renderDetail(over: Partial<InvoiceDetailData>) {
-  return render(<InvoiceDetail detail={{ invoice, lines: [line('a', 2), line('b', 0)], ...over }} onChanged={vi.fn()} />);
+  return render(<InvoiceDetail detail={{ autopay: null, invoice, lines: [line('a', 2), line('b', 0)], ...over }} onChanged={vi.fn()} />);
 }
 
 describe('InvoiceDetail device evidence (#3205 W07)', () => {
@@ -48,7 +48,7 @@ describe('InvoiceDetail device evidence (#3205 W07)', () => {
   });
 
   it('renders NO notice for a recorded invoice, even when a line has zero devices', () => {
-    renderDetail({ invoice: { ...invoice, evidenceVersion: 1 }, lines: [line('a', 0)] });
+    renderDetail({ autopay: null, invoice: { ...invoice, evidenceVersion: 1 }, lines: [line('a', 0)] });
     expect(screen.queryByTestId('invoice-devices-not-recorded')).toBeNull();
   });
 

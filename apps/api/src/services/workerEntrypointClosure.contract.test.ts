@@ -487,6 +487,12 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
   });
 
   describe('global-placement entries never reach socket-local dispatch', () => {
+    it('collection engine merge provenance does not load the merge engine or socket dispatch', () => {
+      const closure = importClosure(path.join(SRC_ROOT, 'services/autopay/collectionEngine.ts'), { followDynamic: true });
+      expect([...closure].map(relPath)).not.toContain('services/orgMerge.ts');
+      expect(socketLocalOffenders(closure)).toEqual([]);
+    });
+
     const entries = parseRegistrySource();
     // sanity: the source-parsing regex itself must find every registry entry
     expect(entries.length).toBe(EXPECTED_NAMES.length);

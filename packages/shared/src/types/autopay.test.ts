@@ -41,3 +41,23 @@ describe('autopay cross-wave vocabulary', () => {
     expect(BILLING_NOTICE_KINDS).toEqual(['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring', 'autopay_paused', 'autopay_resumed']);
   });
 });
+
+const bank = { invoiceId: '10000000-0000-4000-8000-000000000001', orgId: '20000000-0000-4000-8000-000000000001',
+  principal: '100.00', fee: '0.00', currency: 'USD', disclosureHash: 'a'.repeat(64) };
+const collection = { attemptId: '30000000-0000-4000-8000-000000000001',
+  methodId: '40000000-0000-4000-8000-000000000001', stripePaymentMethodId: 'pm_bank',
+  setupIntentId: 'seti_bank', accountHolderType: 'individual' };
+const bankSchema = vocabulary.autopayConsentSnapshotSchema.shape.bankPayment;
+
+it('validates bank consent amounts without a collection binding before reservation', () => {
+  expect(bankSchema.safeParse(bank).success).toBe(true);
+  expect(bankSchema.safeParse(undefined).success).toBe(true);
+  expect(bankSchema.safeParse(null).success).toBe(true);
+  for (const patch of [{ principal: 100 }, { fee: '-1.00' }, { currency: 'EUR' }, { invoiceId: 'bad' }, { disclosureHash: '' }]) {
+    expect(bankSchema.safeParse({ ...bank, ...patch }).success).toBe(false);
+  }
+});
+
+it('rejects reservation-time mutations of immutable bank consent', () => {
+  expect(bankSchema.safeParse({ ...bank, collection }).success).toBe(false);
+});

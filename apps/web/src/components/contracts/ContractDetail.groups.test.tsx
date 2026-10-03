@@ -24,7 +24,9 @@ const resp = (payload: unknown): Response =>
   ({ ok: true, status: 200, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 const detail: ContractDetailData = {
+  autopayEnabled: false,
   contract: {
+    autopayExcluded: false,
     id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status: 'active',
     billingTiming: 'advance', intervalMonths: 1, startDate: '2026-06-01', endDate: null,
     nextBillingAt: '2026-07-01', autoIssue: false, autoRenew: false, renewalTermMonths: null, renewalNoticeDays: null,

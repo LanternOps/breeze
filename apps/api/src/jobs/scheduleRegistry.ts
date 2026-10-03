@@ -221,6 +221,8 @@ export const JOB_SCHEDULES = {
   // least one hour, so this takes :21, free in every hour and outside the
   // ≡0 (mod 5) minutes the fine-grained ticks land on.
   'parked-device-expiry': '21 * * * *',
+  // Autopay collection: :26 is free in every hour; the mod-5 sub-daily lane is full.
+  'autopay-collection-run': '26 * * * *',
   // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
   // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in

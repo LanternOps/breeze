@@ -18,7 +18,10 @@ type TemplatesMap = Partial<Record<EmailTemplateId, EmailTemplateOverride>>;
 const AUTOPAY_TEMPLATE_IDS=new Set<EmailTemplateId>(['autopay_request','autopay_enrolled','autopay_stopped', 'autopay_paused', 'autopay_resumed','card_expiring']);
 const BILLING_TEMPLATE_IDS=new Set<EmailTemplateId>(['quote_send','invoice_send',...AUTOPAY_TEMPLATE_IDS]);
 BILLING_TEMPLATE_IDS.add('payment_reminder');
+BILLING_TEMPLATE_IDS.add('invoice_autopay');
 BILLING_TEMPLATE_IDS.add('payment_overdue');
+BILLING_TEMPLATE_IDS.add('payment_receipt');
+BILLING_TEMPLATE_IDS.add('payment_failed');
 
 function asOverride(row: unknown): EmailTemplateOverride | undefined {
   if (!row || typeof row !== 'object') return undefined;
@@ -136,7 +139,8 @@ export default function EmailTemplatesTab() {
                     data-testid={AUTOPAY_TEMPLATE_IDS.has(id)?`autopay-email-template-${id}`:id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`}>
                     <span className="text-sm font-medium">
                       {AUTOPAY_TEMPLATE_IDS.has(id)?t(/* i18n-dynamic */ `emailTemplates.labels.${id}`):id === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
-                        :id === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue') : emailTemplateLabel(id)}
+                        :id === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
+                        :id === 'invoice_autopay' ? tBilling('autopay.noticeTemplate') : t(/* i18n-dynamic */ `emailTemplates.labels.${id}`, { defaultValue: emailTemplateLabel(id) })}
                     </span>
                     <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
                       {isCustom(templates[id])?t('emailTemplates.custom'):t('emailTemplates.usingDefault')}

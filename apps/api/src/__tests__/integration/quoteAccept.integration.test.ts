@@ -1,3 +1,4 @@
+import { orgAutopayEnrollments, stripeConnectAccounts, invoiceAutopaySchedules } from '../../db/schema';
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
@@ -15,6 +16,18 @@ import type { QuoteActor } from '../../services/quoteTypes';
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 function ctxFor(orgId: string, partnerId: string): DbAccessContext { return { scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [partnerId], userId: null }; }
 function actorFor(orgId: string, partnerId: string): QuoteActor { return { userId: null, partnerId, accessibleOrgIds: [orgId] }; }
+async function seedRequestedEnrollment(orgId: string, partnerId: string) {
+  await withSystemDbAccessContext(async () => {
+    const [connection] = await db.insert(stripeConnectAccounts).values({
+      partnerId, stripeAccountId: `acct_requested_${orgId}`, apiKey: 'enc:synthetic',
+      keyLast4: 'test', status: 'connected', livemode: false,
+    }).returning();
+    await db.insert(orgAutopayEnrollments).values({ orgId, partnerId, status: 'requested',
+      generation: 1, requestedAt: new Date(), stripeConnectionId: connection!.id,
+      stripeAccountId: connection!.stripeAccountId });
+  });
+}
+
 async function seed() { return withSystemDbAccessContext(async () => { const partner = await createPartner(); const org = await createOrganization({ partnerId: partner.id }); return { partner, org }; }); }
 
 describe('quote accept → convert', () => {
@@ -101,12 +114,17 @@ describe('quote accept → convert', () => {
   // total (no tax re-resolve).
   runDb('issues the converted invoice (sent + number + balance) so it is immediately payable', async () => {
     const { partner, org } = await seed();
+    await seedRequestedEnrollment(org.id, partner.id);
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Onboarding', quantity: 1, unitPrice: 250, taxable: false, customerVisible: true, recurrence: 'one_time' } as any, actor));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
 
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Jane Buyer' }));
+    const schedules = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, res.invoiceId)));
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0]!.ineligibleReason).toBe('not_enrolled');
     expect(res.invoiceIssued).toBe(true); // drives the post-commit invoice.issued emit + PDF enqueue
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
     expect(inv!.status).toBe('sent'); // issued → payable (PAYABLE set in invoiceCheckout)
@@ -187,11 +205,14 @@ describe('quote accept → convert', () => {
 
   runDb('a recurring-only quote still converts but yields a $0 invoice (Phase 2 degenerate edge)', async () => {
     const { partner, org } = await seed();
+    await seedRequestedEnrollment(org.id, partner.id);
     const ctx = ctxFor(org.id, partner.id); const actor = actorFor(org.id, partner.id);
     const created = await withDbAccessContext(ctx, () => createQuote({ orgId: org.id, currencyCode: 'USD' }, actor));
     await withDbAccessContext(ctx, () => addManualLine(created.id, { sourceType: 'manual', description: 'Managed services', quantity: 1, unitPrice: 99, taxable: false, customerVisible: true, recurrence: 'monthly' } as any, actor));
     await withDbAccessContext(ctx, () => sendQuote(created.id, actor));
     const res = await withDbAccessContext(ctx, () => acceptQuote({ quoteId: created.id, signerName: 'Bob' }));
+    expect(await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, res.invoiceId)))).toHaveLength(0);
     expect(res.invoiceIssued).toBe(false); // no one-time lines → invoice not issued → no invoice.issued emit
     const [inv] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, res.invoiceId)));
     expect(inv!.total).toBe('0.00');

@@ -14,7 +14,7 @@ import './setup';
 import { describe, it, expect } from 'vitest';
 import { eq, and } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, contracts, contractLines, contractBillingPeriods, invoices } from '../../db/schema';
+import { partners, organizations, users, contracts, contractLines, contractBillingPeriods, invoices, orgAutopayEnrollments, stripeConnectAccounts, invoiceAutopaySchedules } from '../../db/schema';
 import { runContractBillingSweep } from '../../jobs/contractWorker';
 
 describe('runContractBillingSweep', () => {
@@ -100,6 +100,13 @@ describe('runContractBillingSweep', () => {
           partnerId, name: 'AIOrg', slug: `aio-${sfx}`
         }).returning({ id: organizations.id });
         const orgId = o!.id;
+        const [connection] = await db.insert(stripeConnectAccounts).values({
+          partnerId, stripeAccountId: `acct_requested_${orgId}`, apiKey: 'enc:synthetic',
+          keyLast4: 'test', status: 'connected', livemode: false,
+        }).returning();
+        await db.insert(orgAutopayEnrollments).values({ orgId, partnerId, status: 'requested',
+          generation: 1, requestedAt: new Date(), stripeConnectionId: connection!.id,
+          stripeAccountId: connection!.stripeAccountId });
 
         // A real user row is needed because generated invoices reference created_by FK.
         const [u] = await db.insert(users).values({
@@ -144,6 +151,11 @@ describe('runContractBillingSweep', () => {
       );
       expect(periods).toHaveLength(1); // exactly one row — no double-billing
       invoiceId = periods[0]!.invoiceId!;
+    const schedules = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)));
+    expect(schedules).toHaveLength(1);
+    expect(schedules[0]!.ineligibleReason).toBe('not_enrolled');
+
 
       // The invoice must have been issued (non-draft) by the post-commit auto-issue step.
       // Acceptable statuses after issue: 'sent' (if email is configured) or any non-draft
@@ -166,6 +178,8 @@ describe('runContractBillingSweep', () => {
         db.select().from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, contractId))
       );
       expect(periodsAfter).toHaveLength(1);
+      expect(await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+        .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)))).toHaveLength(1);
     }
   );
 });

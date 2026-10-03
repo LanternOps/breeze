@@ -7,6 +7,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'ticket_resolved',
   'quote_send',
   'invoice_send',
+  'invoice_autopay',
   'portal_invite',
   'autopay_request',
   'autopay_enrolled',
@@ -14,6 +15,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'card_expiring',
   'payment_reminder',
   'payment_overdue',
+  'payment_receipt', 'payment_failed',
 ] as const;
 
 export type EmailTemplateId = (typeof EMAIL_TEMPLATE_IDS)[number];
@@ -40,7 +42,10 @@ export type EmailTemplateVarKey =
   | 'client_name' | 'setup_link' | 'ach_mode_text' | 'payment_method'
   | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
   | 'expires_on' | 'update_link'
-  | 'amount_due' | 'pay_link' | 'days_overdue';
+  | 'amount_due' | 'pay_link' | 'days_overdue'
+  | 'charge_date' | 'fee_amount' | 'invoice_link'
+  | 'amount_paid' | 'total_charged' | 'paid_on' | 'balance_remaining'
+  | 'failure_text' | 'action_link' | 'action_label';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -97,6 +102,8 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_resolved: [...COMMENT_NOTIFICATION_VARS, 'resolution_note'],
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
+  invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
+    'charge_date', 'payment_method', 'fee_amount', 'invoice_link'],
   portal_invite: PORTAL_INVITE_VARS,
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
@@ -106,6 +113,9 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
   payment_reminder: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'pay_link', 'cta_button'],
   payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button'],
+  payment_receipt: ['org_name','partner_name','invoice_number','amount_paid','fee_amount',
+    'total_charged','payment_method','paid_on','balance_remaining'],
+  payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -114,6 +124,7 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Ticket resolved',
   quote_send: 'Quote / proposal',
   invoice_send: 'Invoice',
+  invoice_autopay: 'Invoice with automatic payment notice',
   portal_invite: 'Portal invite',
   autopay_request: 'Automatic payments request',
   autopay_enrolled: 'Automatic payments confirmed',
@@ -123,6 +134,8 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   card_expiring: 'Saved card expiring',
   payment_reminder: 'Payment reminder',
   payment_overdue: 'Overdue payment reminder',
+  payment_receipt: 'Online payment receipt',
+  payment_failed: 'Payment could not be completed',
 };
 
 const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
@@ -131,6 +144,7 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   ticket_resolved: true,
   quote_send: true,
   invoice_send: true,
+  invoice_autopay: true,
   portal_invite: true,
   autopay_request: true,
   autopay_enrolled: false,
@@ -140,6 +154,8 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   card_expiring: true,
   payment_reminder: true,
   payment_overdue: true,
+  payment_receipt: false,
+  payment_failed: true,
 };
 
 export function varsForEmailTemplate(id: EmailTemplateId): readonly EmailTemplateVarKey[] {
@@ -206,6 +222,11 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>Use the button above to review the full proposal and accept it online.</p>
 <p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>
 <p>If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.</p>`,
+  },
+  invoice_autopay: {
+    subject: 'Invoice {{invoice_number}} — automatic payment notice',
+    heading: 'Your invoice is ready', buttonLabel: 'View invoice',
+    html: '<p>{{amount_due}} is due on {{due_date}}. We will initiate payment on or around {{charge_date}} using {{payment_method}}. Processing fee: {{fee_amount}}.</p>',
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',
@@ -279,6 +300,10 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>This invoice is {{days_overdue}} days overdue.</p>
 <p>{{cta_button}}</p>`,
   },
+  payment_receipt: { subject: 'Payment receipt for {{invoice_number}}', heading: 'Payment received',
+    buttonLabel: '', html: '<p>Paid: {{amount_paid}}. Processing fee: {{fee_amount}}. Total charged: {{total_charged}}.</p><p>{{payment_method}} on {{paid_on}}. Remaining balance: {{balance_remaining}}.</p>' },
+  payment_failed: { subject: 'Action needed for invoice {{invoice_number}}', heading: 'Payment needs attention',
+    buttonLabel: 'Review payment', html: '<p>{{failure_text}}</p><p>Amount due: {{amount_due}}.</p>' },
 };
 
 export function emailTemplateFieldDefaults(id: EmailTemplateId): EmailTemplateFieldDefaults {

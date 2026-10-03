@@ -5,7 +5,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
-      '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
     },
   },
   test: {
@@ -20,6 +20,8 @@ export default defineConfig({
       'src/db/schema/autopaySetupAttempts.integration.test.ts',
       'src/services/autopay/enrollmentService.integration.test.ts',
       'src/services/autopay/cardExpiryCheck.integration.test.ts',
+      // Charging locks/replay require real PostgreSQL (never the unit DB mocks).
+      'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**',

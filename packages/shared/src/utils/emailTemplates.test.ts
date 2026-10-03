@@ -16,6 +16,7 @@ describe('email template catalog', () => {
       'ticket_resolved',
       'quote_send',
       'invoice_send',
+      'invoice_autopay',
       'portal_invite',
       'autopay_request',
       'autopay_enrolled',
@@ -25,6 +26,8 @@ describe('email template catalog', () => {
       'card_expiring',
       'payment_reminder',
       'payment_overdue',
+      'payment_receipt',
+      'payment_failed',
     ]);
   });
 
@@ -51,9 +54,9 @@ describe('email template catalog', () => {
     ]);
   });
 
-  it('cta_button is insertable on every template that has a CTA, and never on autoresponse', () => {
+  it('cta_button is insertable on CTA templates except the closed invoice autopay contract', () => {
     for (const id of EMAIL_TEMPLATE_IDS) {
-      if (emailTemplateHasCta(id)) expect(varsForEmailTemplate(id)).toContain('cta_button');
+      if (emailTemplateHasCta(id) && id !== 'invoice_autopay' && id !== 'payment_failed') expect(varsForEmailTemplate(id)).toContain('cta_button');
       else expect(varsForEmailTemplate(id)).not.toContain('cta_button');
     }
   });
@@ -208,4 +211,21 @@ it.each([
   expect(emailTemplateHasCta(id)).toBe(true);
   expect(emailTemplateFieldDefaults(id).html).toContain('{{amount_due}}');
   expect(emailTemplateFieldDefaults(id).html).not.toContain('PDF');
+});
+
+it('pins the invoice autopay variable contract', () => {
+  expect(EMAIL_TEMPLATE_IDS).toContain('invoice_autopay');
+  expect(varsForEmailTemplate('invoice_autopay')).toEqual([
+    'org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
+    'charge_date', 'payment_method', 'fee_amount', 'invoice_link',
+  ]);
+});
+
+it('pins the closed payment notice variable contracts', () => {
+  expect(varsForEmailTemplate('payment_receipt')).toEqual(['org_name','partner_name','invoice_number','amount_paid','fee_amount','total_charged','payment_method','paid_on','balance_remaining']);
+  expect(varsForEmailTemplate('payment_failed')).toEqual(['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label']);
+  expect(emailTemplateLabel('payment_receipt')).toBe('Online payment receipt');
+  expect(emailTemplateLabel('payment_failed')).toBe('Payment could not be completed');
+  expect(emailTemplateHasCta('payment_receipt')).toBe(false);
+  expect(emailTemplateHasCta('payment_failed')).toBe(true);
 });

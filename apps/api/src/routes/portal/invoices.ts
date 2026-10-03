@@ -1,5 +1,6 @@
+import {invoicePaySchema,getBankAutopayOffer,startInvoiceBankSetup,collectAfterBankSetup} from '../../services/autopay/bankPayment';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { payAndSaveSchema, getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
+import { getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
 import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -182,6 +183,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     onlinePaymentAvailable,
     collectionInProgress,
     autopay: await getInvoiceAutopayOffer(auth.user.orgId),
+    bankAutopay: await runOutsideDbContext(()=>getBankAutopayOffer(id,auth.user.orgId)),
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,
@@ -236,10 +238,9 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
 // not rely on RLS scope: the invoice SELECT is explicitly filtered to the
 // authenticated `auth.user.orgId`, and the mapping INSERT runs inside a context
 // so it isn't a contextless 0-row no-op (#1375).
-invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), async (c) => {
+invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), zValidator('json',invoicePaySchema), async (c) => {
   const auth = c.get('portalAuth');
-  const parsed = payAndSaveSchema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return c.json({ error: 'Invalid automatic-payment authorization' }, 400);
+  const body=c.req.valid('json');
   const { id } = c.req.valid('param');
 
   const [inv] = await withSystemDbAccessContext(() =>
@@ -250,6 +251,16 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   if (!inv) return c.json({ error: 'Invoice not found' }, 404);
   if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable' }, 409);
 
+  if('methodType' in body && body.methodType==='us_bank_account'){
+    try{
+      const result=body.phase==='setup'
+        ? await startInvoiceBankSetup({invoiceId:inv.id,orgId:inv.orgId,terms:body,returnTo:'portal',
+          ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null})
+        : await collectAfterBankSetup({invoiceId:inv.id,orgId:inv.orgId,setupSessionId:body.setupSessionId!});
+      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result},409);
+      return c.json(result);
+    }catch(error){if(error instanceof InvoiceServiceError)return c.json({error:error.message,code:error.code},error.status);throw error;}
+  }
   // SEC-150 producer gate — twin of createInvoicePayLink's. A session minted
   // while a revocation is in flight would not be covered by that revocation, so
   // the customer is asked to retry rather than handed a link nobody can kill.
@@ -278,12 +289,12 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
   try {
     capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
-      ...parsed.data, contactEmail: auth.user.email, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
+      ...body, contactEmail: auth.user.email, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
     }, `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`);
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
       // Local compatibility translation until the shared autopay error mapper lands.
-      if (parsed.data.saveForAutopay && err.status === 404 && err.code === 'INVALID_STATE'
+      if (('saveForAutopay' in body && body.saveForAutopay) && err.status === 404 && err.code === 'INVALID_STATE'
         && err.message === 'Automatic payments unavailable') {
         return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
       }

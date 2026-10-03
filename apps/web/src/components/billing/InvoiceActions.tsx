@@ -135,7 +135,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
         // /send owns draft issue + email as one lifecycle action. In particular,
         // it persists includeDeviceAppendix while the invoice is still a draft,
         // before issue freezes the PDF evidence choice.
-        const result = await runAction<{ data: { emailed: boolean } }>({
+        const result = await runAction<{ data: { emailed: boolean; reason?: string } }>({
           request: () => fetchWithAuth(`/invoices/${invoice.id}/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -144,7 +144,9 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
           errorFallback: stableT('invoiceActions.issueSendError'),
           onUnauthorized: UNAUTHORIZED,
         });
-        if (result?.data?.emailed) {
+        if (result?.data?.reason === 'notice_queued') {
+          showToast({ type: 'success', message: stableT('autopay.noticeQueued') });
+        } else if (result?.data?.emailed) {
           showToast({ type: 'success', message: stableT('invoiceActions.issueSentSuccess') });
         } else {
           showToast({ type: 'warning', message: stableT('invoiceActions.issueNoEmailWarning') });
@@ -267,7 +269,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
       // out. Both routes swallow delivery failures into `reason`, so the
       // outcome is post-processed below — `emailed !== true` (not `=== false`)
       // so an unexpected response shape can't be read as success.
-      const result = await runAction<{ data?: { emailed?: boolean } }>({
+      const result = await runAction<{ data?: { emailed?: boolean; reason?: string } }>({
         request: () => fetchWithAuth(`/invoices/${invoice.id}/${neverEmailed ? 'send' : 'resend'}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -280,7 +282,9 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
       // A first send stamps sent_at (which flips this very button's label), and
       // even a re-send may reveal other stale detail — reconcile either way.
       refresh();
-      if (result?.data?.emailed !== true) {
+      if (result?.data?.reason === 'notice_queued') {
+        showToast({ type: 'success', message: stableT('autopay.noticeQueued') });
+      } else if (result?.data?.emailed !== true) {
         showToast({ type: 'warning', message: t('invoiceDetail.requestPayment.noEmailWarning') });
       } else {
         showToast({
@@ -299,7 +303,7 @@ export default function InvoiceActions({ detail, onChanged, variant, savePending
     } finally {
       setResending(false);
     }
-  }, [resending, invoice.id, neverEmailed, partiallyPaid, refresh, t]);
+  }, [resending, invoice.id, neverEmailed, partiallyPaid, refresh, t, stableT]);
 
   // Copy the customer-facing DURABLE view-and-pay link without emailing
   // anything — for pasting into a chat/SMS/reply by hand. Mirrors the quote's

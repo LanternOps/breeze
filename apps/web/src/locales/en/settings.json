@@ -1341,7 +1341,20 @@
       "stopped_by": "Who stopped automatic payments",
       "open_invoices_text": "Open invoice summary",
       "expires_on": "Card expiry date",
-      "update_link": "Payment method update link"
+      "update_link": "Payment method update link",
+      "amount_due": "Amount due",
+      "charge_date": "Charge date",
+      "fee_amount": "Processing fee",
+      "invoice_link": "Invoice link",
+      "amount_paid": "Amount paid",
+      "total_charged": "Total charged",
+      "paid_on": "Payment date",
+      "balance_remaining": "Remaining balance",
+      "failure_text": "Failure details",
+      "action_link": "Action link",
+      "action_label": "Action label",
+      "days_overdue": "Days overdue",
+      "pay_link": "Payment link"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1351,7 +1364,9 @@
       "autopay_stopped": "Automatic payments stopped",
       "autopay_paused": "Automatic payments paused",
       "autopay_resumed": "Automatic payments resumed",
-      "card_expiring": "Saved card expiring"
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Online payment receipt",
+      "payment_failed": "Payment could not be completed"
     }
   },
   "inboundEmail": {

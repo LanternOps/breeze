@@ -72,3 +72,22 @@ it('selects only active org staff and this partner with all or selected-org acce
  expect(queries[1]!.params).toEqual(['partner','active','all','selected','org']);
  expect(queries[1]!.sql).toContain('"partner_users"."partner_id"');expect(queries[1]!.sql).toContain('ANY(');
 });
+
+it('links payment attention to its invoice independently of enrollment rollout',async()=>{
+  const invoiceId='55555555-5555-4555-8555-555555555555';
+  h.rows.push([{userId:'11111111-1111-4111-8111-111111111111'}],[],[{billingEmail:null}]);
+  await notifyAutopayStaff({orgId:'33333333-3333-4333-8333-333333333333',partnerId:'44444444-4444-4444-8444-444444444444',
+    invoiceId,event:'payment.unapplied',dedupeKey:'attempt:unapplied',message:'Review captured money.'});
+  expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({link:`/billing/invoices/${invoiceId}`,priority:'high',
+    dedupeKey:'attempt:unapplied:11111111-1111-4111-8111-111111111111'})]);
+});
+
+it('keeps partner-only configuration attention out of customer notifications',async()=>{
+ vi.clearAllMocks();h.rows.length=0;
+ h.rows.push([{userId:'partner-staff'}]);
+ await enqueueAutopayStaffNotifications(db,{orgId:'org',partnerId:'partner',partnerOnly:true,
+  event:'autopay.needs_attention',dedupeKey:'autopay:charging_disabled:partner:2026-10-03',message:'Automatic payments are disabled.'});
+ expect(h.rows).toEqual([]);
+ expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({userId:'partner-staff',
+  dedupeKey:'autopay:charging_disabled:partner:2026-10-03:partner-staff'})]);
+});

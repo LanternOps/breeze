@@ -1341,7 +1341,20 @@
       "stopped_by": "Who stopped automatic payments",
       "open_invoices_text": "Open invoice summary",
       "expires_on": "Card expiry date",
-      "update_link": "Payment method update link"
+      "update_link": "Payment method update link",
+      "amount_due": "Montant dû",
+      "charge_date": "Date de prélèvement",
+      "fee_amount": "Frais de traitement",
+      "invoice_link": "Lien de la facture",
+      "amount_paid": "Montant payé",
+      "total_charged": "Total prélevé",
+      "paid_on": "Date de paiement",
+      "balance_remaining": "Solde restant",
+      "failure_text": "Détails de l’échec",
+      "action_link": "Lien de l’action",
+      "action_label": "Libellé de l’action",
+      "days_overdue": "Jours de retard",
+      "pay_link": "Lien de paiement"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1351,7 +1364,9 @@
       "autopay_stopped": "Automatic payments stopped",
       "autopay_paused": "Paiements automatiques suspendus",
       "autopay_resumed": "Paiements automatiques repris",
-      "card_expiring": "Saved card expiring"
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Reçu de paiement en ligne",
+      "payment_failed": "Le paiement n’a pas pu être effectué"
     }
   },
   "inboundEmail": {

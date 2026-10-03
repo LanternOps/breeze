@@ -1,3 +1,4 @@
+import { planAutopayForInvoice } from './autopay/scheduler';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } from '../db/schema/quotes';
@@ -578,6 +579,7 @@ export async function acceptQuote(
     }
   }
   await db.update(invoices).set(issueFields).where(eq(invoices.id, invoice!.id));
+  if (oneTime.length > 0) await planAutopayForInvoice(db, invoice!.id);
 
   // 3. Transition the quote to converted.
   await db

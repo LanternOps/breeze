@@ -21,7 +21,7 @@ describe('enrollment lifecycle',()=>{
  });
 });
 
-const h = vi.hoisted(() => ({ rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only' }));
+const h = vi.hoisted(() => ({ lockInvoices: vi.fn(), stopSchedules: vi.fn(), rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only' }));
 vi.mock('../../db', () => {
  const chain: Record<string, unknown> = {};
  for (const op of ['select','from','where','limit','for','update','set','returning','insert','values']) {
@@ -39,6 +39,7 @@ vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:h.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:h.mint,revokeBillingLinkTokens:h.revoke,
  buildBillingLinkUrl:(purpose:string,token:string)=>`https://portal.example.test/autopay/${token}/${purpose}`,
  resolveBillingLinkToken:h.resolve}));
+vi.mock('./collectionControl',()=>({lockInvoicesForEnrollmentStop:h.lockInvoices,stopEnrollmentSchedules:h.stopSchedules}));
 vi.mock('./paymentMethods',()=>({getAutopayMethod:h.method,detachPaymentMethodPostCommit:vi.fn()}));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn(),enqueueAutopayStaffNotifications:h.staff,sendAutopayStaffEmail:h.staffEmail}));
 vi.mock('./billingPaymentSettings',()=>({resolveBillingPaymentSettings:async()=>({
@@ -58,18 +59,21 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue([]);h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
-  h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}],[]);
+  h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}]);
+  if(action==='pause')h.rows.push([]);
   if(action==='pause') h.rows.push([]); else h.rows.push([{id:'method'}]);
   h.rows.push([invoice]); noticeRows(action==='pause'?'autopay_paused':'autopay_stopped');
   await (action==='pause'?pauseAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
   const updates=h.calls.filter(c=>c.op==='update').map(c=>c.value);
-  expect(updates).toEqual(action==='pause'?[orgAutopayEnrollments,invoiceAutopaySchedules,autopaySetupAttempts]:[orgAutopayEnrollments,invoiceAutopaySchedules,orgPaymentMethods]);
+  expect(updates).toEqual(action==='pause'?[orgAutopayEnrollments,invoiceAutopaySchedules,autopaySetupAttempts]:[orgAutopayEnrollments,orgPaymentMethods]);
+  if(action==='pause'){
   const index=h.calls.findIndex(c=>c.op==='update'&&c.value===invoiceAutopaySchedules);
   const predicate=h.calls.slice(index).find(c=>c.op==='where')!.value as SQL;
   expect(new PgDialect().sqlToQuery(predicate).params).toEqual([orgId,...NON_TERMINAL_SCHEDULE_STATES]);
+  }else {expect(h.lockInvoices).toHaveBeenCalledWith(db,orgId);expect(h.stopSchedules).toHaveBeenCalledWith(db,enrollment.id);}
   const rendered=h.enqueue.mock.calls[0]![1].rendered;
   for(const content of [rendered.html,rendered.text]){
    expect(content).toContain('Replacement body only');expect(content).toContain('No processing fee applies.');
@@ -124,7 +128,7 @@ describe('client stop authority',()=>{
   {orgId,enrollmentId:'55555555-5555-4555-8555-555555555555',generation:9},
  ])('rejects revoked, expired or mismatched authority under the locks: %j',async link=>{
   h.rows.push([org],[enrollment]);h.resolve.mockImplementation(async()=>{
-   expect(h.calls.filter(c=>c.op==='for'&&c.value==='update')).toHaveLength(2);return link;
+   expect(h.calls.filter(c=>c.op==='for'&&['update','no key update'].includes(String(c.value)))).toHaveLength(2);return link;
   });
   await expect(withAutopayStopToken('old-token',()=>stopAutopayByClient(db,{orgId,source:'link'}))).rejects.toThrow('Invalid or expired');
   expect(h.resolve).toHaveBeenCalledWith(db,'old-token','stop_autopay');
@@ -156,7 +160,7 @@ describe('review regressions',()=>{
   }
  });
  it('enqueues staff notifications on the caller executor before post-context callbacks',async()=>{
-  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[],[]);
+  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[]);
   await turnOffAutopay(db,actor,orgId);
   expect(h.staff).toHaveBeenCalledWith(db,expect.objectContaining({event:'autopay.stopped',orgId}));
   expect(h.staffEmail).not.toHaveBeenCalled();
@@ -169,7 +173,7 @@ describe('staff email committed-state guard',()=>{
   {status:'active',generation:9,send:false},
   {status:'cancelled',generation:10,send:false},
  ])('checks committed state %j before emailing',async committed=>{
-  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[],[]);
+  h.rows.push([{...org,billingContact:null}],[{...enrollment,requestRecipientEmail:null}],[{...enrollment,status:'cancelled'}],[],[]);
   await turnOffAutopay(db,actor,orgId);
   const callback=h.after.mock.calls.find(call=>call[0]==='autopay.stopped')![1];
   h.rows.push([committed]);
@@ -190,5 +194,15 @@ it.each(['pause','resume'] as const)('renders an accurate %s notice through the 
  expect(notice.rendered.subject).toContain(action==='pause'?'paused':'resumed');
  for(const body of [notice.rendered.html,notice.rendered.text]){
   expect(body).toContain(action==='pause'?'until':'future');expect(body).not.toContain('paused automatic payments stopped');
+ }
+});
+
+it('protects the pending Stop disclosure outside a custom notice body',async()=>{
+ h.stopSchedules.mockResolvedValue(['INV-1','INV-2']);
+ h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[invoice]);noticeRows('autopay_stopped');
+ await turnOffAutopay(db,actor,orgId);
+ for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
+  expect(body).toContain('Replacement body only');expect(body).toContain('invoice INV-1 is being cancelled');
+  expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
  }
 });

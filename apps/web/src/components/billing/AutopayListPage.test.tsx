@@ -52,3 +52,11 @@ it('shows failed email delivery on the list and allows resending',async()=>{
  expect(await screen.findByTestId(`autopay-delivery-${id}`)).toHaveTextContent('Request email could not be delivered');
  expect(screen.getByTestId(`autopay-resend-${id}`)).toBeEnabled();
 });
+
+it.each(['processing','failed'])('shows the last %s charge and aged notice on the real list',async state=>{
+ vi.mocked(fetchWithAuth).mockResolvedValue(Response.json({data:[{orgId:id,orgName:'Example',status:'active',enrollment:{status:'active'},method:null,
+ lastCharge:{state,createdAt:'2026-10-01T00:00:00Z',principalAmount:'100.00',currency:'USD'},
+ awaitingNotice:{count:1,oldestCreatedAt:'2026-09-30T00:00:00Z',reason:'delivery_failed',invoiceId:'inv-1'}}]}));
+ render(<AutopayListPage/>);expect(await screen.findByTestId('autopay-last-charge')).toHaveTextContent(state==='processing'?'Processing':'Failed');
+ expect(screen.getByTestId('autopay-notice-stuck')).toHaveAttribute('href','/billing/invoices/inv-1');
+});

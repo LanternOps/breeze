@@ -11,6 +11,7 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Your ticket has been resolved.',
   quote_send: 'A proposal is ready for review.',
   invoice_send: 'An invoice is ready to view.',
+  invoice_autopay: 'Your invoice and automatic payment date.',
   portal_invite: 'Set your password to access your support portal.',
   autopay_request: 'Set up payments for future invoices.',
   autopay_enrolled: 'Your automatic payment details.',
@@ -20,6 +21,8 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   card_expiring: 'Update your saved payment method.',
   payment_reminder: 'A payment is coming due.',
   payment_overdue: 'An invoice payment is overdue.',
+  payment_receipt: 'Your online payment receipt.',
+  payment_failed: 'Your payment needs attention.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -28,6 +31,7 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   ticket_resolved: undefined,
   quote_send: undefined,
   invoice_send: undefined,
+  invoice_autopay: 'Keep this notice for your records.',
   portal_invite: undefined,
   autopay_request: undefined,
   autopay_enrolled: undefined,
@@ -37,6 +41,8 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   card_expiring: undefined,
   payment_reminder: undefined,
   payment_overdue: undefined,
+  payment_receipt: undefined,
+  payment_failed: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {

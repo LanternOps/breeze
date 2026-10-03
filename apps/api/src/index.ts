@@ -51,6 +51,7 @@ import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { autopayRoutes } from './routes/autopay';
+import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
 import { portalPaymentMethodRoutes } from './routes/portal/paymentMethods';
 import { contractRoutes } from './routes/contracts';
@@ -753,6 +754,7 @@ api.route('/catalog', catalogRoutes);
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
 // isn't swallowed by invoiceRoutes' auth middleware (mirrors /quotes/public).
 api.route('/invoices/public', invoicesPublicRoutes);
+mountAutopayChargingRoutes(api);
 api.route('/invoices', invoiceRoutes);
 // Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
 // /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed

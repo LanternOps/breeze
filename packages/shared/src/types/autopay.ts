@@ -61,7 +61,8 @@ export interface AutopayEnrollmentView { status:AutopayEnrollmentStatus;generati
 export interface AutopayListRow {
  orgId:string;orgName:string;billingContact:{email?:string|null}|null;
  stripeReadiness:{ready:boolean;missing:string[]};status:AutopayEnrollmentStatus|'not_requested'|'needs_attention';
- enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastChargeResult:null;requestNoticeStatus:BillingNoticeStatus|null;
+ enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastCharge:{state:CollectionAttemptState;createdAt:string;principalAmount:string;currency:string}|null;
+ awaitingNotice:{count:number;oldestCreatedAt:string;reason:string|null;invoiceId:string}|null;requestNoticeStatus:BillingNoticeStatus|null;
 }
 export interface AutopayCustomerPage {
  stopOnly?:false;
@@ -93,11 +94,68 @@ export interface PaymentSettingsView { autopayEnabled:boolean;values:PaymentValu
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
 export const autopayFeeTermsSchema=z.object({methodType:z.enum(AUTOPAY_PAYMENT_METHOD_TYPES),cardFeeBps:z.number().int().min(0).max(300),achFeeAmount:z.string(),feeAttested:z.boolean(),currency:z.string()});
+export const bankPaymentConsentSchema=z.object({
+ invoiceId:z.string().uuid(),orgId:z.string().uuid(),principal:z.string().regex(/^\d+\.\d{2}$/),
+ fee:z.string().regex(/^\d+\.\d{2}$/),currency:z.literal('USD'),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type BankPaymentConsent=z.infer<typeof bankPaymentConsentSchema>;
 export const autopayConsentSnapshotSchema=z.object({
  version:z.string(),text:z.string(),hash:z.string(),textHash:z.string(),partnerName:z.string(),scheduleText:z.string(),feeText:z.string(),
  achMode:z.enum(['ach_preferred','ach_only','card_only']),scheduleTerms:autopayScheduleTermsSchema,feeTerms:autopayFeeTermsSchema,
  source:z.enum(AUTOPAY_SETUP_SOURCES),contactEmail:z.string(),ip:z.string().nullable(),userAgent:z.string().nullable(),
  invoiceId:z.string().nullable(),checkoutKey:z.string().nullable(),
+ bankPayment:bankPaymentConsentSchema.nullish(),
 });
 export type AutopayConsentSnapshot=z.infer<typeof autopayConsentSnapshotSchema>;
 export const AUTOPAY_SNAPSHOT_KEYS={hash:'hash',checkoutKey:'checkoutKey'} as const satisfies Record<string,keyof AutopayConsentSnapshot>;
+
+const collectionTermsSchema = autopayScheduleTermsSchema.extend({
+ kind:z.literal('terms'), issuedAt:z.string().datetime({offset:true}),
+ methodType:z.enum(AUTOPAY_PAYMENT_METHOD_TYPES),methodId:z.string().min(1),last4:z.string(),methodLabel:z.string(),
+ accountHolderType:z.enum(ACCOUNT_HOLDER_TYPES).nullable(),noticeLeadDays:z.union([z.literal(1),z.literal(10)]),
+ principal:z.string().regex(/^\d+\.\d{2}$/),currency:z.string().length(3),feeAmount:z.string().regex(/^\d+\.\d{2}$/),
+ feeKind:z.enum(['none','card_percent','ach_flat']),cardFeeBps:z.number().int().min(0).max(300),
+ achFeeAmount:z.string().regex(/^\d+\.\d{2}$/),chargeDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),noticeSeq:z.number().int().positive(),
+});
+/** Legacy rows predate the discriminator. Normalize at the read boundary; never
+ * interpret the issuance placeholder as permission to collect. */
+export const autopayTermsSnapshotSchema=z.preprocess(value=>{
+ if(value && typeof value==='object' && !('kind' in value))return {...value,kind:'noticeSeq' in value && value.noticeSeq===0?'placeholder':'terms'};
+ return value;
+},z.discriminatedUnion('kind',[
+ collectionTermsSchema,
+ z.object({kind:z.literal('placeholder'),issuedAt:z.string().datetime({offset:true}),noticeSeq:z.literal(0)}).strict(),
+]));
+export type AutopayTermsSnapshot=z.infer<typeof autopayTermsSnapshotSchema>;
+export type AutopayTerms=Omit<z.infer<typeof collectionTermsSchema>,'kind'>;
+export function parseAutopayTerms(value:unknown):AutopayTerms {
+ const parsed=autopayTermsSnapshotSchema.parse(value);
+ if(parsed.kind!=='terms')throw new Error('Schedule has no collection terms');
+ return parsed;
+}
+export const SCHEDULE_CONTROL_MARKERS=['skip','exclude','stop','renotice'] as const;
+export type ControlMarker=typeof SCHEDULE_CONTROL_MARKERS[number];
+export type PendingControlReason=`control_pending:${ControlMarker}`;
+
+export type CollectionResult =
+ | {outcome:'created';attemptId:string;state:Extract<CollectionAttemptState,'reserved'|'created'|'confirming'|'processing'|'succeeded'>;failureClass?:CollectionFailureClass|null;reason?:never}
+ | {outcome:'failed'|'canceled'|'requires_action'|'unapplied';attemptId:string;state:CollectionAttemptState;failureClass:CollectionFailureClass|null;reason:string}
+ | {outcome:'deferred'|'refused';attemptId:null;reason:string;state?:never;failureClass?:never};
+export interface InvoiceAutopayView {
+ /** Maximum noticed charge, including fees; collection may lower this amount. */
+ chargePreview?: { amount: string; currency: string; methodLabel: string } | null;
+ state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
+ noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
+}
+export const bankPaySchema=bankPaymentConsentSchema.omit({invoiceId:true,orgId:true}).extend({
+ methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),consentAccepted:z.literal(true),
+ setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional(),
+}).strict().superRefine((value,ctx)=>{
+ if(value.phase==='collect'&&!value.setupSessionId)ctx.addIssue({code:'custom',path:['setupSessionId'],message:'Setup session required'});
+});
+export type BankPayInput=z.infer<typeof bankPaySchema>;
+export interface BankAutopayOffer {
+ available:boolean;principal:string;fee:string;currency:'USD';consentText:string;disclosureHash:string;
+ methodStatus:Extract<OrgPaymentMethodStatus,'active'|'pending_verification'>|null;
+}
+export type InvoicePayResult={url:string;outcome?:never;attemptId?:never;reason?:never}|(CollectionResult&{url?:never});

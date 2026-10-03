@@ -44,7 +44,9 @@ const resp = (payload: unknown, status = 200): Response =>
 
 function detail(status: ContractStatus, currencyCode = 'USD'): ContractDetailData {
   return {
+    autopayEnabled: false,
     contract: {
+      autopayExcluded: false,
       id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status,
       billingTiming: 'advance', intervalMonths: 1, startDate: '2026-06-01', endDate: null,
       nextBillingAt: null, autoIssue: false, autoRenew: false, renewalTermMonths: null, renewalNoticeDays: null,

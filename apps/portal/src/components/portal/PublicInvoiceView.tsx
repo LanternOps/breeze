@@ -1,3 +1,4 @@
+import BankAutopayPayment from './BankAutopayPayment';
 import { InvoiceAutopayConsent } from './InvoiceDetailView';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
@@ -149,13 +150,13 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
   const pay = async () => {
     if (paying) return; setPaying(true); setPayError(null);
-    const result = await runAction<{ data: { url: string } }>({
+    const result = await runAction({
       request: () => portalApi.payPublicInvoice(token, invoiceAutopayInput(saveForAutopay, detail.autopay)),
       onOutcome: (message, error) => { if (error) setPayError(message); },
       successMessage: 'Opening secure checkout…', errorFallback: 'Could not start payment. Please try again.',
       validate: value => typeof value.data?.url === 'string' && value.data.url.startsWith('https://checkout.stripe.com/'),
     });
-    if (result) window.location.href = result.data.url; else setPaying(false);
+    if (result && typeof result.data.url === 'string') window.location.href = result.data.url; else setPaying(false);
   };
 
   const downloadPdf = async () => {
@@ -187,6 +188,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
       <div className="flex flex-wrap items-center justify-end gap-2">
         {canPay && (
           <>
+            <BankAutopayPayment target={{invoiceId:invoice.id,publicToken:token}} offer={detail.bankAutopay}/>
             <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
             <button
               type="button"

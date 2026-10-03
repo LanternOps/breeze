@@ -784,3 +784,8 @@ describe('BullMQ repeatable schedule registry', { timeout: 60_000 }, () => {
     expect(Number(minute) % 5, 'daily tier is minutes = 3 (mod 5)').toBe(3);
   });
 });
+
+it('registers the exact charging schedule', () => {
+  expect(JOB_SCHEDULES['autopay-collection-run']).toBe('26 * * * *');
+  expect(JOB_SCHEDULES['software-upload-session-cleanup']).toBe('15 * * * *');
+});

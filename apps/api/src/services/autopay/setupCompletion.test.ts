@@ -205,3 +205,14 @@ it('queues stored pending methods when a failed SetupIntent omits payment_method
  expect(runAfterDbContextExit).toHaveBeenCalledWith('autopay.detachFailedVerification',expect.any(Function));
  expect(m.method).not.toHaveBeenCalled();
 });
+
+it.each([false,true])('saving a bank method consumes only ordinary enroll tokens (invoice-bound=%s)',async bound=>{
+ const value=attempt({methodType:'us_bank_account',tokenId:'token',consentSnapshot:{...snapshot,
+  bankPayment:bound?{invoiceId:'10000000-0000-4000-8000-000000000001',orgId:attempt().orgId,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)}:null}});
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate',metadata:{...((await m.intent()).metadata),token_id:'token'}});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{account_holder_type:'individual'}});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],...(!bound?[[]]:[]),[{settings:{}}]);
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ expect(m.writes.some(row=>'consumedAt' in row)).toBe(!bound);
+});

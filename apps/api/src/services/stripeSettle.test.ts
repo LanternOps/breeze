@@ -17,6 +17,7 @@ vi.mock('./partnerStripe', () => ({
 }));
 vi.mock('./stripeReconcile', () => ({ recordStripePayment: h.record }));
 vi.mock('./stripeCredentialArchive', () => ({ findLatestArchivedCredentialForAccount: h.archive }));
+vi.mock('./autopay/paymentNotices', () => ({ enqueueOnlineReceipt: vi.fn() }));
 import { settlePaymentIntent } from './stripeSettle';
 const mapping = { id: '11111111-1111-4111-8111-111111111111', invoiceId: '22222222-2222-4222-8222-222222222222', stripeAccountId: 'acct_original', revocationCredentialId: null };
 beforeEach(() => {
@@ -40,7 +41,7 @@ describe('settlePaymentIntent', () => {
   it('uses the mapping archive when the partner disconnected, without checking rollout', async () => {
     h.rows.push([{ ...mapping, revocationCredentialId: 'archive-id' }], [{ invoicePaymentId: 'payment-id' }]);
     await settlePaymentIntent('partner', 'pi_test');
-    expect(h.client).toHaveBeenCalledWith('partner', { archivedCredentialId: 'archive-id', invoiceStripePaymentId: mapping.id });
+    expect(h.client).toHaveBeenCalledWith('partner', { reconciliationAccountId: 'acct_original', archivedCredentialId: 'archive-id', invoiceStripePaymentId: mapping.id, reason: 'payment_intent_settlement' });
   });
   it('never retrieves another partner\'s mapping', async () => {
     h.rows.push([]);
@@ -56,4 +57,15 @@ describe('settlePaymentIntent', () => {
     await expect(settlePaymentIntent('partner', 'pi_test')).rejects.toThrow(/must run outside any DB access context/);
     expect(h.client).not.toHaveBeenCalled();
   });
+});
+
+it('passes the mapping account and pinned archive deliberately to settlement', async () => {
+  h.rows.push([{ ...mapping, revocationCredentialId: 'archive-original' }],
+    [{ invoicePaymentId: '33333333-3333-4333-8333-333333333333' }], []);
+  await settlePaymentIntent('44444444-4444-4444-8444-444444444444', 'pi_test');
+  expect(h.client).toHaveBeenCalledWith('44444444-4444-4444-8444-444444444444', {
+    reconciliationAccountId: 'acct_original', archivedCredentialId: 'archive-original',
+    invoiceStripePaymentId: mapping.id, reason: 'payment_intent_settlement',
+  });
+  expect(h.archive).not.toHaveBeenCalled();
 });

@@ -377,6 +377,7 @@ export const createContractSchema = z.object({
 );
 
 export const updateContractSchema = z.object({
+  autopayExcluded: z.boolean().optional(),
   name: z.string().min(1).max(255).optional(),
   billingTiming: z.enum(['advance', 'arrears']).optional(),
   intervalMonths: z.number().int().min(1).max(60).optional(),

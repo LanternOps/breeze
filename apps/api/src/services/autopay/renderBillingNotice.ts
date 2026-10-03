@@ -4,7 +4,7 @@ import { htmlToText } from '../inboundEmail/htmlToText';
 import { partnerEmailCustomFromSettings } from '../emailTemplates/renderPartnerEmail';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { escapeHtml } from '../emailLayout';
-import { renderPartnerEmail, type RenderPartnerEmailArgs } from '../emailTemplates/renderPartnerEmail';
+import { renderPartnerEmail, type RenderPartnerEmailArgs, type PartnerEmailCustom } from '../emailTemplates/renderPartnerEmail';
 import type { Tx, RenderedNotice } from './types';
 import { renderAutopayNotice, type AutopayNoticeContext } from './enrollmentNotices';
 
@@ -16,7 +16,9 @@ interface RegisteredBillingNoticeContext {
   mandatory: { skipUrl?: string; stopUrl?: string; feeDisclosure?: string; achAuthorizationReference?: string };
 }
 
-export type BillingNoticeContext = RegisteredBillingNoticeContext | { autopay: AutopayNoticeContext };
+export type BillingNoticeContext = RegisteredBillingNoticeContext | { autopay: AutopayNoticeContext }
+  | { charging: ChargingNoticeContext }
+  | { payment: { id: 'payment_receipt' | 'payment_failed'; vars: Record<string, string>; custom: PartnerEmailCustom | null; frozen: RenderedNotice['frozen'] } };
 
 export type BillingNoticeRenderer = (ctx: RegisteredBillingNoticeContext) => Promise<{
   email: Omit<RenderPartnerEmailArgs, 'bodyBeforeCta' | 'bodyAfterCta'>;
@@ -47,7 +49,43 @@ function checkedUrl(value: string): string {
   return value;
 }
 
+export interface ChargingNoticeContext {
+  vars: Record<string, string>;
+  custom?: PartnerEmailCustom | null;
+  skipUrl: string;
+  stopUrl: string;
+  feeText: string;
+  authorizationText: string;
+  frozen: RenderedNotice['frozen'];
+}
+export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice {
+  checkedUrl(ctx.skipUrl); checkedUrl(ctx.stopUrl); checkedUrl(ctx.vars.invoice_link!);
+  const append = `<p>${escapeHtml(ctx.feeText)}</p><p>${escapeHtml(ctx.authorizationText)}</p>`
+    + `<p><a href="${escapeHtml(ctx.skipUrl)}">Skip this invoice</a> · `
+    + `<a href="${escapeHtml(ctx.stopUrl)}">Stop automatic payments</a></p>`;
+  const rendered = renderPartnerEmail({ id: 'invoice_autopay', custom: ctx.custom,
+    vars: ctx.vars, ctaUrl: ctx.vars.invoice_link, bodyAfterCta: append });
+  return { ...rendered, frozen: ctx.frozen,
+    text: `Invoice ${ctx.vars.invoice_number}\nAmount: ${ctx.vars.amount_due}\n`
+      + `Charge on or around ${ctx.vars.charge_date} using ${ctx.vars.payment_method}\n`
+      + `${ctx.feeText}\n${ctx.authorizationText}\nInvoice: ${ctx.vars.invoice_link}\n`
+      + `Skip: ${ctx.skipUrl}\nStop: ${ctx.stopUrl}` };
+}
+
 export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext, executor?: Tx): Promise<RenderedNotice> {
+  if ('payment' in ctx) {
+    if ((kind !== 'payment_receipt' && kind !== 'payment_failed') || ctx.payment.id !== kind) throw new Error('Missing payment notice context');
+    const p = ctx.payment;
+    const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars,
+      ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label,
+      bodyAfterCta: kind === 'payment_receipt' ? `<p>Processing fee: ${escapeHtml(p.vars.fee_amount!)}</p>` : undefined });
+    return { ...rendered, frozen: p.frozen,
+      text: [htmlToText(rendered.html), p.vars.action_link].filter(Boolean).join('\n\n') };
+  }
+  if ('charging' in ctx) {
+    if (kind !== 'invoice_autopay') throw new Error('Wrong charging notice context');
+    return renderChargingNotice(ctx.charging);
+  }
   if ('autopay' in ctx) {
     const render = enrollmentRenderers[kind];
     if (!render) throw new Error(`Wrong enrollment notice context for ${kind}`);

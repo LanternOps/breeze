@@ -1,6 +1,10 @@
+import { sweepOrphanAutopayNotices } from '../services/autopay/scheduler';
+import { runAutopayCollection } from '../services/autopay/collectionEngine';
+import { reconcilePendingControls } from '../services/autopay/collectionControl';
 import { captureException } from '../services/sentry';
 import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { registerAutopayNoticeHandlers } from '../services/autopay/chargingNotice';
 import { dispatchPendingBillingNotices } from '../services/autopay/noticeOutbox';
 import { drainAutopayMethodDetaches } from '../services/autopay/merge';
 import { checkExpiringAutopayCards } from '../services/autopay/cardExpiryCheck';
@@ -8,21 +12,25 @@ import { runInvoiceReminderSweep } from '../services/autopay/reminderSweep';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
+const COLLECTION_CRON = jobSchedule('autopay-collection-run');
+
 interface ReminderSweepJobData { type: 'reminder-sweep' }
 
-export type AutopayJobData = ReminderSweepJobData | { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
+export type AutopayJobData = ReminderSweepJobData | { type: 'collection-run' } | { type: 'control-reconcile' } | { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
 let queue: Queue<AutopayJobData> | null = null;
 let worker: Worker<AutopayJobData> | null = null;
+let noticeHandlersRegistered = false;
 
 export async function processNoticeDispatch(): Promise<{ sent: number; failed: number }> {
   let result: { sent: number; failed: number } | undefined;
   let dispatchError: unknown;
   try {
     result = await dispatchPendingBillingNotices();
+    await sweepOrphanAutopayNotices();
     if (result.failed) console.error('[autopayWorker] notice dispatch failures', result);
   } catch (error) {
     dispatchError = error;
-    console.error('[autopayWorker] dispatch failed', { phase: 'dispatch' });
+    console.error('[autopayWorker] dispatch failed', { phase: 'dispatch', error });
     captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'dispatch' });
   }
   // Merge only queues removed methods. Worker ticks own all network drains.
@@ -31,7 +39,7 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
     console.error('[autopayWorker] detach drain failed', { phase: 'detach' });
     captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'detach' });
   }
-  if (!result) throw dispatchError;
+  if (dispatchError || !result) throw dispatchError;
   return result;
 }
 
@@ -41,6 +49,8 @@ export async function processReminderSweep(): Promise<{ enqueued: number }> {
 
 export async function processAutopayJob(data: AutopayJobData) {
   switch (data.type) {
+    case 'collection-run': return runAutopayCollection();
+    case 'control-reconcile': return reconcilePendingControls();
     case 'notice-dispatch': return processNoticeDispatch();
     case 'card-expiry-check': return checkExpiringAutopayCards();
     case 'reminder-sweep': return processReminderSweep();
@@ -49,6 +59,10 @@ export async function processAutopayJob(data: AutopayJobData) {
 }
 
 export async function initializeAutopayWorkers(): Promise<void> {
+  if (!noticeHandlersRegistered) {
+    registerAutopayNoticeHandlers();
+    noticeHandlersRegistered = true;
+  }
   if (worker) return;
   let pendingQueue: Queue<AutopayJobData> | null = null;
   let pendingWorker: Worker<AutopayJobData> | null = null;
@@ -74,6 +88,15 @@ export async function initializeAutopayWorkers(): Promise<void> {
       backoff: { type: 'exponential', delay: 30_000 },
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 50 },
+    });
+    await pendingQueue.add('collection-run', { type: 'collection-run' }, {
+      jobId: 'autopay-collection-run', repeat: { pattern: COLLECTION_CRON, tz: 'UTC' },
+      removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
+    });
+    await pendingQueue.add('control-reconcile', { type: 'control-reconcile' }, {
+      jobId: 'autopay-control-reconcile',
+      repeat: { pattern: jobSchedule('billing-notice-dispatch'), tz: 'UTC' },
+      removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
     });
     queue = pendingQueue;
     worker = pendingWorker;

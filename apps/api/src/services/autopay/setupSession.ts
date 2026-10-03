@@ -1,9 +1,13 @@
+import {getBankSetupTerms} from './clientPaymentAuthority';
+import {toMinorUnits} from '../stripeMoney';
+import {quoteProcessingFee} from './processingFee';
+import {resolveBillingPaymentSettings} from './billingPaymentSettings';
 import {autopayConsentSnapshotSchema,AUTOPAY_SNAPSHOT_KEYS,type AutopayConsentSnapshot} from './types';
 import {and,eq,desc,sql} from 'drizzle-orm';
 import type {AutopaySetupSource,AutopayPaymentMethodType} from '@breeze/shared';
 import type Stripe from 'stripe';
 import {db,withSystemDbAccessContext,runOutsideDbContext} from '../../db';
-import {organizations,orgAutopayEnrollments,billingLinkTokens,stripeConnectAccounts} from '../../db/schema';
+import {organizations,orgAutopayEnrollments,billingLinkTokens,stripeConnectAccounts,invoices} from '../../db/schema';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import {getPartnerStripeClient} from '../partnerStripe';
 import {assertNoHeldDbContextForStripe} from '../stripeSettle';
@@ -28,13 +32,28 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
   if(!ready.ready||ready.stripeAccountId!==enrollment.stripeAccountId)throw new InvoiceServiceError('Stripe account is not ready',409,'INVALID_STATE');
   const [connection]=await db.select().from(stripeConnectAccounts).where(and(eq(stripeConnectAccounts.id,enrollment.stripeConnectionId),eq(stripeConnectAccounts.status,'connected'))).limit(1).for('share');
   if(!connection||connection.stripeAccountId!==enrollment.stripeAccountId)throw new InvoiceServiceError('Stripe connection changed',409,'INVALID_STATE');
+  const bankPayment=getBankSetupTerms();
+  if(bankPayment&&!input.tokenId)throw new InvoiceServiceError('Bank setup authority required',409,'INVALID_STATE');
   if(input.tokenId){
    const [token]=await db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id,input.tokenId)).limit(1).for('update');
    if(!token||token.orgId!==org.id||token.enrollmentId!==enrollment.id||token.purpose!=='enroll'||token.generation!==enrollment.generation||
-    token.revokedAt||token.consumedAt||token.expiresAt<=new Date())throw new InvoiceServiceError('Setup link expired',404,'INVALID_STATE');
+    token.revokedAt||token.consumedAt||token.expiresAt<=new Date()||(bankPayment&&token.invoiceId!==bankPayment.invoiceId))throw new InvoiceServiceError('Setup link expired',404,'INVALID_STATE');
   }else if(source==='setup_page')throw new InvoiceServiceError('Setup link required',403,'INVALID_STATE');
   const disclosure=await buildAutopayDisclosure(db,org.id,input.methodType);
   requireAcceptedAutopayDisclosure(disclosure.hash);
+  if(bankPayment){
+   if(bankPayment.orgId!==org.id||bankPayment.disclosureHash!==disclosure.hash||input.methodType!=='us_bank_account')
+    throw new InvoiceServiceError('Bank setup authority changed',409,'INVALID_STATE');
+   const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,bankPayment.invoiceId),eq(invoices.orgId,org.id))).limit(1);
+   if(!invoice||invoice.currencyCode!=='USD'||!['sent','partially_paid','overdue'].includes(invoice.status))
+    throw new InvoiceServiceError('Invoice unavailable',409,'INVALID_STATE');
+   const settings=await resolveBillingPaymentSettings(db,{partnerId:org.partnerId,orgId:org.id});
+   const quote=quoteProcessingFee({methodType:'us_bank_account',cardFunding:null,principal:invoice.balance,currency:invoice.currencyCode,
+    stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
+    cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
+   if(invoice.balance!==bankPayment.principal||quote.feeAmount!==bankPayment.fee||invoice.currencyCode!==bankPayment.currency)
+    throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
+  }
   if((disclosure.achMode==='card_only'&&input.methodType!=='card')||(disclosure.achMode==='ach_only'&&input.methodType!=='us_bank_account'))
    throw new InvoiceServiceError('Payment method unavailable',409,'INVALID_STATE');
   if(checkoutKey){
@@ -49,7 +68,7 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
   const [saved]=await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:org.partnerId,enrollmentId:enrollment.id,
    generation:enrollment.generation,tokenId:input.tokenId??null,source,methodType:input.methodType,
    stripeConnectionId:connection.id,stripeAccountId:connection.stripeAccountId,stripeCustomerId:enrollment.stripeCustomerId,
-   consentSnapshot:{invoiceId:invoiceId??null,checkoutKey:checkoutKey??null,...disclosure,contactEmail:input.contactEmail,ip:input.ip,userAgent:input.userAgent,source} satisfies AutopayConsentSnapshot}).returning();
+   consentSnapshot:{bankPayment:bankPayment??null,invoiceId:invoiceId??null,checkoutKey:checkoutKey??null,...disclosure,contactEmail:input.contactEmail,ip:input.ip,userAgent:input.userAgent,source} satisfies AutopayConsentSnapshot}).returning();
   return saved!;
  });
  if(attempt.stripeCustomerId)return attempt;
@@ -75,16 +94,19 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
  });
 }
 export async function createHostedAutopaySession(attempt:{id:string;partnerId:string;orgId:string;enrollmentId:string;generation:number;tokenId:string|null;
- stripeCustomerId:string;stripeAccountId:string;methodType:AutopayPaymentMethodType},returnTo:'public'|'portal'){
+ stripeCustomerId:string;stripeAccountId:string;methodType:AutopayPaymentMethodType;consentSnapshot:unknown},returnTo:'public'|'portal'){
  assertNoHeldDbContextForStripe('createHostedAutopaySession');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(attempt.partnerId));
  if(stripeAccountId!==attempt.stripeAccountId)throw new Error('Stripe account changed');
  const metadata={org_id:attempt.orgId,enrollment_id:attempt.enrollmentId,generation:String(attempt.generation),token_id:attempt.tokenId??'',setup_attempt_id:attempt.id};
+ const bank=autopayConsentSnapshotSchema.parse(attempt.consentSnapshot).bankPayment;
+ const paymentMetadata:Record<string,string>=bank?{invoice_id:bank.invoiceId,principal_minor:String(toMinorUnits(bank.principal,bank.currency)),
+  fee_minor:String(toMinorUnits(bank.fee,bank.currency)),currency:bank.currency}:{};
  try{return await runOutsideDbContext(()=>stripe.checkout.sessions.create({mode:'setup',customer:attempt.stripeCustomerId,
   payment_method_types:[attempt.methodType],
   ...(attempt.methodType==='us_bank_account'?{currency:'usd',payment_method_options:{us_bank_account:{verification_method:'automatic' as const}}}:{}),
-  metadata,setup_intent_data:{metadata},
-  success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}`,
+  metadata:{...metadata,...paymentMetadata},setup_intent_data:{metadata:{...metadata,...paymentMetadata}},
+  success_url:`${portalBase()}/autopay/return?session_id={CHECKOUT_SESSION_ID}&target=${returnTo}${bank?'&bank=1':''}`,
   cancel_url:returnTo==='portal'?`${portalBase()}/payment-methods`:`${portalBase()}/autopay/return?cancelled=1`
  },{idempotencyKey:`autopay_setup_${attempt.id}`}));
  }catch(error){throw mapStripeCheckoutError(error,'USD')??error;}

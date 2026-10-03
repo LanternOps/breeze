@@ -44,6 +44,7 @@ import { requestLikeFromSnapshot, writeAuditEventAsync } from './auditEvents';
 export type RevocationReason =
   | 'link_reset'
   | 'manual_payment'
+  | 'autopay_collection'
   | 'invoice_void'
   | 'key_replaced'
   | 'account_changed'
