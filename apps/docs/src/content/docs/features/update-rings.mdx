@@ -46,7 +46,7 @@ Devices are assigned to rings through the **Configuration Policy** system, not d
 | Description | string | null | Optional description of the ring's purpose |
 | Enabled | boolean | `true` | Whether the ring is active |
 | Ring order | integer | `0` | Position in the deployment sequence (0 = first, higher = later) |
-| Deferral period (days) | integer | `0` | Days to wait after a patch is released before it becomes eligible for this ring (0 -- 365) |
+| Deferral period (days) | integer | `0` | Days to wait after a patch is released before it becomes eligible for this ring (0 -- 365). Third-party and Linux patches carry no release date, so their wait starts when the device first reports the patch. A Windows or macOS patch with no release date stays held until approved manually |
 | Deadline (days) | integer | null | Days after deferral ends by which the patch must be installed. Null means no deadline |
 | Grace period (hours) | integer | `4` | Hours after deadline before the device is marked non-compliant (0 -- 168) |
 | Included categories | string[] | `[]` | Patch categories to include (empty means all categories) |

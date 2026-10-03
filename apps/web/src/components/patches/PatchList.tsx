@@ -345,7 +345,7 @@ export default function PatchList({
     </>
   );
 
-  // A missing release date (every APT patch, #7800) reads "Unknown" — never a
+  // A missing release date (every Linux patch, #7800) reads "Unknown" — never a
   // stand-in date the vendor did not publish.
   const renderReleaseDate = (patch: Patch) => (
     <span data-testid={`patch-row-${patch.id}-release`}>

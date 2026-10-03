@@ -72,7 +72,8 @@ export function normalizePatch(raw: Record<string, unknown>, index: number): Pat
   const os = raw.os ?? raw.osType ?? raw.os_type ?? raw.platform
     ?? (Array.isArray(osTypesRaw) && osTypesRaw.length > 0 ? osTypesRaw[0] : undefined);
   // No createdAt fallback: that is when the catalog imported the patch, not
-  // when the vendor released it. APT never supplies a release date, so the
+  // when the vendor released it. Linux package managers (apt/dnf/yum) never
+  // supply a release date, so the
   // fallback showed import dates as release dates (#7800). Empty renders as
   // "Unknown" in PatchList.
   const releaseDate = raw.releaseDate ?? raw.releasedAt ?? raw.release_date ?? '';
