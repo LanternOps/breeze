@@ -9,7 +9,7 @@ export const tunnelStatusEnum = pgEnum('tunnel_status', ['pending', 'connecting'
 // A VNC tunnel that is still live (or coming up). Inline literals on purpose,
 // so the planner can use tunnel_sessions_device_live_vnc_idx under generic
 // plans; must match that index's predicate as created by its migration
-// (2026-11-29-110000-device-live-session-indexes.sql). Parenthesised so
+// (2026-12-05-100000-device-live-session-indexes.sql). Parenthesised so
 // it stays one term inside not()/or().
 export const tunnelSessionIsLiveVnc = (type: AnyColumn | SQL, status: AnyColumn | SQL) =>
   sql`(${type} = 'vnc' AND ${status} IN ('pending', 'connecting', 'active'))`;
@@ -46,7 +46,7 @@ export const tunnelSessions = pgTable('tunnel_sessions', {
   lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
 }, (t) => [
   // GET /remote/devices/:deviceId/active-sessions reads a device's live VNC rows.
-  // Created CONCURRENTLY by 2026-11-29-110000-device-live-session-indexes.sql.
+  // Created CONCURRENTLY by 2026-12-05-100000-device-live-session-indexes.sql.
   index('tunnel_sessions_device_live_vnc_idx')
     .on(t.deviceId)
     .where(tunnelSessionIsLiveVnc(t.type, t.status)),

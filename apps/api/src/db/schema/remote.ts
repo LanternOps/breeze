@@ -73,7 +73,7 @@ export const remoteSessions = pgTable('remote_sessions', {
   // notifications.ts:57-64).
   index('remote_sessions_user_ended_idx').on(t.userId, t.endedAt).where(sql`${t.endedAt} IS NOT NULL`),
   // GET /remote/devices/:deviceId/active-sessions reads a device's live rows.
-  // Created CONCURRENTLY by 2026-11-29-110000-device-live-session-indexes.sql.
+  // Created CONCURRENTLY by 2026-12-05-100000-device-live-session-indexes.sql.
   index('remote_sessions_device_live_idx')
     .on(t.deviceId)
     .where(remoteSessionIsLive(t.status)),
