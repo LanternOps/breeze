@@ -1,5 +1,5 @@
 ---
-tracking_issue:
+tracking_issue: LanternOps/breeze#7910
 ---
 # M365 Customer Graph — Identity-First Admin Consent Implementation Plan
 
