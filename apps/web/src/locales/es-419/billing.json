@@ -2489,5 +2489,26 @@
     "empty": "No se encontraron clientes.",
     "requestedCount_one": "Solicitud enviada a {{count}} cliente.",
     "requestedCount_other": "Solicitudes enviadas a {{count}} clientes."
+  },
+  "reminders": {
+    "title": "Recordatorios de pago",
+    "description": "Enviar recordatorios de facturas pendientes al contacto de facturación de la organización. Los recordatorios funcionan sin pagos automáticos.",
+    "enabled": "Enviar recordatorios de pago",
+    "on": "Habilitados",
+    "off": "Deshabilitados",
+    "inherit": "Usar {{source}}: {{value}}",
+    "before": "Días antes del vencimiento",
+    "repeat": "Repetir antes del vencimiento cada (días)",
+    "overdue": "Recordar después del vencimiento cada (días)",
+    "noRepeat": "Sin repetición",
+    "orgRepeatHelp": "Si se deja en blanco, se hereda la configuración del socio. Aquí no se pueden deshabilitar solo las repeticiones previas al vencimiento cuando el socio las tiene activadas; deshabilita los recordatorios para esta organización para detenerlos todos.",
+    "partnerRepeatHelp": "Deja el intervalo de repetición en blanco para enviar un solo recordatorio antes del vencimiento. Los demás campos en blanco usan el valor predeterminado que se muestra.",
+    "cadenceHelp": "No se envían recordatorios el día del vencimiento. El primer recordatorio de atraso se envía un intervalo después del vencimiento. Cambiar las fechas o los intervalos no vuelve a enviar los recordatorios ya asignados.",
+    "invalid": "Ingresa un número entero de días entre 1 y 31, o deja el campo en blanco para heredar el valor.",
+    "sources": {
+      "org": "organización",
+      "partner": "valor predeterminado del socio",
+      "default": "valor predeterminado del sistema"
+    }
   }
 }

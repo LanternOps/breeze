@@ -2489,5 +2489,26 @@
     "empty": "No clients found.",
     "requestedCount_one": "Request sent to {{count}} client.",
     "requestedCount_other": "Requests sent to {{count}} clients."
+  },
+  "reminders": {
+    "title": "Payment reminders",
+    "description": "Send reminders to the organization's billing contact for unpaid invoices. Reminders work without automatic payments.",
+    "enabled": "Send payment reminders",
+    "on": "Enabled",
+    "off": "Disabled",
+    "inherit": "Use {{source}}: {{value}}",
+    "before": "Days before the due date",
+    "repeat": "Repeat before due every (days)",
+    "overdue": "Remind overdue every (days)",
+    "noRepeat": "No repeat",
+    "orgRepeatHelp": "Blank inherits the partner setting. You cannot disable only upcoming repeats here when the partner repeats them; disable reminders for this organization to stop all reminders.",
+    "partnerRepeatHelp": "Leave the repeat interval blank for one upcoming reminder. Blank in the other fields uses the displayed default.",
+    "cadenceHelp": "No reminder is sent on the due date. The first overdue reminder is sent one overdue interval later. Changing dates or intervals does not resend already allocated reminders.",
+    "invalid": "Enter whole days from 1 to 31, or leave blank to inherit.",
+    "sources": {
+      "org": "organization",
+      "partner": "partner default",
+      "default": "system default"
+    }
   }
 }

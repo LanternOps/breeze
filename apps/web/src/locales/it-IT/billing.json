@@ -2489,5 +2489,26 @@
     "empty": "Nessun cliente trovato.",
     "requestedCount_one": "Richiesta inviata a {{count}} cliente.",
     "requestedCount_other": "Richieste inviate a {{count}} clienti."
+  },
+  "reminders": {
+    "title": "Promemoria di pagamento",
+    "description": "Invia promemoria per le fatture non pagate al contatto di fatturazione dell’organizzazione. I promemoria funzionano anche senza pagamenti automatici.",
+    "enabled": "Invia promemoria di pagamento",
+    "on": "Attivati",
+    "off": "Disattivati",
+    "inherit": "Usa {{source}}: {{value}}",
+    "before": "Giorni prima della scadenza",
+    "repeat": "Ripeti prima della scadenza ogni (giorni)",
+    "overdue": "Ricorda dopo la scadenza ogni (giorni)",
+    "noRepeat": "Nessuna ripetizione",
+    "orgRepeatHelp": "Lasciando il campo vuoto si eredita l’impostazione del partner. Non è possibile disattivare solo le ripetizioni prima della scadenza se il partner le ha attivate; disattiva i promemoria per questa organizzazione per interromperli tutti.",
+    "partnerRepeatHelp": "Lascia vuoto l’intervallo di ripetizione per inviare un solo promemoria prima della scadenza. Gli altri campi vuoti usano il valore predefinito visualizzato.",
+    "cadenceHelp": "Non viene inviato alcun promemoria il giorno della scadenza. Il primo promemoria di ritardo viene inviato un intervallo dopo la scadenza. Modificare date o intervalli non invia nuovamente i promemoria già assegnati.",
+    "invalid": "Inserisci un numero intero di giorni da 1 a 31 oppure lascia il campo vuoto per ereditare il valore.",
+    "sources": {
+      "org": "organizzazione",
+      "partner": "valore predefinito del partner",
+      "default": "valore predefinito del sistema"
+    }
   }
 }
