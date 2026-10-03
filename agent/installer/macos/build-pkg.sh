@@ -81,8 +81,11 @@ cp "$SCRIPT_DIR/preinstall" "$SCRIPTS/preinstall"
 cp "$SCRIPT_DIR/postinstall" "$SCRIPTS/postinstall"
 # Sourced by postinstall from its own directory.
 cp "$SCRIPT_DIR/install-location.sh" "$SCRIPTS/install-location.sh"
+# Also sourced by postinstall: the breeze-group create/repair rule, shared with
+# the daemon, which go:embeds the same file (#7829).
+cp "$SCRIPT_DIR/../../internal/sessionbroker/ensure_ipc_group.sh" "$SCRIPTS/ensure_ipc_group.sh"
 chmod 755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
-chmod 644 "$SCRIPTS/install-location.sh"
+chmod 644 "$SCRIPTS/install-location.sh" "$SCRIPTS/ensure_ipc_group.sh"
 
 # ----- Build component package -----
 mkdir -p "$(dirname "$OUTPUT")"
