@@ -148,7 +148,9 @@ describe('node label and search SQL', () => {
     expect(compiled).toContain('discovery_jobs');
     expect(compiled).toMatch(/last_job_id/);
     expect(compiled).toMatch(/status = 'completed'/);
-    expect(compiled).not.toMatch(/is_online/);
+    // is_online is read only behind a dated UniFi verdict, never as the scan answer.
+    expect(compiled.match(/is_online/g)).toHaveLength(1);
+    expect(compiled).toMatch(/status_source = 'unifi' AND a\.status_observed_at > now\(\) - interval '1 hour'\s+THEN CASE WHEN a\.is_online/);
   });
 
   it('rolls confirmed relationship observations into the node support summary (#7879)', () => {

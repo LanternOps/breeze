@@ -139,6 +139,9 @@ const isoUtc = (column: string) => sql.raw(`to_char(${column}, 'YYYY-MM-DD"T"HH2
  * scan of the profile that last saw it (`last_job_id` is always the newest job that saw
  * it, so a later completed job of that profile is one that did not). Per profile, because
  * a site's profiles scan different subnets. No scan of the asset at all is `unknown`.
+ * A UniFi controller's verdict (rewritten every sync) wins while it is dated within 1 h.
+ * A completed scan that found no hosts at all is no evidence of absence (the disappeared sweep
+ * makes the same refusal: an agent on the wrong network must not dim a whole site).
  * The latest-completion map is uncorrelated with the node, so Postgres reads
  * discovery_jobs once per statement (an InitPlan), not once per node.
  */
@@ -146,11 +149,16 @@ function assetScanPresenceSql(scope: TopologyScope): SQL {
   const latestCompleted = sql`(SELECT coalesce(jsonb_object_agg(lj.profile_id::text, lj.completed_at), '{}'::jsonb) FROM (
       SELECT dj.profile_id, max(dj.completed_at) AS completed_at FROM discovery_jobs dj
       WHERE dj.org_id = ${scope.orgId}::uuid AND dj.site_id = ${scope.siteId}::uuid AND dj.status = 'completed' AND dj.completed_at IS NOT NULL
+        AND coalesce(dj.hosts_discovered, 1) > 0
       GROUP BY dj.profile_id) lj)`;
-  return sql`coalesce((SELECT CASE
+  // A UniFi controller rewrites is_online on every sync (status_source='unifi'): its verdict is current
+  // only while dated inside the reachability window (assetReachability.ts UNIFI_FRESHNESS_MS, 1 h).
+  return sql`CASE WHEN a.status_source = 'unifi' AND a.status_observed_at > now() - interval '1 hour'
+    THEN CASE WHEN a.is_online THEN 'online' ELSE 'offline' END
+    ELSE coalesce((SELECT CASE
       WHEN coalesce(sj.completed_at, sj.started_at, sj.created_at) >= coalesce((${latestCompleted} ->> sj.profile_id::text)::timestamp, '-infinity'::timestamp)
       THEN 'online' ELSE 'offline' END
-    FROM discovery_jobs sj WHERE sj.id = a.last_job_id AND sj.org_id = a.org_id), 'unknown')`;
+    FROM discovery_jobs sj WHERE sj.id = a.last_job_id AND sj.org_id = a.org_id), 'unknown') END`;
 }
 /**
  * Live inventory of node `n` (grouped overview §1): the first device binding, else the

@@ -200,7 +200,9 @@ Found on a production site re-check; each rule is presentation-only and never au
   later completed job of that profile is one that did not), `offline` otherwise, `unknown`
   ("Not scanned") with no scan at all. Never `discovered_assets.is_online`: the disappeared sweep only
   flips approved assets, so the column is sticky for everything else. Per profile, because one site's
-  profiles scan different subnets.
+  profiles scan different subnets. A completed scan that found no hosts proves no absence (same
+  refusal as the sweep). A UniFi controller verdict (`status_source='unifi'`, rewritten every sync)
+  wins while dated within 1 h (`UNIFI_FRESHNESS_MS`).
 - **Node observation.** `evidence.lastObservedAt` is the latest of the node's own observation and its
   incident relationships' observations, where a source that re-captured unchanged, still-published
   content confirms them at `confirmed_through_at` — the same rule `observedFreshUntilSql` applies to

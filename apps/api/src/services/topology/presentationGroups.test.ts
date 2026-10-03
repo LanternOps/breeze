@@ -583,6 +583,28 @@ describe('orphan network/gateway nodes and decommissioned devices (#7879)', () =
     expect(presentationNodeSchema.safeParse(decommissioned).success).toBe(true);
   });
 
+  it('never folds an orphan into a link-local gateway group, and folds a split prefix into exactly one card (the smallest key)', () => {
+    const base = lan([
+      { n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.254' },
+      { n: 3, prefix: '2001:db8:1::/64', gateway: 'fe80::1' },
+    ]);
+    const input: PresentationGroupInput = { ...base, orphans: [
+      { id: O(1), kind: 'gateway', prefix: null, address: 'fe80::1', evidenced: false },
+      { id: O(2), kind: 'network', prefix: '10.1.2.0/24', address: null, evidenced: false },
+      { id: O(3), kind: 'network', prefix: '10.9.0.0/24', address: null, evidenced: true },
+    ] };
+    const { nodes } = build(input, { visible: orphanVisible(input) });
+    const linkLocal = gateways(nodes).find((node) => node.group!.address === 'fe80::1')!;
+    expect(linkLocal.group!.canonicalNodeIds).toEqual([G(3)]);
+    expect(hidden(nodes)[0]!.group!.canonicalNodeIds).toEqual([O(1)]);
+    const split = networks(nodes).filter((node) => node.group!.prefix === '10.1.2.0/24');
+    expect(split).toHaveLength(2);
+    expect(split.every((node) => node.group!.conflict)).toBe(true);
+    expect(split.filter((node) => node.group!.canonicalNodeIds.includes(O(2)))).toEqual([split[0]]);
+    // A non-matching prefix never folds anywhere; evidenced LAN, so it stays a canonical node.
+    expect(nodes.flatMap((node) => node.group!.canonicalNodeIds)).not.toContain(O(3));
+  });
+
   it('counts hidden nodes site-wide but lists only this page', () => {
     const input: PresentationGroupInput = { ...site(), decommissioned: [E(30), E(31)], orphans: [{ id: O(1), kind: 'network', prefix: '10.7.0.0/24', address: null, evidenced: false }] };
     const { nodes } = build(input, { visible: [N(1), N(2), E(1), E(2), G(1), G(2), E(30)] });

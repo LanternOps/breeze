@@ -32,7 +32,7 @@ const GRANTS = [
 ];
 const system = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn, 'topology overview truth test'));
 
-type Assets = { latest: string; stale: string; never: string; running: string };
+type Assets = { latest: string; stale: string; never: string; running: string; unifiFresh: string; unifiStale: string };
 
 async function lanSite() {
   const env = await setupTestEnvironment({ scope: 'organization', rolePermissions: GRANTS });
@@ -41,8 +41,9 @@ async function lanSite() {
   const scope = { orgId, siteId };
   const scoped = <T>(fn: () => Promise<T>) => withDbAccessContext(orgContext(orgId), fn);
   const deviceIds = [crypto.randomUUID(), crypto.randomUUID()];
-  const assets: Assets = { latest: crypto.randomUUID(), stale: crypto.randomUUID(), never: crypto.randomUUID(), running: crypto.randomUUID() };
-  const [profile, otherProfile, oldJob, latestJob, runningJob, otherJob] = Array.from({ length: 6 }, () => crypto.randomUUID());
+  const assets: Assets = { latest: crypto.randomUUID(), stale: crypto.randomUUID(), never: crypto.randomUUID(), running: crypto.randomUUID(),
+    unifiFresh: crypto.randomUUID(), unifiStale: crypto.randomUUID() };
+  const [profile, otherProfile, oldJob, latestJob, runningJob, otherJob, emptyJob] = Array.from({ length: 7 }, () => crypto.randomUUID());
   await system(() => db.update(organizations).set({ settings: { topologyFeatureFlags: { materialization: true } } }).where(eq(organizations.id, orgId)));
   await scoped(async () => {
     for (const [index, deviceId] of deviceIds.entries()) {
@@ -64,6 +65,9 @@ async function lanSite() {
     await job(latestJob!, profile!, 'completed', '61 minutes', '60 minutes');
     await job(runningJob!, profile!, 'running', '5 minutes', null);
     await job(otherJob!, otherProfile!, 'completed', '2 minutes', '1 minute');
+    // A later scan of `profile` that found no hosts at all (agent on the wrong network) proves nobody's absence.
+    await job(emptyJob!, profile!, 'completed', '2 minutes', '30 seconds');
+    await db.execute(sql`UPDATE discovery_jobs SET hosts_scanned = 254, hosts_discovered = 0 WHERE id = ${emptyJob!}::uuid`);
     // is_online is deliberately the OPPOSITE of the truth on every row: it must not be read.
     const asset = (id: string, ip: string, online: boolean, lastJob: string | null, seenAgo: string) => db.execute(sql`INSERT INTO discovered_assets
       (id,org_id,site_id,ip_address,hostname,asset_type,is_online,last_seen_at,last_job_id)
@@ -72,6 +76,12 @@ async function lanSite() {
     await asset(assets.stale, '10.1.2.226', true, oldJob!, '30 days');
     await asset(assets.never, '10.1.2.51', true, null, '1 day');
     await asset(assets.running, '10.1.2.52', false, runningJob!, '3 minutes');
+    // UniFi-sourced rows (no scan): the controller's verdict counts only while it is dated within the hour.
+    const unifi = (id: string, ip: string, observedAgo: string) => db.execute(sql`INSERT INTO discovered_assets
+      (id,org_id,site_id,ip_address,hostname,asset_type,is_online,last_seen_at,status_source,status_observed_at,source)
+      VALUES (${id}::uuid,${orgId}::uuid,${siteId}::uuid,${ip},${`ap-${ip}`},'access_point',true,now() - ${observedAgo}::interval,'unifi',now() - ${observedAgo}::interval,'unifi')`);
+    await unifi(assets.unifiFresh, '10.1.2.60', '5 minutes');
+    await unifi(assets.unifiStale, '10.1.2.61', '2 days');
   });
   let imported = await scoped(() => importLegacyTopologySite(scope));
   for (let attempt = 0; !imported.complete && attempt < 30; attempt++) imported = await scoped(() => drainTopologyOutbox(scope));
@@ -155,6 +165,9 @@ describe('grouped overview truth (#7879)', () => {
     // Last seen 30 days ago by a scan its profile has since completed again without it.
     expect(await state(site.assets.stale)).toBe('offline');
     expect(await state(site.assets.never)).toBe('unknown');
+    expect(await state(site.assets.unifiFresh)).toBe('online');
+    // A controller verdict two days old is no longer evidence, and there was never a scan.
+    expect(await state(site.assets.unifiStale)).toBe('unknown');
   });
 
   it('rolls confirmed relationship observations into node freshness and lastObservedAt, and keeps fresh members fresh', async () => {
@@ -179,6 +192,16 @@ describe('grouped overview truth (#7879)', () => {
     const member = cardOf(fresh, '10.1.2.0/24')!.group!.members.find((entry) => entry.nodeId === observer.endpoint)!;
     expect(member.stale).toBe(false);
 
+    // A confirmation only counts under the confirmation rule: a source whose last outcome carries
+    // no positives confirms nothing, however recent its confirmed_through_at.
+    await system(() => db.execute(sql`UPDATE topology_collection_sources SET last_outcome = 'not_attempted', confirmed_through_at = now()
+      WHERE org_id=${site.orgId}::uuid AND producer_id = ${site.deviceIds[0]!}`));
+    const unconfirmed = (await site.graph()).nodes.find((entry) => entry.id === observer.endpoint)!;
+    expect(unconfirmed.freshness).toBe('stale');
+    expect(Date.now() - Date.parse(unconfirmed.evidence.lastObservedAt!)).toBeGreaterThan(10 * 3600_000);
+    await system(() => db.execute(sql`UPDATE topology_collection_sources SET last_outcome = 'complete'
+      WHERE org_id=${site.orgId}::uuid AND producer_id = ${site.deviceIds[0]!}`));
+
     // When the source stops confirming, the node is honestly stale — and still says WHEN it was last observed.
     await system(() => db.execute(sql`UPDATE topology_collection_sources SET confirmed_through_at = now() - interval '11 hours',
       fresh_until = now() - interval '11 hours' + interval '15 minutes' WHERE org_id=${site.orgId}::uuid AND producer_id = ${site.deviceIds[0]!}`));
@@ -200,8 +223,8 @@ describe('grouped overview truth (#7879)', () => {
     const before = await site.relationshipCount();
 
     const body = await site.graph();
-    expect(cardOf(body, '10.1.2.0/24')!.group!.canonicalNodeIds).toEqual(expect.arrayContaining([zero.lan.id, one.lan.id]));
-    expect(gatewayOf(body, '10.1.2.100')!.group!.canonicalNodeIds).toEqual(expect.arrayContaining([zero.gateway.id, one.gateway.id]));
+    expect(cardOf(body, '10.1.2.0/24')!.group!.canonicalNodeIds).toEqual([zero.lan.id, one.lan.id].sort());
+    expect(gatewayOf(body, '10.1.2.100')!.group!.canonicalNodeIds).toEqual([zero.gateway.id, one.gateway.id].sort());
     // Just observed, so evidenced: under its class, which the hidden-networks toggle governs.
     expect(cardOf(body, '169.254.0.0/16')!.group).toMatchObject({ networkClass: 'link_local', members: [], canonicalNodeIds: [zero.linkLocal.id] });
     expect(hiddenOf(body, 'no_current_evidence')).toBeUndefined();
@@ -233,7 +256,23 @@ describe('grouped overview truth (#7879)', () => {
     expect(card.group!.members.map((member) => member.nodeId)).not.toContain(one.endpoint);
     expect(card.group!.members.map((member) => member.nodeId)).toContain(zero.endpoint);
     expect(card.group!.observerCount).toBe(1);
-    expect(card.group!.canonicalNodeIds).toEqual(expect.arrayContaining([zero.lan.id, one.lan.id]));
-    expect(gatewayOf(body, '10.1.2.100')!.group!.canonicalNodeIds).toEqual(expect.arrayContaining([zero.gateway.id, one.gateway.id]));
+    expect(card.group!.canonicalNodeIds).toEqual([zero.lan.id, one.lan.id].sort());
+    expect(gatewayOf(body, '10.1.2.100')!.group!.canonicalNodeIds).toEqual([zero.gateway.id, one.gateway.id].sort());
+    // Its stale default route no longer contributes to the card's routes_via edge.
+    const contributing = body.presentation.edges.flatMap((edge) => edge.meaning === 'aggregate' ? edge.contributingRelationshipIds : []);
+    expect(contributing).toContain(zero.gateway.rel);
+    expect(contributing).not.toContain(one.gateway.rel);
+
+    // A node that still has a live binding (here a discovered asset) is not hidden: only EVERY binding decommissioned hides it.
+    const assetId = crypto.randomUUID();
+    await system(async () => {
+      await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type)
+        VALUES (${assetId}::uuid,${site.orgId}::uuid,${site.siteId}::uuid,'10.1.2.99','reimaged','workstation')`);
+      await db.execute(sql`INSERT INTO topology_node_bindings (org_id,site_id,node_id,discovered_asset_id)
+        VALUES (${site.orgId}::uuid,${site.siteId}::uuid,${one.endpoint}::uuid,${assetId}::uuid)`);
+    });
+    const live = await site.graph();
+    expect(hiddenOf(live, 'decommissioned')).toBeUndefined();
+    expect(cardOf(live, '10.1.2.0/24')!.group!.members.map((member) => member.nodeId)).toContain(one.endpoint);
   });
 });
