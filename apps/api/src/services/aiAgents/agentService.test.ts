@@ -1370,3 +1370,25 @@ describe('research agent creation backstop (W2)', () => {
     expect(state.hasResolvableAgentRecipient).not.toHaveBeenCalled();
   });
 });
+
+describe('research create pinning (W2 review)', () => {
+  it('overwrites every non-editable field with the provisioned shape but keeps editable research caps', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research',
+      instructions: 'x', toolAllowlist: ['run_script'],
+      triggers: { ...storedRow.triggers, alertSeverities: ['low'] },
+      limits: { ...storedRow.limits, researchDeepBudgetCentsPerRun: 40, maxActionsPerRun: 99 },
+      recipients: { userIds: ['u9'], roleIds: [] },
+    } as never);
+    const v = state.insertedValues as Record<string, unknown>;
+    expect(v.instructions).toBeNull();
+    expect(v.toolAllowlist).toEqual([]);
+    expect(v.mode).toBe('act');
+    expect((v.triggers as { alertSeverities: string[] }).alertSeverities).toEqual(['critical', 'high']);
+    expect(v.recipients).toEqual({ userIds: [], roleIds: [] });
+    const limits = v.limits as Record<string, number>;
+    expect(limits.researchDeepBudgetCentsPerRun).toBe(40);
+    expect(limits.maxActionsPerRun).not.toBe(99);
+  });
+});

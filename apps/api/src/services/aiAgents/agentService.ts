@@ -28,7 +28,7 @@ import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipien
 import type { AgentModelBinding } from './agentModelBinding';
 import { AgentModelNotAllowedError } from './agentModelErrors';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
-import { assertResearchAgentEdit, ResearchAgentEditError } from './researchAgentEdit';
+import { assertResearchAgentEdit, pinResearchCreateInput, ResearchAgentEditError } from './researchAgentEdit';
 import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
@@ -665,8 +665,11 @@ async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> 
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
-  input: CreateAiAgentInput,
+  rawInput: CreateAiAgentInput,
 ): Promise<AiAgentRow> {
+  // W2: research rows are pinned to the provisioned shape (see
+  // pinResearchCreateInput) before any validation or persistence sees them.
+  const input = rawInput.kind === 'research' ? pinResearchCreateInput(rawInput) : rawInput;
   assertAgentWriteAllowed(auth, owner);
 
   // AI Suggested Fixes W2: the partner baseline research agent is provisioned

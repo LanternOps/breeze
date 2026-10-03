@@ -42,6 +42,13 @@ function adopt(partnerId: string, row: { id: string; provisionedBy: string | nul
   return { agentId: row.id, created: false };
 }
 
+/**
+ * Callers must NOT invoke this while holding a request DB transaction:
+ * `inSystemDbContext` opens a second pooled connection from inside one, which
+ * double-holds the pool (hang at concurrency >= pool size, repo CLAUDE.md /
+ * #2417). Call it before entering the request context, or from a self-managed
+ * route phase or background path.
+ */
 export async function ensureResearchAgent(partnerId: string): Promise<{ agentId: string; created: boolean }> {
   return inSystemDbContext(async () => {
     const existing = await readBaseline(partnerId);
