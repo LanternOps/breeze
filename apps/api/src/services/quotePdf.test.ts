@@ -1130,14 +1130,14 @@ describe('renderQuotePdf', () => {
       const buf = await renderQuotePdf(
         {
           id: 'q1', quoteNumber: 'Q-11', oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00', total: '0.00', currencyCode: 'USD',
-          coverPage: { enabled: true, title: 'Proposal', preparedForName: 'Cassidy Lowrey — Animal Health at Home Veterinary Practice LLC' },
-          billToAddress: { line1: '406 10th Street', city: 'Berthoud', region: 'CO', postalCode: '80513' },
+          coverPage: { enabled: true, title: 'Proposal', preparedForName: 'Jordan Whitfield — Paws at Home Companion Veterinary Practice LLC' },
+          billToAddress: { line1: '100 Example Street', city: 'Springfield', region: 'CO', postalCode: '80000' },
         } as never,
         [], [], async () => null, {},
       );
       const positioned = extractPositionedPdfText(buf);
-      const nameBottom = Math.max(...positioned.filter((f) => f.text.includes('Animal Health')).map((f) => f.y));
-      const address = positioned.find((f) => f.text.includes('406 10th Street'))!;
+      const nameBottom = Math.max(...positioned.filter((f) => f.text.includes('Paws at Home')).map((f) => f.y));
+      const address = positioned.find((f) => f.text.includes('100 Example Street'))!;
       expect(address).toBeDefined();
       expect(Number.isFinite(nameBottom)).toBe(true);
       // Address must start below the wrapped name's LAST line (12pt font ≈

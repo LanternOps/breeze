@@ -39,7 +39,7 @@ function row(partial: Partial<BackupHealthRow> & { key: string; name: string }):
 }
 
 const data: BackupStatusReportData = {
-  org: { id: 'o1', name: 'Liggett & Goodman P.C.' },
+  org: { id: 'o1', name: 'Harlow & Pierce P.C.' },
   asOf: '2026-09-15T12:00:00.000Z',
   generatedAt: '2026-09-15T12:00:00.000Z',
   summary: {
@@ -98,7 +98,7 @@ describe('backup status report PDF', () => {
     const doc = buildReportPdf([], { ...opts, summary: data });
     const text = pdfText(doc);
     expect(text).toContain('Backup Status Report');
-    expect(text).toContain('Liggett & Goodman P.C.');
+    expect(text).toContain('Harlow & Pierce P.C.');
     expect(text).toContain('Status');
     expect(text).toContain('Completed');
     expect(text).toContain('Unsuccessful');

@@ -25,7 +25,7 @@ function pdfText(doc: ReturnType<typeof buildReportPdf>): string {
 
 const SUMMARY: EndpointManagementSummary = {
   orgId: 'o1',
-  orgName: 'Liggett & Goodman P.C.',
+  orgName: 'Harlow & Pierce P.C.',
   generatedAt: '2026-09-30T06:00:00.000Z',
   period: { start: '2026-09-01', end: '2026-09-30' },
   freshness: {
@@ -77,7 +77,7 @@ describe('endpoint management PDF', () => {
   it('labels the report type without losing its wording', () => {
     const text = pdfText(buildReportPdf([], { ...opts, summary: SUMMARY }));
     expect(text).toContain('Endpoint Management Review');
-    expect(text).toContain('Liggett & Goodman P.C.');
+    expect(text).toContain('Harlow & Pierce P.C.');
   });
 
   it('prints the freshness note and the history caveat', () => {

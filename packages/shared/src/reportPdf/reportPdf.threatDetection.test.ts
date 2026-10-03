@@ -23,7 +23,7 @@ function pdfText(doc: ReturnType<typeof buildReportPdf>): string {
 
 const SUMMARY: ThreatDetectionSummary = {
   orgId: 'o1',
-  orgName: 'Liggett & Goodman P.C.',
+  orgName: 'Harlow & Pierce P.C.',
   generatedAt: '2026-09-30T05:18:00.000Z',
   coverage: {
     periodStart: '2026-09-01',
@@ -70,7 +70,7 @@ describe('buildReportPdf: threat_detection_review', () => {
   it('labels the report and names the org', () => {
     const text = pdfText(buildReportPdf([], { ...opts, summary: SUMMARY }));
     expect(text).toContain('Threat Detection Review');
-    expect(text).toContain('Liggett & Goodman P.C.');
+    expect(text).toContain('Harlow & Pierce P.C.');
   });
 
   it('prints the coverage window on the cover, verbatim from summary.coverage.note', () => {

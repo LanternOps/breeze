@@ -30,7 +30,7 @@ function finding(overrides: Partial<FindingDetailData> = {}): FindingDetailData 
   return {
     id: 'f-1',
     orgId: 'o-1',
-    orgName: 'Berthoud Vet Care',
+    orgName: 'Cedar Ridge Vet Care',
     title: 'VSS writers failing',
     summary: 'Shadow copy creation failed on 3 devices.',
     status: 'open',
@@ -245,7 +245,7 @@ describe('findingDetailMeta', () => {
     const byLabel = Object.fromEntries(rows.map((r) => [r.label, r.value]));
     expect(byLabel.Status).toBe('Open');
     expect(byLabel.Severity).toBe('Error');
-    expect(byLabel.Organization).toBe('Berthoud Vet Care');
+    expect(byLabel.Organization).toBe('Cedar Ridge Vet Care');
     expect(byLabel.Devices).toBe('3');
   });
 
