@@ -1,4 +1,5 @@
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import TopologyEntry from './TopologyEntry';
 import { topologyApi, TopologyReadError } from './topologyApi';
@@ -13,7 +14,8 @@ vi.mock('@/lib/authScope', () => ({
   useJwtClaims: () => ({ status: 'resolved' as const, claims: { scope: 'partner', orgId: null, partnerId: 'partner-1' } }),
   getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' }),
 }));
-vi.mock('./TopologyExplorer', () => ({ default: () => <div data-testid="topology-explorer" /> }));
+// Renders whatever start-of-toolbar control the entry hands it, so a test sees where the site select lives.
+vi.mock('./TopologyExplorer', () => ({ default: ({ toolbarStart }: { toolbarStart?: ReactNode }) => <div data-testid="topology-explorer">{toolbarStart}</div> }));
 
 const uiOff = (reason: string | null) => {
   const settings = topologySettingsFixture();
@@ -139,4 +141,22 @@ it('without an organization selector, a linked site owned by another organizatio
   render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
   expect(await screen.findByTestId('topology-site-not-in-org')).toBeInTheDocument();
   expect(screen.queryByTestId('topology-explorer')).toBeNull();
+});
+
+it('keeps keyboard focus on the site select when the site changes (the select never remounts)', async () => {
+  window.location.hash = `#topology/site/${SITE}/view/overview`;
+  vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+  render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }, { id: OTHER, name: 'Warehouse' }]} />);
+  await screen.findByTestId('topology-explorer');
+  const select = screen.getByTestId('topology-site') as HTMLSelectElement;
+  select.focus();
+  expect(document.activeElement).toBe(select);
+  // ArrowDown on a closed select fires `change` straight away.
+  fireEvent.change(select, { target: { value: OTHER } });
+  await waitFor(() => expect(topologyApi.settings).toHaveBeenCalledWith(OTHER, expect.anything()));
+  expect(document.activeElement).toBe(screen.getByTestId('topology-site'));
+  expect(screen.getByTestId('topology-site')).toBe(select);
+  await screen.findByTestId('topology-explorer');
+  expect(document.activeElement).toBe(select);
+  expect(screen.getAllByTestId('topology-site')).toHaveLength(1);
 });

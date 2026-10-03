@@ -240,13 +240,19 @@ it('frames the overview as networks within one site and says when a second netwo
   expect(screen.getByTestId('topology-unlinked-note')).toHaveTextContent('No observed link between 10.1.5.0/24 and 10.1.2.0/24');
 });
 
-it('compacts the header: one status row, a secondary control group with accessible names, and a site control in the toolbar', async () => {
-  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} toolbarStart={<select data-testid="topology-site" aria-label="Site"><option>Main</option></select>} />);
+it('compacts the header: one status row, a secondary control group with accessible names, and the toolbar in the entry\'s row beside the site control', async () => {
+  // The entry's own toolbar row (TopologyEntry): the site select, then the slot the explorer fills.
+  const row = document.body.appendChild(document.createElement('div'));
+  row.innerHTML = '<select data-testid="topology-site" aria-label="Site"><option>Main</option></select><div data-testid="slot"></div>';
+  const slot = row.querySelector<HTMLElement>('[data-testid="slot"]')!;
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} toolbarSlot={slot} />);
   const status = await screen.findByTestId('topology-status');
   for (const id of ['topology-coverage', 'topology-health-internet', 'topology-counts']) expect(status).toContainElement(screen.getByTestId(id));
   const toolbar = screen.getByTestId('topology-toolbar');
+  expect(slot).toContainElement(toolbar);
+  expect(screen.getByTestId('topology-explorer')).not.toContainElement(toolbar);
   for (const id of ['topology-site', 'topology-search', 'topology-view', 'topology-list-toggle', 'topology-refresh', 'topology-configure', 'topology-operations-toggle']) {
-    expect(toolbar).toContainElement(screen.getByTestId(id));
+    expect(row).toContainElement(screen.getByTestId(id));
   }
   expect(screen.getByRole('button', { name: 'Refresh snapshot' })).toBe(screen.getByTestId('topology-refresh'));
   expect(screen.getByRole('button', { name: 'Configuration' })).toHaveAttribute('aria-expanded', 'false');
@@ -254,6 +260,7 @@ it('compacts the header: one status row, a secondary control group with accessib
   expect(screen.getByRole('searchbox', { name: 'Search this site by name or address' })).toBe(screen.getByTestId('topology-search'));
   // Nothing outside the view: no "Outside this view: 0 nodes · 0 connections" taking up the row.
   expect(screen.queryByText(/Outside this view/)).toBeNull();
+  cleanup(); row.remove();
 });
 
 it('collapses an expansion back to the base read (#7818)', async () => {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Activity, RefreshCw, Settings2 } from 'lucide-react';
 import type { GraphNode, TopologyView } from '@breeze/shared';
@@ -38,8 +39,13 @@ const cardMemberIds = (boxes: LayoutBox[]) => {
 const ICON_BUTTON = 'inline-flex h-9 w-9 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary aria-pressed:bg-muted aria-pressed:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground';
 const LAYOUT_BUTTON = 'h-8 rounded-md border bg-background px-2.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary';
 
-/** `toolbarStart`: a control the entry puts at the start of the toolbar row (the site select), so it does not take a row of its own. */
-export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings, toolbarStart }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings; toolbarStart?: ReactNode }) {
+/** Renders `node` into `target` when there is one, in place otherwise. */
+const portalInto = (target: HTMLElement | undefined, node: ReactNode) => (target ? createPortal(node, target) : node);
+/**
+ * `toolbarSlot`: the entry's own toolbar row, which already holds the site select. The toolbar renders
+ * into it through a portal so the select keeps one stable place (and keyboard focus) across site changes.
+ */
+export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings, toolbarSlot }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings; toolbarSlot?: HTMLElement }) {
   const { t } = useTranslation('topology');
   const [navigation, setNavigation] = useHashState<TopologyNavigation>({ siteId, view: 'overview', search: '' }, (hash) => {
     const value = parseTopologyHash(hash); return value && (!value.siteId || value.siteId === siteId) ? value : undefined;
@@ -203,8 +209,7 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   // indicator is no signal since an automatic arrangement is not an unsaved change (#7880).
   return <section data-testid="topology-explorer" data-layout-applied={positions.length ? 'true' : undefined} className="min-w-0 space-y-3">
     {/* One toolbar row (2026-10-03): site, search, view, list; refresh/configuration/operations as a compact icon group. */}
-    <div data-testid="topology-toolbar" className="flex flex-wrap items-center gap-2">
-      {toolbarStart}
+    {portalInto(toolbarSlot, <div data-testid="topology-toolbar" className={toolbarSlot ? 'contents' : 'flex flex-wrap items-center gap-2'}>
       <label className="min-w-48 flex-1"><span className="sr-only">{t('search')}</span>
         <input data-testid="topology-search" type="search" placeholder={t('search')} className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
       <label className="flex items-center gap-2 text-sm text-muted-foreground">{t('view')}<select data-testid="topology-view" className="h-9 rounded-md border bg-background px-2 text-sm text-foreground" value={view} onChange={(event) => navigate({ ...navigation, view: event.target.value as TopologyView, selection: undefined })}><option value="overview">{t('overview')}</option><option value="logical">{t('logical')}</option><option value="physical" disabled={!settings.capabilities.physical.available}>{t('physical')}</option></select></label>
@@ -214,7 +219,7 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
         <button data-testid="topology-configure" className={`${ICON_BUTTON} border-l`} aria-label={t('configuration')} title={t('configuration')} aria-expanded={configuration} onClick={() => setConfiguration(!configuration)}><Settings2 className="h-4 w-4" aria-hidden="true" /></button>
         <button data-testid="topology-operations-toggle" className={`${ICON_BUTTON} border-l`} aria-label={t('operations.toggle')} title={t('operations.toggle')} aria-pressed={!!navigation.operations} onClick={() => navigate({ ...navigation, operations: !navigation.operations })}><Activity className="h-4 w-4" aria-hidden="true" /></button>
       </div>
-    </div>
+    </div>)}
     {(focusNodeId || searchFocus) && !fullSite && <button className="text-sm text-primary underline" onClick={() => { setFullSite(true); setSearchFocus(undefined); }}>{t('fullSite')}</button>}
     {configuration && <TopologyConfiguration siteId={siteId} />}
     {navigation.operations && <section data-testid="topology-operations" aria-label={t('operations.heading')} className="space-y-2 rounded border bg-card p-4">
