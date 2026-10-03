@@ -80,3 +80,25 @@ CVE-2025-71330
 #
 # Added 2026-10-02 (Trivy DB refresh).
 CVE-2026-85393
+
+# braces — CVE-2026-93687 is the Trivy-DB id for GHSA-vfj7-8cjw-p6xm, which the
+# npm audit gate already excepts (scripts/security/npm-audit-exceptions.json,
+# tracking #7862). No fixed release (<=3.0.3 affected; 3.0.3 is latest). Build
+# tooling only (tailwindcss/chokidar/fast-glob and Expo Metro → micromatch →
+# braces); `pnpm why braces --prod` is empty for every shipped app and no
+# production image deps stage installs it.
+# Remove together with that exception (expires 2026-10-16).
+#
+# Added 2026-10-03 (Trivy DB refresh).
+CVE-2026-93687
+
+# http-cache-semantics — CVE-2026-93748 is the Trivy-DB id for
+# GHSA-ch52-4w7c-c8xp, which the npm audit gate already excepts (tracking
+# #7863). No fixed release (<=4.2.0 affected; 4.2.0 is latest). Present in the
+# web/portal images via astro, but only astro's build-time remote-image cache
+# imports it and it calls only storable()/timeToLive(), never the max-stale
+# path; the built servers load it 0 times. Full reachability evidence lives in
+# the npm-audit exception. Remove together with it (expires 2026-10-16).
+#
+# Added 2026-10-03 (Trivy DB refresh).
+CVE-2026-93748
