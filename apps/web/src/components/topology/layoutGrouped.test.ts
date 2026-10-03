@@ -66,6 +66,20 @@ describe('grouped two-stage layout', () => {
     expect(order.slice(0, firstRanked.length)).toEqual(firstRanked);
   });
 
+  it('puts the primary (largest) network first, with smaller networks beside it', async () => {
+    // Harbor Dental / prod Whalers shape: a big LAN via one gateway, a 3-device LAN via its own gateway
+    // whose ids sort first, and a VPN gateway one big-LAN member routes to.
+    const tile = (id: string, groupId: string): LayoutBox => ({ id, width: 208, height: 60, role: 'device', groupId, section: 2, rank: 3, name: id });
+    const request: LayoutRequest = { requestId: 'r', graphRevision: '1', layoutRevision: '0', measurementRevision: 'm', algorithmVersion: 'v', mode: 'reflow', positions: [],
+      nodes: [{ id: 'zz-gw', width: 236, height: 64, role: 'gateway' }, { id: 'aa-gw', width: 236, height: 64, role: 'gateway' }, { id: 'mm-vpn', width: 236, height: 64, role: 'gateway' },
+        { id: 'zz-lan', width: 0, height: 0, role: 'group' }, { id: 'aa-lan', width: 0, height: 0, role: 'group' },
+        ...Array.from({ length: 40 }, (_, i) => tile(`pc-${String(i).padStart(2, '0')}`, 'zz-lan')), ...Array.from({ length: 3 }, (_, i) => tile(`aa-${i}`, 'aa-lan'))],
+      edges: [{ id: 'rv1', source: 'zz-gw', target: 'zz-lan' }, { id: 'rv2', source: 'aa-gw', target: 'aa-lan' }, { id: 'vpn', source: 'pc-07', target: 'mm-vpn' }] };
+    const result = await computeTopologyLayout(request, new ELK());
+    expect(findOverlaps(result, request)).toEqual([]);
+    expect(bounds(result, request, members(request, 'zz-lan')).x1).toBeLessThan(bounds(result, request, members(request, 'aa-lan')).x1);
+  });
+
   it('is deterministic', async () => {
     const request = groupedRequest();
     expect((await computeTopologyLayout(request, new ELK())).positions).toEqual((await computeTopologyLayout(request, new ELK())).positions);

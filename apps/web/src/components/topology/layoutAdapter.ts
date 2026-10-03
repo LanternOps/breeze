@@ -26,6 +26,22 @@ export function layeredThoroughness(elements: number): number {
   return 1; // V1000 (3,000) up to the 5,000-element packing cap
 }
 
+/**
+ * Model order for ELK (2026-10-03): by role as before, then the primary (largest) network first. A
+ * card's weight is its area; a gateway or other node weighs as much as the largest card it links to,
+ * so the main network and its gateway lead the row and smaller networks sit beside it. Ties keep id order.
+ */
+function primaryFirst(request: LayoutRequest): LayoutBox[] {
+  const area = new Map(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => [node.id, node.width * node.height]));
+  const weight = new Map(area);
+  for (const edge of request.edges) {
+    for (const [end, other] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      if (area.has(other) && !area.has(end)) weight.set(end, Math.max(weight.get(end) ?? 0, area.get(other)!));
+    }
+  }
+  return [...request.nodes].sort((a, b) => (roleOrder[a.role] ?? 4) - (roleOrder[b.role] ?? 4) || (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0) || a.id.localeCompare(b.id, 'en'));
+}
+
 export function toElkGraph(request: LayoutRequest, direction: 'RIGHT' | 'DOWN' = 'RIGHT'): ElkNode {
   // Interface ports (M2): an edge with a known endpoint port attaches to an ELK
   // port on that node, so parallel cables between one pair stay distinct.
@@ -39,7 +55,7 @@ export function toElkGraph(request: LayoutRequest, direction: 'RIGHT' | 'DOWN' =
   };
   const edges = [...request.edges].sort((a, b) => a.id.localeCompare(b.id, 'en'))
     .map((edge) => ({ id: edge.id, sources: [endpoint(edge.source, edge.sourcePort)], targets: [endpoint(edge.target, edge.targetPort)] }));
-  const children: ElkNode[] = sorted(request.nodes).map((node) => ({ id: node.id, width: node.width, height: node.height,
+  const children: ElkNode[] = primaryFirst(request).map((node) => ({ id: node.id, width: node.width, height: node.height,
     ...(ports.has(node.id) ? { ports: [...ports.get(node.id)!].sort((a, b) => a.localeCompare(b, 'en')).map((id) => ({ id, width: 1, height: 1 })) } : {}) }));
   const groups = new Map<string, ElkNode>();
   for (const node of sorted(request.nodes)) {
@@ -117,7 +133,11 @@ export async function computeTopologyLayout(request: LayoutRequest, engine: { la
   if (request.nodes.length + request.edges.length > 5000) return packTopologyLayout(request, undefined, true);
   if (isGroupedRequest(request)) {
     const { top } = groupedStages(request);
-    return packGroupedLayout(request, elkPositions(await engine.layout(toElkGraph(top, 'DOWN'))));
+    const graph = toElkGraph(top, 'DOWN');
+    // The card graph is small (cards, gateways, loose tiles), so ELK can afford to keep the model order
+    // within a layer: the primary network and its gateway lead (primaryFirst). Not for big flat graphs (#7285).
+    if (top.nodes.length <= 200) graph.layoutOptions = { ...graph.layoutOptions, 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES' };
+    return packGroupedLayout(request, elkPositions(await engine.layout(graph)));
   }
   const layout = await engine.layout(toElkGraph(request));
   return packTopologyLayout(request, elkPositions(layout));
