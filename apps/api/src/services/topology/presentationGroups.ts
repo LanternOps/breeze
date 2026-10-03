@@ -44,8 +44,8 @@ export type PresentationGroupOptions = {
   scopeHash: string;
   /** Canonical ids present in this response; group lists only ever name these. */
   visibleNodeIds: ReadonlySet<string>;
-  /** Frontier token focused on one canonical node (server-issued, DC:172). */
-  tokenFor: (focusNodeId: string) => string;
+  /** Server-issued expansion token for one whole group card (DC:172, #7818); never a single canonical node. */
+  tokenFor: (group: PresentationGroupRef) => string;
   maxNodes?: number;
   maxEdges?: number;
   /** Clock for neighbour-evidence expiry (tests). */
@@ -100,12 +100,10 @@ function gatewayMac(evidence: NeighborEvidenceIndex | null, route: Route): Neigh
 }
 
 /**
- * Pure grouping over complete-site inputs. Deterministic for a given input regardless
- * of row order: every list is sorted and every choice (primary parent, route owner)
- * is decided by candidate key, never by size.
+ * The grouping decisions themselves (candidates, gateway groups, placement, primary
+ * parent), shared by the card builder and by group expansion so both see one answer.
  */
-export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
-  const { view, scopeHash, visibleNodeIds, tokenFor } = options;
+function analysePresentationGroups(input: PresentationGroupInput, now?: Date) {
   const prefixes = new Map<string, string>();
   for (const network of input.networks) {
     const prefix = network.prefix?.trim().toLowerCase();
@@ -126,7 +124,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     list.push({ ...row, address, family: parsed.family });
     routesByObserver.set(row.endpointId, list);
   }
-  const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, options.now ?? new Date()) : null;
+  const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, now ?? new Date()) : null;
   const neighborCoverage = evidence ? (evidence.coverage === 'limited' || input.inventoryPairsTruncated ? 'limited' as const : 'complete' as const) : undefined;
   // Only complete evidence may DECIDE anything (an upgrade or a split): a truncated read can be
   // missing exactly the conflicting row or the other candidate's observer. Site-wide, because a
@@ -338,7 +336,47 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   };
   const primary = new Map<string, string>();
   for (const [endpointId, keys] of endpointCandidates) primary.set(endpointId, [...keys].sort((a, b) => bySmallest(rank(a), rank(b)))[0]!);
+  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage };
+}
 
+/** The group a frontier token names (#7818): its kind and the SHA-256 of its internal key. */
+export type PresentationGroupRef = { kind: 'network' | 'gateway' | 'unidentified'; key: string };
+const UNIDENTIFIED_KEY = 'unidentified';
+const groupRef = (kind: PresentationGroupRef['kind'], key: string): PresentationGroupRef =>
+  ({ kind, key: createHash('sha256').update(key).digest('hex') });
+
+/**
+ * Every canonical node a group card stands for — its `members` and `canonicalNodeIds`
+ * without the page filter or list cap — or null when `ref` names no group in this
+ * input (the grouping moved, e.g. a route went stale). Group expansion (#7818) pages
+ * over exactly this set; folded gateways stay on their own gateway card.
+ */
+export function presentationGroupMembers(input: PresentationGroupInput, ref: PresentationGroupRef, now?: Date): string[] | null {
+  const site = analysePresentationGroups(input, now);
+  const named = (key: string) => groupRef(ref.kind, key).key === ref.key;
+  let members: string[] = [];
+  if (ref.kind === 'unidentified') {
+    if (named(UNIDENTIFIED_KEY)) members = site.unidentified;
+  } else if (ref.kind === 'gateway') {
+    const group = [...site.gatewayGroups.values()].find((entry) => named(entry.key));
+    if (group) members = group.routes.map((route) => route.gatewayId);
+  } else {
+    const candidate = [...site.candidates.values()].find((entry) => named(entry.key));
+    if (candidate) {
+      members = [...candidate.memberships.flatMap((m) => [m.networkId, m.endpointId]), ...candidate.addressMatches, ...candidate.neighborSeen.keys()];
+    }
+  }
+  return members.length ? sorted(new Set(members)) : null;
+}
+
+/**
+ * Pure grouping over complete-site inputs. Deterministic for a given input regardless
+ * of row order: every list is sorted and every choice (primary parent, route owner)
+ * is decided by candidate key, never by size.
+ */
+export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
+  const { view, scopeHash, visibleNodeIds, tokenFor } = options;
+  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = analysePresentationGroups(input, options.now);
   const visible = (ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
   const canonicalNetworks = (candidate: Candidate) => sorted(new Set(candidate.memberships.map((m) => m.networkId)));
   const nodeIds = new Map<string, string>();
@@ -362,7 +400,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     nodeIds.set(candidate.key, id);
     return { id, view, role: 'network_group', label: candidate.prefix.slice(0, 255),
       memberCount: new Set([...observed.keys(), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]).size,
-      frontierToken: tokenFor(canonical[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('network', candidate.key)), authority: false,
       group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: candidate.networkClass, prefix: candidate.prefix, address: null,
         gatewayAddresses: sorted(listed).slice(0, GATEWAY_ADDRESS_CAP), conflict: candidate.conflict, observerCount: observed.size,
         members, canonicalNodeIds,
@@ -389,7 +427,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const id = presentationId(view, scopeHash, 'gw', group.key);
     nodeIds.set(group.key, id);
     return { id, view, role: 'gateway_group', label: `Reported gateway ${group.address}`.slice(0, 255), memberCount: canonical.length,
-      frontierToken: tokenFor(canonical[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('gateway', group.key)), authority: false,
       group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: group.address, gatewayAddresses: [],
         conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds,
         ...(gatewayMacs.length ? { gatewayMacs } : {}) } };
@@ -399,7 +437,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const members = visible(all).slice(0, LIST_CAP).map((nodeId) => ({ nodeId, placement: 'observed' as const, primary: true, stale: false }));
     if (!members.length) return null;
     return { id: presentationId(view, scopeHash, 'unid', 'unidentified'), view, role: 'unidentified_group', label: 'Network not identified',
-      memberCount: all.length, frontierToken: tokenFor(all[0]!), authority: false,
+      memberCount: all.length, frontierToken: tokenFor(groupRef('unidentified', UNIDENTIFIED_KEY)), authority: false,
       group: { kind: 'unidentified', basis: 'unidentified', networkClass: null, prefix: null, address: null, gatewayAddresses: [],
         conflict: false, observerCount: 0, members, canonicalNodeIds: [] } };
   };
@@ -413,7 +451,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   ].filter((node): node is PresentationNode => !!node).slice(0, options.maxNodes ?? LIST_CAP);
   const emitted = new Set(nodes.map((node) => node.id));
 
-  const aggregate = (short: string, key: string, source: string, target: string, contributing: string[], memberCount: number, focus: string): PresentationEdge => ({
+  const aggregate = (short: string, key: string, source: string, target: string, contributing: string[], memberCount: number, focus: PresentationGroupRef): PresentationEdge => ({
     id: presentationId(view, scopeHash, short, key), sourceNodeId: source, targetNodeId: target, relationshipKind: null, presentationOnly: true,
     authority: false, meaning: 'aggregate', role: short === 'rv' ? 'routes_via' : 'shared_devices',
     contributingRelationshipIds: sorted(contributing).slice(0, CONTRIBUTING_CAP), memberCount, frontierToken: tokenFor(focus),
@@ -424,7 +462,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const source = nodeIds.get(group.candidateKey); const target = nodeIds.get(key);
     if (!source || !target || !emitted.has(source) || !emitted.has(target)) continue;
     edges.push(aggregate('rv', `rv|${key}`, source, target, group.routes.map((route) => route.id), group.routes.length,
-      canonicalNetworks(candidates.get(group.candidateKey)!)[0]!));
+      groupRef('network', group.candidateKey)));
   }
   // Devices a primary LAN card shares with another card (dual stack, second NIC).
   const shared = new Map<string, { primaryKey: string; secondaryKey: string; endpoints: Set<string>; relationships: string[] }>();
@@ -441,7 +479,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const entry = shared.get(pair)!;
     const source = nodeIds.get(entry.primaryKey); const target = nodeIds.get(entry.secondaryKey);
     if (!source || !target || !emitted.has(source) || !emitted.has(target)) continue;
-    edges.push(aggregate('sd', pair, source, target, entry.relationships, entry.endpoints.size, canonicalNetworks(candidates.get(entry.secondaryKey)!)[0]!));
+    edges.push(aggregate('sd', pair, source, target, entry.relationships, entry.endpoints.size, groupRef('network', entry.secondaryKey)));
   }
   return { nodes, edges: edges.slice(0, options.maxEdges ?? CONTRIBUTING_CAP) };
 }

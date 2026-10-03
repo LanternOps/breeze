@@ -23,6 +23,7 @@
   "openInventory": "Bestandsdetails öffnen",
   "members": "{{count}} Mitglieder",
   "expand": "Gruppe erweitern",
+  "collapse": "Gruppe reduzieren",
   "diagnose": "Diagnostizieren",
   "diagnosticsUnavailable": "Diagnosen sind für diesen Standort oder Ihre aktuellen Berechtigungen nicht verfügbar.",
   "pin": "Anheften",

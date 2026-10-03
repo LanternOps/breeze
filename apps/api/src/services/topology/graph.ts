@@ -8,7 +8,7 @@ import { GraphReadError, graphAuthority, issueGraphToken, verifyGraphToken, node
 import { scoped, nodeFilter, listFilter, relationshipFilter, nodeColumns, relationshipColumns, presentNode, presentRelationship, safeCount, missingSubject,
   nodeExposure, relationshipExposure, type NodeRow, type ReadExposure, type RelationshipRow } from './graphRead';
 import { loadActiveExclusions } from './exclusions';
-import { buildPresentationGroups, readPresentationGroupInput } from './presentationGroups';
+import { buildPresentationGroups, presentationGroupMembers, readPresentationGroupInput, type PresentationGroupInput } from './presentationGroups';
 import { readGraphCoverage } from './physicalCoverage';
 import { projectPhysicalView } from './physicalProjection';
 import { readRelationshipDetail, readRelationshipEvidence, type DetailRow } from './relationshipDetail';
@@ -42,7 +42,7 @@ async function readState(tx: ReadTx, ctx: TopologyRequestContext, claims?: Graph
   }
   return state;
 }
-function token(ctx: TopologyRequestContext, authority: Authority, revision: string, claims: Pick<GraphTokenClaims, 'kind' | 'filter' | 'after' | 'edgeAfter' | 'boundaryAfter' | 'boundaryOnly' | 'relationshipId'>): string {
+function token(ctx: TopologyRequestContext, authority: Authority, revision: string, claims: Pick<GraphTokenClaims, 'kind' | 'filter' | 'after' | 'edgeAfter' | 'boundaryAfter' | 'boundaryOnly' | 'relationshipId' | 'group'>): string {
   return issueGraphToken({ ...ctx.scope, authority: authority.digest, graphRevision: revision, ...claims });
 }
 type SubjectHealth = { byKey: Map<string, TopologyHealthContribution[]>; now: Date };
@@ -95,7 +95,21 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
       throw new GraphReadError('invalid_topology_group', 400, 'Node is not a network or infrastructure group');
     }
   }
-  const filter = nodeFilter(ctx.scope, query, 'n', exposure);
+  // Group-scoped expansion (#7818): the card's complete member set, re-resolved from the
+  // complete site under this pinned revision, bounds every row, count and frontier below.
+  // The same read then renders the cards, so membership and presentation agree.
+  let groupInput: PresentationGroupInput | undefined;
+  let pageFilter = (alias: string) => nodeFilter(ctx.scope, query, alias, exposure);
+  if (claims?.group) {
+    if (query.view === 'physical' || query.focusNodeId) throw new GraphReadError('invalid_topology_cursor', 400, 'Invalid or expired topology cursor');
+    groupInput = await readPresentationGroupInput(tx, ctx.scope, query.view, exposure);
+    const members = presentationGroupMembers(groupInput, claims.group);
+    if (!members) throw new GraphReadError('presentation_group_changed', 409, 'Topology group changed; reload the projection');
+    const memberArray = sql`${`{${members.join(',')}}`}::uuid[]`;
+    pageFilter = (alias) => sql`${nodeFilter(ctx.scope, query, alias, exposure)} AND ${sql.identifier(alias)}.id = ANY(${memberArray})`;
+  }
+  const group = claims?.group;
+  const filter = pageFilter('n');
   // A fresh focus reserves the first slot. Continuations visit the remaining
   // UUID-ordered members once, including members whose UUID precedes the focus.
   // Keeping the focus on every page would prevent progress when limit is one.
@@ -109,8 +123,8 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
   const [count] = await tx.execute<{ count: string; remaining: string }>(sql`SELECT count(*)::text AS count,
     count(*) FILTER (WHERE ${after})::text AS remaining FROM topology_nodes n WHERE ${filter}`);
   const relationshipScope = sql`${relationshipFilter(ctx.scope, query.view, 'r', exposure)}
-    AND EXISTS (SELECT 1 FROM topology_nodes ns WHERE ns.id = r.source_node_id AND ${nodeFilter(ctx.scope, query, 'ns', exposure)})
-    AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${nodeFilter(ctx.scope, query, 'nt', exposure)})`;
+    AND EXISTS (SELECT 1 FROM topology_nodes ns WHERE ns.id = r.source_node_id AND ${pageFilter('ns')})
+    AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${pageFilter('nt')})`;
   const [relationshipCount] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_relationships r WHERE ${relationshipScope}`);
   const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope, exposure)} FROM topology_nodes n
     WHERE ${filter} AND ${after} ORDER BY ${nodeOrder} LIMIT ${query.limit}`);
@@ -153,19 +167,19 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     omittedRelationships: safeCount(relationshipCount?.count) - graph.relationships.length };
   graph.coverage = await readGraphCoverage(tx, ctx.scope, query.view, authority.physical);
   if (safeCount(count?.remaining ?? count?.count) > rows.length && rows.length) {
-    graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: rows.at(-1)!.id }),
+    graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: rows.at(-1)!.id, group }),
       label: 'More devices', memberCount: safeCount(count?.remaining ?? count?.count) - rows.length });
   }
   if (relationships.length > edgeLimit) {
-    graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: claims?.after, edgeAfter: graph.relationships.at(-1)!.id }),
+    graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: claims?.after, edgeAfter: graph.relationships.at(-1)!.id, group }),
       label: 'More connections in this projection', memberCount: safeCount(relationships[0]?.remaining ?? relationships.length) - edgeLimit });
   }
   if (boundaryRows.length > boundaryLimit) {
     graph.frontier.push({ token: token(ctx, authority, state.graph, { kind: 'graph', filter: query, after: claims?.after,
-      boundaryOnly: true, boundaryAfter: boundary.at(-1)?.id ?? claims?.boundaryAfter }),
+      boundaryOnly: true, boundaryAfter: boundary.at(-1)?.id ?? claims?.boundaryAfter, group }),
       label: 'More boundary connections', memberCount: safeCount(boundaryRows[0]?.remaining ?? boundaryRows.length) - boundary.length });
   }
-  const scopeHash = createHash('sha256').update(`${authority.digest}:${state.graph}:${JSON.stringify(query)}:${claims?.after ?? ''}`).digest('hex').slice(0, 24);
+  const scopeHash = createHash('sha256').update(`${authority.digest}:${state.graph}:${JSON.stringify(query)}:${claims?.after ?? ''}${group ? `:${group.kind}:${group.key}` : ''}`).digest('hex').slice(0, 24);
   if (boundary.length) {
     const groupId = `presentation:${query.view}:${scopeHash}:outside`;
     const firstOutside = ids.includes(boundary[0]!.sourceNodeId) ? boundary[0]!.targetNodeId : boundary[0]!.sourceNodeId;
@@ -184,9 +198,12 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
   if (!groupOnly && options.presentationGroups !== false && query.view !== 'physical' && ids.length) {
     // Grouped overview: inferred site+prefix cards over the COMPLETE site, listing only
     // this page's canonical ids. Presentation only — never authority (D:50, C:19).
-    const groups = buildPresentationGroups(await readPresentationGroupInput(tx, ctx.scope, query.view, exposure), {
+    // Cards expand to their whole group (#7818), never to one canonical node's neighbourhood,
+    // so a card drawn inside a focused read expands unfocused.
+    const { focusNodeId: _focus, ...unfocused } = query;
+    const groups = buildPresentationGroups(groupInput ?? await readPresentationGroupInput(tx, ctx.scope, query.view, exposure), {
       view: query.view, scopeHash, visibleNodeIds: new Set(ids),
-      tokenFor: (focusNodeId) => token(ctx, authority, state.graph, { kind: 'graph', filter: { ...query, focusNodeId } }),
+      tokenFor: (ref) => token(ctx, authority, state.graph, { kind: 'graph', filter: unfocused, group: ref }),
       maxNodes: 1_000 - graph.presentation.nodes.length, maxEdges: 2_000 - graph.presentation.edges.length,
     });
     graph.presentation.nodes.push(...groups.nodes);
@@ -196,7 +213,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     graph.coverage = { state: graph.coverage.state === 'complete' ? 'limited' : graph.coverage.state,
       reasons: [...graph.coverage.reasons, { code: 'projection_bounded', message: 'Some canonical nodes or connections are outside this bounded projection.' }] };
   }
-  return response(graph, authority, { query, after: claims?.after, edgeAfter: claims?.edgeAfter, boundaryAfter: claims?.boundaryAfter, boundaryOnly: claims?.boundaryOnly });
+  return response(graph, authority, { query, after: claims?.after, edgeAfter: claims?.edgeAfter, boundaryAfter: claims?.boundaryAfter, boundaryOnly: claims?.boundaryOnly, group });
 }
 export async function getTopologyGraph(ctx: TopologyRequestContext, query: GraphQuery, options: GraphReadOptions = {}): Promise<GraphResponse> {
   const parsed = input(graphQuerySchema, query); const authority = await graphAuthority(ctx);
@@ -286,7 +303,7 @@ export async function getTopologyGroupMembers(ctx: TopologyRequestContext, nodeI
   input(uuid, nodeId);
   if (cursor) {
     const authority = await graphAuthority(ctx); const claims = verifyGraphToken(cursor, authority.digest, ctx.scope);
-    if (claims.kind !== 'graph' || !('view' in claims.filter) || claims.filter.focusNodeId !== nodeId) throw new GraphReadError('invalid_topology_cursor', 400, 'Cursor does not belong to this group');
+    if (claims.kind !== 'graph' || claims.group || !('view' in claims.filter) || claims.filter.focusNodeId !== nodeId) throw new GraphReadError('invalid_topology_cursor', 400, 'Cursor does not belong to this group');
     return db.transaction((tx) => project(tx, ctx, input(graphQuerySchema, claims.filter), authority, claims, true));
   }
   const authority = await graphAuthority(ctx);

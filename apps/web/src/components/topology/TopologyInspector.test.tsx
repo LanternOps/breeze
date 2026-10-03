@@ -144,8 +144,8 @@ describe('grouped overview inspector (2026-10-02)', () => {
     graph.relationships = [{ ...graph.relationships[0]!, kind: 'default_route', sourceNodeId: reporter.id, targetNodeId: gatewayId }];
     graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.100', memberCount: 0, frontierToken: 't', authority: false,
       group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.100', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [gatewayId] } }];
-    const onSelectNode = vi.fn();
-    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} onSelectNode={onSelectNode} />);
+    const onSelectNode = vi.fn(); const onExpand = vi.fn();
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={onExpand} onSelectNode={onSelectNode} />);
     expect(screen.getByTestId('topology-group-summary')).toHaveTextContent('1 device reports 10.1.2.100 as its default gateway');
     expect(screen.getByTestId('topology-gateway-address-match')).toHaveTextContent('not verified');
     fireEvent.click(screen.getByRole('button', { name: 'Ubiquiti UDM-Pro' }));
@@ -153,7 +153,9 @@ describe('grouped overview inspector (2026-10-02)', () => {
     fireEvent.click(screen.getByRole('button', { name: reporter.label }));
     expect(onSelectNode).toHaveBeenCalledWith(gatewayId);
     expect(screen.queryByTestId('topology-diagnose')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('topology-expand')).not.toBeInTheDocument();
+    // #7818: a card expands its whole group through its own server-issued group token.
+    fireEvent.click(screen.getByTestId('topology-expand'));
+    expect(onExpand).toHaveBeenCalledWith('t');
   });
 
   it('offers SNMP port measurement for infrastructure, never for a workstation', () => {

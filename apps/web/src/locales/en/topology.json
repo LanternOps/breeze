@@ -23,6 +23,7 @@
   "openInventory": "Open inventory details",
   "members": "{{count}} members",
   "expand": "Expand group",
+  "collapse": "Collapse group",
   "diagnose": "Diagnose",
   "diagnosticsUnavailable": "Diagnostics are unavailable for this site or your current permissions.",
   "pin": "Pin",
