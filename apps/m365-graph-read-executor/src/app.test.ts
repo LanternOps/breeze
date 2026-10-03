@@ -362,7 +362,7 @@ describe('executor process lifecycle', () => {
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction: vi.fn(),
       syncAction: vi.fn(),
