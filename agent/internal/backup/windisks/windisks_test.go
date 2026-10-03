@@ -28,6 +28,31 @@ func descriptor(removable bool, bus uint32, vendor, product, serial string) []by
 	return b
 }
 
+func TestSkippableProbeErr(t *testing.T) {
+	cases := []struct {
+		name  string
+		errno uint32
+		want  bool
+	}{
+		{"file not found", 2, true},
+		{"path not found", 3, true},
+		{"not ready", 21, true},
+		{"no media in drive", 1112, true},
+		{"unrecognized media", 1785, true},
+		{"access denied", 5, false},
+		{"invalid function", 1, false},
+		{"io device error", 1117, false},
+		{"zero", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skippableProbeErr(tc.errno); got != tc.want {
+				t.Fatalf("skippableProbeErr(%d) = %v, want %v", tc.errno, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecodeDeviceDescriptor(t *testing.T) {
 	cases := []struct {
 		name               string

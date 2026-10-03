@@ -43,6 +43,13 @@ func List() ([]Disk, error) {
 	return disks, nil
 }
 
+// skippable reports whether err wraps a Win32 errno that skippableProbeErr
+// classifies as "no usable disk here".
+func skippable(err error) bool {
+	var errno windows.Errno
+	return errors.As(err, &errno) && skippableProbeErr(uint32(errno))
+}
+
 func openDrive(path string, access uint32) (windows.Handle, error) {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
@@ -56,9 +63,11 @@ func openDrive(path string, access uint32) (windows.Handle, error) {
 func probe(n int) (Disk, bool, error) {
 	path := fmt.Sprintf(`\\.\PhysicalDrive%d`, n)
 
+	// Access 0 (query-only) so the open succeeds even for drives we may not
+	// read, and for empty removable slots that answer property queries.
 	h, err := openDrive(path, 0)
 	if err != nil {
-		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+		if skippable(err) {
 			return Disk{}, false, nil
 		}
 		return Disk{}, false, fmt.Errorf("windisks: open %s: %w", path, err)
@@ -71,6 +80,9 @@ func probe(n int) (Disk, bool, error) {
 	if err := windows.DeviceIoControl(h, ioctlStorageQueryProperty,
 		(*byte)(unsafe.Pointer(&q)), uint32(unsafe.Sizeof(q)),
 		&buf[0], uint32(len(buf)), &returned, nil); err != nil {
+		if skippable(err) {
+			return Disk{}, false, nil
+		}
 		return Disk{}, false, fmt.Errorf("windisks: IOCTL_STORAGE_QUERY_PROPERTY %s: %w", path, err)
 	}
 	model, serial, bus, removable, err := DecodeDeviceDescriptor(buf[:returned])
@@ -80,6 +92,9 @@ func probe(n int) (Disk, bool, error) {
 
 	size, err := lengthInfo(path)
 	if err != nil {
+		if skippable(err) {
+			return Disk{}, false, nil
+		}
 		return Disk{}, false, err
 	}
 	return Disk{Number: n, Path: path, Model: model, Serial: serial, SizeBytes: size, BusType: bus, Removable: removable}, true, nil

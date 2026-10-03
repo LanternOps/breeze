@@ -30,6 +30,27 @@ const (
 	descriptorHeader = 36
 )
 
+// Win32 error numbers (untagged so the classification is testable everywhere).
+const (
+	errFileNotFound      = 2
+	errPathNotFound      = 3
+	errNotReady          = 21
+	errNoMediaInDrive    = 1112
+	errUnrecognizedMedia = 1785
+)
+
+// skippableProbeErr reports whether a per-disk Win32 error means "this slot
+// has no usable disk" (absent drive number, or an empty card reader / USB slot
+// with no media). Such a drive is never a valid restore target, so List skips
+// it; every other error is fatal so real faults fail loudly.
+func skippableProbeErr(errno uint32) bool {
+	switch errno {
+	case errFileNotFound, errPathNotFound, errNotReady, errNoMediaInDrive, errUnrecognizedMedia:
+		return true
+	}
+	return false
+}
+
 func DecodeDeviceDescriptor(b []byte) (model, serial string, busType uint32, removable bool, err error) {
 	if len(b) < descriptorHeader {
 		return "", "", 0, false, fmt.Errorf("storage device descriptor is %d bytes, need %d", len(b), descriptorHeader)
