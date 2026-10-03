@@ -3,13 +3,14 @@ import { readFileSync } from 'node:fs';
 const mocks = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue({}), close: vi.fn().mockResolvedValue(undefined),
   work: vi.fn(), dispatch: vi.fn().mockResolvedValue({ sent: 1, failed: 0 }),
-  expiry: vi.fn(),
+  expiry: vi.fn(), register: vi.fn(),
   drain: vi.fn().mockResolvedValue(undefined), observe: vi.fn(),
 }));
 vi.mock('bullmq', () => ({
   Queue: class { add = mocks.add; close = mocks.close; },
   Worker: class { constructor(name: string, processor: unknown) { mocks.work(name, processor); } on() { return this; } close = mocks.close; },
 }));
+vi.mock('../services/autopay/chargingNotice', () => ({ registerAutopayNoticeHandlers: mocks.register }));
 vi.mock('../services/autopay/reminderSweep', () => ({ runInvoiceReminderSweep: vi.fn() }));
 vi.mock('../services/autopay/cardExpiryCheck', () => ({ checkExpiringAutopayCards: mocks.expiry }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
@@ -22,6 +23,20 @@ import { WORKER_REGISTRY, selectWorkers } from '../services/workerRegistry';
 import { WORKER_READINESS_MANIFEST } from './workerReadinessManifest';
 beforeEach(() => vi.clearAllMocks());
 describe('autopay worker registration', () => {
+  it('registers handlers before dispatch starts and only once across failed start and restart', async () => {
+    mocks.add.mockRejectedValueOnce(new Error('initial start failed'));
+    await expect(initializeAutopayWorkers()).rejects.toThrow('initial start failed');
+    expect(mocks.register).toHaveBeenCalledOnce();
+    expect(mocks.register.mock.invocationCallOrder[0]).toBeLessThan(mocks.work.mock.invocationCallOrder[0]!);
+    await initializeAutopayWorkers();
+    await shutdownAutopayWorkers();
+    await initializeAutopayWorkers();
+    expect(mocks.register).toHaveBeenCalledOnce();
+    expect(mocks.add).toHaveBeenCalledWith('notice-dispatch', { type: 'notice-dispatch' }, expect.objectContaining({
+      jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
+    }));
+    await shutdownAutopayWorkers();
+  });
   it('registers precisely the C5 cadence and closes both resources', async () => {
     expect(jobSchedule('billing-notice-dispatch')).toBe('* * * * *');
     await initializeAutopayWorkers();

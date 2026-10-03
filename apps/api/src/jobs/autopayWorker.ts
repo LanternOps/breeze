@@ -1,6 +1,7 @@
 import { captureException } from '../services/sentry';
 import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { registerAutopayNoticeHandlers } from '../services/autopay/chargingNotice';
 import { dispatchPendingBillingNotices } from '../services/autopay/noticeOutbox';
 import { drainAutopayMethodDetaches } from '../services/autopay/merge';
 import { checkExpiringAutopayCards } from '../services/autopay/cardExpiryCheck';
@@ -13,6 +14,7 @@ interface ReminderSweepJobData { type: 'reminder-sweep' }
 export type AutopayJobData = ReminderSweepJobData | { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
 let queue: Queue<AutopayJobData> | null = null;
 let worker: Worker<AutopayJobData> | null = null;
+let noticeHandlersRegistered = false;
 
 export async function processNoticeDispatch(): Promise<{ sent: number; failed: number }> {
   let result: { sent: number; failed: number } | undefined;
@@ -49,6 +51,10 @@ export async function processAutopayJob(data: AutopayJobData) {
 }
 
 export async function initializeAutopayWorkers(): Promise<void> {
+  if (!noticeHandlersRegistered) {
+    registerAutopayNoticeHandlers();
+    noticeHandlersRegistered = true;
+  }
   if (worker) return;
   let pendingQueue: Queue<AutopayJobData> | null = null;
   let pendingWorker: Worker<AutopayJobData> | null = null;
