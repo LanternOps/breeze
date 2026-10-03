@@ -347,7 +347,7 @@ it('hides disabled idle autopay', async () => {
   expect(await getInvoiceAutopayView(f.tx, f.inv as any)).toBeNull();
 });
 
-it.each([null, 'succeeded', 'failed', 'cancelled', 'excluded_by_msp'])(
+it.each([null, 'succeeded', 'failed', 'cancelled', 'excluded_by_msp', 'skipped_by_client', 'not_needed'])(
   'keeps exclusion pending for invoice-wide reservations with schedule %s',
   async (state) => {
     const attempt = {
@@ -357,6 +357,7 @@ it.each([null, 'succeeded', 'failed', 'cancelled', 'excluded_by_msp'])(
       scheduleId: null,
     };
     const f = fixture({ state, enrollmentId: null }, [attempt]);
+    const history = { ...f.sched };
     if (state === null) f.data.set(invoiceAutopaySchedules, []);
     if (state === 'excluded_by_msp') f.inv.autopayExcluded = true;
 
@@ -365,17 +366,13 @@ it.each([null, 'succeeded', 'failed', 'cancelled', 'excluded_by_msp'])(
     expect(result).toEqual({ status: 'pending', control: 'exclude' });
     expect(f.inv.autopayExcluded).toBe(true);
     if (state !== null) {
-      expect(f.sched).toMatchObject({
-        state,
-        enrollmentId: null,
-        stateReason: 'control_pending:exclude',
-      });
-      expect(f.sched.mspExcludedAt).toBeInstanceOf(Date);
+      expect(f.sched).toEqual(history);
     } else {
       expect(f.data.get(invoiceAutopaySchedules)).toEqual([]);
     }
     expect(f.data.get(invoiceCollectionAttempts)).toEqual([attempt]);
     expect(f.writes.some((write) => write.table === invoiceCollectionAttempts)).toBe(false);
+    expect(f.writes.some((write) => write.table === invoiceAutopaySchedules)).toBe(false);
     const writes = f.writes.length;
 
     expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toEqual(result);
@@ -461,21 +458,24 @@ it.each([
 });
 
 
-it('finalizes an already-excluded pending schedule and permits replay and reinclusion', async () => {
+it('preserves already-excluded history while pending and permits replay and reinclusion after cancellation', async () => {
   const attempt = { id: 'attempt', state: 'requires_action' };
   const f = fixture({ state: 'excluded_by_msp', stateReason: 'exclude', mspExcludedAt: new Date() }, [attempt]);
   f.inv.autopayExcluded = true;
+  const history = { ...f.sched };
 
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor))
     .toEqual({ status: 'pending', control: 'exclude' });
-  expect(f.sched.stateReason).toBe('control_pending:exclude');
+  expect(f.sched).toEqual(history);
   expect(attempt.state).toBe('requires_action');
+  expect(f.writes).toEqual([]);
 
   // Model the reconciler after verified cancellation, under the invoice lock.
   f.data.set(invoiceCollectionAttempts, []);
   expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, 'exclude'))
     .toEqual({ status: 'excluded' });
-  expect(f.sched).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude', nextAttemptAt: null });
+  expect(f.sched).toEqual(history);
+  expect(f.writes).toEqual([]);
   expect(f.inv.autopayExcluded).toBe(true);
   const writes = f.writes.length;
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toEqual({ status: 'excluded' });
@@ -492,14 +492,15 @@ it('finalizes an already-excluded pending schedule and permits replay and reincl
 it.each([
   ['skip', 'skipped_by_client'],
   ['exclude', 'excluded_by_msp'],
-] as const)('clears stale pending metadata on repeated %s finalization without duplicate notices', async (kind, state) => {
+] as const)('preserves terminal history with legacy pending metadata on repeated %s finalization', async (kind, state) => {
   const f = fixture({ state, stateReason: `control_pending:${kind}`, nextAttemptAt: new Date() });
+  const history = { ...f.sched };
   const result = await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, kind);
 
   expect(result).toEqual({ status: kind === 'skip' ? 'skipped' : 'excluded' });
-  expect(f.sched).toMatchObject({ state, stateReason: kind, nextAttemptAt: null });
+  expect(f.sched).toEqual(history);
   const writes = f.writes.length;
-  expect(writes).toBe(1);
+  expect(writes).toBe(0);
   expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, kind)).toEqual(result);
   expect(f.writes).toHaveLength(writes);
   expect(h.confirmation).not.toHaveBeenCalled();

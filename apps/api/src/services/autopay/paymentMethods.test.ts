@@ -69,6 +69,29 @@ describe('payment method usability', () => {
   });
 });
 describe('durable post-commit detach', () => {
+  it.each([true, false])('reserving attempts block detach; no reservation permits detach (reserved=%s)', async reserved => {
+    // Model the database selection result, while asserting the actual SQL guard
+    // so an omitted, uncorrelated, or incomplete exclusion cannot pass.
+    m.execute.mockReset().mockResolvedValue([]).mockImplementationOnce(async (sql: SQL) => {
+      const q = query(sql);
+      expect(q.sql).toMatch(/AND NOT EXISTS \(SELECT 1 FROM invoice_collection_attempts a WHERE a\.payment_method_id=m\.id\s+AND a\.state IN \(\$1, \$2, \$3, \$4, \$5\)\)/);
+      expect(q.params).toEqual(['reserved', 'created', 'confirming', 'processing', 'requires_action', 'partner', 'method']);
+      return reserved ? [] : [row];
+    });
+    await detachPaymentMethodPostCommit('partner', 'method');
+    if (reserved) {
+      expect(m.client).not.toHaveBeenCalled();
+      expect(m.retrieve).not.toHaveBeenCalled();
+      expect(m.detach).not.toHaveBeenCalled();
+      expect(m.execute).toHaveBeenCalledTimes(1);
+    } else {
+      expect(m.client).toHaveBeenCalledWith('partner');
+      expect(m.retrieve).toHaveBeenCalledWith('pm_one');
+      expect(m.detach).toHaveBeenCalledExactlyOnceWith('pm_one');
+      expect(m.execute).toHaveBeenCalledTimes(2);
+      expect(query(m.execute.mock.calls[1]![0]).sql).toContain(":detached");
+    }
+  });
   it('checks committed removed state, tenant, backoff and terminal state before Stripe', async () => {
     m.execute.mockReset().mockResolvedValue([]);
     await detachPaymentMethodPostCommit('partner', 'method');
@@ -79,7 +102,7 @@ describe('durable post-commit detach', () => {
     expect(q.sql).toContain('m.detach_next_attempt_at<=now()');
     expect(q.sql).toContain("NOT LIKE '%:detached'");
     expect(q.sql).toContain('e.partner_id='); expect(q.sql).toContain('m.id=');
-    expect(q.params).toEqual(['partner', 'method']);
+    expect(q.params).toEqual(['reserved', 'created', 'confirming', 'processing', 'requires_action', 'partner', 'method']);
   });
   it('rejects held contexts before opening another connection', async () => {
     m.held = true;
