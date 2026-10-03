@@ -569,7 +569,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       mockCurrentSnapshotLocal();
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'verified', manifestSha256: 'b'.repeat(64) } }]);
       lineageRows.push([{ id: 'file-row-1' }]);
-      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
@@ -580,7 +580,7 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
       mockCurrentSnapshotLocal();
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'mismatch', manifestSha256: 'a'.repeat(64) } }]);
       lineageRows.push([{ id: 'file-row-1' }]);
-      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
@@ -588,11 +588,11 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     });
 
     it('an external key bound to a matching attestation is authorized, and membership is read against the approved index', async () => {
-      mockCurrentSnapshotLocal('store-1');
+      mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       innerJoins.length = 0;
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: 'a'.repeat(64), attestation: { status: 'pending', manifestSha256: 'a'.repeat(64) } }]);
       lineageRows.push([{ id: 'file-row-1' }]);
-      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
@@ -601,12 +601,12 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
     });
 
     it('reads membership only against the index state it approved, in the same statement', async () => {
-      mockCurrentSnapshotLocal('store-1');
+      mockCurrentSnapshotLocal(LOCAL_IDENTITY);
       wheres.length = 0;
       const digest = 'c'.repeat(64);
       lineageRows.push([{ fileIndexStatus: 'complete', fileIndexManifestSha256: digest, attestation: { status: 'verified', manifestSha256: digest } }]);
       lineageRows.push([{ id: 'file-row-1' }]);
-      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: 'store-1', originStoragePrefix: null }]);
+      lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: null }]);
 
       await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
