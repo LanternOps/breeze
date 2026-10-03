@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { PDFDocument as PdfLibDocument, PDFArray, PDFDict, PDFName, PDFRawStream, PDFStream, PDFString, decodePDFRawStream } from 'pdf-lib';
-import { parseTable, measureTable, renderTableIntoPdf, MIN_COLUMN_WIDTH, CELL_PADDING, type EnsureRoomRich, type TableModel } from './tablePdf';
+import { parseTable, measureTable, renderTableIntoPdf, MIN_COLUMN_WIDTH, CELL_PADDING, CELL_PADDING_X, type EnsureRoomRich, type TableModel } from './tablePdf';
 import { registerThemeFonts } from './documentThemes';
 import type { QuoteTableContent } from '@breeze/shared';
 
@@ -225,7 +225,7 @@ describe('measureTable', () => {
     const measured = measureTable(doc, model, theme);
 
     doc.font(theme.body.regular).fontSize(10);
-    const flattenedHeight = doc.heightOfString(longText, { width: model.columns[0]!.width - 2 * CELL_PADDING });
+    const flattenedHeight = doc.heightOfString(longText, { width: model.columns[0]!.width - 2 * CELL_PADDING_X });
 
     expect(measured.rows[0]!.height).toBeGreaterThanOrEqual(flattenedHeight + 2 * CELL_PADDING);
   });
@@ -349,7 +349,7 @@ describe('renderTableIntoPdf', () => {
     expect(rects.length).toBeLessThanOrEqual(pdfLibDoc.getPageCount() + 1);
   });
 
-  it('zebra striping alternates row fill color; headerStyle "accent" fills the header with the accent color', async () => {
+  it('zebra striping alternates row fill color; headerStyle "accent" fills the header with a 10% accent tint (web parity)', async () => {
     const buf = await renderToBuffer((doc) => {
       const theme = registerThemeFonts(doc, 'classic');
       const model = buildMeasured(
@@ -369,8 +369,9 @@ describe('renderTableIntoPdf', () => {
     const rects = extractFilledRects(buf);
     expect(rects.length).toBeGreaterThanOrEqual(3); // 1 header + 2 zebra stripes (rows 1 & 3, 0-indexed odd rows)
 
-    const [ar, ag, ab] = hexToRgbFrac(ACCENT);
-    const headerRect = rects.find((r) => Math.abs(r.r - ar) < 0.01 && Math.abs(r.g - ag) < 0.01 && Math.abs(r.b - ab) < 0.01);
+    // The web's accent header is a 10% tint of the accent under dark text.
+    const [ar, ag, ab] = hexToRgbFrac(ACCENT).map((v) => v * 0.1 + 0.9);
+    const headerRect = rects.find((r) => Math.abs(r.r - ar!) < 0.01 && Math.abs(r.g - ag!) < 0.01 && Math.abs(r.b - ab!) < 0.01);
     expect(headerRect).toBeDefined();
 
     const zebraColor = hexToRgbFrac('#f8fafc');
@@ -440,13 +441,16 @@ describe('renderTableIntoPdf', () => {
     const positioned = extractPositionedPdfText(buf);
     const rowStarts = positioned.filter((f) => /^Service [ABC]$/.test(f.text)).sort((a, b) => a.y - b.y);
     expect(rowStarts.length).toBe(3);
-    // The wrapped middle-column text's LAST line ("our SOC team...") for each
-    // row must sit ABOVE (smaller y, since y grows downward here) the NEXT
-    // row's label — i.e. real vertical separation, not overlap/collapse.
-    const lastLines = positioned.filter((f) => f.text.startsWith('our SOC team')).sort((a, b) => a.y - b.y);
-    expect(lastLines.length).toBe(3);
+    // Every wrapped line of a row's middle cell must sit between that row's
+    // label and the next row's label: with the overlap bug, a row's last
+    // line(s) landed below the next row's start. Each row wraps identically,
+    // so each band must hold exactly a third of the middle-column lines.
+    const middle = positioned.filter((f) => !/^(Service [ABC]|[123]|Item|Description|Qty)$/.test(f.text.trim()));
+    const perRow = middle.length / 3;
+    expect(Number.isInteger(perRow) && perRow > 1).toBe(true);
     for (let i = 0; i < 2; i++) {
-      expect(rowStarts[i + 1]!.y).toBeGreaterThan(lastLines[i]!.y);
+      const band = middle.filter((f) => f.y >= rowStarts[i]!.y && f.y < rowStarts[i + 1]!.y);
+      expect(band.length, `row ${i} lines outside its band`).toBe(perRow);
     }
     // Also assert the row-to-row spacing is at least the full 3-line cell
     // height (a loose lower bound — well beyond what a collapsed-row bug like
@@ -610,7 +614,7 @@ describe('renderTableIntoPdf multi-run cells in non-left-aligned columns (#4438)
       captured.columns = model.columns.map((col) => {
         const box = {
           outer: { left: cx, right: cx + col.width },
-          inner: { left: cx + CELL_PADDING, right: cx + col.width - CELL_PADDING },
+          inner: { left: cx + CELL_PADDING_X, right: cx + col.width - CELL_PADDING_X },
         };
         cx += col.width;
         return box;

@@ -27,6 +27,7 @@ import { resolvePartnerDocumentLocale } from '../../services/documentLocale';
 import { resolveDocumentFooter } from '../../services/documentFooter';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { normalizeEmail, portalFinancialMutationGuard } from './helpers';
+import { resolveDocumentBrand } from '../../services/partnerDocumentBrand';
 
 export const quoteRoutes = new Hono();
 quoteRoutes.use('*', portalFinancialMutationGuard);
@@ -96,7 +97,7 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
       .orderBy(desc(quoteAcceptances.signedAt))
       .limit(1);
     return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, acceptanceOrigin: acceptance?.origin ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
-      partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+      partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
       supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,
     }, presentation: { theme, pageSize } } });
@@ -173,7 +174,7 @@ quoteRoutes.get('/quotes/:id/pdf', zValidator('param', idParam), async (c) => {
   // theme/pageSize columns.
   const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
   const branding = {
-    partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+    partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
     footer: resolveDocumentFooter({ documentTerms: quote.terms, partnerFooter: partner?.invoiceFooter ?? null, brandingFooter: brand?.footerText ?? null }), currencyCode: quote.currencyCode ?? partner?.currencyCode ?? 'USD',
     theme: resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme),
     pageSize: resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize),

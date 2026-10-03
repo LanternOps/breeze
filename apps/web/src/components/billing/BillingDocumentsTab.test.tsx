@@ -37,6 +37,14 @@ describe('BillingDocumentsTab', () => {
     expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument();
   });
 
+  it('names the document theme by its fonts — "Condensed" read as a layout change, not a font choice', () => {
+    renderTab();
+    expect(screen.getByLabelText('Document fonts')).toBe(screen.getByTestId('partner-billing-document-theme'));
+    const options = [...(screen.getByTestId('partner-billing-document-theme') as HTMLSelectElement).options].map((o) => [o.value, o.text]);
+    // Stored values are unchanged (partners.document_theme, quote presentation snapshots).
+    expect(options).toEqual([['classic', 'Helvetica'], ['condensed', 'Barlow Condensed + DM Sans']]);
+  });
+
   it('#6635: renders the on-behalf acceptance notice toggle unchecked by default and wires its setter', () => {
     const props = renderTab();
     const box = screen.getByTestId('partner-billing-notify-on-behalf-acceptance') as HTMLInputElement;

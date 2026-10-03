@@ -57,7 +57,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 59, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 61, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.manual "Manual" are
     // identical cognates in pt-BR.
@@ -216,7 +216,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 47, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; source.manual "Manual" is an identical cognate in es-419.
     'checklists.json': 2,
@@ -371,7 +371,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -551,7 +551,7 @@ const namespaceDuplicateBaselines = {
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
-    'billing.json': 57, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    'billing.json': 58, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.description — "Description" is also the French word.
     'checklists.json': 2,
@@ -740,7 +740,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
-    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     // +1 W02: templates.name — "Name" is also the German word.
     'checklists.json': 2,
@@ -906,7 +906,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 38, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713, net +1 after 1 pre-existing slack): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
     // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
     // are the same loanwords deliverables.json already keeps untranslated in it-IT.
@@ -1038,7 +1038,7 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation
+    'billing.json': 24, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal; +1 (#6648): quotes.editor.footer.counter "{{count}} / {{max}}" is pure interpolation; +2 (#7713): partnerBillingSettings.defaults.documentThemeClassic/Condensed are font family names ("Helvetica", "Barlow Condensed + DM Sans") — proper nouns, identical in every locale
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
     'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation

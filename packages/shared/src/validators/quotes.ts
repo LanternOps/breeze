@@ -372,6 +372,9 @@ export const coverPageSchema = z.object({
   coverImageId: z.string().guid().nullable().optional(),
   preparedForName: z.string().max(255).nullable().optional(),
   showPreparedBy: z.boolean().default(true),
+  // PDF only: a contents list (section → page, linked) under the intro. Lives
+  // with the cover settings but is independent of `enabled`. Absent = off.
+  showContents: z.boolean().optional(),
 });
 
 export type CoverPage = z.infer<typeof coverPageSchema>;

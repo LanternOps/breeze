@@ -13,16 +13,17 @@
 // `loadImage`, branding via `branding`) so it is unit-testable without a DB; the
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
+import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { DEVICE_ROLE_NOUNS, toCents, fromCents, formatMoney as sharedFormatMoney, type BillableDeviceRole, type CoverPage } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
 import { captureException } from './sentry';
-import { renderRichTextIntoPdf } from './richTextPdf';
+import { renderRichTextIntoPdf, measureRichTextLead, parseRichText, WEB_TYPOGRAPHY } from './richTextPdf';
 import { registerThemeFonts, pdfPageSize, type DocumentThemeId, type DocumentPageSize, type PdfThemeFonts } from './documentThemes';
-import { parseTable, measureTable, renderTableIntoPdf, type EnsureRoomRich } from './tablePdf';
-import { renderCalloutIntoPdf } from './calloutPdf';
+import { parseTable, measureTable, renderTableIntoPdf, tableLeadHeight, type EnsureRoomRich } from './tablePdf';
+import { renderCalloutIntoPdf, measureCalloutLead } from './calloutPdf';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers (kept in lock-step with invoicePdf.ts conventions)
@@ -97,6 +98,124 @@ function hexToColor(value: string | null | undefined, fallback: string): string 
   return /^#[0-9a-fA-F]{3,8}$/.test(v) ? v : fallback;
 }
 
+type Rgb = [number, number, number];
+const INK: Rgb = [17, 24, 39]; // #111827, the default heading/body ink
+const DEFAULT_HEADING_COLOR = '#111827';
+
+function parseHexRgb(hex: string): Rgb | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const h = m[1]!.length === 3 ? m[1]!.split('').map((ch) => ch + ch).join('') : m[1]!;
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)) as Rgb;
+}
+
+function rgbToHex(rgb: Rgb): string {
+  return `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function contrastOnWhite(rgb: Rgb): number {
+  const lin = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const lum = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+  return 1.05 / (lum + 0.05);
+}
+
+/** The accent prints as text (PROPOSAL eyebrow, the amount due, the
+ *  AGREEMENT/TERMS labels) and as rules, bars and tints, so a light brand
+ *  colour is darkened toward ink until it reaches WCAG AA (4.5:1) — the same
+ *  rule report PDFs apply (paletteForBranding). A colour that already passes
+ *  is returned unchanged. */
+export function legibleAccent(hex: string): string {
+  const rgb = parseHexRgb(hex);
+  if (!rgb || contrastOnWhite(rgb) >= 4.5) return hex;
+  let c: Rgb = rgb;
+  for (let i = 0; i < 20 && contrastOnWhite(c) < 4.5; i++) {
+    c = c.map((v, k) => v + (INK[k]! - v) * 0.12) as Rgb;
+  }
+  return rgbToHex(c);
+}
+
+/** A brand colour dark enough for headings (≥7:1 on white), else null. */
+function brandHeadingColor(hex: string | null | undefined): string | null {
+  const rgb = hex ? parseHexRgb(hex) : null;
+  return rgb && contrastOnWhite(rgb) >= 7 ? hex!.trim() : null;
+}
+
+/** Whether pdfkit can draw this image without crashing the process.
+ *
+ *  pdfkit embeds JPEGs and opaque PNGs without decoding them, but a PNG with
+ *  an alpha channel (colour types 4/6) or a tRNS transparency chunk has its
+ *  pixels inflated ASYNCHRONOUSLY to split out the soft mask — after
+ *  doc.image() has returned. Corrupt pixel data then throws outside every
+ *  try/catch here, reaches the process's uncaughtException handler, and the
+ *  document never ends. Inflate those PNGs synchronously first: if the data
+ *  doesn't decompress, the caller skips the image. */
+export function imageIsDrawable(data: Buffer): boolean {
+  if (data.length < 8 || data.readUInt32BE(0) !== 0x89504e47) return true; // not a PNG (e.g. JPEG)
+  let offset = 8;
+  let colorType = -1;
+  let transparency = false;
+  const idat: Buffer[] = [];
+  while (offset + 8 <= data.length) {
+    const length = data.readUInt32BE(offset);
+    const type = data.toString('latin1', offset + 4, offset + 8);
+    const start = offset + 8;
+    if (start + length > data.length) return false; // truncated chunk
+    if (type === 'IHDR' && length >= 10) colorType = data[start + 9]!;
+    else if (type === 'tRNS') transparency = true;
+    else if (type === 'IDAT') idat.push(data.subarray(start, start + length));
+    else if (type === 'IEND') break;
+    offset = start + length + 4; // + CRC
+  }
+  if (colorType !== 4 && colorType !== 6 && !transparency) return true;
+  try {
+    zlib.inflateSync(Buffer.concat(idat));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Load-time gate for every image this renderer draws: a buffer pdfkit would
+ *  crash on (see imageIsDrawable) is reported and treated as missing. */
+function drawableOrNull(img: { data: Buffer } | null, what: string): { data: Buffer } | null {
+  if (!img?.data || imageIsDrawable(img.data)) return img;
+  const err = new Error(`[quotePdf] undecodable PNG skipped: ${what}`);
+  console.error(err.message);
+  captureException(err);
+  return null;
+}
+
+interface PdfLogo { data: Buffer; width: number; height: number }
+
+/** An uploaded logo (PNG/JPEG data URL) as drawable bytes, or null. */
+export function decodeLogo(logoUrl: string | null | undefined): PdfLogo | null {
+  const m = logoUrl ? /^data:image\/(?:png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$/i.exec(logoUrl.trim()) : null;
+  if (!m) return null;
+  const data = Buffer.from(m[1]!, 'base64');
+  const dims = imageIntrinsicSize(data);
+  if (!dims || !drawableOrNull({ data }, 'partner logo')) return null;
+  return { data, ...dims };
+}
+
+/** Fit the logo in a maxW × maxH box at (x, y). Returns the drawn size, or
+ *  null when pdfkit can't draw it (the caller falls back to the wordmark). */
+function drawLogo(doc: PDFKit.PDFDocument, logo: PdfLogo, x: number, y: number, maxW: number, maxH: number): { width: number; height: number } | null {
+  const scale = Math.min(maxW / logo.width, maxH / logo.height);
+  const width = logo.width * scale;
+  const height = logo.height * scale;
+  try {
+    doc.image(logo.data, x, y, { width, height });
+    return { width, height };
+  } catch (e) {
+    console.error('[quotePdf] logo draw failed', e instanceof Error ? e.message : e);
+    captureException(e instanceof Error ? e : new Error(String(e)));
+    return null;
+  }
+}
+
 function addressLines(addr: BillToAddress | null | undefined): string[] {
   if (!addr) return [];
   const cityLine = [addr.city, addr.region, addr.postalCode].filter(Boolean).join(', ');
@@ -110,8 +229,13 @@ function addressLines(addr: BillToAddress | null | undefined): string[] {
 
 export interface QuotePdfBranding {
   partnerName?: string | null;
+  /** Uploaded logo as a PNG/JPEG data URL is drawn in the header and on the
+   *  cover; anything else (e.g. an https URL) keeps the text wordmark — the
+   *  renderer never fetches. */
   logoUrl?: string | null;
   primaryColor?: string | null;
+  /** Headings take this colour when it reads as text on white (≥7:1). */
+  secondaryColor?: string | null;
   footer?: string | null;
   currencyCode?: string | null;
   /** Render locale for money glyphs, used only when the quote carries no
@@ -296,6 +420,48 @@ export function columnsFor(doc: PDFKit.PDFDocument, showTax = false): QuotePdfCo
   };
 }
 
+/** CSS px → PDF pt. The web proposal sizes images (and everything else) in
+ *  CSS px; a PDF point is 1/72in and a CSS px 1/96in. */
+const PX_TO_PT = 0.75;
+/** Web parity (quoteBlocks.tsx): images are rounded-lg with a 1px border. */
+const IMAGE_RADIUS = 6;
+const IMAGE_BORDER = '#e5e7eb';
+const IMAGE_MAX_HEIGHT = 400;
+
+/** Where an image block draws and how tall it is, matching the web's <img>:
+ *  `content.width` is CSS px; without one the image shows at its natural
+ *  size (pixels as CSS px); either way capped at the content width (the web's
+ *  max-w-full). Height is capped too, so a tall portrait can't fill a page. */
+function imageBlockGeometry(block: QuoteBlock, data: Buffer, contentWidth: number): { drawnWidth: number; drawnHeight: number } {
+  const dims = imageIntrinsicSize(data);
+  const widthPx = Number((block.content as { width?: number }).width);
+  const wanted = widthPx > 0 ? widthPx * PX_TO_PT : dims ? dims.width * PX_TO_PT : contentWidth;
+  const fitWidth = Math.min(wanted, contentWidth);
+  if (!dims) return { drawnWidth: fitWidth, drawnHeight: IMAGE_MAX_HEIGHT };
+  const scale = Math.min(fitWidth / dims.width, IMAGE_MAX_HEIGHT / dims.height);
+  return { drawnWidth: dims.width * scale, drawnHeight: dims.height * scale };
+}
+
+/** Page room an image block reserves before drawing (also what a heading above
+ *  it reserves to stay with it). */
+function imageBlockHeight(block: QuoteBlock, data: Buffer, contentWidth: number, usableHeight: number): number {
+  return Math.min(imageBlockGeometry(block, data, contentWidth).drawnHeight, usableHeight);
+}
+
+/** Minimum room every block asks for before drawing anything. */
+const BLOCK_MIN_ROOM = 50;
+/** Space between blocks — the web document's space-y-6 (24px). */
+const BLOCK_GAP = 18;
+/** Contents list: the CONTENTS label band and the gap under each entry. */
+const TOC_LABEL_HEIGHT = 18;
+const TOC_ROW_GAP = 5;
+const TOC_PAGE_COL = 36;
+
+/** Pricing table: header band height (labels + hairline + gap) and the space
+ *  between rows, which holds the row hairline. */
+const LINE_HEADER_HEIGHT = 22;
+const LINE_ROW_GAP = 10;
+
 /** Add a page if `y` is within the bottom margin band; returns the (possibly reset) y. */
 function ensureSpace(doc: PDFKit.PDFDocument, y: number, needed = 40): number {
   if (y > doc.page.height - doc.page.margins.bottom - needed) {
@@ -351,6 +517,42 @@ export function imageIntrinsicSize(buf: Buffer): { width: number; height: number
 // Returns the y position below the table.
 // ---------------------------------------------------------------------------
 
+const LINE_THUMB = 44;
+
+/** Height a pricing-table row needs: bold-10 title, regular-8.5 blurb and any
+ *  device-set lines, at least a thumbnail tall when the row has one. Measures
+ *  each fragment at the SAME font/size it is drawn with — the blurb used to be
+ *  measured while the font was still 10pt, over-reserving ~1.5pt per wrapped
+ *  line (a visible gap below tall spec-list rows). */
+function measureLineRow(doc: PDFKit.PDFDocument, l: QuoteLine, descW: number, fonts: PdfThemeFonts, currency: string, locale: string, hasImage: boolean) {
+  // Title falls back to description for legacy lines that predate the name/description split.
+  const title = (l.name ?? l.description ?? '').trim() || '—';
+  const blurb = l.name ? (l.description ?? '').trim() : '';
+  doc.font(fonts.body.bold).fontSize(10);
+  const titleHeight = doc.heightOfString(title, { width: descW });
+  doc.font(fonts.body.regular).fontSize(8.5);
+  const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
+  const deviceSetText = deviceSetCustomerText(l, currency, locale);
+  const deviceSetHeight = deviceSetText.length
+    ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
+    : 0;
+  return { title, blurb, titleHeight, blurbHeight, deviceSetText, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, hasImage ? LINE_THUMB : 12) };
+}
+
+/** The label, column header and first row of a pricing table, which are
+ *  reserved as one unit (capped at a page) — by the table itself and by a
+ *  heading above it. `imageLines` holds the lines that will draw a thumbnail;
+ *  any thumbnail narrows every row's description column. */
+function lineTableLeadHeight(doc: PDFKit.PDFDocument, lines: QuoteLine[], label: string, fonts: PdfThemeFonts, currency: string, locale: string, showTax: boolean, imageLines: (l: QuoteLine) => boolean): number {
+  const c = columnsFor(doc, showTax);
+  const descW = c.colDescW - (lines.some(imageLines) ? LINE_THUMB + 8 : 0);
+  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
+  const first = lines[0];
+  const firstRowHeight = first ? measureLineRow(doc, first, descW, fonts, currency, locale, imageLines(first)).rowHeight + LINE_ROW_GAP : 0;
+  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+  return Math.min(labelHeight + LINE_HEADER_HEIGHT + firstRowHeight, usable);
+}
+
 async function renderLineTable(
   doc: PDFKit.PDFDocument,
   lines: QuoteLine[],
@@ -372,16 +574,16 @@ async function renderLineTable(
   // catalog item's image. A failed load degrades to "no thumbnail" — never
   // aborts the document. 44pt: large enough to recognize the product, small
   // enough that rows stay table-like.
-  const THUMB = 44;
+  const THUMB = LINE_THUMB;
   const imageByLine = new Map<string, Buffer>();
   for (const l of lines) {
     try {
       if (l.imageId) {
-        const img = await loadQuoteImage(l.imageId);
+        const img = drawableOrNull(await loadQuoteImage(l.imageId), `line image ${l.imageId}`);
         if (img?.data) { imageByLine.set(l.id, img.data); continue; }
       }
       if (l.catalogItemId) {
-        const img = await loadCatalogImage(l.catalogItemId);
+        const img = drawableOrNull(await loadCatalogImage(l.catalogItemId), `catalog image ${l.catalogItemId}`);
         if (img?.data) imageByLine.set(l.id, img.data);
       }
     } catch (e) {
@@ -397,20 +599,21 @@ async function renderLineTable(
   const gutter = imageByLine.size > 0 ? THUMB + 8 : 0;
   const descW = c.colDescW - gutter;
 
-  // Header row with a light fill bar. Extracted so it re-draws at the top of
-  // every page the table spills onto — a continuation page without column
-  // headers forces the reader to flip back to relearn the columns.
+  // Header row: muted uppercase labels over a hairline (web parity — the
+  // portal's line table header has no fill, text-xs uppercase muted with a
+  // bottom border). Extracted so it re-draws at the top of every page the
+  // table spills onto — a continuation page without column headers forces the
+  // reader to flip back to relearn the columns.
   const drawTableHeader = (headerY: number): number => {
-    doc.save();
-    doc.rect(c.left - 6, headerY - 5, c.contentWidth + 12, 22).fill('#f8fafc');
-    doc.restore();
-    doc.fillColor('#6b7280').fontSize(8.5).font(fonts.heading.bold);
-    doc.text('QTY', c.colQtyX, headerY, { width: c.colQtyW, align: 'left' });
-    doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left' });
-    doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right' });
-    if (showTax) doc.text('TAX', c.colTaxX, headerY, { width: c.colNumW, align: 'right' });
-    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colAmtW, align: 'right' });
-    return headerY + 24;
+    doc.fillColor('#6b7280').fontSize(8).font(fonts.heading.bold);
+    const opts = { characterSpacing: 0.5 } as const;
+    doc.text('QTY', c.colQtyX, headerY, { width: c.colQtyW, align: 'left', ...opts });
+    doc.text('DESCRIPTION', c.colDescX, headerY, { width: c.colDescW, align: 'left', ...opts });
+    doc.text('UNIT', c.colUnitX, headerY, { width: c.colNumW, align: 'right', ...opts });
+    if (showTax) doc.text('TAX', c.colTaxX, headerY, { width: c.colNumW, align: 'right', ...opts });
+    doc.text('TOTAL', c.colAmtX, headerY, { width: c.colAmtW, align: 'right', ...opts });
+    doc.moveTo(c.left, headerY + 13).lineTo(c.right, headerY + 13).lineWidth(0.75).strokeColor('#e5e7eb').stroke();
+    return headerY + LINE_HEADER_HEIGHT;
   };
   // Page-break helper that re-draws the column header on the fresh page (unlike
   // the generic ensureSpace, which just resets y).
@@ -422,24 +625,9 @@ async function renderLineTable(
     return rowY;
   };
 
-  // Measure each fragment at the SAME font/size it is drawn with. The blurb is
-  // rendered at 8.5pt but used to be measured while the font was still 10pt,
-  // over-reserving ~1.5pt per wrapped line — a visible gap below tall spec-list
-  // rows (e.g. a 15-bullet PC). Measure title as bold-10, blurb as regular-8.5.
   const measureRow = (l: QuoteLine) => {
-    // Title falls back to description for legacy lines that predate the name/description split.
-    const title = (l.name ?? l.description ?? '').trim() || '—';
-    const blurb = l.name ? (l.description ?? '').trim() : '';
-    doc.font(fonts.body.bold).fontSize(10);
-    const titleHeight = doc.heightOfString(title, { width: descW });
-    doc.font(fonts.body.regular).fontSize(8.5);
-    const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
-    const deviceSetText = deviceSetCustomerText(l, currency, locale);
-    const deviceSetHeight = deviceSetText.length
-      ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
-      : 0;
-    const img = imageByLine.get(l.id);
-    return { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, img ? THUMB : 12) };
+    const row = measureLineRow(doc, l, descW, fonts, currency, locale, imageByLine.has(l.id));
+    return { ...row, img: imageByLine.get(l.id) };
   };
 
   // Keep the section label, the column header and the FIRST row together as one
@@ -447,12 +635,9 @@ async function renderLineTable(
   // whenever the first row is a tall spec list: the label + header fit the guess,
   // got drawn at the foot of the page, then the row-level break moved the row to
   // the next page and stranded them. Reserve the first row's real measured height
-  // instead, capped to a page so a taller-than-a-page row can't force a blank one.
-  const labelHeight = label ? (doc.font(fonts.heading.bold).fontSize(11).heightOfString(label, { width: c.contentWidth }) + 6) : 0;
-  const usable = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
-  const firstLine = lines[0];
-  const firstRowHeight = firstLine ? measureRow(firstLine).rowHeight + 6 : 0;
-  y = ensureSpace(doc, y, Math.min(labelHeight + 24 + firstRowHeight, usable));
+  // — with the same row gap the row loop asks for — capped to a page so a
+  // taller-than-a-page row can't force a blank one.
+  y = ensureSpace(doc, y, lineTableLeadHeight(doc, lines, label, fonts, currency, locale, showTax, (l) => imageByLine.has(l.id)));
   if (label) {
     doc.fillColor('#111827').fontSize(11).font(fonts.heading.bold).text(label, c.left, y, { width: c.contentWidth });
     y = doc.y + 6;
@@ -461,13 +646,19 @@ async function renderLineTable(
   y = drawTableHeader(y);
 
   const descX = c.colDescX;
-  for (const l of lines) {
+  for (const [rowIndex, l] of lines.entries()) {
     const { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight } = measureRow(l);
     // Keep the whole row together: if it won't fit in the remaining page, break to
     // a fresh page (re-drawing the column header) rather than letting a long
     // description overflow into the footer band. (Old reserve was a flat 30/52pt,
     // so tall rows spilled past the bottom margin.)
-    y = ensureRowSpace(y, rowHeight + 6);
+    const rowY = ensureRowSpace(y, rowHeight + LINE_ROW_GAP);
+    // Hairline between rows (web: row borders) — not above the first row, nor
+    // at the top of a continuation page, where the column header sits.
+    if (rowIndex > 0 && rowY === y) {
+      doc.moveTo(c.left, y - LINE_ROW_GAP / 2).lineTo(c.right, y - LINE_ROW_GAP / 2).lineWidth(0.5).strokeColor('#f1f5f9').stroke();
+    }
+    y = rowY;
     doc.fillColor('#1f2937').font(fonts.body.regular).fontSize(10);
     doc.text(String(Number(l.quantity)), c.colQtyX, y, { width: c.colQtyW, align: 'left' });
     if (img) {
@@ -503,7 +694,9 @@ async function renderLineTable(
     const unitText = formatMoneyForPdf(l.unitPrice, currency, locale);
     doc.font(fonts.body.regular);
     fitFontSize(doc, unitText, c.colNumW, 10);
-    doc.text(unitText, c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+    // Unit price is secondary to the amount (web: muted).
+    doc.fillColor('#6b7280').text(unitText, c.colUnitX, y, { width: c.colNumW, align: 'right', lineBreak: false });
+    doc.fillColor('#1f2937');
     if (showTax) {
       const t = lineTax(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice), !!l.taxable, taxRate);
       const taxText = t === null ? '—' : formatMoneyForPdf(t, currency, locale);
@@ -516,7 +709,7 @@ async function renderLineTable(
     fitFontSize(doc, totalText, c.colAmtW, 10);
     doc.text(totalText, c.colAmtX, y, { width: c.colAmtW, align: 'right', lineBreak: false });
     doc.fontSize(10);
-    y += rowHeight + 6;
+    y += rowHeight + LINE_ROW_GAP;
   }
 
   // Opt-in per-table subtotal: sum THIS table's lines split by recurrence, shown
@@ -558,7 +751,7 @@ async function renderLineTable(
       }
     }
   }
-  return y + 6;
+  return y;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +764,10 @@ async function renderLineTable(
 // recurring-inclusive number is still visible but not presented as the invoiced
 // amount.
 // ---------------------------------------------------------------------------
+
+/** Web parity (PublicQuoteView / QuoteDetailView): acceptance invoices the
+ *  one-time charges only; recurring lines bill later through the contract. */
+const FIRST_PERIOD_NOTE = 'Accepting this proposal bills only the one-time charges now. Recurring lines bill on their own schedule.';
 
 function renderRecurringSummary(
   doc: PDFKit.PDFDocument,
@@ -627,15 +824,25 @@ function renderRecurringSummary(
   const BREAKDOWN_GAP = 5;
   const REGULAR_ROW_ADVANCE = 16;
   const BOLD_ROW_ADVANCE = 20;
-  const EMPHASIS_ROW_ADVANCE = 22;
+  // Web parity: the amount due is text-2xl (24px → 18pt) under an accent rule.
+  const EMPHASIS_ROW_ADVANCE = 26;
   const EMPHASIS_RULE_ADVANCE = 13;
+  const NOTE_GAP = 2;
+  // The first-period total and its note sit in a tinted box (web: rounded bg-muted p-3; padded a little tighter here).
+  const PERIOD_BOX_PAD = 6;
+  const PERIOD_BOX_GAP = 6;
   const rollupRows = 1 + Number(showMonthly) + Number(showAnnual) + Number(showTaxRow);
   const breakdownHeight = breakdownRows.length ? breakdownRows.reduce((total, row) => total + row.height, 0) + BREAKDOWN_GAP : 0;
   const emphasisHeight = hasDeposit
     ? BOLD_ROW_ADVANCE + EMPHASIS_ROW_ADVANCE + BOLD_ROW_ADVANCE
     : EMPHASIS_ROW_ADVANCE;
+  // Under the first-period total: the same sentence the web views print, so
+  // the PDF never implies the recurring amount is charged on acceptance.
+  doc.font(fonts.body.regular).fontSize(8);
+  const noteHeight = hasRecurring ? doc.heightOfString(FIRST_PERIOD_NOTE, { width: c.right - sumX }) + NOTE_GAP : 0;
+  const periodBoxHeight = hasRecurring ? 2 * PERIOD_BOX_PAD + REGULAR_ROW_ADVANCE + noteHeight : 0;
   const needed = TOP_RULE_ADVANCE + breakdownHeight + rollupRows * REGULAR_ROW_ADVANCE +
-    EMPHASIS_RULE_ADVANCE + emphasisHeight + (hasRecurring ? REGULAR_ROW_ADVANCE : 0);
+    EMPHASIS_RULE_ADVANCE + emphasisHeight + (hasRecurring ? PERIOD_BOX_GAP + periodBoxHeight : 0);
   let y = ensureSpace(doc, startY + 6, needed);
 
   // Wider label column than the line table's so the emphasised "Due on
@@ -668,9 +875,14 @@ function renderRecurringSummary(
   ) => {
     const { bold = false, emphasis = false } = opts;
     const strong = bold || emphasis;
-    const size = emphasis ? 14 : strong ? 12 : 10;
-    doc.font(strong ? fonts.body.bold : fonts.body.regular).fontSize(size).fillColor(strong ? '#111827' : '#6b7280');
-    doc.text(label, labelX, y, { width: labelW, align: 'left' });
+    const size = emphasis ? 18 : strong ? 12 : 10;
+    // The emphasised label stays at 12pt beside the 18pt figure (the web uses
+    // text-sm; 12pt holds up better next to the larger amount), dropped to sit
+    // on the figure's baseline.
+    const labelSize = emphasis ? 12 : size;
+    doc.font(strong ? fonts.body.bold : fonts.body.regular).fontSize(labelSize).fillColor(strong ? '#111827' : '#6b7280');
+    doc.text(label, labelX, emphasis ? y + 4 : y, { width: labelW, align: 'left' });
+    doc.fontSize(size);
     // lineBreak: false — the y advances below are fixed constants shared with
     // the page-break reservation; a wrapped amount would silently break both.
     // Shrink-to-fit so a schema-maximum figure is never truncated by pdfkit.
@@ -689,7 +901,7 @@ function renderRecurringSummary(
   // Separate the roll-up from the amount the customer pays now. The 4pt top
   // padding and 9pt bottom padding are included in EMPHASIS_RULE_ADVANCE.
   y += 4;
-  doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
+  doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(0.75).strokeColor(primary).stroke();
   y += 9;
   // Accent primary figure = what the customer pays NOW. With a deposit, the
   // emphasised figure is the deposit due — anchored by an explicit "Due on
@@ -706,14 +918,22 @@ function renderRecurringSummary(
     drawRow('Due on acceptance', quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, '', { emphasis: true });
   }
   if (hasRecurring) {
+    y += PERIOD_BOX_GAP;
+    doc.save();
+    doc.roundedRect(sumX - PERIOD_BOX_PAD, y, c.right - sumX + 2 * PERIOD_BOX_PAD, periodBoxHeight, 4).fill('#f3f4f6');
+    doc.restore();
+    y += PERIOD_BOX_PAD;
     drawRow('First-period total', quote.total, '');
+    y += NOTE_GAP;
+    doc.font(fonts.body.regular).fontSize(8).fillColor('#6b7280').text(FIRST_PERIOD_NOTE, sumX, y, { width: c.right - sumX });
+    y = doc.y + PERIOD_BOX_PAD;
   }
   return y;
 }
 
 // ---------------------------------------------------------------------------
 // Cover page (Task 14): a page-1 frame drawn ahead of every block when
-// `quote.coverPage.enabled` — branding wordmark, a hero cover image (top ~55%
+// `quote.coverPage.enabled` — partner logo or wordmark, a hero cover image (top ~55%
 // of the page), the proposal title (24pt bold), then Prepared-for/Prepared-by
 // side by side at the bottom. Always ends with doc.addPage() when it draws
 // anything, so the existing header/blocks code below is unaffected — it always
@@ -727,6 +947,8 @@ async function renderCoverPage(
   loadImage: (imageId: string) => Promise<{ data: Buffer } | null>,
   c: QuotePdfColumns,
   fonts: PdfThemeFonts,
+  logo: PdfLogo | null = null,
+  headingColor: string = DEFAULT_HEADING_COLOR,
 ): Promise<void> {
   const cp = (quote.coverPage ?? null) as CoverPage | null;
   if (!cp?.enabled) return;
@@ -735,9 +957,6 @@ async function renderCoverPage(
   const top = doc.page.margins.top;
   const pageBottom = doc.page.height - doc.page.margins.bottom;
 
-  // Branding wordmark (mirrors the main document header's plain-text wordmark —
-  // this renderer has no logo-image loader; logoUrl is a remote URL and the
-  // renderer must stay network-free/pure).
   // Cover image: full-bleed page background (cover-fit, clipped to the page —
   // pdfkit's `cover` scales but does not crop). A failed/absent load degrades
   // to "no image" — never aborts the document (same discipline as every other
@@ -746,7 +965,7 @@ async function renderCoverPage(
   if (cp.coverImageId) {
     let img: { data: Buffer } | null = null;
     try {
-      img = await loadImage(cp.coverImageId);
+      img = drawableOrNull(await loadImage(cp.coverImageId), `cover image ${cp.coverImageId}`);
     } catch (e) {
       console.error('[quotePdf] cover image load failed', cp.coverImageId, e instanceof Error ? e.message : e);
       captureException(e instanceof Error ? e : new Error(String(e)));
@@ -785,25 +1004,33 @@ async function renderCoverPage(
     doc.restore();
   }
 
-  // Branding wordmark (mirrors the main document header's plain-text wordmark —
-  // this renderer has no logo-image loader; logoUrl is a remote URL and the
-  // renderer must stay network-free/pure). On a background image it sits on a
-  // translucent white pill so it survives busy artwork.
+  // Partner logo (an uploaded data-URL image) or, failing that, the text
+  // wordmark. On a background image either sits on a translucent white pill
+  // so it survives busy artwork.
+  const LOGO_MAX_W = 200;
+  const LOGO_MAX_H = 48;
+  const logoSize = logo
+    ? { width: logo.width * Math.min(LOGO_MAX_W / logo.width, LOGO_MAX_H / logo.height), height: logo.height * Math.min(LOGO_MAX_W / logo.width, LOGO_MAX_H / logo.height) }
+    : null;
   if (hasBackground) {
     doc.save();
     doc.fontSize(16).font(fonts.heading.bold);
-    const wordW = doc.widthOfString(partnerName);
+    const pillW = (logoSize?.width ?? doc.widthOfString(partnerName)) + 20;
+    const pillH = (logoSize?.height ?? 18) + 16;
     doc.fillOpacity(0.85);
-    doc.roundedRect(c.left - 10, top - 8, wordW + 20, 34, 6).fill('#ffffff');
+    doc.roundedRect(c.left - 10, top - 8, pillW, pillH, 6).fill('#ffffff');
     doc.restore();
   }
-  doc.fillColor('#111827').fontSize(16).font(fonts.heading.bold).text(partnerName, c.left, top);
+  const coverLogo = logo ? drawLogo(doc, logo, c.left, top, LOGO_MAX_W, LOGO_MAX_H) : null;
+  if (!coverLogo) {
+    doc.fillColor('#111827').fontSize(16).font(fonts.heading.bold).text(partnerName, c.left, top);
+  }
 
   // Title (24pt bold): inside the bottom band on a background cover, else in
   // the classic position under the top margin.
   if (cp.title?.trim()) {
     const titleY = hasBackground ? bandTop + 28 : top + 54;
-    doc.fillColor('#111827').fontSize(24).font(fonts.heading.bold).text(cp.title.trim(), c.left, titleY, { width: c.contentWidth });
+    doc.fillColor(headingColor).fontSize(24).font(fonts.heading.bold).text(cp.title.trim(), c.left, titleY, { width: c.contentWidth });
   }
 
   // Prepared for / Prepared by, side by side at the bottom of the page.
@@ -867,7 +1094,16 @@ export async function renderQuotePdf(
   // Stamped send-time snapshot → partner-resolved branding locale → 'en'. Never
   // changes the number, only the glyphs (#3777).
   const locale = quote.documentLocale ?? branding.locale ?? 'en';
-  const primary = hexToColor(branding.primaryColor, '#2563eb');
+  const primary = legibleAccent(hexToColor(branding.primaryColor, '#2563eb'));
+  // Brand headings only when the partner's secondary colour reads as text;
+  // otherwise the classic ink, and rich-text subheads keep their own colour.
+  const brandHeading = brandHeadingColor(branding.secondaryColor);
+  const headingColor = brandHeading ?? DEFAULT_HEADING_COLOR;
+  const logo = decodeLogo(branding.logoUrl);
+  if (branding.logoUrl?.trim() && !logo) {
+    // Report-PDF parity (reportBranding.ts): say why the name prints instead.
+    console.warn('[quotePdf] partner logo is not an embeddable PNG/JPEG data URL; drawing the name instead', { quoteId: quote.id });
+  }
   const partnerName = branding.partnerName ?? 'Proposal';
   // Per-line Tax column only when this quote carries tax (mirrors the summary).
   const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
@@ -890,10 +1126,13 @@ export async function renderQuotePdf(
   const c = columnsFor(doc);
 
   // ---- Cover page (page 1, when enabled) — always ends with doc.addPage() ---
-  await renderCoverPage(doc, quote, branding, loadImage, c, fonts);
+  await renderCoverPage(doc, quote, branding, loadImage, c, fonts, logo, headingColor);
 
-  // ---- Header: partner wordmark (left) + accent PROPOSAL eyebrow + number ---
-  doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
+  // ---- Header: partner logo or wordmark (left) + accent PROPOSAL eyebrow + number ---
+  const headerLogo = logo ? drawLogo(doc, logo, c.left, 46, Math.min(180, c.contentWidth * 0.45), 44) : null;
+  if (!headerLogo) {
+    doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(partnerName, c.left, 50, { width: c.contentWidth * 0.55 });
+  }
   doc.fillColor(primary).fontSize(10).font(fonts.heading.bold).text('PROPOSAL', c.left, 52, { width: c.contentWidth, align: 'right', characterSpacing: 1.5 });
   doc.fillColor('#111827').fontSize(20).font(fonts.heading.bold).text(quote.quoteNumber ?? 'Draft', c.left, 66, { width: c.contentWidth, align: 'right' });
   doc.moveTo(c.left, 100).lineTo(c.right, 100).lineWidth(2).strokeColor(primary).stroke();
@@ -901,7 +1140,7 @@ export async function renderQuotePdf(
   // ---- Quote title (tech-authored, e.g. "Office Network Refresh") -----------
   let y = 120;
   if (quote.title?.trim()) {
-    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(quote.title.trim(), c.left, y - 6, { width: c.contentWidth });
+    doc.fillColor(headingColor).fontSize(15).font(fonts.heading.bold).text(quote.title.trim(), c.left, y - 6, { width: c.contentWidth });
     y = doc.y + 16;
   }
 
@@ -944,12 +1183,87 @@ export async function renderQuotePdf(
 
   // Intro notes, if any (above the blocks).
   if (quote.introNotes) {
-    doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular).text(quote.introNotes, c.left, y, { width: c.contentWidth });
-    y = doc.y + 14;
+    // Web parity: text-sm at leading-relaxed (14px / 1.625 → 10.5pt).
+    doc.fillColor('#4b5563').fontSize(10.5).font(fonts.body.regular);
+    const introGap = Math.max(0, 1.625 * 10.5 - doc.currentLineHeight(true));
+    doc.text(quote.introNotes, c.left, y, { width: c.contentWidth, lineGap: introGap });
+    y = doc.y + BLOCK_GAP;
   }
 
   // ---- Walk blocks in sortOrder -------------------------------------------
   const sorted = [...blocks].sort((a, z) => a.sortOrder - z.sortOrder);
+
+  // Agreements: contract blocks, drawn after the price (below), not in block
+  // order. contractRenderData[b.id] is pre-fetched by the route (Task 14's
+  // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
+  // A missing entry (render data load failed upstream, or an injected-empty Map
+  // in a caller that doesn't pass one) degrades to the uploaded marker rather
+  // than throwing.
+  const agreements = sorted
+    .filter((b) => b.blockType === 'contract')
+    .map((b) => {
+      const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
+      const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+      const data = contractRenderData.get(b.id);
+      return { label, templateName: data?.templateName || 'Contract', html: data?.html || null };
+    });
+
+  // ---- Contents: sections → pages -------------------------------------------
+  // Every top-level section heading, authored agreement and the T&C get a PDF
+  // bookmark (the viewer's sidebar) and a named destination. With
+  // coverPage.showContents the same entries are also listed, with page numbers
+  // and links, under the intro. Page numbers are only known once everything is
+  // drawn, so the list's space is reserved here and filled in at the end
+  // (bufferPages keeps every page writable).
+  const headingText = (b: QuoteBlock) => String((b.content as { text?: string }).text ?? '').trim();
+  const headingLevel = (b: QuoteBlock) => Number((b.content as { level?: number }).level ?? 1);
+  const sectionLevel = Math.min(...sorted.filter((b) => b.blockType === 'heading' && headingText(b)).map(headingLevel));
+  const tocTitles = [
+    ...sorted.filter((b) => b.blockType === 'heading' && headingText(b) && headingLevel(b) === sectionLevel).map(headingText),
+    ...agreements.filter((a) => a.html).map((a) => a.label ?? a.templateName),
+    ...(quote.termsAndConditions ? ['Terms & Conditions'] : []),
+  ];
+  const tocEntries: { title: string; page: number; dest: string }[] = [];
+  // Pages are only ever appended while drawing, so the current page is the last.
+  const currentPageNumber = () => doc.bufferedPageRange().count;
+  const markSection = (title: string, atY: number): void => {
+    const dest = `section-${tocEntries.length + 1}`;
+    doc.addNamedDestination(dest, 'XYZ', null, atY, null);
+    doc.outline.addItem(title);
+    tocEntries.push({ title, page: currentPageNumber(), dest });
+  };
+  const tocTitleWidth = c.contentWidth - TOC_PAGE_COL;
+  doc.font(fonts.body.regular).fontSize(10.5);
+  const tocRowHeights = tocTitles.map((t) => doc.heightOfString(t, { width: tocTitleWidth }) + TOC_ROW_GAP);
+  let tocSlot: { pageIndex: number; y: number; shown: number } | null = null;
+  if ((quote.coverPage as CoverPage | null)?.showContents === true && tocTitles.length > 0) {
+    // The list never runs past one page: when it would, it stops after the
+    // entries that fit and ends with "…and N more" (the bookmarks still list
+    // every section). Drawn later onto a reserved slot, an overflowing list
+    // would otherwise spill a trail of one-entry pages after the T&C.
+    const pageBody = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+    const moreRowHeight = doc.heightOfString('…', { width: tocTitleWidth }) + TOC_ROW_GAP;
+    const full = tocRowHeights.reduce((sum, h) => sum + h, 0);
+    let shown = tocRowHeights.length;
+    let rowsHeight = full;
+    if (TOC_LABEL_HEIGHT + full > pageBody) {
+      // Too long for any page: fill what's left of this one (or a fresh page
+      // when less than half a page remains) rather than leaving it blank.
+      const pageBottom = doc.page.height - doc.page.margins.bottom;
+      const room = pageBottom - y >= pageBody / 2 ? pageBottom - y : pageBody;
+      rowsHeight = 0;
+      shown = 0;
+      while (shown < tocRowHeights.length && TOC_LABEL_HEIGHT + rowsHeight + tocRowHeights[shown]! + moreRowHeight <= room) {
+        rowsHeight += tocRowHeights[shown]!;
+        shown++;
+      }
+      rowsHeight += moreRowHeight;
+    }
+    const tocHeight = TOC_LABEL_HEIGHT + rowsHeight;
+    y = ensureSpace(doc, y, tocHeight);
+    tocSlot = { pageIndex: currentPageNumber() - 1, y, shown };
+    y += tocHeight + BLOCK_GAP;
+  }
   // Shared by the 'table' and 'callout' branches below — both need the richer
   // {y, didBreak} contract (table redraws its header on break; callout needs
   // to know whether its chrome landed on a fresh page), unlike the plain
@@ -959,18 +1273,109 @@ export async function renderQuotePdf(
     y = ensureSpace(doc, doc.y, needed);
     return { y, didBreak: doc.y !== before };
   };
-  for (const b of sorted) {
-    // Contract blocks are agreements, drawn after the price (below), not in
-    // block order — an agreement placed before the pricing used to push the
-    // totals pages down the document (#7040).
-    if (b.blockType === 'contract') continue;
-    y = ensureSpace(doc, y, 50);
+  // Block images are loaded once: a heading measures the image after it (to
+  // keep the two together) before the image branch draws it.
+  const imageCache = new Map<string, Promise<{ data: Buffer } | null>>();
+  const loadBlockImage = (imageId: string): Promise<{ data: Buffer } | null> => {
+    let pending = imageCache.get(imageId);
+    if (!pending) {
+      // loadImage performs DB I/O and can reject; a failed fetch must degrade to
+      // skip-the-image rather than escaping renderQuotePdf (which would skip
+      // doc.end() and surface as a 500).
+      pending = loadImage(imageId).then((img) => drawableOrNull(img, `image ${imageId}`)).catch((e) => {
+        console.error('[quotePdf] loadImage failed', imageId, e instanceof Error ? e.message : e);
+        captureException(e instanceof Error ? e : new Error(String(e)));
+        return null;
+      });
+      imageCache.set(imageId, pending);
+    }
+    return pending;
+  };
+  const drawable = sorted.filter((b) => b.blockType !== 'contract');
+  const usableHeight = doc.page.height - doc.page.margins.top - doc.page.margins.bottom;
+  // Room the block after a heading reserves before it draws — the heading
+  // asks for that much too, so it moves to the next page WITH its content
+  // instead of being left as the last line of this one (Q-2026-0027 shipped
+  // eight such headings). Every follower is measured the way it will reserve:
+  // image, rich text, table, callout (its whole box) and pricing table (label
+  // + header + first row) exactly; a following heading recurses one level so
+  // "section, subsection, paragraph" holds together too.
+  const headingSize = (b: QuoteBlock) => {
+    const level = headingLevel(b);
+    // Portal sizes: text-2xl / text-xl / text-lg (24/20/18px).
+    return level <= 1 ? 18 : level === 2 ? 15 : 13.5;
+  };
+  const headingBlockHeight = (b: QuoteBlock) =>
+    doc.fontSize(headingSize(b)).font(fonts.heading.bold).heightOfString(headingText(b), { width: c.contentWidth });
+  // Every block first passes the loop's flat ensureSpace(y, BLOCK_MIN_ROOM),
+  // so whatever follows a heading needs at least that much as well.
+  const leadHeightOf = async (at: number, depth = 0): Promise<number> => {
+    const next = visible[at];
+    if (!next) return 0;
+    return Math.max(BLOCK_MIN_ROOM, await ownLeadHeight(next, at, depth));
+  };
+  const ownLeadHeight = async (next: QuoteBlock, at: number, depth: number): Promise<number> => {
+    if (next.blockType === 'heading') {
+      const own = headingBlockHeight(next);
+      return depth >= 1 ? own : own + BLOCK_GAP + await leadHeightOf(at + 1, depth + 1);
+    }
+    if (next.blockType === 'image') {
+      const imageId = (next.content as { imageId?: string }).imageId;
+      const img = imageId ? await loadBlockImage(imageId) : null;
+      return img?.data ? imageBlockHeight(next, img.data, c.contentWidth, usableHeight) : 0;
+    }
+    if (next.blockType === 'rich_text') {
+      const html = String((next.content as { html?: string }).html ?? '');
+      return html.trim() ? measureRichTextLead(doc, html, c.contentWidth, fonts.body, WEB_TYPOGRAPHY, fonts.heading.bold) : 0;
+    }
+    if (next.blockType === 'table') {
+      const model = parseTable(next.content, c.contentWidth);
+      return model ? tableLeadHeight(measureTable(doc, model, fonts)) : 0;
+    }
+    if (next.blockType === 'callout') return measureCalloutLead(doc, next.content, c.contentWidth, fonts);
+    if (next.blockType === 'line_items') {
+      const label = String((next.content as { label?: string }).label ?? '').trim();
+      const blockLines = lines.filter((l) => l.blockId === next.id);
+      // Thumbnails aren't loaded yet; assume one wherever a line could have one
+      // (a narrower description column only ever over-reserves).
+      return lineTableLeadHeight(doc, blockLines, label, fonts, currency, locale, showTax, (l) => !!(l.imageId || l.catalogItemId));
+    }
+    return 0;
+  };
+  // Whether a block draws anything — an empty one gets no gap around it, and
+  // a heading measures the next block that actually draws.
+  const drawsSomething = async (b: QuoteBlock): Promise<boolean> => {
+    const content = (b.content ?? {}) as Record<string, unknown>;
+    if (b.blockType === 'heading') return String(content.text ?? '').trim().length > 0;
+    // An empty editor saves "<p></p>": nothing visible, so it's skipped
+    // rather than drawn as a blank line a heading would be kept with.
+    if (b.blockType === 'rich_text') {
+      return parseRichText(String(content.html ?? '')).some((rb) => rb.kind === 'table' || rb.runs.some((r) => r.text.trim().length > 0));
+    }
+    if (b.blockType === 'image') return typeof content.imageId === 'string' && !!(await loadBlockImage(content.imageId))?.data;
+    if (b.blockType === 'line_items') return lines.some((l) => l.blockId === b.id);
+    return b.blockType === 'table' || b.blockType === 'callout';
+  };
+  const visible: QuoteBlock[] = [];
+  for (const b of drawable) if (await drawsSomething(b)) visible.push(b);
+  let drewBlock = false;
+  for (const [index, b] of visible.entries()) {
+    if (drewBlock) y += BLOCK_GAP;
+    drewBlock = true;
+    y = ensureSpace(doc, y, BLOCK_MIN_ROOM);
     if (b.blockType === 'heading') {
-      const level = Number((b.content as { level?: number }).level ?? 1);
-      const text = String((b.content as { text?: string }).text ?? '');
-      const size = level === 1 ? 18 : level === 2 ? 15 : 13;
-      doc.fillColor('#111827').fontSize(size).font(fonts.heading.bold).text(text, c.left, y, { width: c.contentWidth });
-      y = doc.y + 8;
+      const level = headingLevel(b);
+      const text = headingText(b);
+      const size = headingSize(b);
+      const headingHeight = headingBlockHeight(b) + BLOCK_GAP;
+      // A follower that can't share any page with the heading (taller than
+      // the page body) gets no reservation — moving the heading would only
+      // strand it alone on a fresh page.
+      const lead = await leadHeightOf(index + 1);
+      y = ensureSpace(doc, y, headingHeight + (lead <= usableHeight - headingHeight ? lead : 0));
+      if (level === sectionLevel) markSection(text, y);
+      doc.fillColor(headingColor).fontSize(size).font(fonts.heading.bold).text(text, c.left, y, { width: c.contentWidth });
+      y = doc.y;
     } else if (b.blockType === 'rich_text') {
       const html = String((b.content as { html?: string }).html ?? '');
       if (html.trim()) {
@@ -983,52 +1388,39 @@ export async function renderQuotePdf(
           y = ensureSpace(doc, doc.y, needed);
           return y;
         };
-        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
+        y = renderRichTextIntoPdf(doc, html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body, headingColor: brandHeading ?? undefined, headingFont: fonts.heading.bold, typography: WEB_TYPOGRAPHY });
       }
     } else if (b.blockType === 'image') {
       const imageId = (b.content as { imageId?: string }).imageId;
-      // loadImage performs DB I/O and can reject; a failed fetch must degrade to
-      // skip-the-image rather than escaping renderQuotePdf (which would skip
-      // doc.end() and surface as a 500).
-      let img: { data: Buffer } | null = null;
-      try {
-        img = imageId ? await loadImage(imageId) : null;
-      } catch (e) {
-        console.error('[quotePdf] loadImage failed', imageId, e instanceof Error ? e.message : e);
-        captureException(e instanceof Error ? e : new Error(String(e)));
-        img = null;
-      }
+      const img = imageId ? await loadBlockImage(imageId) : null;
       if (img?.data) {
-        const fitWidth = Math.min(Number((b.content as { width?: number }).width ?? 400), c.contentWidth);
-        const fitHeight = 400;
-        // doc.image() with explicit x/y never advances pdfkit's cursor, so the
-        // drawn height must be computed up front — both to reserve page space
-        // (a tall image near the bottom margin would otherwise overflow the
-        // page) and to advance y past the image (stale-cursor overlap shipped
-        // as text painting straight over every image block).
-        const dims = imageIntrinsicSize(img.data);
-        const drawnHeight = dims
-          ? Math.min(fitWidth / dims.width, fitHeight / dims.height) * dims.height
-          : fitHeight;
-        y = ensureSpace(doc, y, Math.min(drawnHeight, doc.page.height - doc.page.margins.top - doc.page.margins.bottom) + 6);
+        const { drawnWidth, drawnHeight } = imageBlockGeometry(b, img.data, c.contentWidth);
+        y = ensureSpace(doc, y, imageBlockHeight(b, img.data, c.contentWidth, usableHeight));
+        // Rounded corners: clip to the rounded box, then draw the hairline
+        // border over the edge. save/restore stays paired even when doc.image
+        // throws, so a failed draw can't leak the clip into later content.
+        doc.save();
         try {
-          doc.image(img.data, c.left, y, { fit: [fitWidth, fitHeight] });
-          y += drawnHeight + 6;
+          doc.roundedRect(c.left, y, drawnWidth, drawnHeight, IMAGE_RADIUS).clip();
+          doc.image(img.data, c.left, y, { width: drawnWidth, height: drawnHeight });
+          doc.restore();
+          doc.roundedRect(c.left, y, drawnWidth, drawnHeight, IMAGE_RADIUS).lineWidth(0.75).strokeColor(IMAGE_BORDER).stroke();
+          y += drawnHeight;
         } catch (e) {
+          doc.restore();
           // A corrupt/unsupported image (e.g. a WebP blob stored before
           // upload-time rejection shipped, #3483) must not abort the whole
           // document — but it must not be silent either, so report it.
           console.error('[quotePdf] doc.image failed', imageId, e instanceof Error ? e.message : e);
           captureException(e instanceof Error ? e : new Error(String(e)));
-          y += 6;
         }
         const caption = (b.content as { caption?: string }).caption;
         if (caption) {
-          doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(caption, c.left, y, { width: c.contentWidth });
+          // Web: figcaption mt-2 text-xs muted (8px / 12px).
+          doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(caption, c.left, y + 6, { width: c.contentWidth });
           y = doc.y;
         }
         doc.fillColor('#111827');
-        y += 8;
       }
     } else if (b.blockType === 'line_items') {
       const blockLines = lines.filter((l) => l.blockId === b.id);
@@ -1054,6 +1446,8 @@ export async function renderQuotePdf(
     }
   }
 
+  if (drewBlock) y += BLOCK_GAP;
+
   // ---- Trailing default table for lines with no block ----------------------
   const orphanLines = lines.filter((l) => !l.blockId);
   if (orphanLines.length) y = await renderLineTable(doc, orphanLines, currency, locale, y, loadCatalogImage, loadImage, fonts, taxRate, showTax);
@@ -1069,26 +1463,20 @@ export async function renderQuotePdf(
   // the same place, above the sign panel. The branding footer is no longer
   // drawn inline — it lives in the per-page footer band below, on EVERY page.
   if (quote.terms) {
-    y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(quote.terms, c.left, y, { width: c.contentWidth });
+    // Web parity (documentShell.tsx): a rule, a small TERMS label, then the
+    // text at text-xs leading-relaxed (12px / 1.625 → 9pt).
+    y = ensureSpace(doc, y + 18, 70);
+    doc.moveTo(c.left, y).lineTo(c.right, y).lineWidth(0.5).strokeColor('#e5e7eb').stroke();
+    y += 14;
+    doc.fillColor('#6b7280').fontSize(8).font(fonts.heading.bold).text('TERMS', c.left, y, { width: c.contentWidth, characterSpacing: 1 });
+    y = doc.y + 4;
+    doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular);
+    const termsGap = Math.max(0, 1.625 * 9 - doc.currentLineHeight(true));
+    doc.text(quote.terms, c.left, y, { width: c.contentWidth, lineGap: termsGap });
     y = doc.y;
   }
 
-  // ---- Agreements: contract blocks in block order ----------------------------
-  // contractRenderData[b.id] is pre-fetched by the route (Task 14's
-  // loadContractPdfInputs) — never a DB read here, keeping the renderer pure.
-  // A missing entry (render data load failed upstream, or an injected-empty Map
-  // in a caller that doesn't pass one) degrades to the uploaded marker rather
-  // than throwing.
-  const agreements = sorted
-    .filter((b) => b.blockType === 'contract')
-    .map((b) => {
-      const raw = b.content && typeof b.content === 'object' && !Array.isArray(b.content) ? (b.content as Record<string, unknown>) : {};
-      const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
-      const data = contractRenderData.get(b.id);
-      return { label, templateName: data?.templateName || 'Contract', html: data?.html || null };
-    });
-
+  // ---- Agreements (computed above, with the contents) -----------------------
   // Uploaded: pdfkit can't draw an existing PDF's pages (see pdfMerge.ts), and
   // the route appends them after this whole document via
   // mergeUploadedContractPdfs. The one-line marker is a pointer, so it closes
@@ -1109,15 +1497,16 @@ export async function renderQuotePdf(
     if (!a.html) continue;
     doc.addPage();
     y = doc.page.margins.top;
+    markSection(a.label ?? a.templateName, y);
     doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('AGREEMENT', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
     y = doc.y + 4;
-    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text(a.label ?? a.templateName, c.left, y, { width: c.contentWidth });
+    doc.fillColor(headingColor).fontSize(15).font(fonts.heading.bold).text(a.label ?? a.templateName, c.left, y, { width: c.contentWidth });
     y = doc.y + 10;
     const ensureRoom = (needed: number): number => {
       y = ensureSpace(doc, doc.y, needed);
       return y;
     };
-    y = renderRichTextIntoPdf(doc, a.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body });
+    y = renderRichTextIntoPdf(doc, a.html, { x: c.left, width: c.contentWidth, startY: y, ensureRoom, fonts: fonts.body, headingColor: brandHeading ?? undefined, headingFont: fonts.heading.bold, typography: WEB_TYPOGRAPHY });
     onAgreementPage = true;
   }
 
@@ -1128,17 +1517,39 @@ export async function renderQuotePdf(
     // Its own page, headed like the agreement pages before it.
     doc.addPage();
     y = doc.page.margins.top;
+    markSection('Terms & Conditions', y);
     doc.fillColor(primary).fontSize(9).font(fonts.heading.bold).text('TERMS', c.left, y, { width: c.contentWidth, characterSpacing: 1.5 });
     y = doc.y + 4;
-    doc.fillColor('#111827').fontSize(15).font(fonts.heading.bold).text('Terms & Conditions', c.left, y, { width: c.contentWidth });
+    doc.fillColor(headingColor).fontSize(15).font(fonts.heading.bold).text('Terms & Conditions', c.left, y, { width: c.contentWidth });
     y = doc.y + 10;
     doc.fillColor('#374151').fontSize(10).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
     y = doc.y;
   } else if (quote.termsAndConditions) {
     y = ensureSpace(doc, y + 14, 60);
+    markSection('Terms & Conditions', y);
     doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
     doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
     y = doc.y;
+  }
+
+  // ---- Contents list, now that every section's page is known ----------------
+  if (tocSlot) {
+    doc.switchToPage(tocSlot.pageIndex);
+    let ty = tocSlot.y;
+    doc.fillColor('#6b7280').fontSize(8).font(fonts.heading.bold).text('CONTENTS', c.left, ty, { width: c.contentWidth, characterSpacing: 1, lineBreak: false });
+    ty += TOC_LABEL_HEIGHT;
+    tocEntries.slice(0, tocSlot.shown).forEach((entry, i) => {
+      doc.font(fonts.body.regular).fontSize(10.5).fillColor('#374151')
+        .text(entry.title, c.left, ty, { width: tocTitleWidth, goTo: entry.dest });
+      doc.fillColor('#6b7280')
+        .text(String(entry.page), c.left + tocTitleWidth, ty, { width: TOC_PAGE_COL, align: 'right', goTo: entry.dest, lineBreak: false });
+      ty += tocRowHeights[i]!;
+    });
+    const hidden = tocEntries.length - tocSlot.shown;
+    if (hidden > 0) {
+      doc.font(fonts.body.regular).fontSize(10.5).fillColor('#6b7280')
+        .text(`…and ${hidden} more`, c.left, ty, { width: tocTitleWidth, lineBreak: false });
+    }
   }
 
   // ---- Per-page footer band: branding footer + quote number + page X of Y ---
