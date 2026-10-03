@@ -2531,9 +2531,30 @@
       "skip": "Saltato dal cliente",
       "exclude": "Escluso dal fornitore",
       "stop": "Pagamenti automatici interrotti",
-      "client_request": "Richiesto dal cliente"
+      "client_request": "Richiesto dal cliente",
+      "no_billing_contact": "Nessun contatto di fatturazione",
+      "delivery_failed": "Invio dell’avviso non riuscito"
     },
-    "noticeTemplate": "Fattura con avviso di pagamento automatico"
+    "noticeTemplate": "Fattura con avviso di pagamento automatico",
+    "chargeFailed": "Impossibile avviare il pagamento. Riprova.",
+    "chargeStarted": "Tentativo di pagamento avviato",
+    "chargeNow": "Addebita ora",
+    "noCharge": "Nessun addebito",
+    "noticeStuck": "Avviso di pagamento da verificare",
+    "unapplied": "{{count}} pagamento/i richiedono riconciliazione. Verifica gli importi irrisolti prima di un nuovo addebito.",
+    "lastCharge": "Ultimo addebito",
+    "attention": "Da verificare",
+    "attemptStates": {
+      "reserved": "Pagamento riservato",
+      "created": "Pagamento creato",
+      "confirming": "Conferma del pagamento in corso",
+      "processing": "Pagamento in elaborazione",
+      "succeeded": "Pagamento ricevuto",
+      "failed": "Pagamento non riuscito",
+      "requires_action": "Conferma richiesta",
+      "canceled": "Annullato",
+      "unapplied": "Il pagamento richiede riconciliazione"
+    }
   },
   "reminders": {
     "title": "Promemoria di pagamento",

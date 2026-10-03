@@ -2531,9 +2531,30 @@
       "skip": "Skipped by client",
       "exclude": "Excluded by provider",
       "stop": "Automatic payments stopped",
-      "client_request": "Requested by client"
+      "client_request": "Requested by client",
+      "no_billing_contact": "No billing contact",
+      "delivery_failed": "Notice delivery failed"
     },
-    "noticeTemplate": "Invoice with automatic payment notice"
+    "noticeTemplate": "Invoice with automatic payment notice",
+    "chargeFailed": "Could not start payment. Please try again.",
+    "chargeStarted": "Payment attempt started",
+    "chargeNow": "Charge now",
+    "noCharge": "No charges yet",
+    "noticeStuck": "Payment notice needs attention",
+    "unapplied": "{{count}} payment(s) need reconciliation. Review unresolved money before collecting again.",
+    "lastCharge": "Last charge",
+    "attention": "Attention",
+    "attemptStates": {
+      "reserved": "Payment reserved",
+      "created": "Payment created",
+      "confirming": "Confirming payment",
+      "processing": "Processing",
+      "succeeded": "Payment received",
+      "failed": "Failed",
+      "requires_action": "Confirmation required",
+      "canceled": "Cancelled",
+      "unapplied": "Payment needs reconciliation"
+    }
   },
   "reminders": {
     "title": "Payment reminders",

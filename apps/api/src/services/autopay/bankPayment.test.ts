@@ -133,3 +133,10 @@ it('revalidates the organization after setup return',async()=>{
  completionFixture();bank.rows[4]=[{id:invoice.orgId,status:'archived',deletedAt:null}];
  await expect(collect()).rejects.toThrow('Organization unavailable');expect(attemptCollection).not.toHaveBeenCalled();
 });
+it('retains pending bank verification after another payment closes the invoice',async()=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'us_bank_account',status:'pending_verification'} as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'paid',balance:'0.00'}],
+ [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:false,methodStatus:'pending_verification'});
+});

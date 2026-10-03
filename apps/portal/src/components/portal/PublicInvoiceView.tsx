@@ -1,3 +1,4 @@
+import BankAutopayPayment from './BankAutopayPayment';
 import { InvoiceAutopayConsent } from './InvoiceDetailView';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
@@ -187,6 +188,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
       <div className="flex flex-wrap items-center justify-end gap-2">
         {canPay && (
           <>
+            <BankAutopayPayment target={{invoiceId:invoice.id,publicToken:token}} offer={detail.bankAutopay}/>
             <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
             <button
               type="button"

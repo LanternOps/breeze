@@ -65,7 +65,7 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     authorizationText: terms.methodType === 'us_bank_account'
       ? 'Bank debit authorized during setup. The date is the initiation date; your bank controls settlement.'
       : 'Payment authorized during automatic payment setup.',
-    frozen: { amount: terms.principal, fee: terms.feeAmount, chargeDate: schedule.collectOn,
+    frozen: { enqueuedAt: new Date().toISOString(), amount: terms.principal, fee: terms.feeAmount, chargeDate: schedule.collectOn,
       methodType: terms.methodType, enrollmentGeneration: schedule.enrollmentGeneration },
   } }, tx);
   const outbox = await enqueueBillingNotice(tx, { orgId: schedule.orgId, partnerId: invoice!.partnerId,

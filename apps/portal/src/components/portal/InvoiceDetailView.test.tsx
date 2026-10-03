@@ -236,3 +236,10 @@ it('surfaces settlement request failures on checkout return', async () => {
   expect(await screen.findByTestId('invoice-pay-error')).toHaveTextContent('Could not confirm payment. Please try again.');
   expect(screen.getByTestId('invoice-settle-failed')).toBeInTheDocument();
 });
+
+it('mounts bank pay only when the server offers it', () => {
+ const data=detail([]);
+ const view=render(<InvoiceDetailView detail={{...data,bankAutopay:{available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null}}}/>);
+ expect(screen.getByTestId('autopay-bank-pay')).toBeTruthy();view.unmount();
+ render(<InvoiceDetailView detail={data}/>);expect(screen.queryByTestId('autopay-bank-pay')).toBeNull();
+});

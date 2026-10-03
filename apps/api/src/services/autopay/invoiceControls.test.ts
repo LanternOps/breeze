@@ -15,7 +15,7 @@ vi.mock('./paymentMethods', () => ({
   getAutopayMethod: vi
     .fn()
     .mockResolvedValue({
-      id: 'method',
+      id: 'method', orgId:'org',enrollmentId:'enrollment',isAutopayMethod:true,
       type: 'card',
       status: 'active',
       cardFunding: 'credit',
@@ -513,4 +513,12 @@ it('does not mark an already-excluded schedule pending without an outstanding at
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toEqual({ status: 'excluded' });
   expect(f.writes).toEqual([]);
   expect(f.sched.stateReason).toBe('exclude');
+});
+
+it('offers Charge now after the full notice lead even before collectOn',async()=>{
+ const f=fixture({noticeSentAt:new Date('2020-01-01'),collectOn:'2099-01-01',termsSnapshot:{noticeLeadDays:1,methodId:'method',methodType:'card',accountHolderType:null}});
+ expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.canChargeNow).toBe(true);
+});
+it.each([{noticeSentAt:new Date()},{clientSkippedAt:new Date()},{mspExcludedAt:new Date()},{enrollmentGeneration:2},{state:'retry_scheduled',nextAttemptAt:new Date('2099-01-01')}])('withholds Charge now for an unsafe schedule %j',async over=>{
+ const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:{noticeLeadDays:1,methodId:'method',methodType:'card',accountHolderType:null},...over});expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.canChargeNow).toBe(false);
 });

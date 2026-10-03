@@ -2531,9 +2531,30 @@
       "skip": "Müşteri tarafından atlandı",
       "exclude": "Sağlayıcı tarafından hariç tutuldu",
       "stop": "Otomatik ödemeler durduruldu",
-      "client_request": "Müşteri tarafından istendi"
+      "client_request": "Müşteri tarafından istendi",
+      "no_billing_contact": "Faturalandırma kişisi yok",
+      "delivery_failed": "Bildirim iletilemedi"
     },
-    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura"
+    "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
+    "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",
+    "chargeStarted": "Ödeme girişimi başlatıldı",
+    "chargeNow": "Şimdi tahsil et",
+    "noCharge": "Henüz tahsilat yok",
+    "noticeStuck": "Ödeme bildirimi incelenmeli",
+    "unapplied": "{{count}} ödeme mutabakat gerektiriyor. Yeniden tahsil etmeden önce çözümlenmemiş tutarları inceleyin.",
+    "lastCharge": "Son tahsilat",
+    "attention": "İnceleme gerekli",
+    "attemptStates": {
+      "reserved": "Ödeme için tutar ayrıldı",
+      "created": "Ödeme oluşturuldu",
+      "confirming": "Ödeme onaylanıyor",
+      "processing": "Ödeme işleniyor",
+      "succeeded": "Ödeme alındı",
+      "failed": "Ödeme başarısız",
+      "requires_action": "Onay gerekli",
+      "canceled": "İptal edildi",
+      "unapplied": "Ödeme mutabakat gerektiriyor"
+    }
   },
   "reminders": {
     "title": "Ödeme hatırlatmaları",

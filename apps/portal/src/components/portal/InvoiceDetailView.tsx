@@ -1,3 +1,4 @@
+import BankAutopayPayment from './BankAutopayPayment';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
@@ -219,7 +220,8 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         <div className="flex flex-wrap items-center gap-2">
           {canPay && (
             <>
-              <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
+              <BankAutopayPayment target={{invoiceId:invoice.id}} offer={detail.bankAutopay}/>
+            <InvoiceAutopayConsent disclosure={detail.autopay} checked={saveForAutopay} paying={paying} onChange={setSaveForAutopay} />
               <button
                 type="button"
                 onClick={() => void payInvoice()}

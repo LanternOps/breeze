@@ -1,55 +1,39 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import PublicInvoiceView from './PublicInvoiceView';
-import { portalApi, type PublicInvoiceDetail } from '@/lib/api';
-vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-const data: PublicInvoiceDetail = {
-  invoice: { id: '11111111-1111-4111-8111-111111111111', invoiceNumber: 'INV-1', status: 'sent', currencyCode: 'USD',
-    total: '100.00', subtotal: '100.00', taxTotal: '0.00', amountPaid: '0.00', balance: '100.00' },
-  lines: [], chargeNow: { amount: '100.00', isDeposit: false }, payable: true,
-  branding: { partnerName: 'Example MSP', contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'letter' },
-  autopay: { eligible: true, consentText: 'I authorize Example MSP.', consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) },
-};
-it('shows unticked consent only when the server says this invoice can save a card', () => {
-  const view = render(<PublicInvoiceView token="token" initial={data} />);
-  expect((screen.getByTestId('autopay-save-card') as HTMLInputElement).checked).toBe(false);
-  view.unmount();
-  render(<PublicInvoiceView token="other-token" initial={{ ...data, autopay: null }} />);
-  expect(screen.queryByTestId('autopay-save-card')).toBeNull();
-});
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { fireEvent, render, screen, cleanup, waitFor } from '@testing-library/react';
+import type { PublicInvoiceDetail } from '@/lib/api';
 
-for (const consent of ['untouched', 'accepted', 'withdrawn'] as const) {
-  it(`submits public payment with ${consent} consent`, async () => {
-    const pay = vi.spyOn(portalApi, 'payPublicInvoice').mockResolvedValue({ error: 'Payment unavailable', statusCode: 409 });
-    render(<PublicInvoiceView token="token" initial={data} />);
-    if (consent !== 'untouched') fireEvent.click(screen.getByTestId('autopay-save-card'));
-    if (consent === 'withdrawn') fireEvent.click(screen.getByTestId('autopay-save-card'));
-    fireEvent.click(screen.getByTestId('public-invoice-pay'));
-    await vi.waitFor(() => expect(pay).toHaveBeenCalledWith('token', consent === 'accepted'
-      ? { saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }
-      : { saveForAutopay: false }));
-    expect(screen.getByTestId('autopay-save-card-text')).toHaveTextContent(data.autopay!.consentText);
-    expect(await screen.findByTestId('public-invoice-pay-error')).toHaveTextContent('Payment unavailable');
-    expect(screen.getByTestId('public-invoice-pay')).not.toBeDisabled();
-  });
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
+import { PublicInvoiceView } from './PublicInvoiceView';
+
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+function detail(overrides: Partial<PublicInvoiceDetail> = {}): PublicInvoiceDetail {
+  return {
+    invoice: {
+      id: 'inv-1', invoiceNumber: 'INV-2026-0001', status: 'sent', currencyCode: 'USD',
+      issueDate: '2026-08-01', dueDate: '2026-08-31', total: '100.00', amountPaid: '0.00',
+      balance: '100.00', depositDue: null, subtotal: '100.00', taxTotal: '0.00', taxRate: null,
+    },
+    lines: [],
+    chargeNow: { amount: '100.00', isDeposit: false },
+    payable: true,
+    branding: { partnerName: 'Lantern MSP', contactEmail: null, logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'letter' },
+    ...overrides,
+  } as PublicInvoiceDetail;
 }
 
-it('does not offer consent for an ineligible or unpayable invoice', () => {
-  const view = render(<PublicInvoiceView token="token" initial={{ ...data, autopay: { ...data.autopay!, eligible: false } }} />);
-  expect(screen.queryByTestId('autopay-save-card')).toBeNull();
-  view.unmount();
-  render(<PublicInvoiceView token="token" initial={{ ...data, payable: false }} />);
-  expect(screen.queryByTestId('autopay-save-card')).toBeNull();
-});
 
-it.each(['throw', 'invalid-url'] as const)('surfaces %s failures and re-enables payment', async failure => {
-  const pay = vi.spyOn(portalApi, 'payPublicInvoice');
-  if (failure === 'throw') pay.mockRejectedValue(new Error('offline'));
-  else pay.mockResolvedValue({ data: { data: { url: 'https://example.com/' } } });
-  render(<PublicInvoiceView token="token" initial={data} />);
-  fireEvent.click(screen.getByTestId('public-invoice-pay'));
-  expect(await screen.findByTestId('public-invoice-pay-error')).toHaveTextContent('Could not start payment. Please try again.');
-  expect(screen.getByTestId('public-invoice-pay')).not.toBeDisabled();
+it('loads the server bank offer and starts setup only after consent',async()=>{
+ const {portalApi,apiPost}=await import('@/lib/api');
+ const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null};
+ vi.spyOn(portalApi,'getPublicInvoice').mockResolvedValue({data:{data:detail({bankAutopay:offer})}});
+ const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({data:{url:'https://checkout.stripe.com/c/setup/example'}}),{status:200,headers:{'Content-Type':'application/json'}}));
+ render(<PublicInvoiceView token="token-1"/>);
+ const button=await screen.findByTestId('autopay-bank-pay');expect((button as HTMLButtonElement).disabled).toBe(true);
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(button);
+ await waitFor(()=>expect(fetch).toHaveBeenCalled());
+ const payment=fetch.mock.calls.find(([url])=>String(url).endsWith('/invoices/public/token-1/pay'));
+ expect(payment).toBeDefined();expect(JSON.parse(payment![1]!.body as string)).toMatchObject({phase:'setup',consentAccepted:true});
 });

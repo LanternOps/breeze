@@ -1,0 +1,56 @@
+// @vitest-environment jsdom
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+vi.mock('@/lib/api',()=>({apiGet:vi.fn(),apiPost:vi.fn()}));
+vi.mock('@/lib/navigation',()=>({navigateTo:vi.fn()}));
+import {apiGet,apiPost} from '@/lib/api';
+import {navigateTo} from '@/lib/navigation';
+import BankAutopayPayment from './BankAutopayPayment';
+const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize payment and future automatic payments.',
+  disclosureHash:'a'.repeat(64),methodStatus:null} as const;
+beforeEach(()=>{vi.clearAllMocks();sessionStorage.clear();window.history.replaceState({},'','/');});
+afterEach(cleanup);
+it('requires consent and stores continuation before Stripe redirect',async()=>{
+  vi.mocked(apiPost).mockResolvedValue({data:{data:{url:'https://checkout.stripe.com/c/setup/example'}}});
+  render(<BankAutopayPayment target={{invoiceId:'invoice-1',publicToken:'token-1'}} offer={offer}/>);
+  expect(screen.getByTestId('autopay-bank-pay')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-pay'));
+  await waitFor(()=>expect(navigateTo).toHaveBeenCalled());
+  expect(apiPost).toHaveBeenCalledWith('/invoices/public/token-1/pay',expect.objectContaining({phase:'setup',disclosureHash:offer.disclosureHash}),{redirectOnUnauthorized:false});
+  expect(JSON.parse(sessionStorage.getItem('autopay-bank-return')!)).toEqual({invoiceId:'invoice-1',publicToken:'token-1'});
+});
+it('return reads only until the explicit payment confirmation',async()=>{
+  sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1'}));
+  window.history.replaceState({},'','/autopay/return?bank=1&session_id=cs_bank_one');
+  vi.mocked(apiGet).mockResolvedValue({data:{invoice:{id:'invoice-1'},bankAutopay:{...offer,methodStatus:'active'}}});
+  vi.mocked(apiPost).mockResolvedValue({data:{outcome:'created',attemptId:'attempt-1'}});
+  render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-confirm-pay');
+  expect(apiPost).not.toHaveBeenCalled();fireEvent.click(screen.getByTestId('autopay-bank-consent'));
+  fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+  await waitFor(()=>expect(apiPost).toHaveBeenCalledWith('/portal/invoices/invoice-1/pay',expect.objectContaining({phase:'collect',setupSessionId:'cs_bank_one'}),{redirectOnUnauthorized:true}));
+});
+it('pending verification has no charge button or mutation on refresh',async()=>{
+  sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',setupSessionId:'cs_pending'}));
+  vi.mocked(apiGet).mockResolvedValue({data:{invoice:{id:'invoice-1'},bankAutopay:{...offer,methodStatus:'pending_verification'}}});
+  render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-pending');
+  expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();fireEvent.click(screen.getByTestId('autopay-bank-refresh'));
+  await waitFor(()=>expect(apiGet).toHaveBeenCalledTimes(2));expect(apiPost).not.toHaveBeenCalled();
+});
+it.each(['in_progress','abandoned'])('shows explicit %s recovery without automatic collection',async reason=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',setupSessionId:'cs_bank_one'}));
+ vi.mocked(apiGet).mockResolvedValue({data:{invoice:{id:'invoice-1'},bankAutopay:{...offer,methodStatus:'active'}}});
+ vi.mocked(apiPost).mockResolvedValue({data:{outcome:'deferred',reason}});
+ render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-confirm-pay');
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-bank-result')).toHaveTextContent(reason==='in_progress'?'still being confirmed':'Restart bank setup'));
+ expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();
+ if(reason==='abandoned'){fireEvent.click(screen.getByTestId('autopay-bank-restart'));expect(screen.getByTestId('autopay-bank-pay')).toBeDisabled();}
+ else {fireEvent.click(screen.getByTestId('autopay-bank-refresh'));await waitFor(()=>expect(apiGet).toHaveBeenCalledTimes(2));}
+ expect(apiPost).toHaveBeenCalledTimes(1);
+});
+it('retains verification status without a charge button when collection is unavailable',async()=>{
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify({invoiceId:'invoice-1',setupSessionId:'cs_pending'}));
+ vi.mocked(apiGet).mockResolvedValue({data:{invoice:{id:'invoice-1'},bankAutopay:{...offer,available:false,methodStatus:'pending_verification'}}});
+ render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-pending');
+ expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();expect(apiPost).not.toHaveBeenCalled();
+});

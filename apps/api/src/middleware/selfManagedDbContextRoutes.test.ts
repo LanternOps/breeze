@@ -621,3 +621,8 @@ it('W05: the continuation route manages its own DB context (it makes a provider 
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions/11111111-1111-1111-1111-111111111111/continue/extra')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/ai/sessions//continue')).toBe(false);
 });
+
+it('only opts the network-bearing charge POST out of ambient context', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/invoices/abc/autopay/charge-now')).toBe(true);
+  expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/invoices/abc/autopay')).toBe(false);
+});

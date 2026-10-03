@@ -2531,9 +2531,30 @@
       "skip": "Omitido por el cliente",
       "exclude": "Excluido por el proveedor",
       "stop": "Pagos automáticos detenidos",
-      "client_request": "Solicitado por el cliente"
+      "client_request": "Solicitado por el cliente",
+      "no_billing_contact": "No hay contacto de facturación",
+      "delivery_failed": "No se pudo entregar el aviso"
     },
-    "noticeTemplate": "Factura con aviso de pago automático"
+    "noticeTemplate": "Factura con aviso de pago automático",
+    "chargeFailed": "No se pudo iniciar el pago. Inténtalo de nuevo.",
+    "chargeStarted": "Intento de pago iniciado",
+    "chargeNow": "Cobrar ahora",
+    "noCharge": "Aún no hay cobros",
+    "noticeStuck": "El aviso de pago requiere atención",
+    "unapplied": "{{count}} pago(s) necesitan conciliación. Revisa los fondos pendientes antes de volver a cobrar.",
+    "lastCharge": "Último cobro",
+    "attention": "Atención",
+    "attemptStates": {
+      "reserved": "Pago reservado",
+      "created": "Pago creado",
+      "confirming": "Confirmando el pago",
+      "processing": "Pago en proceso",
+      "succeeded": "Pago recibido",
+      "failed": "Pago fallido",
+      "requires_action": "Se requiere confirmación",
+      "canceled": "Cancelado",
+      "unapplied": "El pago requiere conciliación"
+    }
   },
   "reminders": {
     "title": "Recordatorios de pago",

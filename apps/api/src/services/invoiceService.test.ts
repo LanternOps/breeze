@@ -2024,6 +2024,7 @@ describe('getInvoice — billing evidence counts (#3205 W07)', () => {
     queueResult([{ lineId: 'l1', n: 3 }]);
     queueResult([]); // Stripe connection
     queueResult([]); // accounting sync
+    queueResult([{count:0}]); // ungated money attention
     queueResult([{ id: 'i1', orgId: 'org1' }]); // listInvoices
 
     const detail = await svc.getInvoice('i1', actor);
@@ -3015,4 +3016,20 @@ describe('getInvoice — effectiveTaxRate on drafts (#6338)', () => {
     const out = await svc.getInvoice('i1', actor);
     expect(out.effectiveTaxRate).toBeNull();
   });
+});
+
+it('projects all unresolved money after invoice authorization even with no autopay panel',async()=>{
+ results.length=0; vi.clearAllMocks();
+ const actor={userId:'u1',partnerId:'p1',accessibleOrgIds:['org1']};
+ queueResult([{id:'i1',orgId:'org1',partnerId:'p1',status:'sent'}]);
+ queueResult([]); // lines
+ queueResult([]); // evidence
+ queueResult([]); // Stripe
+ queueResult([]); // accounting
+ queueResult([{count:2}]);
+ const detail=await svc.getInvoice('i1',actor);
+ expect(detail.unappliedCount).toBe(2);
+ const predicate=(db as unknown as {where:Mock}).where.mock.calls.at(-1)![0] as SQL;
+ expect(new PgDialect().sqlToQuery(predicate).params).toEqual(['i1','org1','unapplied']);
+ expect(detail.autopay).toBeNull();
 });

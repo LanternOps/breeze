@@ -368,3 +368,35 @@ it('hides autopay controls on the real workspace when rollout is disabled and no
  expect(screen.queryByTestId('autopay-invoice-panel')).toBeNull();
  expect(screen.queryByTestId('autopay-invoice-excluded')).toBeNull();
 });
+
+it('keeps unresolved-money attention visible with enrollment disabled, until resolution',async()=>{
+  let count=1;
+  fetchMock.mockImplementation(async(input:string)=>{
+    if(input==='/billing/autopay')return json({error:'autopay_not_enabled'},false,404);
+    if(input==='/invoices/inv-1')return json({data:{...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:null,unappliedCount:count}});
+    if(input==='/invoices/inv-1/payments')return json({data:[]});
+    return json({data:[]});
+  });
+  const first=render(<InvoiceWorkspace id="inv-1"/>);
+  expect(await screen.findByTestId('autopay-unapplied-banner')).toBeVisible();
+  fireEvent.click(screen.getByTestId('invoice-tab-preview'));
+  expect(screen.getByTestId('autopay-unapplied-banner')).toBeVisible();
+  expect(fetchMock.mock.calls.some(([path])=>path==='/billing/autopay')).toBe(false);
+  first.unmount();count=0;render(<InvoiceWorkspace id="inv-1"/>);
+  await screen.findByTestId('invoice-workspace-title');
+  expect(screen.queryByTestId('autopay-unapplied-banner')).not.toBeInTheDocument();
+});
+it('Charge now conflict surfaces an error without a successful workspace refresh',async()=>{
+ window.location.hash='';
+ const {showToast}=await import('../shared/Toast');vi.mocked(showToast).mockClear();
+ const detail={...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:{state:'scheduled',reason:null,collectOn:'2099-01-01',noticeSentAt:'2020-01-01',excluded:false,canExclude:true,canChargeNow:true,processing:false,unapplied:false}};
+ fetchMock.mockImplementation(async(input:string,init?:RequestInit)=>{
+  if(input==='/invoices/inv-1/autopay/charge-now')return json({error:'notice_lead',code:'notice_lead'},false,409);
+  return json({data:input==='/invoices/inv-1'?detail:[]});
+ });
+ render(<InvoiceWorkspace id="inv-1"/>);fireEvent.click(await screen.findByTestId('autopay-charge-now'));
+ await waitFor(()=>expect(showToast).toHaveBeenCalledWith(expect.objectContaining({type:'error'})));
+ expect(fetchMock).toHaveBeenCalledWith('/invoices/inv-1/autopay/charge-now',{method:'POST'});
+ expect(fetchMock.mock.calls.filter(([path])=>path==='/invoices/inv-1')).toHaveLength(1);
+ expect(vi.mocked(showToast).mock.calls.some(([toast])=>toast.type==='success')).toBe(false);
+});

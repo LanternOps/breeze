@@ -97,6 +97,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // unconditionally for anyone with read access, and the per-line "Accounting
   // view" checkbox was a separate, unpersisted control — so hiding margin on a
   // quote didn't carry over here).
+  const [chargePending, setChargePending] = useState(false);
+  async function startAutopayCharge() {
+    if (chargePending) return;
+    setChargePending(true);
+    try {
+      await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
+        errorFallback: t('autopay.chargeFailed'), successMessage: t('autopay.chargeStarted'), onUnauthorized: UNAUTHORIZED });
+      await onChanged();
+    } catch (error) { handleActionError(error, t('autopay.chargeFailed')); }
+    finally { setChargePending(false); }
+  }
   const [autopaySaving, setAutopaySaving] = useState(false);
   const setAutopayExcluded = async (excluded: boolean) => {
     if (autopaySaving) return;
@@ -524,6 +535,9 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" data-testid="autopay-invoice-excluded"
               checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}
               onChange={event => void setAutopayExcluded(event.target.checked)} />{t('autopay.excludeInvoice')}</label>
+            <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
+              disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow}
+              onClick={() => void startAutopayCharge()}>{t('autopay.chargeNow')}</button>
           </section>}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">

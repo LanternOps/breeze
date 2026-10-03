@@ -2531,9 +2531,30 @@
       "skip": "Ignoré par le client",
       "exclude": "Exclu par le prestataire",
       "stop": "Paiements automatiques arrêtés",
-      "client_request": "Demandé par le client"
+      "client_request": "Demandé par le client",
+      "no_billing_contact": "Aucun contact de facturation",
+      "delivery_failed": "Échec de l’envoi de l’avis"
     },
-    "noticeTemplate": "Facture avec avis de paiement automatique"
+    "noticeTemplate": "Facture avec avis de paiement automatique",
+    "chargeFailed": "Impossible de lancer le paiement. Réessayez.",
+    "chargeStarted": "Tentative de paiement lancée",
+    "chargeNow": "Prélever maintenant",
+    "noCharge": "Aucun prélèvement",
+    "noticeStuck": "Avis de paiement à vérifier",
+    "unapplied": "{{count}} paiement(s) nécessitent un rapprochement. Vérifiez les montants non rapprochés avant un nouveau prélèvement.",
+    "lastCharge": "Dernier prélèvement",
+    "attention": "À vérifier",
+    "attemptStates": {
+      "reserved": "Paiement réservé",
+      "created": "Paiement créé",
+      "confirming": "Confirmation du paiement en cours",
+      "processing": "Traitement du paiement en cours",
+      "succeeded": "Paiement reçu",
+      "failed": "Échec du paiement",
+      "requires_action": "Confirmation requise",
+      "canceled": "Annulé",
+      "unapplied": "Rapprochement du paiement nécessaire"
+    }
   },
   "reminders": {
     "title": "Rappels de paiement",

@@ -61,7 +61,8 @@ export interface AutopayEnrollmentView { status:AutopayEnrollmentStatus;generati
 export interface AutopayListRow {
  orgId:string;orgName:string;billingContact:{email?:string|null}|null;
  stripeReadiness:{ready:boolean;missing:string[]};status:AutopayEnrollmentStatus|'not_requested'|'needs_attention';
- enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastChargeResult:null;requestNoticeStatus:BillingNoticeStatus|null;
+ enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastCharge:{state:string;createdAt:string;principalAmount:string;currency:string}|null;
+ awaitingNotice:{count:number;oldestCreatedAt:string;reason:string|null;invoiceId:string}|null;requestNoticeStatus:BillingNoticeStatus|null;
 }
 export interface AutopayCustomerPage {
  stopOnly?:false;

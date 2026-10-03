@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Hono } from 'hono';
 import { beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
+  select: vi.fn(), collect: vi.fn(), access: vi.fn(), context: false,
   exclude: vi.fn(),
   skip: vi.fn(),
   view: vi.fn(),
@@ -11,7 +12,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock('../../services/autopay/confirmPayment',()=>({getConfirmPaymentView:h.confirmView,confirmInvoicePayment:h.confirm}));
 vi.mock('../../db', () => ({
-  db: { transaction: (fn: any) => fn({}) },
+  db: { select: h.select, transaction: (fn: any) => fn({}) },
   withSystemDbAccessContext: (fn: any) => fn(),
 }));
 vi.mock('../../services/autopay/invoiceControls', () => ({
@@ -26,8 +27,11 @@ vi.mock('../../services/autopay/enrollmentLifecycle', () => ({}));
 vi.mock('../../services/autopay/consentText', () => ({}));
 vi.mock('../../services/clientIp', () => ({}));
 vi.mock('../../services/portalUrl', () => ({ portalBase: () => 'https://portal.example.test' }));
-vi.mock('../../services/invoiceService', () => ({}));
+vi.mock('../../services/invoiceService', () => ({ requireInvoiceAccess: h.access }));
+vi.mock('../../services/autopay/collectionEngine', () => ({ attemptCollection: h.collect }));
 vi.mock('../../middleware/auth', () => ({
+  withAuthDbAccessContext: async (_auth: any, fn: any) => { h.context = true; try { return await fn(); } finally { h.context = false; } },
+
   authMiddleware: async (c: any, next: any) => {
     if (!c.req.header('authorization')) return c.json({ error: 'Unauthorized' }, 401);
     c.set('auth', {
@@ -245,4 +249,34 @@ it('confirm rejects missing authority, stale binding, cross-origin and invalid J
  expect((await app.request(url,{method:'POST',headers:{...headers,origin:'https://other.example.test'},body:'{}'})).status).toBe(403);
  expect((await app.request(url,{method:'POST',headers,body:'{"extra":true}'})).status).toBe(400);
  expect(h.confirm).not.toHaveBeenCalled();
+});
+
+const charge = (extra: Record<string,string> = {}, invoiceId = id) => app.request(`/api/v1/invoices/${invoiceId}/autopay/charge-now`, { method: 'POST', headers: {...headers,...extra} });
+function chargeRows(schedule: any = {id:'schedule-1',eligible:true,state:'scheduled',noticeSentAt:new Date('2020-01-01'),noticeOutboxId:'notice',termsSnapshot:{noticeLeadDays:1}}) {
+  const rows = [[{id,orgId:'org',siteId:'site',partnerId:'partner'}],schedule?[schedule]:[]];
+  h.select.mockImplementation(() => ({from:()=>({where:()=>({limit:async()=>rows.shift()??[]})})}));
+}
+it('Charge now authorizes before collection and closes its read context',async()=>{
+ chargeRows();h.collect.mockImplementation(async input=>{expect(h.context).toBe(false);return {outcome:'created',attemptId:'attempt'};});
+ expect((await charge()).status).toBe(200);
+ expect(h.access).toHaveBeenCalled();
+ expect(h.collect).toHaveBeenCalledWith({invoiceId:id,scheduleId:'schedule-1',initiatedBy:'msp_charge_now'});
+});
+it('Charge now requires auth, invoice write, rollout and a UUID',async()=>{
+ expect((await charge({authorization:''})).status).toBe(401);
+ expect((await charge({'x-deny':'1'})).status).toBe(403);
+ expect((await charge({'x-disabled':'1'})).status).toBe(404);
+ expect((await charge({},'bad')).status).toBe(400);
+ expect(h.collect).not.toHaveBeenCalled();
+});
+it('Charge now refuses foreign org/site before revocation or Stripe',async()=>{
+ chargeRows();h.access.mockImplementationOnce(()=>{throw new InvoiceServiceError('Denied',403,'ORG_DENIED');});
+ expect((await charge()).status).toBe(403);expect(h.collect).not.toHaveBeenCalled();
+});
+it.each([null,{id:'schedule',eligible:true,state:'scheduled',noticeSentAt:new Date(),noticeOutboxId:'notice',termsSnapshot:{noticeLeadDays:1}}])('Charge now refuses missing or immature notice without Stripe',async schedule=>{
+ chargeRows(schedule);expect((await charge()).status).toBe(409);expect(h.collect).not.toHaveBeenCalled();
+});
+it('Charge now returns a stale-state service refusal as 409',async()=>{
+ chargeRows();h.collect.mockResolvedValue({outcome:'deferred',reason:'retry_not_due',attemptId:null});
+ const response=await charge();expect(response.status).toBe(409);expect(await response.json()).toEqual({error:'retry_not_due',code:'retry_not_due'});
 });

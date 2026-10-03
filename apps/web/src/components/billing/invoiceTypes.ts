@@ -199,6 +199,7 @@ export interface InvoiceAutopayView {
 }
 
 export interface InvoiceDetail {
+  unappliedCount?: number;
   autopay: InvoiceAutopayView | null;
   invoice: InvoiceSummary;
   lines: InvoiceLine[];

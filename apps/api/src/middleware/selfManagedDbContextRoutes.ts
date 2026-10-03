@@ -28,6 +28,7 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/autopay\/?$/ },

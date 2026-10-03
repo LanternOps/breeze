@@ -172,13 +172,13 @@ describe('autopay mounted in the production Hono application',()=>{
     expect(active).toEqual({orgId:f.org.id,orgName:f.org.name,billingContact:{email:'billing@example.test'},status:'active',
       enrollment:{status:'active',generation:1,effectiveFrom:'2026-01-01T00:00:00.000Z',needsAttentionReason:null},
       method:{type:'card',cardBrand:'visa',cardFunding:null,cardLast4:'4242',cardExpMonth:null,cardExpYear:null,
-        bankName:null,bankLast4:null,status:'active'},stripeReadiness:{ready:true,missing:[]},lastChargeResult:null,requestNoticeStatus:'pending'});
+        bankName:null,bankLast4:null,status:'active'},stripeReadiness:{ready:true,missing:[]},lastCharge:null,awaitingNotice:null,requestNoticeStatus:'pending'});
     const detail=await app.request(`/api/v1/orgs/${f.org.id}/autopay`,{headers:f.headers});
     expect(detail.status).toBe(200);
     expect(await detail.json()).toEqual(active);
     if(access==='all'){
       expect(body.data.find((row:{orgId:string})=>row.orgId===sibling.id)).toEqual({orgId:sibling.id,orgName:sibling.name,
-        billingContact:null,status:'not_requested',enrollment:null,method:null,stripeReadiness:{ready:true,missing:[]},lastChargeResult:null,requestNoticeStatus:null});
+        billingContact:null,status:'not_requested',enrollment:null,method:null,stripeReadiness:{ready:true,missing:[]},lastCharge:null,awaitingNotice:null,requestNoticeStatus:null});
     }else{
       expect((await app.request(`/api/v1/orgs/${sibling.id}/autopay`,{headers:f.headers})).status).toBe(404);
     }

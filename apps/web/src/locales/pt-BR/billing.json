@@ -2531,9 +2531,30 @@
       "skip": "Ignorado pelo cliente",
       "exclude": "Excluído pelo prestador",
       "stop": "Pagamentos automáticos interrompidos",
-      "client_request": "Solicitado pelo cliente"
+      "client_request": "Solicitado pelo cliente",
+      "no_billing_contact": "Nenhum contato de faturamento",
+      "delivery_failed": "Falha na entrega do aviso"
     },
-    "noticeTemplate": "Fatura com aviso de pagamento automático"
+    "noticeTemplate": "Fatura com aviso de pagamento automático",
+    "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
+    "chargeStarted": "Tentativa de pagamento iniciada",
+    "chargeNow": "Cobrar agora",
+    "noCharge": "Nenhuma cobrança",
+    "noticeStuck": "O aviso de pagamento requer atenção",
+    "unapplied": "{{count}} pagamento(s) precisam de conciliação. Revise os valores pendentes antes de cobrar novamente.",
+    "lastCharge": "Última cobrança",
+    "attention": "Atenção",
+    "attemptStates": {
+      "reserved": "Pagamento reservado",
+      "created": "Pagamento criado",
+      "confirming": "Confirmando pagamento",
+      "processing": "Pagamento em processamento",
+      "succeeded": "Pagamento recebido",
+      "failed": "Falha no pagamento",
+      "requires_action": "Confirmação necessária",
+      "canceled": "Cancelado",
+      "unapplied": "O pagamento precisa de conciliação"
+    }
   },
   "reminders": {
     "title": "Lembretes de pagamento",

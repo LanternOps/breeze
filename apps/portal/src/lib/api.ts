@@ -521,7 +521,18 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
     : { saveForAutopay: false };
 }
 
+export interface BankAutopayOffer {
+  available: boolean; principal: string; fee: string; currency: string; consentText: string; disclosureHash: string;
+  methodStatus: 'active' | 'pending_verification' | null;
+}
+export type BankPayInput = {
+  methodType: 'us_bank_account'; phase: 'setup' | 'collect'; consentAccepted: true; disclosureHash: string;
+  principal: string; fee: string; currency: string; setupSessionId?: string;
+};
+export type InvoicePayResult = { url?: string; attemptId?: string | null; outcome?: string; reason?: string };
+
 export interface InvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
@@ -725,6 +736,7 @@ export interface PublicQuoteDetail {
  *  invoice deliberately carries only identity fields (no amounts), so most
  *  money fields are optional here. */
 export interface PublicInvoiceDetail {
+  bankAutopay?: BankAutopayOffer | null;
   autopay?: InvoiceAutopayDisclosure | null;
   invoice: {
     id: string;
@@ -986,7 +998,7 @@ export const portalApi = {
     return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
   },
 
-  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ url: string }>> =>
+  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<InvoicePayResult>> =>
     apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, autopay, config),
 
   // Verify-on-return: settle the Checkout session server-side after the customer
@@ -1193,7 +1205,7 @@ export const portalApi = {
     );
   },
 
-  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ data: { url: string } }>> =>
+  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
     apiPost<{ data: { url: string } }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe

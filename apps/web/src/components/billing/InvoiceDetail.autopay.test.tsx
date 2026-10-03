@@ -18,3 +18,20 @@ it('translates pending controls without treating their colon as an i18n namespac
  render(<InvoiceDetail detail={{...detail,autopay:{...autopay,reason:'control_pending:skip',canExclude:false}}} onChanged={()=>{}}/>);
  expect(screen.getByTestId('autopay-invoice-panel')).toHaveTextContent('Skip requested; stopping the pending payment');
 });
+
+it('Charge now reports a conflict without refreshing or claiming payment',async()=>{
+ h.fetch.mockImplementation(async (_url:string,opts?:RequestInit)=>({ok:opts?.method!=='POST',status:opts?.method==='POST'?409:200,json:async()=>opts?.method==='POST'?{error:'notice_lead'}:{data:[]}}));
+ const changed=vi.fn();render(<InvoiceDetail detail={{...detail,autopay:{...autopay,canChargeNow:true}}} onChanged={changed}/>);
+ fireEvent.click(screen.getByTestId('autopay-charge-now'));
+ await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'error'})));
+ expect(h.fetch).toHaveBeenCalledWith('/invoices/inv/autopay/charge-now',{method:'POST'});expect(changed).not.toHaveBeenCalled();
+});
+it('Charge now disables duplicate clicks until the request finishes',async()=>{
+ let finish!: (value:any)=>void;
+ h.fetch.mockImplementation(async (_url:string,opts?:RequestInit)=>opts?.method==='POST'?new Promise(resolve=>{finish=resolve;}):{ok:true,json:async()=>({data:[]})});
+ const changed=vi.fn();render(<InvoiceDetail detail={{...detail,autopay:{...autopay,canChargeNow:true}}} onChanged={changed}/>);
+ fireEvent.click(screen.getByTestId('autopay-charge-now'));expect(screen.getByTestId('autopay-charge-now')).toBeDisabled();
+ finish({ok:true,status:200,json:async()=>({data:{outcome:'created'}})});
+ await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
+ expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'success',message:'Payment attempt started'}));
+});

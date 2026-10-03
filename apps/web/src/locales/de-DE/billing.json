@@ -2531,9 +2531,30 @@
       "skip": "Vom Kunden übersprungen",
       "exclude": "Vom Anbieter ausgeschlossen",
       "stop": "Automatische Zahlungen gestoppt",
-      "client_request": "Vom Kunden angefordert"
+      "client_request": "Vom Kunden angefordert",
+      "no_billing_contact": "Kein Rechnungskontakt",
+      "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen"
     },
-    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung"
+    "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
+    "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",
+    "chargeStarted": "Zahlungsversuch gestartet",
+    "chargeNow": "Jetzt abbuchen",
+    "noCharge": "Noch keine Abbuchungen",
+    "noticeStuck": "Zahlungsankündigung prüfen",
+    "unapplied": "{{count}} Zahlung(en) müssen abgeglichen werden. Prüfen Sie ungeklärte Beträge vor einer weiteren Abbuchung.",
+    "lastCharge": "Letzte Abbuchung",
+    "attention": "Handlungsbedarf",
+    "attemptStates": {
+      "reserved": "Zahlung reserviert",
+      "created": "Zahlung angelegt",
+      "confirming": "Zahlung wird bestätigt",
+      "processing": "Zahlung wird verarbeitet",
+      "succeeded": "Zahlung eingegangen",
+      "failed": "Zahlung fehlgeschlagen",
+      "requires_action": "Bestätigung erforderlich",
+      "canceled": "Abgebrochen",
+      "unapplied": "Zahlung muss zugeordnet werden"
+    }
   },
   "reminders": {
     "title": "Zahlungserinnerungen",

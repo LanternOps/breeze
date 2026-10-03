@@ -1,3 +1,6 @@
+import { getAutopayMethod } from './paymentMethods';
+import { getAutopayStripeReadiness } from './stripeCapabilities';
+import { toMinorUnits } from '../stripeMoney';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
@@ -6,7 +9,7 @@ import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
 import { resolveBillingLinkToken } from './linkTokens';
-import { computeCollectOn } from './scheduler';
+import { computeCollectOn, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { collectionFenced, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
@@ -122,10 +125,30 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
     .where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)).limit(1);
   const pending = pendingInvoiceControl(schedule?.stateReason ?? null)
     ?? (invoice.autopayExcluded && (processing || actionRequired) ? 'exclude' : null);
+  let canChargeNow = false;
+  if (enabled && schedule?.eligible && schedule.enrollmentId && ['scheduled', 'retry_scheduled'].includes(schedule.state)
+    && ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && toMinorUnits(invoice.balance, invoice.currencyCode) > 0
+    && !processing && !actionRequired && !unapplied && !pending && schedule.noticeOutboxId && schedule.noticeSentAt
+    && !(schedule.state === 'retry_scheduled' && schedule.nextAttemptAt && schedule.nextAttemptAt > new Date())) {
+    const [enrollment] = await tx.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
+    if (enrollment && enrollment.orgId === invoice.orgId && enrollment.generation === schedule.enrollmentGeneration
+      && !collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: enrollment.status })) {
+      const method = await getAutopayMethod(tx, invoice.orgId);
+      const ready = await getAutopayStripeReadiness(tx, invoice.partnerId);
+      const terms = schedule.termsSnapshot as unknown as AutopayTerms;
+      canChargeNow = !!method && method.status === 'active' && method.isAutopayMethod
+        && method.orgId === invoice.orgId && method.enrollmentId === enrollment.id
+        && ready.ready && ready.stripeAccountId === enrollment.stripeAccountId
+        && (method.type !== 'us_bank_account' || (invoice.currencyCode === 'USD' && !!method.accountHolderType))
+        && terms?.methodId === method.id && terms.methodType === method.type
+        && terms.accountHolderType === method.accountHolderType && terms.noticeLeadDays === noticeLeadDays(method)
+        && Date.now() >= schedule.noticeSentAt.getTime() + terms.noticeLeadDays * 86_400_000;
+    }
+  }
   return { state: unapplied ? 'unapplied' : processing ? 'processing' : actionRequired ? 'action_required' : schedule?.state ?? 'not_needed',
     reason: pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
     noticeSentAt: schedule?.noticeSentAt?.toISOString() ?? null, excluded: invoice.autopayExcluded,
     canExclude: enabled && ['draft', 'sent', 'partially_paid', 'overdue'].includes(invoice.status)
       && !processing && !actionRequired && !unapplied && !pending,
-    canChargeNow: false, processing, unapplied };
+    canChargeNow, processing, unapplied };
 }

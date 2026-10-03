@@ -6,7 +6,7 @@ import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } f
 import { assertInTransaction, db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
-  invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
+  invoiceCollectionAttempts, invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections, portalBranding, aiUsageCharges
 } from '../db/schema';
@@ -860,7 +860,12 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   // Multi-currency (#3777, spec §10): surface the CACHED account currency and a
   // warn-don't-block mismatch so the detail page can flag the FX spread before
   // the partner sends a pay link. Cached columns only — no Stripe call here.
+  const [attention] = await db.select({count:sql<number>`count(*)::int`}).from(invoiceCollectionAttempts).where(and(
+    eq(invoiceCollectionAttempts.invoiceId,inv.id),eq(invoiceCollectionAttempts.orgId,inv.orgId),
+    eq(invoiceCollectionAttempts.state,'unapplied'),
+  ));
   return {
+    unappliedCount: attention?.count ?? 0,
     autopay: await getInvoiceAutopayView(db, inv),
     invoice: displayInvoice, lines: linesWithDeviceCount, stripeConnected: connected, // accounting view (all lines)
     effectiveTaxRate,

@@ -44,7 +44,8 @@ export const invoicePaySchema=z.preprocess(value=>{
 export async function getBankAutopayOffer(invoiceId:string,orgId:string){
   return withSystemDbAccessContext(async()=>{
     const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,invoiceId),eq(invoices.orgId,orgId))).limit(1);
-    if(!invoice||invoice.currencyCode!=='USD'||toMinorUnits(invoice.balance,invoice.currencyCode)<=0||!['sent','partially_paid','overdue'].includes(invoice.status))return null;
+    if(!invoice||invoice.currencyCode!=='USD'||!['sent','partially_paid','overdue','paid'].includes(invoice.status))return null;
+    const available=toMinorUnits(invoice.balance,invoice.currencyCode)>0&&['sent','partially_paid','overdue'].includes(invoice.status);
     if(!await isAutopayEnabledForPartner(db,invoice.partnerId))return null;
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,orgId)).limit(1);
     const [org]=await db.select().from(organizations).where(eq(organizations.id,orgId)).limit(1);
@@ -61,7 +62,8 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string){
       stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
       cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
     const method=await getAutopayMethod(db,orgId);
-    return {available:true,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
+    if(!available&&method?.status!=='pending_verification')return null;
+    return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
       consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
       methodStatus:method?.type==='us_bank_account'&&['active','pending_verification'].includes(method.status)?method.status:null};
   });
@@ -70,7 +72,7 @@ export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string
   returnTo:'public'|'portal';ip:string|null;userAgent:string|null}){
   assertNoHeldDbContextForStripe('startInvoiceBankSetup');
   const offer=await getBankAutopayOffer(input.invoiceId,input.orgId);
-  if(!offer||offer.principal!==input.terms.principal||offer.fee!==input.terms.fee
+  if(!offer?.available||offer.principal!==input.terms.principal||offer.fee!==input.terms.fee
     ||offer.currency!==input.terms.currency||offer.disclosureHash!==input.terms.disclosureHash){
     throw new InvoiceServiceError('The terms changed. Review them and try again.',409,'INVALID_STATE');
   }
