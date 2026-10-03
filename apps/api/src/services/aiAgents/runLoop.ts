@@ -1994,11 +1994,12 @@ async function driveSdkLoop(
   });
 
   // #5205 W06, spec §6.2: "Record the prompt template version and the resolved
-  // model on every task-linked run." Admission stamped the CONFIGURED model
-  // (`policySnapshot.effective.model`), which is null whenever the agent
-  // follows the `ai_agents` assignment default resolved above. This is
-  // the first and only moment the value actually used is known, so it is
-  // stamped here rather than guessed at admission.
+  // model on every task-linked run." Admission snapshots no model string (the
+  // agent policy model string was retired in W08 #7606): at most the bound
+  // offering id, and nothing when the agent follows the `ai_agents`
+  // assignment default resolved above. This is the first and only moment the
+  // model actually used is known, so it is stamped here rather than guessed
+  // at admission.
   //
   // Best-effort and non-fatal: a failed metadata write must never turn a
   // healthy run into a failed one. `resolved_model` is not in

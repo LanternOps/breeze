@@ -27,8 +27,8 @@ import {
   connectAnthropicConnection,
   disconnectAnthropicConnection,
   lockAnthropicConnection,
+  connectionPrimaryModelId,
   lockAnthropicConnectionIds,
-  partnerChatDefaultModelId,
   RegistryNotCutOverError,
   rotateAnthropicConnectionKey,
   setAnthropicConnectionCatalogEntry,
@@ -40,6 +40,7 @@ import { ensurePartnerCutover } from './registryCutover';
 import { RegistryWriteError, toRegistryWriteError } from './registryWriteErrors';
 import { lockPartnerRegistry } from './registryWriteLock';
 import { safeErrorMessage } from './safeDbError';
+import { captureException } from '../sentry';
 
 /** R1 cap: one Anthropic API connection per partner while partner_ai_connections_compat_uq exists. W08b Task 14 removes it with the index. */
 export const MAX_ANTHROPIC_API_CONNECTIONS_PER_PARTNER = 1;
@@ -103,6 +104,7 @@ function scheduleConnectionDiscovery(connectionId: string): void {
     await enqueueConnectionSync(connectionId);
   }).catch((error: unknown) => {
     console.error(`[aiModels] model discovery enqueue failed for connection ${connectionId} (non-fatal): ${safeErrorMessage(error)}`);
+    captureException(error, undefined, { service: 'aiModels', stage: 'enqueue' });
   });
 }
 
@@ -125,8 +127,9 @@ async function readConnectionKey(connectionId: string): Promise<string> {
   return decryptConnectionKey(material);
 }
 
-const chatDefaultModel = (partnerId: string) =>
-  systemRead(() => partnerChatDefaultModelId(partnerId), 'aiModels.chatDefaultModel');
+/** The model this connection's endpoint is validated and probed against (connectionRemap.connectionPrimaryModelId). */
+const connectionModel = (partnerId: string, connectionId: string) =>
+  systemRead(() => connectionPrimaryModelId(partnerId, connectionId), 'aiModels.connectionPrimaryModel');
 
 /**
  * Gate first: a partner without its registry rows is bootstrapped
@@ -185,7 +188,7 @@ export async function rotateAnthropicKey(input: {
   const conn = await readAnthropicConnection(input.partnerId, input.connectionId);
   // Probe against the endpoint the key will be used with.
   const endpoint: ResolvedLlmEndpoint = conn.kind === 'catalog' && conn.catalogEntryId
-    ? await resolveCatalogEndpointForSelection(conn.catalogEntryId, await chatDefaultModel(input.partnerId))
+    ? await resolveCatalogEndpointForSelection(conn.catalogEntryId, await connectionModel(input.partnerId, conn.id))
     : { kind: 'anthropic' };
   await probeAnthropicKey(apiKey, endpoint);
   const verifiedAt = new Date();
@@ -204,8 +207,8 @@ export async function rotateAnthropicKey(input: {
  * (#3922 W3). Clearing reverts to direct Anthropic without a probe — the key
  * was verified against Anthropic when connected. A selection is verified end
  * to end before anything is written: listed with an active revision, the data
- * note acknowledged, the partner's chat default model mapped AND verified on
- * the entry, then a live probe with the stored key. Any failure persists
+ * note acknowledged, the connection's primary model (connectionPrimaryModelId)
+ * mapped AND verified on the entry, then a live probe with the stored key. Any failure persists
  * nothing. A same-kind change edits the connection in place; a kind switch
  * converts it in place too (same id, key and references).
  */
@@ -247,7 +250,7 @@ export async function changeAnthropicEndpoint(input: {
   if (provider.dataNote && !input.acknowledgeDataNote) {
     throw new ConnectionCheckError('You must acknowledge the data-handling note for this endpoint before selecting it.', 400);
   }
-  const model = await chatDefaultModel(input.partnerId);
+  const model = await connectionModel(input.partnerId, existing.id);
   const endpoint = buildCatalogEndpointSnapshot(provider, model);
   if (!endpoint) {
     throw new ConnectionCheckError(

@@ -35,6 +35,7 @@ import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth
 import { getEffectiveAiBudget } from '../effectiveSettings';
 import { chatReadinessInSystemContext } from '../aiModels/readiness';
 import { getUserPermissions } from '../permissions';
+import { captureException } from '../sentry';
 import { requireTopologySiteAccess, TopologyError, type TopologyRequestContext } from './access';
 import { loadTopologyFlags, resolveTopologyFlags, withResolvedTopologyFlags, type TopologyFlags } from './flags';
 
@@ -123,7 +124,11 @@ const carriedReadiness = new AsyncLocalStorage<{ orgId: string; readiness: Topol
 /** Readiness reads on the caller's held SYSTEM connection; each half fails closed. */
 async function readReadinessInSystemContext(orgId: string): Promise<TopologyAiReadiness> {
   // Sequential on purpose: one transaction, one connection.
-  const unusable = await chatReadinessInSystemContext(orgId).catch(() => 'ai_unavailable' as const);
+  const unusable = await chatReadinessInSystemContext(orgId).catch((error: unknown) => {
+    // Fail closed, but never silently: a throwing readiness read is a bug, not "AI is off".
+    captureException(error, undefined, { service: 'topology', stage: 'ai_readiness' });
+    return 'ai_unavailable' as const;
+  });
   const orgPolicy = await getEffectiveAiBudget(orgId).then((budget) => budget.enabled === true, () => false);
   return { provider: unusable === null, ...(unusable === 'ai_not_configured' ? { providerNotConfigured: true as const } : {}), orgPolicy };
 }

@@ -10,7 +10,7 @@ const remap = vi.hoisted(() => ({
   setAnthropicConnectionCatalogEntry: vi.fn(),
   bumpConnectionConfigVersion: vi.fn(),
   switchAnthropicConnectionKind: vi.fn(),
-  partnerChatDefaultModelId: vi.fn(),
+  connectionPrimaryModelId: vi.fn(),
 }));
 const order = vi.hoisted(() => [] as string[]);
 const gateState = vi.hoisted(() => ({ cutOver: true, catalogEnabled: true }));
@@ -43,8 +43,10 @@ vi.mock('../llm/llmConfigResolver', () => ({
 }));
 vi.mock('../llmProviderCatalog', () => ({ getListedProviderByEntryId: vi.fn(async () => ({ entryId: 'e1', slug: 'gw', revision: 3, dataNote: null })) }));
 vi.mock('../../jobs/aiModelDiscoveryWorker', () => ({ enqueueConnectionSync: vi.fn(async () => undefined) }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import { enqueueConnectionSync } from '../../jobs/aiModelDiscoveryWorker';
+import { captureException } from '../sentry';
 import { buildCatalogEndpointSnapshot } from '../llm/llmConfigResolver';
 import { getListedProviderByEntryId } from '../llmProviderCatalog';
 import { ConnectionKeyError, getConnection } from './connections';
@@ -71,7 +73,7 @@ beforeEach(() => {
   remap.lockAnthropicConnectionIds.mockResolvedValue([]);
   remap.connectAnthropicConnection.mockResolvedValue('c-new');
   remap.rotateAnthropicConnectionKey.mockResolvedValue({ configVersion: 5 });
-  remap.partnerChatDefaultModelId.mockResolvedValue('model-chat');
+  remap.connectionPrimaryModelId.mockResolvedValue('model-conn');
 });
 
 describe('createAnthropicKeyConnection', () => {
@@ -140,12 +142,13 @@ describe('rotateAnthropicKey', () => {
       .rejects.toMatchObject({ status: 409, message: expect.stringContaining('configuration changed') });
   });
 
-  it('a catalog connection probes its endpoint for the partner chat default model', async () => {
+  it('a catalog connection probes its endpoint for the CONNECTION\'s primary model (never a chat default elsewhere)', async () => {
     const { resolveCatalogEndpointForSelection } = await import('./connectionProbe');
     vi.mocked(getConnection).mockResolvedValue({ ...byok, kind: 'catalog', catalogEntryId: 'e1' } as never);
     remap.lockAnthropicConnection.mockResolvedValue({ ...byok, kind: 'catalog', catalogEntryId: 'e1' });
     await rotateAnthropicKey({ partnerId: 'p1', connectionId: 'c1', apiKey: 'sk-ant-9999', userId: 'u1' });
-    expect(resolveCatalogEndpointForSelection).toHaveBeenCalledWith('e1', 'model-chat');
+    expect(remap.connectionPrimaryModelId).toHaveBeenCalledWith('p1', 'c1');
+    expect(resolveCatalogEndpointForSelection).toHaveBeenCalledWith('e1', 'model-conn');
     expect(probeAnthropicKey).toHaveBeenCalledWith('sk-ant-9999', { kind: 'catalog' });
   });
 });
@@ -154,10 +157,11 @@ describe('changeAnthropicEndpoint', () => {
   const select = (catalogEntryId: string | null, acknowledgeDataNote = true) =>
     changeAnthropicEndpoint({ partnerId: 'p1', connectionId: 'c1', catalogEntryId, acknowledgeDataNote, userId: 'u1' });
 
-  it('validates the endpoint against the partner chat default model, probes the stored key, switches in place', async () => {
+  it('validates the endpoint against the connection\'s primary model, probes the stored key, switches in place', async () => {
     remap.switchAnthropicConnectionKind.mockResolvedValue({ connectionId: 'c1', configVersion: 5 });
     const out = await select('e1', false);
-    expect(buildCatalogEndpointSnapshot).toHaveBeenCalledWith(expect.anything(), 'model-chat');
+    expect(remap.connectionPrimaryModelId).toHaveBeenCalledWith('p1', 'c1');
+    expect(buildCatalogEndpointSnapshot).toHaveBeenCalledWith(expect.anything(), 'model-conn');
     expect(probeAnthropicKey).toHaveBeenCalledWith('sk-ant-stored', expect.objectContaining({ kind: 'catalog' }));
     expect(remap.switchAnthropicConnectionKind).toHaveBeenCalledWith('p1', 'c1', { kind: 'catalog', catalogEntryId: 'e1' });
     expect(out).toEqual({ connectionId: 'c1', catalogEntryId: 'e1', configVersion: 5, slug: 'gw', revision: 3 });
@@ -192,7 +196,7 @@ describe('changeAnthropicEndpoint', () => {
   it.each([
     ['a delisted entry', () => vi.mocked(getListedProviderByEntryId).mockResolvedValueOnce(null), true, 409],
     ['a missing data-note consent', () => vi.mocked(getListedProviderByEntryId).mockResolvedValueOnce({ entryId: 'e1', slug: 'gw', revision: 3, dataNote: 'Prompts transit gw.' } as never), false, 400],
-    ['a chat default model the revision does not serve', () => vi.mocked(buildCatalogEndpointSnapshot).mockReturnValueOnce(null), true, 409],
+    ['a connection model the revision does not serve', () => vi.mocked(buildCatalogEndpointSnapshot).mockReturnValueOnce(null), true, 409],
     ['catalog selection disabled', () => { gateState.catalogEnabled = false; }, true, 409],
   ] as const)('rejects %s without probing or writing', async (_why, arrange, ack, status) => {
     arrange();
@@ -309,6 +313,10 @@ describe('connection discovery (spec §6: after commit, on connect and on key/en
       .resolves.toMatchObject({ configVersion: 1 });
     await vi.waitFor(() => expect(errors).toHaveBeenCalled());
     expect(inspect(errors.mock.calls)).not.toContain('secret-1234');
+    // Not silent: the failure reaches Sentry, tagged, still non-fatal.
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'redis down' }), undefined, { service: 'aiModels', stage: 'enqueue' },
+    ));
     errors.mockRestore();
   });
 });

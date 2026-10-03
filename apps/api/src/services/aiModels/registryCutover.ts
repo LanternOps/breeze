@@ -60,8 +60,16 @@ export async function cutoverPartner(
     outcome.report = await (deps.bootstrapInTx ?? bootstrapPartnerRegistryInTx)(partnerId);
     outcome.result = 'done';
   });
-  // Reported after commit, so a rolled-back bootstrap never reports.
-  if (outcome.report) noteBootstrap(partnerId, outcome.report);
+  // Reported after commit, so a rolled-back bootstrap never reports. The
+  // bootstrap is committed by now: a failing report must not turn it into
+  // ensurePartnerCutover() === false.
+  if (outcome.report) {
+    try {
+      noteBootstrap(partnerId, outcome.report);
+    } catch (error) {
+      console.warn(`[aiModels] partner ${partnerId} bootstrap report failed (non-fatal): ${safeErrorMessage(error)}`);
+    }
+  }
   return outcome.result;
 }
 

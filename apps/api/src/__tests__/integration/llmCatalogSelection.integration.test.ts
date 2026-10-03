@@ -16,7 +16,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { llmProviderCatalog, partnerAiConnections } from '../../db/schema';
-import { changeAnthropicEndpoint } from '../../services/aiModels/anthropicConnectionWrites';
+import { changeAnthropicEndpoint, rotateAnthropicKey } from '../../services/aiModels/anthropicConnectionWrites';
 import { probeAnthropicKey } from '../../services/aiModels/connectionProbe';
 import {
   createCatalogEntry,
@@ -155,8 +155,9 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
   });
 
   // =========================================================================
-  // W08 (#7606): endpoint selection is id-keyed and validates the partner's
-  // chat default model (the per-connection pinned model is gone); a BYOK <->
+  // W08 (#7606): endpoint selection is id-keyed and validates the
+  // connection's primary model (connectionPrimaryModelId: the chat default
+  // when it is on this connection, else this connection's own); a BYOK <->
   // catalog switch converts the connection IN PLACE.
   // =========================================================================
   const connectionState = async (id: string) => (await fixtureSql`
@@ -169,7 +170,7 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
   const assignmentDefaults = (partnerId: string) => fixtureSql`
     SELECT id, default_offering_id, fallback_offering_ids FROM ai_model_assignments WHERE offering_partner_id = ${partnerId} ORDER BY id`;
 
-  runDb('a catalog switch validates the partner chat default model: unmapped on the revision → 409, nothing written or probed', async () => {
+  runDb('a catalog switch validates the chat default model on this connection: unmapped on the revision → 409, nothing written or probed', async () => {
     const s = await seedRegistryPartner('byok');
     // The revision maps (and verifies) a different platform model only.
     const otherModel = `not-the-chat-model-${randomUUID()}`;
@@ -213,6 +214,45 @@ describe('LLM catalog selection (#3922 W3, Task 3.4)', () => {
     expect(await resolveModel({ partnerId: s.partnerId, orgId: s.orgId, surface: 'chat' })).toMatchObject({
       ok: true, funding: 'partner_key', logicalModel: s.modelId,
     });
+  });
+
+  /** Chat defaults to a platform model the catalog entry does NOT map; every other surface stays on the connection. */
+  const moveChatToUnmappedPlatformModel = async (partnerId: string) => {
+    const unmapped = `w08a-unmapped-${randomUUID()}`;
+    const platformModelId = await seedW03PlatformModel(unmapped);
+    const [row] = await fixtureSql`
+      INSERT INTO partner_ai_models (partner_id, platform_model_id, source, enabled)
+      VALUES (${partnerId}, ${platformModelId}, 'platform', true) RETURNING id`;
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${row!.id}
+      WHERE partner_id = ${partnerId} AND org_id IS NULL AND surface = 'chat'`;
+    return unmapped;
+  };
+
+  runDb('rotating a catalog connection\'s key probes with the CONNECTION\'s model, not a chat default that lives elsewhere', async () => {
+    const s = await seedRegistryPartner('catalog');
+    await moveChatToUnmappedPlatformModel(s.partnerId);
+    vi.mocked(probeAnthropicKey).mockClear();
+
+    await expect(rotateAnthropicKey({
+      partnerId: s.partnerId, connectionId: s.connectionId!, apiKey: 'sk-ant-api03-w08a-rotate-0001', userId: s.userId,
+    })).resolves.toMatchObject({ last4: '0001' });
+
+    expect(probeAnthropicKey).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(probeAnthropicKey).mock.calls[0]![1]).toMatchObject({
+      kind: 'catalog', catalogEntryId: s.catalogEntryId, providerModel: `gw/${s.modelId}`,
+    });
+  });
+
+  runDb('a BYOK → catalog switch validates the connection\'s own model, not a chat default on another connection', async () => {
+    const s = await seedRegistryPartner('byok');
+    await moveChatToUnmappedPlatformModel(s.partnerId);
+    const entryId = await seedListedCatalogEntry([s.modelId], s.userId);
+    vi.mocked(probeAnthropicKey).mockClear();
+
+    await expect(changeAnthropicEndpoint({
+      partnerId: s.partnerId, connectionId: s.connectionId!, catalogEntryId: entryId, acknowledgeDataNote: true, userId: s.userId,
+    })).resolves.toMatchObject({ connectionId: s.connectionId, catalogEntryId: entryId });
+    expect(vi.mocked(probeAnthropicKey).mock.calls[0]![1]).toMatchObject({ kind: 'catalog', providerModel: `gw/${s.modelId}` });
   });
 
   runDb('catalog → direct relinks each offering to its platform row (discovered) and disables one whose model has no platform row', async () => {

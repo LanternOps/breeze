@@ -45,8 +45,10 @@ vi.mock('./access', async (original) => ({ ...await original<object>(), requireT
 vi.mock('./flags', async (original) => ({ ...await original<object>(), loadTopologyFlags: mocks.flags }));
 vi.mock('../aiModels/readiness', () => ({ chatReadinessInSystemContext: mocks.providerUsable }));
 vi.mock('../effectiveSettings', () => ({ getEffectiveAiBudget: mocks.budget }));
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 import * as dbModule from '../../db';
+import { captureException } from '../sentry';
 import { TopologyError } from './access';
 import {
   authorizeTopologyAiToolCall, authorizeTopologySessionSite, isTopologyAiToolName, loadTopologyAiPreconditions, TOPOLOGY_AI_TOOL_NAMES, withTopologyAiPreconditions, withTopologyReleasePreconditions,
@@ -146,6 +148,15 @@ describe('topology AI tool gate (M4-D1)', () => {
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
     mocks.budget.mockRejectedValueOnce(new Error('db down'));
     expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+  });
+
+  it('a readiness read that THROWS still fails closed (ai_unavailable) and is reported, not swallowed', async () => {
+    const bound = { kind: 'ai_session', sessionId: SESSION } as const;
+    mocks.providerUsable.mockRejectedValueOnce(new Error('registry read failed'));
+    expect(await authorizeTopologyAiToolCall({ site_id: SITE_A }, auth(), bound)).toMatchObject({ ok: false, code: 'topology_ai_disabled' });
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'registry read failed' }), undefined, { service: 'topology', stage: 'ai_readiness' },
+    );
   });
 
   it('an MCP site key still reads topology on a server with no model key (the MCP client brings its own model)', async () => {

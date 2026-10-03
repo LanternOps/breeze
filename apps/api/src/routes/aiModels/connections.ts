@@ -30,6 +30,7 @@ import {
 } from '../../services/aiModels/gatewayConnections';
 import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors';
 import { isLlmProviderCatalogEnabled } from '../../services/llm/llmConfigResolver';
+import { captureException } from '../../services/sentry';
 import {
   auditHost,
   idParamSchema,
@@ -51,6 +52,20 @@ async function ownGatewayConnection(partnerId: string, id: string): Promise<Owne
   const conn = await ownConnection(partnerId, id);
   if (!isGatewayConnectionKind(conn.kind)) throw new RegistryWriteError(NOT_FOUND, 'not_found', 404);
   return conn;
+}
+
+/**
+ * W09 (#7607): a key or endpoint change may fix auth_failed / quota_exhausted
+ * at once, so forget this connection's failover cooldowns — after the write.
+ * Cooldowns fail open: a failed clear only means the old cooldown runs out
+ * (15 min) on its own, so it never fails the request; it is reported, not swallowed.
+ */
+async function clearCooldownsFailOpen(partnerId: string, connectionId: string): Promise<void> {
+  try {
+    await clearConnectionCooldowns(partnerId, connectionId);
+  } catch (error) {
+    captureException(error, undefined, { service: 'aiModels', stage: 'cooldown_clear' });
+  }
 }
 
 function audit(c: Context, partnerId: string, action: string, details: Record<string, unknown> = {}) {
@@ -126,11 +141,7 @@ aiModelConnectionRoutes.patch('/:id/gateway', ...partnerWrite, zValidator('param
     // W09 (#7607): every successful PATCH changes the key or the URL, either of
     // which may fix auth_failed / quota_exhausted at once — forget this
     // connection's failover cooldowns, as POST /:id/key does. Fails open.
-    try {
-      await clearConnectionCooldowns(partnerId, conn.id);
-    } catch (error) {
-      console.warn('[aiModels] cooldown clear after gateway update failed', { connectionId: conn.id, error: error instanceof Error ? error.message : String(error) });
-    }
+    await clearCooldownsFailOpen(partnerId, conn.id);
     // Spec §6: discovery runs on create AND on every endpoint/key change (a new
     // key can see different models). Best-effort, as on create.
     await queueConnectionSync(c, conn.id);
@@ -166,14 +177,8 @@ aiModelConnectionRoutes.post('/:id/key', ...partnerWrite, zValidator('param', id
     if (!isAnthropicApiConnectionKind(conn.kind)) throw new HTTPException(404, { message: NOT_FOUND });
     const id = conn.id;
     const result = await rotateAnthropicKey({ partnerId, connectionId: id, apiKey: c.req.valid('json').apiKey, userId });
-    // W09 (#7607): a new key may fix auth_failed / quota_exhausted at once, so
-    // forget this connection's failover cooldowns. Cooldowns fail open: a
-    // failed clear only means the old cooldown runs out (15 min) on its own.
-    try {
-      await clearConnectionCooldowns(partnerId, id);
-    } catch (error) {
-      console.warn('[aiModels] cooldown clear after key rotation failed', { connectionId: id, error: error instanceof Error ? error.message : String(error) });
-    }
+    // W09 (#7607): a new key may fix auth_failed / quota_exhausted at once.
+    await clearCooldownsFailOpen(partnerId, id);
     audit(c, partnerId, 'key_rotated', { connectionId: id, last4: result.last4, configVersion: result.configVersion });
     return c.json({ id, keyLast4: result.last4, configVersion: result.configVersion });
   });
@@ -191,6 +196,9 @@ aiModelConnectionRoutes.post('/:id/endpoint', ...partnerWrite, zValidator('param
     if (!isAnthropicApiConnectionKind(conn.kind)) throw new HTTPException(404, { message: NOT_FOUND });
     // A BYOK <-> catalog switch is in place (W08): the connection keeps its id.
     const result = await changeAnthropicEndpoint({ partnerId, connectionId: conn.id, catalogEntryId, acknowledgeDataNote, userId });
+    // W08a: the switch is in place now (same id), so the failover cooldowns keyed
+    // by this connection would otherwise outlive the endpoint they were earned on.
+    await clearCooldownsFailOpen(partnerId, result.connectionId);
     audit(c, partnerId, 'endpoint_changed', {
       connectionId: conn.id,
       newConnectionId: result.connectionId,

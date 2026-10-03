@@ -102,6 +102,17 @@ function refsCte(partnerId: string, skipSurfaces: readonly string[] = []): SQL {
     ) `;
 }
 
+/**
+ * `array_replace(column, from, to)` with any duplicate it creates collapsed,
+ * first occurrence kept (W08a review): a list already holding `to` next to
+ * `from` would otherwise trip ai_model_assignments_offering_ownership_guard's
+ * "contains a duplicate" (23514). A NULL list stays NULL; nothing else in the
+ * list moves.
+ */
+const replaceDedup = (column: SQL, from: string, to: string) => sql`CASE WHEN ${column} IS NULL THEN NULL ELSE ARRAY(
+    SELECT x FROM unnest(array_replace(${column}, ${from}::uuid, ${to}::uuid)) WITH ORDINALITY AS t(x, n)
+     GROUP BY x ORDER BY min(n)) END`;
+
 export async function remapPartnerOfferings(
   partnerId: string,
   mapping: ReadonlyMap<string, string>,
@@ -114,11 +125,12 @@ export async function remapPartnerOfferings(
     // W09 (#7607): the fallback list is preserved verbatim (the W03 authority
     // contract), even when the remap lands the default on an offering already
     // in it: ai_model_assignments_fallback_shape_chk caps the list but allows
-    // that inert self-entry (the resolver's walk skips the primary).
+    // that inert self-entry (the resolver's walk skips the primary). Only an
+    // exact duplicate id WITHIN one list collapses (replaceDedup).
     assignments += (await rows(sql`UPDATE ai_model_assignments SET
         default_offering_id = CASE WHEN default_offering_id = ${from}::uuid THEN ${to}::uuid ELSE default_offering_id END,
-        permitted_offering_ids = array_replace(permitted_offering_ids, ${from}::uuid, ${to}::uuid),
-        fallback_offering_ids = array_replace(fallback_offering_ids, ${from}::uuid, ${to}::uuid),
+        permitted_offering_ids = ${replaceDedup(sql`permitted_offering_ids`, from, to)},
+        fallback_offering_ids = ${replaceDedup(sql`fallback_offering_ids`, from, to)},
         updated_at = now()
       WHERE offering_partner_id = ${partnerId}::uuid${skip}
         AND (default_offering_id = ${from}::uuid OR ${from}::uuid = ANY(permitted_offering_ids) OR ${from}::uuid = ANY(fallback_offering_ids))
@@ -127,8 +139,15 @@ export async function remapPartnerOfferings(
       WHERE offering_partner_id = ${partnerId}::uuid AND offering_id = ${from}::uuid RETURNING id`)).length;
     sessions += (await rows(sql`UPDATE ai_sessions SET offering_id = ${to}::uuid
       WHERE offering_partner_id = ${partnerId}::uuid AND offering_id = ${from}::uuid AND status = 'active' RETURNING id`)).length;
+    // A refusal fallback must sit on its offering's connection
+    // (partner_ai_models_integrity_guard, 23514). Only rows on the TARGET's
+    // connection move; a row left on the other connection keeps its
+    // same-connection fallback, which stays valid (W08a review).
     offerings += (await rows(sql`UPDATE partner_ai_models SET refusal_fallback_offering_id = ${to}::uuid, updated_at = now()
-      WHERE partner_id = ${partnerId}::uuid AND refusal_fallback_offering_id = ${from}::uuid RETURNING id`)).length;
+      WHERE partner_id = ${partnerId}::uuid AND refusal_fallback_offering_id = ${from}::uuid
+        AND connection_id IS NOT DISTINCT FROM (SELECT t.connection_id FROM partner_ai_models t
+                                                 WHERE t.id = ${to}::uuid AND t.partner_id = ${partnerId}::uuid)
+      RETURNING id`)).length;
   }
   return { assignments, agents, sessions, offerings };
 }
@@ -445,7 +464,39 @@ export async function switchAnthropicConnectionKind(
   return { connectionId: previous.id, configVersion: Number(updated!.config_version) };
 }
 
-/** The model of the partner-level `chat` default offering, else the bootstrap default (endpoint validation and the catalog-rotation probe). */
+/**
+ * The ONE model a connection's endpoint is validated and probed against (the
+ * catalog-rotation probe and an endpoint change; R0 used the connection's own
+ * pinned model). In order: (a) the partner-level `chat` default's model when
+ * that offering is on this connection; (b) an enabled offering on it that
+ * something routes to — an assignment default first, then oldest; (c) any
+ * enabled offering on it, oldest; (d) partnerChatDefaultModelId. Never the
+ * model of a chat default on another connection or the platform: a catalog
+ * entry that does not map it would refuse the rotation of a leaked key.
+ */
+export async function connectionPrimaryModelId(partnerId: string, connectionId: string): Promise<string> {
+  assertSystemContext();
+  const [chat] = await rows<{ model_id: string | null }>(sql`SELECT COALESCE(m.model_id, pm.model_id) AS model_id
+      FROM ai_model_assignments a
+      JOIN partner_ai_models m ON m.id = a.default_offering_id AND m.partner_id = ${partnerId}::uuid
+                              AND m.connection_id = ${connectionId}::uuid
+      LEFT JOIN ai_platform_models pm ON pm.id = m.platform_model_id
+     WHERE a.partner_id = ${partnerId}::uuid AND a.org_id IS NULL AND a.surface = 'chat' AND a.role = 'default'`);
+  if (chat?.model_id) return chat.model_id;
+  const [own] = await rows<{ model_id: string | null }>(sql`${refsCte(partnerId)}
+    SELECT COALESCE(m.model_id, pm.model_id) AS model_id
+      FROM partner_ai_models m LEFT JOIN ai_platform_models pm ON pm.id = m.platform_model_id
+     WHERE m.partner_id = ${partnerId}::uuid AND m.connection_id = ${connectionId}::uuid AND m.enabled
+       AND COALESCE(m.model_id, pm.model_id) IS NOT NULL
+     ORDER BY (m.id IN (SELECT id FROM refs WHERE id IS NOT NULL)) DESC,
+              (m.id IN (SELECT default_offering_id FROM assignment_rows WHERE default_offering_id IS NOT NULL)) DESC,
+              m.created_at, m.id
+     LIMIT 1`);
+  if (own?.model_id) return own.model_id;
+  return partnerChatDefaultModelId(partnerId);
+}
+
+/** The model of the partner-level `chat` default offering, else the bootstrap default (connectionPrimaryModelId's last resort). */
 export async function partnerChatDefaultModelId(partnerId: string): Promise<string> {
   const [row] = await rows<{ model_id: string | null }>(sql`SELECT COALESCE(m.model_id, pm.model_id) AS model_id
       FROM ai_model_assignments a

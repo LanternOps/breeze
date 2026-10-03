@@ -42,6 +42,7 @@ vi.mock('../secretCrypto', () => ({ hmacFingerprint: () => 'fp' }));
 
 import {
   connectAnthropicConnection,
+  connectionPrimaryModelId,
   disconnectAnthropicConnection,
   lockAnthropicConnection,
   lockAnthropicConnectionIds,
@@ -81,8 +82,8 @@ describe('remapPartnerOfferings (registry-native id remaps, never a re-projectio
 
     const [assign, agents, sessions, offerings] = m.statements;
     expect(assign!.text).toMatch(/^UPDATE ai_model_assignments SET default_offering_id = CASE/);
-    expect(assign!.text).toContain('permitted_offering_ids = array_replace(permitted_offering_ids,');
-    expect(assign!.text).toContain('fallback_offering_ids = array_replace(fallback_offering_ids,');
+    expect(assign!.text).toContain('unnest(array_replace(permitted_offering_ids,');
+    expect(assign!.text).toContain('unnest(array_replace(fallback_offering_ids,');
     expect(assign!.text).toContain('WHERE offering_partner_id =');
     expect(agents!.text).toMatch(/^UPDATE ai_agents SET offering_id = /);
     expect(sessions!.text).toMatch(/^UPDATE ai_sessions SET offering_id = /);
@@ -114,6 +115,55 @@ describe('remapPartnerOfferings (registry-native id remaps, never a re-projectio
     m.scope = 'partner';
     await expect(remapPartnerOfferings(P, new Map([[A, B]]))).rejects.toThrow(/system/);
     expect(m.statements).toEqual([]);
+  });
+
+  it('moves a refusal fallback only on rows on the TARGET offering\'s connection (never across connections)', async () => {
+    await remapPartnerOfferings(P, new Map([[A, B]]));
+    const refusal = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_models SET refusal_fallback_offering_id'))!;
+    expect(refusal.text).toMatch(/AND connection_id IS NOT DISTINCT FROM \(SELECT t\.connection_id FROM partner_ai_models t WHERE t\.id = \$\d+::uuid AND t\.partner_id = \$\d+::uuid\)/);
+  });
+
+  it('collapses a duplicate the replace creates in permitted / fallback lists, first occurrence kept, NULL stays NULL', async () => {
+    await remapPartnerOfferings(P, new Map([[A, B]]));
+    const assign = m.statements[0]!.text;
+    for (const col of ['permitted_offering_ids', 'fallback_offering_ids']) {
+      expect(assign).toContain(`${col} = CASE WHEN ${col} IS NULL THEN NULL ELSE ARRAY( SELECT x FROM unnest(array_replace(${col},`);
+    }
+    expect(assign.match(/WITH ORDINALITY AS t\(x, n\) GROUP BY x ORDER BY min\(n\)\)/g)).toHaveLength(2);
+  });
+});
+
+describe('connectionPrimaryModelId (the one model a connection\'s endpoint is validated and probed against)', () => {
+  const chatOnConnection = (t: string) => t.includes("a.surface = 'chat'") && t.includes('AND m.connection_id =');
+  const ownOfferings = (t: string) => t.startsWith('WITH assignment_rows') && t.includes('AND m.enabled');
+  const chatAnywhere = (t: string) => t.includes("a.surface = 'chat'") && !t.includes('AND m.connection_id =');
+
+  it('(a) the partner chat default when that offering is on this connection — nothing else is read', async () => {
+    m.respond = baseRespond((t) => (chatOnConnection(t) ? [{ model_id: 'chat-on-conn' }] : undefined));
+    await expect(connectionPrimaryModelId(P, CONN)).resolves.toBe('chat-on-conn');
+    expect(m.statements).toHaveLength(1);
+    expect(m.statements[0]!.params).toEqual(expect.arrayContaining([P, CONN]));
+  });
+
+  it('(b)/(c) else an enabled offering on it: referenced first, an assignment default first among those, then oldest', async () => {
+    m.respond = baseRespond((t) => (ownOfferings(t) ? [{ model_id: 'own' }] : undefined));
+    await expect(connectionPrimaryModelId(P, CONN)).resolves.toBe('own');
+    const own = m.statements.find((s) => ownOfferings(s.text))!;
+    expect(own.text).toMatch(/ORDER BY \(m\.id IN \(SELECT id FROM refs WHERE id IS NOT NULL\)\) DESC, \(m\.id IN \(SELECT default_offering_id FROM assignment_rows WHERE default_offering_id IS NOT NULL\)\) DESC, m\.created_at, m\.id LIMIT 1$/);
+    expect(own.params).toEqual(expect.arrayContaining([P, CONN]));
+    expect(m.statements.some((s) => chatAnywhere(s.text))).toBe(false);
+  });
+
+  it('(d) else the partner chat default model wherever it lives, then the bootstrap default', async () => {
+    m.respond = baseRespond((t) => (chatAnywhere(t) ? [{ model_id: 'chat-elsewhere' }] : undefined));
+    await expect(connectionPrimaryModelId(P, CONN)).resolves.toBe('chat-elsewhere');
+    m.respond = baseRespond();
+    await expect(connectionPrimaryModelId(P, CONN)).resolves.toBe('bootstrap-default');
+  });
+
+  it('refuses to run outside a held system context', async () => {
+    m.scope = 'partner';
+    await expect(connectionPrimaryModelId(P, CONN)).rejects.toThrow(/system/);
   });
 });
 

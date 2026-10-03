@@ -89,6 +89,16 @@ describe('registry gate (W08: bootstrap, no legacy projection)', () => {
     expect(tags).toMatchObject({ area: 'ai_model_registry_cutover', partnerId: 'p1' });
   });
 
+  it('a failing post-commit report never turns a committed bootstrap into "not cut over"', async () => {
+    vi.mocked(bootstrapPartnerRegistryInTx).mockResolvedValue(report({ destination: 'connection', connectionId: 'c1' }) as never);
+    vi.mocked(captureMessage).mockImplementationOnce(() => { throw new Error('sentry transport down'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(await ensurePartnerCutover('p9')).toBe(true);
+    expect(store.rows.has('p9')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('bootstrap report failed'));
+    warn.mockRestore();
+  });
+
   it('the W03 boot sweep is gone', () => {
     expect('runRegistryCutoverSweep' in registryCutoverModule).toBe(false);
     expect('runRegistryCutoverSweepWithRetry' in registryCutoverModule).toBe(false);

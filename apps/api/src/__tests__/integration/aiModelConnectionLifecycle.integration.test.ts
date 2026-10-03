@@ -34,6 +34,7 @@ import {
   changeAnthropicEndpoint, createAnthropicKeyConnection, deleteAnthropicConnection, rotateAnthropicKey,
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { loadOfferingCandidate } from '../../services/aiModels/candidateLoader';
+import { connectionPrimaryModelId } from '../../services/aiModels/connectionRemap';
 import { __resetRegistryCutoverMemoForTests, ensurePartnerCutover } from '../../services/aiModels/registryCutover';
 import { columnAad } from '../../services/encryptedColumnRegistry';
 import { chatReadinessInSystemContext } from '../../services/aiModels/readiness';
@@ -321,6 +322,100 @@ describe.skipIf(!RUN)('Anthropic connection lifecycle (W08)', () => {
         JOIN ai_platform_models pm ON pm.id = o.platform_model_id WHERE s.id = ${s.chatSessionId}`;
     expect(sessionAfter).toEqual({ connection_id: null, model_id: otherModel });
     expect(await fixtureSql`SELECT 1 FROM ai_model_assignments WHERE org_id = ${s.orgId}`).toHaveLength(1);
+  });
+
+  it('connectionPrimaryModelId: chat default on the connection > assignment-default ref > any ref > oldest enabled > chat default elsewhere', async () => {
+    const s = await seedRegistryPartner('byok');
+    const primary = () => sys(() => connectionPrimaryModelId(s.partnerId, s.connectionId!));
+    const onConn = async (tag: string) => {
+      const modelId = `w08a-${tag}-${randomUUID()}`;
+      const platformModelId = await seedW03PlatformModel(modelId);
+      const id = await seedOffering({ partnerId: s.partnerId, connectionId: s.connectionId, platformModelId, modelId, source: 'discovered', enabled: true });
+      return { id, modelId };
+    };
+    // (a) chat defaults to the connection's (oldest) offering.
+    expect(await primary()).toBe(s.modelId);
+
+    // Chat moves to the platform; the session follows it, so the oldest offering is referenced by nothing yet.
+    const elsewhereModel = `w08a-elsewhere-${randomUUID()}`;
+    const platformChat = await seedOffering({ partnerId: s.partnerId, platformModelId: await seedW03PlatformModel(elsewhereModel), enabled: true });
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${platformChat} WHERE offering_partner_id = ${s.partnerId}`;
+    await fixtureSql`UPDATE ai_sessions SET offering_id = ${platformChat} WHERE id = ${s.chatSessionId}`;
+    const listed = await onConn('listed');
+    const defaulted = await onConn('defaulted');
+    await fixtureSql`UPDATE ai_model_assignments SET permitted_offering_ids = ARRAY[${platformChat}, ${listed.id}]::uuid[]
+      WHERE partner_id = ${s.partnerId} AND org_id IS NULL AND surface = 'chat'`;
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${defaulted.id}
+      WHERE partner_id = ${s.partnerId} AND org_id IS NULL AND surface = 'helper'`;
+    // (b) an assignment default on the connection beats an older list-only reference and the oldest offering.
+    expect(await primary()).toBe(defaulted.modelId);
+
+    await fixtureSql`UPDATE ai_model_assignments SET default_offering_id = ${platformChat}
+      WHERE partner_id = ${s.partnerId} AND org_id IS NULL AND surface = 'helper'`;
+    // (b) a referenced offering beats the older unreferenced one.
+    expect(await primary()).toBe(listed.modelId);
+
+    // (b) a DISABLED referenced offering is skipped: (c) the oldest enabled one.
+    await fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE id = ${listed.id}`;
+    expect(await primary()).toBe(s.modelId);
+
+    // (d) nothing enabled on the connection: the partner chat default wherever it lives.
+    await fixtureSql`UPDATE partner_ai_models SET enabled = false WHERE connection_id = ${s.connectionId}`;
+    expect(await primary()).toBe(elsewhereModel);
+  });
+
+  it('disconnect leaves a same-connection refusal fallback on the offering that stays behind (never crosses connections, 23514)', async () => {
+    const s = await seedRegistryPartner('byok');
+    const fbModel = `w08a-refusal-fb-${randomUUID()}`;
+    const fbPlatform = await seedW03PlatformModel(fbModel);
+    const fb = await seedOffering({
+      partnerId: s.partnerId, connectionId: s.connectionId, platformModelId: fbPlatform, modelId: fbModel, source: 'discovered', enabled: true,
+    });
+    await fixtureSql`UPDATE partner_ai_models SET refusal_fallback_offering_id = ${fb} WHERE id = ${s.offeringId}`;
+
+    expect(await deleteAnthropicConnection({ partnerId: s.partnerId, connectionId: s.connectionId! })).toBe(true);
+
+    // The offering left on the (disconnected) connection keeps its same-connection fallback.
+    const [left] = await fixtureSql`SELECT refusal_fallback_offering_id AS fb, connection_id FROM partner_ai_models WHERE id = ${s.offeringId}`;
+    expect(left).toEqual({ fb, connection_id: s.connectionId });
+    expect(await chatDefault(s.partnerId)).toMatchObject({ conn: null, model: s.modelId });
+  });
+
+  it('first connect leaves a platform refusal fallback on the platform offering it belongs to', async () => {
+    const s = await seedRegistryPartner('platform');
+    const fbModel = `w08a-refusal-fb-${randomUUID()}`;
+    const fbPlatform = await seedW03PlatformModel(fbModel);
+    const fb = await seedOffering({ partnerId: s.partnerId, platformModelId: fbPlatform, enabled: true });
+    await fixtureSql`UPDATE partner_ai_models SET refusal_fallback_offering_id = ${fb} WHERE id = ${s.offeringId}`;
+
+    const { connectionId } = await createAnthropicKeyConnection({ partnerId: s.partnerId, apiKey: 'sk-ant-api03-lifecycle-0021', userId: s.userId });
+
+    const [platformRow] = await fixtureSql`SELECT refusal_fallback_offering_id AS fb FROM partner_ai_models WHERE id = ${s.offeringId}`;
+    expect(platformRow!.fb).toBe(fb);
+    expect(await chatDefault(s.partnerId)).toMatchObject({ conn: connectionId, model: s.modelId });
+  });
+
+  it('disconnect collapses a duplicate the remap creates inside one list (first occurrence kept); a default already in the fallback list stays', async () => {
+    const s = await seedRegistryPartner('byok');
+    // The platform offering of the SAME model already sits in the lists next to the connection offering.
+    const platformTwin = await seedOffering({ partnerId: s.partnerId, platformModelId: s.platformModelId, enabled: true });
+    const otherPlatform = await seedW03PlatformModel(`w08a-other-${randomUUID()}`);
+    const other = await seedOffering({ partnerId: s.partnerId, platformModelId: otherPlatform, enabled: true });
+    await fixtureSql`UPDATE ai_model_assignments
+      SET permitted_offering_ids = ARRAY[${s.offeringId}, ${other}, ${platformTwin}]::uuid[],
+          fallback_offering_ids = ARRAY[${s.offeringId}, ${platformTwin}]::uuid[]
+      WHERE partner_id = ${s.partnerId} AND org_id IS NULL AND surface = 'chat'`;
+
+    expect(await deleteAnthropicConnection({ partnerId: s.partnerId, connectionId: s.connectionId! })).toBe(true);
+
+    const [chat] = await fixtureSql`SELECT default_offering_id, permitted_offering_ids, fallback_offering_ids
+      FROM ai_model_assignments WHERE partner_id = ${s.partnerId} AND org_id IS NULL AND surface = 'chat'`;
+    expect(chat).toEqual({
+      default_offering_id: platformTwin,
+      permitted_offering_ids: [platformTwin, other],
+      // The default landing on an entry of its own fallback list is the W09 inert self-entry: kept.
+      fallback_offering_ids: [platformTwin],
+    });
   });
 
   it('a revoked key never survives in partner_llm_configs: rotate and disconnect remove the legacy ciphertext (#7700 finding 4)', async () => {

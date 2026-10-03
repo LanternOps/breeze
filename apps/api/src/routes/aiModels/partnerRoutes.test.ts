@@ -411,11 +411,30 @@ describe('/ai/models partner routes — behaviour', () => {
     expect(res.status).toBe(200);
     expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, C);
   });
-  it('W09: a cooldown clear failure never fails the rotation (cooldowns fail open)', async () => {
+  it('W09: a cooldown clear failure never fails the rotation (cooldowns fail open), and is reported', async () => {
     vi.mocked(clearConnectionCooldowns).mockRejectedValue(new Error('db down'));
     const res = await call('POST', `/connections/${C}/key`, { apiKey: KEY });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: C, keyLast4: 'xxxx' });
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
+  });
+  it('W08a: an endpoint change (now in place, same id) clears that connection\'s failover cooldowns after the write', async () => {
+    const res = await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null });
+    expect(res.status).toBe(200);
+    expect(clearConnectionCooldowns).toHaveBeenCalledWith(P, C);
+    expect(vi.mocked(clearConnectionCooldowns).mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(vi.mocked(changeAnthropicEndpoint).mock.invocationCallOrder[0]!);
+  });
+  it('W08a: a failed endpoint change clears nothing; a cooldown clear failure never fails the change and is reported', async () => {
+    vi.mocked(changeAnthropicEndpoint).mockRejectedValueOnce(new ConnectionCheckError('That endpoint was delisted and is no longer available for selection.', 409));
+    expect((await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null })).status).toBe(409);
+    expect(clearConnectionCooldowns).not.toHaveBeenCalled();
+
+    vi.mocked(clearConnectionCooldowns).mockRejectedValueOnce(new Error('db down'));
+    const res = await call('POST', `/connections/${C}/endpoint`, { catalogEntryId: null });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: C, configVersion: 3 });
+    expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
   });
   it('passes the disable force flag and returns the affected surfaces', async () => {
     const inUse = [{ surface: 'chat' as const, level: 'partner' as const, orgId: null }];
@@ -726,6 +745,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       const res = await call('PATCH', `/connections/${G}/gateway`, { apiKey: 'sk-new-abcdef12', expectedConfigVersion: 3 });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ id: G, configVersion: 4 });
+      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'redis down' }), undefined, { service: 'aiModels', stage: 'cooldown_clear' });
     });
     it('a URL change audits the new host only; a null key audits key cleared', async () => {
       vi.mocked(updateGatewayConnection).mockResolvedValueOnce(gatewayConn({ baseUrl: 'https://other.example.org/tenant-42/v1', configVersion: 4 }) as any);
