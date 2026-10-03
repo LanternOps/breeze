@@ -43,7 +43,7 @@ const { dbMocks, accountsRetrieveMock, eventsListMock, sessionsExpireMock, syste
 }));
 
 vi.mock('./partnerStripeClient', () => ({ getPartnerStripeClient: clientBoundaryMock }));
-vi.mock('./autopay/stripeCapabilities', () => ({ probeAutopayCapabilities: capabilityProbeMock }));
+vi.mock('./autopay/stripeCapabilities', async (importOriginal) => ({ ...await importOriginal<typeof import('./autopay/stripeCapabilities')>(), probeAutopayCapabilities: capabilityProbeMock }));
 
 vi.mock('./secretCrypto', () => ({
   encryptSecret: (x: string) => `enc(${x})`,
@@ -127,7 +127,10 @@ import {
   listPartnersNeedingStripeAccountBootstrap,
   refreshPartnerStripeAccount,
   savePartnerStripeKey,
+  disconnectPartnerStripe,
 } from './partnerStripe';
+import { getAutopayStripeReadiness } from './autopay/stripeCapabilities';
+import { db } from '../db';
 
 /**
  * Walk a drizzle SQL tree and collect every bound parameter value + referenced
@@ -178,6 +181,48 @@ beforeEach(() => {
 });
 
 describe('savePartnerStripeKey', () => {
+  it('blocks account switching with an active enrollment even without payments', async () => {
+    dbMocks.selectResults.push([], [], [{ stripeAccountId: 'acct_old', apiKey: null }], [], [{ id: 'enrollment' }]);
+    await expect(savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID }))
+      .rejects.toMatchObject({ code: 'STRIPE_ACCOUNT_CHANGE_BLOCKED', message: 'Turn off automatic payments before changing Stripe accounts.' });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+    expect(collectSqlTerms(dbMocks.selectWheres.at(-1)).params).toEqual(expect.arrayContaining([PARTNER_A, 'active']));
+  });
+
+  it('same-account reconnect clears only Stripe attention and retains unusable method attention', async () => {
+    dbMocks.selectResults.push([], [], [{ stripeAccountId: 'acct_unit', apiKey: null }]);
+    await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+    const index = dbMocks.updatedValues.findIndex(value => value.needsAttentionReason === null);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(dbMocks.updatedValues[index]).toEqual({ needsAttentionReason: null });
+    const terms = collectSqlTerms(dbMocks.updateWheres[index]);
+    expect(terms.params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit', 'stripe_account_changed', 'key_missing_permissions']));
+    expect(terms.params).not.toContain('method_unusable');
+    expect(terms.params).not.toContain('verification_failed');
+    expect(terms.columns).toEqual(expect.arrayContaining(['partner_id', 'stripe_account_id', 'needs_attention_reason']));
+  });
+
+  it('confirmed missing permissions marks account-bound enrollment attention', async () => {
+    capabilityProbeMock.mockResolvedValue({ missing: ['mandates_read'] });
+    await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+    const index = dbMocks.updatedValues.findIndex(value => value.needsAttentionReason === 'key_missing_permissions');
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(dbMocks.updatedValues[index]).toEqual({ needsAttentionReason: 'key_missing_permissions' });
+    expect(collectSqlTerms(dbMocks.updateWheres[index]).params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit']));
+  });
+
+  it('a probe outage cannot clear attention or call it confirmed missing permissions', async () => {
+    capabilityProbeMock.mockRejectedValue(new Error('probe outage'));
+    await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+    expect(dbMocks.updatedValues.some(value => 'needsAttentionReason' in value)).toBe(false);
+  });
+
+  it('revocation during capability probing fences collection and marks attention', async () => {
+    capabilityProbeMock.mockRejectedValue({ type: 'StripeAuthenticationError' });
+    await savePartnerStripeKey({ partnerId: PARTNER_A, apiKey: TEST_KEY, userId: USER_ID });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['payment_intents_write']) });
+    expect(dbMocks.updatedValues).toContainEqual({ needsAttentionReason: 'key_missing_permissions' });
+  });
   it('saves a checkout-capable key with missing autopay permissions in both upsert arms', async () => {
     capabilityProbeMock.mockResolvedValue({ missing: ['setup_intents_write', 'mandates_read'] });
     dbMocks.selectResults.push([]);
@@ -405,6 +450,15 @@ describe('refreshPartnerStripeAccount', () => {
     expect(dbMocks.updatedValues.at(-1)).toMatchObject({ autopayMissingPermissions: expect.arrayContaining(['customers_write', 'mandates_read']) });
   });
 
+  it('refresh marks confirmed missing permissions only after the account/key guard succeeds', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    dbMocks.updateReturning.push([returnedRow({ autopayMissingPermissions: ['mandates_read'] })]);
+    capabilityProbeMock.mockResolvedValue({ missing: ['mandates_read'] });
+    await refreshPartnerStripeAccount(PARTNER_A);
+    expect(dbMocks.updatedValues.at(-1)).toEqual({ needsAttentionReason: 'key_missing_permissions' });
+    expect(collectSqlTerms(dbMocks.updateWheres.at(-1)).params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit']));
+  });
+
   it('retrieves fresh account fields, updates the cache via RETURNING, and returns the persisted row', async () => {
     dbMocks.selectResults.push([connectedRow()]);
     accountsRetrieveMock.mockResolvedValue({ id: 'acct_unit', default_currency: 'gbp', country: 'GB' });
@@ -530,7 +584,30 @@ describe('refreshPartnerStripeAccount', () => {
     } finally {
       consoleSpy.mockRestore();
     }
-    expect(dbMocks.updatedValues).toHaveLength(0);
+    expect(dbMocks.updatedValues).toContainEqual(expect.objectContaining({ autopayMissingPermissions: expect.arrayContaining(['payment_intents_write']) }));
+  });
+
+  it('a confirmed revoked key fences new attempts while preserving connection identity', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    dbMocks.updateReturning.push([{ stripeAccountId: 'acct_unit' }]);
+    accountsRetrieveMock.mockRejectedValue({ type: 'StripeAuthenticationError' });
+    await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({ code: 'INVALID_STRIPE_KEY' });
+    const fenced = dbMocks.updatedValues.find(value => 'autopayMissingPermissions' in value);
+    expect(fenced).toBeDefined();
+    expect(fenced).not.toHaveProperty('apiKey');
+    expect(fenced).not.toHaveProperty('stripeAccountId');
+    expect(collectSqlTerms(dbMocks.updateWheres[0]).params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit', 'connected', 'enc(sk_test_x)']));
+    expect(dbMocks.updatedValues).toContainEqual({ needsAttentionReason: 'key_missing_permissions' });
+    dbMocks.selectResults.push([{ ...connectedRow(), accountCountry: 'US', autopayCapabilitiesCheckedAt: new Date(), autopayMissingPermissions: [], ...fenced }]);
+    await expect(getAutopayStripeReadiness(db, PARTNER_A)).resolves.toMatchObject({ ready: false });
+  });
+
+  it('does not mark a replacement enrollment when the revoked-key update loses its guard', async () => {
+    dbMocks.selectResults.push([connectedRow()]);
+    dbMocks.updateReturning.push([]);
+    accountsRetrieveMock.mockRejectedValue({ type: 'StripeAuthenticationError' });
+    await expect(refreshPartnerStripeAccount(PARTNER_A)).rejects.toMatchObject({ code: 'INVALID_STRIPE_KEY' });
+    expect(dbMocks.updatedValues.some(value => 'needsAttentionReason' in value)).toBe(false);
   });
 
   // Review F2: a restricted key without accounts.retrieve, an odd invalid-request,
@@ -811,5 +888,19 @@ describe('isPartnerOnlinePaymentAvailable (#7509)', () => {
   ])('is false for %s', async (_label, rows) => {
     dbMocks.selectResults.push(rows as unknown[]);
     expect(await isPartnerOnlinePaymentAvailable(PARTNER_A)).toBe(false);
+  });
+});
+
+describe('disconnect enrollment fencing', () => {
+  it('marks the matching account without changing generation, methods or active attempts', async () => {
+    dbMocks.selectResults.push([{ id: 'connection', stripeAccountId: 'acct_unit', apiKey: null }]);
+    await disconnectPartnerStripe(PARTNER_A);
+    const index = dbMocks.updatedValues.findIndex(value => value.needsAttentionReason === 'stripe_account_changed');
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(dbMocks.updatedValues[index]).toEqual({ needsAttentionReason: 'stripe_account_changed' });
+    const terms = collectSqlTerms(dbMocks.updateWheres[index]);
+    expect(terms.params).toEqual(expect.arrayContaining([PARTNER_A, 'acct_unit']));
+    expect(terms.params).not.toContain('method_unusable');
+    expect(dbMocks.updatedValues).toHaveLength(2);
   });
 });
