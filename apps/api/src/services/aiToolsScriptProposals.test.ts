@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { flagMock, createMock, enqueueMock, waitMock, getMock, verifyDeviceAccessMock } = vi.hoisted(() => ({
+const { flagMock, createMock, enqueueMock, waitMock, getMock, verifyDeviceAccessMock, executionsMock } = vi.hoisted(() => ({
+  executionsMock: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   verifyDeviceAccessMock: vi.fn(
     async (id: string): Promise<{ device: { id: string; orgId: string } } | { error: string }> =>
       ({ device: { id, orgId: 'org-dev' } }),
@@ -62,6 +63,7 @@ vi.mock('./aiTools', () => ({ verifyDeviceAccess: verifyDeviceAccessMock }));
 vi.mock('./scriptProposals', () => ({
   createScriptProposal: createMock, enqueueScriptReview: enqueueMock,
   waitForReviewCompletion: waitMock, getScriptProposalForPrincipal: getMock,
+  loadProposalExecutions: executionsMock,
 }));
 
 import { registerScriptProposalTools } from './aiToolsScriptProposals';
@@ -247,6 +249,57 @@ describe('propose_script', () => {
 });
 
 describe('get_script_proposal', () => {
+  const PROPOSAL_ROW = {
+    id: 'p7', status: 'verified', riskTier: 'low', goal: 'g', expectedEffect: 'e', language: 'powershell',
+    runAs: 'system', timeoutSeconds: 300, targetDeviceIds: ['d1', 'd2'], scopedDeviceIds: null,
+    basicHits: [], strictHits: [], touchClasses: [], scannerVersion: 'v', decidedBy: null, decidedAt: null,
+    decisionNote: null, intentId: 'i1', verifiedAt: null, verificationResult: null, expiresAt: new Date(0),
+  };
+  const STARTED = new Date('2026-10-03T12:00:00Z');
+  const RUNS = [
+    { id: 'e1', deviceId: 'd1', hostname: 'KIT', status: 'completed', exitCode: 0, startedAt: STARTED, completedAt: STARTED },
+    { id: 'e2', deviceId: 'd2', hostname: 'LAB', status: 'running', exitCode: null, startedAt: STARTED, completedAt: null },
+  ];
+
+  // #7918: a run that outlived its tool call still completed; the model needs
+  // its execution id to read the output, and the human needs the page that
+  // offers "Save to library".
+  it('returns each run\'s execution id so the model can read it with get_script_execution (#7918)', async () => {
+    getMock.mockResolvedValueOnce(PROPOSAL_ROW as never);
+    executionsMock.mockResolvedValueOnce(RUNS);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(executionsMock).toHaveBeenCalledWith('p7');
+    expect(out.executions).toEqual([
+      { executionId: 'e1', deviceId: 'd1', hostname: 'KIT', status: 'completed', exitCode: 0,
+        startedAt: STARTED.toISOString(), completedAt: STARTED.toISOString() },
+      { executionId: 'e2', deviceId: 'd2', hostname: 'LAB', status: 'running', exitCode: null,
+        startedAt: STARTED.toISOString(), completedAt: null },
+    ]);
+    expect(out.nextStep).toContain('get_script_execution');
+    expect(out.approvalsPath).toBe('/approvals#proposal-p7');
+  });
+
+  it('narrows the runs to the devices the caller may see (#7918)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, scopedDeviceIds: ['d1'] } as never);
+    executionsMock.mockResolvedValueOnce(RUNS);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.executions.map((e: { executionId: string }) => e.executionId)).toEqual(['e1']);
+  });
+
+  it('a proposal that never ran has no executions and no read-the-run hint (#7918)', async () => {
+    getMock.mockResolvedValueOnce({ ...PROPOSAL_ROW, status: 'reviewed', intentId: null } as never);
+    executionsMock.mockResolvedValueOnce([]);
+
+    const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p7' }, auth));
+
+    expect(out.executions).toEqual([]);
+    expect(out.nextStep).toBeUndefined();
+  });
+
   it('reports not found for a proposal outside the caller org', async () => {
     const out = JSON.parse(await tools.get('get_script_proposal')!.handler({ proposalId: 'p9' }, auth));
     expect(out.error).toContain('not_found');

@@ -733,6 +733,30 @@ function reportLostTerminalCas(opts: {
  * makeHandler() in aiAgentSdkTools.ts and IS invoked for in-process MCP
  * server tools.
  */
+/**
+ * The model-facing text for an action intent that could not be created.
+ *
+ * Generic for every failure the model cannot act on — but a `run_script`
+ * whose proposal is no longer runnable is the model's to fix (#7918).
+ * `createActionIntent` CAS-claims a proposal for exactly one intent, so a
+ * second run of a proposal that already ran is refused with
+ * `ActionIntentError('proposal_not_runnable')`. Reported as "Failed to create
+ * approval record", the model told the user nothing had run, when the first
+ * run had in fact completed on the device. Matched on the error's `code`
+ * (the class lives in intentService, whose module this file's tests mock).
+ */
+export function intentCreationRefusal(toolName: string, input: unknown, err: unknown): string {
+  const code = err instanceof Error ? (err as Error & { code?: unknown }).code : undefined;
+  const proposalId = (input as { proposalId?: unknown } | null)?.proposalId;
+  if (toolName === 'run_script' && code === 'proposal_not_runnable' && typeof proposalId === 'string') {
+    return `proposal_not_runnable: proposal ${proposalId} cannot start another run. A proposal runs once, `
+      + 'and this one has already been claimed by an earlier run_script, has expired, or is no longer reviewed. '
+      + 'Call get_script_proposal: its executions list each run\'s executionId, and get_script_execution reads '
+      + 'that run\'s output. To run the script again, submit it as a new proposal with propose_script.';
+  }
+  return 'Failed to create approval record';
+}
+
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
@@ -1451,7 +1475,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             });
           } catch (err) {
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
-            return await failMatchedPlanStep({ allowed: false, error: 'Failed to create approval record' });
+            return await failMatchedPlanStep({ allowed: false, error: intentCreationRefusal(toolName, input, err) });
           }
 
           // Stamp the intent link onto the ledger row so handleApproval (web

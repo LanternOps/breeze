@@ -79,6 +79,17 @@ describe('makeHandler — self-managed DB context tools (#7128)', () => {
     expect(withDbAccessContextMock).not.toHaveBeenCalled();
   });
 
+  // #7918: run_script waits up to 60 s per device for the agent; held in the
+  // wrapper's transaction, production Postgres killed it after one minute.
+  it('opens NO wrapper transaction around run_script (#7918)', async () => {
+    expect(aiTools.get('run_script')?.selfManagedDbContext).toBe(true);
+
+    await makeHandler('run_script', () => fakeAuth)({ proposalId: 'p1', deviceIds: ['d1'] });
+
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    expect(withDbAccessContextMock).not.toHaveBeenCalled();
+  });
+
   it.each(['manage_invoices', 'manage_quotes'])('%s pay links open no outer transaction', async (name) => {
     await makeHandler(name, () => fakeAuth)({ action: 'create_pay_link' });
     expect(mockExecuteTool).toHaveBeenCalledTimes(1);

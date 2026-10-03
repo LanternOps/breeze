@@ -15,6 +15,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_c: unknown, fn: () => Promise<unknown>) => fn()),
 }));
+// #7918: get_script_proposal also echoes the proposal's runs; that read is
+// not what this suite is about, so it returns none.
+vi.mock('./scriptProposals/queries', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  loadProposalExecutions: vi.fn(async () => []),
+}));
 vi.mock('../config/env', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   aiScriptAuthoringEnabled: () => true,
