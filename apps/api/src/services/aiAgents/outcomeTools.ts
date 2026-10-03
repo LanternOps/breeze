@@ -43,6 +43,7 @@ import {
   patchPlanSubmissionSchema,
   analysisOutcomeSchema,
   ANALYSIS_FINDING_SEVERITIES,
+  RESEARCH_SUBMISSION_SHAPE,
   sweepFindingsOutcomeSchema,
   ticketTriageProposalSchema,
   type AiAgentRunProfile,
@@ -54,6 +55,7 @@ import {
   type NarrativeOutcome,
   type PatchPlanOutcome,
   type PatchPlanOutcomeRefs,
+  type ResearchOutcome,
   type SweepFindingsOutcome,
   type TicketTriageProposal,
   type SubmitTaskStepPayload,
@@ -64,6 +66,7 @@ import {
   SUBMIT_TASK_STEP_TOOL_NAME,
   validateSubmitTaskStep,
 } from './tools/submitTaskStep';
+import { validateResearchSubmission, type ResearchToolRefs } from './researchSubmission';
 
 export const OUTCOME_TOOL_NAMES = [
   'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative', 'submit_ticket_proposal',
@@ -115,6 +118,10 @@ export interface PatchPlanToolRefs {
   refs: PatchPlanOutcomeRefs;
   evidenceTruncated: boolean;
   generatedAt: string;
+}
+
+function isResearchToolRefs(value: unknown): value is ResearchToolRefs {
+  return !!value && typeof value === 'object' && 'scriptIdsAnyOs' in value;
 }
 
 function isPatchPlanToolRefs(value: unknown): value is PatchPlanToolRefs {
@@ -259,6 +266,15 @@ export function validateOutcomeToolInput(
 export function validateOutcomeToolInput(
   toolName: 'submit_patch_plan', input: unknown, refs: PatchPlanToolRefs,
 ): PatchPlanOutcome;
+/**
+ * AI Suggested Fixes W2 — `submit_suggestions`' validated outcome is the
+ * SERVER-BUILT `ResearchOutcome` (accepted items + recorded rejections). Like
+ * the patch/design overloads it REQUIRES run refs: the OS-filtered catalog
+ * sets computed once per run by researchContext.ts.
+ */
+export function validateOutcomeToolInput(
+  toolName: 'submit_suggestions', input: unknown, refs: ResearchToolRefs,
+): ResearchOutcome;
 // The union overload the run loop's hooks call through: `toolName` there is
 // the `OutcomeToolName` the SDK handed them, not a literal, so none of the
 // narrow overloads above would apply. Callers that need the concrete type
@@ -276,18 +292,19 @@ export function validateOutcomeToolInput(
  */
 export function validateOutcomeToolInput(toolName: 'submit_analysis', input: unknown): AnalysisOutcome;
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs | ResearchToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome;
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome;
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs | ResearchToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome {
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome | ResearchOutcome {
   switch (toolName) {
     case 'submit_analysis':
       return analysisOutcomeSchema.parse(input);
     case 'submit_suggestions':
-      throw new Error('[outcomeTools] submit_suggestions is wired in AI Suggested Fixes W2 Task 8');
+      if (!isResearchToolRefs(refs)) throw new Error('[validateOutcomeToolInput] submit_suggestions needs research refs');
+      return validateResearchSubmission(input, refs);
     case 'submit_task_step':
       return validateSubmitTaskStep(input);
     case 'submit_alert_verdict':
@@ -302,7 +319,7 @@ export function validateOutcomeToolInput(
     case 'submit_ticket_proposal':
       return ticketTriageProposalSchema.parse(input);
     case 'submit_fleet_design': {
-      if (!refs || isPatchPlanToolRefs(refs)) throw new Error('[validateOutcomeToolInput] submit_fleet_design needs design refs');
+      if (!refs || isPatchPlanToolRefs(refs) || isResearchToolRefs(refs)) throw new Error('[validateOutcomeToolInput] submit_fleet_design needs design refs');
       // `.parse` first (the message names the offending path — the model
       // reads it back as the tool error), then the referential pass, which
       // throws `FleetDesignReferenceError` with the same path discipline.
@@ -766,7 +783,7 @@ const SUBMIT_PATCH_PLAN_SHAPE = {
 
 export function buildOutcomeSdkTools(
   names: readonly OutcomeToolName[],
-  refs?: { design?: FleetDesignOutcomeRefs; patch?: PatchPlanToolRefs },
+  refs?: { design?: FleetDesignOutcomeRefs; patch?: PatchPlanToolRefs; research?: ResearchToolRefs },
 ): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -877,8 +894,21 @@ export function buildOutcomeSdkTools(
           },
         ) as SdkTool;
       }
-      case 'submit_suggestions':
-        throw new Error('[outcomeTools] submit_suggestions is wired in AI Suggested Fixes W2 Task 8');
+      case 'submit_suggestions': {
+        const research = refs?.research;
+        if (!research) throw new Error('[buildOutcomeSdkTools] submit_suggestions requires research refs');
+        return tool(
+          'submit_suggestions',
+          'Record your fix suggestions for this problem on this device. Only visible, OS-compatible catalog items, '
+          + 'the allowlisted built-in actions, short manual steps, or a draft_request hand-off. Nothing here runs. '
+          + 'Call exactly once, as your last action.',
+          RESEARCH_SUBMISSION_SHAPE,
+          async (input) => {
+            const outcome = validateOutcomeToolInput('submit_suggestions', input, research); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded', accepted: outcome.items.length, rejected: outcome.rejected }) }] };
+          },
+        ) as SdkTool;
+      }
       case 'submit_analysis':
         return tool(
           'submit_analysis',

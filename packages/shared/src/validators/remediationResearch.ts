@@ -24,7 +24,10 @@ const item = z.union([
   z.object({ kind: z.literal('draft_request'), brief: text(2000), language: z.enum(['powershell', 'bash', 'python', 'cmd']), ...base }).strict(),
 ]);
 
-export const researchSubmissionSchema = z.object({
+/** Raw zod shape — the SDK `tool()` helper needs a shape, not a schema. */
+export const RESEARCH_SUBMISSION_SHAPE = {
   summary: text(2000),
   items: z.array(item).max(RESEARCH_MAX_ITEMS),
-}).strict() as unknown as z.ZodType<ResearchSubmission>;
+};
+
+export const researchSubmissionSchema = z.object(RESEARCH_SUBMISSION_SHAPE).strict() as unknown as z.ZodType<ResearchSubmission>;
