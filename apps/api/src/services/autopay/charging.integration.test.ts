@@ -544,7 +544,7 @@ import { collectAfterBankSetup } from './bankPayment';
 import { disconnectPartnerStripe } from '../partnerStripe';
 import { pollStripeFinancialEvents } from '../stripeFinancialEventPoller';
 
-async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string) {
+async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`) {
   const seeded = await withSystemDbAccessContext(async () => {
     const token = await mintBillingLinkToken(db, {orgId: f.org.id, invoiceId: f.invoice.id,
       enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 1});
@@ -563,7 +563,7 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string)
     }).returning();
     return {token, setup: setup!};
   });
-  const method = {id: `pm_bank_${suffix}`, type: 'us_bank_account', customer: 'cus_autopay_test',
+  const method = {id: stripeMethodId, type: 'us_bank_account', customer: 'cus_autopay_test',
     us_bank_account: {account_holder_type: 'company', bank_name: 'Test bank', last4: '6789'}} as Stripe.PaymentMethod;
   await persistCapturedAutopayMethod(seeded.setup.id, method, 'activated', seeded.setup.setupIntentId, `mandate_${suffix}`);
   const [saved] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods)
@@ -606,6 +606,54 @@ it('old bank A cannot be collected after replacement B, including replay of comp
   expect(provider.create).not.toHaveBeenCalled();
   expect(provider.confirm).not.toHaveBeenCalled();
   expect(await attempts(f.invoice.id)).toHaveLength(0);
+});
+
+it.each([false, true])('recovers a lost bank create after same-method replacement without confirming old authority (cancelOnly=%s)', async cancelOnly => {
+  const f = await fixture();
+  const original = await bankSetup(f, 'original'); serveBank([original]);
+  const create = provider.create.getMockImplementation()!;
+  provider.create.mockImplementationOnce(async (...args) => {
+    await create(...args);
+    throw new Error('bank create response lost');
+  });
+  await expect(collectAfterBankSetup({invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId: original.session.id!}))
+    .rejects.toThrow('bank create response lost');
+  const [reserved] = await attempts(f.invoice.id);
+  expect(reserved).toMatchObject({state: 'reserved', stripePaymentIntentId: null,
+    paymentMethodId: original.method.id, idempotencyKey: `autopay-bankpay:${original.setup.id}`});
+  expect(provider.confirm).not.toHaveBeenCalled();
+
+  // Complete a real replacement setup that updates the existing method row in place.
+  const replacement = await bankSetup(f, 'replacement', original.method.stripePaymentMethodId);
+  serveBank([original, replacement]);
+  expect(replacement.method).toMatchObject({id: original.method.id, status: 'active', isAutopayMethod: true,
+    stripeSetupIntentId: replacement.setup.setupIntentId});
+  expect(replacement.method.stripeSetupIntentId).not.toBe(original.setup.setupIntentId);
+  // Recovery is permitted inside the 23-hour idempotency safety window.
+  await withSystemDbAccessContext(() => db.update(invoiceCollectionAttempts)
+    .set({createdAt: new Date(Date.now() - 22 * 3_600_000)}).where(eq(invoiceCollectionAttempts.id, reserved!.id)));
+  await resumeCollectionAttempt(reserved!.id, cancelOnly);
+
+  expect(provider.create).toHaveBeenCalledTimes(2);
+  expect(provider.create.mock.calls[1]).toEqual(provider.create.mock.calls[0]);
+  expect(intentsByKey.size).toBe(1);
+  expect(provider.confirm).not.toHaveBeenCalled();
+  expect(provider.cancel).toHaveBeenCalledTimes(1);
+  expect(currentPi.status).toBe('canceled');
+  const recovered = await attempts(f.invoice.id);
+  expect(recovered).toHaveLength(1);
+  expect(recovered[0]).toMatchObject({id: reserved!.id, state: 'canceled', stripePaymentIntentId: currentPi.id});
+  if (!cancelOnly) {
+    const [schedule] = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id)));
+    expect(schedule).toMatchObject({state: 'cancelled', stateReason: 'authority_changed'});
+  }
+  expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments)
+    .where(eq(invoicePayments.invoiceId, f.invoice.id)))).toHaveLength(0);
+  const [setup] = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts)
+    .where(eq(autopaySetupAttempts.id, original.setup.id)));
+  expect(setup!.consentSnapshot).toEqual(original.setup.consentSnapshot);
+  expect(setup!.setupIntentId).toBe(original.setup.setupIntentId);
 });
 
 it('bank pay serializes simultaneous token collection into one distinct provider debit', async () => {

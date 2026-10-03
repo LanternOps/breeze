@@ -424,6 +424,8 @@ async function loadClientCapture(attempt: typeof invoiceCollectionAttempts.$infe
     eq(autopaySetupAttempts.orgId, attempt.orgId), eq(autopaySetupAttempts.id, setupId),
   )).limit(1);
   // The attempt's method FK and unique key hold consumption; accepted consent is immutable.
+  // Same-method replacement can change the method's SetupIntent. Recover with the
+  // original setup; only confirmationDecision checks that it is still current.
   const [method] = await db.select().from(orgPaymentMethods)
     .where(eq(orgPaymentMethods.id, attempt.paymentMethodId)).limit(1);
   const parsed = autopayConsentSnapshotSchema.safeParse(setup?.consentSnapshot);
@@ -431,7 +433,7 @@ async function loadClientCapture(attempt: typeof invoiceCollectionAttempts.$infe
   if (!setup || !bank || !method || bank.invoiceId !== attempt.invoiceId || bank.orgId !== attempt.orgId
     || method.orgId !== attempt.orgId || method.enrollmentId !== setup.enrollmentId
     || method.type !== 'us_bank_account' || !method.accountHolderType
-    || method.stripeSetupIntentId !== setup.setupIntentId || !setup.setupIntentId || bank.currency !== attempt.currency
+    || !setup.setupIntentId || bank.currency !== attempt.currency
     || toMinorUnits(attempt.principalAmount, attempt.currency) > toMinorUnits(bank.principal, bank.currency)
     || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(bank.fee, bank.currency)
     || !setup.stripeCustomerId || setup.outcome !== 'activated') return null;
