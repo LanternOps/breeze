@@ -30,20 +30,22 @@ export function NodeIdentity({ graph, node, onSelectNode, sharedAddressCount = 0
   const seen = when(presence.lastSeenAt);
   const routes = graph.relationships.filter((edge) => edge.kind === 'default_route' && edge.sourceNodeId === node.id)
     .map((edge) => graph.nodes.find((candidate) => candidate.id === edge.targetNodeId)?.label).filter(Boolean);
-  const rows: [string, string | null][] = [
-    [t('grouped.type'), inventory.type?.replaceAll('_', ' ') ?? node.kind],
-    [t('grouped.addresses'), inventory.addresses.join(', ') || null],
-    [t('grouped.mac'), inventory.mac],
-    [t('grouped.vendor'), [inventory.vendor, inventory.model].filter(Boolean).join(' ') || null],
-    [t('grouped.os'), inventory.os],
-    [t('grouped.gateway'), [...new Set(routes)].join(', ') || null],
+  // Rows carry a machine key so behaviour never depends on comparing translated text.
+  const rowLabel = { type: t('grouped.type'), addresses: t('grouped.addresses'), mac: t('grouped.mac'), vendor: t('grouped.vendor'), os: t('grouped.os'), gateway: t('grouped.gateway') };
+  const rows: [key: 'type' | 'addresses' | 'mac' | 'vendor' | 'os' | 'gateway', value: string | null][] = [
+    ['type', inventory.type?.replaceAll('_', ' ') ?? node.kind],
+    ['addresses', inventory.addresses.join(', ') || null],
+    ['mac', inventory.mac],
+    ['vendor', [inventory.vendor, inventory.model].filter(Boolean).join(' ') || null],
+    ['os', inventory.os],
+    ['gateway', [...new Set(routes)].join(', ') || null],
   ];
   const groups = groupsOf(graph, node.id).filter((group) => group.group!.kind === 'network');
   return <div data-testid="topology-identity" className="space-y-3 text-sm">
     <p className="text-muted-foreground" data-testid="topology-presence">{presenceText}{seen ? ` · ${t('grouped.lastSeen', { when: seen })}` : ''}</p>
     <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
-      {rows.filter(([, value]) => value).map(([label, value]) => <div key={label} className="contents"><dt className="text-muted-foreground">{label}</dt><dd className="break-words">{value}
-        {label === t('grouped.addresses') && sharedAddressCount > 0 && <span data-testid="topology-shared-address" className="block text-xs text-muted-foreground">{t('grouped.sharedAddress', { count: sharedAddressCount })}</span>}</dd></div>)}
+      {rows.filter(([, value]) => value).map(([key, value]) => <div key={key} className="contents"><dt className="text-muted-foreground">{rowLabel[key]}</dt><dd className="break-words">{value}
+        {key === 'addresses' && sharedAddressCount > 0 && <span data-testid="topology-shared-address" className="block text-xs text-muted-foreground">{t('grouped.sharedAddress', { count: sharedAddressCount })}</span>}</dd></div>)}
     </dl>
     {groups.length > 0 && <div><p className="font-medium">{t('grouped.networks')}</p><ul className="mt-1 space-y-1">{groups.map((group) => {
       const member = group.group!.members.find((m) => m.nodeId === node.id)!;
