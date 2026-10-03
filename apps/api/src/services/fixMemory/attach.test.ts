@@ -16,7 +16,9 @@ vi.mock('./signatureLoader', () => ({
 vi.mock('./catalog', () => ({ resolveOrgPartnerId: h.partner }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
 vi.mock('../outcomeProbes', () => ({ inSystemDbContext: h.systemCtx }));
+const capture = vi.hoisted(() => vi.fn());
 const research = vi.hoisted(() => vi.fn(async (_input: unknown) => ({ status: 'started', runId: 'r', depth: 'quick' }) as unknown));
+vi.mock('../sentry', () => ({ captureException: capture }));
 vi.mock('./research', () => ({ requestResearch: research }));
 
 import { attachProvenFixes, handleAlertTriggeredForFixMemory, memoryRationale } from './attach';
@@ -34,7 +36,7 @@ describe('attachProvenFixes', () => {
   });
 
   it('writes a memory-origin suggestion for each proven script fix and upgrades an untouched catalog row', async () => {
-    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toBe(1);
+    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toEqual({ proven: 1, attached: 1 });
     expect(h.values).toHaveBeenCalledWith(expect.objectContaining({
       origin: 'memory', targetType: 'script', scriptId: 's-1', deviceId: 'd-1', targetDeviceIds: ['d-1'],
       alertId: 'a-1', status: 'suggested', confidence: null,
@@ -45,10 +47,10 @@ describe('attachProvenFixes', () => {
 
   it('does nothing when the flag is off, the signature is broad, or the source has none', async () => {
     h.flag.mockResolvedValueOnce(false);
-    expect(await attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).toBe(0);
+    expect(await attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).toEqual({ proven: 0, attached: 0 });
     h.sig.mockResolvedValueOnce({ signature: { ...signature, broad: true }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
-    expect(await attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).toBe(0);
-    expect(await attachProvenFixes({ sourceType: 'rca', sourceId: 'x', orgId: 'org-1' })).toBe(0);
+    expect(await attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).toEqual({ proven: 0, attached: 0 });
+    expect(await attachProvenFixes({ sourceType: 'rca', sourceId: 'x', orgId: 'org-1' })).toEqual({ proven: 0, attached: 0 });
     expect(h.values).not.toHaveBeenCalled();
   });
 
@@ -109,7 +111,10 @@ describe('auto research (W2 Task 14)', () => {
   it('a denied research request is not an error (no retry storm)', async () => {
     h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
     research.mockResolvedValueOnce({ status: 'denied', code: 'auto_cap', message: 'cap' });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     await expect(handleAlertTriggeredForFixMemory(evt('high'))).resolves.toBeUndefined();
+    expect(info).toHaveBeenCalledWith('[fixMemory] auto research not started', expect.objectContaining({ code: 'auto_cap' }));
+    info.mockRestore();
   });
 
   it('a thrown research failure never fails the subscriber (memory path is independent)', async () => {
@@ -117,6 +122,23 @@ describe('auto research (W2 Task 14)', () => {
     research.mockRejectedValueOnce(new Error('boom'));
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expect(handleAlertTriggeredForFixMemory(evt('high'))).resolves.toBeUndefined();
+    expect(err).toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, { component: 'fixMemory.autoResearch' });
     err.mockRestore();
+  });
+
+  it('a proven non-script fix (builtin/playbook) counts as proven: no auto research', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [{ ...proven, scriptId: null, scriptName: null, fixKind: 'builtin_action' }], similar: [] });
+    await handleAlertTriggeredForFixMemory(evt('critical'));
+    expect(h.values).not.toHaveBeenCalled();
+    expect(research).not.toHaveBeenCalled();
+  });
+
+  it('missing or non-string severity never auto-researches', async () => {
+    for (const payload of [{ alertId: 'a-1' }, { alertId: 'a-1', severity: 3 }]) {
+      h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+      await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: 'org-1', source: 's', priority: 'normal', payload, metadata: { timestamp: '' } } as never);
+    }
+    expect(research).not.toHaveBeenCalled();
   });
 });

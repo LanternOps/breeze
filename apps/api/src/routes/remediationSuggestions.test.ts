@@ -7,6 +7,9 @@ const dbMocks = vi.hoisted(() => ({
   updateMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   generateMock: vi.fn(),
+  requestResearchMock: vi.fn(),
+  researchStatusMock: vi.fn(),
+  lookupMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
   recordOutcomeMock: vi.fn(async () => ({ state: 'pending', stateReason: null, humanVote: null })),
@@ -28,7 +31,7 @@ const withAuthDbAccessContextMock = vi.hoisted(() => vi.fn(async (_auth: unknown
   }
 }));
 
-let currentPermissions: { allowedSiteIds?: string[] } | undefined;
+let currentPermissions: { allowedSiteIds?: string[]; permissions?: Array<{ resource: string; action: string }> } | undefined;
 
 vi.mock('../db', () => ({
   db: {
@@ -88,7 +91,7 @@ vi.mock('../middleware/auth', () => ({
       orgCondition: () => undefined,
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
     });
-    c.set('permissions', currentPermissions ?? {});
+    c.set('permissions', currentPermissions ?? { permissions: [] });
     return next();
   }),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
@@ -104,6 +107,17 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../services/remediationSuggestions', () => ({
   generateRemediationSuggestions: dbMocks.generateMock,
 }));
+
+vi.mock('../services/fixMemory/research', () => ({
+  requestResearch: dbMocks.requestResearchMock,
+  researchStatusForSource: dbMocks.researchStatusMock,
+}));
+vi.mock('../services/fixMemory/lookup', () => ({ lookupFixes: dbMocks.lookupMock }));
+vi.mock('../services/fixMemory/signatureLoader', () => ({
+  signatureForSource: vi.fn(async () => ({ signature: { broad: false } })),
+  sourceRefFor: vi.fn(() => ({ kind: 'alert', alertId: 'a-1' })),
+}));
+vi.mock('../services/fixMemory/catalog', () => ({ resolveOrgPartnerId: vi.fn(async () => 'p-1') }));
 
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitRemediationSuggestionFeedback: dbMocks.emitFeedbackMock,
@@ -1181,5 +1195,104 @@ describe('remediation suggestion routes', () => {
     const res = await app.request('/remediation-suggestions?sourceType=alert&sourceId=a-1', { headers: { Authorization: 'Bearer token' } });
     const body = await res.json();
     expect(body.data[0]).toMatchObject({ origin: 'memory', outcome: { state: 'holding' } });
+  });
+});
+
+describe('research / memory / draft-brief routes', () => {
+  let app: Hono;
+  const ORG = '11111111-1111-4111-8111-111111111111';
+  const ALERT = '66666666-6666-4666-8666-666666666666';
+  const auth = { headers: { Authorization: 'Bearer token' } };
+  const post = (body: unknown) => ({ method: 'POST', headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    dbMocks.loadSummariesMock.mockResolvedValue(new Map());
+    currentPermissions = undefined;
+    app = new Hono();
+    app.route('/remediation-suggestions', remediationSuggestionRoutes);
+  });
+
+  it('POST /research starts deep research and 202s', async () => {
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'run-9', depth: 'deep' });
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'deep' }));
+    expect(res.status).toBe(202);
+    expect((await res.json()).data).toEqual({ status: 'started', runId: 'run-9', depth: 'deep' });
+    expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG, sourceType: 'alert', sourceId: ALERT, depth: 'deep', trigger: 'manual', actorUserId: 'user-1' }));
+  });
+
+  it('POST /research answers 200 when research is already running', async () => {
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'already_running', runId: 'run-9', depth: 'quick' });
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['credits_exhausted', 402], ['daily_budget', 402], ['monthly_budget', 402],
+    ['plan_gate', 403], ['ai_disabled', 403], ['flag_off', 403], ['permission', 403],
+    ['source_not_found', 404],
+    ['max_concurrent_research_runs', 409], ['research_auto_cap', 409], ['model_unavailable', 409], ['research_baseline_not_system_provisioned', 409],
+  ])('POST /research maps denial %s to %i with the code verbatim in the body', async (code, status) => {
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'denied', code, message: 'm' });
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error: 'm', code });
+  });
+
+  it('POST /research refuses an org the caller cannot access before starting anything', async () => {
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: '99999999-9999-4999-8999-999999999999' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /research returns the latest run state for the source', async () => {
+    dbMocks.researchStatusMock.mockResolvedValueOnce({ runId: 'run-9', depth: 'quick', status: 'running', errorCode: null, noSafeFix: false, finishedAt: null });
+    const res = await app.request(`/remediation-suggestions/research?sourceType=alert&sourceId=${ALERT}`, auth);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ status: 'running' });
+    expect(dbMocks.researchStatusMock).toHaveBeenCalledWith({ orgId: ORG, sourceType: 'alert', sourceId: ALERT });
+  });
+
+  it('GET /memory returns proven and similar fixes without touching research', async () => {
+    dbMocks.lookupMock.mockResolvedValueOnce({ signature: {}, proven: [{ id: 'f1' }], similar: [{ id: 'f2' }] });
+    const res = await app.request(`/remediation-suggestions/memory?sourceType=alert&sourceId=${ALERT}`, auth);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual({ proven: [{ id: 'f1' }], similar: [{ id: 'f2' }] });
+    expect(dbMocks.lookupMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG, partnerId: 'p-1', limit: 5 }));
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+    expect(dbMocks.researchStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /draft-brief only serves script_draft rows', async () => {
+    mockSuggestionLoad({ ...baseSuggestion, targetType: 'script_draft', parameters: { brief: 'Clear queue', language: 'powershell' } });
+    const ok = await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth);
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).data).toEqual({ brief: 'Clear queue', language: 'powershell', title: baseSuggestion.title });
+    mockSuggestionLoad(baseSuggestion);
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(400);
+  });
+
+  it('GET /draft-brief 404s an unknown suggestion', async () => {
+    dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(404);
+  });
+
+  describe('Generate research gating', () => {
+    const gen = () => app.request('/remediation-suggestions/generate', post({ sourceType: 'anomaly', sourceId: baseSuggestion.sourceId }));
+    const result = { orgId: ORG, sourceType: 'anomaly', sourceId: baseSuggestion.sourceId, skipped: false, suggestions: [], research: { status: 'started', runId: 'r', depth: 'quick' } };
+
+    it('passes allowResearch=true only with ai_sessions:use and returns the research outcome', async () => {
+      currentPermissions = { permissions: [{ resource: 'ai_sessions', action: 'use' }] };
+      dbMocks.generateMock.mockResolvedValueOnce(result);
+      const res = await gen();
+      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: true }));
+      expect((await res.json()).research).toEqual(result.research);
+    });
+
+    it('passes allowResearch=false without that permission', async () => {
+      dbMocks.generateMock.mockResolvedValueOnce(result);
+      await gen();
+      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: false }));
+    });
   });
 });

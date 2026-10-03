@@ -29,7 +29,7 @@ import { resolveOrgPartnerId } from './catalog';
 
 export type ResearchTrigger = 'manual' | 'auto';
 export type ResearchDenialCode =
-  | AiDenialReason | AgentRunSkipReason | 'flag_off' | 'source_not_found' | 'no_device' | 'auto_cap'
+  | AiDenialReason | AgentRunSkipReason | 'flag_off' | 'source_not_found' | 'no_device' | 'auto_cap' | 'permission'
   | 'research_baseline_not_system_provisioned';
 export type ResearchRequestResult =
   | { status: 'started' | 'already_running' | 'already_done'; runId: string; depth: ResearchDepth }

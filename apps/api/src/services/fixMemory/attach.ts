@@ -9,6 +9,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { remediationSuggestions } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
+import { captureException } from '../sentry';
 import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { inSystemDbContext } from '../outcomeProbes';
 import { resolveOrgPartnerId } from './catalog';
@@ -27,14 +28,15 @@ export async function attachProvenFixes(input: {
   sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca';
   sourceId: string;
   orgId: string;
-}): Promise<number> {
-  if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return 0;
+}): Promise<{ proven: number; attached: number }> {
+  const none = { proven: 0, attached: 0 };
+  if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return none;
   const ref = sourceRefFor({ sourceType: input.sourceType, sourceId: input.sourceId });
-  if (!ref) return 0;
+  if (!ref) return none;
   const resolved = await signatureForSource(ref);
-  if (!resolved || resolved.signature.broad) return 0;
+  if (!resolved || resolved.signature.broad) return none;
   const partnerId = await resolveOrgPartnerId(input.orgId);
-  if (!partnerId) return 0;
+  if (!partnerId) return none;
 
   const { proven } = await lookupFixes({ orgId: input.orgId, partnerId, signature: resolved.signature, limit: ATTACH_LIMIT });
   let attached = 0;
@@ -74,7 +76,7 @@ export async function attachProvenFixes(input: {
     });
     attached += 1;
   }
-  return attached;
+  return { proven: proven.length, attached };
 }
 
 /** Durable subscriber 'fix-memory-attach' on alert.triggered (W1) + auto research (W2). */
@@ -82,15 +84,15 @@ export async function handleAlertTriggeredForFixMemory(event: BreezeEvent): Prom
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const alertId = typeof payload.alertId === 'string' ? payload.alertId : null;
   if (!alertId || !event.orgId) return;
-  const attached = await inSystemDbContext(
+  const { proven } = await inSystemDbContext(
     () => attachProvenFixes({ sourceType: 'alert', sourceId: alertId, orgId: event.orgId }),
     'fixMemory.attach',
   );
-  // Spec P3: LLM research runs automatically only for high/critical severity when memory has no hit.
+  // Spec P3: LLM research runs automatically only for high/critical severity when memory has NO proven fix (a proven non-script fix still counts).
   // Dedupe, the per-org hourly cap and credits are requestResearch's job. A refusal is an answer, and a
   // research failure must never fail this durable subscriber (it would retry the already-done attach).
   const severity = typeof payload.severity === 'string' ? payload.severity : null;
-  if (attached > 0 || (severity !== 'high' && severity !== 'critical')) return;
+  if (proven > 0 || (severity !== 'high' && severity !== 'critical')) return;
   try {
     const result = await inSystemDbContext(
       () => requestResearch({ orgId: event.orgId, sourceType: 'alert', sourceId: alertId, depth: 'quick', trigger: 'auto', actorUserId: null }),
@@ -101,5 +103,6 @@ export async function handleAlertTriggeredForFixMemory(event: BreezeEvent): Prom
     }
   } catch (err) {
     console.error('[fixMemory] auto research failed', { orgId: event.orgId, alertId, err });
+    captureException(err, undefined, { component: 'fixMemory.autoResearch' });
   }
 }

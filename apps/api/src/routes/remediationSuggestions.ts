@@ -5,12 +5,16 @@ import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
+import { authMiddleware, type AuthContext, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitters';
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
+import { requestResearch, researchStatusForSource } from '../services/fixMemory/research';
+import { lookupFixes } from '../services/fixMemory/lookup';
+import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
+import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
 import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
@@ -43,6 +47,32 @@ const generateBodySchema = z.object({
   deviceId: z.string().uuid().optional(),
   limit: z.number().int().min(1).max(10).optional(),
 });
+
+const researchSourceTypeSchema = z.enum(['alert', 'anomaly', 'correlation']);
+const researchBodySchema = z.object({
+  sourceType: researchSourceTypeSchema,
+  sourceId: z.string().uuid(),
+  depth: z.enum(['quick', 'deep']),
+  orgId: z.string().uuid().optional(),
+});
+const sourceQuerySchema = z.object({
+  sourceType: researchSourceTypeSchema,
+  sourceId: z.string().uuid(),
+  orgId: z.string().uuid().optional(),
+});
+// Denial code -> HTTP status. The code itself always reaches the client verbatim
+// (the panel switches on it); anything not listed is a 409 "can't start now".
+const DENIAL_STATUS: Record<string, 402 | 403 | 404> = {
+  credits_exhausted: 402, daily_budget: 402, monthly_budget: 402,
+  plan_gate: 403, ai_disabled: 403, flag_off: 403, permission: 403,
+  source_not_found: 404,
+};
+
+/** The org a research/memory request targets, or null when the caller cannot act on it. */
+function resolveOrgForSource(auth: AuthContext, orgId: string | undefined): string | null {
+  if (orgId) return auth.canAccessOrg(orgId) ? orgId : null;
+  return auth.orgId ?? null;
+}
 
 const updateBodySchema = z.object({
   status: z.enum(['accepted', 'edited', 'rejected', 'executed', 'failed']),
@@ -658,6 +688,8 @@ remediationSuggestionRoutes.post(
     const result = await generateRemediationSuggestions({
       ...input,
       actorUserId: auth.user.id,
+      allowResearch: Array.isArray(perms?.permissions)
+        && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
     });
     const visible = await filterSiteAllowedSuggestions(result.suggestions, perms);
 
@@ -678,8 +710,97 @@ remediationSuggestionRoutes.post(
     const outcomes = await loadOutcomeSummaries(visible.map((row) => row.id));
     return c.json({
       skipped: result.skipped,
+      research: result.research,
       data: visible.map((row) => serializeSuggestion(row, outcomes.get(row.id) ?? null)),
     }, result.skipped ? 200 : 201);
+  }
+);
+
+remediationSuggestionRoutes.post(
+  '/research',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+  zValidator('json', researchBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    const orgId = resolveOrgForSource(auth, body.orgId);
+    if (!orgId) {
+      return c.json({ error: body.orgId ? 'Organization not found or access denied' : 'Select an organization.' }, body.orgId ? 403 : 400);
+    }
+    // requestResearch runs under this request's RLS context: a source from another org is simply not found.
+    const result = await requestResearch({
+      orgId, sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
+      trigger: 'manual', actorUserId: auth.user.id,
+    });
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ml.remediation_suggestions.research',
+      resourceType: 'remediation_suggestion',
+      details: {
+        sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
+        result: result.status, code: result.status === 'denied' ? result.code : undefined,
+      },
+    });
+    if (result.status === 'denied') {
+      return c.json({ error: result.message, code: result.code }, DENIAL_STATUS[result.code] ?? 409);
+    }
+    return c.json({ data: result }, result.status === 'started' ? 202 : 200);
+  }
+);
+
+remediationSuggestionRoutes.get(
+  '/research',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', sourceQuerySchema),
+  async (c) => {
+    const q = c.req.valid('query');
+    const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
+    if (!orgId) return c.json({ data: null });
+    return c.json({ data: await researchStatusForSource({ orgId, sourceType: q.sourceType, sourceId: q.sourceId }) });
+  }
+);
+
+// Memory never depends on research: this reads fix_memory only, so it renders
+// whether research is running, denied or failed.
+remediationSuggestionRoutes.get(
+  '/memory',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action),
+  zValidator('query', sourceQuerySchema),
+  async (c) => {
+    const q = c.req.valid('query');
+    const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
+    const ref = sourceRefFor({ sourceType: q.sourceType, sourceId: q.sourceId });
+    const resolved = orgId && ref ? await signatureForSource(ref) : null;
+    const partnerId = orgId ? await resolveOrgPartnerId(orgId) : null;
+    if (!orgId || !resolved || !partnerId) return c.json({ data: { proven: [], similar: [] } });
+    const out = await lookupFixes({ orgId, partnerId, signature: resolved.signature, limit: 5 });
+    return c.json({ data: { proven: out.proven, similar: out.similar } });
+  }
+);
+
+remediationSuggestionRoutes.get(
+  '/:id/draft-brief',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  async (c) => {
+    const auth = c.get('auth');
+    const conditions: SQL[] = [eq(remediationSuggestions.id, c.req.param('id') ?? '')];
+    const orgCond = auth.orgCondition(remediationSuggestions.orgId);
+    if (orgCond) conditions.push(orgCond);
+    const [row] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);
+    if (!row) return c.json({ error: 'Suggestion not found' }, 404);
+    if (row.targetType !== 'script_draft') return c.json({ error: 'not_a_draft_request' }, 400);
+    const p = (row.parameters ?? {}) as { brief?: unknown; language?: unknown };
+    return c.json({
+      data: {
+        brief: typeof p.brief === 'string' ? p.brief : '',
+        language: typeof p.language === 'string' ? p.language : 'powershell',
+        title: row.title,
+      },
+    });
   }
 );
 
