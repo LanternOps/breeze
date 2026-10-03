@@ -169,6 +169,8 @@ describe('visibility-gate handling in portal pages', () => {
  * - account-disabled: the destination — guarding it would loop.
  * - quote/[token], invoice/[token], invoice/return: the URL token IS the
  *   capability; these documents are emailed to people who never sign in.
+ * - autopay token pages (including stop/skip) and return: public payment
+ *   capabilities; skip loads token state with GET and acts only on explicit POST.
  */
 const UNAUTHENTICATED_PAGES = new Set([
   'index.astro',
@@ -182,6 +184,7 @@ const UNAUTHENTICATED_PAGES = new Set([
   'invoice/return.astro',
   'autopay/[token].astro',
   'autopay/[token]/stop.astro',
+  'autopay/[token]/skip.astro',
   'autopay/return.astro',
 ]);
 

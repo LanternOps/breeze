@@ -140,7 +140,7 @@ export default function EmailTemplatesTab() {
                     <span className="text-sm font-medium">
                       {AUTOPAY_TEMPLATE_IDS.has(id)?t(/* i18n-dynamic */ `emailTemplates.labels.${id}`):id === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
                         :id === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
-                        :id === 'invoice_autopay' ? tBilling('autopay.noticeTemplate') : emailTemplateLabel(id)}
+                        :id === 'invoice_autopay' ? tBilling('autopay.noticeTemplate') : t(/* i18n-dynamic */ `emailTemplates.labels.${id}`, { defaultValue: emailTemplateLabel(id) })}
                     </span>
                     <span className="text-xs text-muted-foreground" data-testid={`email-template-status-${id}`}>
                       {isCustom(templates[id])?t('emailTemplates.custom'):t('emailTemplates.usingDefault')}

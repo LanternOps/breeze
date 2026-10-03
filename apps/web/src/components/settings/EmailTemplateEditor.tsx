@@ -48,6 +48,19 @@ const SAMPLE_VARS: Record<string, string> = {
   due_date: '2026-09-01',
   invite_url: 'https://portal.example.com/accept-invite?token=abc',
   cta_button: 'Button',
+  amount_due: '$1,200.00',
+  charge_date: '2026-09-01',
+  fee_amount: '$0.00',
+  invoice_link: 'https://portal.example.com/invoice/TOKEN',
+  amount_paid: '$1,200.00',
+  total_charged: '$1,200.00',
+  paid_on: '2026-09-01',
+  balance_remaining: '$0.00',
+  failure_text: 'The payment could not be completed.',
+  action_link: 'https://portal.example.com/invoice/TOKEN',
+  action_label: 'View invoice',
+  days_overdue: '7',
+  pay_link: 'https://portal.example.com/invoice/TOKEN',
   client_name:'Example client',
   setup_link:'https://portal.example.test/autopay/example-token',
   ach_mode_text:'Bank account (recommended) or card',
@@ -173,6 +186,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
   const { t } = useTranslation('settings');
   const { t: tBilling } = useTranslation('billing');
   const hasCta = emailTemplateHasCta(templateId);
+  const insertVariables = [...new Set([...varsForEmailTemplate(templateId), ...(hasCta ? ['cta_button'] : [])])];
   const initial = shownFields(templateId, value);
   const [subject, setSubject] = useState(initial.subject);
   const [heading, setHeading] = useState(initial.heading);
@@ -235,7 +249,9 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
     <div className="space-y-4" data-testid="email-template-editor">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">{templateId === 'payment_reminder' ? tBilling('reminders.templates.paymentReminder')
-          : templateId === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue') : emailTemplateLabel(templateId)}</h2>
+          : templateId === 'payment_overdue' ? tBilling('reminders.templates.paymentOverdue')
+          : templateId === 'invoice_autopay' ? tBilling('autopay.noticeTemplate')
+          : t(/* i18n-dynamic */ `emailTemplates.labels.${templateId}`, { defaultValue: emailTemplateLabel(templateId) })}</h2>
         <button
           type="button"
           onClick={onBack}
@@ -302,7 +318,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
 
       <div className="flex flex-wrap items-center gap-1">
         <span className="text-xs text-muted-foreground">{t('emailTemplates.insert')}</span>
-        {varsForEmailTemplate(templateId).map((key) => (
+        {insertVariables.map((key) => (
           <button
             key={key}
             type="button"

@@ -1341,7 +1341,20 @@
       "stopped_by": "Who stopped automatic payments",
       "open_invoices_text": "Open invoice summary",
       "expires_on": "Card expiry date",
-      "update_link": "Payment method update link"
+      "update_link": "Payment method update link",
+      "amount_due": "Ödenecek tutar",
+      "charge_date": "Tahsilat tarihi",
+      "fee_amount": "İşlem ücreti",
+      "invoice_link": "Fatura bağlantısı",
+      "amount_paid": "Ödenen tutar",
+      "total_charged": "Tahsil edilen toplam",
+      "paid_on": "Ödeme tarihi",
+      "balance_remaining": "Kalan bakiye",
+      "failure_text": "Hata ayrıntıları",
+      "action_link": "İşlem bağlantısı",
+      "action_label": "İşlem etiketi",
+      "days_overdue": "Gecikme günü",
+      "pay_link": "Ödeme bağlantısı"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1351,7 +1364,9 @@
       "autopay_stopped": "Automatic payments stopped",
       "autopay_paused": "Otomatik ödemeler duraklatıldı",
       "autopay_resumed": "Otomatik ödemeler devam ediyor",
-      "card_expiring": "Saved card expiring"
+      "card_expiring": "Saved card expiring",
+      "payment_receipt": "Çevrimiçi ödeme makbuzu",
+      "payment_failed": "Ödeme tamamlanamadı"
     }
   },
   "inboundEmail": {

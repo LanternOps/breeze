@@ -75,6 +75,7 @@ describe('EmailTemplatesTab', () => {
       'autopay_stopped','autopay_paused','autopay_resumed',
       'card_expiring',
       'payment_reminder', 'payment_overdue',
+      'payment_receipt', 'payment_failed',
     ]);
     expect(screen.getByTestId('autopay-email-template-group').contains(screen.getByTestId('email-template-row-invoice_autopay'))).toBe(true);
     const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']);
@@ -172,6 +173,22 @@ it.each([
   routeFetch();
   render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
   const row = await screen.findByTestId(`autopay-template-${id}`);
+  expect(row).toHaveTextContent(label);
+  fireEvent.click(row);
+  expect(within(await screen.findByTestId('email-template-editor')).getByRole('heading', { name: label })).toBeInTheDocument();
+});
+
+it.each([
+  ['payment_receipt', 'Reçu de paiement'],
+  ['payment_failed', 'Le paiement n’a pas pu être effectué'],
+])('translates the %s row and editor heading', async (id, label) => {
+  const translated = createInstance();
+  await translated.init({ lng: 'fr', fallbackLng: false, defaultNS: 'settings',
+    resources: { fr: { settings: { emailTemplates: { labels: { [id]: label } } } } },
+    interpolation: { escapeValue: false } });
+  routeFetch();
+  render(<I18nextProvider i18n={translated}><EmailTemplatesTab /></I18nextProvider>);
+  const row = await screen.findByTestId(`email-template-row-${id}`);
   expect(row).toHaveTextContent(label);
   fireEvent.click(row);
   expect(within(await screen.findByTestId('email-template-editor')).getByRole('heading', { name: label })).toBeInTheDocument();
