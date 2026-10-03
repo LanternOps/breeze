@@ -28,7 +28,9 @@ set -euo pipefail
 # Exceptions: an advisory that cannot be fixed by upgrading is suppressed ONLY
 # through a reviewed entry in scripts/security/npm-audit-exceptions.json. Its
 # header states the bar (no fixed release exists, the package is unreachable
-# from every production artifact, a tracking issue exists). The rules this
+# from every production artifact, or its vulnerable function is provably never
+# called at runtime with a negative test and positive control recorded in the
+# entry; a tracking issue exists). The rules this
 # script enforces on that file:
 #   - an entry suppresses one exact advisory id on one exact package name;
 #     the same id on another package, or another id on the same package,
