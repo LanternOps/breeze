@@ -4,12 +4,16 @@ import {
   completeConsentResultSchema,
   retestRequestSchema,
   retestResultSchema,
+  verifyConsentIdentityRequestSchema,
+  verifyConsentIdentityResultSchema,
   writeActionRequestSchema,
   writeActionResultSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
   type RetestRequest,
   type RetestResult,
+  type VerifyConsentIdentityRequest,
+  type VerifyConsentIdentityResult,
   type WriteActionRequest,
   type WriteActionResult,
 } from '@breeze/shared/m365';
@@ -19,7 +23,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const TOKEN_LIFETIME_SECONDS = 60;
 
-type ExecutorOperation = 'complete-consent' | 'retest' | 'execute-action';
+type ExecutorOperation = 'complete-consent' | 'verify-identity' | 'retest' | 'execute-action';
 
 export class GraphActionsExecutorClientError extends Error {
   readonly code = 'executor_unavailable' as const;
@@ -32,6 +36,8 @@ export class GraphActionsExecutorClientError extends Error {
 
 export interface GraphActionsExecutorClient {
   completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
+  /** Identity-first consent, phase 1 (#7910). Not yet called by any route (W2). */
+  verifyConsentIdentity(input: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retestCustomerGraphActions(input: RetestRequest): Promise<RetestResult>;
   executeWriteAction(input: WriteActionRequest): Promise<WriteActionResult>;
 }
@@ -72,6 +78,7 @@ function exactExecutorOrigin(value: string): URL {
 
 const OPERATION_ENDPOINT_PATHS: Record<ExecutorOperation, string> = {
   'complete-consent': '/v1/complete-consent',
+  'verify-identity': '/v1/verify-identity',
   retest: '/v1/retest',
   'execute-action': '/v1/execute-action',
 };
@@ -152,7 +159,7 @@ export function createGraphActionsExecutorClient(
 
   async function invoke<T>(
     operation: ExecutorOperation,
-    input: CompleteConsentRequest | RetestRequest | WriteActionRequest,
+    input: CompleteConsentRequest | VerifyConsentIdentityRequest | RetestRequest | WriteActionRequest,
     parseResponse: (value: unknown) => T,
     maxBytes: number = maxResponseBytes,
   ): Promise<T> {
@@ -204,6 +211,11 @@ export function createGraphActionsExecutorClient(
       const parsed = completeConsentRequestSchema.safeParse(input);
       if (!parsed.success) return Promise.reject(unavailable());
       return invoke('complete-consent', parsed.data, (value) => completeConsentResultSchema.parse(value));
+    },
+    verifyConsentIdentity(input) {
+      const parsed = verifyConsentIdentityRequestSchema.safeParse(input);
+      if (!parsed.success) return Promise.reject(unavailable());
+      return invoke('verify-identity', parsed.data, (value) => verifyConsentIdentityResultSchema.parse(value));
     },
     retestCustomerGraphActions(input) {
       const parsed = retestRequestSchema.safeParse(input);
