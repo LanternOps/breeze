@@ -1,3 +1,4 @@
+import { autopayReasonKey } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -113,9 +114,10 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     if (autopaySaving) return;
     setAutopaySaving(true);
     try {
-      await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay`, {
+      await runAction<{status?:string}>({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ excluded }),
-      }), errorFallback: t('autopay.failed'), successMessage: t('autopay.saved') });
+      }), errorFallback: t('autopay.failed'), successMessage: result => result.status === 'pending'
+        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved') });
       await onChanged();
     } catch (error) { handleActionError(error, t('autopay.failed')); }
     finally { setAutopaySaving(false); }
@@ -530,7 +532,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           {detail.autopay && <section className="space-y-2 rounded-lg border bg-card p-4" data-testid="autopay-invoice-panel" aria-label={t('autopay.title')} aria-busy={autopaySaving}>
             <h3 className="font-semibold">{t('autopay.title')}</h3>
             <p className="text-sm">{t(/* i18n-dynamic */ `autopay.states.${detail.autopay.state}`, { defaultValue: detail.autopay.state })}</p>
-            {detail.autopay.reason && <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `autopay.reasons.${detail.autopay.reason}`, { defaultValue: detail.autopay.reason, nsSeparator: false })}</p>}
+            {detail.autopay.reason && <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ autopayReasonKey(detail.autopay.reason), {nsSeparator:false})}</p>}
             {detail.autopay.collectOn && <p className="text-sm">{t('autopay.chargeDate', { date: formatDate(detail.autopay.collectOn) })}</p>}
             <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" data-testid="autopay-invoice-excluded"
               checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}

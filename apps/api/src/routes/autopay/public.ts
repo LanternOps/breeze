@@ -1,3 +1,4 @@
+import { captureException } from '../../services/sentry';
 import {getConfirmPaymentView,confirmInvoicePayment} from '../../services/autopay/confirmPayment';
 import { HTTPException } from 'hono/http-exception';
 import { portalBase } from '../../services/portalUrl';
@@ -21,7 +22,8 @@ publicAutopayRoutes.onError((error, c) => {
     return c.json({ error: 'Invalid request' }, error.status);
   }
   if ((c.req.path.endsWith('/skip')||c.req.path.endsWith('/confirm')) && !(error instanceof InvoiceServiceError)) {
-    console.error('[autopay] Skip request failed');
+    console.error('[autopay] Public payment control failed', error);
+    captureException(error,undefined,{autopay_phase:c.req.path.endsWith('/skip')?'skip':'confirm'});
     return c.json({ error: 'The request could not be completed.' }, 500);
   }
   return autopayErrorHandler(error, c);
@@ -95,6 +97,9 @@ publicAutopayRoutes.post('/:token/confirm',boundary('confirm_payment'),publicJso
     try{return c.json(await confirmInvoicePayment(c.req.param('token')));}
     catch(error){
       if(error instanceof InvoiceServiceError&&error.status===404)return c.json({error:'Link unavailable'},404);
-      return c.json({error:'Payment could not be confirmed. Refresh the invoice to check its status.'},409);
+      console.error('[autopay] Public confirmation failed',error);
+      captureException(error,undefined,{autopay_phase:'confirm'});
+      if(error instanceof InvoiceServiceError && error.status<500)return c.json({error:error.message},error.status);
+      return c.json({error:'Payment could not be confirmed. Refresh the invoice to check its status.'},500);
     }
   });

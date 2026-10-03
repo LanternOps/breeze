@@ -1,3 +1,5 @@
+vi.mock('./scheduler', async importOriginal => ({...await importOriginal<typeof import('./scheduler')>(), closeSettledAutopaySchedules:vi.fn()}));
+vi.mock('./attemptProvenance', () => ({ resolveAttemptProvenance:h.accountProvenance }));
 import {withClientPaymentAuthority} from './clientPaymentAuthority';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -11,7 +13,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(),
-  capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
+  capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
 vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: client }));
@@ -110,7 +112,7 @@ const update = (table: unknown, patch: object) => h.rows.set(table, [{ ...h.rows
 const attempts = () => h.writes.filter(w => w.table === invoiceCollectionAttempts);
 
 beforeEach(() => {
-  vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-20T00:00Z'));
+  vi.resetAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-20T00:00Z'));
   h.depth = 0; h.persist = false; h.mappingError = false; h.rows.clear(); h.writes.length = 0; h.reads.length = 0;
   h.beforeRead.mockReset();
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
@@ -120,6 +122,7 @@ beforeEach(() => {
       billingAddressCountry: 'US', billingAddressRegion: 'NY' }]]] as const) h.rows.set(table, structuredClone([...rows]));
   h.method.mockImplementation(async () => ({ ...method }));
   h.provenance.mockResolvedValue([invoice.orgId]);
+  h.accountProvenance.mockResolvedValue({stripeAccountId:'acct_test',stripeCustomerId:'cus_test',methodType:'card'});
   h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true);
   h.readiness.mockResolvedValue({ ready: true, stripeAccountId: 'acct_test', accountCountry: 'US' });
   h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
@@ -359,7 +362,7 @@ it('recovers accepted confirmation by retrieval without a second create or confi
   expect(currentAttempt().state).toBe('succeeded');
 });
 it.each([true, false])('quarantines a 24-hour missing ID with durable attention (scheduled=%s)', async scheduled => {
-  recovery(); update(invoiceCollectionAttempts, { createdAt: new Date('2026-10-19T00:00Z'),
+  recovery();h.accountProvenance.mockRejectedValue(new Error('Missing provenance')); update(invoiceCollectionAttempts, { createdAt: new Date('2026-10-19T00:00Z'),
     scheduleId: scheduled ? schedule.id : null, initiatedBy: scheduled ? 'scheduler' : 'client_on_session' });
   await resumeCollectionAttempt(attempt.id); await resumeCollectionAttempt(attempt.id);
   expect(h.create).not.toHaveBeenCalled(); expect(h.confirm).not.toHaveBeenCalled();
@@ -551,7 +554,7 @@ it('refuses a principal larger than the terms now authorized for confirmation', 
   expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
 });
 it('retains pending control visibility while quarantining an unknown create', async () => {
-  recovery(); update(invoiceCollectionAttempts, { createdAt: new Date('2026-10-19T00:00Z') });
+  recovery();h.accountProvenance.mockRejectedValue(new Error('Missing provenance')); update(invoiceCollectionAttempts, { createdAt: new Date('2026-10-19T00:00Z') });
   update(invoiceAutopaySchedules, { stateReason: 'control_pending:skip', clientSkippedAt: new Date() });
   await reconcilePendingControls();
   expect(currentAttempt()).toMatchObject({ state: 'reserved', failureCode: 'provider_create_unknown' });
@@ -745,7 +748,7 @@ it('continues beyond 200 failed collections and counts failure, deferral, and cr
   await expect(runAutopayCollection(now)).resolves.toEqual({ attempted: 1, deferred: 201 });
   expect(h.revocation.mock.calls.map(([request]) => request.invoiceId)).toEqual(rows.map(row => row.invoiceId));
   expect(h.capture).toHaveBeenCalledTimes(200);
-  expect(h.capture).toHaveBeenCalledWith(failure);
+  expect(h.capture).toHaveBeenCalledWith(failure,undefined,expect.objectContaining({autopay_phase:'collection'}));
   expect(queries).toHaveLength(3);
   expect(queries[1]!.params[4]).toBe(rows[199]!.id);
   expect(queries[2]!.params[4]).toBe(rows[201]!.id);
@@ -839,3 +842,131 @@ it.each(['new method', 'new setup for the same method'])(
     expect(currentAttempt().state).toBe('canceled');
   },
 );
+
+it.each([
+  ['StripeInvalidRequestError', 'amount_too_small', false],
+  ['StripeInvalidRequestError', 'resource_missing', true],
+  ['StripeCardError', 'card_declined', true],
+] as const)('releases a definitive create rejection %s/%s', async (type, code, unusable) => {
+  recovery();
+  h.create.mockRejectedValue(Object.assign(new Error(code), { type, code, statusCode: 400, param: code === 'resource_missing' ? 'payment_method' : undefined }));
+  await resumeCollectionAttempt(attempt.id);
+  expect(currentAttempt()).toMatchObject({ state: 'failed', failureClass: 'hard', failureCode: code });
+  expect(h.rows.get(invoiceAutopaySchedules)![0].state).toBe('failed');
+  expect(h.confirm).not.toHaveBeenCalled();
+  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, unusable ? 'update' : 'pay');
+  expect(h.unusable).toHaveBeenCalledTimes(unusable ? 1 : 0);
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'payment.failed_final' }));
+});
+it('cancels an unconfirmed intent after a definitive confirm error', async () => {
+  recovery(true);
+  h.confirm.mockRejectedValue(Object.assign(new Error('Mandate missing'), { type: 'StripeInvalidRequestError', payment_intent: pi }));
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+});
+
+it('cancels and releases action-required attempts after the 14-day confirm TTL', async () => {
+  recovery(true); update(invoiceCollectionAttempts, { state: 'requires_action', updatedAt: new Date('2026-10-05') });
+  update(invoiceAutopaySchedules, { state: 'action_required' });
+  h.piRetrieve.mockResolvedValue({ ...pi, status: 'requires_action' });
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'action_required_expired' });
+  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, 'expired');
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention' }));
+});
+
+it('marks a missing provider method unusable and raises transactional attention', async () => {
+  h.retrieve.mockRejectedValueOnce(Object.assign(new Error('missing method'), { type:'StripeInvalidRequestError',code:'resource_missing' }));
+  expect(await reserveCollection(input)).toMatchObject({outcome:'deferred',reason:'method_not_usable'});
+  expect(h.unusable).toHaveBeenCalledWith(expect.anything(),method.id,'resource_missing');
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({event:'autopay.needs_attention'}));
+});
+it('raises deduped attention for a rejected Stripe credential', async () => {
+  h.retrieve.mockRejectedValue(Object.assign(new Error('revoked'),{type:'StripeAuthenticationError'}));
+  await reserveCollection(input); await reserveCollection(input);
+  expect(h.staff).toHaveBeenCalledTimes(2);
+  expect(h.staff.mock.calls[0]![1].dedupeKey).toBe(h.staff.mock.calls[1]![1].dedupeKey);
+});
+it('fails a collection job when every selected row throws and reports row identities', async () => {
+  mockCollectionCandidates([schedule],new Date());
+  h.revocation.mockRejectedValue(new Error('provider unavailable'));
+  await expect(runAutopayCollection()).rejects.toThrow();
+  expect(h.capture).toHaveBeenCalledWith(expect.any(Error),undefined,expect.objectContaining({invoice_id:invoice.id,schedule_id:schedule.id}));
+});
+it('reports an immediate definitive rejection as failed rather than created', async () => {
+  recovery();
+  update(invoiceCollectionAttempts,{state:'failed'}); update(invoiceAutopaySchedules,{...schedule});
+  h.create.mockRejectedValueOnce(Object.assign(new Error('too small'),{type:'StripeInvalidRequestError',code:'amount_too_small'}));
+  const result=await attemptCollection(input);
+  expect(result).toMatchObject({outcome:'failed',state:'failed'});
+});
+it('persists final failure attention inside the outcome transaction', async () => {
+  recovery(true);
+  h.staff.mockImplementation(async()=>expect(h.depth).toBe(1));
+  update(invoiceCollectionAttempts,{attemptNo:3});update(invoiceAutopaySchedules,{attemptCount:3});
+  h.piRetrieve.mockResolvedValue({...pi,status:'requires_payment_method',last_payment_error:{code:'card_declined',decline_code:'stolen_card'}});
+  h.cancel.mockResolvedValue({...pi,status:'canceled'});
+  await resumeCollectionAttempt('attempt');
+  expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({event:'payment.failed_final'}));
+});
+
+it.each(['gate','readiness','account','org-suspended','org-deleted','invoice-void','balance','method-pending','method-removed','schedule-state','elapsed-notice'])(
+ 'rechecks %s immediately before confirmation',async change=>{
+ recovery();h.create.mockImplementationOnce(async()=>{
+  if(change==='gate')h.gate.mockResolvedValue(false);
+  if(change==='readiness')h.readiness.mockResolvedValue({ready:false,stripeAccountId:'acct_test'});
+  if(change==='account')h.readiness.mockResolvedValue({ready:true,stripeAccountId:'acct_other'});
+  if(change==='org-suspended')update(organizations,{status:'suspended'});
+  if(change==='org-deleted')update(organizations,{deletedAt:new Date()});
+  if(change==='invoice-void')update(invoices,{status:'void'});
+  if(change==='balance')h.balance='99.00';
+  if(change==='method-pending')h.method.mockResolvedValue({...method,status:'pending_verification'});
+  if(change==='method-removed')h.method.mockResolvedValue({...method,status:'removed'});
+  if(change==='schedule-state')update(invoiceAutopaySchedules,{state:'scheduled'});
+  if(change==='elapsed-notice')update(invoiceAutopaySchedules,{noticeSentAt:new Date()});
+  return pi;
+ });
+ await resumeCollectionAttempt(attempt.id);expect(h.confirm).not.toHaveBeenCalled();expect(h.cancel).toHaveBeenCalledOnce();
+});
+it.each([{status:'suspended'},{deletedAt:new Date()}])('rejects inactive org at reservation: %j',async patch=>{
+ update(organizations,patch);expect(await reserveCollection(input)).toMatchObject({outcome:'refused',reason:'enrollment_inactive'});expect(attempts()).toEqual([]);
+});
+it.each(['amount','fee','chargeDate','methodType','enrollmentGeneration','kind','sentAt'])(
+ 'isolates the delivered notice binding: %s',async field=>{
+ const frozen={...outbox.rendered.frozen};
+ if(field==='kind')update(billingNoticeOutbox,{kind:'payment_receipt'});
+ else if(field==='sentAt')update(billingNoticeOutbox,{sentAt:new Date(schedule.noticeSentAt.getTime()+1)});
+ else update(billingNoticeOutbox,{rendered:{frozen:{...frozen,[field]:field==='enrollmentGeneration'?2:'different'}}});
+ expect(await reserveCollection(input)).toMatchObject({outcome:'deferred',reason:'notice_lead'});expect(attempts()).toEqual([]);
+});
+it.each([
+ ['card','stolen_card','hard','update',true,'payment.failed_final'],
+ ['card','insufficient_funds','soft','pay',false,null],
+ ['card','authentication_required','auth_required','confirm',false,'autopay.needs_attention'],
+ ['us_bank_account','R07','revoked','update',true,'payment.failed_final'],
+ ['us_bank_account','R01','nsf','pay',false,null],
+] as const)('records %s %s failure effects',async(methodType,code,failureClass,variant,unusable,event)=>{
+ recovery(true);update(invoiceStripePayments,{paymentMethodType:methodType});
+ h.piRetrieve.mockResolvedValue({...pi,status:failureClass==='auth_required'?'requires_action':'requires_payment_method',last_payment_error:{code}});
+ await applyAttemptOutcome(invoice.partnerId,attempt.id);
+ expect(currentAttempt().failureClass).toBe(failureClass);
+ if(unusable)expect(h.unusable).toHaveBeenCalledWith(expect.anything(),method.id,expect.any(String));else expect(h.unusable).not.toHaveBeenCalled();
+ expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(),attempt.id,variant);
+ if(event)expect(h.attention).toHaveBeenCalledWith(expect.objectContaining({event}));else expect(h.attention).not.toHaveBeenCalled();
+});
+
+it('rethrows held-context programming errors during method admission',async()=>{
+ const error=Object.assign(new Error('held context'),{name:'HeldDbContextForStripeError'});
+ h.retrieve.mockRejectedValueOnce(error);
+ await expect(reserveCollection(input)).rejects.toBe(error);
+ expect(h.capture).toHaveBeenCalledWith(error,undefined,expect.objectContaining({autopay_phase:'admission',invoice_id:invoice.id}));
+});
+it('persists unapplied-money attention before the outcome transaction exits',async()=>{
+ recovery(true);h.piRetrieve.mockResolvedValue({...pi,status:'succeeded'});h.settle.mockResolvedValue({settled:false});
+ h.staff.mockImplementation(async()=>expect(h.depth).toBe(1));
+ await applyAttemptOutcome(invoice.partnerId,attempt.id);
+ expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({event:'payment.unapplied'}));
+});

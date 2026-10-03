@@ -192,11 +192,8 @@ export interface AccountingSyncSummary {
   remoteDeleted?: boolean;
 }
 
-export interface InvoiceAutopayView {
-  state: string; reason: string | null; collectOn: string | null;
-  noticeSentAt: string | null; excluded: boolean; canExclude: boolean;
-  canChargeNow: boolean; processing: boolean; unapplied: boolean;
-}
+import type { InvoiceAutopayView } from '@breeze/shared';
+export type { InvoiceAutopayView } from '@breeze/shared';
 
 export interface InvoiceDetail {
   unappliedCount?: number;

@@ -1,3 +1,4 @@
+import { parseAutopayTerms } from '@breeze/shared';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { toMinorUnits } from '../stripeMoney';
@@ -9,7 +10,7 @@ import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
 import { resolveBillingLinkToken } from './linkTokens';
-import { computeCollectOn, noticeLeadDays } from './scheduler';
+import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { collectionFenced, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
@@ -24,23 +25,12 @@ export async function renoticeSchedule(tx: Tx, invoiceId: string): Promise<void>
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)).limit(1).for('update');
   if (!invoice || !schedule?.enrollmentId || schedule.state !== 'scheduled'
-    || pendingInvoiceControl(schedule.stateReason)
-    || collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: 'active' })) return;
+    || pendingInvoiceControl(schedule.stateReason)) return;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
-  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+  if (collectionFenced({ schedule, invoice, enrollment }) || !enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
     || enrollment.generation !== schedule.enrollmentGeneration) return;
-  const terms = schedule.termsSnapshot as unknown as AutopayTerms;
-  const collectOn = computeCollectOn({ issueDate: invoice.issueDate!, dueDate: invoice.dueDate!,
-    offsetDays: terms.offsetDays, rule: terms.rule,
-    noticeDate: new Date().toISOString().slice(0, 10), leadDays: terms.noticeLeadDays });
-  if (schedule.noticeOutboxId) await tx.update(billingNoticeOutbox).set({ status: 'cancelled' }).where(and(
-    eq(billingNoticeOutbox.id, schedule.noticeOutboxId), inArray(billingNoticeOutbox.status, ['pending', 'failed']),
-  ));
-  await tx.update(invoiceAutopaySchedules).set({ state: 'awaiting_notice', noticeSentAt: null,
-    noticeOutboxId: null, collectOn, termsSnapshot: { ...terms, chargeDate: collectOn, noticeSeq: terms.noticeSeq + 1 } })
-    .where(eq(invoiceAutopaySchedules.id, schedule.id));
-  await enqueueAutopayNotice(tx, schedule.id);
+  await planAutopayForInvoice(tx, invoiceId, true);
 }
 
 async function skipAuthority(tx: Tx, token: string, lock: boolean) {
@@ -105,11 +95,8 @@ export async function setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, exclu
   return { status: 'included' };
 }
 
-export interface InvoiceAutopayView {
-  state: string; reason: string | null; collectOn: string | null;
-  noticeSentAt: string | null; excluded: boolean; canExclude: boolean;
-  canChargeNow: boolean; processing: boolean; unapplied: boolean;
-}
+import type { InvoiceAutopayView } from '@breeze/shared';
+export type { InvoiceAutopayView } from '@breeze/shared';
 
 /** Only call after authorizing the invoice. Never project provider identifiers or tokens. */
 export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$inferSelect): Promise<InvoiceAutopayView | null> {
@@ -132,10 +119,10 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
     && !(schedule.state === 'retry_scheduled' && schedule.nextAttemptAt && schedule.nextAttemptAt > new Date())) {
     const [enrollment] = await tx.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
     if (enrollment && enrollment.orgId === invoice.orgId && enrollment.generation === schedule.enrollmentGeneration
-      && !collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: enrollment.status })) {
+      && !collectionFenced({ schedule: schedule, invoice: invoice, enrollment })) {
       const method = await getAutopayMethod(tx, invoice.orgId);
       const ready = await getAutopayStripeReadiness(tx, invoice.partnerId);
-      const terms = schedule.termsSnapshot as unknown as AutopayTerms;
+      const terms = parseAutopayTerms(schedule.termsSnapshot);
       canChargeNow = !!method && method.status === 'active' && method.isAutopayMethod
         && method.orgId === invoice.orgId && method.enrollmentId === enrollment.id
         && ready.ready && ready.stripeAccountId === enrollment.stripeAccountId
@@ -149,6 +136,6 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
     reason: pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
     noticeSentAt: schedule?.noticeSentAt?.toISOString() ?? null, excluded: invoice.autopayExcluded,
     canExclude: enabled && ['draft', 'sent', 'partially_paid', 'overdue'].includes(invoice.status)
-      && !processing && !actionRequired && !unapplied && !pending,
+      && !processing && !unapplied && !pending,
     canChargeNow, processing, unapplied };
 }

@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Demande d’omission reçue; arrêt du paiement en attente",
       "control_pending:exclude": "Exclusion demandée; arrêt du paiement en attente",
       "control_pending:stop": "Arrêt demandé; arrêt du paiement en attente",
+      "control_pending:renotice": "Mise à jour de l’avis ; arrêt du paiement en attente",
       "skip": "Ignoré par le client",
       "exclude": "Exclu par le prestataire",
       "stop": "Paiements automatiques arrêtés",

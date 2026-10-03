@@ -1,7 +1,8 @@
+import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { and, eq, inArray } from 'drizzle-orm';
-import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { SCHEDULE_CONTROL_MARKERS, type ControlMarker, RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
   organizations, partners, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
@@ -44,7 +45,7 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
         inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
     await tx.update(invoiceAutopaySchedules).set(reserving
       ? { stateReason: 'control_pending:stop' }
-      : { state: 'cancelled', stateReason: 'autopay_stopped', nextAttemptAt: null })
+      : { state: 'cancelled', stateReason: 'stop', nextAttemptAt: null })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     await tx.update(billingNoticeOutbox).set({ status: 'cancelled' }).where(and(
       eq(billingNoticeOutbox.invoiceId, schedule.invoiceId), eq(billingNoticeOutbox.kind, 'invoice_autopay'),
@@ -62,18 +63,17 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
 
 /** Shared by all collection producers, including confirmation of an existing PI. */
 export function collectionFenced(input: {
-  clientSkippedAt?: Date | string | null; mspExcludedAt?: Date | string | null;
-  autopayExcluded: boolean; enrollmentStatus: string | null;
-}): boolean {
-  return input.clientSkippedAt != null || input.mspExcludedAt != null
-    || input.autopayExcluded || input.enrollmentStatus !== 'active';
+  schedule?: Pick<typeof invoiceAutopaySchedules.$inferSelect, 'clientSkippedAt' | 'mspExcludedAt'> | null;
+  invoice: Pick<typeof invoices.$inferSelect, 'autopayExcluded'>;
+  enrollment?: Pick<typeof orgAutopayEnrollments.$inferSelect, 'status'> | null;
+}, options: { allowRequestedEnrollment?: boolean } = {}): boolean {
+  return input.schedule?.clientSkippedAt != null || input.schedule?.mspExcludedAt != null
+    || input.invoice.autopayExcluded || !(input.enrollment?.status === 'active'
+      || (options.allowRequestedEnrollment && input.enrollment?.status === 'requested'));
 }
 
-export function pendingInvoiceControl(reason: string | null): InvoiceControl | 'stop' | null {
-  if (reason === 'control_pending:skip') return 'skip';
-  if (reason === 'control_pending:exclude') return 'exclude';
-  if (reason === 'control_pending:stop') return 'stop';
-  return null;
+export function pendingInvoiceControl(reason: string | null): ControlMarker | null {
+  return SCHEDULE_CONTROL_MARKERS.find(marker => reason === `control_pending:${marker}`) ?? null;
 }
 
 /** Fence first under the shared invoice lock. This request path never calls Stripe or releases money.
@@ -188,12 +188,13 @@ export async function reconcilePendingControls(): Promise<void> {
           .where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)).limit(1);
         const [enrollment] = await db.select().from(orgAutopayEnrollments)
           .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
-        return collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded,
-          enrollmentStatus: enrollment?.status ?? null }) || !!pendingInvoiceControl(schedule?.stateReason ?? null);
+        return collectionFenced({ schedule: schedule, invoice: invoice, enrollment }) || !!pendingInvoiceControl(schedule?.stateReason ?? null);
       }, 'autopay.controlFence');
       if (fenced) await resumeCollectionAttempt(attempt.id, true);
     } catch (error) {
       // One unavailable account must not prevent another invoice's control from finishing.
+      reportCollectionError(error,{org_id:attempt.orgId,invoice_id:attempt.invoiceId,attempt_id:attempt.id,autopay_phase:'control'});
+      if(isCollectionProgrammingError(error))throw error;
       errors.push(error);
     }
   }

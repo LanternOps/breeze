@@ -49,3 +49,12 @@ describe('getPartnerStripeClient credential boundary', () => {
     expect(h.constructed).toHaveLength(1);
   });
 });
+
+it('prefers a current key on the original account over an archived mapping key', async () => {
+  h.rows.push([connected(encryptSecret('sk_test_current')!)]);
+  await expect(getPartnerStripeClient('partner', {
+    reconciliationAccountId: 'acct_test', archivedCredentialId: 'old-credential', reason: 'autopay_recovery',
+  })).resolves.toMatchObject({ stripeAccountId: 'acct_test' });
+  expect(h.constructed).toEqual([['sk_test_current', { apiVersion }]]);
+  expect(h.selectMock).toHaveBeenCalledOnce();
+});

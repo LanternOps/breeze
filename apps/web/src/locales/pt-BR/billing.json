@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Solicitação para ignorar recebida; interrompendo o pagamento pendente",
       "control_pending:exclude": "Exclusão solicitada; interrompendo o pagamento pendente",
       "control_pending:stop": "Interrupção solicitada; interrompendo o pagamento pendente",
+      "control_pending:renotice": "Atualizando o aviso; interrompendo o pagamento pendente",
       "skip": "Ignorado pelo cliente",
       "exclude": "Excluído pelo prestador",
       "stop": "Pagamentos automáticos interrompidos",

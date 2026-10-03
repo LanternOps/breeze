@@ -1,3 +1,4 @@
+import { autopayReasonKey } from './autopayReason';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
@@ -36,7 +37,7 @@ export default function AutopayListPage() {
         <td>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}{(row.requestNoticeStatus==='failed'||row.requestNoticeStatus==='handler_failed')&&<div><p role="alert" data-testid={`autopay-delivery-${row.orgId}`} className="text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p><button data-testid={`autopay-resend-${row.orgId}`} disabled={busy} onClick={()=>void send([row.orgId])}>{t('autopay.resend')}</button></div>}</td><td>{methodLabel(row.method)}</td>
         <td data-testid="autopay-last-charge">{row.lastCharge ? t(/* i18n-dynamic */ `autopay.attemptStates.${row.lastCharge.state}`, {defaultValue:row.lastCharge.state}) : t('autopay.noCharge')}</td>
         <td>{row.awaitingNotice && row.awaitingNotice.count > 0 && <a data-testid="autopay-notice-stuck" href={`/billing/invoices/${row.awaitingNotice.invoiceId}`}>
-          <span>{t('autopay.noticeStuck')}</span>{row.awaitingNotice.reason && <>: {t(/* i18n-dynamic */ `autopay.reasons.${row.awaitingNotice.reason}`,{defaultValue:row.awaitingNotice.reason,nsSeparator:false})}</>}
+          <span>{t('autopay.noticeStuck')}</span>{row.awaitingNotice.reason && <>: {t(/* i18n-dynamic */ autopayReasonKey(row.awaitingNotice.reason),{nsSeparator:false})}</>}
         </a>}</td></tr>)}</tbody></table>
     {rows.length === 0 && <p data-testid="autopay-empty">{t('autopay.empty')}</p>}
     {result && <section data-testid="autopay-bulk-result" role={result.skipped.length?'alert':'status'} className={result.skipped.length?'text-amber-800 dark:text-amber-200':undefined}><p>{t('autopay.requestedCount', { count: result.requested.length })}</p>

@@ -259,6 +259,7 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
         ? await startInvoiceBankSetup({invoiceId:inv.id,orgId:inv.orgId,terms:body,returnTo:'public',
           ip:getTrustedClientIpOrUndefined(c)??null,userAgent:c.req.header('user-agent')??null})
         : await collectAfterBankSetup({invoiceId:inv.id,orgId:inv.orgId,setupSessionId:body.setupSessionId!});
+      if ('outcome' in result && result.outcome !== 'created') return c.json({error:'Payment has not started. Review the invoice payment status.',data:result},409);
       return c.json({data:result});
     }
     // The producer owns short committed contexts. Do not hide a caller's held

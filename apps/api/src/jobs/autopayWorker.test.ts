@@ -1,9 +1,10 @@
+vi.mock('../services/autopay/scheduler',()=>({sweepOrphanAutopayNotices:mocks.orphan}));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 const mocks = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue({}), close: vi.fn().mockResolvedValue(undefined),
   work: vi.fn(), dispatch: vi.fn().mockResolvedValue({ sent: 1, failed: 0 }),
-  expiry: vi.fn(), register: vi.fn(), collection: vi.fn(), controls: vi.fn(),
+  orphan:vi.fn(), expiry: vi.fn(), register: vi.fn(), collection: vi.fn(), controls: vi.fn(),
   drain: vi.fn().mockResolvedValue(undefined), observe: vi.fn(),
 }));
 vi.mock('bullmq', () => ({
@@ -154,4 +155,9 @@ it('registers and dispatches collection and pending controls in UTC with stable 
     expect(mocks.controls).toHaveBeenCalledOnce();
     expect(mocks.collection).toHaveBeenCalledOnce();
   } finally { await shutdownAutopayWorkers(); }
+});
+
+it('fails dispatch when orphan recovery fails after delivery completed',async()=>{
+ mocks.orphan.mockRejectedValueOnce(new TypeError('bad schedule'));
+ await expect(processNoticeDispatch()).rejects.toThrow('bad schedule');
 });

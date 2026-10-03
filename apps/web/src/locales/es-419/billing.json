@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Omisión solicitada; deteniendo el pago pendiente",
       "control_pending:exclude": "Exclusión solicitada; deteniendo el pago pendiente",
       "control_pending:stop": "Cancelación solicitada; deteniendo el pago pendiente",
+      "control_pending:renotice": "Actualizando el aviso; deteniendo el pago pendiente",
       "skip": "Omitido por el cliente",
       "exclude": "Excluido por el proveedor",
       "stop": "Pagos automáticos detenidos",

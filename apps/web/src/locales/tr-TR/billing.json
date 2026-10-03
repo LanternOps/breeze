@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Atlama istendi; bekleyen ödeme durduruluyor",
       "control_pending:exclude": "Hariç tutma istendi; bekleyen ödeme durduruluyor",
       "control_pending:stop": "Durdurma istendi; bekleyen ödeme durduruluyor",
+      "control_pending:renotice": "Bildirim güncelleniyor; bekleyen ödeme durduruluyor",
       "skip": "Müşteri tarafından atlandı",
       "exclude": "Sağlayıcı tarafından hariç tutuldu",
       "stop": "Otomatik ödemeler durduruldu",

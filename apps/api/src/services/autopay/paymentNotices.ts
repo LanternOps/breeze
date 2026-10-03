@@ -1,3 +1,4 @@
+import { reportCollectionError } from './collectionErrors';
 import { eq } from 'drizzle-orm';
 import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox } from '../../db/schema';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
@@ -8,7 +9,7 @@ import { mintBillingLinkToken, buildBillingLinkUrl } from './linkTokens';
 import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import type { Tx } from './types';
-import { notifyAutopayStaff } from './staffNotifications';
+import { sendAutopayStaffEmail } from './staffNotifications';
 export function noticeDedupeKey(id: string, kind: string): string { return `${id}:${kind}:1`; }
 export function returnedNoticeDedupeKey(attemptId: string,returnIdentity: string): string {
   if (!returnIdentity) throw new Error('Returned payment requires an applied return identity');
@@ -37,7 +38,7 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
 }
 export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
-  variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned', returnIdentity?: string): Promise<void> {
+  variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned' | 'expired', returnIdentity?: string): Promise<void> {
   let [attempt] = await tx.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id, attemptId)).limit(1);
   if (variant === 'returned' && !returnIdentity) throw new Error('Returned payment identity missing');
   if (!attempt) throw new Error('Attempt not found for notice');
@@ -69,7 +70,7 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
     }
   }
   const dedupeKey = variant === 'returned' ? returnedNoticeDedupeKey(attemptId,returnIdentity!)
-    : noticeDedupeKey(attemptId,'payment_failed');
+    : noticeDedupeKey(attemptId, variant === 'expired' ? 'payment_expired' : 'payment_failed');
   const [existingNotice] = await tx.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
     .where(eq(billingNoticeOutbox.dedupeKey,dedupeKey)).limit(1);
   if (existingNotice) return;
@@ -81,14 +82,15 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   if ((variant === 'confirm' || variant === 'update') && !hasAuthority) return;
   let tokenId: string | null = null;
   let actionLink: string;
-  if (variant === 'pay' || variant === 'returned') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
+  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
   else {
     const token = await mintBillingLinkToken(tx, { orgId: attempt.orgId, invoiceId: invoice!.id,
       enrollmentId: method!.enrollmentId, generation: enrollment!.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
     tokenId = token.id;
     actionLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
   }
-  const failureText = variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
+  const failureText = variant === 'expired' ? 'Your payment confirmation link expired. The pending payment was canceled. Please pay this invoice using the invoice link.'
+    : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
     : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
     : variant === 'update' ? 'This payment method cannot be used. Please update it or pay this invoice.'
     : attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
@@ -106,7 +108,7 @@ export function attentionDedupeKey(attemptId: string,event: string,returnIdentit
   return `autopay:${attemptId}:${event}${returnIdentity ? `:${returnIdentity}` : ''}`;
 }
 export async function notifyPaymentAttention(input: {
-  partnerId: string; orgId: string; invoiceId: string; attemptId: string; returnIdentity?: string;
+  partnerId: string; orgId: string; invoiceId: string; attemptId: string; returnIdentity?: string; message?: string;
   event: 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'autopay.needs_attention';
 }): Promise<void> {
   if (input.event === 'payment.ach_returned' && !input.returnIdentity) throw new Error('Returned payment identity missing');
@@ -115,7 +117,11 @@ export async function notifyPaymentAttention(input: {
     : input.event === 'payment.ach_returned' ? 'A bank payment was returned. The invoice balance has reopened.'
     : input.event === 'payment.failed_final' ? 'Automatic payment has stopped retrying. The client can pay the invoice directly.'
     : 'Automatic payment needs attention. Review the invoice before trying again.';
-  await notifyAutopayStaff({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
+  try { await sendAutopayStaffEmail({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
     dedupeKey:attentionDedupeKey(input.attemptId,input.event,input.returnIdentity),
-    message:`${message} Invoice: ${input.invoiceId}`});
+    message:input.message ?? `${message} Invoice: ${input.invoiceId}; attempt: ${input.attemptId}`});
+  } catch(error) {
+    reportCollectionError(error,{org_id:input.orgId,invoice_id:input.invoiceId,attempt_id:input.attemptId,
+      autopay_phase:'staff_email',...(input.returnIdentity?{return_identity:input.returnIdentity}:{})});
+  }
 }

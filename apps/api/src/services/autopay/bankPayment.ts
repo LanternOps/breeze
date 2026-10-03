@@ -27,12 +27,8 @@ import { attemptCollection } from './collectionEngine';
 import { fromMinorUnits, toMinorUnits } from '../stripeMoney';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 
-export const bankPaySchema=z.object({methodType:z.literal('us_bank_account'),phase:z.enum(['setup','collect']),
-  consentAccepted:z.literal(true),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/),
-  principal:z.string().regex(/^\d+\.\d{2}$/),fee:z.string().regex(/^\d+\.\d{2}$/),currency:z.literal('USD'),
-  setupSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255).optional()}).strict().superRefine((value,ctx)=>{
-    if(value.phase==='collect'&&!value.setupSessionId)ctx.addIssue({code:'custom',path:['setupSessionId'],message:'Setup session required'});
-  });
+import { bankPaySchema, type BankAutopayOffer } from '@breeze/shared';
+export { bankPaySchema } from '@breeze/shared';
 // Ordinary card requests keep W2's defaults/refinements; bank bodies cannot
 // fall through to Checkout when their bank authorization is malformed.
 export const invoicePaySchema=z.preprocess(value=>{
@@ -41,7 +37,7 @@ export const invoicePaySchema=z.preprocess(value=>{
   return value;
 },z.discriminatedUnion('methodType',[bankPaySchema,
   payAndSaveSchema.safeExtend({methodType:z.literal('card').optional()})]));
-export async function getBankAutopayOffer(invoiceId:string,orgId:string){
+export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise<BankAutopayOffer|null>{
   return withSystemDbAccessContext(async()=>{
     const [invoice]=await db.select().from(invoices).where(and(eq(invoices.id,invoiceId),eq(invoices.orgId,orgId))).limit(1);
     if(!invoice||invoice.currencyCode!=='USD'||!['sent','partially_paid','overdue','paid'].includes(invoice.status))return null;
@@ -57,7 +53,7 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string){
     if(disclosure.achMode==='card_only')return null;
     if((await readInFlightCollection(db,invoice.id)).inProgress)return null;
     const [schedule]=await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)).limit(1);
-    if(collectionFenced({...schedule,autopayExcluded:invoice.autopayExcluded,enrollmentStatus:enrollment.status==='requested'?'active':enrollment.status}))return null;
+    if(collectionFenced({schedule,invoice,enrollment}, {allowRequestedEnrollment:true}))return null;
     const quote=quoteProcessingFee({methodType:'us_bank_account',cardFunding:null,principal:invoice.balance,currency:'USD',
       stripeAccountCountry:ready.accountCountry,orgBillingCountry:org.billingAddressCountry,orgBillingRegion:org.billingAddressRegion,
       cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,feeAttested:settings.feeAttested});
@@ -65,7 +61,7 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string){
     if(!available&&method?.status!=='pending_verification')return null;
     return {available,principal:invoice.balance,fee:quote.feeAmount,currency:'USD' as const,disclosureHash:disclosure.hash,
       consentText:`I authorize a bank payment of USD ${invoice.balance}, plus a processing fee of USD ${quote.feeAmount}, for this invoice. ${disclosure.text}`,
-      methodStatus:method?.type==='us_bank_account'&&['active','pending_verification'].includes(method.status)?method.status:null};
+      methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
   });
 }
 export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string;terms:z.infer<typeof bankPaySchema>;

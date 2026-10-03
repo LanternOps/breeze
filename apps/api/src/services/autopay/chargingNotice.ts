@@ -1,3 +1,5 @@
+import { enqueueAutopayStaffNotifications } from './staffNotifications';
+import { parseAutopayTerms } from '@breeze/shared';
 import { collectionFenced } from './collectionControl';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
@@ -17,16 +19,7 @@ import { toMinorUnits } from '../stripeMoney';
 import { AR_OPEN_STATUSES } from '../../db/schema/invoices';
 import { isPublicLinkOrgStatusLive, isPublicLinkPartnerStatusLive } from '../publicLinkOrgGate';
 type Tx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
-export interface AutopayTerms {
-  issuedAt: string; offsetDays: number; rule: 'earlier' | 'later';
-  cap: { enabled: false } | { enabled: true; amount: string; currency: string };
-  methodType: AutopayPaymentMethodType; methodId: string; last4: string;
-  methodLabel: string; accountHolderType: AccountHolderType | null;
-  noticeLeadDays: 1 | 10; principal: string; currency: string;
-  feeAmount: string; feeKind: 'none' | 'card_percent' | 'ach_flat';
-  cardFeeBps: number; achFeeAmount: string; chargeDate: string;
-  noticeSeq: number;
-}
+export type { AutopayTerms } from '@breeze/shared';
 export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<void> {
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.id, scheduleId)).limit(1);
@@ -38,9 +31,11 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
   if (!contact?.email) {
     await tx.update(invoiceAutopaySchedules).set({ stateReason: 'no_billing_contact' })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
+    await enqueueAutopayStaffNotifications(tx, {orgId:schedule.orgId,partnerId:invoice!.partnerId,invoiceId:invoice!.id,
+      event:'autopay.needs_attention',dedupeKey:`autopay:${schedule.id}:no_billing_contact`,message:`Invoice ${invoice!.id}: notice blocked: no billing contact. Delivery will be retried when a contact is added.`});
     return;
   }
-  const terms = schedule.termsSnapshot as AutopayTerms;
+  const terms = parseAutopayTerms(schedule.termsSnapshot);
   const seq = terms.noticeSeq;
   const existing = await tx.select({ id: billingNoticeOutbox.id }).from(billingNoticeOutbox)
     .where(eq(billingNoticeOutbox.dedupeKey, `${invoice!.id}:invoice_autopay:${seq}`)).limit(1);
@@ -81,13 +76,12 @@ export const invoiceAutopayNoticeSent: NoticeSentHandler = async (tx, row) => {
   const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.noticeOutboxId, row.id),
   )).limit(1).for('update');
-  if (!schedule?.enrollmentId || schedule.state !== 'awaiting_notice'
-    || collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: 'active' })) return;
+  if (!schedule?.enrollmentId || schedule.state !== 'awaiting_notice') return;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
-  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+  if (collectionFenced({ schedule, invoice, enrollment }) || !enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
     || enrollment.generation !== schedule.enrollmentGeneration) return;
-  const terms = schedule.termsSnapshot as AutopayTerms;
+  const terms = parseAutopayTerms(schedule.termsSnapshot);
   // collectOn is a calendar selection date. Collection must also enforce the
   // full elapsed lead from this exact noticeSentAt, including non-midnight sends.
   // Keep the rendered chargeDate frozen as the recipient saw it.
@@ -112,17 +106,16 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
     .where(and(eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.noticeOutboxId, row.id)))
     .limit(1).for('update');
   if (!schedule?.enrollmentId || !schedule.eligible || schedule.state !== 'awaiting_notice'
-    || collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: 'active' })
     || schedule.orgId !== row.orgId || schedule.noticeOutboxId !== row.id || schedule.enrollmentId !== row.enrollmentId) return obsolete;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
-  if (!enrollment || enrollment.orgId !== row.orgId || enrollment.partnerId !== invoice.partnerId
+  if (collectionFenced({ schedule, invoice, enrollment }) || !enrollment || enrollment.orgId !== row.orgId || enrollment.partnerId !== invoice.partnerId
     || enrollment.status !== 'active' || enrollment.generation !== schedule.enrollmentGeneration) return obsolete;
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, row.orgId)).limit(1);
   if (!org || org.partnerId !== invoice.partnerId || org.deletedAt || !isPublicLinkOrgStatusLive(org.status)) return obsolete;
   const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   if (!partner || partner.deletedAt || !isPublicLinkPartnerStatusLive(partner.status) || !partner.autopayEnabled) return obsolete;
-  const terms = schedule.termsSnapshot as AutopayTerms;
+  const terms = parseAutopayTerms(schedule.termsSnapshot);
   const frozen = (row.rendered as { frozen?: Record<string, unknown> }).frozen;
   if (!terms || terms.noticeSeq !== row.seq || terms.currency !== invoice.currencyCode
     || frozen?.amount !== terms.principal || frozen.fee !== terms.feeAmount

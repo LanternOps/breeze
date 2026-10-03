@@ -71,3 +71,10 @@ it('recovers beyond 200 blocked attempts even with no Checkout candidates',async
   expect(queries[1]!.params).toContain(id(200));expect(queries[2]!.params).toContain(id(201));
   for(const query of queries)expect(query.sql).not.toMatch(/created_at|interval|7 days/i);
 });
+
+it('fails the sweep when all autopay rows fail and reports their local identities',async()=>{
+  m.apply.mockRejectedValue(new Error('provider unavailable'));
+  m.resume.mockRejectedValue(new Error('provider unavailable'));
+  await expect(reconcilePendingStripePayments()).rejects.toThrow('Every autopay reconciliation failed');
+  expect(m.capture).toHaveBeenCalledWith(expect.any(Error),undefined,expect.objectContaining({attempt_id:rows[0]!.id,autopay_phase:'reconcile'}));
+});

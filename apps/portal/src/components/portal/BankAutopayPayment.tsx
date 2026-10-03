@@ -4,7 +4,7 @@ import {runAction} from '@/lib/runAction';
 import {navigateTo} from '@/lib/navigation';
 type Target={invoiceId:string;publicToken?:string};
 type View={target:Target;offer:BankAutopayOffer;setupSessionId?:string};
-type Result={url?:string;attemptId?:string|null;outcome?:'created'|'deferred'|'refused';reason?:string};
+import type { InvoicePayResult as Result } from '@breeze/shared';
 const key='autopay-bank-return';
 const path=(target:Target)=>target.publicToken?`/invoices/public/${encodeURIComponent(target.publicToken)}`:`/portal/invoices/${encodeURIComponent(target.invoiceId)}`;
 function unwrap<T>(response:ApiResponse<T|{data:T}>,publicRequest:boolean):ApiResponse<T>{
@@ -53,7 +53,7 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
       principal:view.offer.principal,fee:view.offer.fee,currency:view.offer.currency,...(collecting?{setupSessionId:view.setupSessionId}:{}),
     },{redirectOnUnauthorized:!view.target.publicToken}),!!view.target.publicToken),onOutcome:outcome,
       successMessage:collecting?'Payment request checked.':'Opening secure bank setup…',errorFallback:'Could not start bank payment.',
-      validate:value=>collecting?['created','deferred','refused'].includes(value.outcome??''):
+      validate:value=>collecting?['created','deferred','refused','failed','canceled','requires_action','unapplied'].includes(value.outcome??''):
         typeof value.url==='string'&&value.url.startsWith('https://checkout.stripe.com/')});
     setBusy(false);if(!result)return;
     if(!collecting&&result.url){void navigateTo(result.url);return;}

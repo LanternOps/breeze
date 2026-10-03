@@ -1,3 +1,4 @@
+import { sweepOrphanAutopayNotices } from '../services/autopay/scheduler';
 import { runAutopayCollection } from '../services/autopay/collectionEngine';
 import { reconcilePendingControls } from '../services/autopay/collectionControl';
 import { captureException } from '../services/sentry';
@@ -25,10 +26,11 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
   let dispatchError: unknown;
   try {
     result = await dispatchPendingBillingNotices();
+    await sweepOrphanAutopayNotices();
     if (result.failed) console.error('[autopayWorker] notice dispatch failures', result);
   } catch (error) {
     dispatchError = error;
-    console.error('[autopayWorker] dispatch failed', { phase: 'dispatch' });
+    console.error('[autopayWorker] dispatch failed', { phase: 'dispatch', error });
     captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'dispatch' });
   }
   // Merge only queues removed methods. Worker ticks own all network drains.
@@ -37,7 +39,7 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
     console.error('[autopayWorker] detach drain failed', { phase: 'detach' });
     captureException(error, undefined, { service: 'autopayWorker', autopay_phase: 'detach' });
   }
-  if (!result) throw dispatchError;
+  if (dispatchError || !result) throw dispatchError;
   return result;
 }
 

@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Skip requested; stopping the pending payment",
       "control_pending:exclude": "Exclusion requested; stopping the pending payment",
       "control_pending:stop": "Stop requested; stopping the pending payment",
+      "control_pending:renotice": "Updating the notice; stopping the pending payment",
       "skip": "Skipped by client",
       "exclude": "Excluded by provider",
       "stop": "Automatic payments stopped",

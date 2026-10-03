@@ -1,3 +1,5 @@
+import { reportCollectionError } from './autopay/collectionErrors';
+import { enqueueAutopayStaffNotifications } from './autopay/staffNotifications';
 import { applyAttemptOutcome } from './autopay/collectionEngine';
 import { invoiceCollectionAttempts, invoiceAutopaySchedules, orgPaymentMethods } from '../db/schema';
 import { enqueueAttemptNotice, notifyPaymentAttention } from './autopay/paymentNotices';
@@ -531,6 +533,8 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         .where(eq(invoiceAutopaySchedules.id,attempt.scheduleId));
       returnAttention = {partnerId:invoice.partnerId,orgId:invoice.orgId,invoiceId:invoice.id,
         attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
+      await enqueueAutopayStaffNotifications(db,{...returnAttention,dedupeKey:`autopay:${attempt.id}:payment.ach_returned:${returnIdentity}`,
+        message:`A bank payment was returned. Invoice ${invoice.id}, attempt ${attempt.id}: the invoice balance has reopened.`});
     }
     await db.update(stripeFinancialEvents).set({
       status: 'applied', attemptCount: event.attemptCount + 1, lastError: null,
@@ -551,9 +555,8 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     if (outcome.returnAttention) {
       try { await notifyPaymentAttention(outcome.returnAttention); }
       catch (error) {
-        console.error('[stripeReversalState] staff return notification failed after commit',{
-          invoiceId:outcome.invoiceId,error:error instanceof Error?error.message:String(error),
-        });
+        reportCollectionError(error,{invoice_id:outcome.invoiceId,org_id:outcome.returnAttention.orgId,
+          attempt_id:outcome.returnAttention.attemptId,return_identity:outcome.returnAttention.returnIdentity,autopay_phase:'return_staff_email'});
       }
     }
     if (outcome.accountingDeleteMappingId) {

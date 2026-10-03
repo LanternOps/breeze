@@ -26,7 +26,7 @@ function detail(overrides: Partial<PublicInvoiceDetail> = {}): PublicInvoiceDeta
 
 
 it('loads the server bank offer and starts setup only after consent',async()=>{
- const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD',consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null};
+ const offer={available:true,principal:'100.00',fee:'0.00',currency:'USD' as const,consentText:'Authorize bank payment.',disclosureHash:'a'.repeat(64),methodStatus:null};
  vi.spyOn(portalApi,'getPublicInvoice').mockResolvedValue({data:{data:detail({bankAutopay:offer})}});
  const fetch=vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response(JSON.stringify({data:{url:'https://checkout.stripe.com/c/setup/example'}}),{status:200,headers:{'Content-Type':'application/json'}}));
  render(<PublicInvoiceView token="token-1"/>);

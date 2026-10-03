@@ -80,11 +80,11 @@ function completionFixture(){
  vi.mocked(attemptCollection).mockImplementation(async()=>{
   expect(getClientPaymentAuthority()).toMatchObject({invoiceId:invoice.id,tokenId:token.id,methodId:method.id,
    capture:{setupAttemptId:setup.id,stripePaymentMethodId:'pm_A',setupIntentId:'seti_A'}});
-  return {attemptId:'attempt',outcome:'created'};
+  return {attemptId:'attempt',outcome:'created',state:'processing'};
  });
 }
 it('collect carries only the server-verified exact method authority and clears it afterward',async()=>{
- completionFixture();expect(await collect()).toEqual({attemptId:'attempt',outcome:'created'});
+ completionFixture();expect(await collect()).toEqual({attemptId:'attempt',outcome:'created',state:'processing'});
  expect(attemptCollection).toHaveBeenCalledWith({invoiceId:invoice.id,initiatedBy:'client_on_session'});expect(getClientPaymentAuthority()).toBeUndefined();
 });
 it.each(['pending_verification','in_progress','abandoned'] as const)('never collects a %s setup',async outcome=>{

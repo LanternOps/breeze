@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Richiesta di salto ricevuta; arresto del pagamento in sospeso",
       "control_pending:exclude": "Esclusione richiesta; arresto del pagamento in sospeso",
       "control_pending:stop": "Interruzione richiesta; arresto del pagamento in sospeso",
+      "control_pending:renotice": "Aggiornamento dell’avviso; interruzione del pagamento in sospeso",
       "skip": "Saltato dal cliente",
       "exclude": "Escluso dal fornitore",
       "stop": "Pagamenti automatici interrotti",

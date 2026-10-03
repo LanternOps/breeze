@@ -1,7 +1,9 @@
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { autopayTermsSnapshotSchema } from '@breeze/shared';
+import { collectionFenced, pendingInvoiceControl } from './collectionControl';
+import { and, eq, inArray, sql, asc, gt } from 'drizzle-orm';
+import { db, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments,
-  invoiceAutopaySchedules } from '../../db/schema';
+  invoiceAutopaySchedules, billingNoticeOutbox, invoiceCollectionAttempts } from '../../db/schema';
 import type { AutopayIneligibleReason } from '@breeze/shared';
 import { toMinorUnits } from '../stripeMoney';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
@@ -68,16 +70,30 @@ export function eligibilityReason(e: Eligibility): AutopayIneligibleReason | nul
   if (e.excludedInvoice) return 'excluded_invoice';
   return null;
 }
-export async function planAutopayForInvoice(tx: Tx, invoiceId: string)
+export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh = false)
   : Promise<typeof invoiceAutopaySchedules.$inferSelect | null> {
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
   if (!invoice?.invoiceNumber || !invoice.issueDate || !invoice.dueDate) return null;
   const [existing] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)).limit(1);
-  if (existing) return existing;
+  if (existing && !refresh) return existing;
+  if (refresh && (!existing || !['scheduled','awaiting_notice'].includes(existing.state)
+    || pendingInvoiceControl(existing.stateReason))) return existing ?? null;
+  const previous = existing ? autopayTermsSnapshotSchema.parse(existing.termsSnapshot) : null;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
   if (!enrollment) return null;
+  if (existing && (collectionFenced({schedule:existing,invoice,enrollment})
+    || existing.enrollmentId !== enrollment.id || existing.enrollmentGeneration !== enrollment.generation)) {
+    await tx.update(invoiceAutopaySchedules).set({state:'not_needed',stateReason:'authority_changed',nextAttemptAt:null})
+      .where(eq(invoiceAutopaySchedules.id,existing.id));
+    return existing;
+  }
+  if (existing) {
+    const [reserving]=await tx.select().from(invoiceCollectionAttempts).where(and(eq(invoiceCollectionAttempts.invoiceId,invoiceId),
+      inArray(invoiceCollectionAttempts.state,['reserved','created','confirming','processing','requires_action']))).limit(1);
+    if(reserving)return existing;
+  }
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
   if (!org) throw new Error('Invoice organization missing');
   const settings = await resolveBillingPaymentSettings(tx, { partnerId: invoice.partnerId, orgId: invoice.orgId });
@@ -89,8 +105,8 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string)
   )).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(contracts.autopayExcluded, true))).limit(1);
   const cap = settings.autopayCap.value;
   const capCurrency = !cap.enabled || cap.currency.toUpperCase() === invoice.currencyCode;
-  const reason = eligibilityReason({ active: enrollment.status === 'active',
-    effective: !!enrollment.effectiveFrom && enrollment.effectiveFrom <= invoice.updatedAt,
+  const reason = eligibilityReason({ active: enrollment.status === 'active' && !org.deletedAt && ['active','trial'].includes(org.status),
+    effective: !!enrollment.effectiveFrom && enrollment.effectiveFrom <= (previous ? new Date(previous.issuedAt) : invoice.updatedAt),
     methodUsable: !!method && ['active', 'pending_verification'].includes(method.status)
       && (method.type !== 'us_bank_account' || method.accountHolderType !== null),
     charging, stripeReady: readiness.ready,
@@ -110,7 +126,7 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string)
     cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value,
     feeAttested: settings.feeAttested }) : { feeAmount: '0.00', kind: 'none' as const };
   const snapshot = method ? {
-    issuedAt: invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
+    issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
     rule: settings.autopayOffsetRule.value, cap, methodType: method.type, methodId: method.id,
     last4: method.type === 'card' ? method.cardLast4 ?? '' : method.bankLast4 ?? '',
     methodLabel: method.type === 'card'
@@ -119,16 +135,52 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string)
     accountHolderType: method.accountHolderType, noticeLeadDays: leadDays,
     principal: invoice.balance, currency: invoice.currencyCode, feeAmount: fee.feeAmount,
     feeKind: fee.kind, cardFeeBps: settings.cardFeeBps.value,
-    achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: 1,
-  } satisfies AutopayTerms : { issuedAt: invoice.updatedAt.toISOString(), noticeSeq: 0 };
-  const [created] = await tx.insert(invoiceAutopaySchedules).values({ orgId: invoice.orgId,
-    invoiceId, enrollmentId: enrollment.id, enrollmentGeneration: enrollment.generation,
-    eligible: reason === null, ineligibleReason: reason, collectOn, termsSnapshot: snapshot,
-    state: reason === null ? 'awaiting_notice' : 'not_needed', stateReason: reason,
-    attemptCount: 0 }).returning();
+    achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: (previous?.noticeSeq ?? 0) + 1,
+  } satisfies AutopayTerms : { issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), noticeSeq: 0 };
+  const values = { orgId: invoice.orgId, invoiceId, enrollmentId: enrollment.id, enrollmentGeneration: enrollment.generation,
+    eligible: reason === null, ineligibleReason: reason, collectOn, termsSnapshot: autopayTermsSnapshotSchema.parse(snapshot),
+    state: reason === null ? 'awaiting_notice' as const : 'not_needed' as const, stateReason: reason,
+    noticeOutboxId: null, noticeSentAt: null, nextAttemptAt: null };
+  if (existing?.noticeOutboxId) await tx.update(billingNoticeOutbox).set({status:'cancelled'}).where(and(
+    eq(billingNoticeOutbox.id,existing.noticeOutboxId),inArray(billingNoticeOutbox.status,['pending','failed'])));
+  const [created] = existing ? await tx.update(invoiceAutopaySchedules).set(values).where(eq(invoiceAutopaySchedules.id,existing.id)).returning()
+    : await tx.insert(invoiceAutopaySchedules).values({...values,attemptCount:0}).returning();
   if (!created) throw new Error('Autopay schedule insert failed');
   if (created.eligible) await enqueueAutopayNotice(tx, created.id);
   const [planned] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.id, created.id)).limit(1);
   return planned!;
+}
+
+/** Close schedules for all settlement/void paths, including external accounting writers. */
+export async function closeSettledAutopaySchedules(): Promise<void> {
+  await withSystemDbAccessContext(() => db.execute(sql`
+    UPDATE invoice_autopay_schedules s SET state='not_needed', next_attempt_at=NULL,
+      state_reason=CASE WHEN i.status='void' THEN 'invoice_voided' ELSE 'invoice_settled' END
+    FROM invoices i WHERE i.id=s.invoice_id AND i.org_id=s.org_id
+      AND i.status IN ('paid','void')
+      AND s.state IN ('awaiting_notice','scheduled','collecting','retry_scheduled','action_required')
+  `), 'autopay.closeSettled');
+}
+
+/** Recover canceled/stale/missing notices without enrolling historical invoices. */
+export async function sweepOrphanAutopayNotices(): Promise<void> {
+  await closeSettledAutopaySchedules();
+  let cursor: string | undefined;
+  for (;;) {
+    const rows=await withSystemDbAccessContext(()=>db.select({id:invoiceAutopaySchedules.id,invoiceId:invoiceAutopaySchedules.invoiceId})
+      .from(invoiceAutopaySchedules).where(and(eq(invoiceAutopaySchedules.state,'awaiting_notice'),
+        cursor?gt(invoiceAutopaySchedules.id,cursor):undefined,
+        sql`NOT EXISTS (SELECT 1 FROM billing_notice_outbox n WHERE n.id=${invoiceAutopaySchedules.noticeOutboxId}
+          AND n.status IN ('pending','sending'))`)).orderBy(asc(invoiceAutopaySchedules.id)).limit(200));
+    if(!rows.length)return;
+    for(const row of rows) await withSystemDbAccessContext(async()=>{
+      await db.select({id:invoices.id}).from(invoices).where(eq(invoices.id,row.invoiceId)).for('update');
+      const [current]=await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,row.id)).limit(1);
+      if(!current || current.state!=='awaiting_notice')return;
+      const [live]=current.noticeOutboxId?await db.select().from(billingNoticeOutbox).where(and(eq(billingNoticeOutbox.id,current.noticeOutboxId),inArray(billingNoticeOutbox.status,['pending','sending']))).limit(1):[];
+      if(!live)await planAutopayForInvoice(db,row.invoiceId,true);
+    },'autopay.renoticeOrphan');
+    cursor=rows[rows.length-1]!.id;
+  }
 }

@@ -65,6 +65,9 @@ const ALLOWED_TAG_NAMES = new Set([
   'billing_notice_kind',
   'autopay_method_id',
   'autopay_phase',
+  'attempt_id',
+  'schedule_id',
+  'return_identity',
   // SEC-150: which phase of Checkout-session revocation produced the alert —
   // 'request' (intent/sibling request), 'expire' (the sweep's provider call),
   // 'blocked' (terminal-unrepaired) or 'charged_repair' (the session was paid

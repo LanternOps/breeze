@@ -1,3 +1,4 @@
+vi.mock('./staffNotifications', () => ({enqueueAutopayStaffNotifications:vi.fn()}));
 import { beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   responses: [] as unknown[][], writes: [] as { table: unknown; values: Record<string, unknown> }[],
@@ -160,7 +161,7 @@ it('delivers a current notice and runs its registered acknowledgement handler', 
 });
 
 it.each(['clientSkippedAt', 'mspExcludedAt'])('does not restore notice authority behind the %s fence', async field => {
-  h.responses.push([invoice], [{...schedule, [field]:new Date()}]);
+  h.responses.push([invoice], [{...schedule, [field]:new Date()}], [enrollment]);
   await invoiceAutopayNoticeSent(db, row);
   expect(h.writes).toHaveLength(0);
 });

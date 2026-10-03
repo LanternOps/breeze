@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({ enqueue: vi.fn(), mint: vi.fn(), payLink: vi.fn(),
 vi.mock('./noticeOutbox', () => ({ enqueueBillingNotice: h.enqueue }));
 vi.mock('./linkTokens', () => ({ mintBillingLinkToken: h.mint, buildBillingLinkUrl: (purpose: string, token: string) => `https://example.test/${purpose}/${token}` }));
 vi.mock('../invoiceLinkToken', () => ({ getOrMintInvoiceLink: h.payLink, buildPublicInvoiceUrl: (token: string) => `https://example.test/invoice/${token}` }));
-vi.mock('./staffNotifications', () => ({ notifyAutopayStaff: h.staff }));
+vi.mock('./staffNotifications', () => ({ sendAutopayStaffEmail: h.staff }));
 const rows = new Map<unknown, Record<string, unknown>[]>();
 const tx = { select: () => {
   let table: unknown;

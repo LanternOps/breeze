@@ -1,10 +1,10 @@
 import {beforeEach,expect,it,vi} from 'vitest';
-const h=vi.hoisted(()=>({rows:[] as unknown[],latest:vi.fn(),archived:vi.fn(),decrypt:vi.fn(),construct:vi.fn()}));
-vi.mock('../db',()=>({db:{select:()=>({from:()=>({where:()=>({limit:async()=>h.rows})})})}}));
+const h=vi.hoisted(()=>({rows:[] as unknown[],latest:vi.fn(),archived:vi.fn(),decrypt:vi.fn(),construct:vi.fn(),retrieve:vi.fn()}));
+vi.mock('../db',()=>({runOutsideDbContext:async(fn:()=>unknown)=>fn(),withSystemDbAccessContext:async(fn:()=>unknown)=>fn(),db:{select:()=>({from:()=>({where:()=>({limit:async()=>h.rows})})})}}));
 vi.mock('./partnerStripe',()=>({PartnerStripeError:class extends Error {constructor(message:string,readonly code:string){super(message);}}}));
 vi.mock('./secretCrypto',()=>({decryptSecret:h.decrypt}));
 vi.mock('./stripeCredentialArchive',()=>({findLatestArchivedCredentialForAccount:h.latest,getSupersededStripeCredential:h.archived}));
-vi.mock('stripe',()=>({default:class { constructor(key:string){h.construct(key);} }}));
+vi.mock('stripe',()=>({default:class { paymentIntents={retrieve:h.retrieve}; constructor(key:string){h.construct(key);} }}));
 import {getPartnerStripeClient} from './partnerStripeClient';
 beforeEach(()=>{vi.clearAllMocks();h.rows=[];h.decrypt.mockReturnValue('synthetic_live');});
 it('preserves candidate, stored and explicit archive overloads',async()=>{
@@ -29,13 +29,14 @@ it('uses the original account and checks both archive identities',async()=>{
     await expect(getPartnerStripeClient('p',source)).rejects.toThrow('Stripe account mismatch');
   }
 });
-it('honors a pinned archive even with a connected same-account live key',async()=>{
+it('prefers a connected same-account live key over a pinned archive',async()=>{
   h.rows=[{status:'connected',apiKey:'cipher',stripeAccountId:'acct_old'}];
   h.archived.mockResolvedValue({stripe:{},partnerId:'p',stripeAccountId:'acct_old'});
   await getPartnerStripeClient('p',{reconciliationAccountId:'acct_old',archivedCredentialId:'pinned',
     invoiceStripePaymentId:'mapping',reason:'payment_intent_settlement'});
-  expect(h.latest).not.toHaveBeenCalled();expect(h.construct).not.toHaveBeenCalled();
-  expect(h.archived).toHaveBeenCalledWith('pinned',{reason:'payment_intent_settlement',invoiceStripePaymentId:'mapping'});
+  expect(h.latest).not.toHaveBeenCalled();
+  expect(h.construct).toHaveBeenCalledWith('synthetic_live');
+  expect(h.archived).not.toHaveBeenCalled();
 });
 
 it('rejects explicit archives from another partner', async () => {
@@ -74,4 +75,14 @@ it.each([null, 'throws'])('preserves unreadable stored-key rejection: %s', async
   h.decrypt.mockImplementation(() => { if (result === 'throws') throw new Error('synthetic decrypt failure'); return result; });
   await expect(getPartnerStripeClient('p')).rejects.toMatchObject({ code: 'STRIPE_KEY_UNREADABLE' });
   expect(h.construct).not.toHaveBeenCalled();
+});
+
+it('retries a revoked current same-account key with the bound archive outside DB context', async () => {
+  h.rows = [{ status: 'connected', apiKey: 'cipher', stripeAccountId: 'acct_old' }];
+  const retrieve = vi.fn().mockResolvedValue({ id: 'pi_original' });
+  h.archived.mockResolvedValue({ stripe: { paymentIntents: { retrieve } }, partnerId: 'p', stripeAccountId: 'acct_old' });
+  h.retrieve.mockRejectedValue(Object.assign(new Error('revoked'), { type: 'StripeAuthenticationError' }));
+  const client = await getPartnerStripeClient('p', { reconciliationAccountId: 'acct_old', archivedCredentialId: 'pinned', reason: 'autopay_recovery' });
+  expect(await client.stripe.paymentIntents.retrieve('pi_original')).toEqual({ id: 'pi_original' });
+  expect(retrieve).toHaveBeenCalledWith('pi_original');
 });

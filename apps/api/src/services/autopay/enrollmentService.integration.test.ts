@@ -197,7 +197,7 @@ it.each(['public','portal'])('allows %s stop when the partner is disabled, revok
  const res=await app.request(source==='public'?`/public/${token.token}/stop`:'/portal/autopay/stop',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer test'},body:'{}'});
  expect(res.status).toBe(200);
  const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));expect(enrollment?.status).toBe('cancelled');
- const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules));expect(schedule).toMatchObject({state:'cancelled',stateReason:'autopay_stopped'});
+ const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules));expect(schedule).toMatchObject({state:'cancelled',stateReason:'stop'});
  const links=await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens));expect(links.every(link=>link.revokedAt!==null)).toBe(true);
  await vi.waitFor(()=>expect(detach).toHaveBeenCalledExactlyOnceWith('pm_stop'));
 });

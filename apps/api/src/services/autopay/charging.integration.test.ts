@@ -6,7 +6,7 @@ import { db, withSystemDbAccessContext, withDbAccessContext, hasDbAccessContext 
 import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
 import { partners, invoices, orgAutopayEnrollments, orgPaymentMethods, invoiceAutopaySchedules,
   invoiceCollectionAttempts, invoiceStripePayments, stripeConnectAccounts, invoicePayments,
-  organizations, billingNoticeOutbox, stripeFinancialEvents, orgMergeEvents } from '../../db/schema';
+  organizations, billingNoticeOutbox, stripeFinancialEvents, orgMergeEvents, userNotifications } from '../../db/schema';
 import { encryptSecret } from '../secretCrypto';
 import { attemptCollection, resumeCollectionAttempt, applyAttemptOutcome } from './collectionEngine';
 import {recordPayment,getInvoice} from '../invoiceService';
@@ -14,11 +14,11 @@ import {executeOrgMerge} from '../orgMerge';
 import {ingestStripeFinancialEvent,processPendingStripeFinancialEvents,processPendingStripeFinancialEventsForPayment} from '../stripeReversalState';
 import {enqueueAutopayNotice} from './chargingNotice';
 import { createInvoicePayLink } from '../invoiceCheckout';
-const provider = vi.hoisted(() => ({ create: vi.fn(), retrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(),
+const provider = vi.hoisted(() => ({ search: vi.fn(), create: vi.fn(), retrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(),
   accountRetrieve: vi.fn(), probeUpdate: vi.fn(), setupRetrieve: vi.fn(), mandateRetrieve: vi.fn(), eventList: vi.fn(), sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn(), methodRetrieve:vi.fn(),methodDetach:vi.fn() }));
 vi.mock('../partnerStripeClient', () => ({
   getPartnerStripeClient: vi.fn(async (partnerId: string, options?: {reconciliationAccountId?: string}) => ({ stripeAccountId: options?.reconciliationAccountId ?? accountsByPartner.get(partnerId) ?? 'acct_autopay_test', defaultCurrency: 'USD',
-    stripe: { accounts: {retrieve: provider.accountRetrieve}, customers: {update: provider.probeUpdate}, setupIntents: {update: provider.probeUpdate, retrieve: provider.setupRetrieve}, mandates: {retrieve: provider.mandateRetrieve}, events: {list: provider.eventList}, paymentMethods:{update: provider.probeUpdate, retrieve:provider.methodRetrieve,detach:provider.methodDetach}, paymentIntents: { update: provider.probeUpdate, create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
+    stripe: { accounts: {retrieve: provider.accountRetrieve}, customers: {update: provider.probeUpdate}, setupIntents: {update: provider.probeUpdate, retrieve: provider.setupRetrieve}, mandates: {retrieve: provider.mandateRetrieve}, events: {list: provider.eventList}, paymentMethods:{update: provider.probeUpdate, retrieve:provider.methodRetrieve,detach:provider.methodDetach}, paymentIntents: { search: provider.search, update: provider.probeUpdate, create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
       checkout: { sessions: { create: provider.sessionCreate, expire: provider.sessionExpire, retrieve: provider.sessionRetrieve } } } })),
 }));
 vi.mock('../invoiceEvents', () => ({ emitInvoiceEvent: vi.fn() }));
@@ -75,8 +75,11 @@ async function fixture(accountId = 'acct_autopay_test') {
       status: 'active', generation: 1, stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId,
       stripeCustomerId: 'cus_autopay_test', effectiveFrom: new Date('2020-01-01T00:00Z'), requestedAt: new Date() }).returning();
     const [method] = await db.insert(orgPaymentMethods).values({ orgId: org.id, enrollmentId: enrollment!.id,
-      stripePaymentMethodId: 'pm_autopay_test', type: 'card', cardBrand: 'visa', cardLast4: '4242', cardFunding: 'credit',
+      stripePaymentMethodId: 'pm_autopay_test',stripeSetupIntentId:'seti_fixture', type: 'card', cardBrand: 'visa', cardLast4: '4242', cardFunding: 'credit',
       status: 'active', isAutopayMethod: true }).returning();
+    await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:partner.id,enrollmentId:enrollment!.id,
+      generation:1,source:'setup_page',methodType:'card',stripeConnectionId:connection!.id,stripeAccountId:accountId,
+      stripeCustomerId:'cus_autopay_test',setupIntentId:'seti_fixture',consentSnapshot:{},outcome:'activated'});
     const today = new Date().toISOString().slice(0,10);
     const [invoice] = await db.insert(invoices).values({ partnerId: partner.id, orgId: org.id,
       invoiceNumber: `T-${randomUUID()}`, currencyCode: 'USD', status: 'sent', issueDate: today, dueDate: today,
@@ -136,6 +139,8 @@ it('recovers a lost create response with the same key and one provider PI', asyn
   await resumeCollectionAttempt(attempt!.id);
   expect(provider.create.mock.calls[0]![1].idempotencyKey).toBe(provider.create.mock.calls[1]![1].idempotencyKey);
   expect((await attempts(f.invoice.id))[0]!.stripePaymentIntentId).toBe('pi_autopay_test');
+  expect(provider.confirm).toHaveBeenCalledOnce();
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
 });
 it('recovers a crash after mapping commit but before confirm without creating again', async () => {
   const f = await fixture();
@@ -145,6 +150,8 @@ it('recovers a crash after mapping commit but before confirm without creating ag
   expect(attempt!.invoiceStripePaymentId).toBeTruthy();
   await resumeCollectionAttempt(attempt!.id);
   expect(provider.create).toHaveBeenCalledTimes(1);
+  expect(provider.confirm).toHaveBeenCalledTimes(2);
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
 });
 it('preserves captured money as unapplied after an out-of-band void', async () => {
   const f = await fixture();
@@ -444,6 +451,7 @@ it.each([-1, 1])('unknown create at 23 hours %+i ms replays only inside the safe
       .where(eq(invoiceCollectionAttempts.id, attempt!.id));
     await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'skip', actor: f.actor});
   });
+  if(epsilon>0) await withSystemDbAccessContext(()=>db.update(orgPaymentMethods).set({stripeSetupIntentId:null}).where(eq(orgPaymentMethods.id,f.method.id)));
   await reconcilePendingControls(); await reconcilePendingControls();
   const [final] = await attempts(f.invoice.id);
   if (epsilon < 0) {
@@ -496,6 +504,13 @@ it('only the current notice acknowledgement advances identity and the elapsed le
   expect(await scheduleFor(f)).toMatchObject({noticeOutboxId: current!.id, noticeSentAt: sentAt, state: 'scheduled'});
   expect(await attemptCollection(inputFor(f))).toMatchObject({outcome: 'deferred', reason: 'notice_lead'});
   expect(provider.create).not.toHaveBeenCalled();
+  const aged=new Date(Date.now()-2*86_400_000);
+  await withSystemDbAccessContext(async()=>{
+    await db.update(billingNoticeOutbox).set({status:'sent',sentAt:aged}).where(eq(billingNoticeOutbox.id,current!.id));
+    await db.update(invoiceAutopaySchedules).set({noticeSentAt:aged}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+  });
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'created'});
+  expect(provider.confirm).toHaveBeenCalledOnce();
 });
 
 it('breeze_app cannot read or forge another org collection history', async () => {
@@ -898,7 +913,7 @@ it('Stop preserves every terminal schedule while canceling pending and fencing i
   await attemptCollection(inputFor(inFlight));
   await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
   expect(await Promise.all(history.map(scheduleFor))).toEqual(before);
-  expect(await scheduleFor(pending)).toMatchObject({state: 'cancelled', stateReason: 'autopay_stopped', nextAttemptAt: null});
+  expect(await scheduleFor(pending)).toMatchObject({state: 'cancelled', stateReason: 'stop', nextAttemptAt: null});
   expect(await scheduleFor(inFlight)).toMatchObject({state: 'collecting', stateReason: 'control_pending:stop'});
   currentPi = {...currentPi, status: 'canceled'};
   await reconcilePendingControls();
@@ -1083,7 +1098,7 @@ it.each(['before_confirm', 'after_confirm', 'after_settlement'] as const)(
       } finally {release.release();}
     }
     const replacement = await replacementWork;
-    expect(replacement.outcome).toBe('created');
+    expect(replacement.outcome).toBe(arrival==='before_confirm'?'canceled':'created');
     const replacementAttempt = (await attempts(f.invoice.id)).find(a => a.id === replacement.attemptId)!;
     if (arrival !== 'before_confirm') {
       succeed(oldPi); await applyAttemptOutcome(f.partner.id, old.attemptId!);
@@ -1151,4 +1166,180 @@ it.each(['exclude', 'stop'] as const)('%s preserves terminal schedule history ev
   await reconcilePendingControls();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
   expect(await scheduleFor(f)).toEqual(before);
+});
+
+it.each(['empty', 'canceled', 'succeeded', 'changed_account', 'missing'] as const)(
+  'quarantine recovery uses immutable setup provenance: %s', async mode => {
+    const f = await fixture();
+    if(mode==='missing')await withSystemDbAccessContext(()=>createUser({partnerId:f.partner.id,withMembership:true}));
+    if (mode !== 'missing') await withSystemDbAccessContext(async () => {
+      await db.update(orgPaymentMethods).set({ stripeSetupIntentId: 'seti_original' }).where(eq(orgPaymentMethods.id, f.method.id));
+      await db.insert(autopaySetupAttempts).values({ orgId: f.org.id, partnerId: f.partner.id,
+        enrollmentId: f.enrollment.id, generation: 1, source: 'setup_page', methodType: 'card',
+        stripeConnectionId: f.connection.id, stripeAccountId: f.connection.stripeAccountId,
+        stripeCustomerId: 'cus_autopay_test', setupIntentId: 'seti_original', consentSnapshot: {}, outcome: 'activated' });
+    });
+    const normal = provider.create.getMockImplementation()!;
+    provider.create.mockImplementationOnce(async (...args) => { await normal(...args); throw new Error('lost'); });
+    await expect(attemptCollection({ invoiceId: f.invoice.id, scheduleId: f.schedule.id, initiatedBy: 'scheduler' })).rejects.toThrow('lost');
+    const [attempt] = await attempts(f.invoice.id);
+    await withSystemDbAccessContext(async () => {
+      await db.update(invoiceCollectionAttempts).set({ createdAt: new Date(Date.now() - 25 * 3600000) }).where(eq(invoiceCollectionAttempts.id, attempt!.id));
+      if (mode === 'missing') await db.update(orgPaymentMethods).set({stripeSetupIntentId:null}).where(eq(orgPaymentMethods.id,f.method.id));
+      if (mode === 'changed_account') await db.update(orgAutopayEnrollments).set({ stripeAccountId: 'acct_replacement' }).where(eq(orgAutopayEnrollments.id, f.enrollment.id));
+    });
+    currentPi = { ...currentPi, status: mode === 'succeeded' ? 'succeeded' : 'canceled', amount_received: mode === 'succeeded' ? 10000 : 0 };
+    provider.search.mockImplementation(async params => {
+      expect(hasDbAccessContext()).toBe(false);
+      expect(params.query).toBe(`metadata['attempt_id']:'${attempt!.id}'`);
+      return { data: ['canceled', 'succeeded'].includes(mode) ? [currentPi] : [], has_more: false };
+    });
+    vi.mocked(getPartnerStripeClient).mockClear();
+    await resumeCollectionAttempt(attempt!.id);
+    const [saved] = await attempts(f.invoice.id);
+    expect(saved!.state).toBe(mode === 'missing' ? 'reserved' : mode === 'succeeded' ? 'succeeded' : 'canceled');
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    if (mode === 'missing') {
+      expect(provider.search).not.toHaveBeenCalled();
+      await resumeCollectionAttempt(attempt!.id);
+      const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+      expect(notices).toHaveLength(1);expect(notices[0]!.message).toContain(attempt!.id);expect(notices[0]!.message).toContain('Reservation retained');
+    }
+    else {
+      expect(provider.search).toHaveBeenCalledOnce();
+      expect(getPartnerStripeClient).toHaveBeenCalledWith(f.partner.id, expect.objectContaining({ reconciliationAccountId: f.connection.stripeAccountId }));
+    }
+  });
+
+it('re-notices with the current saved method, not the issued method snapshot', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(orgPaymentMethods).set({cardLast4:'9999'}).where(eq(orgPaymentMethods.id,f.method.id));
+    const {renoticeSchedule}=await import('./invoiceControls');
+    await renoticeSchedule(db,f.invoice.id);
+  });
+  expect((await scheduleFor(f)).termsSnapshot).toMatchObject({last4:'9999',noticeSeq:2});
+});
+it('orphan notice sweep retries missing contacts and canceled notices', async () => {
+  const f=await fixture();
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceAutopaySchedules).set({state:'awaiting_notice',noticeSentAt:null}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+    await db.update(billingNoticeOutbox).set({status:'cancelled'}).where(eq(billingNoticeOutbox.id,f.notice.id));
+    await db.update(organizations).set({billingContact:null}).where(eq(organizations.id,f.org.id));
+  });
+  const {sweepOrphanAutopayNotices}=await import('./scheduler');
+  await sweepOrphanAutopayNotices();
+  expect(await scheduleFor(f)).toMatchObject({state:'awaiting_notice',stateReason:'no_billing_contact'});
+  await withSystemDbAccessContext(()=>db.update(organizations).set({billingContact:{email:'billing@example.test'}}).where(eq(organizations.id,f.org.id)));
+  await sweepOrphanAutopayNotices();
+  const saved=await scheduleFor(f);
+  expect(saved.state).toBe('awaiting_notice');expect(saved.noticeOutboxId).not.toBe(f.notice.id);
+  const [notice]=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id,saved.noticeOutboxId!)));
+  expect(notice?.status).toBe('pending');
+});
+it.each(['paid','void'] as const)('closes a live schedule for an externally %s invoice', async status=>{
+  const f=await fixture();
+  await withSystemDbAccessContext(()=>db.update(invoices).set({status}).where(eq(invoices.id,f.invoice.id)));
+  await runAutopayCollection();
+  expect(await scheduleFor(f)).toMatchObject({state:'not_needed',stateReason:status==='paid'?'invoice_settled':'invoice_voided'});
+});
+
+it.each(['expired','revoked','consumed','valid'] as const)('bank reservation token consume predicate: %s',async mode=>{
+ const f=await fixture(), bank=await bankSetup(f,mode);serveBank([bank]);
+ if(mode!=='valid')await withSystemDbAccessContext(()=>db.update(billingLinkTokens).set(mode==='expired'?{expiresAt:new Date(0)}:mode==='revoked'?{revokedAt:new Date()}:{consumedAt:new Date()}).where(eq(billingLinkTokens.id,bank.token.id)));
+ const result=await withClientPaymentAuthority(bank.authority,()=>attemptCollection({invoiceId:f.invoice.id,initiatedBy:'client_on_session'}));
+ if(mode==='valid'){expect(result.outcome).toBe('created');expect(provider.create).toHaveBeenCalledOnce();}
+ else {expect(result).toMatchObject({outcome:'refused',reason:'client_authorization_used'});expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();}
+});
+it('bank consent amounts are immutable in the database (23514)',async()=>{
+ const f=await fixture(), bank=await bankSetup(f,'immutable');
+ const consent=bank.setup.consentSnapshot as Record<string,unknown>;
+ try {
+   await withSystemDbAccessContext(()=>db.update(autopaySetupAttempts).set({consentSnapshot:{...consent,bankPayment:{...consent.bankPayment as object,principal:'999.00'}}}).where(eq(autopaySetupAttempts.id,bank.setup.id)));
+   throw new Error('Consent mutation unexpectedly succeeded');
+ }catch(error){expect((error as {cause?:{code?:string};code?:string}).cause?.code ?? (error as {code?:string}).code).toBe('23514');}
+});
+
+import * as linkTokensModule from './linkTokens';
+import { getConfirmPaymentView, confirmInvoicePayment } from './confirmPayment';
+it.each(['newer','attemptCount','generation','expired','revoked','consumed','valid'] as const)(
+ 'real confirm-token binding and consume race: %s',async mode=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{currentPi={...currentPi,status:'requires_action',last_payment_error:{code:'authentication_required'}};return currentPi;});
+ const result=await attemptCollection(inputFor(f));
+ const [attempt]=await attempts(f.invoice.id);
+ const token=await withSystemDbAccessContext(async()=>{
+   const token=await mintBillingLinkToken(db,{orgId:f.org.id,invoiceId:f.invoice.id,enrollmentId:f.enrollment.id,generation:1,purpose:'confirm_payment',ttlDays:14});
+   await db.insert(billingNoticeOutbox).values({orgId:f.org.id,invoiceId:f.invoice.id,kind:'payment_failed',seq:2,dedupeKey:`confirm-test:${token.id}`,toEmail:'billing@example.test',rendered:{subject:'Confirm',html:'Confirm',text:'Confirm',frozen:{attemptId:attempt!.id,tokenId:token.id,variant:'confirm'}}});
+   if(mode==='newer')await db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,paymentMethodId:f.method.id,attemptNo:2,principalAmount:'100.00',feeAmount:'0.00',currency:'USD',idempotencyKey:`newer:${token.id}`,state:'failed',initiatedBy:'scheduler'});
+   if(mode==='attemptCount'||mode==='generation')await db.update(invoiceAutopaySchedules).set(mode==='attemptCount'?{attemptCount:2}:{enrollmentGeneration:2}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+   return token;
+ });
+ if(['newer','attemptCount','generation'].includes(mode)){
+  await expect(getConfirmPaymentView(token.token)).rejects.toMatchObject({status:404});expect(provider.cancel).not.toHaveBeenCalled();return;
+ }
+ expect(await getConfirmPaymentView(token.token)).toMatchObject({state:'requires_action'});
+ const original=linkTokensModule.resolveBillingLinkToken;let calls=0;
+ const spy=vi.spyOn(linkTokensModule,'resolveBillingLinkToken').mockImplementation(async(...args)=>{
+   const link=await original(...args);calls++;
+   // Race after the locked resolution but before consume: the real UPDATE must reject.
+   if(calls===2&&mode!=='valid')await db.update(billingLinkTokens).set(mode==='expired'?{expiresAt:new Date(0)}:mode==='revoked'?{revokedAt:new Date()}:{consumedAt:new Date()}).where(eq(billingLinkTokens.id,token.id));
+   return link;
+ });
+ try{
+   if(mode==='valid')expect(await confirmInvoicePayment(token.token)).toMatchObject({url:expect.any(String)});
+   else await expect(confirmInvoicePayment(token.token)).rejects.toMatchObject({status:404});
+ }finally{spy.mockRestore();}
+ expect(result.attemptId).toBe(attempt!.id);expect(provider.cancel).toHaveBeenCalledOnce();
+});
+
+it.each(['bank','pay_and_save','ambiguous','credential_missing'] as const)(
+  'recovers only proven account provenance: %s',async mode=>{
+  const f=await fixture();
+  const bank=mode==='bank'?await bankSetup(f,'quarantine'):null;
+  if(bank)serveBank([bank]);
+  if(mode==='pay_and_save') {
+    const setup=await withSystemDbAccessContext(async()=>{
+      await db.update(orgPaymentMethods).set({stripeSetupIntentId:null}).where(eq(orgPaymentMethods.id,f.method.id));
+      const [setup]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,
+        generation:1,source:'pay_and_save',methodType:'card',stripeConnectionId:f.connection.id,stripeAccountId:f.connection.stripeAccountId,
+        stripeCustomerId:'cus_autopay_test',paymentIntentId:'pi_saved_card',checkoutSessionId:'cs_saved_card',consentSnapshot:{},outcome:'activated'}).returning();
+      return setup!;
+    });
+    provider.retrieve.mockImplementation(async id=>{
+      expect(hasDbAccessContext()).toBe(false);
+      return id==='pi_saved_card'?{id,status:'succeeded',payment_method:f.method.stripePaymentMethodId,
+        customer:'cus_autopay_test',metadata:{autopay_setup_attempt_id:setup.id}}:currentPi;
+    });
+  }
+  const normal=provider.create.getMockImplementation()!;
+  provider.create.mockImplementationOnce(async(...args)=>{await normal(...args);throw new Error('lost');});
+  const start=()=>bank?withClientPaymentAuthority(bank.authority,()=>attemptCollection({invoiceId:f.invoice.id,initiatedBy:'client_on_session'})):attemptCollection(inputFor(f));
+  await expect(start()).rejects.toThrow('lost');
+  const [attempt]=await attempts(f.invoice.id);
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceCollectionAttempts).set({createdAt:new Date(Date.now()-25*3600000)}).where(eq(invoiceCollectionAttempts.id,attempt!.id));
+    await db.update(orgAutopayEnrollments).set({stripeAccountId:'acct_new'}).where(eq(orgAutopayEnrollments.id,f.enrollment.id));
+    if(mode==='ambiguous')await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,
+      generation:1,source:'setup_page',methodType:'card',stripeConnectionId:f.connection.id,stripeAccountId:'acct_ambiguous',
+      stripeCustomerId:'cus_other',setupIntentId:'seti_fixture',consentSnapshot:{},outcome:'activated'});
+  });
+  if(mode==='credential_missing')vi.mocked(getPartnerStripeClient).mockRejectedValueOnce(new Error('Original credential unavailable'));
+  provider.search.mockImplementation(async()=>{expect(hasDbAccessContext()).toBe(false);return {data:[],has_more:false};});
+  await resumeCollectionAttempt(attempt!.id);
+  const [saved]=await attempts(f.invoice.id);
+  expect(saved!.state).toBe(mode==='ambiguous'||mode==='credential_missing'?'reserved':'canceled');
+  if(mode==='ambiguous'||mode==='credential_missing')expect(provider.search).not.toHaveBeenCalled();
+  else expect(provider.search).toHaveBeenCalledOnce();
+  expect(provider.create).toHaveBeenCalledOnce();
+});
+
+it.each(['cancelled','missing'] as const)('Send does not claim a %s notice was queued',async mode=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+   await db.update(invoiceAutopaySchedules).set({state:'awaiting_notice',noticeOutboxId:mode==='missing'?null:f.notice.id}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+   await db.update(billingNoticeOutbox).set({status:'cancelled'}).where(eq(billingNoticeOutbox.id,f.notice.id));
+ });
+ const {sendInvoiceEmail}=await import('../invoicePdf');
+ expect(await withSystemDbAccessContext(()=>sendInvoiceEmail(f.invoice.id,f.actor))).toMatchObject({emailed:false,reason:'send_failed'});
 });

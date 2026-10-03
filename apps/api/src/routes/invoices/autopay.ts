@@ -1,4 +1,4 @@
-import type { AutopayTerms } from '../../services/autopay/chargingNotice';
+import { parseAutopayTerms } from '@breeze/shared';
 import { eq } from 'drizzle-orm';
 import { invoices, invoiceAutopaySchedules } from '../../db/schema';
 import { requireInvoiceAccess } from '../../services/invoiceService';
@@ -41,7 +41,7 @@ invoiceAutopayRoutes.post('/:id/autopay/charge-now',
         if (!schedule?.eligible) throw new InvoiceServiceError('Invoice has no eligible notice', 409, 'INVALID_STATE');
         // Reject before Checkout revocation or any provider call. The locked
         // collection service rechecks the authoritative notice and all fences.
-        const lead = (schedule.termsSnapshot as Partial<AutopayTerms> | null)?.noticeLeadDays;
+        const lead = parseAutopayTerms(schedule.termsSnapshot).noticeLeadDays;
         if (!schedule.noticeOutboxId || !schedule.noticeSentAt || (lead !== 1 && lead !== 10)
           || Date.now() < schedule.noticeSentAt.getTime() + lead * 86_400_000) {
           throw new InvoiceServiceError('notice_lead', 409, 'INVALID_STATE');

@@ -13,11 +13,11 @@ import { requestInvoiceControl, finalizeInvoiceControl } from './collectionContr
 async function fixture() {
   return withSystemDbAccessContext(async () => {
     const suffix = randomUUID();
-    const [partner] = await db.insert(partners).values({ name: 'Control fixture', slug: `control-${suffix}`, type: 'msp', plan: 'pro', status: 'active' }).returning();
+    const [partner] = await db.insert(partners).values({ autopayEnabled:true,name: 'Control fixture', slug: `control-${suffix}`, type: 'msp', plan: 'pro', status: 'active' }).returning();
     const [org] = await db.insert(organizations).values({ partnerId: partner!.id, name: 'Control customer', slug: `control-${suffix}`, currencyCode: 'USD', billingContact: {email:'billing@example.test'} }).returning();
-    const [connection] = await db.insert(stripeConnectAccounts).values({ partnerId: partner!.id, stripeAccountId: `acct_${suffix}`, apiKey: 'enc:synthetic', keyLast4: 'test', status: 'connected', livemode: false }).returning();
+    const [connection] = await db.insert(stripeConnectAccounts).values({ partnerId: partner!.id, stripeAccountId: `acct_${suffix}`, apiKey: 'enc:synthetic', keyLast4: 'test', status: 'connected', livemode: false,accountCountry:'US',autopayCapabilitiesCheckedAt:new Date(),autopayMissingPermissions:[] }).returning();
     const [enrollment] = await db.insert(orgAutopayEnrollments).values({ orgId: org!.id, partnerId: partner!.id, status: 'active', effectiveFrom: new Date('2026-09-01'), generation: 1, stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId }).returning();
-    const [method] = await db.insert(orgPaymentMethods).values({ orgId: org!.id, enrollmentId: enrollment!.id, stripePaymentMethodId: `pm_${suffix}`, type: 'card', status: 'active' }).returning();
+    const [method] = await db.insert(orgPaymentMethods).values({ orgId: org!.id, enrollmentId: enrollment!.id, stripePaymentMethodId: `pm_${suffix}`, type: 'card', status: 'active',isAutopayMethod:true }).returning();
     const [invoice] = await db.insert(invoices).values({ orgId: org!.id, partnerId: partner!.id, currencyCode: 'USD', status: 'sent', invoiceNumber: `INV-${suffix}`, issueDate: '2026-10-01', dueDate: '2026-10-31', total: '100.00', subtotal: '100.00', balance: '100.00' }).returning();
     const [schedule] = await db.insert(invoiceAutopaySchedules).values({ orgId: org!.id, invoiceId: invoice!.id, enrollmentId: enrollment!.id, enrollmentGeneration: 1, eligible: true, state: 'scheduled', collectOn: '2026-10-31', termsSnapshot: {} }).returning();
     const token = await mintBillingLinkToken(db, { orgId: org!.id, invoiceId: invoice!.id, enrollmentId: enrollment!.id, generation:1, purpose:'skip_invoice',ttlDays:1 });
@@ -105,8 +105,8 @@ it('clears an already-excluded pending control after verified cancellation and a
   await withSystemDbAccessContext(async () => {
     await db.update(invoices).set({ autopayExcluded: true }).where(eq(invoices.id, f.invoice.id));
     await db.update(invoiceAutopaySchedules).set({
-      state: 'excluded_by_msp', stateReason: 'exclude', mspExcludedAt: new Date(),
-      termsSnapshot: { issuedAt: '2026-10-01', offsetDays: 0, rule: 'later',
+      state: 'scheduled', stateReason: null, mspExcludedAt: new Date(),
+      termsSnapshot: { issuedAt: '2026-10-01T00:00:00Z', offsetDays: 0, rule: 'later',
         cap: { enabled: false }, methodType: 'card', methodId: f.attempt.paymentMethodId,
         last4: '4242', methodLabel: 'Card ending in 4242', accountHolderType: null,
         noticeLeadDays: 1, principal: '100.00', currency: 'USD', feeAmount: '0.00',
@@ -124,7 +124,7 @@ it('clears an already-excluded pending control after verified cancellation and a
     const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)).for('update');
     const [schedule] = await tx.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.id, f.schedule.id)).for('update');
-    expect(schedule).toMatchObject({ state: 'excluded_by_msp', stateReason: 'control_pending:exclude' });
+    expect(schedule).toMatchObject({ state: 'scheduled', stateReason: 'control_pending:exclude' });
     const [attempt] = await tx.select().from(invoiceCollectionAttempts)
       .where(eq(invoiceCollectionAttempts.invoiceId, f.invoice.id));
     expect(attempt!.state).toBe('requires_action');

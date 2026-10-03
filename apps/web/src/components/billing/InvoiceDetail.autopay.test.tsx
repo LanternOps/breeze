@@ -35,3 +35,9 @@ it('Charge now disables duplicate clicks until the request finishes',async()=>{
  await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
  expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'success',message:'Payment attempt started'}));
 });
+
+it('reports a pending exclusion instead of saved',async()=>{
+ h.fetch.mockImplementation(async(_url:string,opts?:RequestInit)=>({ok:true,status:opts?.method==='PATCH'?202:200,json:async()=>opts?.method==='PATCH'?{status:'pending',control:'exclude'}:{data:[]}}));
+ render(<InvoiceDetail detail={detail} onChanged={()=>{}}/>);fireEvent.click(screen.getByTestId('autopay-invoice-excluded'));
+ await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({message:'Exclusion requested; stopping the pending payment'})));
+});

@@ -1157,7 +1157,7 @@ export async function sendInvoiceEmail(
       return { invoice, emailed: true, recipients: [notice.toEmail] };
     }
     return { invoice, emailed: false, recipients: [],
-      reason: notice?.status === 'failed' ? 'send_failed' : 'notice_queued' };
+      reason: notice && ['pending','sending'].includes(notice.status) ? 'notice_queued' : 'send_failed' };
   }
 
   // 2-4. Ensure the PDF, resolve recipients, send (graceful no-op if email is

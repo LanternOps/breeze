@@ -90,7 +90,7 @@ const schedule = {
   mspExcludedAt: null,
   stateReason: null,
   noticeOutboxId: 'notice',
-  termsSnapshot: { offsetDays: 0, rule: 'later', noticeLeadDays: 1, noticeSeq: 1 },
+  termsSnapshot: { issuedAt:'2026-10-01T00:00:00Z',offsetDays:0,rule:'later',cap:{enabled:false},noticeLeadDays:1,noticeSeq:1,methodId:'method',methodType:'card',accountHolderType:null,last4:'4242',methodLabel:'Card',principal:'10.00',currency:'USD',feeAmount:'0.00',feeKind:'none',cardFeeBps:0,achFeeAmount:'0.00',chargeDate:'2026-10-15' },
   noticeSentAt: new Date(),
   collectOn: '2026-10-15',
 };
@@ -121,7 +121,7 @@ function fixture(over: Record<string, unknown> = {}, attempts: unknown[] = []) {
         },
       ],
     ],
-    [organizations, [{ name: 'Customer', billingContact: { email: 'billing@example.test' } }]],
+    [organizations, [{ status:'active',deletedAt:null,name: 'Customer', billingContact: { email: 'billing@example.test' } }]],
     [partners, [{ enabled: true, name: 'Partner', settings: {} }]],
   ]);
   const tx: any = {
@@ -307,30 +307,11 @@ it('never replans a client skip on MSP reinclusion', async () => {
   expect(h.notice).not.toHaveBeenCalled();
 });
 it('fence predicate covers each authority marker', () => {
-  expect(
-    collectionFenced({
-      clientSkippedAt: null,
-      mspExcludedAt: null,
-      autopayExcluded: false,
-      enrollmentStatus: 'active',
-    }),
-  ).toBe(false);
-  for (const patch of [
-    { clientSkippedAt: new Date() },
-    { mspExcludedAt: new Date() },
-    { autopayExcluded: true },
-    { enrollmentStatus: 'cancelled' },
-  ])
-    expect(
-      collectionFenced({
-        clientSkippedAt: null,
-        mspExcludedAt: null,
-        autopayExcluded: false,
-        enrollmentStatus: 'active',
-        ...patch,
-      }),
-    ).toBe(true);
+ const base={schedule:{clientSkippedAt:null,mspExcludedAt:null},invoice:{autopayExcluded:false},enrollment:{status:'active' as const}};
+ expect(collectionFenced(base)).toBe(false);
+ for(const patch of [{schedule:{...base.schedule,clientSkippedAt:new Date()}},{schedule:{...base.schedule,mspExcludedAt:new Date()}},{invoice:{autopayExcluded:true}},{enrollment:{status:'cancelled' as const}}])expect(collectionFenced({...base,...patch})).toBe(true);
 });
+
 it('retains a read-only processing/unapplied projection after rollout disable', async () => {
   const f = fixture({}, [{ state: 'processing' }, { state: 'unapplied' }]);
   f.data.set(partners, [{ enabled: false }]);
@@ -517,9 +498,14 @@ it('does not mark an already-excluded schedule pending without an outstanding at
 });
 
 it('offers Charge now after the full notice lead even before collectOn',async()=>{
- const f=fixture({noticeSentAt:new Date('2020-01-01'),collectOn:'2099-01-01',termsSnapshot:{noticeLeadDays:1,methodId:'method',methodType:'card',accountHolderType:null}});
+ const f=fixture({noticeSentAt:new Date('2020-01-01'),collectOn:'2099-01-01',termsSnapshot:schedule.termsSnapshot});
  expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.canChargeNow).toBe(true);
 });
 it.each([{noticeSentAt:new Date()},{clientSkippedAt:new Date()},{mspExcludedAt:new Date()},{enrollmentGeneration:2},{state:'retry_scheduled',nextAttemptAt:new Date('2099-01-01')}])('withholds Charge now for an unsafe schedule %j',async over=>{
- const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:{noticeLeadDays:1,methodId:'method',methodType:'card',accountHolderType:null},...over});expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.canChargeNow).toBe(false);
+ const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:schedule.termsSnapshot,...over});expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.canChargeNow).toBe(false);
+});
+
+it('allows MSP exclusion of an action-required reservation', async () => {
+  const f = fixture({ state: 'action_required' }, [{ state: 'requires_action' }]);
+  expect(await getInvoiceAutopayView(f.tx, invoice as never)).toMatchObject({ canExclude: true, canChargeNow: false });
 });

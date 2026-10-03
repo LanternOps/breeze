@@ -1,3 +1,6 @@
+import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
+import { parseAutopayTerms } from '@breeze/shared';
+import { resolveAttemptProvenance } from './attemptProvenance';
 import {getClientPaymentAuthority} from './clientPaymentAuthority';
 import {autopayConsentSnapshotSchema} from './types';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
@@ -25,10 +28,11 @@ import { isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
-import { noticeLeadDays, computeCollectOn } from './scheduler';
+import { noticeLeadDays, computeCollectOn, closeSettledAutopaySchedules } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 export type CollectionInput = { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string };
-export type CollectionResult = { attemptId: string | null; outcome: 'created' | 'deferred' | 'refused'; reason?: string };
+import type { CollectionResult } from '@breeze/shared';
+export type { CollectionResult } from '@breeze/shared';
 export function collectionNoticeAllows(sentAt: Date | null, lead: number, now: Date): boolean {
   return !!sentAt && now.getTime() >= sentAt.getTime() + lead * 86_400_000;
 }
@@ -81,9 +85,20 @@ async function prepareMethodAdmission(invoiceId: string) {
     if (provider.stripeAccountId !== snapshot.enrollment.stripeAccountId) return refuse('stripe_unavailable');
     const live = await runOutsideDbContext(() => provider.stripe.paymentMethods.retrieve(snapshot.method.stripePaymentMethodId));
     return { ...snapshot, live };
-  } catch {
-    // A transient lookup failure is not evidence that the saved method is bad.
-    return defer('stripe_unavailable');
+  } catch (error) {
+    reportCollectionError(error, {org_id:snapshot.invoice.orgId,invoice_id:invoiceId,autopay_method_id:snapshot.method.id,autopay_phase:'admission'});
+    if (isCollectionProgrammingError(error)) throw error;
+    const provider=error as {type?:string;code?:string};
+    const missing=provider.code==='resource_missing';
+    const credentials=['StripeAuthenticationError','StripePermissionError'].includes(provider.type ?? '')
+      || ['INVALID_STRIPE_KEY','STRIPE_KEY_UNREADABLE','NO_STRIPE_KEY'].includes(provider.code ?? '');
+    if (missing || credentials) await withSystemDbAccessContext(async()=>{
+      if(missing)await markPaymentMethodUnusable(db,snapshot.method.id,'resource_missing');
+      await enqueueAutopayStaffNotifications(db,{orgId:snapshot.invoice.orgId,partnerId:snapshot.invoice.partnerId,invoiceId,
+        event:'autopay.needs_attention',dedupeKey:`autopay_admission:${snapshot.enrollment.id}:${snapshot.enrollment.generation}:${snapshot.method.id}:${missing?'missing':'credentials'}`,
+        message:missing?'Automatic payment method is missing or detached. Update the saved method.':'Stripe credentials require attention before automatic payments can continue.'});
+    },'autopay.admissionFailure');
+    return defer(missing?'method_not_usable':'stripe_unavailable');
   }
 }
 
@@ -128,6 +143,9 @@ export async function reserveCollection(input: CollectionInput)
       || method.type !== admission.method.type || method.accountHolderType !== admission.method.accountHolderType
       || method.cardFunding !== admission.method.cardFunding) return defer('method_not_usable');
     if (!admittedMethod(admission.live, method, enrollment)) {
+      if ((typeof admission.live.customer === 'string' ? admission.live.customer : admission.live.customer?.id) !== enrollment.stripeCustomerId) {
+        await markPaymentMethodUnusable(db, method.id, 'payment_method_detached');
+      }
       await db.update(orgAutopayEnrollments).set({ needsAttentionReason: 'method_unusable' })
         .where(eq(orgAutopayEnrollments.id, enrollment.id));
       await enqueueAutopayStaffNotifications(db, { orgId: invoice.orgId, partnerId: invoice.partnerId,
@@ -143,8 +161,7 @@ export async function reserveCollection(input: CollectionInput)
     const [invoiceSchedule] = await db.select().from(invoiceAutopaySchedules)
       .where(and(eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, invoice.orgId)))
       .limit(1).for('update');
-    if (collectionFenced({ ...invoiceSchedule, autopayExcluded: invoice.autopayExcluded,
-      enrollmentStatus: enrollment.status })) return refuse('schedule_inactive');
+    if (collectionFenced({ schedule: invoiceSchedule, invoice: invoice, enrollment })) return refuse('schedule_inactive');
     const schedule = input.scheduleId ? invoiceSchedule : undefined;
     if (input.initiatedBy !== 'client_on_session' && !schedule) return refuse('schedule_required');
     if (input.initiatedBy === 'client_on_session' && input.scheduleId) return refuse('unexpected_schedule');
@@ -164,7 +181,7 @@ export async function reserveCollection(input: CollectionInput)
     }
     const settings = await resolveBillingPaymentSettings(db, { partnerId: invoice.partnerId, orgId: invoice.orgId });
     const [org] = await db.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-    const terms = schedule?.termsSnapshot as AutopayTerms | undefined;
+    const terms = schedule ? parseAutopayTerms(schedule.termsSnapshot) : undefined;
     if (!org || org.partnerId !== invoice.partnerId || org.deletedAt || !['active','trial'].includes(org.status)) return refuse('enrollment_inactive');
     if (schedule && (!terms || terms.currency !== invoice.currencyCode)) return refuse('schedule_inactive');
     const principalMinor = terms ? Math.min(toMinorUnits(locked.unreservedBalance, invoice.currencyCode),
@@ -327,6 +344,58 @@ function attemptStateGuard(attempt: typeof invoiceCollectionAttempts.$inferSelec
 
 async function quarantineUnknownCreate(attemptId: string): Promise<void> {
   const record = await withSystemDbAccessContext(() => loadAttemptRecord(attemptId));
+  try {
+    const provenance = await resolveAttemptProvenance(record.attempt, record.invoice);
+    const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(record.invoice.partnerId, {
+      reconciliationAccountId: provenance.stripeAccountId, reason: 'autopay_recovery',
+    }));
+    const found = await runOutsideDbContext(() => stripe.paymentIntents.search({
+      query: `metadata['attempt_id']:'${attemptId}'`, limit: 2,
+    }));
+    if (found.has_more || found.data.length > 1) throw new Error('Multiple PaymentIntents match attempt provenance');
+    if (found.data.length === 0) {
+      await withSystemDbAccessContext(async () => {
+        const locked = await lockInvoiceForCollection(db, record.invoice.id);
+        const current = await loadAttemptRecord(attemptId);
+        if (current.attempt.stripePaymentIntentId || !['reserved', 'created'].includes(current.attempt.state)) return;
+        await db.update(invoiceCollectionAttempts).set({ state: 'canceled', failureCode: 'provider_create_not_found', updatedAt: new Date() })
+          .where(attemptStateGuard(current.attempt));
+        const [schedule] = await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1);
+        const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, locked.invoice.orgId)).limit(1);
+        await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, 'provider_create_not_found');
+      }, 'autopay.releaseUnknownCreate');
+    } else {
+      const pi = found.data[0]!;
+      if (pi.metadata.attempt_id !== attemptId || pi.metadata.invoice_id !== record.invoice.id
+        || pi.metadata.partner_id !== record.invoice.partnerId || pi.currency.toUpperCase() !== record.attempt.currency
+        || pi.amount !== toMinorUnits(record.attempt.principalAmount, record.attempt.currency)
+          + toMinorUnits(record.attempt.feeAmount, record.attempt.currency)) throw new Error('Recovered PaymentIntent binding mismatch');
+      await assertOriginalOrgProvenance(pi.metadata.org_id, record.invoice.orgId, record.invoice.partnerId);
+      await withSystemDbAccessContext(async () => {
+        await lockInvoiceForCollection(db, record.invoice.id);
+        const current = await loadAttemptRecord(attemptId);
+        if (current.attempt.stripePaymentIntentId || !['reserved', 'created'].includes(current.attempt.state)) return;
+        const values = { orgId: record.attempt.orgId, invoiceId: record.invoice.id,
+          stripeAccountId: provenance.stripeAccountId, stripeObjectType: 'payment_intent' as const,
+          stripeObjectId: pi.id, stripePaymentIntentId: pi.id, amount: record.attempt.principalAmount,
+          feeAmount: record.attempt.feeAmount, currency: record.attempt.currency, source: 'autopay' as const,
+          paymentMethodType: provenance.methodType, status: 'pending' as const };
+        const [inserted] = await db.insert(invoiceStripePayments).values(values).onConflictDoNothing().returning();
+        const [mapping] = inserted ? [inserted] : await db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripeObjectId, pi.id)).limit(1);
+        if (!mapping || Object.entries(values).some(([key, value]) => key !== 'status'
+          && mapping[key as keyof typeof mapping] !== value)) throw new Error('Recovered mapping conflict');
+        await db.update(invoiceCollectionAttempts).set({ state: 'created', stripePaymentIntentId: pi.id,
+          invoiceStripePaymentId: mapping.id, failureCode: null, updatedAt: new Date() }).where(attemptStateGuard(current.attempt));
+      }, 'autopay.adoptUnknownCreate');
+      // Old unconfirmed creates are canceled; captured/processing money follows normal settlement.
+      await resumeCollectionAttempt(attemptId, true);
+    }
+    return;
+  } catch (error) {
+    if (isCollectionProgrammingError(error)) throw error;
+    console.error('[autopay] Original-account recovery remains quarantined', { invoiceId: record.invoice.id, orgId: record.invoice.orgId, attemptId, error });
+    captureException(error, undefined, { attempt_id: attemptId, invoice_id: record.invoice.id, org_id: record.invoice.orgId, autopay_phase: 'quarantine' });
+  }
   const quarantined = await withSystemDbAccessContext(async () => {
     const locked = await lockInvoiceForCollection(db, record.invoice.id);
     const current = await loadAttemptRecord(attemptId);
@@ -339,10 +408,12 @@ async function quarantineUnknownCreate(attemptId: string): Promise<void> {
       if (!pendingInvoiceControl(schedule?.stateReason ?? null)) await db.update(invoiceAutopaySchedules)
         .set({ stateReason: 'provider_create_unknown' }).where(eq(invoiceAutopaySchedules.id, current.attempt.scheduleId));
     }
+    await enqueueOutcomeAttention('autopay.needs_attention', locked.invoice, attemptId, `Invoice ${locked.invoice.id}, attempt ${attemptId}: verifying the original Stripe account for a lost payment creation. Reservation retained until provenance and provider outcome are verified.`);
     return { orgId: locked.invoice.orgId, partnerId: locked.invoice.partnerId };
   }, 'autopay.quarantine');
   if (quarantined) await notifyPaymentAttention({ ...quarantined, invoiceId: record.invoice.id,
-    attemptId, event: 'autopay.needs_attention' });
+    attemptId, event: 'autopay.needs_attention',
+    message: `Invoice ${record.invoice.id}, attempt ${attemptId}: verifying the original Stripe account for a lost payment creation. Reservation retained until provenance and provider outcome are verified.` });
 }
 
 /** Cancellation errors never prove that money is safe to release. */
@@ -380,6 +451,11 @@ async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
     .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
   if (reserving) return;
+  if (reason === 'action_required_expired' && !pendingInvoiceControl(schedule.stateReason)) {
+    await db.update(invoiceAutopaySchedules).set({ state: 'failed', stateReason: reason, nextAttemptAt: null })
+      .where(eq(invoiceAutopaySchedules.id, schedule.id));
+    return;
+  }
   const pending = pendingInvoiceControl(schedule.stateReason);
   // Finalize only the live schedule; terminal history is preserved above.
   if (pending === 'skip' || pending === 'exclude') {
@@ -398,8 +474,7 @@ async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
     await finalizeInvoiceControl(db, invoice, schedule, control);
     return;
   }
-  if (schedule.stateReason === RENOTICE_PENDING && !collectionFenced({ ...schedule,
-    autopayExcluded: invoice.autopayExcluded, enrollmentStatus: enrollment?.status ?? null })) {
+  if (schedule.stateReason === RENOTICE_PENDING && !collectionFenced({ schedule: schedule, invoice: invoice, enrollment })) {
     const method = await getAutopayMethod(db, invoice.orgId);
     if (method?.status === 'active' && method.enrollmentId === enrollment?.id) {
       await renoticeCanceledAttempt(invoice, schedule, method);
@@ -459,8 +534,7 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       }
       return { action: 'cancel' as const, reason };
     };
-    if (collectionFenced({ ...schedule, autopayExcluded: locked.invoice.autopayExcluded,
-      enrollmentStatus: enrollment?.status ?? null })) return cancel('collection_fenced');
+    if (collectionFenced({ schedule: schedule, invoice: locked.invoice, enrollment })) return cancel('collection_fenced');
     if (schedule?.stateReason === RENOTICE_PENDING) return cancel('renotice_required');
     const readiness = await getAutopayStripeReadiness(db, locked.invoice.partnerId);
     if (!enrollment || !method || method.status !== 'active'
@@ -494,7 +568,7 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     const settings = await resolveBillingPaymentSettings(db, { partnerId: locked.invoice.partnerId, orgId: locked.invoice.orgId });
     const [org] = await db.select().from(organizations).where(eq(organizations.id, locked.invoice.orgId)).limit(1);
     if (!org || org.partnerId !== locked.invoice.partnerId || org.deletedAt || !['active','trial'].includes(org.status)) return cancel('authority_changed');
-    const terms = attempt.scheduleId ? schedule?.termsSnapshot as AutopayTerms : undefined;
+    const terms = attempt.scheduleId && schedule ? parseAutopayTerms(schedule.termsSnapshot) : undefined;
     const quote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
       principal: attempt.principalAmount, currency: attempt.currency, stripeAccountCountry: readiness.accountCountry,
       orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
@@ -522,6 +596,47 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
   }, 'autopay.beforeConfirm');
 }
 
+/** A rejected create has no provider object and therefore no captured funds. */
+async function rejectCreate(data: Awaited<ReturnType<typeof loadAttempt>>, error: Stripe.errors.StripeError): Promise<void> {
+  const failureClass = classifyCollectionFailure({ methodType: data.method.type, code: error.code ?? null,
+    declineCode: error.decline_code ?? null, achReturnCode: null, piStatus: 'requires_payment_method' });
+  const invalidMethod = (failureClass === 'hard' || failureClass === 'revoked')
+    && (error.type === 'StripeCardError' || error.param === 'payment_method'
+      || error.code === 'payment_method_unexpected_state');
+  const attention = await withSystemDbAccessContext(async () => {
+    const locked = await lockInvoiceForCollection(db, data.invoice.id);
+    const { attempt } = await loadAttemptRecord(data.attempt.id);
+    if (attempt.stripePaymentIntentId || !['reserved', 'created'].includes(attempt.state)) return null;
+    const [schedule] = await db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1).for('update');
+    const [enrollment] = await db.select().from(orgAutopayEnrollments)
+      .where(eq(orgAutopayEnrollments.id, data.enrollment.id)).limit(1);
+    await db.update(invoiceCollectionAttempts).set({ state: 'failed', failureClass,
+      failureCode: error.code ?? error.type, declineCode: error.decline_code ?? null, updatedAt: new Date() })
+      .where(attemptStateGuard(attempt));
+    const [first] = await db.select({ createdAt: invoiceCollectionAttempts.createdAt }).from(invoiceCollectionAttempts)
+      .where(attempt.scheduleId ? eq(invoiceCollectionAttempts.scheduleId, attempt.scheduleId)
+        : eq(invoiceCollectionAttempts.id, attempt.id)).orderBy(asc(invoiceCollectionAttempts.createdAt)).limit(1);
+    const mayAdvance = schedule && schedule.id === attempt.scheduleId && schedule.attemptCount === attempt.attemptNo
+      && isControllableSchedule(schedule.state) && enrollment?.generation === schedule.enrollmentGeneration
+      && !collectionFenced({ schedule: schedule, invoice: locked.invoice, enrollment });
+    const next = mayAdvance ? retryAt(first!.createdAt, new Date(), failureClass, attempt.attemptNo) : null;
+    if (mayAdvance) await db.update(invoiceAutopaySchedules).set({ state: next ? 'retry_scheduled' : 'failed',
+      stateReason: failureClass, nextAttemptAt: next }).where(eq(invoiceAutopaySchedules.id, schedule.id));
+    else await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, null);
+    if (invalidMethod) await markPaymentMethodUnusable(db, data.method.id, error.code ?? failureClass);
+    await enqueueAttemptNotice(db, attempt.id, invalidMethod ? 'update' : 'pay');
+    if (next) return null;
+    const notice = { partnerId: locked.invoice.partnerId, orgId: locked.invoice.orgId,
+      invoiceId: locked.invoice.id, attemptId: attempt.id, event: 'payment.failed_final' as const };
+    await enqueueAutopayStaffNotifications(db, { ...notice,
+      dedupeKey: `autopay:${attempt.id}:payment.failed_final`,
+      message: `Automatic payment could not be created. Invoice: ${locked.invoice.id}; attempt: ${attempt.id}. The client can pay directly.` });
+    return notice;
+  }, 'autopay.rejectCreate');
+  if (attention) await notifyPaymentAttention(attention);
+}
+
 export async function resumeCollectionAttempt(attemptId: string, cancelOnly = false): Promise<void> {
   assertNoHeldDbContextForStripe('resumeCollectionAttempt');
   let record = await withSystemDbAccessContext(() => loadAttemptRecord(attemptId));
@@ -535,8 +650,11 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
     const capture = data.attempt.initiatedBy === 'client_on_session'
       ? await withSystemDbAccessContext(() => loadClientCapture(data.attempt)) : null;
     if (data.attempt.initiatedBy === 'client_on_session' && !capture) throw new Error('Client payment authority missing');
-    const accountId = capture?.setup.stripeAccountId ?? data.enrollment.stripeAccountId;
-    const customerId = capture?.setup.stripeCustomerId ?? data.enrollment.stripeCustomerId;
+    let provenance:Awaited<ReturnType<typeof resolveAttemptProvenance>>;
+    try { provenance=await resolveAttemptProvenance(data.attempt,data.invoice); }
+    catch(error) { if(isCollectionProgrammingError(error))throw error; await quarantineUnknownCreate(attemptId);return; }
+    const accountId = provenance.stripeAccountId;
+    const customerId = provenance.stripeCustomerId;
     const paymentMethodId = capture?.collection.stripePaymentMethodId ?? data.method.stripePaymentMethodId;
     const methodType = capture ? 'us_bank_account' as const : data.method.type;
     const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(data.invoice.partnerId, {
@@ -554,7 +672,18 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
       authority_card_fee_bps: String(capture?.snapshot.feeTerms.cardFeeBps ?? settings.cardFeeBps.value),
       authority_ach_fee: capture?.snapshot.feeTerms.achFeeAmount ?? settings.achFeeAmount.value,
     });
-    const pi = await runOutsideDbContext(() => stripe.paymentIntents.create(params, { idempotencyKey: data.attempt.idempotencyKey }));
+    let pi: Stripe.PaymentIntent;
+    try {
+      pi = await runOutsideDbContext(() => stripe.paymentIntents.create(params, { idempotencyKey: data.attempt.idempotencyKey }));
+    } catch (error) {
+      const provider = error as Stripe.errors.StripeError;
+      if (provider && ['StripeInvalidRequestError', 'StripeCardError'].includes(provider.type)
+        && !provider.payment_intent && (!provider.statusCode || provider.statusCode < 500)) {
+        await rejectCreate(data, provider);
+        return;
+      }
+      throw error;
+    }
     await withSystemDbAccessContext(async () => {
       await lockInvoiceForCollection(db, data.invoice.id);
       const current = await loadAttemptRecord(attemptId);
@@ -604,7 +733,14 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
       { idempotencyKey: `${data.attempt.idempotencyKey}_confirm` }));
   } catch (error) {
     const provider = error as { payment_intent?: unknown; type?: string };
-    if (!provider.payment_intent && provider.type !== 'StripeCardError') throw error;
+    if (!provider.payment_intent && !['StripeCardError', 'StripeInvalidRequestError'].includes(provider.type ?? '')) throw error;
+    console.warn('[autopay] Confirmation rejected', { attemptId, invoiceId: data.invoice.id, error });
+    const observed = await runOutsideDbContext(() => stripe.paymentIntents.retrieve(pi.id));
+    await validateIntent(data, observed);
+    if (observed.status === 'requires_confirmation') {
+      await applyObservedOutcome(data, stripe, await cancelOrRetrieve(stripe, observed), 'authority_changed');
+      return;
+    }
   }
   await applyAttemptOutcome(data.invoice.partnerId, attemptId);
 }
@@ -617,8 +753,14 @@ export async function attemptCollection(input: CollectionInput): Promise<Collect
   }
   const reserved = await reserveCollection(input);
   if (!('attempt' in reserved)) return reserved;
-  await resumeCollectionAttempt(reserved.attempt.id);
-  return { attemptId: reserved.attempt.id, outcome: 'created' };
+  try { await resumeCollectionAttempt(reserved.attempt.id); }
+  catch(error) { reportCollectionError(error,{org_id:reserved.attempt.orgId,invoice_id:input.invoiceId,attempt_id:reserved.attempt.id,autopay_phase:'create_confirm'});throw error; }
+  const {attempt}=await withSystemDbAccessContext(()=>loadAttemptRecord(reserved.attempt.id));
+  if(attempt.state==='failed'||attempt.state==='canceled'||attempt.state==='requires_action'||attempt.state==='unapplied') {
+    return {attemptId:attempt.id,outcome:attempt.state,state:attempt.state,failureClass:attempt.failureClass,
+      reason:attempt.failureCode ?? attempt.state};
+  }
+  return { attemptId: attempt.id, outcome: 'created',state:attempt.state,failureClass:attempt.failureClass };
 }
 
 export function outcomeState(status: string, code: string | null) {
@@ -673,6 +815,13 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
   const attemptId = data.attempt.id;
   let pi = observed;
   await validateIntent(data, pi);
+  if (data.attempt.state === 'requires_action' && pi.status === 'requires_action'
+    && Date.now() - data.attempt.updatedAt.getTime() >= 14 * 86_400_000) {
+    pi = await cancelOrRetrieve(stripe, pi);
+    await validateIntent(data, pi);
+    if (pi.status !== 'canceled' && pi.status !== 'succeeded') return;
+    cancellationReason = 'action_required_expired';
+  }
   const failure = await readProviderFailure(stripe, pi, data.methodType);
   let state = outcomeState(pi.status, failure.code);
   if (state === 'created') return;
@@ -712,8 +861,7 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
       .where(and(eq(orgPaymentMethods.id,attempt.paymentMethodId),eq(orgPaymentMethods.orgId,locked.invoice.orgId))).limit(1) : [];
     const [enrollment] = method ? await db.select().from(orgAutopayEnrollments)
       .where(and(eq(orgAutopayEnrollments.id,method.enrollmentId),eq(orgAutopayEnrollments.orgId,locked.invoice.orgId))).limit(1) : [];
-    const mayAdvance = !collectionFenced({ ...schedule, autopayExcluded: locked.invoice.autopayExcluded,
-      enrollmentStatus: enrollment?.status ?? null }) && !!schedule?.enrollmentId && !!enrollment && !!method
+    const mayAdvance = !collectionFenced({ schedule: schedule, invoice: locked.invoice, enrollment }) && !!schedule?.enrollmentId && !!enrollment && !!method
       && schedule.id === attempt.scheduleId && schedule.enrollmentId === enrollment.id && schedule.attemptCount === attempt.attemptNo
       && schedule.enrollmentGeneration === enrollment.generation && enrollment.status === 'active'
       && ['collecting','retry_scheduled','action_required'].includes(schedule.state);
@@ -728,6 +876,7 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
         stateReason: applied ? (reversed ? 'payment_reversed' : null) : 'payment_unapplied', nextAttemptAt: null,
       }).where(eq(invoiceAutopaySchedules.id, schedule.id));
       if (applied && !reversed) await enqueueAttemptNotice(db, attemptId, 'receipt');
+      if (!applied) await enqueueOutcomeAttention('payment.unapplied', locked.invoice, attemptId);
       return applied ? null : {event:'payment.unapplied' as const,orgId:locked.invoice.orgId};
     }
     // W1 clears authority on merged terminal history. Never restore processing/action/retry
@@ -752,10 +901,17 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
     }
     if (state === 'canceled' && (!attempt.failureClass || attempt.failureClass === 'auth_required' || cancellationReason
       || pendingInvoiceControl(schedule?.stateReason ?? null) || schedule?.stateReason === RENOTICE_PENDING
-      || collectionFenced({ ...schedule, autopayExcluded: locked.invoice.autopayExcluded, enrollmentStatus: enrollment.status }))) {
+      || collectionFenced({ schedule: schedule, invoice: locked.invoice, enrollment }))) {
       await db.update(invoiceCollectionAttempts).set({ state: 'canceled', updatedAt: new Date() })
         .where(attemptStateGuard(attempt));
       await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, cancellationReason);
+      if (cancellationReason === 'action_required_expired') {
+        await enqueueAttemptNotice(db, attemptId, 'expired');
+        await enqueueAutopayStaffNotifications(db, { partnerId, orgId: locked.invoice.orgId,
+          invoiceId: locked.invoice.id, event: 'autopay.needs_attention',
+          dedupeKey: `autopay:${attemptId}:action_required_expired`,
+          message: `Payment confirmation expired. Invoice: ${locked.invoice.id}; attempt: ${attemptId}. The payment was canceled and the client can pay directly.` });
+      }
       return null;
     }
     const failureClass = (state === 'canceled' ? attempt.failureClass : null) ?? classifyCollectionFailure({ methodType: data.methodType,
@@ -784,6 +940,7 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
     }
     await enqueueAttemptNotice(db, attemptId, authRequired ? 'confirm'
       : failureClass === 'hard' || failureClass === 'revoked' ? 'update' : 'pay');
+    if (authRequired || !next) await enqueueOutcomeAttention(authRequired ? 'autopay.needs_attention' : 'payment.failed_final', locked.invoice, attemptId);
     return authRequired ? {event:'autopay.needs_attention' as const,orgId:locked.invoice.orgId}
       : next ? null : {event:'payment.failed_final' as const,orgId:locked.invoice.orgId};
   }, 'autopay.applyOutcome');
@@ -793,7 +950,7 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
 
 async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
   schedule: typeof invoiceAutopaySchedules.$inferSelect, method: Method): Promise<void> {
-  const terms = schedule.termsSnapshot as AutopayTerms;
+  const terms = parseAutopayTerms(schedule.termsSnapshot);
   const settings = await resolveBillingPaymentSettings(db, { partnerId: invoice.partnerId, orgId: invoice.orgId });
   const readiness = await getAutopayStripeReadiness(db, invoice.partnerId);
   const [org] = await db.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
@@ -820,12 +977,15 @@ async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
 
 export async function runAutopayCollection(now = new Date()): Promise<{ attempted: number; deferred: number }> {
   assertNoHeldDbContextForStripe('runAutopayCollection');
+  await closeSettledAutopaySchedules();
   let attempted = 0;
   let deferred = 0;
   let cursor: string | undefined;
+  const errors:unknown[]=[];
+  let total=0;
   for (;;) {
     const due = await withSystemDbAccessContext(() => db.select({id:invoiceAutopaySchedules.id,
-      invoiceId:invoiceAutopaySchedules.invoiceId}).from(invoiceAutopaySchedules).where(and(
+      invoiceId:invoiceAutopaySchedules.invoiceId,orgId:invoiceAutopaySchedules.orgId}).from(invoiceAutopaySchedules).where(and(
       inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled']),
       lte(invoiceAutopaySchedules.collectOn,now.toISOString().slice(0,10)),
       or(isNull(invoiceAutopaySchedules.nextAttemptAt),lte(invoiceAutopaySchedules.nextAttemptAt,now)),
@@ -833,12 +993,33 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
     )).orderBy(asc(invoiceAutopaySchedules.id)).limit(200));
     if (!due.length) break;
     for (const row of due) {
+      total++;
       try {
         const result=await attemptCollection({invoiceId:row.invoiceId,scheduleId:row.id,initiatedBy:'scheduler'});
-        if(result.outcome==='created')attempted++;else deferred++;
-      } catch(error) {deferred++;captureException(error instanceof Error?error:new Error(String(error)));}
+        if(result.attemptId)attempted++;else {
+          deferred++;
+          console.info('[autopay] Collection not started',{orgId:row.orgId,invoiceId:row.invoiceId,scheduleId:row.id,...result});
+          await withSystemDbAccessContext(async()=>{
+            await lockInvoiceForCollection(db,row.invoiceId);
+            await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
+              ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}
+              : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+3_600_000)})
+              .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])));
+          },'autopay.collectionDeferred');
+        }
+      } catch(error) {
+        deferred++; errors.push(error);
+        reportCollectionError(error,{org_id:row.orgId,invoice_id:row.invoiceId,schedule_id:row.id,autopay_phase:'collection'});
+        if(isCollectionProgrammingError(error))throw error;
+      }
     }
     cursor=due[due.length-1]!.id;
   }
+  if(total>0 && errors.length===total)throw new AggregateError(errors,'Every automatic collection failed');
   return { attempted, deferred };
+}
+
+async function enqueueOutcomeAttention(event: 'payment.unapplied'|'payment.failed_final'|'autopay.needs_attention', invoice: typeof invoices.$inferSelect, attemptId: string, message?:string) {
+  await enqueueAutopayStaffNotifications(db, {orgId:invoice.orgId,partnerId:invoice.partnerId,invoiceId:invoice.id,event,
+    dedupeKey:`autopay:${attemptId}:${event}`,message:message ?? `${event === 'payment.unapplied' ? 'Captured money could not be applied; review the Stripe payment.' : event === 'payment.failed_final' ? 'Automatic payment stopped retrying; the client can pay directly.' : 'Payment requires attention.'} Invoice: ${invoice.id}; attempt: ${attemptId}`});
 }

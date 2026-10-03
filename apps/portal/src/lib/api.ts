@@ -521,15 +521,8 @@ export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: Invoic
     : { saveForAutopay: false };
 }
 
-export interface BankAutopayOffer {
-  available: boolean; principal: string; fee: string; currency: string; consentText: string; disclosureHash: string;
-  methodStatus: 'active' | 'pending_verification' | null;
-}
-export type BankPayInput = {
-  methodType: 'us_bank_account'; phase: 'setup' | 'collect'; consentAccepted: true; disclosureHash: string;
-  principal: string; fee: string; currency: string; setupSessionId?: string;
-};
-export type InvoicePayResult = { url?: string; attemptId?: string | null; outcome?: string; reason?: string };
+import type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
+export type { BankAutopayOffer, BankPayInput, InvoicePayResult } from '@breeze/shared';
 
 export interface InvoiceDetail {
   bankAutopay?: BankAutopayOffer | null;
@@ -999,7 +992,7 @@ export const portalApi = {
   },
 
   payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<InvoicePayResult>> =>
-    apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, autopay, config),
+    apiPost<InvoicePayResult>(`/portal/invoices/${id}/pay`, autopay, config),
 
   // Verify-on-return: settle the Checkout session server-side after the customer
   // lands back on the invoice (success_url carries the session id). Idempotent — the
@@ -1206,7 +1199,7 @@ export const portalApi = {
   },
 
   payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
-    apiPost<{ data: { url: string } }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
+    apiPost<{ data: InvoicePayResult }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
   // session id for settlement + the canonical public page url (the return urls

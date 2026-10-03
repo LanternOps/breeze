@@ -767,3 +767,12 @@ it('bank collect requires invoice admission and never treats the session ID as a
  })});
  expect(response.status).toBe(404);expect(bankRoutes.collect).not.toHaveBeenCalled();
 });
+
+it.each(['refused','deferred','failed','canceled'])('bank %s is a conflict rather than a successful payment',async outcome=>{
+ dbResults.length=0;dbResults.push([{id:INV_ID,orgId:ORG_ID,partnerId:'p1',status:'sent',balance:'100.00',currencyCode:'USD'}]);
+ bankRoutes.collect.mockResolvedValue({attemptId:null,outcome,reason:'unavailable'});
+ const response=await app().request(`/invoices/${INV_ID}/pay`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({
+ methodType:'us_bank_account',phase:'collect',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64),setupSessionId:'cs_test'
+ })});
+ expect(response.status).toBe(409);
+});

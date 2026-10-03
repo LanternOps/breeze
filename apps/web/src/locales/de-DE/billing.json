@@ -2528,6 +2528,7 @@
       "control_pending:skip": "Überspringen angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:exclude": "Ausschluss angefordert; ausstehende Zahlung wird gestoppt",
       "control_pending:stop": "Stopp angefordert; ausstehende Zahlung wird gestoppt",
+      "control_pending:renotice": "Mitteilung wird aktualisiert; ausstehende Zahlung wird gestoppt",
       "skip": "Vom Kunden übersprungen",
       "exclude": "Vom Anbieter ausgeschlossen",
       "stop": "Automatische Zahlungen gestoppt",

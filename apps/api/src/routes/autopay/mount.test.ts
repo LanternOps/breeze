@@ -252,7 +252,7 @@ it('confirm rejects missing authority, stale binding, cross-origin and invalid J
 });
 
 const charge = (extra: Record<string,string> = {}, invoiceId = id) => app.request(`/api/v1/invoices/${invoiceId}/autopay/charge-now`, { method: 'POST', headers: {...headers,...extra} });
-function chargeRows(schedule: any = {id:'schedule-1',eligible:true,state:'scheduled',noticeSentAt:new Date('2020-01-01'),noticeOutboxId:'notice',termsSnapshot:{noticeLeadDays:1}}) {
+function chargeRows(schedule: any = {id:'schedule-1',eligible:true,state:'scheduled',noticeSentAt:new Date('2020-01-01'),noticeOutboxId:'notice',termsSnapshot:{issuedAt:'2026-10-01T00:00:00Z',offsetDays:0,rule:'later',cap:{enabled:false},methodType:'card',methodId:'method',last4:'4242',methodLabel:'Card',accountHolderType:null,noticeLeadDays:1,principal:'100.00',currency:'USD',feeAmount:'0.00',feeKind:'none',cardFeeBps:0,achFeeAmount:'0.00',chargeDate:'2026-10-01',noticeSeq:1}}) {
   const rows = [[{id,orgId:'org',siteId:'site',partnerId:'partner'}],schedule?[schedule]:[]];
   h.select.mockImplementation(() => ({from:()=>({where:()=>({limit:async()=>rows.shift()??[]})})}));
 }
@@ -273,7 +273,7 @@ it('Charge now refuses foreign org/site before revocation or Stripe',async()=>{
  chargeRows();h.access.mockImplementationOnce(()=>{throw new InvoiceServiceError('Denied',403,'ORG_DENIED');});
  expect((await charge()).status).toBe(403);expect(h.collect).not.toHaveBeenCalled();
 });
-it.each([null,{id:'schedule',eligible:true,state:'scheduled',noticeSentAt:new Date(),noticeOutboxId:'notice',termsSnapshot:{noticeLeadDays:1}}])('Charge now refuses missing or immature notice without Stripe',async schedule=>{
+it.each([null,{id:'schedule',eligible:true,state:'scheduled',noticeSentAt:new Date(),noticeOutboxId:'notice',termsSnapshot:{issuedAt:'2026-10-01T00:00:00Z',offsetDays:0,rule:'later',cap:{enabled:false},methodType:'card',methodId:'method',last4:'4242',methodLabel:'Card',accountHolderType:null,noticeLeadDays:1,principal:'100.00',currency:'USD',feeAmount:'0.00',feeKind:'none',cardFeeBps:0,achFeeAmount:'0.00',chargeDate:'2026-10-01',noticeSeq:1}}])('Charge now refuses missing or immature notice without Stripe',async schedule=>{
  chargeRows(schedule);expect((await charge()).status).toBe(409);expect(h.collect).not.toHaveBeenCalled();
 });
 it('Charge now returns a stale-state service refusal as 409',async()=>{
