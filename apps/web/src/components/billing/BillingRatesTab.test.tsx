@@ -358,3 +358,25 @@ it('stays editable when canManagePartnerWide is absent (stale session)', async (
   expect(screen.queryByTestId('billing-rates-readonly')).not.toBeInTheDocument();
   expect(screen.getByTestId('billing-profile-create')).toBeEnabled();
 });
+it('keeps Save reachable: fields scroll in their own body while the footer stays pinned outside it (#7804)', async () => {
+  mockApi([aiProfile()]);
+  render(<BillingRatesTab />);
+  fireEvent.click(await screen.findByTestId('billing-profile-edit-p1'));
+  change('billing-ai-coverage', 'billable');
+  fireEvent.click(screen.getByTestId('billing-ai-rate-add'));
+  const body = screen.getByTestId('billing-profile-drawer-body');
+  expect(body.className).toContain('overflow-y-auto');
+  expect(body.className).toContain('flex-1');
+  expect(body.className).toContain('px-5');
+  expect(body).toContainElement(screen.getByTestId('billing-ai-rate-model-0'));
+  const footer = screen.getByTestId('billing-profile-drawer-footer');
+  expect(body).not.toContainElement(screen.getByTestId('billing-profile-save'));
+  expect(footer).toContainElement(screen.getByTestId('billing-profile-save'));
+  expect(footer).toContainElement(screen.getByTestId('billing-profile-cancel'));
+  // One <form> wraps both so Enter and Save still submit; it must be a shrinkable
+  // flex column or the body can never become the scroll container.
+  const form = body.closest('form')!;
+  expect(form).toContainElement(footer);
+  expect(form.className).toContain('min-h-0');
+  expect(form.className).toContain('flex-col');
+});
