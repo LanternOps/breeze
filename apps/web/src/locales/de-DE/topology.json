@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} Verbindungen",
   "notMeasured": "Nicht gemessen",
   "fit": "Karte einpassen",
+  "moreActions": "Weitere Aktionen",
+  "layoutActions": "Kartenlayout",
   "arrange": "Neue Geräte anordnen",
   "reflow": "Nicht angeheftete neu anordnen",
   "saving": "Wird gespeichert…",

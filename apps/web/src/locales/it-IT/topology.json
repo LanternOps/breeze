@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} connessioni",
   "notMeasured": "Non misurato",
   "fit": "Adatta mappa",
+  "moreActions": "Altre azioni",
+  "layoutActions": "Layout della mappa",
   "arrange": "Disponi nuovi dispositivi",
   "reflow": "Riorganizza gli elementi non bloccati",
   "saving": "Salvataggio…",

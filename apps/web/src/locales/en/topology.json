@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} connections",
   "notMeasured": "Not measured",
   "fit": "Fit map",
+  "moreActions": "More actions",
+  "layoutActions": "Map layout",
   "arrange": "Arrange new devices",
   "reflow": "Reflow unpinned",
   "saving": "Saving\u2026",

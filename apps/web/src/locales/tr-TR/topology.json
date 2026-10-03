@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} bağlantı",
   "notMeasured": "Ölçülmedi",
   "fit": "Haritayı sığdır",
+  "moreActions": "Diğer işlemler",
+  "layoutActions": "Harita düzeni",
   "arrange": "Yeni cihazları düzenle",
   "reflow": "Sabitlenmemişleri yeniden düzenle",
   "saving": "Kaydediliyor…",

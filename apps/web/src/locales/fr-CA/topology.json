@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} connexions",
   "notMeasured": "Non mesuré",
   "fit": "Ajuster la carte",
+  "moreActions": "Autres actions",
+  "layoutActions": "Disposition de la carte",
   "arrange": "Organiser les nouveaux appareils",
   "reflow": "Réorganiser les éléments non épinglés",
   "saving": "Enregistrement…",

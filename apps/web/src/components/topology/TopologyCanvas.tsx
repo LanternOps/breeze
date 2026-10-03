@@ -143,17 +143,20 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
   ];
 }
 
-export default function TopologyCanvas({ render, positions, boxes, selection, editable, onSelect, onMove, fitRef, fitKey }: {
+export default function TopologyCanvas({ render, positions, boxes, selection, editable, onSelect, onMove, fitRef, fitKey, fitInsetTop = 0 }: {
   render: TopologyRender; positions: LayoutPosition[]; boxes: LayoutBox[]; selection?: TopologySelection; editable: boolean;
   onSelect: (selection: TopologySelection) => void;
   /** One call per drop: a dragged card reports all its members at once, so the explorer re-arranges once. */
   onMove: (positions: LayoutPosition[]) => void; fitRef: React.MutableRefObject<(() => void) | null>;
   /** Changes when the set of drawn things changes (view, network toggle); the map re-fits once per key. */
   fitKey: string;
+  /** Pixels at the top that floating controls cover; Fit map frames the content below them. */
+  fitInsetTop?: number;
 }) {
   const { t } = useTranslation('topology');
   const container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), chipLayer = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
   const callbacks = useRef({ onSelect, onMove }); callbacks.current = { onSelect, onMove };
+  const insetRef = useRef(fitInsetTop); insetRef.current = fitInsetTop;
   const fitted = useRef<string | undefined>(undefined);
   const tierRef = useRef<ZoomTier>('detail'), [tier, setTier] = useState<ZoomTier>('detail');
   /** Items Fit map left out (fitFocus); the badge counts those currently off screen. */
@@ -292,9 +295,9 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     renderer.on('viewport resize', () => schedule.current());
     renderer.on('position', 'node[kind!="anchor"]', () => schedule.current());
     const viewportTo = (bounds: Bounds, maxZoom: number) => {
-      const width = renderer.width(), height = renderer.height();
+      const width = renderer.width(), inset = insetRef.current, height = renderer.height() - inset;
       const zoom = Math.max(renderer.minZoom(), Math.min(maxZoom, (width - 2 * FIT_PADDING) / Math.max(1, bounds.x2 - bounds.x1), (height - 2 * FIT_PADDING) / Math.max(1, bounds.y2 - bounds.y1)));
-      renderer.viewport({ zoom, pan: { x: width / 2 - (bounds.x1 + bounds.x2) / 2 * zoom, y: height / 2 - (bounds.y1 + bounds.y2) / 2 * zoom } });
+      renderer.viewport({ zoom, pan: { x: width / 2 - (bounds.x1 + bounds.x2) / 2 * zoom, y: inset + height / 2 - (bounds.y1 + bounds.y2) / 2 * zoom } });
     };
     // Fit map frames the main structure (semanticZoom.fitFocus); far-away items get the badge instead.
     fitRef.current = () => {

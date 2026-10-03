@@ -240,6 +240,20 @@ it('frames the overview as networks within one site and says when a second netwo
   expect(screen.getByTestId('topology-unlinked-note')).toHaveTextContent('No observed link between 10.1.5.0/24 and 10.1.2.0/24');
 });
 
+it('compacts the header: one status row, a secondary control group with accessible names, and a site control in the toolbar', async () => {
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} toolbarStart={<select data-testid="topology-site" aria-label="Site"><option>Main</option></select>} />);
+  const status = await screen.findByTestId('topology-status');
+  for (const id of ['topology-coverage', 'topology-health-internet', 'topology-counts']) expect(status).toContainElement(screen.getByTestId(id));
+  const toolbar = screen.getByTestId('topology-toolbar');
+  for (const id of ['topology-site', 'topology-search', 'topology-view', 'topology-list-toggle', 'topology-refresh', 'topology-configure', 'topology-operations-toggle']) {
+    expect(toolbar).toContainElement(screen.getByTestId(id));
+  }
+  expect(screen.getByRole('button', { name: 'Refresh snapshot' })).toBe(screen.getByTestId('topology-refresh'));
+  expect(screen.getByRole('button', { name: 'Configuration' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByRole('button', { name: 'Operations' })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByRole('searchbox', { name: 'Search this site by name or address' })).toBe(screen.getByTestId('topology-search'));
+});
+
 it('collapses an expansion back to the base read (#7818)', async () => {
   const initial = topologyGraphFixture();
   const added = { ...initial.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Expanded peer' };

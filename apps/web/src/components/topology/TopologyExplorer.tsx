@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Activity, RefreshCw, Settings2 } from 'lucide-react';
 import type { GraphNode, TopologyView } from '@breeze/shared';
 import { useHashState } from '../../lib/useHashState';
 import { ActionError, handleActionError } from '../../lib/runAction';
@@ -34,7 +35,11 @@ const cardMemberIds = (boxes: LayoutBox[]) => {
   return new Set(boxes.filter((box) => box.groupId && cards.has(box.groupId)).map((box) => box.id));
 };
 
-export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings }) {
+const ICON_BUTTON = 'inline-flex h-9 w-9 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary aria-pressed:bg-muted aria-pressed:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground';
+const LAYOUT_BUTTON = 'h-8 rounded-md border bg-background px-2.5 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary';
+
+/** `toolbarStart`: a control the entry puts at the start of the toolbar row (the site select), so it does not take a row of its own. */
+export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings, toolbarStart }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings; toolbarStart?: ReactNode }) {
   const { t } = useTranslation('topology');
   const [navigation, setNavigation] = useHashState<TopologyNavigation>({ siteId, view: 'overview', search: '' }, (hash) => {
     const value = parseTopologyHash(hash); return value && (!value.siteId || value.siteId === siteId) ? value : undefined;
@@ -48,6 +53,16 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   const draft = useMemo(() => new TopologyLayoutDraft(), [siteId, view]);
   const [positions, setPositions] = useState<LayoutPosition[]>([]), [boxes, setBoxes] = useState<LayoutBox[]>([]);
   const [warning, setWarning] = useState<string>(), [announcement, setAnnouncement] = useState(''), [saving, setSaving] = useState(false), [conflict, setConflict] = useState(false);
+  // The floating layout toolbar covers the map's top edge; Fit map keeps that strip clear.
+  const layoutBar = useRef<HTMLDivElement>(null), [fitInsetTop, setFitInsetTop] = useState(0);
+  useEffect(() => {
+    const bar = layoutBar.current;
+    if (!bar) return;
+    const update = () => setFitInsetTop(getComputedStyle(bar).position === 'absolute' ? bar.offsetHeight + 8 : 0);
+    update();
+    const observer = new ResizeObserver(update); observer.observe(bar);
+    return () => observer.disconnect();
+  });
   const measured = useRef<HTMLDivElement>(null), fitRef = useRef<(() => void) | null>(null), listToggle = useRef<HTMLButtonElement>(null);
   const navigate = useCallback((next: TopologyNavigation) => { const value = { ...next, siteId }; setNavigation(value); writeTopologyHash(value); }, [siteId]);
   const selection = navigation.selection;
@@ -187,13 +202,18 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
   // `data-layout-applied`: a layout result reached the canvas. Browser gates wait on it; the unsaved
   // indicator is no signal since an automatic arrangement is not an unsaved change (#7880).
   return <section data-testid="topology-explorer" data-layout-applied={positions.length ? 'true' : undefined} className="min-w-0 space-y-3">
-    <div className="flex flex-wrap items-end gap-3">
-      <label className="min-w-40 flex-1 text-sm">{t('search')}<input data-testid="topology-search" className="mt-1 w-full rounded border bg-background px-3 py-2" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
-      <label className="text-sm">{t('view')}<select data-testid="topology-view" className="ml-2 rounded border bg-background p-2" value={view} onChange={(event) => navigate({ ...navigation, view: event.target.value as TopologyView, selection: undefined })}><option value="overview">{t('overview')}</option><option value="logical">{t('logical')}</option><option value="physical" disabled={!settings.capabilities.physical.available}>{t('physical')}</option></select></label>
-      <button ref={listToggle} data-testid="topology-list-toggle" className="rounded border px-3 py-2" aria-pressed={list} onClick={() => setList(!list)}>{list ? t('showMap') : t('showList')}</button>
-      <button data-testid="topology-refresh" className="rounded border px-3 py-2" onClick={refreshGraph}>{t('refresh')}</button>
-      <button data-testid="topology-configure" className="rounded border px-3 py-2" onClick={() => setConfiguration(!configuration)}>{t('configuration')}</button>
-      <button data-testid="topology-operations-toggle" className="rounded border px-3 py-2" aria-pressed={!!navigation.operations} onClick={() => navigate({ ...navigation, operations: !navigation.operations })}>{t('operations.toggle')}</button>
+    {/* One toolbar row (2026-10-03): site, search, view, list; refresh/configuration/operations as a compact icon group. */}
+    <div data-testid="topology-toolbar" className="flex flex-wrap items-center gap-2">
+      {toolbarStart}
+      <label className="min-w-48 flex-1"><span className="sr-only">{t('search')}</span>
+        <input data-testid="topology-search" type="search" placeholder={t('search')} className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">{t('view')}<select data-testid="topology-view" className="h-9 rounded-md border bg-background px-2 text-sm text-foreground" value={view} onChange={(event) => navigate({ ...navigation, view: event.target.value as TopologyView, selection: undefined })}><option value="overview">{t('overview')}</option><option value="logical">{t('logical')}</option><option value="physical" disabled={!settings.capabilities.physical.available}>{t('physical')}</option></select></label>
+      <button ref={listToggle} data-testid="topology-list-toggle" className="h-9 rounded-md border px-3 text-sm" aria-pressed={list} onClick={() => setList(!list)}>{list ? t('showMap') : t('showList')}</button>
+      <div role="group" aria-label={t('moreActions')} className="flex items-center rounded-md border">
+        <button data-testid="topology-refresh" className={ICON_BUTTON} aria-label={t('refresh')} title={t('refresh')} onClick={refreshGraph}><RefreshCw className="h-4 w-4" aria-hidden="true" /></button>
+        <button data-testid="topology-configure" className={`${ICON_BUTTON} border-l`} aria-label={t('configuration')} title={t('configuration')} aria-expanded={configuration} onClick={() => setConfiguration(!configuration)}><Settings2 className="h-4 w-4" aria-hidden="true" /></button>
+        <button data-testid="topology-operations-toggle" className={`${ICON_BUTTON} border-l`} aria-label={t('operations.toggle')} title={t('operations.toggle')} aria-pressed={!!navigation.operations} onClick={() => navigate({ ...navigation, operations: !navigation.operations })}><Activity className="h-4 w-4" aria-hidden="true" /></button>
+      </div>
     </div>
     {(focusNodeId || searchFocus) && !fullSite && <button className="text-sm text-primary underline" onClick={() => { setFullSite(true); setSearchFocus(undefined); }}>{t('fullSite')}</button>}
     {configuration && <TopologyConfiguration siteId={siteId} />}
@@ -205,28 +225,36 @@ export default function TopologyExplorer({ siteId, siteName, focusNodeId, settin
     {searchError && <p role="alert">{searchError}</p>}
     {error && <p role="alert" className="text-destructive">{error} <button className="underline" onClick={refreshGraph}>{t('retry')}</button></p>}
     {graph && <>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span><span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span></div>
-      <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
-      <div className="flex flex-wrap items-center gap-2">
-        {expanded && <button data-testid="topology-collapse" className="rounded border px-3 py-2 text-sm" onClick={collapse}>{t('collapse')}</button>}
-        <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>
-        <button data-testid="topology-arrange" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('incremental', true)}>{t('arrange')}</button>
-        <button data-testid="topology-reflow" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('reflow', true)}>{t('reflow')}</button>
-        {graph.permissions.canEdit && <button data-testid="topology-layout-save" className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" disabled={!draft.dirty || saving || conflict} onClick={() => void save()}>{saving ? t('saving') : t('saveLayout')}</button>}
-        {render?.grouped && (hasPins || warning === 'pinned_overlap') && <button data-testid="topology-grouped-layout" className="rounded border px-3 py-2 text-sm" onClick={useGroupedLayout}>{t('grouped.useLayout')}</button>}
-        {render && (render.hiddenNetworkCount > 0 || showAllNetworks) && <label className="flex items-center gap-2 text-sm"><input data-testid="topology-show-all-networks" type="checkbox" checked={showAllNetworks} onChange={(event) => setShowAllNetworks(event.target.checked)} />{t('grouped.showAllNetworks', { count: render.hiddenNetworkCount })}</label>}
-        {render && render.hiddenDeviceCount > 0 && <span data-testid="topology-hidden-devices" className="text-sm text-muted-foreground">{t('grouped.hiddenDevices', { count: render.hiddenDeviceCount })}</span>}
-        {draft.dirty && <span data-testid="topology-unsaved-layout" className="text-sm text-muted-foreground">{graph.permissions.canEdit ? t('unsaved') : t('localLayout')}</span>}
+      {/* One status row: the site and its networks, collection coverage (reasons behind a disclosure), health, counts. */}
+      <div data-testid="topology-status" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+        {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} />}
+        <PhysicalCoveragePanel coverage={graph.coverage} />
+        <span data-testid="topology-health-internet">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</span>
+        <span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span>
+        <span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span>
       </div>
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
       {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
-      {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} />}
       {!nodes.length ? (view === 'physical'
         ? <div data-testid="topology-physical-empty" className="py-12 text-center text-muted-foreground"><p>{t('physicalView.empty')}</p>
           <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
         : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
-        <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
-          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitKey={`${view}:${showAllNetworks}:${render?.grouped}`} />}</div>
+        <div className="relative min-w-0 flex-1">
+        {/* Layout actions float over the map's top-left on wide screens (a row above it on narrow ones), so the map starts higher. */}
+        <div ref={layoutBar} data-testid="topology-layout-actions" role="toolbar" aria-label={t('layoutActions')}
+          className={`flex flex-wrap items-center gap-1.5 border-b bg-card/95 p-2 ${list || navigation.search ? '' : 'lg:absolute lg:left-2 lg:top-2 lg:z-10 lg:max-w-[calc(100%-12rem)] lg:rounded-lg lg:border lg:shadow-sm'}`}>
+        {expanded && <button data-testid="topology-collapse" className={LAYOUT_BUTTON} onClick={collapse}>{t('collapse')}</button>}
+        <button data-testid="topology-fit" className={LAYOUT_BUTTON} onClick={() => fitRef.current?.()}>{t('fit')}</button>
+        <button data-testid="topology-arrange" className={LAYOUT_BUTTON} onClick={() => void arrange('incremental', true)}>{t('arrange')}</button>
+        <button data-testid="topology-reflow" className={LAYOUT_BUTTON} onClick={() => void arrange('reflow', true)}>{t('reflow')}</button>
+        {graph.permissions.canEdit && <button data-testid="topology-layout-save" className="h-8 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground disabled:opacity-50" disabled={!draft.dirty || saving || conflict} onClick={() => void save()}>{saving ? t('saving') : t('saveLayout')}</button>}
+        {render?.grouped && (hasPins || warning === 'pinned_overlap') && <button data-testid="topology-grouped-layout" className={LAYOUT_BUTTON} onClick={useGroupedLayout}>{t('grouped.useLayout')}</button>}
+        {render && (render.hiddenNetworkCount > 0 || showAllNetworks) && <label className="flex items-center gap-1.5 px-1 text-xs"><input data-testid="topology-show-all-networks" type="checkbox" checked={showAllNetworks} onChange={(event) => setShowAllNetworks(event.target.checked)} />{t('grouped.showAllNetworks', { count: render.hiddenNetworkCount })}</label>}
+        {render && render.hiddenDeviceCount > 0 && <span data-testid="topology-hidden-devices" className="px-1 text-xs text-muted-foreground">{t('grouped.hiddenDevices', { count: render.hiddenDeviceCount })}</span>}
+        {draft.dirty && <span data-testid="topology-unsaved-layout" className="px-1 text-xs text-muted-foreground">{graph.permissions.canEdit ? t('unsaved') : t('localLayout')}</span>}
+        </div>
+        {list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
+          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitInsetTop={fitInsetTop} fitKey={`${view}:${showAllNetworks}:${render?.grouped}`} />}</div>
         {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
           historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} sharedAddressCount={render?.nodes.find((node) => node.id === selection.id)?.sharedWith} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePositions([{ ...point, pinned: !point.pinned }]); } : undefined} />}
       </div>}
