@@ -5,6 +5,10 @@ export function canonicalFactValue(value:unknown):unknown {
  if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([key,child])=>[key,canonicalFactValue(child)]));
  return value;
 }
+/** Opaque OS network-context key (relationship `logical_context.contextKey`) of one producer context. */
+export function topologyOsContextKey(producerId:string,contextKey:string):string {
+  return createHash('sha256').update(JSON.stringify(canonicalFactValue([producerId,contextKey]))).digest('hex');
+}
 /** Compound rows can contain several independently withdrawn graph facts. */
 export function topologyFactKey(rowKey:string,detail:unknown):string {
  return createHash('sha256').update(JSON.stringify(canonicalFactValue([rowKey,detail]))).digest('hex');

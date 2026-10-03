@@ -668,6 +668,18 @@
     "devices_other": "{{count}} dispositivi",
     "moreOutside_one": "{{count}} altro fuori da questa vista",
     "moreOutside_other": "{{count}} altri fuori da questa vista",
-    "gatewayAddressMatch": "Un dispositivo rilevato usa questo indirizzo (solo corrispondenza di indirizzo, non verificata):"
+    "gatewayAddressMatch": "Un dispositivo rilevato usa questo indirizzo (solo corrispondenza di indirizzo, non verificata):",
+    "neighborSeen": "cache dei vicini",
+    "neighborSeenNote": "IP/MAC corrispondente nella cache dei vicini di {{observer}}; ultima conferma: {{when}}.",
+    "neighborState": {
+      "permanent": "Voce statica della cache.",
+      "unknown": "Raggiungibilità sconosciuta."
+    },
+    "neighborSeenCount_one": "{{count}} dispositivo è collocato qui in base a un IP/MAC corrispondente nella cache dei vicini di un altro dispositivo.",
+    "neighborSeenCount_other": "{{count}} dispositivi sono collocati qui in base a un IP/MAC corrispondente nelle cache dei vicini di altri dispositivi.",
+    "neighborCoverageLimited": "I dati della cache dei vicini per questa rete sono incompleti: se un dispositivo manca da una cache, non significa che sia assente.",
+    "conflictGatewayMac": "I dispositivi in questo intervallo segnalano lo stesso indirizzo del gateway, ma le loro cache dei vicini mostrano indirizzi MAC del gateway diversi, quindi è suddiviso in schede separate.",
+    "gatewayMac_one": "MAC del gateway {{mac}}: nella cache dei vicini di {{count}} dispositivo; ultima conferma: {{when}}",
+    "gatewayMac_other": "MAC del gateway {{mac}}: nelle cache dei vicini di {{count}} dispositivi; ultima conferma: {{when}}"
   }
 }

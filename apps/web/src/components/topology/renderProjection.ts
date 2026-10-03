@@ -12,7 +12,8 @@ export type RenderKind = 'device' | 'gateway' | 'internet' | 'network' | 'group'
 export type RenderNode = {
   id: string; label: string; detail: string | null; kind: RenderKind; glyph: TopologyGlyph;
   parent?: string; presence: 'online' | 'offline' | 'unknown' | null; health: HealthStatus | null;
-  stale: boolean; unverified: boolean; networkClass: TopologyNetworkClass | null; memberCount: number;
+  /** `unverified`: address-range placement only; `corroborated`: placed from a matching neighbour-cache entry (#7816). Neither is health. */
+  stale: boolean; unverified: boolean; corroborated: boolean; networkClass: TopologyNetworkClass | null; memberCount: number;
 };
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
@@ -36,26 +37,27 @@ function canonicalNode(node: GraphNode, parent?: string, member?: { stale: boole
   const text = tileText(node);
   return { id: node.id, label: text.title, detail: text.detail, kind, glyph: topologyGlyph(node), ...(parent ? { parent } : {}),
     presence: node.inventory?.presence.state ?? null, health: node.health.status === 'unknown' ? null : node.health.status,
-    stale: member ? member.stale : false, unverified: member?.placement === 'address_match', networkClass: null, memberCount: 0 };
+    stale: member ? member.stale : false, unverified: member?.placement === 'address_match', corroborated: member?.placement === 'neighbor_seen',
+    networkClass: null, memberCount: 0 };
 }
 
 function groupNode(group: PresentationNode): RenderNode {
   const g = group.group!;
   if (g.kind === 'gateway') {
     return { id: group.id, label: g.address ?? group.label, detail: `Gateway for ${g.observerCount} ${g.observerCount === 1 ? 'device' : 'devices'}`, kind: 'gateway', glyph: 'router',
-      presence: null, health: null, stale: false, unverified: false, networkClass: null, memberCount: group.memberCount };
+      presence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: group.memberCount };
   }
   const devices = `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`;
   const via = g.gatewayAddresses.length ? ` · via ${g.gatewayAddresses.join(', ')}` : '';
   return { id: group.id, label: group.label, detail: g.kind === 'unidentified' ? devices : `${devices}${via}${g.conflict ? ' · gateways differ' : ''}`,
-    kind: g.kind === 'unidentified' ? 'unidentified' : 'group', glyph: 'network', presence: null, health: null, stale: false, unverified: false,
+    kind: g.kind === 'unidentified' ? 'unidentified' : 'group', glyph: 'network', presence: null, health: null, stale: false, unverified: false, corroborated: false,
     networkClass: g.networkClass, memberCount: group.memberCount };
 }
 
 /** A network whose devices are all drawn in other cards: a compact tile, never an empty compound card. */
 function summaryNode(group: PresentationNode): RenderNode {
   return { id: group.id, label: group.label, detail: `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`, kind: 'network', glyph: 'network',
-    presence: null, health: null, stale: false, unverified: false, networkClass: group.group!.networkClass, memberCount: group.memberCount };
+    presence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: group.group!.networkClass, memberCount: group.memberCount };
 }
 
 export function compileTopologyRender(graph: GraphResponse, { showAllNetworks }: { showAllNetworks: boolean }): TopologyRender {
@@ -94,7 +96,7 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks }:
   }
   for (const node of graph.presentation.nodes) {
     if (!node.group) nodes.push({ id: node.id, label: node.label, detail: null, kind: 'outside', glyph: 'device', presence: null, health: null, stale: false,
-      unverified: false, networkClass: null, memberCount: node.memberCount });
+      unverified: false, corroborated: false, networkClass: null, memberCount: node.memberCount });
   }
   const rendered = new Set(nodes.map((node) => node.id));
   const edges: RenderEdge[] = [];

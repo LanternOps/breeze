@@ -135,6 +135,8 @@ counts folded canonical nodes.
 
 - Projecting ARP/NDP `neighbors` into relationships (spec gives neighbours only gateway-alias
   enrichment, C:190; would need the `attributes.method` enum + a spec decision). Follow-up issue.
+  Decided 2026-10-02 (#7816/#7817): presentation-only corroboration, no canonical projection — see
+  `2026-10-02-topology-neighbour-corroboration.md`.
 - Physical view, switch inference (never invent switches, C:14).
 - Changing canonical identity (per-observer nodes stay; grouping is presentation only).
 
@@ -161,7 +163,11 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
 - **Q4 — deliberate spec extension, labelled.** Discovered-only endpoints whose inventory address falls in
   exactly one `lan` candidate across the complete site are drawn inside it with per-member placement
   `address_match` and copy "Address in this range — membership not verified". No canonical relationship
-  is created; these members are excluded from counts of observed members.
+  is created; these members are excluded from counts of observed members. **Amended 2026-10-02 (#7816):** an
+  explicit third category, `neighbor_seen` (inferred/low), keeps the unique-range rule but places the endpoint in
+  the ONE candidate whose observer's fresh, published neighbour cache holds the endpoint's exact (IP, MAC) pair
+  from a single inventory row; conflicts stay `address_match`. Also excluded from observer counts. See
+  `2026-10-02-topology-neighbour-corroboration.md`.
 - **Q5 — agreed.** `inventory` (with presence) rides on graph nodes; presence uses neutral icons and
   explicit text ("Agent offline", last seen), never health colours; refreshing it never re-runs layout.
 - **Layout — revised.** Two-stage, in the existing worker and within its 3 s budget: (1) pack each

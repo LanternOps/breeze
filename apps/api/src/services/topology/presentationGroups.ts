@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
+import { topologyIpSchema, topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
 import { nodeFilter, observedFreshUntilSql, relationshipFilter, scoped, type ReadExposure } from './graphRead';
+import { cidrContains, parseIpAddress, parsePrefix, type Family } from './ipAddress';
+import { addressKey, buildNeighborEvidenceIndex, canonicalMac, readNeighborEvidence, type NeighborEvidenceIndex, type NeighborEvidenceRead, type NeighborTuple } from './neighborEvidence';
+
+export { cidrContains, parseIpAddress } from './ipAddress';
 
 /**
  * Grouped-overview presentation (docs/superpowers/plans/monitoring/2026-10-02-topology-grouped-overview.md,
@@ -16,11 +20,20 @@ export type PresentationGroupInput = {
   /** Every active network node of the site under this view's node filters. */
   networks: { id: string; prefix: string | null }[];
   /** Every active `network_member` row (endpoint → network) under this view's exposure. */
-  memberships: { id: string; endpointId: string; networkId: string; interfaceId: string | null; fresh: boolean }[];
+  memberships: { id: string; endpointId: string; networkId: string; interfaceId: string | null; fresh: boolean; context?: string | null }[];
   /** Every active `default_route` row (endpoint → gateway); `address` is the gateway node's reported next hop. */
-  routes: { id: string; endpointId: string; gatewayId: string; address: string | null; interfaceId: string | null; fresh: boolean }[];
+  routes: { id: string; endpointId: string; gatewayId: string; address: string | null; interfaceId: string | null; fresh: boolean; context?: string | null }[];
   /** Active endpoints with no `network_member` row at all, with their live inventory addresses. */
   unplaced: { endpointId: string; addresses: string[] }[];
+  /**
+   * (IP, MAC) pairs of active site endpoints, each taken from ONE inventory row (#7816):
+   * an address is never combined with an independently chosen MAC.
+   */
+  inventoryPairs?: { endpointId: string; ip: string; mac: string }[];
+  /** The pair read stopped at its bound: corroboration coverage is limited. */
+  inventoryPairsTruncated?: boolean;
+  /** Published neighbour-cache evidence (neighborEvidence.ts); absent = not consulted. */
+  neighbors?: NeighborEvidenceRead;
 };
 export type PresentationGroupOptions = {
   view: GraphQuery['view'];
@@ -31,6 +44,8 @@ export type PresentationGroupOptions = {
   tokenFor: (focusNodeId: string) => string;
   maxNodes?: number;
   maxEdges?: number;
+  /** Clock for neighbour-evidence expiry (tests). */
+  now?: Date;
 };
 export type PresentationGroups = { nodes: PresentationNode[]; edges: PresentationEdge[] };
 
@@ -39,72 +54,14 @@ const LIST_CAP = 1_000;
 const GATEWAY_ADDRESS_CAP = 16;
 const TEXT_CAP = 64;
 
-type Family = 4 | 6;
-type Parsed = { family: Family; value: bigint };
-
-function parseIpv4(text: string): bigint | null {
-  const parts = text.split('.');
-  if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
-  return parts.reduce((value, part) => (value << 8n) | BigInt(Number(part)), 0n);
-}
-function parseIpv6(text: string): bigint | null {
-  let value = text.toLowerCase();
-  const lastColon = value.lastIndexOf(':');
-  const tail = value.slice(lastColon + 1);
-  if (tail.includes('.')) {
-    // Embedded IPv4 (::ffff:10.1.2.3) becomes its two trailing groups.
-    const v4 = parseIpv4(tail);
-    if (v4 === null) return null;
-    value = `${value.slice(0, lastColon + 1)}${(v4 >> 16n).toString(16)}:${(v4 & 0xffffn).toString(16)}`;
-  }
-  const halves = value.split('::');
-  if (halves.length > 2) return null;
-  const groupsOf = (part: string) => (part === '' ? [] : part.split(':'));
-  const head = groupsOf(halves[0]!);
-  const rest = halves.length === 2 ? groupsOf(halves[1]!) : [];
-  const missing = 8 - head.length - rest.length;
-  if (halves.length === 1 ? head.length !== 8 : missing < 1) return null;
-  let result = 0n;
-  for (const group of [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill('0'), ...rest]) {
-    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
-    result = (result << 16n) | BigInt(parseInt(group, 16));
-  }
-  return result;
-}
-/** Parse an IPv4 or IPv6 address; an IPv6 zone (`%eth0`) is ignored. */
-export function parseIpAddress(text: string): Parsed | null {
-  const address = text.trim().split('%')[0]!;
-  if (address.includes(':')) {
-    const value = parseIpv6(address);
-    return value === null ? null : { family: 6, value };
-  }
-  const value = parseIpv4(address);
-  return value === null ? null : { family: 4, value };
-}
-function parsePrefix(prefix: string): (Parsed & { length: number }) | null {
-  const [base = '', lengthText, extra] = prefix.split('/');
-  if (extra !== undefined) return null;
-  const parsed = parseIpAddress(base);
-  if (!parsed) return null;
-  const bits = parsed.family === 4 ? 32 : 128;
-  const length = lengthText === undefined ? bits : Number(lengthText);
-  if (!/^\d{1,3}$/.test(lengthText ?? String(bits)) || length > bits) return null;
-  return { ...parsed, length };
-}
-/** True when `address` lies inside `prefix` (IPv4 or IPv6, same family only). */
-export function cidrContains(prefix: string, address: string): boolean {
-  const network = parsePrefix(prefix);
-  const host = parseIpAddress(address);
-  if (!network || !host || network.family !== host.family) return false;
-  const shift = BigInt((network.family === 4 ? 32 : 128) - network.length);
-  return (network.value >> shift) === (host.value >> shift);
-}
-
 type Membership = PresentationGroupInput['memberships'][number] & { prefix: string; family: Family; networkClass: TopologyNetworkClass };
 type Route = PresentationGroupInput['routes'][number] & { address: string; family: Family };
+type ConflictBasis = 'gateway_address' | 'gateway_mac';
 type Candidate = {
-  key: string; family: Family; prefix: string; networkClass: TopologyNetworkClass; conflict: boolean;
+  key: string; family: Family; prefix: string; networkClass: TopologyNetworkClass; conflict: boolean; conflictBasis: Set<ConflictBasis>;
   keyAddresses: string[]; memberships: Membership[]; addressMatches: Set<string>;
+  /** Unplaced endpoints corroborated by an in-candidate observer's neighbour cache (#7816). */
+  neighborSeen: Map<string, NeighborTuple>;
 };
 type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[] };
 
@@ -116,6 +73,26 @@ function presentationId(view: GraphQuery['view'], scopeHash: string, short: stri
 function linkLocalAddress(address: string): boolean {
   const parsed = parseIpAddress(address);
   return !!parsed && topologyNetworkClass(`${address.split('%')[0]}/${parsed.family === 4 ? 32 : 128}`) === 'link_local';
+}
+const latestFirst = (a: NeighborTuple, b: NeighborTuple) => bySmallest(b.confirmedAt, a.confirmedAt) || bySmallest(a.sourceId, b.sourceId) || bySmallest(a.rowKey, b.rowKey);
+/** The presentation provenance of one neighbour tuple: inferred/low, bounded, never "verified". */
+function neighborProvenance(tuple: NeighborTuple) {
+  return { method: 'neighbor_cache' as const, evidenceClass: 'inferred' as const, confidence: 'low' as const, observerNodeId: tuple.observerNodeId,
+    observerLabel: tuple.observerLabel.slice(0, 255), sourceId: tuple.sourceId, rowKey: tuple.rowKey.slice(0, 255), interfaceName: tuple.interfaceName,
+    address: tuple.address.slice(0, TEXT_CAP), mac: tuple.mac, state: tuple.state, confirmedAt: tuple.confirmedAt, expiresAt: tuple.expiresAt };
+}
+/**
+ * Gateway policy (#7817): the observer's own fresh cache mapping for a default route's
+ * exact next hop, in the route's OS context, on the route's interface and family.
+ * Zones are interface scope (qualifyNeighborRow), so the interface match carries them.
+ * Several MACs for one next hop are ambiguous and count as no evidence.
+ */
+function gatewayMac(evidence: NeighborEvidenceIndex | null, route: Route): NeighborTuple | null {
+  const key = evidence && route.interfaceId && route.context ? addressKey(route.address) : null;
+  if (!key) return null;
+  const tuples = (evidence!.byAddress.get(key) ?? []).filter((tuple) => tuple.observerNodeId === route.endpointId && tuple.context === route.context
+    && tuple.interfaceId === route.interfaceId && tuple.family === route.family && (tuple.networkClass === 'lan' || tuple.linkLocal));
+  return new Set(tuples.map((tuple) => tuple.mac)).size === 1 ? [...tuples].sort(latestFirst)[0]! : null;
 }
 
 /**
@@ -145,6 +122,12 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     list.push({ ...row, address, family: parsed.family });
     routesByObserver.set(row.endpointId, list);
   }
+  const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, options.now ?? new Date()) : null;
+  const neighborCoverage = evidence ? (evidence.coverage === 'limited' || input.inventoryPairsTruncated ? 'limited' as const : 'complete' as const) : undefined;
+  // Only complete evidence may DECIDE anything (an upgrade or a split): a truncated read can be
+  // missing exactly the conflicting row or the other candidate's observer. Site-wide, because a
+  // source past the read's cap could belong to any range. Limited evidence is still displayed.
+  const decisive = neighborCoverage === 'complete' ? evidence : null;
   const lanCount = new Map<string, number>();
   for (const m of memberships) if (m.networkClass === 'lan') lanCount.set(`${m.endpointId}|${m.family}`, (lanCount.get(`${m.endpointId}|${m.family}`) ?? 0) + 1);
 
@@ -161,6 +144,45 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const fresh = routes.filter((route) => route.fresh);
     matched.set(m.id, routes);
     keyAddresses.set(m.id, sorted(new Set((fresh.length ? fresh : routes).map((route) => route.address))));
+  }
+
+  // 2a. Gateway MAC corroboration (#7817): within one (prefix, gateway-address set)
+  //     candidate, observers whose FRESH neighbour caches map the same non-link-local
+  //     gateway address to different MACs become separate presentation candidates.
+  //     An observer with no (or ambiguous) MAC evidence keeps the base key: missing
+  //     evidence never splits and never bridges. Equal MACs prove nothing on their own,
+  //     and nothing here merges or splits canonical gateway identities.
+  function gatewayMacSuffixes(rows: Membership[], preliminary: Map<string, [string, string[]]>): Map<string, string> {
+    const suffixes = new Map<string, string>();
+    if (!decisive) return suffixes;
+    const byKey = new Map<string, Membership[]>();
+    for (const m of rows) byKey.set(preliminary.get(m.id)![0], [...(byKey.get(preliminary.get(m.id)![0]) ?? []), m]);
+    for (const group of byKey.values()) {
+      const observed = new Map<string, Map<string, string>>();
+      const macs = new Map<string, Set<string>>();
+      for (const m of group) {
+        const own = new Map<string, string>();
+        const ambiguous = new Set<string>();
+        for (const route of matched.get(m.id) ?? []) {
+          if (!route.fresh || linkLocalAddress(route.address)) continue;
+          const mac = gatewayMac(decisive, route)?.mac;
+          if (!mac) continue;
+          if (own.has(route.address) && own.get(route.address) !== mac) ambiguous.add(route.address);
+          own.set(route.address, mac);
+        }
+        for (const address of ambiguous) own.delete(address);
+        observed.set(m.id, own);
+        for (const [address, mac] of own) macs.set(address, (macs.get(address) ?? new Set()).add(mac));
+      }
+      const conflicted = sorted([...macs].filter(([, set]) => set.size > 1).map(([address]) => address));
+      if (!conflicted.length) continue;
+      for (const m of group) {
+        const own = observed.get(m.id)!;
+        const signature = conflicted.filter((address) => own.has(address)).map((address) => `${address}=${own.get(address)}`).join(',');
+        if (signature) suffixes.set(m.id, `|mac:${signature}`);
+      }
+    }
+    return suffixes;
   }
 
   // 2. Candidates. LAN: (family, prefix, gateway-address set); an observer reporting no
@@ -182,17 +204,26 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
       if (addresses.length) nonEmpty.set(keyFor(addresses), addresses);
     }
     const sole = nonEmpty.size === 1 ? [...nonEmpty.entries()][0]! : null;
+    const preliminary = new Map<string, [string, string[]]>();
     for (const m of rows) {
       const own = keyAddresses.get(m.id) ?? [];
-      const [key, addresses] = own.length ? [keyFor(own), own] : sole ? sole : [keyFor([]), []];
+      preliminary.set(m.id, own.length ? [keyFor(own), own] : sole ? sole : [keyFor([]), []]);
+    }
+    const suffixes = first.networkClass === 'lan' ? gatewayMacSuffixes(rows, preliminary) : new Map<string, string>();
+    for (const m of rows) {
+      const [base, addresses] = preliminary.get(m.id)!;
+      const key = `${base}${suffixes.get(m.id) ?? ''}`;
       membershipCandidate.set(m.id, key);
-      const candidate = candidates.get(key) ?? { key, family: m.family, prefix: m.prefix, networkClass: m.networkClass, conflict: false,
-        keyAddresses: addresses, memberships: [], addressMatches: new Set<string>() };
+      const candidate: Candidate = candidates.get(key) ?? { key, family: m.family, prefix: m.prefix, networkClass: m.networkClass, conflict: false,
+        conflictBasis: new Set<ConflictBasis>(), keyAddresses: addresses, memberships: [], addressMatches: new Set<string>(), neighborSeen: new Map() };
       candidate.memberships.push(m);
       candidates.set(key, candidate);
     }
     const keys = new Set(rows.map((m) => membershipCandidate.get(m.id)!));
-    if (keys.size > 1) for (const key of keys) candidates.get(key)!.conflict = true;
+    const basis: ConflictBasis[] = [];
+    if (new Set([...preliminary.values()].map(([base]) => base)).size > 1) basis.push('gateway_address');
+    if (suffixes.size) basis.push('gateway_mac');
+    if (keys.size > 1) for (const key of keys) { const candidate = candidates.get(key)!; candidate.conflict = true; for (const b of basis) candidate.conflictBasis.add(b); }
   }
 
   // 3. Each default route is folded under exactly one LAN candidate (smallest key), so a
@@ -220,11 +251,56 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   //    A range split into candidates by a gateway conflict is still one range: the
   //    unverified tile is drawn in the candidate with the most observers (ties: smallest
   //    key). This only places an unverified tile; it asserts no route for the device.
+  //    Neighbour corroboration (#7816) keeps the unique-range rule and then prefers the
+  //    ONE candidate whose observer's fresh cache holds an exact (IP, MAC) pair taken from
+  //    a single inventory row of this endpoint alone; conflicts stay address_match.
   const memberEndpoints = new Set(memberships.map((m) => m.endpointId));
+  // Inventory pairs, canonicalised; a pair claimed by two endpoints is attributable to neither.
+  const pairsByEndpoint = new Map<string, { key: string; address: string; mac: string }[]>();
+  const pairOwners = new Map<string, Set<string>>();
+  for (const pair of evidence && !input.inventoryPairsTruncated ? input.inventoryPairs ?? [] : []) {
+    const key = typeof pair.ip === 'string' && pair.ip.length <= TEXT_CAP ? addressKey(pair.ip) : null;
+    const mac = canonicalMac(pair.mac);
+    if (!key || !mac) continue;
+    pairOwners.set(`${key}|${mac}`, (pairOwners.get(`${key}|${mac}`) ?? new Set()).add(pair.endpointId));
+    pairsByEndpoint.set(pair.endpointId, [...(pairsByEndpoint.get(pair.endpointId) ?? []), { key, address: pair.ip.trim(), mac }]);
+  }
+  const observerMemberships = new Map<string, Membership[]>();
+  for (const m of memberships) if (m.networkClass === 'lan' && m.interfaceId && m.context) {
+    const key = `${m.endpointId}|${m.interfaceId}|${m.context}|${m.prefix}`;
+    observerMemberships.set(key, [...(observerMemberships.get(key) ?? []), m]);
+  }
+  function corroboratingCandidate(endpointId: string, inRange: Candidate[]): { candidate: Candidate; tuple: NeighborTuple } | null {
+    if (!decisive) return null;
+    const { prefix, family } = inRange[0]!;
+    const allowed = new Set(inRange.map((candidate) => candidate.key));
+    const matches = new Map<string, NeighborTuple[]>();
+    for (const pair of pairsByEndpoint.get(endpointId) ?? []) {
+      if (!cidrContains(prefix, pair.address) || pairOwners.get(`${pair.key}|${pair.mac}`)!.size !== 1) continue;
+      for (const tuple of decisive.byAddress.get(pair.key) ?? []) {
+        if (tuple.linkLocal || tuple.networkClass !== 'lan' || tuple.family !== family || tuple.prefix !== prefix) continue;
+        // The same address mapped to another MAC by any in-range cache: ambiguous, never corroborated.
+        if (tuple.mac !== pair.mac) return null;
+        for (const m of observerMemberships.get(`${tuple.observerNodeId}|${tuple.interfaceId}|${tuple.context}|${tuple.prefix}`) ?? []) {
+          const key = membershipCandidate.get(m.id)!;
+          if (allowed.has(key)) matches.set(key, [...(matches.get(key) ?? []), tuple]);
+        }
+      }
+    }
+    if (matches.size !== 1) return null;
+    const [key, tuples] = [...matches.entries()][0]!;
+    return { candidate: candidates.get(key)!, tuple: [...tuples].sort(latestFirst)[0]! };
+  }
   const lanCandidates = [...candidates.values()].filter((candidate) => candidate.networkClass === 'lan');
   const observers = (candidate: Candidate) => new Set(candidate.memberships.map((m) => m.endpointId)).size;
   const unidentified: string[] = [];
-  for (const row of input.unplaced) {
+  // #7821: a membership whose target prefix is unparseable places nothing, so an endpoint
+  // whose every membership is like that is treated exactly as one with no membership.
+  const unplaced = new Map(input.unplaced.map((row) => [row.endpointId, row]));
+  for (const row of input.memberships) {
+    if (!memberEndpoints.has(row.endpointId) && !unplaced.has(row.endpointId)) unplaced.set(row.endpointId, { endpointId: row.endpointId, addresses: [] });
+  }
+  for (const row of unplaced.values()) {
     if (memberEndpoints.has(row.endpointId)) continue;
     const ranges = new Map<string, Candidate[]>();
     for (const address of row.addresses) {
@@ -237,7 +313,10 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
       }
     }
     if (ranges.size !== 1) { unidentified.push(row.endpointId); continue; }
-    const [home] = [...ranges.values()][0]!.sort((a, b) => observers(b) - observers(a) || bySmallest(a.key, b.key));
+    const inRange = [...ranges.values()][0]!;
+    const seen = corroboratingCandidate(row.endpointId, inRange);
+    if (seen) { seen.candidate.neighborSeen.set(row.endpointId, seen.tuple); continue; }
+    const [home] = inRange.sort((a, b) => observers(b) - observers(a) || bySmallest(a.key, b.key));
     home!.addressMatches.add(row.endpointId);
   }
 
@@ -245,7 +324,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   //    then the smallest candidate key — stable, never size based.
   const endpointCandidates = new Map<string, Set<string>>();
   for (const candidate of candidates.values()) {
-    for (const endpointId of [...candidate.memberships.map((m) => m.endpointId), ...candidate.addressMatches]) {
+    for (const endpointId of [...candidate.memberships.map((m) => m.endpointId), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]) {
       endpointCandidates.set(endpointId, (endpointCandidates.get(endpointId) ?? new Set()).add(candidate.key));
     }
   }
@@ -263,10 +342,12 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   const networkNode = (candidate: Candidate): PresentationNode | null => {
     const observed = new Map<string, Membership[]>();
     for (const m of candidate.memberships) observed.set(m.endpointId, [...(observed.get(m.endpointId) ?? []), m]);
-    const members = visible([...observed.keys(), ...candidate.addressMatches]).slice(0, LIST_CAP).map((nodeId) => {
+    const members = visible([...observed.keys(), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]).slice(0, LIST_CAP).map((nodeId) => {
       const rows = observed.get(nodeId);
-      return { nodeId, placement: rows ? 'observed' as const : 'address_match' as const, primary: primary.get(nodeId) === candidate.key,
-        stale: rows ? rows.every((m) => !m.fresh) : false };
+      const seen = rows ? undefined : candidate.neighborSeen.get(nodeId);
+      return { nodeId, placement: rows ? 'observed' as const : seen ? 'neighbor_seen' as const : 'address_match' as const,
+        primary: primary.get(nodeId) === candidate.key, stale: rows ? rows.every((m) => !m.fresh) : false,
+        ...(seen ? { neighbor: neighborProvenance(seen) } : {}) };
     });
     const canonical = canonicalNetworks(candidate);
     const canonicalNodeIds = canonical.filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
@@ -276,22 +357,38 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
     const id = presentationId(view, scopeHash, 'net', candidate.key);
     nodeIds.set(candidate.key, id);
     return { id, view, role: 'network_group', label: candidate.prefix.slice(0, 255),
-      memberCount: new Set([...observed.keys(), ...candidate.addressMatches]).size,
+      memberCount: new Set([...observed.keys(), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]).size,
       frontierToken: tokenFor(canonical[0]!), authority: false,
       group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: candidate.networkClass, prefix: candidate.prefix, address: null,
         gatewayAddresses: sorted(listed).slice(0, GATEWAY_ADDRESS_CAP), conflict: candidate.conflict, observerCount: observed.size,
-        members, canonicalNodeIds } };
+        members, canonicalNodeIds,
+        ...(candidate.conflict && candidate.conflictBasis.size ? { conflictBasis: sorted(candidate.conflictBasis) } : {}),
+        ...(neighborCoverage && candidate.networkClass === 'lan' ? { neighborCoverage } : {}) } };
   };
   const gatewayNode = (group: GatewayGroup): PresentationNode | null => {
     const canonical = sorted(new Set(group.routes.map((route) => route.gatewayId)));
     const canonicalNodeIds = canonical.filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
     if (!canonicalNodeIds.length) return null;
+    // Corroborated gateway MACs (#7817): what the reporters' own caches map this next hop to.
+    const macs = new Map<string, { observers: Set<string>; confirmedAt: string; expiresAt: string }>();
+    for (const route of group.routes) {
+      const tuple = gatewayMac(evidence, route);
+      if (!tuple) continue;
+      const entry = macs.get(tuple.mac) ?? { observers: new Set<string>(), confirmedAt: tuple.confirmedAt, expiresAt: tuple.expiresAt };
+      entry.observers.add(route.endpointId);
+      if (tuple.confirmedAt > entry.confirmedAt) entry.confirmedAt = tuple.confirmedAt;
+      if (tuple.expiresAt > entry.expiresAt) entry.expiresAt = tuple.expiresAt;
+      macs.set(tuple.mac, entry);
+    }
+    const gatewayMacs = sorted(macs.keys()).slice(0, GATEWAY_ADDRESS_CAP).map((mac) => ({ address: group.address.slice(0, TEXT_CAP), mac,
+      observerCount: macs.get(mac)!.observers.size, confirmedAt: macs.get(mac)!.confirmedAt, expiresAt: macs.get(mac)!.expiresAt }));
     const id = presentationId(view, scopeHash, 'gw', group.key);
     nodeIds.set(group.key, id);
     return { id, view, role: 'gateway_group', label: `Reported gateway ${group.address}`.slice(0, 255), memberCount: canonical.length,
       frontierToken: tokenFor(canonical[0]!), authority: false,
       group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: group.address, gatewayAddresses: [],
-        conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds } };
+        conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds,
+        ...(gatewayMacs.length ? { gatewayMacs } : {}) } };
   };
   const unidentifiedNode = (): PresentationNode | null => {
     const all = sorted(new Set(unidentified));
@@ -346,10 +443,13 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
 }
 
 const deviceAddress = sql.raw(`nullif(btrim(split_part(dn.ip_address, '/', 1)), '')`);
+/** Inventory (IP, MAC) pairs read per site; beyond it no neighbour placement is attempted. */
+export const INVENTORY_PAIR_CAP = 20_000;
 /**
  * Complete-site grouping inputs (Q2: never the bounded page) under this view's node
  * filters and relationship exposure (physical gate + view exclusions). One statement,
- * so the projection gains exactly one read.
+ * plus one bounded read of the published neighbour caches that could corroborate an
+ * unplaced endpoint or a reported gateway (#7816/#7817).
  */
 export async function readPresentationGroupInput(
   tx: Pick<typeof db, 'execute'>, scope: TopologyScope, view: Exclude<GraphQuery['view'], 'physical'>, exposure: ReadExposure,
@@ -358,7 +458,8 @@ export async function readPresentationGroupInput(
   const [row] = await tx.execute<PresentationGroupInput>(sql`WITH site_nodes AS MATERIALIZED (
       SELECT n.id, n.kind, n.attributes FROM topology_nodes n WHERE ${siteNodes}
     ), rels AS MATERIALIZED (
-      SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
+      SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, r.logical_context->>'contextKey' AS context,
+        coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
       FROM topology_relationships r
       WHERE ${relationshipFilter(scope, view, 'r', exposure)} AND r.kind IN ('network_member', 'default_route')
         AND EXISTS (SELECT 1 FROM site_nodes s WHERE s.id = r.source_node_id) AND EXISTS (SELECT 1 FROM site_nodes t WHERE t.id = r.target_node_id)
@@ -368,9 +469,9 @@ export async function readPresentationGroupInput(
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'prefix', s.attributes->>'prefix') ORDER BY s.id), '[]'::jsonb)
         FROM site_nodes s WHERE s.kind = 'network') AS networks,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'endpointId', m.source_node_id, 'networkId', m.target_node_id,
-          'interfaceId', m.source_interface_id, 'fresh', m.fresh) ORDER BY m.id), '[]'::jsonb) FROM memberships m) AS memberships,
+          'interfaceId', m.source_interface_id, 'fresh', m.fresh, 'context', m.context) ORDER BY m.id), '[]'::jsonb) FROM memberships m) AS memberships,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'endpointId', r.source_node_id, 'gatewayId', r.target_node_id,
-          'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh) ORDER BY r.id), '[]'::jsonb)
+          'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh, 'context', r.context) ORDER BY r.id), '[]'::jsonb)
         FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'gateway' WHERE r.kind = 'default_route') AS routes,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('endpointId', e.id, 'addresses', coalesce((SELECT jsonb_agg(x.ip ORDER BY x.ip) FROM (
             SELECT host(a.ip_address) AS ip FROM topology_node_bindings b JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
@@ -378,6 +479,31 @@ export async function readPresentationGroupInput(
             UNION SELECT ${deviceAddress} FROM topology_node_bindings b JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
               WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL
           ) x), '[]'::jsonb)) ORDER BY e.id), '[]'::jsonb)
-        FROM site_nodes e WHERE e.kind = 'endpoint' AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id)) AS unplaced`);
-  return { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [] };
+        FROM site_nodes e WHERE e.kind = 'endpoint' AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id)) AS unplaced,
+      -- Each pair comes from ONE inventory row (an asset, or one device_network row): never an address joined to another row's MAC.
+      (SELECT coalesce(jsonb_agg(p.pair), '[]'::jsonb) FROM (
+          SELECT jsonb_build_object('endpointId', e.id, 'ip', host(a.ip_address), 'mac', btrim(a.mac_address)) AS pair
+            FROM site_nodes e JOIN topology_node_bindings b ON ${scoped(scope, 'b')} AND b.node_id = e.id
+            JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
+            WHERE e.kind = 'endpoint' AND a.ip_address IS NOT NULL AND nullif(btrim(a.mac_address), '') IS NOT NULL
+          UNION ALL SELECT jsonb_build_object('endpointId', e.id, 'ip', ${deviceAddress}, 'mac', btrim(dn.mac_address))
+            FROM site_nodes e JOIN topology_node_bindings b ON ${scoped(scope, 'b')} AND b.node_id = e.id
+            JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
+            WHERE e.kind = 'endpoint' AND ${deviceAddress} IS NOT NULL AND nullif(btrim(dn.mac_address), '') IS NOT NULL
+          LIMIT ${INVENTORY_PAIR_CAP + 1}) p) AS "inventoryPairs"`);
+  const input: PresentationGroupInput = { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [] };
+  const pairs = row?.inventoryPairs ?? [];
+  input.inventoryPairsTruncated = pairs.length > INVENTORY_PAIR_CAP;
+  input.inventoryPairs = input.inventoryPairsTruncated ? [] : pairs;
+  // Ask the caches only about addresses that could change placement or corroborate a gateway.
+  const unplaced = new Set(input.unplaced.map((entry) => entry.endpointId));
+  const requested = new Set<string>();
+  const ask = (address: string | null | undefined) => {
+    const canonical = typeof address === 'string' && address.length <= TEXT_CAP ? topologyIpSchema.safeParse(address.split('%')[0]!.trim()) : null;
+    if (canonical?.success) requested.add(canonical.data);
+  };
+  for (const pair of input.inventoryPairs) if (unplaced.has(pair.endpointId)) ask(pair.ip);
+  for (const route of input.routes) ask(route.address);
+  input.neighbors = await readNeighborEvidence(tx, scope, view, exposure, requested);
+  return input;
 }

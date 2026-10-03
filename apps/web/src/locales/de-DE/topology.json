@@ -668,6 +668,18 @@
     "devices_other": "{{count}} Geräte",
     "moreOutside_one": "{{count}} weiteres außerhalb dieser Ansicht",
     "moreOutside_other": "{{count}} weitere außerhalb dieser Ansicht",
-    "gatewayAddressMatch": "Ein erkanntes Gerät verwendet diese Adresse (nur Adressabgleich, nicht verifiziert):"
+    "gatewayAddressMatch": "Ein erkanntes Gerät verwendet diese Adresse (nur Adressabgleich, nicht verifiziert):",
+    "neighborSeen": "Nachbar-Cache",
+    "neighborSeenNote": "Passende IP/MAC im Nachbar-Cache von {{observer}}; zuletzt bestätigt {{when}}.",
+    "neighborState": {
+      "permanent": "Statischer Cache-Eintrag.",
+      "unknown": "Erreichbarkeit unbekannt."
+    },
+    "neighborSeenCount_one": "{{count}} Gerät ist hier anhand einer passenden IP/MAC im Nachbar-Cache eines anderen Geräts eingeordnet.",
+    "neighborSeenCount_other": "{{count}} Geräte sind hier anhand einer passenden IP/MAC in den Nachbar-Caches anderer Geräte eingeordnet.",
+    "neighborCoverageLimited": "Die Nachbar-Cache-Daten für dieses Netzwerk sind unvollständig: Fehlt ein Gerät in einem Cache, heißt das nicht, dass es nicht vorhanden ist.",
+    "conflictGatewayMac": "Geräte in diesem Bereich melden dieselbe Gateway-Adresse, ihre Nachbar-Caches zeigen aber unterschiedliche Gateway-MAC-Adressen, daher ist er in einzelne Karten aufgeteilt.",
+    "gatewayMac_one": "Gateway-MAC {{mac}}: im Nachbar-Cache von {{count}} Gerät; zuletzt bestätigt {{when}}",
+    "gatewayMac_other": "Gateway-MAC {{mac}}: in den Nachbar-Caches von {{count}} Geräten; zuletzt bestätigt {{when}}"
   }
 }
