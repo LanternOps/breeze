@@ -7,7 +7,7 @@ test('processing fees display and save through the actual Payments page',async({
     remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
     reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'}};
   let saved:Record<string,unknown>|null=null;
-  await page.route('**/partner/billing/payment-settings',async route=>{
+  await page.route(/\/api\/v1\/partner\/billing\/payment-settings(\?.*)?$/,async route=>{
     if(route.request().method()==='PUT'){saved=route.request().postDataJSON();await route.fulfill({json:{success:true}});return;}
     await route.fulfill({json:{autopayEnabled:true,effective,inherited:effective,values:{autopayOffsetDays:null,autopayOffsetRule:null,
       autopayCapEnabled:null,autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null}}});
