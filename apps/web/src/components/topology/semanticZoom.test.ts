@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, summarySlot } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('switches to summaries below the enter zoom and back to tiles above the exit zoom', () => {
@@ -91,5 +91,19 @@ describe('summarySlot', () => {
     expect(summarySlot({ x1: 100, y1: 50, x2: 900, y2: 600 }, 1200, 700)).toEqual({ x: 100, y: 50, width: 800, height: 550 });
     expect(summarySlot({ x1: -200, y1: -300, x2: 900, y2: 600 }, 1200, 700)).toEqual({ x: 0, y: 0, width: 900, height: 600 });
     expect(summarySlot({ x1: 1300, y1: 50, x2: 1500, y2: 600 }, 1200, 700)).toBeNull();
+  });
+});
+
+describe('chipModes', () => {
+  const chip = (id: string, x: number, nodeW = 240, fullW = 170, compactW = 110) => ({ id, x, y: 100, nodeW, nodeH: nodeW / 4, fullW, compactW });
+  it('shows full chips when nodes draw large enough and nothing collides', () => {
+    expect(chipModes([chip('a', 100), chip('b', 600)])).toEqual(new Map([['a', 'full'], ['b', 'full']]));
+  });
+  it('uses the compact chip (icon and address) when the node draws very small', () => {
+    expect(chipModes([chip('a', 100, 36), chip('b', 600, 36)]).get('a')).toBe('compact');
+  });
+  it('steps colliding chips down until they no longer overlap: compact, then icon only', () => {
+    expect(chipModes([chip('a', 100, 36), chip('b', 230, 36)])).toEqual(new Map([['a', 'compact'], ['b', 'compact']]));
+    expect(chipModes([chip('a', 100, 36), chip('b', 160, 36)])).toEqual(new Map([['a', 'icon'], ['b', 'icon']]));
   });
 });

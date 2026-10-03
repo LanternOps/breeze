@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { canvasFillHeight, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type ZoomTier } from './semanticZoom';
+import { canvasFillHeight, chipModes, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 import NodeChipOverlay, { type NodeChip } from './NodeChipOverlay';
 
@@ -43,6 +43,12 @@ function clipToWidth(text: string, width: number, font: string): string {
   while (low < high) { const mid = Math.ceil((low + high) / 2); if (context.measureText(`${text.slice(0, mid)}…`).width <= width) low = mid; else high = mid - 1; }
   return `${text.slice(0, low).trimEnd()}…`;
 }
+const textWidth = (text: string, font: string) => {
+  if (measureContext === undefined) clipToWidth('', 0, font);
+  if (!measureContext) return text.length * 7;
+  measureContext.font = font;
+  return Math.ceil(measureContext.measureText(text).width);
+};
 /** Tile text starts after the glyph (12px inset + 30px glyph + 12px gap), left-aligned in every tile. */
 const TEXT_INSET = 54;
 /** Right padding of tile text; with TEXT_INSET it matches the measurement tile (pl-[54px] pr-[14px]). */
@@ -273,14 +279,23 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           if (panel) panel.style.transform = `scale(${summaryScale(panel.offsetWidth, panel.offsetHeight, slot.width, slot.height)})`;
         });
         // Each chip sits centred on its node and at least as large as it, so the node's edges meet the chip.
-        chipLayer.current?.querySelectorAll<HTMLElement>('[data-node-id]').forEach((box) => {
+        // Chips step down (full → compact → icon) when the node draws small or two chips would overlap (chipModes).
+        const family = fontFamily(), boxes = [...(chipLayer.current?.querySelectorAll<HTMLElement>('[data-node-id]') ?? [])];
+        const placed = boxes.flatMap((box) => {
           const node = renderer.getElementById(box.dataset.nodeId!);
-          if (!node.length) { box.style.display = 'none'; return; }
+          if (!node.length) { box.style.display = 'none'; return []; }
           const bb = node.renderedBoundingBox({ includeLabels: false });
-          box.style.display = '';
-          box.style.transform = `translate(${(bb.x1 + bb.x2) / 2}px, ${(bb.y1 + bb.y2) / 2}px) translate(-50%, -50%)`;
-          box.style.minWidth = `${bb.w}px`; box.style.minHeight = `${bb.h}px`;
+          const title = textWidth(box.dataset.title ?? '', `600 13px ${family}`), detail = textWidth(box.dataset.detail ?? '', `400 11px ${family}`);
+          return [{ box, chip: { id: box.dataset.nodeId!, x: (bb.x1 + bb.x2) / 2, y: (bb.y1 + bb.y2) / 2, nodeW: bb.w, nodeH: bb.h,
+            fullW: 52 + Math.max(title, detail), compactW: 52 + title } }];
         });
+        const modes = chipModes(placed.map(({ chip }) => chip));
+        for (const { box, chip } of placed) {
+          box.style.display = '';
+          box.style.transform = `translate(${chip.x}px, ${chip.y}px) translate(-50%, -50%)`;
+          box.style.minWidth = `${chip.nodeW}px`; box.style.minHeight = `${chip.nodeH}px`;
+          box.dataset.mode = modes.get(chip.id);
+        }
         placeAnchors();
       }
       const off = outsideRef.current.filter((id) => {
