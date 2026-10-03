@@ -5,7 +5,7 @@ import { findOverlaps } from './layoutFixtures';
 import type { LayoutBox, LayoutRequest, LayoutResult } from './layoutTypes';
 import { SECTION_BAND } from './cardSections';
 
-/** A Whalers-shaped site: one gateway, one LAN card with 30 devices, a small second LAN, an unidentified card and one ungrouped device. */
+/** A large-site shape: one gateway, one LAN card with 30 devices, a small second LAN, an unidentified card and one ungrouped device. */
 function groupedRequest(mode: LayoutRequest['mode'] = 'reflow', positions: LayoutRequest['positions'] = []): LayoutRequest {
   const tile = (id: string, groupId: string, rank = 3): LayoutBox => ({ id, width: 208, height: 60, role: 'device', groupId, rank, name: id });
   const nodes: LayoutBox[] = [
@@ -67,7 +67,7 @@ describe('grouped two-stage layout', () => {
   });
 
   it('puts the primary (largest) network first, with smaller networks beside it', async () => {
-    // Harbor Dental / prod Whalers shape: a big LAN via one gateway, a 3-device LAN via its own gateway
+    // Harbor Dental demo shape: a big LAN via one gateway, a 3-device LAN via its own gateway
     // whose ids sort first, and a VPN gateway one big-LAN member routes to.
     const tile = (id: string, groupId: string): LayoutBox => ({ id, width: 208, height: 60, role: 'device', groupId, section: 2, rank: 3, name: id });
     const request: LayoutRequest = { requestId: 'r', graphRevision: '1', layoutRevision: '0', measurementRevision: 'm', algorithmVersion: 'v', mode: 'reflow', positions: [],
@@ -121,7 +121,7 @@ describe('grouped two-stage layout', () => {
     expect(findOverlaps(result, request)).toEqual([]);
   });
 
-  it('turns a pile of legacy member pins into a readable grid (Whalers: 37 pins on one card)', async () => {
+  it('turns a pile of legacy member pins into a readable grid (37 pins on one card)', async () => {
     const pile = Array.from({ length: 20 }, (_, i) => ({ nodeId: `pc-${String(i).padStart(2, '0')}`, x: 100 + (i % 4) * 30, y: 100 + (i % 5) * 20, pinned: true }));
     const request = groupedRequest('incremental', pile);
     const result = await computeTopologyLayout(request, new ELK());

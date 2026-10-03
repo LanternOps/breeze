@@ -176,7 +176,7 @@ describe('compileTopologyRender', () => {
   });
 
   describe('site framing and links between networks', () => {
-    /** Main LAN (two PCs + FW-01) and a small second LAN via 10.1.5.1, as in prod Whalers. */
+    /** Main LAN (two PCs + FW-01) and a small second LAN via 10.1.5.1, as on a measured production site. */
     function twoLans({ fwAddresses = ['10.1.2.1'], extraRelationships = [] as GraphRelationship[] } = {}) {
       const [a, b, fw, c, gw] = [61, 62, 63, 64, 65].map(id);
       const inv = (name: string, addresses: string[]) => ({ inventory: { source: 'device' as const, name, addresses, mac: null, vendor: null, model: null, os: null, type: 'workstation',
