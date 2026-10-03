@@ -7,7 +7,7 @@ import { retryAt } from './retryDates';
 import { enqueueAttemptNotice, notifyPaymentAttention } from './paymentNotices';
 import { resolveMergedOrgIds } from '../orgMergeProvenance';
 import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
-import { collectionFenced, finalizeInvoiceControl, pendingInvoiceControl } from './collectionControl';
+import { collectionFenced, finalizeInvoiceControl, isControllableSchedule, pendingInvoiceControl } from './collectionControl';
 import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments, orgPaymentMethods,
@@ -375,14 +375,13 @@ async function validateIntent(data: AttemptHistory, pi: Stripe.PaymentIntent): P
 async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
   schedule: typeof invoiceAutopaySchedules.$inferSelect | undefined, enrollment: Enrollment | undefined,
   reason: string | null): Promise<void> {
-  if (!schedule) return;
+  if (!schedule || !isControllableSchedule(schedule.state)) return;
   const [reserving] = await db.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
     .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
   if (reserving) return;
   const pending = pendingInvoiceControl(schedule.stateReason);
-  // A client attempt may coexist with terminal schedule history. Its pending
-  // control still needs finalization in the transaction releasing the attempt.
+  // Finalize only the live schedule; terminal history is preserved above.
   if (pending === 'skip' || pending === 'exclude') {
     await finalizeInvoiceControl(db, invoice, schedule, pending);
     return;
@@ -392,7 +391,6 @@ async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     return;
   }
-  if (['succeeded', 'failed'].includes(schedule.state)) return;
   const control = pending
     ?? (schedule.mspExcludedAt || invoice.autopayExcluded ? 'exclude'
       : schedule.clientSkippedAt ? 'skip' : enrollment?.status !== 'active' ? 'stop' : null);

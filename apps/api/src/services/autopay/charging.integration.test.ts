@@ -1,6 +1,6 @@
 import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext, withDbAccessContext, hasDbAccessContext } from '../../db';
 import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
@@ -15,11 +15,10 @@ import {ingestStripeFinancialEvent,processPendingStripeFinancialEvents,processPe
 import {enqueueAutopayNotice} from './chargingNotice';
 import { createInvoicePayLink } from '../invoiceCheckout';
 const provider = vi.hoisted(() => ({ create: vi.fn(), retrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(),
-  setupRetrieve: vi.fn(), mandateRetrieve: vi.fn(), eventList: vi.fn(), sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn(), methodRetrieve:vi.fn(),methodDetach:vi.fn() }));
-vi.mock('../partnerStripe', async importOriginal => ({
-  ...(await importOriginal<typeof import('../partnerStripe')>()),
-  getPartnerStripeClient: vi.fn(async () => ({ stripeAccountId: 'acct_autopay_test', defaultCurrency: 'USD',
-    stripe: { setupIntents: {retrieve: provider.setupRetrieve}, mandates: {retrieve: provider.mandateRetrieve}, events: {list: provider.eventList}, paymentMethods:{retrieve:provider.methodRetrieve,detach:provider.methodDetach}, paymentIntents: { create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
+  accountRetrieve: vi.fn(), probeUpdate: vi.fn(), setupRetrieve: vi.fn(), mandateRetrieve: vi.fn(), eventList: vi.fn(), sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn(), methodRetrieve:vi.fn(),methodDetach:vi.fn() }));
+vi.mock('../partnerStripeClient', () => ({
+  getPartnerStripeClient: vi.fn(async (partnerId: string, options?: {reconciliationAccountId?: string}) => ({ stripeAccountId: options?.reconciliationAccountId ?? accountsByPartner.get(partnerId) ?? 'acct_autopay_test', defaultCurrency: 'USD',
+    stripe: { accounts: {retrieve: provider.accountRetrieve}, customers: {update: provider.probeUpdate}, setupIntents: {update: provider.probeUpdate, retrieve: provider.setupRetrieve}, mandates: {retrieve: provider.mandateRetrieve}, events: {list: provider.eventList}, paymentMethods:{update: provider.probeUpdate, retrieve:provider.methodRetrieve,detach:provider.methodDetach}, paymentIntents: { update: provider.probeUpdate, create: provider.create, retrieve: provider.retrieve, confirm: provider.confirm, cancel: provider.cancel },
       checkout: { sessions: { create: provider.sessionCreate, expire: provider.sessionExpire, retrieve: provider.sessionRetrieve } } } })),
 }));
 vi.mock('../invoiceEvents', () => ({ emitInvoiceEvent: vi.fn() }));
@@ -28,10 +27,13 @@ vi.mock('../../jobs/accountingSyncWorker', () => ({ enqueueAccountingInvoicePush
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn() }));
 let currentPi: any;
 const intentsByKey = new Map<string, any>();
+const accountsByPartner = new Map<string, string>();
+afterEach(() => vi.useRealTimers());
 beforeEach(() => {
   vi.stubEnv('ORG_MERGE_FENCE_DRAIN_MS', '0');
   vi.resetAllMocks();
   intentsByKey.clear();
+  accountsByPartner.clear();
   provider.create.mockImplementation(async (params, options) => {
     expect(hasDbAccessContext()).toBe(false);
     if (!intentsByKey.has(options.idempotencyKey)) {
@@ -58,14 +60,15 @@ beforeEach(() => {
   provider.methodDetach.mockResolvedValue({customer:null});
   currentPi = null;
 });
-async function fixture() {
+async function fixture(accountId = 'acct_autopay_test') {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
+    accountsByPartner.set(partner.id, accountId);
     const org = await createOrganization({ partnerId: partner.id });
     await db.update(organizations).set({ billingContact: {email: 'billing@example.test'} }).where(eq(organizations.id, org.id));
     await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, partner.id));
     const [connection] = await db.insert(stripeConnectAccounts).values({ partnerId: partner.id,
-      stripeAccountId: 'acct_autopay_test', status: 'connected', accountCountry: 'US', defaultCurrency: 'USD',
+      stripeAccountId: accountId, status: 'connected', accountCountry: 'US', defaultCurrency: 'USD',
       keyLast4: 'only', apiKey: encryptSecret(['sk','test','fixture_only'].join('_')), autopayMissingPermissions: [],
       autopayCapabilitiesCheckedAt: new Date() }).returning();
     const [enrollment] = await db.insert(orgAutopayEnrollments).values({ orgId: org.id, partnerId: partner.id,
@@ -154,19 +157,6 @@ it('preserves captured money as unapplied after an out-of-band void', async () =
   const [mapping] = await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments)
     .where(eq(invoiceStripePayments.invoiceId,f.invoice.id)));
   expect(mapping!.invoicePaymentId).toBeNull();
-});
-it('does not confirm when a late payment closes the invoice after reservation',async()=>{
-  const f=await fixture();const normal=provider.create.getMockImplementation()!;
-  provider.create.mockImplementationOnce(async(...args)=>{
-    const pi=await normal(...args);
-    // Model the ledger state committed by an older provider-success replay under its invoice lock.
-    await withSystemDbAccessContext(()=>db.update(invoices).set({status:'paid',amountPaid:'100.00',balance:'0.00'})
-      .where(eq(invoices.id,f.invoice.id)));
-    return pi;
-  });
-  await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy:'scheduler'});
-  expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).toHaveBeenCalledTimes(1);
-  expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
 });
 it('does not confirm an old enrollment generation after create', async () => {
   const f = await fixture();
@@ -296,11 +286,13 @@ function barrier() {
   const wait = new Promise<void>(resolve => { release = resolve; });
   return { wait, release };
 }
-async function blockedBy(pid: number) {
+async function blockedBy(pid: number, count = 1) {
   await vi.waitFor(async () => {
-    const rows = await getTestDb().execute(sql`select pid from pg_stat_activity
-      where ${pid} = any(pg_blocking_pids(pid)) and wait_event_type = 'Lock'`);
-    expect(rows.length).toBeGreaterThan(0);
+    const rows = await getTestDb().execute(sql`with recursive waiters(pid) as (
+      select ${pid}::int union select a.pid from pg_stat_activity a join waiters w
+      on w.pid = any(pg_blocking_pids(a.pid)) where a.wait_event_type = 'Lock'
+    ) select pid from waiters where pid <> ${pid}`);
+    expect(rows.length).toBeGreaterThanOrEqual(count);
   }, { timeout: 5000, interval: 20 });
 }
 
@@ -321,9 +313,10 @@ it('manual-first holds the invoice lock; the losing collector never creates or c
   await blockedBy(pid);
   const collect = attemptCollection(inputFor(f));
   try {
-    await blockedBy(pid);
+    // Both manual and collector must be waiting before the holder releases.
+    await blockedBy(pid, 2);
     expect(provider.create).not.toHaveBeenCalled();
-  } finally { release.release(); await holder; await manual; }
+  } finally { release.release(); await holder; await manual; await collect; }
   expect(await collect).toMatchObject({outcome: 'refused', reason: 'not_payable'});
   expect(provider.create).not.toHaveBeenCalled();
   expect(provider.confirm).not.toHaveBeenCalled();
@@ -371,21 +364,20 @@ it.each(['observe', 'enforce'])('rechecks Checkout inserted after revocation in 
   } finally { vi.unstubAllEnvs(); }
 });
 
-it.each(['invoice', 'org'])('refuses a schedule owned by a different %s', async ownership => {
+it.each(['invoice', 'org'] as const)('refuses an otherwise collectible schedule owned by a different %s', async ownership => {
   const f = await fixture();
-  const otherOrg = ownership === 'org' ? await createOrganization({partnerId: f.partner.id}) : f.org;
-  const [otherInvoice] = await withSystemDbAccessContext(() => db.insert(invoices).values({
-    orgId: otherOrg.id, partnerId: f.partner.id, currencyCode: 'USD', status: 'sent', total: '100.00', balance: '100.00',
-  }).returning());
-  const [foreign] = await withSystemDbAccessContext(() => db.insert(invoiceAutopaySchedules).values({
-    orgId: otherOrg.id, invoiceId: otherInvoice!.id, termsSnapshot: {}, enrollmentGeneration: 1, eligible: false, state: 'not_needed', ineligibleReason: 'not_enrolled',
-  }).returning());
-  expect(await reserveCollection({...inputFor(f), scheduleId: foreign!.id})).toMatchObject({outcome: 'refused', reason: 'schedule_inactive'});
+  const foreign = ownership === 'org' ? await fixture(`acct_foreign_${randomUUID()}`) : await siblingInvoice(f);
+  expect(await reserveCollection({...inputFor(f), scheduleId: foreign.schedule.id}))
+    .toMatchObject({outcome: 'refused', reason: 'schedule_inactive'});
   expect(await attempts(f.invoice.id)).toHaveLength(0);
   expect(provider.create).not.toHaveBeenCalled();
+  // Each schedule independently collects when paired with its actual invoice.
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome: 'created'});
+  expect(await attemptCollection(inputFor(foreign))).toMatchObject({outcome: 'created'});
+  expect(intentsByKey.size).toBe(2);
 });
 
-it.each(['skip', 'exclude', 'stop'] as const)('%s finalizes immediately and fences scheduler, charge-now, and client producers', async kind => {
+it.each(['skip', 'exclude', 'stop'] as const)('%s finalizes immediately and fences scheduler and charge-now producers', async kind => {
   const f = await fixture();
   await withSystemDbAccessContext(async () => {
     if (kind === 'stop') await turnOffAutopay(db, f.actor, f.org.id);
@@ -394,9 +386,9 @@ it.each(['skip', 'exclude', 'stop'] as const)('%s finalizes immediately and fenc
   });
   const schedule = await scheduleFor(f);
   expect(schedule).toMatchObject({state: {skip: 'skipped_by_client', exclude: 'excluded_by_msp', stop: 'cancelled'}[kind], nextAttemptAt: null});
-  for (const initiatedBy of ['scheduler', 'msp_charge_now', 'client_on_session'] as const) {
+  for (const initiatedBy of ['scheduler', 'msp_charge_now'] as const) {
     const result = await attemptCollection({invoiceId: f.invoice.id, initiatedBy,
-      ...(initiatedBy === 'client_on_session' ? {} : {scheduleId: f.schedule.id})});
+      scheduleId: f.schedule.id});
     expect(result.outcome).not.toBe('created');
   }
   expect(await runAutopayCollection()).toMatchObject({attempted: 0});
@@ -439,20 +431,22 @@ it('settles succeeded-during-pending instead of sending a skip confirmation', as
   expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments))).toHaveLength(1);
 });
 
-it.each([22, 24])('unknown create at %s hours replays only inside the 23-hour safety window', async age => {
+it.each([-1, 1])('unknown create at 23 hours %+i ms replays only inside the safety window', async epsilon => {
   const f = await fixture();
   const normal = provider.create.getMockImplementation()!;
   provider.create.mockImplementationOnce(async (...args) => {await normal(...args); throw new Error('lost create');});
   await expect(attemptCollection(inputFor(f))).rejects.toThrow('lost create');
   const [attempt] = await attempts(f.invoice.id);
+  vi.useFakeTimers({toFake: ['Date']});
+  vi.setSystemTime(new Date());
   await withSystemDbAccessContext(async () => {
-    await db.update(invoiceCollectionAttempts).set({createdAt: new Date(Date.now() - age * 3600000)})
+    await db.update(invoiceCollectionAttempts).set({createdAt: new Date(Date.now() - 23 * 3600000 - epsilon)})
       .where(eq(invoiceCollectionAttempts.id, attempt!.id));
     await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'skip', actor: f.actor});
   });
   await reconcilePendingControls(); await reconcilePendingControls();
   const [final] = await attempts(f.invoice.id);
-  if (age < 23) {
+  if (epsilon < 0) {
     expect(final!.state).toBe('canceled');
     expect(provider.create).toHaveBeenCalledTimes(2);
     expect(provider.create.mock.calls[0]![1]).toEqual(provider.create.mock.calls[1]![1]);
@@ -550,7 +544,7 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
       enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 1});
     const [setup] = await db.insert(autopaySetupAttempts).values({
       orgId: f.org.id, partnerId: f.partner.id, enrollmentId: f.enrollment.id, generation: 1,
-      stripeConnectionId: f.connection.id, stripeAccountId: 'acct_autopay_test', stripeCustomerId: 'cus_autopay_test',
+      stripeConnectionId: f.connection.id, stripeAccountId: f.connection.stripeAccountId, stripeCustomerId: 'cus_autopay_test',
       tokenId: token.id, source: 'setup_page', methodType: 'us_bank_account',
       checkoutSessionId: `cs_bank_${suffix}`, setupIntentId: `seti_bank_${suffix}`,
       consentSnapshot: {version: '2026-10-01.v1', text: 'Authorization', hash: 'a'.repeat(64), textHash: 'b'.repeat(64),
@@ -578,7 +572,7 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
     authority: {tokenId: seeded.token.id, invoiceId: f.invoice.id, generation: 1, methodId: saved!.id,
       principal: '100.00', fee: '0.00', currency: 'USD', capture: {setupAttemptId: seeded.setup.id,
         stripePaymentMethodId: method.id, setupIntentId: seeded.setup.setupIntentId!,
-        stripeAccountId: 'acct_autopay_test', stripeCustomerId: 'cus_autopay_test'}}};
+        stripeAccountId: f.connection.stripeAccountId, stripeCustomerId: 'cus_autopay_test'}}};
 }
 function serveBank(setups: Awaited<ReturnType<typeof bankSetup>>[]) {
   provider.sessionRetrieve.mockImplementation(async id => {
@@ -873,4 +867,288 @@ it('Stop includes a schedule-less bank debit in the protected pending notice', a
   expect((notice!.rendered as {text: string}).text).toContain(`invoice ${f.invoice.invoiceNumber} is being cancelled`);
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
+});
+
+async function siblingInvoice(f: Awaited<ReturnType<typeof fixture>>) {
+  return withSystemDbAccessContext(async () => {
+    const [invoice] = await db.insert(invoices).values({...f.invoice, id: randomUUID(), invoiceNumber: `T-${randomUUID()}`}).returning();
+    const [notice] = await db.insert(billingNoticeOutbox).values({...f.notice, id: randomUUID(), invoiceId: invoice!.id, dedupeKey: randomUUID()}).returning();
+    const [schedule] = await db.insert(invoiceAutopaySchedules).values({...f.schedule, id: randomUUID(), invoiceId: invoice!.id, noticeOutboxId: notice!.id}).returning();
+    return {...f, invoice: invoice!, schedule: schedule!, notice: notice!};
+  });
+}
+
+it('Stop preserves every terminal schedule while canceling pending and fencing in-flight invoices', async () => {
+  const f = await fixture();
+  provider.confirm.mockImplementationOnce(async () => {
+    currentPi = {...currentPi, status: 'succeeded', amount_received: 10000}; return currentPi;
+  });
+  await attemptCollection(inputFor(f));
+  const skipped = await siblingInvoice(f);
+  await withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: skipped.invoice.id, kind: 'skip', actor: f.actor}));
+  const history = [f, skipped];
+  for (const state of ['failed', 'excluded_by_msp', 'cancelled', 'not_needed'] as const) {
+    const sibling = await siblingInvoice(f);
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules)
+      .set({state, stateReason: `historical_${state}`}).where(eq(invoiceAutopaySchedules.id, sibling.schedule.id)));
+    history.push(sibling);
+  }
+  const before = await Promise.all(history.map(scheduleFor));
+  const pending = await siblingInvoice(f), inFlight = await siblingInvoice(f);
+  await attemptCollection(inputFor(inFlight));
+  await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
+  expect(await Promise.all(history.map(scheduleFor))).toEqual(before);
+  expect(await scheduleFor(pending)).toMatchObject({state: 'cancelled', stateReason: 'autopay_stopped', nextAttemptAt: null});
+  expect(await scheduleFor(inFlight)).toMatchObject({state: 'collecting', stateReason: 'control_pending:stop'});
+  currentPi = {...currentPi, status: 'canceled'};
+  await reconcilePendingControls();
+  expect(await scheduleFor(inFlight)).toMatchObject({state: 'cancelled'});
+  expect(await Promise.all(history.map(scheduleFor))).toEqual(before);
+});
+
+import { withClientPaymentAuthority } from './clientPaymentAuthority';
+it.each(['skip', 'exclude', 'stop'] as const)('%s refuses valid bank authority that collects without the fence', async kind => {
+  const f = await fixture(); const bank = await bankSetup(f, 'fenced'); serveBank([bank]);
+  const input = {invoiceId: f.invoice.id, initiatedBy: 'client_on_session' as const};
+  // A real setup row, captured method, invoice-bound consent and unconsumed token.
+  await withSystemDbAccessContext(async () => {
+    if (kind === 'stop') await turnOffAutopay(db, f.actor, f.org.id);
+    else await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind, actor: f.actor});
+  });
+  expect(await withClientPaymentAuthority(bank.authority, () => attemptCollection(input)))
+    .toMatchObject({outcome: 'refused', reason: kind === 'stop' ? 'enrollment_inactive' : 'schedule_inactive'});
+  expect(await attempts(f.invoice.id)).toHaveLength(0);
+  expect(provider.create).not.toHaveBeenCalled(); expect(provider.confirm).not.toHaveBeenCalled();
+  // Matched positive control: same setup procedure on an unfenced invoice.
+  const control = await fixture(`acct_control_${randomUUID()}`);
+  const valid = await bankSetup(control, 'control'); serveBank([valid]);
+  expect(await collectAfterBankSetup({invoiceId: control.invoice.id, orgId: control.org.id, setupSessionId: valid.session.id!}))
+    .toMatchObject({outcome: 'created'});
+  expect(provider.create).toHaveBeenCalledTimes(1); expect(provider.confirm).toHaveBeenCalledTimes(1);
+});
+
+it.each(['recovery', 'outcome'] as const)('durable re-notice survives a crash after provider cancellation (%s)', async replay => {
+  const f = await fixture();
+  const create = provider.create.getMockImplementation()!;
+  provider.create.mockImplementationOnce(async (...args) => {
+    const pi = await create(...args);
+    // Real setup completion replaces the rail after reservation but before confirmation.
+    const replacement = await bankSetup(f, 'renotice'); serveBank([replacement]);
+    return pi;
+  });
+  await getTestDb().execute(sql`create function task_l_cancel_crash() returns trigger language plpgsql as $$
+    begin if NEW.state = 'canceled' then raise exception 'crash after provider cancellation'; end if; return NEW; end $$`);
+  await getTestDb().execute(sql`create trigger task_l_cancel_crash before update on invoice_collection_attempts
+    for each row execute function task_l_cancel_crash()`);
+  try {
+    await expect(attemptCollection(inputFor(f))).rejects.toThrow();
+    expect(currentPi.status).toBe('canceled');
+    expect((await attempts(f.invoice.id))[0]!.state).toBe('created');
+    expect(await scheduleFor(f)).toMatchObject({state: 'collecting', stateReason: 'control_pending:renotice'});
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+  } finally {
+    await getTestDb().execute(sql`drop trigger task_l_cancel_crash on invoice_collection_attempts`);
+    await getTestDb().execute(sql`drop function task_l_cancel_crash()`);
+  }
+  const [attempt] = await attempts(f.invoice.id);
+  if (replay === 'recovery') await resumeCollectionAttempt(attempt!.id);
+  else await applyAttemptOutcome(f.partner.id, attempt!.id);
+  const schedule = await scheduleFor(f);
+  expect(schedule).toMatchObject({state: 'awaiting_notice', stateReason: null, noticeSentAt: null,
+    termsSnapshot: expect.objectContaining({methodType: 'us_bank_account', noticeSeq: 2})});
+  expect(schedule.noticeOutboxId).not.toBe(f.notice.id);
+  await resumeCollectionAttempt(attempt!.id); await applyAttemptOutcome(f.partner.id, attempt!.id);
+  expect(await scheduleFor(f)).toEqual(schedule);
+  const notices = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+    .where(eq(billingNoticeOutbox.invoiceId, f.invoice.id)));
+  expect(notices.filter(n => n.kind === 'invoice_autopay' && n.seq === 2)).toHaveLength(1);
+  expect(provider.confirm).not.toHaveBeenCalled(); expect(provider.cancel).toHaveBeenCalledTimes(1);
+  expect(intentsByKey.size).toBe(1);
+});
+
+it.each([
+  ['USD', '0.01', 1], ['USD', '100.01', 10001], ['USD', '9999999999.99', 999999999999],
+  ['JPY', '1.00', 1], ['JPY', '9999999999.00', 9999999999],
+] as const)('preserves %s %s through numeric(12,2), provider minor units and settlement', async (currency, amount, minor) => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoices).set({currencyCode: currency, total: amount, balance: amount}).where(eq(invoices.id, f.invoice.id));
+    await db.update(invoiceAutopaySchedules).set({termsSnapshot: {...f.schedule.termsSnapshot as object, currency, principal: amount}})
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    const rendered = f.notice.rendered as {frozen: object};
+    await db.update(billingNoticeOutbox).set({rendered: {...rendered, frozen: {...rendered.frozen, amount}}})
+      .where(eq(billingNoticeOutbox.id, f.notice.id));
+  });
+  provider.confirm.mockImplementationOnce(async () => {
+    currentPi = {...currentPi, status: 'succeeded', amount_received: minor}; return currentPi;
+  });
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome: 'created'});
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount: minor, currency: currency.toLowerCase()}), expect.anything());
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({principalAmount: amount, currency, state: 'succeeded'});
+  const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+  expect(invoice).toMatchObject({status: 'paid', amountPaid: amount, balance: '0.00'});
+  const [payment] = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoice.id)));
+  expect(payment!.amount).toBe(amount);
+});
+
+it('Postgres refuses a value above the numeric(12,2) maximum without changing the obligation', async () => {
+  const f = await fixture();
+  await expect(withSystemDbAccessContext(() => db.update(invoices).set({total: '10000000000.00', balance: '10000000000.00'})
+    .where(eq(invoices.id, f.invoice.id)))).rejects.toThrow();
+  const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+  expect(invoice!.balance).toBe('100.00'); expect(provider.create).not.toHaveBeenCalled();
+});
+
+import { savePartnerStripeKey } from '../partnerStripe';
+import { decryptSecret } from '../secretCrypto';
+it('key rotation retains original-account credentials; different-account rotation is refused with unsettled money', async () => {
+  const f = await fixture(); const result = await attemptCollection(inputFor(f));
+  provider.accountRetrieve.mockImplementation(async () => {
+    expect(hasDbAccessContext()).toBe(false);
+    return {id: 'acct_autopay_test', country: 'US', default_currency: 'usd'};
+  });
+  provider.probeUpdate.mockImplementation(async () => {expect(hasDbAccessContext()).toBe(false); return {};});
+  provider.eventList.mockResolvedValue({has_more: false, data: []});
+  const newKey = ['sk', 'test', 'rotation_fixture_only'].join('_');
+  await savePartnerStripeKey({partnerId: f.partner.id, apiKey: newKey, userId: null});
+  const [connection] = await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.id, f.connection.id)));
+  expect(connection!.stripeAccountId).toBe('acct_autopay_test');
+  expect(decryptSecret(connection!.apiKey!)).toBe(newKey);
+  const [mapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, f.invoice.id)));
+  expect(mapping!.revocationCredentialId).toBeTruthy();
+  provider.accountRetrieve.mockResolvedValue({id: 'acct_rotated', country: 'US', default_currency: 'usd'});
+  await expect(savePartnerStripeKey({partnerId: f.partner.id, apiKey: ['sk', 'test', 'other_account_fixture'].join('_'), userId: null}))
+    .rejects.toMatchObject({code: 'STRIPE_ACCOUNT_CHANGE_BLOCKED'});
+  expect((await withSystemDbAccessContext(() => db.select().from(stripeConnectAccounts).where(eq(stripeConnectAccounts.id, f.connection.id))))[0])
+    .toEqual(connection);
+  currentPi = {...currentPi, status: 'succeeded', amount_received: 10000};
+  vi.mocked(getPartnerStripeClient).mockClear();
+  await applyAttemptOutcome(f.partner.id, result.attemptId!);
+  expect(vi.mocked(getPartnerStripeClient)).toHaveBeenCalledWith(f.partner.id, expect.objectContaining({
+    reconciliationAccountId: 'acct_autopay_test', archivedCredentialId: mapping!.revocationCredentialId,
+  }));
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('succeeded');
+  expect(provider.create).toHaveBeenCalledTimes(1);
+});
+
+it.each(['before_confirm', 'after_confirm', 'after_settlement'] as const)(
+  'reconciles real late success versus replacement %s with distinct provider debit accounting', async arrival => {
+    const f = await fixture();
+    const debits = new Map<string, number>();
+    const intent = (id: string) => [...intentsByKey.values()].find(pi => pi.id === id)!;
+    const succeed = (id: string) => {
+      const pi = intent(id);
+      Object.assign(pi, {status: 'succeeded', amount_received: pi.amount, last_payment_error: null});
+      debits.set(id, pi.amount); return pi;
+    };
+    provider.retrieve.mockImplementation(async id => {expect(hasDbAccessContext()).toBe(false); return intent(id);});
+    provider.cancel.mockImplementation(async id => {
+      expect(hasDbAccessContext()).toBe(false);
+      Object.assign(intent(id), {status: 'canceled'}); return intent(id);
+    });
+    provider.confirm.mockImplementationOnce(async id => {
+      expect(hasDbAccessContext()).toBe(false);
+      // Age only the attempt timestamp so the real day-3 retry is due; leave
+      // all reservation, failure, schedule and ledger transitions to the services.
+      await withSystemDbAccessContext(() => db.update(invoiceCollectionAttempts)
+        .set({createdAt: new Date(Date.now() - 4 * 86400000)}).where(eq(invoiceCollectionAttempts.stripePaymentIntentId, id)));
+      Object.assign(intent(id), {status: 'requires_payment_method', last_payment_error: {code: 'card_declined', decline_code: 'insufficient_funds'}});
+      return intent(id);
+    });
+    const old = await attemptCollection(inputFor(f));
+    const oldPi = currentPi.id;
+    expect((await attempts(f.invoice.id))[0]).toMatchObject({state: 'failed', failureClass: 'soft'});
+    expect(await scheduleFor(f)).toMatchObject({state: 'retry_scheduled'});
+    expect(intent(oldPi).status).toBe('canceled'); expect(debits.size).toBe(0);
+    expect((await scheduleFor(f)).nextAttemptAt!.getTime()).toBeLessThan(Date.now());
+    const entered = barrier(), release = barrier();
+    const retrieve = provider.retrieve.getMockImplementation()!;
+    if (arrival === 'before_confirm') {
+      provider.retrieve.mockImplementation(async (...args) => {
+        if (args[0] !== oldPi) {entered.release(); await release.wait;}
+        return retrieve(...args);
+      });
+    }
+    provider.confirm.mockImplementation(async id => {
+      expect(hasDbAccessContext()).toBe(false);
+      if (arrival === 'after_settlement') return succeed(id);
+      Object.assign(intent(id), {status: 'processing'}); return intent(id);
+    });
+    const replacementWork = attemptCollection(inputFor(f));
+    if (arrival === 'before_confirm') {
+      await Promise.race([entered.wait, replacementWork.then(() => {throw new Error('replacement did not reach confirmation barrier');})]);
+      try {
+        succeed(oldPi);
+        await applyAttemptOutcome(f.partner.id, old.attemptId!);
+      } finally {release.release();}
+    }
+    const replacement = await replacementWork;
+    expect(replacement.outcome).toBe('created');
+    const replacementAttempt = (await attempts(f.invoice.id)).find(a => a.id === replacement.attemptId)!;
+    if (arrival !== 'before_confirm') {
+      succeed(oldPi); await applyAttemptOutcome(f.partner.id, old.attemptId!);
+      if (arrival === 'after_confirm') {
+        // The replacement is still unsettled; verified provider cancellation ends it.
+        intent(replacementAttempt.stripePaymentIntentId!).status = 'canceled';
+        await resumeCollectionAttempt(replacement.attemptId!);
+      }
+    }
+    await applyAttemptOutcome(f.partner.id, old.attemptId!);
+    await applyAttemptOutcome(f.partner.id, replacement.attemptId!);
+    expect(intentsByKey.size).toBe(2);
+    expect(provider.create).toHaveBeenCalledTimes(2);
+    expect(provider.confirm).toHaveBeenCalledTimes(arrival === 'before_confirm' ? 1 : 2);
+    const payments = await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, f.invoice.id)));
+    expect(payments).toHaveLength(1); expect(payments[0]!.amount).toBe('100.00');
+    const detail = await withDbAccessContext({scope: 'partner', orgId: null, accessibleOrgIds: [f.org.id], accessiblePartnerIds: [f.partner.id]},
+      () => getInvoice(f.invoice.id, f.actor));
+    if (arrival === 'after_settlement') {
+      // An anomalous provider success for a previously verified canceled PI is real
+      // extra money, not a second invoice payment; never hide it in a fake single PI.
+      expect(debits.size).toBe(2);
+      expect([...debits.values()].reduce((sum, amount) => sum + amount, 0)).toBe(20000);
+      expect((await attempts(f.invoice.id)).find(a => a.id === old.attemptId)!.state).toBe('unapplied');
+      expect(detail.unappliedCount).toBe(1);
+      const [mapping] = await withSystemDbAccessContext(() => db.select().from(invoiceStripePayments)
+        .where(eq(invoiceStripePayments.stripeObjectId, oldPi)));
+      expect(mapping!.invoicePaymentId).toBeNull();
+      // Attention survives retries and rollout disablement.
+      await withSystemDbAccessContext(() => db.update(partners).set({autopayEnabled: false}).where(eq(partners.id, f.partner.id)));
+      await resumeCollectionAttempt(old.attemptId!);
+      expect((await attempts(f.invoice.id)).find(a => a.id === old.attemptId)!.state).toBe('unapplied');
+    } else {
+      expect(debits.size).toBe(1); expect([...debits.values()]).toEqual([10000]);
+      expect(detail.unappliedCount).toBe(0);
+      expect((await attempts(f.invoice.id)).find(a => a.id === replacement.attemptId)!.state).toBe('canceled');
+    }
+  });
+
+it.each(['failed', 'skipped_by_client', 'excluded_by_msp', 'cancelled', 'not_needed'] as const)(
+  'exclusion preserves terminal %s schedule history', async state => {
+    const f = await fixture();
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({state, stateReason: 'historical'})
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id)));
+    const before = await scheduleFor(f);
+    expect(await withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'exclude', actor: f.actor})))
+      .toMatchObject({status: 'excluded'});
+    expect(await scheduleFor(f)).toEqual(before);
+  });
+
+it.each(['exclude', 'stop'] as const)('%s preserves terminal schedule history even with a live bank reservation', async kind => {
+  const f = await fixture(); const bank = await bankSetup(f, 'terminal_control'); serveBank([bank]);
+  await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({state: 'not_needed', stateReason: 'historical'})
+    .where(eq(invoiceAutopaySchedules.id, f.schedule.id)));
+  await collectAfterBankSetup({invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId: bank.session.id!});
+  const before = await scheduleFor(f);
+  expect(before.state).toBe('not_needed');
+  await withSystemDbAccessContext(async () => {
+    if (kind === 'stop') await turnOffAutopay(db, f.actor, f.org.id);
+    else expect(await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind, actor: f.actor})).toMatchObject({status: 'pending'});
+  });
+  expect(await scheduleFor(f)).toEqual(before);
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('processing');
+  currentPi = {...currentPi, status: 'canceled'};
+  await reconcilePendingControls();
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
+  expect(await scheduleFor(f)).toEqual(before);
 });

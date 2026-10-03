@@ -593,7 +593,7 @@ it.each(['recovery', 'outcome'])('replays durable re-notice intent after interru
   expect(h.confirm).not.toHaveBeenCalled();
 });
 
-it.each([true, false])('finalizes exclusion on a failed schedule after cancellation and completes request replay (scheduled=%s)', async scheduled => {
+it.each([true, false])('preserves failed schedule history while exclusion cancels money and completes request replay (scheduled=%s)', async scheduled => {
   recovery(true);
   update(invoiceAutopaySchedules, { state: 'failed', stateReason: 'soft' });
   if (!scheduled) update(invoiceCollectionAttempts, { scheduleId: null, initiatedBy: 'client_on_session' });
@@ -602,10 +602,10 @@ it.each([true, false])('finalizes exclusion on a failed schedule after cancellat
   }));
   await expect(request()).resolves.toEqual({ status: 'pending', control: 'exclude' });
   await expect(request()).resolves.toEqual({ status: 'pending', control: 'exclude' });
-  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'control_pending:exclude' });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'soft' });
   await reconcilePendingControls();
   expect(currentAttempt().state).toBe('canceled');
-  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude' });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'soft' });
   await expect(request()).resolves.toEqual({ status: 'excluded' });
   await reconcilePendingControls();
   await expect(request()).resolves.toEqual({ status: 'excluded' });
@@ -645,17 +645,19 @@ it('retains re-notice intent across cancel timeout even if the original method i
   expect(h.confirm).not.toHaveBeenCalled();
 });
 
-it('finalizes pending exclusion when replaying an already canceled client attempt', async () => {
+it('preserves terminal history with a legacy pending marker while completing exclusion replay', async () => {
   recovery(true);
   update(invoiceCollectionAttempts, { scheduleId: null, state: 'canceled', initiatedBy: 'client_on_session' });
   update(invoices, { autopayExcluded: true });
   update(invoiceAutopaySchedules, { state: 'failed', stateReason: 'control_pending:exclude', mspExcludedAt: new Date() });
   h.piRetrieve.mockResolvedValue({ ...pi, status: 'canceled' });
   await applyAttemptOutcome(invoice.partnerId, attempt.id);
-  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude' });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'control_pending:exclude' });
   const writes = h.writes.length;
   await applyAttemptOutcome(invoice.partnerId, attempt.id);
   expect(h.writes).toHaveLength(writes);
+  await expect(withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: invoice.id, kind: 'exclude',
+    actor: {userId: null, partnerId: invoice.partnerId, accessibleOrgIds: null}}))).resolves.toEqual({status: 'excluded'});
 });
 
 
