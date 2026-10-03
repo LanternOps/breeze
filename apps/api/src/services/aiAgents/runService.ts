@@ -33,7 +33,7 @@ import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import {
-  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
+  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents, type AiBillingSource,
 } from '../aiCostTracker';
 import { WORKSPACE_TOOL_NAMES } from '../workspace/workspaceToolNames';
 import { deploymentRegion } from '../workspace/workspacePaths';
@@ -455,6 +455,13 @@ export type CreateAgentRunOptions = {
    * this flag and calls `enqueue()` after its transaction commits.
    */
   deferEnqueue?: boolean;
+  /**
+   * Called with the funding admission resolved for this run (step 3d), once
+   * the agent's model is known. Lets a caller attach budget/credit denial
+   * detail computed against the SAME funding admission used, instead of
+   * re-resolving it (and risking disagreeing on a pinned offering).
+   */
+  onFundingResolved?: (funding: AiBillingSource) => void;
 };
 
 /**
@@ -1331,6 +1338,7 @@ export async function createAndEnqueueAgentRun(
     return skip('model_unavailable');
   }
   const billingSource = agentModel.resolved.funding;
+  options.onFundingResolved?.(billingSource);
   const admittedOfferingId = agentModel.resolved.offering.id;
 
   // 4. Maintenance windows. Reads partner-wide (org_id NULL) windows, so it has

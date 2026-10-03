@@ -8,11 +8,13 @@
  * explicit manual retry, the auto-research hourly cap, and a denial CODE the
  * panel can render (spec "Error handling": never a silent empty state).
  *
- * PRECONDITION: call from a NON-transactional phase (a self-managed route
- * phase, a worker, or a system context). `ensureResearchAgent` and
- * `createAndEnqueueAgentRun` both open a system DB context, which from inside
- * a held request transaction double-holds the pool (hang at concurrency >= pool
- * size, #2417). Provisioning is deliberately done here, outside admission.
+ * DB CONTEXT: called from inside the route's request `withDbAccessContext`
+ * transaction. Its own reads (source lookup, dedupe, latest run) are therefore
+ * RLS-scoped, which is the tenancy backstop: another org's source is simply
+ * not found. Its inner system-context calls (`ensureResearchAgent`,
+ * `createAndEnqueueAgentRun`) follow the existing POST /ai-agents/:id/runs
+ * precedent, which calls `createAndEnqueueAgentRun` (an `inSystemDbContext`)
+ * from inside the request. Provisioning is done here, before admission.
  */
 import { and, desc, eq, like, sql } from 'drizzle-orm';
 import type { AiAgentRunStatus, ResearchDepth } from '@breeze/shared';
@@ -21,9 +23,7 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { alertCorrelationGroups, alerts, metricAnomalies } from '../../db/schema';
 import { ensureResearchAgent, ResearchBaselineConflictError } from '../aiAgents/researchProvisioning';
 import { createAndEnqueueAgentRun, type AgentRunSkipReason } from '../aiAgents/runService';
-import { checkBudgetDetailed, type AiDenialReason } from '../aiCostTracker';
-import { agentRunModelRole } from '../aiAgents/agentModelRole';
-import { resolveModel } from '../aiModels/resolveModel';
+import { checkBudgetDetailed, type AiBillingSource, type AiDenialReason } from '../aiCostTracker';
 import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { resolveOrgPartnerId } from './catalog';
 
@@ -80,6 +80,8 @@ export async function requestResearch(input: {
   let dedupeKey = base;
   if (latest) {
     if (ACTIVE.has(latest.status)) return { status: 'already_running', runId: latest.id, depth: input.depth };
+    // NOTE: an auto request over a failed/cancelled run also reports already_done
+    // (auto never retries); callers must read the run's status, not trust the label.
     if (latest.status === 'completed' || input.trigger === 'auto') return { status: 'already_done', runId: latest.id, depth: input.depth };
     const [{ value: prior } = { value: 0 }] = await db.select({ value: sql<number>`count(*)::int` }).from(aiAgentRuns)
       .where(and(eq(aiAgentRuns.orgId, input.orgId), like(aiAgentRuns.dedupeKey, `${base}%`)));
@@ -102,18 +104,10 @@ export async function requestResearch(input: {
     throw err;
   }
 
-  // Credit/budget pre-check, so the panel can name the real denial (credits
-  // exhausted vs daily/monthly budget). Funding is what admission itself will
-  // use: the org's resolved `ai_agents` offering (the per-org funding inference
-  // `getLlmBillingSourceForOrg` no longer exists on main, quorum #4). Admission
-  // re-checks the budget authoritatively; this only adds the denial detail.
-  const model = await resolveModel({
-    partnerId, orgId: input.orgId, surface: 'ai_agents', role: agentRunModelRole({ profile: 'remediation_research' }),
-  });
-  if (!model.ok) return denied('model_unavailable', model.message);
-  const denial = await checkBudgetDetailed(input.orgId, model.funding);
-  if (denial) return denied(denial.reason, denial.message);
-
+  // Funding is captured from admission itself (the effective policy's pinned
+  // offering included), never re-resolved here, so the credit/budget denial
+  // detail below cannot disagree with what admission actually used.
+  const funding: { value: AiBillingSource | null } = { value: null };
   const result = await createAndEnqueueAgentRun({
     orgId: input.orgId,
     kind: 'research',
@@ -124,12 +118,19 @@ export async function requestResearch(input: {
     correlationGroupId: target.correlationGroupId ?? undefined,
     dedupeKey,
     triggerRef: { depth: input.depth, sourceType: input.sourceType, sourceId: input.sourceId, requestedByUserId: input.actorUserId },
-  });
+  }, { onFundingResolved: (f) => { funding.value = f; } });
   if (!result.created) {
     if (result.skipped === 'duplicate') {
-      const [dup] = await db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
+      const [dup] = await db.select({ id: aiAgentRuns.id, status: aiAgentRuns.status }).from(aiAgentRuns)
         .where(and(eq(aiAgentRuns.orgId, input.orgId), eq(aiAgentRuns.dedupeKey, dedupeKey))).limit(1);
-      if (dup) return { status: 'already_running', runId: dup.id, depth: input.depth };
+      if (dup) {
+        return { status: ACTIVE.has(dup.status) ? 'already_running' : 'already_done', runId: dup.id, depth: input.depth };
+      }
+    }
+    if (result.skipped === 'org_budget_exceeded' && funding.value) {
+      // Name the real reason (credits exhausted vs daily/monthly budget).
+      const denial = await checkBudgetDetailed(input.orgId, funding.value);
+      if (denial) return denied(denial.reason, denial.message);
     }
     if (result.skipped === 'research_auto_cap') {
       return denied('auto_cap', 'Automatic research has reached its hourly limit for this organization.');

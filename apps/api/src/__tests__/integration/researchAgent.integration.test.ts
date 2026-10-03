@@ -170,7 +170,8 @@ describe('requestResearch (real Postgres)', () => {
       partnerId: null, orgId: w.orgId, kind: 'research', name: 'org override', createdBy: user.id,
     }));
     const result = await request(w.orgId, await w.mkAlert(), 'manual');
-    expect(['started', 'denied']).toContain(result.status);
+    // The org row is a (default-disabled) override, so admission denies agent_disabled; the point is the baseline.
+    expect(result).toMatchObject({ status: 'denied', code: 'agent_disabled' });
     const baseline = await baselineRows(w.partnerId);
     expect(baseline.filter((a) => a.orgId === null)).toHaveLength(1);
   });
@@ -201,5 +202,19 @@ describe('requestResearch (real Postgres)', () => {
     expect(retry.status).toBe('started');
     const again = await request(w.orgId, alertId, 'manual');
     expect(again).toMatchObject({ status: 'already_running' });
+  });
+  it('under an org-scoped request context, another org\'s source is not found', async () => {
+    const a = await orgWithDevice();
+    const b = await orgWithDevice();
+    const aAlert = await a.mkAlert();
+    const ctx: DbAccessContext = {
+      scope: 'organization', orgId: b.orgId, accessibleOrgIds: [b.orgId], accessiblePartnerIds: [b.partnerId], userId: null, currentPartnerId: b.partnerId,
+    };
+    const result = await withDbAccessContext(ctx, () => requestResearch({
+      orgId: b.orgId, sourceType: 'alert', sourceId: aAlert, depth: 'quick', trigger: 'manual', actorUserId: null,
+    }));
+    expect(result).toMatchObject({ status: 'denied', code: 'source_not_found' });
+    const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, a.orgId)));
+    expect(runs).toHaveLength(0);
   });
 });

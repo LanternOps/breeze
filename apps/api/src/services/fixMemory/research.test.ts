@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   rows: [] as unknown[][],
   flag: vi.fn(async () => true), partner: vi.fn(async (): Promise<string | null> => 'p-1'), ensure: vi.fn(async () => ({ agentId: 'ag', created: false })),
-  budget: vi.fn(async (): Promise<unknown> => null), resolve: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, funding: 'platform' })), create: vi.fn(),
+  budget: vi.fn(async (): Promise<unknown> => null), create: vi.fn(),
 }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
@@ -19,7 +19,6 @@ vi.mock('../aiAgents/researchProvisioning', () => {
   return { ensureResearchAgent: h.ensure, ResearchBaselineConflictError };
 });
 vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed: h.budget }));
-vi.mock('../aiModels/resolveModel', () => ({ resolveModel: h.resolve }));
 vi.mock('../aiAgents/runService', () => ({ createAndEnqueueAgentRun: h.create }));
 
 import { requestResearch, researchDedupeBase } from './research';
@@ -33,7 +32,6 @@ describe('requestResearch (Review Focus 3)', () => {
     vi.clearAllMocks();
     h.flag.mockResolvedValue(true);
     h.budget.mockResolvedValue(null);
-    h.resolve.mockResolvedValue({ ok: true, funding: 'platform' });
     h.create.mockResolvedValue({ created: true, run: { id: 'run-1', status: 'queued' } });
   });
 
@@ -45,7 +43,7 @@ describe('requestResearch (Review Focus 3)', () => {
       orgId: 'org-1', kind: 'research', profile: 'remediation_research', triggerKind: 'manual', deviceId: 'd-1', alertId: 'a-1',
       dedupeKey: researchDedupeBase('alert', 'a-1', 'quick'),
       triggerRef: { depth: 'quick', sourceType: 'alert', sourceId: 'a-1', requestedByUserId: 'u-1' },
-    }));
+    }), expect.any(Object));
   });
 
   it('dedupe per (source, depth): a running or completed run is returned, not re-run', async () => {
@@ -59,7 +57,7 @@ describe('requestResearch (Review Focus 3)', () => {
   it('a failed run can be retried once per click (manual only)', async () => {
     h.rows.push(alertDevice, [{ id: 'run-0', status: 'failed' }], [{ value: 1 }]);
     await requestResearch(req());
-    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: `${researchDedupeBase('alert', 'a-1', 'quick')}:retry-1` }));
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: `${researchDedupeBase('alert', 'a-1', 'quick')}:retry-1` }), expect.any(Object));
     h.create.mockClear();
     h.rows.push(alertDevice, [{ id: 'run-0', status: 'failed' }]);
     await expect(requestResearch(req({ trigger: 'auto', actorUserId: null }))).resolves.toMatchObject({ status: 'already_done' });
@@ -70,7 +68,7 @@ describe('requestResearch (Review Focus 3)', () => {
     h.rows.push(alertDevice, []);
     h.create.mockResolvedValueOnce({ created: false, skipped: 'research_auto_cap' });
     await expect(requestResearch(req({ trigger: 'auto', actorUserId: null }))).resolves.toMatchObject({ status: 'denied', code: 'auto_cap' });
-    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ triggerKind: 'alert' }));
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ triggerKind: 'alert' }), expect.any(Object));
   });
 
   it('provisions the research agent BEFORE admission, and resolves no policy itself (Codex finding 5)', async () => {
@@ -79,23 +77,35 @@ describe('requestResearch (Review Focus 3)', () => {
     expect(h.ensure.mock.invocationCallOrder[0]!).toBeLessThan(h.create.mock.invocationCallOrder[0]!);
   });
 
-  it('credits exhausted surfaces the denial code, no run', async () => {
+  it('credits exhausted: admission skips org_budget_exceeded, the denial detail uses the funding ADMISSION resolved (pinned offering), no run', async () => {
     h.budget.mockResolvedValueOnce({ reason: 'credits_exhausted', message: 'You are out of AI credits.', permanent: false });
     h.rows.push(alertDevice, []);
+    // Admission resolves the agent's pinned offering (partner key) and reports it through the callback.
+    h.create.mockImplementationOnce(async (_input: unknown, options?: { onFundingResolved?: (f: string) => void }) => {
+      options?.onFundingResolved?.('partner_key');
+      return { created: false, skipped: 'org_budget_exceeded' };
+    });
     await expect(requestResearch(req())).resolves.toEqual({ status: 'denied', code: 'credits_exhausted', message: 'You are out of AI credits.' });
-    expect(h.create).not.toHaveBeenCalled();
+    expect(h.budget).toHaveBeenCalledWith('org-1', 'partner_key');
   });
 
-  it('credits are checked against the funding of the resolved ai_agents offering; an unresolvable model is model_unavailable, no run', async () => {
-    h.resolve.mockResolvedValueOnce({ ok: true, funding: 'partner_key' });
+  it('a budget skip with no extra detail falls back to the admission skip code', async () => {
     h.rows.push(alertDevice, []);
-    await requestResearch(req());
-    expect(h.budget).toHaveBeenCalledWith('org-1', 'partner_key');
-    h.create.mockClear();
-    h.resolve.mockResolvedValueOnce({ ok: false, reason: 'no_model', message: 'No AI model is available.' });
-    h.rows.push(alertDevice, []);
-    await expect(requestResearch(req())).resolves.toEqual({ status: 'denied', code: 'model_unavailable', message: 'No AI model is available.' });
-    expect(h.create).not.toHaveBeenCalled();
+    h.create.mockImplementationOnce(async (_input: unknown, options?: { onFundingResolved?: (f: string) => void }) => {
+      options?.onFundingResolved?.('platform');
+      return { created: false, skipped: 'org_budget_exceeded' };
+    });
+    await expect(requestResearch(req())).resolves.toMatchObject({ status: 'denied', code: 'org_budget_exceeded' });
+    expect(h.budget).toHaveBeenCalledWith('org-1', 'platform');
+  });
+
+  it('a duplicate admission re-read maps the existing run status (completed -> already_done)', async () => {
+    h.rows.push(alertDevice, [], [{ id: 'run-9', status: 'completed' }]);
+    h.create.mockResolvedValueOnce({ created: false, skipped: 'duplicate' });
+    await expect(requestResearch(req())).resolves.toEqual({ status: 'already_done', runId: 'run-9', depth: 'quick' });
+    h.rows.push(alertDevice, [], [{ id: 'run-9', status: 'queued' }]);
+    h.create.mockResolvedValueOnce({ created: false, skipped: 'duplicate' });
+    await expect(requestResearch(req())).resolves.toEqual({ status: 'already_running', runId: 'run-9', depth: 'quick' });
   });
 
   it('flag off, missing source, and admission skips are explicit denials', async () => {
