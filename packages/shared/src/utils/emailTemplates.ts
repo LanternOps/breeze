@@ -7,6 +7,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'ticket_resolved',
   'quote_send',
   'invoice_send',
+  'invoice_autopay',
   'portal_invite',
   'autopay_request',
   'autopay_enrolled',
@@ -40,7 +41,8 @@ export type EmailTemplateVarKey =
   | 'client_name' | 'setup_link' | 'ach_mode_text' | 'payment_method'
   | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
   | 'expires_on' | 'update_link'
-  | 'amount_due' | 'pay_link' | 'days_overdue';
+  | 'amount_due' | 'pay_link' | 'days_overdue'
+  | 'charge_date' | 'fee_amount' | 'invoice_link';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -97,6 +99,8 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_resolved: [...COMMENT_NOTIFICATION_VARS, 'resolution_note'],
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
+  invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
+    'charge_date', 'payment_method', 'fee_amount', 'invoice_link'],
   portal_invite: PORTAL_INVITE_VARS,
   autopay_request: ['partner_name','org_name','cta_button','client_name','setup_link','ach_mode_text'],
   autopay_enrolled: ['partner_name','org_name','client_name','payment_method','schedule_text','fee_text'],
@@ -114,6 +118,7 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   ticket_resolved: 'Ticket resolved',
   quote_send: 'Quote / proposal',
   invoice_send: 'Invoice',
+  invoice_autopay: 'Invoice with automatic payment notice',
   portal_invite: 'Portal invite',
   autopay_request: 'Automatic payments request',
   autopay_enrolled: 'Automatic payments confirmed',
@@ -131,6 +136,7 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   ticket_resolved: true,
   quote_send: true,
   invoice_send: true,
+  invoice_autopay: true,
   portal_invite: true,
   autopay_request: true,
   autopay_enrolled: false,
@@ -206,6 +212,11 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>Use the button above to review the full proposal and accept it online.</p>
 <p>This proposal is valid until <strong>{{expiry_date}}</strong>.</p>
 <p>If you have any questions or would like to adjust anything, we're happy to help. We look forward to working with you.</p>`,
+  },
+  invoice_autopay: {
+    subject: 'Invoice {{invoice_number}} — automatic payment notice',
+    heading: 'Your invoice is ready', buttonLabel: 'View invoice',
+    html: '<p>{{amount_due}} is due on {{due_date}}. We will initiate payment on or around {{charge_date}} using {{payment_method}}. Processing fee: {{fee_amount}}.</p>',
   },
   invoice_send: {
     subject: 'Invoice {{invoice_number}} from {{partner_name}}',

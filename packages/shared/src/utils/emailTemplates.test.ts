@@ -16,6 +16,7 @@ describe('email template catalog', () => {
       'ticket_resolved',
       'quote_send',
       'invoice_send',
+      'invoice_autopay',
       'portal_invite',
       'autopay_request',
       'autopay_enrolled',
@@ -51,9 +52,9 @@ describe('email template catalog', () => {
     ]);
   });
 
-  it('cta_button is insertable on every template that has a CTA, and never on autoresponse', () => {
+  it('cta_button is insertable on CTA templates except the closed invoice autopay contract', () => {
     for (const id of EMAIL_TEMPLATE_IDS) {
-      if (emailTemplateHasCta(id)) expect(varsForEmailTemplate(id)).toContain('cta_button');
+      if (emailTemplateHasCta(id) && id !== 'invoice_autopay') expect(varsForEmailTemplate(id)).toContain('cta_button');
       else expect(varsForEmailTemplate(id)).not.toContain('cta_button');
     }
   });
@@ -208,4 +209,12 @@ it.each([
   expect(emailTemplateHasCta(id)).toBe(true);
   expect(emailTemplateFieldDefaults(id).html).toContain('{{amount_due}}');
   expect(emailTemplateFieldDefaults(id).html).not.toContain('PDF');
+});
+
+it('pins the invoice autopay variable contract', () => {
+  expect(EMAIL_TEMPLATE_IDS).toContain('invoice_autopay');
+  expect(varsForEmailTemplate('invoice_autopay')).toEqual([
+    'org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
+    'charge_date', 'payment_method', 'fee_amount', 'invoice_link',
+  ]);
 });
