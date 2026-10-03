@@ -11,7 +11,7 @@ import { emitRemediationSuggestionFeedback } from '../services/mlFeedbackEmitter
 import { generateRemediationSuggestions } from '../services/remediationSuggestions';
 import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { executeScriptOnDevices } from '../services/scriptExecution';
-import { requestResearch, researchStatusForSource } from '../services/fixMemory/research';
+import { requestResearch, researchSourceDeviceId, researchStatusForSource } from '../services/fixMemory/research';
 import { lookupFixes } from '../services/fixMemory/lookup';
 import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
@@ -62,10 +62,11 @@ const sourceQuerySchema = z.object({
 });
 // Denial code -> HTTP status. The code itself always reaches the client verbatim
 // (the panel switches on it); anything not listed is a 409 "can't start now".
-const DENIAL_STATUS: Record<string, 402 | 403 | 404> = {
+const DENIAL_STATUS: Record<string, 402 | 403 | 404 | 503> = {
   credits_exhausted: 402, daily_budget: 402, monthly_budget: 402,
   plan_gate: 403, ai_disabled: 403, flag_off: 403, permission: 403,
   source_not_found: 404,
+  research_unavailable: 503,
 };
 
 /** The org a research/memory request targets, or null when the caller cannot act on it. */
@@ -429,6 +430,20 @@ async function resolveSiteAllowedDeviceIds(
     .map((device) => device.id);
 }
 
+/** Site-limited callers may not act on (or read run state of) a research source whose device is outside their sites. */
+async function researchSourceSiteAllowed(
+  orgId: string,
+  sourceType: 'alert' | 'anomaly' | 'correlation',
+  sourceId: string,
+  perms: UserPermissions | undefined,
+): Promise<boolean> {
+  if (!perms?.allowedSiteIds) return true;
+  const source = await researchSourceDeviceId({ orgId, sourceType, sourceId });
+  // Unknown source / no device: nothing site-scoped to protect; downstream answers not-found / no_device.
+  if (!source?.deviceId) return true;
+  return siteAllowedForSuggestion({ deviceId: source.deviceId }, perms);
+}
+
 async function filterSiteAllowedSuggestions<T extends typeof remediationSuggestions.$inferSelect>(
   rows: T[],
   perms: UserPermissions | undefined,
@@ -685,6 +700,13 @@ remediationSuggestionRoutes.post(
       return c.json({ error: 'Organization not found or access denied' }, 403);
     }
 
+    if (input.sourceType !== 'rca') {
+      const researchOrgId = resolveOrgForSource(auth, input.orgId);
+      if (researchOrgId && !(await researchSourceSiteAllowed(researchOrgId, input.sourceType, input.sourceId, perms))) {
+        return c.json({ error: 'Suggestion source not found' }, 404);
+      }
+    }
+
     const result = await generateRemediationSuggestions({
       ...input,
       actorUserId: auth.user.id,
@@ -728,6 +750,9 @@ remediationSuggestionRoutes.post(
     if (!orgId) {
       return c.json({ error: body.orgId ? 'Organization not found or access denied' : 'Select an organization.' }, body.orgId ? 403 : 400);
     }
+    if (!(await researchSourceSiteAllowed(orgId, body.sourceType, body.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ error: 'The alert or anomaly no longer exists.', code: 'source_not_found' }, 404);
+    }
     // requestResearch runs under this request's RLS context: a source from another org is simply not found.
     const result = await requestResearch({
       orgId, sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
@@ -758,6 +783,9 @@ remediationSuggestionRoutes.get(
     const q = c.req.valid('query');
     const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
     if (!orgId) return c.json({ data: null });
+    if (!(await researchSourceSiteAllowed(orgId, q.sourceType, q.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ data: null });
+    }
     return c.json({ data: await researchStatusForSource({ orgId, sourceType: q.sourceType, sourceId: q.sourceId }) });
   }
 );
@@ -772,6 +800,9 @@ remediationSuggestionRoutes.get(
   async (c) => {
     const q = c.req.valid('query');
     const orgId = resolveOrgForSource(c.get('auth'), q.orgId);
+    if (orgId && !(await researchSourceSiteAllowed(orgId, q.sourceType, q.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ data: { proven: [], similar: [] } });
+    }
     const ref = sourceRefFor({ sourceType: q.sourceType, sourceId: q.sourceId });
     const resolved = orgId && ref ? await signatureForSource(ref) : null;
     const partnerId = orgId ? await resolveOrgPartnerId(orgId) : null;
@@ -787,7 +818,9 @@ remediationSuggestionRoutes.get(
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
   async (c) => {
     const auth = c.get('auth');
-    const conditions: SQL[] = [eq(remediationSuggestions.id, c.req.param('id') ?? '')];
+    const id = c.req.param('id') ?? '';
+    if (!z.string().uuid().safeParse(id).success) return c.json({ error: 'Suggestion not found' }, 404);
+    const conditions: SQL[] = [eq(remediationSuggestions.id, id)];
     const orgCond = auth.orgCondition(remediationSuggestions.orgId);
     if (orgCond) conditions.push(orgCond);
     const [row] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);

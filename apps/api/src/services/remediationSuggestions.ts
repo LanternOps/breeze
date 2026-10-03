@@ -9,6 +9,7 @@ import {
 } from '../db/schema';
 import { attachProvenFixes } from './fixMemory/attach';
 import { requestResearch, type ResearchRequestResult } from './fixMemory/research';
+import { captureException } from './sentry';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 
 export const REMEDIATION_SUGGESTION_VERSION = 'remediation-suggestions-v1';
@@ -159,14 +160,23 @@ export async function generateRemediationSuggestions(
   if (input.sourceType === 'rca') {
     research = null;
   } else if (input.allowResearch) {
-    research = await requestResearch({
-      orgId: ctx.orgId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      depth: 'quick',
-      trigger: 'manual',
-      actorUserId: input.actorUserId ?? null,
-    });
+    // Memory already attached above; a research failure must never take it down.
+    try {
+      research = await requestResearch({
+        orgId: ctx.orgId,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        depth: 'quick',
+        trigger: 'manual',
+        actorUserId: input.actorUserId ?? null,
+      });
+    } catch (error) {
+      console.error('[remediationSuggestions] quick research failed to start', { orgId: ctx.orgId, sourceId: input.sourceId, error });
+      captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+        component: 'remediationSuggestions.generateResearch', orgId: ctx.orgId, sourceType: input.sourceType, sourceId: input.sourceId,
+      });
+      research = { status: 'denied', code: 'research_unavailable', message: 'Research could not be started right now. Proven fixes are still shown.' };
+    }
   } else {
     research = { status: 'denied', code: 'permission', message: 'You need permission to use AI to research fixes.' };
   }

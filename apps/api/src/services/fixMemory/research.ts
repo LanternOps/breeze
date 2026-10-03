@@ -29,7 +29,7 @@ import { resolveOrgPartnerId } from './catalog';
 
 export type ResearchTrigger = 'manual' | 'auto';
 export type ResearchDenialCode =
-  | AiDenialReason | AgentRunSkipReason | 'flag_off' | 'source_not_found' | 'no_device' | 'auto_cap' | 'permission'
+  | AiDenialReason | AgentRunSkipReason | 'flag_off' | 'source_not_found' | 'no_device' | 'auto_cap' | 'permission' | 'research_unavailable'
   | 'research_baseline_not_system_provisioned';
 export type ResearchRequestResult =
   | { status: 'started' | 'already_running' | 'already_done'; runId: string; depth: ResearchDepth }
@@ -59,6 +59,12 @@ async function sourceTarget(orgId: string, sourceType: SourceType, sourceId: str
     .innerJoin(alerts, eq(alerts.id, alertCorrelationGroups.rootAlertId))
     .where(and(eq(alertCorrelationGroups.id, sourceId), eq(alertCorrelationGroups.orgId, orgId))).limit(1);
   return g ? { deviceId: g.deviceId, alertId: g.rootAlertId, correlationGroupId: sourceId } : null;
+}
+
+/** Device of a research source (RLS-scoped, org-filtered), for callers' site-scope checks. null = source not found. */
+export async function researchSourceDeviceId(input: { orgId: string; sourceType: SourceType; sourceId: string }): Promise<{ deviceId: string | null } | null> {
+  const target = await sourceTarget(input.orgId, input.sourceType, input.sourceId);
+  return target ? { deviceId: target.deviceId } : null;
 }
 
 const denied = (code: ResearchDenialCode, message: string): ResearchRequestResult => ({ status: 'denied', code, message });

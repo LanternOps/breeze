@@ -8,6 +8,7 @@ const dbMocks = vi.hoisted(() => ({
   writeRouteAuditMock: vi.fn(),
   generateMock: vi.fn(),
   requestResearchMock: vi.fn(),
+  sourceDeviceMock: vi.fn(),
   researchStatusMock: vi.fn(),
   lookupMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
@@ -111,6 +112,7 @@ vi.mock('../services/remediationSuggestions', () => ({
 vi.mock('../services/fixMemory/research', () => ({
   requestResearch: dbMocks.requestResearchMock,
   researchStatusForSource: dbMocks.researchStatusMock,
+  researchSourceDeviceId: dbMocks.sourceDeviceMock,
 }));
 vi.mock('../services/fixMemory/lookup', () => ({ lookupFixes: dbMocks.lookupMock }));
 vi.mock('../services/fixMemory/signatureLoader', () => ({
@@ -1231,7 +1233,7 @@ describe('research / memory / draft-brief routes', () => {
     ['credits_exhausted', 402], ['daily_budget', 402], ['monthly_budget', 402],
     ['plan_gate', 403], ['ai_disabled', 403], ['flag_off', 403], ['permission', 403],
     ['source_not_found', 404],
-    ['max_concurrent_research_runs', 409], ['research_auto_cap', 409], ['model_unavailable', 409], ['research_baseline_not_system_provisioned', 409],
+    ['max_concurrent_research_runs', 409], ['auto_cap', 409], ['model_unavailable', 409], ['research_unavailable', 503], ['research_baseline_not_system_provisioned', 409],
   ])('POST /research maps denial %s to %i with the code verbatim in the body', async (code, status) => {
     dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'denied', code, message: 'm' });
     const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
@@ -1270,6 +1272,51 @@ describe('research / memory / draft-brief routes', () => {
     expect((await ok.json()).data).toEqual({ brief: 'Clear queue', language: 'powershell', title: baseSuggestion.title });
     mockSuggestionLoad(baseSuggestion);
     expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(400);
+  });
+
+  it('GET /draft-brief 404s a non-uuid id without querying', async () => {
+    expect((await app.request('/remediation-suggestions/not-a-uuid/draft-brief', auth)).status).toBe(404);
+    expect(dbMocks.selectMock).not.toHaveBeenCalled();
+  });
+
+  describe('site-limited user (source device outside allowed sites)', () => {
+    beforeEach(() => {
+      currentPermissions = { permissions: [{ resource: 'ai_sessions', action: 'use' }], allowedSiteIds: ['site-allowed'] };
+      dbMocks.sourceDeviceMock.mockResolvedValue({ deviceId: 'dev-1' });
+      dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-other' }] }) }) });
+    });
+
+    it('POST /research 404s and starts nothing', async () => {
+      const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+      expect(res.status).toBe(404);
+      expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /research reveals no run state', async () => {
+      const res = await app.request(`/remediation-suggestions/research?sourceType=alert&sourceId=${ALERT}`, auth);
+      expect((await res.json()).data).toBeNull();
+      expect(dbMocks.researchStatusMock).not.toHaveBeenCalled();
+    });
+
+    it('GET /memory returns nothing', async () => {
+      const res = await app.request(`/remediation-suggestions/memory?sourceType=alert&sourceId=${ALERT}`, auth);
+      expect((await res.json()).data).toEqual({ proven: [], similar: [] });
+      expect(dbMocks.lookupMock).not.toHaveBeenCalled();
+    });
+
+    it('Generate 404s without generating or researching', async () => {
+      const res = await app.request('/remediation-suggestions/generate', post({ sourceType: 'alert', sourceId: ALERT }));
+      expect(res.status).toBe(404);
+      expect(dbMocks.generateMock).not.toHaveBeenCalled();
+    });
+
+    it('an in-site source still proceeds', async () => {
+      dbMocks.selectMock.mockReset();
+      dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-allowed' }] }) }) });
+      dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'r', depth: 'quick' });
+      const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+      expect(res.status).toBe(202);
+    });
   });
 
   it('GET /draft-brief 404s an unknown suggestion', async () => {

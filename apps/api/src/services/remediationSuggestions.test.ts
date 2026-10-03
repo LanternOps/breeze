@@ -72,6 +72,7 @@ vi.mock('./mlFeatureFlags', () => ({
   shouldProduceMlOutput: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./fixMemory/attach', () => ({ attachProvenFixes: vi.fn(async () => 1) }));
 vi.mock('./fixMemory/research', () => ({
   requestResearch: vi.fn(async () => ({ status: 'started', runId: 'run-1', depth: 'quick' })),
@@ -105,6 +106,14 @@ describe('Generate = memory first, then quick research (keyword matcher retired)
     expect(attachProvenFixes).toHaveBeenCalled();
     expect(requestResearch).not.toHaveBeenCalled();
     expect(out.research).toEqual({ status: 'denied', code: 'permission', message: expect.any(String) });
+  });
+
+  it('a throwing requestResearch still returns Generate with research denied (memory never depends on research)', async () => {
+    vi.mocked(requestResearch).mockRejectedValueOnce(new Error('boom'));
+    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true });
+    expect(attachProvenFixes).toHaveBeenCalled();
+    expect(out.skipped).toBe(false);
+    expect(out.research).toEqual({ status: 'denied', code: 'research_unavailable', message: expect.any(String) });
   });
 
   it('an rca source never starts research', async () => {
