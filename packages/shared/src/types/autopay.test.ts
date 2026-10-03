@@ -58,28 +58,6 @@ it('validates bank consent amounts without a collection binding before reservati
   }
 });
 
-it.each(['individual', 'company'])('preserves the exact persisted collection authority for %s accounts', accountHolderType => {
-  const accepted = { ...bank, collection: { ...collection, accountHolderType } };
-  expect(bankSchema.parse(accepted)).toEqual(accepted);
-});
-
-it.each(['attemptId', 'methodId', 'stripePaymentMethodId', 'setupIntentId', 'accountHolderType'] as const)(
-  'rejects collection authority missing %s', field => {
-    const incomplete: Partial<typeof collection> = { ...collection };
-    delete incomplete[field];
-    expect(bankSchema.safeParse({ ...bank, collection: incomplete }).success).toBe(false);
-  },
-);
-
-it.each([
-  { attemptId: 'invalid' }, { methodId: 'invalid' },
-  { stripePaymentMethodId: '' }, { setupIntentId: '' },
-  { accountHolderType: 'unknown' }, { accountHolderType: null },
-  { extraIdentity: 'unrecognized' },
-])('rejects malformed collection authority %j', patch => {
-  expect(bankSchema.safeParse({ ...bank, collection: { ...collection, ...patch } }).success).toBe(false);
-});
-
-it.each([null, {}, 'invalid'])('rejects an invalid collection binding %j', value => {
-  expect(bankSchema.safeParse({ ...bank, collection: value }).success).toBe(false);
+it('rejects reservation-time mutations of immutable bank consent', () => {
+  expect(bankSchema.safeParse({ ...bank, collection }).success).toBe(false);
 });

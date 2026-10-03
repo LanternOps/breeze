@@ -21,6 +21,8 @@ export default defineConfig({
       'src/db/schema/autopaySetupAttempts.integration.test.ts',
       'src/services/autopay/enrollmentService.integration.test.ts',
       'src/services/autopay/cardExpiryCheck.integration.test.ts',
+      // Charging locks/replay require real PostgreSQL (never the unit DB mocks).
+      'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',

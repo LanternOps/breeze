@@ -97,9 +97,6 @@ export const autopayFeeTermsSchema=z.object({methodType:z.enum(AUTOPAY_PAYMENT_M
 export const bankPaymentConsentSchema=z.object({
  invoiceId:z.string().uuid(),orgId:z.string().uuid(),principal:z.string().regex(/^\d+\.\d{2}$/),
  fee:z.string().regex(/^\d+\.\d{2}$/),currency:z.literal('USD'),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/),
- // Written atomically with reservation; survives request loss and provider-create replay.
- collection:z.object({attemptId:z.string().uuid(),methodId:z.string().uuid(),
-  stripePaymentMethodId:z.string().min(1),setupIntentId:z.string().min(1),accountHolderType:z.enum(['individual','company'])}).strict().optional(),
 }).strict();
 export type BankPaymentConsent=z.infer<typeof bankPaymentConsentSchema>;
 export const autopayConsentSnapshotSchema=z.object({

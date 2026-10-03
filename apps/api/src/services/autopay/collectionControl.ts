@@ -3,7 +3,7 @@ import { assertNoHeldDbContextForStripe } from '../stripeSettle';
 import { and, eq, inArray } from 'drizzle-orm';
 import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
-  organizations, partners, orgAutopayEnrollments } from '../../db/schema';
+  organizations, partners, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
@@ -16,6 +16,41 @@ import type { Tx } from './types';
 export type InvoiceControl = 'skip' | 'exclude';
 export type InvoiceControlResult = { status: 'pending'; control: InvoiceControl }
   | { status: 'skipped' | 'excluded'; staffNotice?: AutopayStaffNotice };
+
+/** Stop uses invoice -> enrollment lock order, as reservation and confirmation do.
+ * Lock all org invoices before changing the enrollment so concurrent producers either
+ * finish reservation first or observe the committed cancellation fence.
+ */
+export async function lockInvoicesForEnrollmentStop(tx: Tx, orgId: string): Promise<void> {
+  await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.orgId, orgId))
+    .orderBy(invoices.id).for('update');
+}
+
+/** Caller holds invoice and enrollment locks; never release an unresolved reservation. */
+export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<string[]> {
+  const schedules = await tx.select().from(invoiceAutopaySchedules)
+    .where(eq(invoiceAutopaySchedules.enrollmentId, enrollmentId)).for('update');
+  for (const schedule of schedules) {
+    const [reserving] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+      .where(and(eq(invoiceCollectionAttempts.invoiceId, schedule.invoiceId),
+        inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
+    await tx.update(invoiceAutopaySchedules).set(reserving
+      ? { stateReason: 'control_pending:stop' }
+      : { state: 'cancelled', stateReason: 'autopay_stopped', nextAttemptAt: null })
+      .where(eq(invoiceAutopaySchedules.id, schedule.id));
+    await tx.update(billingNoticeOutbox).set({ status: 'cancelled' }).where(and(
+      eq(billingNoticeOutbox.invoiceId, schedule.invoiceId), eq(billingNoticeOutbox.kind, 'invoice_autopay'),
+      inArray(billingNoticeOutbox.status, ['pending', 'failed']),
+    ));
+  }
+  // Invoice-bound bank collections can reserve without ever having a schedule.
+  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber }).from(invoiceCollectionAttempts)
+    .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
+    .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
+    .where(and(eq(orgPaymentMethods.enrollmentId, enrollmentId),
+      inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
+  return [...new Set(pending.map(invoice => invoice.number ?? invoice.id))];
+}
 
 /** Shared by all collection producers, including confirmation of an existing PI. */
 export function collectionFenced(input: {

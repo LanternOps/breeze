@@ -228,12 +228,15 @@ export async function reserveCollection(input: CollectionInput)
         .where(eq(autopaySetupAttempts.id, authority.capture.setupAttemptId)).limit(1).for('update');
       const accepted = autopayConsentSnapshotSchema.safeParse(clientSetup?.consentSnapshot);
       const bank = accepted.success ? accepted.data.bankPayment : null;
-      if (!clientSetup || !bank || bank.collection || bank.invoiceId !== invoice.id || bank.orgId !== invoice.orgId
+      if (!clientSetup || !bank || bank.invoiceId !== invoice.id || bank.orgId !== invoice.orgId
         || clientSetup.tokenId !== authority.tokenId || clientSetup.enrollmentId !== enrollment.id
         || clientSetup.generation !== enrollment.generation || clientSetup.outcome !== 'activated'
         || clientSetup.stripeAccountId !== enrollment.stripeAccountId || clientSetup.stripeCustomerId !== enrollment.stripeCustomerId
         || clientSetup.setupIntentId !== method.stripeSetupIntentId || bank.principal !== authority.principal
         || bank.fee !== authority.fee || bank.currency !== authority.currency) return refuse('client_authorization_required');
+      const [used] = await db.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+        .where(eq(invoiceCollectionAttempts.idempotencyKey, `autopay-bankpay:${clientSetup.id}`)).limit(1);
+      if (used) return refuse('client_authorization_used');
       const consumed = await db.update(billingLinkTokens).set({ consumedAt: new Date() }).where(and(
         eq(billingLinkTokens.id, authority.tokenId), eq(billingLinkTokens.orgId, invoice.orgId),
         eq(billingLinkTokens.invoiceId, invoice.id), eq(billingLinkTokens.enrollmentId, enrollment.id),
@@ -247,17 +250,9 @@ export async function reserveCollection(input: CollectionInput)
     const attemptNo = schedule ? schedule.attemptCount + 1 : (ordinal?.n ?? 0) + 1;
     const [attempt] = await db.insert(invoiceCollectionAttempts).values({ orgId: invoice.orgId,
       invoiceId: invoice.id, scheduleId: schedule?.id ?? null, attemptNo, paymentMethodId: method.id,
-      idempotencyKey: schedule ? `autopay_${schedule.id}_${attemptNo}` : `autopay_client_${invoice.id}_${attemptNo}`,
+      idempotencyKey: clientSetup ? `autopay-bankpay:${clientSetup.id}` : schedule ? `autopay_${schedule.id}_${attemptNo}` : `autopay_client_${invoice.id}_${attemptNo}`,
       principalAmount: principal, feeAmount: fromMinorUnits(feeMinor, invoice.currencyCode),
       currency: invoice.currencyCode, state: 'reserved', initiatedBy: input.initiatedBy }).returning();
-    if (clientSetup && authority?.capture) {
-      const snapshot = autopayConsentSnapshotSchema.parse(clientSetup.consentSnapshot);
-      await db.update(autopaySetupAttempts).set({ consentSnapshot: { ...snapshot, bankPayment: {
-        ...snapshot.bankPayment!, collection: { attemptId: attempt!.id, methodId: method.id,
-          stripePaymentMethodId: authority.capture.stripePaymentMethodId, setupIntentId: authority.capture.setupIntentId,
-          accountHolderType: method.accountHolderType! },
-      } } }).where(eq(autopaySetupAttempts.id, clientSetup.id));
-    }
     if (schedule) await db.update(invoiceAutopaySchedules).set({ state: 'collecting', attemptCount: attemptNo })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     return { attempt: attempt! };
@@ -323,9 +318,11 @@ type AttemptHistory = Awaited<ReturnType<typeof loadAttemptForReconciliation>>;
 // verified cancellation and release of every invoice reservation.
 const RENOTICE_PENDING = 'control_pending:renotice';
 
+// PostgreSQL default now() retains microseconds; postgres.js Date values retain
+// milliseconds. Compare at the decoded precision while holding the invoice lock.
 function attemptStateGuard(attempt: typeof invoiceCollectionAttempts.$inferSelect) {
   return and(eq(invoiceCollectionAttempts.id, attempt.id), eq(invoiceCollectionAttempts.state, attempt.state),
-    eq(invoiceCollectionAttempts.updatedAt, attempt.updatedAt));
+    sql`date_trunc('milliseconds', ${invoiceCollectionAttempts.updatedAt}) = ${attempt.updatedAt.toISOString()}::timestamptz`);
 }
 
 async function quarantineUnknownCreate(attemptId: string): Promise<void> {
@@ -419,19 +416,27 @@ async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
 }
 
 async function loadClientCapture(attempt: typeof invoiceCollectionAttempts.$inferSelect) {
+  const prefix = 'autopay-bankpay:';
+  if (!attempt.idempotencyKey.startsWith(prefix) || !attempt.paymentMethodId) return null;
+  const setupId = attempt.idempotencyKey.slice(prefix.length);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(setupId)) return null;
   const [setup] = await db.select().from(autopaySetupAttempts).where(and(
-    eq(autopaySetupAttempts.orgId, attempt.orgId),
-    sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->'collection'->>'attemptId' = ${attempt.id}`,
+    eq(autopaySetupAttempts.orgId, attempt.orgId), eq(autopaySetupAttempts.id, setupId),
   )).limit(1);
+  // The attempt's method FK and unique key hold consumption; accepted consent is immutable.
+  const [method] = await db.select().from(orgPaymentMethods)
+    .where(eq(orgPaymentMethods.id, attempt.paymentMethodId)).limit(1);
   const parsed = autopayConsentSnapshotSchema.safeParse(setup?.consentSnapshot);
   const bank = parsed.success ? parsed.data.bankPayment : null;
-  if (!setup || !bank?.collection || bank.collection.attemptId !== attempt.id || bank.invoiceId !== attempt.invoiceId
-    || bank.orgId !== attempt.orgId || bank.collection.methodId !== attempt.paymentMethodId
-    || bank.collection.setupIntentId !== setup.setupIntentId || bank.currency !== attempt.currency
+  if (!setup || !bank || !method || bank.invoiceId !== attempt.invoiceId || bank.orgId !== attempt.orgId
+    || method.orgId !== attempt.orgId || method.enrollmentId !== setup.enrollmentId
+    || method.type !== 'us_bank_account' || !method.accountHolderType
+    || method.stripeSetupIntentId !== setup.setupIntentId || !setup.setupIntentId || bank.currency !== attempt.currency
     || toMinorUnits(attempt.principalAmount, attempt.currency) > toMinorUnits(bank.principal, bank.currency)
     || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(bank.fee, bank.currency)
     || !setup.stripeCustomerId || setup.outcome !== 'activated') return null;
-  return { setup, bank, collection: bank.collection, snapshot: parsed.data! };
+  return { setup, bank, collection: { methodId: method.id, stripePaymentMethodId: method.stripePaymentMethodId,
+    setupIntentId: setup.setupIntentId, accountHolderType: method.accountHolderType }, snapshot: parsed.data! };
 }
 
 async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent) {

@@ -55,6 +55,8 @@ export async function drainAutopayMethodDetaches(target?: { partnerId: string; m
       SELECT m.id,m.org_id,m.detach_attempts,m.stripe_payment_method_id,e.partner_id,COALESCE(m.detach_stripe_account_id,e.stripe_account_id) AS stripe_account_id,COALESCE(m.detach_stripe_customer_id,e.stripe_customer_id) AS stripe_customer_id
       FROM org_payment_methods m JOIN org_autopay_enrollments e ON e.id=m.enrollment_id AND e.org_id=m.org_id
       WHERE (m.status='removed' OR (m.status='unusable' AND m.removed_at IS NOT NULL AND m.detach_stripe_account_id IS NOT NULL)) AND COALESCE(m.unusable_reason,'') NOT LIKE '%:detached' AND m.detach_failed_at IS NULL AND m.detach_next_attempt_at<=now()
+      AND NOT EXISTS (SELECT 1 FROM invoice_collection_attempts a WHERE a.payment_method_id=m.id
+        AND a.state IN (${sql.join(RESERVING_COLLECTION_ATTEMPT_STATES.map(state => sql`${state}`), sql`, `)}))
       ${target ? sql`AND e.partner_id=${target.partnerId}::uuid AND m.id=${target.methodId}::uuid` : sql``}
       ORDER BY m.detach_next_attempt_at,m.removed_at,m.id LIMIT 100`));
     for (const row of rows as unknown as Array<{id:string;org_id:string;detach_attempts:number;stripe_payment_method_id:string;partner_id:string;stripe_account_id:string;stripe_customer_id:string|null}>) {

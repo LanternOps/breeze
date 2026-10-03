@@ -9,6 +9,7 @@ export type EnrollmentNoticeKind = 'autopay_request' | 'autopay_enrolled' | 'aut
 export interface AutopayNoticeContext {
   partnerId: string; orgId: string; vars: Record<string,string>; ctaUrl?: string;
   scheduleText: string; feeText: string; stopUrl?: string; authorizationReference?: string;
+  processingText?: string;
   openInvoices?: { number: string; amount: string; currency: string; url: string }[];
 }
 const safeUrl = (value: string | undefined): string | null => {
@@ -20,7 +21,7 @@ export async function renderAutopayNotice(kind: EnrollmentNoticeKind, ctx: Autop
   const [partner] = await executor.select({ settings: partners.settings }).from(partners)
     .where(eq(partners.id, ctx.partnerId)).limit(1);
   if (!partner) throw new Error('Partner not found while rendering billing notice');
-  const blocks = [ctx.scheduleText, ctx.feeText, ctx.authorizationReference].filter((x): x is string => !!x);
+  const blocks = [ctx.scheduleText, ctx.feeText, ctx.authorizationReference, ctx.processingText].filter((x): x is string => !!x);
   let append = blocks.map((text) => `<p>${escapeHtml(text)}</p>`).join('');
   const textBlocks = [...blocks];
   const stop = safeUrl(ctx.stopUrl);

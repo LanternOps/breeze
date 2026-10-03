@@ -13,6 +13,7 @@ import {resolveBillingPaymentSettings} from './billingPaymentSettings';
 import {mintBillingLinkToken,revokeBillingLinkTokens,buildBillingLinkUrl,resolveBillingLinkToken} from './linkTokens';
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
+import {lockInvoicesForEnrollmentStop,stopEnrollmentSchedules} from './collectionControl';
 import {getAutopayMethod,detachPaymentMethodPostCommit} from './paymentMethods';
 import {enqueueAutopayStaffNotifications,sendAutopayStaffEmail,type AutopayStaffNotice} from './staffNotifications';
 import {buildAutopayDisclosure} from './consentText';
@@ -22,13 +23,13 @@ export const NON_TERMINAL_SCHEDULE_STATES=['awaiting_notice','scheduled','collec
 export function nextEnrollmentRequest(row:{status:string;generation:number}|null):number|null{
  return row&&['active','paused'].includes(row.status)?null:(row?.generation??0)+1;
 }
-async function lockOrg(db:Tx,orgId:string,actor?:InvoiceActor){
+async function lockOrg(db:Tx,orgId:string,actor?:InvoiceActor,lock:'update'|'no key update'='update'){
  if(actor){
   if(!actor.partnerId)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
   requireOrgAccess(actor,orgId);
  }
  const [org]=await db.select().from(organizations).where(and(eq(organizations.id,orgId),
-  actor?eq(organizations.partnerId,actor.partnerId!):undefined)).limit(1).for('update');
+  actor?eq(organizations.partnerId,actor.partnerId!):undefined)).limit(1).for(lock);
  if(!org)throw new InvoiceServiceError('Organization not found',404,'ORG_NOT_FOUND');
  if(org.deletedAt||!['active','trial'].includes(org.status)||isHiddenOrgType(org.type))
   throw new InvoiceServiceError('Organization is not available for automatic payments',409,'INVALID_STATE');
@@ -54,7 +55,7 @@ async function openInvoiceLinks(db:Tx,orgId:string):Promise<NonNullable<AutopayN
  }
  return links;
 }
-async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices']){
+async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string){
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
  if(!org||!partner)throw new Error('Autopay notice tenant disappeared');
@@ -69,7 +70,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   stopUrl=buildBillingLinkUrl('stop_autopay',stopToken.token);
  }
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,
-  vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices}},db);
+  vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices,processingText}},db);
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
   seq:enrollment.generation,dedupeKey:`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});
@@ -140,20 +141,23 @@ async function validateClientStop(db:Tx,enrollment:typeof orgAutopayEnrollments.
   throw new InvoiceServiceError('Invalid or expired automatic payment link',409,'INVALID_STATE');
 }
 async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor,verifyLink=false):Promise<void>{
- const org=await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
+ // Serialize lifecycle changes without blocking a reserving transaction's org FK check.
+ const org=await lockOrg(db,orgId,actor,'no key update');
+ await lockInvoicesForEnrollmentStop(db,orgId);
+ const enrollment=await lockEnrollment(db,orgId);
  if(verifyLink)await validateClientStop(db,enrollment);
  if(enrollment.status==='cancelled')return;
  const [updated]=await db.update(orgAutopayEnrollments).set({status:'cancelled',cancelledAt:new Date(),cancelSource:source,cancelReason:'autopay_stopped'})
   .where(eq(orgAutopayEnrollments.id,enrollment.id)).returning();
- await db.update(invoiceAutopaySchedules).set({state:'cancelled',stateReason:'autopay_stopped'})
-  .where(and(eq(invoiceAutopaySchedules.orgId,orgId),inArray(invoiceAutopaySchedules.state,[...NON_TERMINAL_SCHEDULE_STATES])));
+ const pendingInvoices=await stopEnrollmentSchedules(db,enrollment.id);
  const removed=await db.update(orgPaymentMethods).set({status:'removed',isAutopayMethod:false,removedAt:new Date()})
   .where(and(eq(orgPaymentMethods.orgId,orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']))).returning();
  await revokeBillingLinkTokens(db,{orgId,enrollmentId:enrollment.id});
  const links=await openInvoiceLinks(db,orgId);
  const lines=links.map(link=>`${link.number}: ${link.currency} ${link.amount} — ${link.url}`);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
- if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links);
+ if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links,
+  pendingInvoices.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`).join('\n'));
  const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
  await enqueueAutopayStaffNotifications(db,staffNotice);

@@ -249,7 +249,7 @@ it.each([
 it('allocates client ordinals across all invoice attempts', async () => {
   h.ordinal = 7; bankAuthority();
   await expect(withClientPaymentAuthority(clientAuthority,()=>reserveCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }))).resolves.toMatchObject({
-    attempt: { scheduleId: null, attemptNo: 8, idempotencyKey: `autopay_client_${invoice.id}_8` },
+    attempt: { scheduleId: null, attemptNo: 8, idempotencyKey: `autopay-bankpay:${clientAuthority.capture.setupAttemptId}` },
   });
 });
 it('requires a schedule for charge-now and rejects one for on-session collection', async () => {
@@ -482,7 +482,7 @@ it('recovers a missing ID under its original key then cancels a fenced unschedul
   h.rows.set(invoiceAutopaySchedules, []);
   update(invoiceCollectionAttempts, { scheduleId: null, initiatedBy: 'client_on_session' });
   await reconcilePendingControls();
-  expect(h.create.mock.calls[0]![1]).toEqual({ idempotencyKey: attempt.idempotencyKey });
+  expect(h.create.mock.calls[0]![1]).toEqual({ idempotencyKey: `autopay-bankpay:${clientAuthority.capture.setupAttemptId}` });
   expect(h.confirm).not.toHaveBeenCalled(); expect(currentAttempt().state).toBe('canceled');
 });
 it('gives a captured payment priority over a pending skip', async () => {
@@ -754,12 +754,12 @@ const clientAuthority = {tokenId:'a0000000-0000-4000-8000-000000000001',invoiceI
  principal:'100.00',fee:'3.00',currency:'USD',capture:{setupAttemptId:'b0000000-0000-4000-8000-000000000001',
  stripePaymentMethodId:'pm_test',setupIntentId:'seti_bank',stripeAccountId:'acct_test',stripeCustomerId:'cus_test'}};
 function bankAuthority(reserved=false){
+ if(reserved)update(invoiceCollectionAttempts,{idempotencyKey:`autopay-bankpay:${clientAuthority.capture.setupAttemptId}`});
  const bankMethod={...method,type:'us_bank_account',stripeSetupIntentId:'seti_bank',accountHolderType:'individual',cardFunding:null};
  h.method.mockResolvedValue(bankMethod);h.rows.set(orgPaymentMethods,[bankMethod]);
  h.retrieve.mockResolvedValue({id:'pm_test',type:'us_bank_account',customer:'cus_test',us_bank_account:{account_holder_type:'individual'}});
  h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true});
- const bankPayment={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'3.00',currency:'USD',disclosureHash:'a'.repeat(64),
-  ...(reserved?{collection:{attemptId:attempt.id,methodId:method.id,stripePaymentMethodId:'pm_test',setupIntentId:'seti_bank',accountHolderType:'individual'}}:{})};
+ const bankPayment={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'3.00',currency:'USD',disclosureHash:'a'.repeat(64)};
  h.rows.set(autopaySetupAttempts,[{id:clientAuthority.capture.setupAttemptId,orgId:invoice.orgId,enrollmentId:enrollment.id,generation:1,
  tokenId:clientAuthority.tokenId,outcome:'activated',stripeAccountId:'acct_test',stripeCustomerId:'cus_test',setupIntentId:'seti_bank',
  consentSnapshot:{version:'v1',text:'Consent',textHash:'hash',hash:'hash',partnerName:'MSP',scheduleText:'Schedule',feeText:'Fee',achMode:'ach_preferred',
@@ -781,10 +781,11 @@ it.each(['missing','invoice','generation','method','principal','fee','account','
  expect(result).toMatchObject({outcome:'refused',reason:'client_authorization_required'});
  expect(attempts()).toEqual([]);expect(h.writes.filter(w=>w.table===billingLinkTokens)).toEqual([]);
 });
-it('persists client capture in the same reservation context as conditional token consumption',async()=>{
+it('consumes bank authority on the attempt without mutating accepted consent',async()=>{
  bankAuthority();await withClientPaymentAuthority(clientAuthority,()=>reserveCollection({invoiceId:invoice.id,initiatedBy:'client_on_session'}));
  expect(h.writes.filter(w=>w.table===billingLinkTokens)).toHaveLength(1);
- expect(h.writes.find(w=>w.table===autopaySetupAttempts)?.values.consentSnapshot.bankPayment.collection).toMatchObject({methodId:method.id,setupIntentId:'seti_bank',stripePaymentMethodId:'pm_test'});
+ expect(h.writes.filter(w=>w.table===autopaySetupAttempts)).toEqual([]);
+ expect(attempts()[0]?.values).toMatchObject({paymentMethodId:method.id,idempotencyKey:`autopay-bankpay:${clientAuthority.capture.setupAttemptId}`});
 });
 it('cancels if a replacement setup changes the captured method between reservation and confirmation',async()=>{
  recovery(true);bankAuthority(true);h.rows.set(invoiceAutopaySchedules,[]);
