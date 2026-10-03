@@ -136,6 +136,7 @@ export function isGroupedRequest(request: LayoutRequest) {
   const groups = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
   return groups.size > 0 && request.nodes.some((node) => node.groupId && groups.has(node.groupId));
 }
+/** `fixed`: the centre its pinned members anchor it at, moved clear of pinned ungrouped nodes (groupedStages). */
 type Card = { id: string; width: number; height: number; local: Map<string, { x: number; y: number }>; fixed?: { x: number; y: number } };
 const fixedPositions = (request: LayoutRequest) => new Map(request.positions
   .filter((p) => request.mode === 'incremental' || p.pinned).map((p) => [p.nodeId, p]));
@@ -185,17 +186,30 @@ function groupedStages(request: LayoutRequest) {
   const seen = new Set<string>();
   const topEdges = request.edges.map((edge) => ({ id: edge.id, source: lift(edge.source), target: lift(edge.target) }))
     .filter((edge) => edge.source !== edge.target && !seen.has(`${edge.source}>${edge.target}`) && seen.add(`${edge.source}>${edge.target}`));
-  const topPositions = [
-    ...request.positions.filter((p) => !homeOf.has(p.nodeId) && !groupIds.has(p.nodeId)),
-    ...[...cards.values()].filter((card) => card.fixed).map((card) => ({ nodeId: card.id, ...card.fixed!, pinned: true })),
-  ];
+  const topPositions = request.positions.filter((p) => !homeOf.has(p.nodeId) && !groupIds.has(p.nodeId));
+  // An anchored card is then a fixed obstacle. Positions the top stage keeps fixed (pins; in incremental
+  // mode every saved top-level position) are exact and win: a card whose anchor would cover one, or an
+  // earlier anchored card, moves straight down until it is clear.
+  const boxOf = new Map(topNodes.map((node) => [node.id, node]));
+  const obstacles = topPositions.filter((p) => (p.pinned || request.mode === 'incremental') && boxOf.has(p.nodeId));
+  for (const card of [...cards.values()].sort((a, b) => a.id.localeCompare(b.id, 'en'))) {
+    if (!card.fixed) continue;
+    const box = boxOf.get(card.id)!;
+    let point: LayoutPosition = { nodeId: card.id, ...card.fixed, pinned: true };
+    for (let guard = 0; guard < 1000; guard++) {
+      const hit = obstacles.find((other) => intersects(point, box, other, boxOf.get(other.nodeId)!));
+      if (!hit) break;
+      point = { ...point, y: hit.y + boxOf.get(hit.nodeId)!.height / 2 + GAP + box.height / 2 };
+    }
+    card.fixed = { x: point.x, y: point.y }; obstacles.push(point); topPositions.push(point);
+  }
   const top: LayoutRequest = { ...request, nodes: topNodes, edges: topEdges, positions: topPositions };
   return { top, cards, homeOf, fixed, pinnedOnly };
 }
 
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
-  // Cards that hold pins are fixed obstacles; their pins are reported, not "pinned overlap" of the card itself.
+  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages).
   const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
   const positions: LayoutPosition[] = [];

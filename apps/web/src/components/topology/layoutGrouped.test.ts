@@ -127,6 +127,19 @@ describe('grouped two-stage layout', () => {
     }
   });
 
+  it('an anchored card yields to a pinned ungrouped node instead of being drawn under it', async () => {
+    // Legacy pins pile card members where the gateway is pinned too.
+    const pins = [{ nodeId: 'gw', x: 400, y: 150, pinned: true },
+      ...Array.from({ length: 12 }, (_, i) => ({ nodeId: `pc-${String(i * 2).padStart(2, '0')}`, x: 300 + (i % 4) * 60, y: 120 + Math.floor(i / 4) * 30, pinned: true }))];
+    for (const fallback of [false, true]) {
+      const request = groupedRequest('incremental', pins);
+      const result = fallback ? packTopologyLayout(request, undefined, true) : await computeTopologyLayout(request, new ELK());
+      expect(result.positions.find((p) => p.nodeId === 'gw')).toEqual(pins[0]);
+      expect(findOverlaps(result, request)).toEqual([]);
+      expect(disjoint(bounds(result, request, ['gw']), bounds(result, request, members(request, 'lan')))).toBe(true);
+    }
+  });
+
   it('still honours pins on ungrouped nodes (gateway, loose device)', async () => {
     const pins = [{ nodeId: 'gw', x: -3_000, y: -3_000, pinned: true }, { nodeId: 'loose', x: 9_000, y: 40, pinned: true }];
     const result = await computeTopologyLayout(groupedRequest('reflow', pins), new ELK());
