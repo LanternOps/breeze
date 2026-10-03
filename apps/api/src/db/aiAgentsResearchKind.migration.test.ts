@@ -7,7 +7,7 @@ import { AI_AGENT_KINDS, AI_AGENT_RUN_PROFILES } from '@breeze/shared';
 import { CORE_TENANT_EXPORT_POLICY } from '../services/tenantExportPolicyRegistry';
 import { aiAgents } from './schema/aiAgents';
 
-const FILE = '2026-11-17-100000-ai-agents-research-kind.sql';
+const FILE = '2026-12-07-100000-ai-agents-research-kind.sql';
 const SQL = readFileSync(new URL(`../../migrations/${FILE}`, import.meta.url), 'utf8');
 const listed = (re: RegExp) => (re.exec(SQL)?.[1] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean).sort();
 
