@@ -18,6 +18,9 @@ export const M365_CUSTOMER_GRAPH_READ_EVENTS = [
   // On-demand tenant sync requested by a technician (spec §5.2). Outcome is
   // always 'initiated' — the run's own outcome is the sync worker's event.
   'm365.customer_graph_read.sync_requested',
+  // #7910 identity-first consent: the administrator's identity was verified
+  // (phase 1). Records WHO signed in — not that they granted consent.
+  'm365.customer_graph_read.admin_identity_verified',
 ] as const;
 
 export type M365CustomerGraphReadEvent = typeof M365_CUSTOMER_GRAPH_READ_EVENTS[number];
@@ -47,6 +50,9 @@ export const M365_CUSTOMER_GRAPH_READ_OUTCOMES = [
   // any other non-cancel provider error).
   'conditional_access_blocked',
   'consent_provider_error',
+  // #7910 identity-first consent, appended (order pinned by metrics.test.ts).
+  'identity_verified',
+  'application_verification_started',
 ] as const;
 
 export type M365CustomerGraphReadOutcome = typeof M365_CUSTOMER_GRAPH_READ_OUTCOMES[number];
@@ -62,6 +68,8 @@ const SUCCESS_OUTCOMES: readonly M365CustomerGraphReadOutcome[] = [
   'active',
   'degraded',
   'revoked',
+  'identity_verified',
+  'application_verification_started',
 ];
 
 interface M365ConsentMetricsRecorder<Event extends string, Outcome extends string> {
@@ -87,6 +95,13 @@ export interface M365ConsentAuditInput<
   outcome: Outcome;
   correlationId?: string;
   verifiedTenantId?: string;
+  /**
+   * Object id of the administrator whose identity Breeze verified in the
+   * identity phase. Deliberately a separate field from `actorId` (the Breeze
+   * user who started the flow): Breeze cannot observe who clicked Accept on
+   * Microsoft's consent screen, so this never claims that.
+   */
+  verifiedAdministratorObjectId?: string;
   actorId?: string;
   actorEmail?: string;
 }
@@ -155,6 +170,9 @@ function createConsentObservability<Event extends string, Outcome extends string
     details.outcome = input.outcome;
     if (input.correlationId !== undefined) details.correlationId = input.correlationId;
     if (input.verifiedTenantId !== undefined) details.tenantId = input.verifiedTenantId;
+    if (input.verifiedAdministratorObjectId !== undefined) {
+      details.verifiedAdministratorObjectId = input.verifiedAdministratorObjectId;
+    }
 
     writeAuditEvent(request, {
       orgId: input.orgId,
@@ -208,6 +226,8 @@ export const M365_CUSTOMER_GRAPH_ACTIONS_EVENTS = [
   'm365.customer_graph_actions.grant_drift_detected',
   'm365.customer_graph_actions.retested',
   'm365.customer_graph_actions.disconnected',
+  // #7910 identity-first consent, appended last.
+  'm365.customer_graph_actions.admin_identity_verified',
 ] as const;
 
 export type M365CustomerGraphActionsEvent = typeof M365_CUSTOMER_GRAPH_ACTIONS_EVENTS[number];
