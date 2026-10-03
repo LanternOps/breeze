@@ -1,4 +1,5 @@
 import type { ElkNode } from 'elkjs/lib/elk-api';
+import { SECTION_BAND, hasSections } from './cardSections';
 import { compareIpAddresses } from './ipOrder';
 import type { LayoutBox, LayoutPosition, LayoutRequest, LayoutResult } from './layoutTypes';
 
@@ -82,7 +83,12 @@ export function packTopologyLayout(request: LayoutRequest, proposed = new Map<st
   if (isGroupedRequest(request)) return packGroupedLayout(request, proposed, fallback);
   return packFlatLayout(request, proposed, fallback);
 }
-function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
+/**
+ * `clearUpward` (grouped overview): a node proposed above the centre of a fixed box it collides with
+ * (a gateway ELK ranked above a card that legacy pins anchored onto its row) clears that box upward,
+ * so the gateway row stays above its LAN instead of being pushed under the card.
+ */
+function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false, clearUpward = false): LayoutResult {
   const boxes = new Map(request.nodes.map((node) => [node.id, node]));
   const positions = new Map(request.positions.filter((p) => boxes.has(p.nodeId) && (request.mode === 'incremental' || p.pinned)).map((p) => [p.nodeId, { ...p }]));
   const fixed = [...positions.values()];
@@ -97,8 +103,13 @@ function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: 
     const anchorEdge = request.edges.find((edge) => edge.source === node.id && positions.has(edge.target) || edge.target === node.id && positions.has(edge.source));
     const anchor = anchorEdge ? positions.get(anchorEdge.source === node.id ? anchorEdge.target : anchorEdge.source) : undefined;
     let point: LayoutPosition = { nodeId: node.id, ...(proposed.get(node.id) ?? { x: anchor ? anchor.x + maxWidth : 0, y: anchor?.y ?? 0 }), pinned: false };
-    const collides = () => [...positions.values()].some((other) => intersects(point, node, other, boxes.get(other.nodeId)!));
-    while (collides() && attempts < 5000) { point = { ...point, y: point.y + maxHeight }; attempts++; }
+    const hitOf = () => [...positions.values()].find((other) => intersects(point, node, other, boxes.get(other.nodeId)!));
+    let hit = hitOf();
+    const upward = clearUpward && hit !== undefined && point.y < hit.y;
+    while (hit && attempts < 5000) {
+      point = upward ? { ...point, y: hit.y - boxes.get(hit.nodeId)!.height / 2 - GAP - node.height / 2 } : { ...point, y: point.y + maxHeight };
+      attempts++; hit = hitOf();
+    }
     if (attempts >= 5000 || fallback) {
       warning = 'layout_fallback';
       // Place beyond every occupied bound, not merely beyond pins.
@@ -150,16 +161,35 @@ const fixedPositions = (request: LayoutRequest) => new Map(request.positions
  * they are: they still apply wherever the view is not grouped.
  */
 function packCard(group: LayoutBox, members: LayoutBox[], pins: Map<string, LayoutPosition>): Card {
-  const ordered = [...members].sort((a, b) => (a.rank ?? 9) - (b.rank ?? 9) || compareIpAddresses(a.address, b.address)
+  const ordered = [...members].sort((a, b) => (a.section ?? 0) - (b.section ?? 0) || (a.rank ?? 9) - (b.rank ?? 9) || compareIpAddresses(a.address, b.address)
     || (a.name ?? a.id).localeCompare(b.name ?? b.id, 'en') || a.id.localeCompare(b.id, 'en'));
-  const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP, cellH = Math.max(1, ...members.map((m) => m.height)) + CELL_GAP;
-  // Roughly 3:2 cards: wide enough to read as a network, never a one-tile strip.
-  const cols = Math.max(1, Math.min(ordered.length, Math.ceil(Math.sqrt(ordered.length * 1.5 * cellH / cellW))));
-  const rows = Math.ceil(ordered.length / cols);
+  const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP;
+  const cellH = members.reduce((sum, m) => sum + m.height, 0) / Math.max(1, members.length) + CELL_GAP;
+  // Roughly 16:9 cards, the shape of the canvas they are fitted into: wide enough to read as a network,
+  // never a one-tile strip. Rows take their own height, so the average tile height sets the shape.
+  const cols = Math.max(1, Math.min(ordered.length, Math.ceil(Math.sqrt(ordered.length * 1.8 * cellH / cellW))));
+  // Role sections (2026-10-03): each section starts a new row under a header band. A card whose
+  // members share one section gets no band, so small single-role cards stay compact.
+  const banded = hasSections(ordered.map((member) => member.section));
+  const rows: { members: LayoutBox[]; band: boolean }[] = [];
+  let section: number | undefined;
+  for (const member of ordered) {
+    const newSection = banded && member.section !== section;
+    const last = rows[rows.length - 1];
+    if (!last || last.members.length >= cols || newSection) rows.push({ members: [member], band: newSection });
+    else last.members.push(member);
+    section = member.section;
+  }
+  // Each row is as tall as its tallest tile: one three-line tile no longer spaces out the whole card.
   const local = new Map<string, { x: number; y: number }>();
-  ordered.forEach((member, index) => local.set(member.id, { x: GROUP_PADDING + (index % cols) * cellW + member.width / 2, y: GROUP_HEADER + Math.floor(index / cols) * cellH + member.height / 2 }));
+  let top = GROUP_HEADER;
+  for (const row of rows) {
+    if (row.band) top += SECTION_BAND;
+    row.members.forEach((member, column) => local.set(member.id, { x: GROUP_PADDING + column * cellW + member.width / 2, y: top + member.height / 2 }));
+    top += Math.max(...row.members.map((member) => member.height)) + CELL_GAP;
+  }
   const width = Math.max(2 * GROUP_PADDING + Math.max(0, cols * cellW - CELL_GAP), 240);
-  const height = Math.max(GROUP_HEADER + GROUP_PADDING + Math.max(0, rows * cellH - CELL_GAP), GROUP_HEADER + GROUP_PADDING);
+  const height = Math.max(rows.length ? top - CELL_GAP + GROUP_PADDING : 0, GROUP_HEADER + GROUP_PADDING);
   const pinned = ordered.filter((member) => pins.has(member.id));
   if (!pinned.length) return { id: group.id, width, height, local };
   const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -210,7 +240,7 @@ function groupedStages(request: LayoutRequest) {
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
   // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages).
-  const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
+  const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback, true);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
   const positions: LayoutPosition[] = [];
   for (const point of placed.positions) if (!cards.has(point.nodeId)) positions.push({ ...point, pinned: fixed.get(point.nodeId)?.pinned ?? false });

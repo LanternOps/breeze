@@ -8,6 +8,7 @@ import { TopologyLayoutDraft, saveTopologyLayout } from './layoutPersistence';
 import { LAYOUT_VERSION, type LayoutBox, type LayoutPosition } from './layoutTypes';
 import { useTopologyGraph } from './useTopologyGraph';
 import { compileTopologyRender, type RenderNode } from './renderProjection';
+import { memberRank, sectionIndex } from './cardSections';
 import { parseTopologyHash, writeTopologyHash, type TopologyNavigation } from './topologyHash';
 import { isPresentation, selectedTopologyEntity, type TopologySelection } from './topologyPresentation';
 import { topologyApi, topologyRead, topologyNodeListSchema, type HiddenConnection, type TopologySettings } from './topologyApi';
@@ -24,7 +25,7 @@ import RecentChangesPanel from './RecentChangesPanel';
 const sameBoxes = (a: LayoutBox[], b: LayoutBox[]) => a.length === b.length && a.every((box, index) => {
   const other = b[index]!;
   return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height && box.groupId === other.groupId
-    && box.rank === other.rank && box.address === other.address && box.name === other.name;
+    && box.section === other.section && box.rank === other.rank && box.address === other.address && box.name === other.name;
 });
 const isCard = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified';
 /** Tiles drawn inside a card: always packed by the card grid, whatever their saved pin says (revised Q3, #7880). */
@@ -32,9 +33,6 @@ const cardMemberIds = (boxes: LayoutBox[]) => {
   const cards = new Set(boxes.filter((box) => box.role === 'group' || box.role === 'unidentified').map((box) => box.id));
   return new Set(boxes.filter((box) => box.groupId && cards.has(box.groupId)).map((box) => box.id));
 };
-/** Inside a card: infrastructure first, then servers, workstations, printers, phones, the rest; unverified placements last. */
-const GLYPH_RANK: Record<string, number> = { router: 0, firewall: 0, switch: 1, access_point: 1, server: 2, nas: 2, workstation: 3, laptop: 3, printer: 4, phone: 5, camera: 6, iot: 6 };
-const memberRank = (node: RenderNode) => (GLYPH_RANK[node.glyph] ?? 7) + (node.unverified && (GLYPH_RANK[node.glyph] ?? 7) > 1 ? 10 : 0);
 
 export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');
@@ -109,7 +107,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         const rect = elements.get(node.id)?.getBoundingClientRect();
         const width = node.kind === 'gateway' || node.kind === 'internet' ? 236 : 208;
         return { id: node.id, role: node.kind, width, height: Math.min(96, Math.max(60, rect?.height || 60)),
-          ...(node.parent ? { groupId: node.parent, rank: memberRank(node), ...(node.address ? { address: node.address } : {}), name: node.label } : {}) };
+          ...(node.parent ? { groupId: node.parent, section: sectionIndex(node.glyph), rank: memberRank(node), ...(node.address ? { address: node.address } : {}), name: node.label } : {}) };
       });
       // Within one run of this effect, a repeat measurement with unchanged sizes
       // (fonts.ready plus the ResizeObserver's initial callback) is dropped. A new
@@ -233,6 +231,6 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       {diagnostic && <TopologyDiagnosticsPanel siteId={siteId} graphRevision={graph.revisions.graph} subject={{ kind: diagnostic.kind === 'edge' ? 'relationship' : 'node', id: diagnostic.id }} onClose={() => setDiagnostic(undefined)} />}
     </>}
     <div aria-live="polite" className="sr-only">{announcement}</div>
-    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-14 pr-3 text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}{node.note && <div>{node.note}</div>}</div>)}</div>
+    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-[54px] pr-[14px] text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}{node.note && <div>{node.note}</div>}</div>)}</div>
   </section>;
 }

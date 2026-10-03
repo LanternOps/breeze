@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { computeTopologyLayout, packTopologyLayout } from './layoutAdapter';
 import { findOverlaps } from './layoutFixtures';
 import type { LayoutBox, LayoutRequest, LayoutResult } from './layoutTypes';
+import { SECTION_BAND } from './cardSections';
 
 /** A Whalers-shaped site: one gateway, one LAN card with 30 devices, a small second LAN, an unidentified card and one ungrouped device. */
 function groupedRequest(mode: LayoutRequest['mode'] = 'reflow', positions: LayoutRequest['positions'] = []): LayoutRequest {
@@ -140,6 +141,19 @@ describe('grouped two-stage layout', () => {
     }
   });
 
+  it('keeps an unpinned gateway above a pin-anchored card that lands on its row (it clears upward, not under the card)', async () => {
+    const free = await computeTopologyLayout(groupedRequest(), new ELK());
+    const gw = free.positions.find((p) => p.nodeId === 'gw')!;
+    // Legacy pins drag the LAN card up over the gateway's own row.
+    const pins = Array.from({ length: 6 }, (_, i) => ({ nodeId: `pc-${String(i * 3).padStart(2, '0')}`, x: gw.x + (i % 3) * 200, y: gw.y + Math.floor(i / 3) * 80, pinned: true }));
+    for (const mode of ['reflow', 'incremental'] as const) {
+      const request = groupedRequest(mode, pins);
+      const result = await computeTopologyLayout(request, new ELK());
+      expect(findOverlaps(result, request)).toEqual([]);
+      expect(bounds(result, request, ['gw']).y2).toBeLessThanOrEqual(bounds(result, request, members(request, 'lan')).y1);
+    }
+  });
+
   it('still honours pins on ungrouped nodes (gateway, loose device)', async () => {
     const pins = [{ nodeId: 'gw', x: -3_000, y: -3_000, pinned: true }, { nodeId: 'loose', x: 9_000, y: 40, pinned: true }];
     const result = await computeTopologyLayout(groupedRequest('reflow', pins), new ELK());
@@ -169,6 +183,36 @@ describe('grouped two-stage layout', () => {
   it('keeps a saved top-level position on incremental placement (existing contract for ungrouped tiles)', async () => {
     const saved = { nodeId: 'loose', x: 7_000, y: 7_000, pinned: false };
     expect((await computeTopologyLayout(groupedRequest('incremental', [saved]), new ELK())).positions.find((p) => p.nodeId === 'loose')).toEqual(saved);
+  });
+
+  it('starts every role section on a new row, in section order, with a header band above each section', async () => {
+    const request = groupedRequest();
+    // lan: 10 network devices (section 0), 20 computers (section 2), interleaved in input order.
+    for (const node of request.nodes) if (node.groupId === 'lan') node.section = Number(node.id.slice(3)) % 3 === 0 ? 0 : 2;
+    const result = await computeTopologyLayout(request, new ELK());
+    expect(findOverlaps(result, request)).toEqual([]);
+    const at = new Map(result.positions.map((p) => [p.nodeId, p]));
+    const lan = request.nodes.filter((n) => n.groupId === 'lan');
+    const net = lan.filter((n) => n.section === 0), pcs = lan.filter((n) => n.section === 2);
+    const lastNetRow = Math.max(...net.map((n) => at.get(n.id)!.y)), firstPcRow = Math.min(...pcs.map((n) => at.get(n.id)!.y));
+    // No row mixes sections, and the computers start below the network rows by more than one plain row step.
+    expect(new Set(net.map((n) => at.get(n.id)!.y)).size + new Set(pcs.map((n) => at.get(n.id)!.y)).size)
+      .toBe(new Set(lan.map((n) => at.get(n.id)!.y)).size);
+    const rowStep = 60 + 16;
+    expect(firstPcRow - lastNetRow).toBeGreaterThanOrEqual(rowStep + SECTION_BAND);
+    // Section bands make the sectioned card taller than the same members packed plainly.
+    const plain = await computeTopologyLayout(groupedRequest(), new ELK());
+    expect(bounds(result, request, members(request, 'lan')).y2 - bounds(result, request, members(request, 'lan')).y1)
+      .toBeGreaterThan(bounds(plain, request, members(request, 'lan')).y2 - bounds(plain, request, members(request, 'lan')).y1);
+  });
+
+  it('reserves no header band on a card whose members share one section', async () => {
+    const plain = await computeTopologyLayout(groupedRequest(), new ELK());
+    const request = groupedRequest();
+    for (const node of request.nodes) if (node.groupId === 'lan2') node.section = 2;
+    const result = await computeTopologyLayout(request, new ELK());
+    const height = (r: LayoutResult) => { const b = bounds(r, request, members(request, 'lan2')); return b.y2 - b.y1; };
+    expect(height(result)).toBe(height(plain));
   });
 
   it('falls back without ELK yet keeps cards together and collision-free', () => {

@@ -69,6 +69,16 @@ describe('compileTopologyRender', () => {
     expect(byId.get(ids.b)).toMatchObject({ label: 'FRONT-DESK', detail: '10.1.2.58 · Agent offline' });
   });
 
+  it('reports agent presence only for agent-reported tiles (a scan answer is not an agent)', () => {
+    const { graph: g, ids } = lan();
+    const render = compileTopologyRender(g, { showAllNetworks: false });
+    const tile = (id: string) => render.nodes.find((n) => n.id === id)!;
+    expect(tile(ids.a).agentPresence).toBe('online');
+    expect(tile(ids.b).agentPresence).toBe('offline');
+    expect(tile(ids.phone).presence).toBe('online');
+    expect(tile(ids.phone).agentPresence).toBeNull();
+  });
+
   it('exposes each tile\'s primary address for numeric ordering inside its card (#7880)', () => {
     const { graph: g, ids } = lan();
     const byId = new Map(compileTopologyRender(g, { showAllNetworks: false }).nodes.map((n) => [n.id, n]));
