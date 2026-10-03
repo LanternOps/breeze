@@ -235,6 +235,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiAgents/runLoop.ts': 'derived: device lookup by the run\'s own device and org',
   'services/aiAgents/runResourceScope.ts': 'derived: device lookup by id and org for run scope tagging',
   'services/aiAgents/runService.ts': 'org-pinned: device sets resolved from proposed ids, pinned to the run\'s org',
+  'services/aiAgents/researchContext.ts': 'derived: single device lookup by id and org for a run that already targets that device',
   'services/aiAgents/runnerPrompt.ts': 'formats already-fetched evidence into a prompt',
   'services/aiAgents/sweepEvidence.ts': 'org-pinned: sweep evidence loaders pinned to one org chosen by the guarded sweep scheduler',
   'services/aiAgents/sweepSubjectProbe.ts': 'derived: re-probes one device already named by an existing sweep finding',
