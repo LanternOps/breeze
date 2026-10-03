@@ -154,6 +154,8 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   lastDisputeEventCreated: bigint('last_dispute_event_created', { mode: 'number' }),
   lastDisputeEventId: text('last_dispute_event_id'),
   paymentReceivedAt: date('payment_received_at'),
+  // First successful capture recorded by Breeze; survives principal reversal/deletion.
+  paymentCapturedAt: timestamp('payment_captured_at', { withTimezone: true }),
   lastEventAt: timestamp('last_event_at'),
   // --- SEC-150 durable Checkout-session revocation intent + retry ladder ---
   revocationState: stripeSessionRevocationStateEnum('revocation_state').notNull().default('active'),

@@ -46,9 +46,13 @@ async function prepare(id:string){
     if(target===0||!mapping.paymentReceivedAt||!['succeeded','partially_refunded','partially_disputed','disputed'].includes(mapping.status))return null;
     if(!conn||conn.status!=='connected'||!conn.pushPayments||conn.pushMode!=='auto'||!providerSupports(conn.provider,'paymentPush')||invoice.status==='void')return null;
     const [raw]=await db.select({since:accountingConnections.pushPaymentsSince}).from(accountingConnections).where(eq(accountingConnections.id,conn.id)).limit(1);
-    // Use the original durable obligation, never a replacement principal row
-    // or updatedAt: reversals/restorations must not re-age historical debt.
-    if(!raw||(raw.since&&mapping.createdAt<raw.since))return null;
+    // Initiation can precede activation (ACH). Only successful capture decides
+    // eligibility; reversals and replacement principal rows cannot re-age it.
+    if(!raw)return null;
+    if(raw.since){
+      if(!mapping.paymentCapturedAt)throw new Error('Original successful capture time is unavailable; operator investigation is required');
+      if(mapping.paymentCapturedAt<raw.since)return null;
+    }
   }
   if(!conn||conn.status!=='connected'||!providerSupports(conn.provider,'paymentPush'))return null;
   assertAccountingInvoicePushCurrency(conn,{currencyCode:mapping.currency});

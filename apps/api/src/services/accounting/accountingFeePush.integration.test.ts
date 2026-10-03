@@ -12,12 +12,15 @@ import {getAccountingProvider} from './providerRegistry';
 import {pushFeeForStripeMapping} from './accountingFeePush';
 import JSZip from 'jszip';
 import {ingestStripeFinancialEvent} from '../stripeReversalState';
+import {recordStripePayment} from '../stripeReconcile';
 import {buildOrgExportZip} from '../tenantExport';
+vi.mock('../autopay/paymentNotices',()=>({enqueueOnlineReceipt:vi.fn().mockResolvedValue(undefined)}));
+vi.mock('../../jobs/accountingSyncWorker',()=>({enqueueAccountingPaymentPush:vi.fn().mockResolvedValue(undefined),enqueueAccountingPaymentDelete:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('../invoiceEvents',()=>({emitInvoiceEvent:vi.fn().mockResolvedValue(undefined)}));
 vi.mock('../auditEvents',()=>({writeAuditEventAsync:vi.fn().mockResolvedValue(undefined),requestLikeFromSnapshot:()=>({req:{header:()=>undefined}})}));
 vi.mock('../../jobs/invoiceWorker',()=>({enqueueInvoicePdfRender:vi.fn().mockResolvedValue(undefined)}));
 import type {AccountingFeeJournalEntry} from './types';
-afterEach(()=>vi.restoreAllMocks());
+afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();});
 async function seedFee(provider:'quickbooks'|'xero'='quickbooks'){return withSystemDbAccessContext(async()=>{
   const partner=await createPartner(),org=await createOrganization({partnerId:partner.id});
   const conn=await upsertConnection(db,partner.id,provider,{realmId:`fee-${partner.id}`,accessToken:'access',refreshToken:'refresh',
@@ -152,27 +155,49 @@ it.each([{pushMode:'manual' as const},{pushPayments:false},{status:'reauth_requi
   expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(false);expect(post).not.toHaveBeenCalled();
 });
 
-// Controller PF-2: the reducer can remove all principal while fee cash remains.
-it.each([true,false])('exports a fee-only remainder using its original activation horizon (eligible=%s)',async eligible=>{
+// Exercise initiation, activation and real settlement on the same day. The
+// original principal may subsequently disappear through the real reducer.
+it.each([
+  {eligible:true,feeOnly:false},
+  {eligible:true,feeOnly:true},
+  {eligible:false,feeOnly:false},
+  {eligible:false,feeOnly:true},
+])('uses durable successful capture time across activation %j',async({eligible,feeOnly})=>{
   const f=await seedFee();
   await withSystemDbAccessContext(async()=>{
     await db.insert(stripeConnectAccounts).values({partnerId:f.conn.partnerId,stripeAccountId:f.mapping.stripeAccountId,
       apiKey:'enc:synthetic',keyLast4:'test',livemode:false});
-    await db.update(invoices).set({subtotal:'0.01',total:'0.01',amountPaid:'0.01'}).where(eq(invoices.id,f.mapping.invoiceId));
-    await db.update(invoicePayments).set({amount:'0.01'}).where(eq(invoicePayments.id,f.payment.id));
-    await db.update(invoiceStripePayments).set({amount:'0.01',feeAmount:'25.00',paymentMethodType:'us_bank_account',
-      createdAt:new Date('2026-10-01T12:00:00Z')}).where(eq(invoiceStripePayments.id,f.mapping.id));
-    await db.update(accountingConnections).set({pushPaymentsSince:new Date(eligible?'2026-10-01T11:00:00Z':'2026-10-01T13:00:00Z')})
+    await db.update(invoiceStripePayments).set({status:'pending'}).where(eq(invoiceStripePayments.id,f.mapping.id));
+    await db.delete(invoicePayments).where(eq(invoicePayments.id,f.payment.id));
+    await db.update(invoices).set({status:'sent',subtotal:'0.01',total:'0.01',amountPaid:'0.00',balance:'0.01'})
+      .where(eq(invoices.id,f.mapping.invoiceId));
+    await db.update(invoiceStripePayments).set({status:'pending',paymentReceivedAt:null,amount:'0.01',feeAmount:'25.00',
+      paymentMethodType:'us_bank_account',createdAt:new Date('2026-10-01T10:00:00Z')})
+      .where(eq(invoiceStripePayments.id,f.mapping.id));
+    await db.update(accountingConnections).set({pushPaymentsSince:new Date('2026-10-01T12:00:00Z')})
       .where(eq(accountingConnections.id,f.conn.id));
   });
-  expect(await ingestStripeFinancialEvent({partnerId:f.conn.partnerId,stripeAccountId:f.mapping.stripeAccountId,
-    stripeEventId:`evt_${randomUUID()}`,eventType:'charge.refunded',livemode:false,providerCreated:1790946000,
-    paymentIntentId:f.mapping.stripePaymentIntentId!,chargeId:`ch_${randomUUID()}`,currency:'USD',
-    chargeAmountMinor:2501,refundedAmountMinor:1251})).toMatchObject({state:'applied'});
-  expect(await read(f.mapping.id)).toMatchObject({invoicePaymentId:null,feeReversedAmount:'12.50',paymentReceivedAt:'2026-10-01'});
   const post=vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'remaining-fee'});
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(false);
+  const capturedAt=new Date(eligible?'2026-10-01T13:00:00Z':'2026-10-01T11:00:00Z');
+  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(capturedAt);
+  const capture={stripeObjectId:f.mapping.stripeObjectId,stripePaymentIntentId:f.mapping.stripePaymentIntentId!,
+    stripeAccountId:f.mapping.stripeAccountId,amount:'25.01',currency:'USD',receivedAt:'2026-10-01'};
+  await recordStripePayment(capture);
+  // A late delivery, refund or restoration cannot re-age the original capture.
+  vi.setSystemTime(new Date('2026-10-02T14:00:00Z'));
+  await recordStripePayment(capture);
+  if(feeOnly){
+    expect(await ingestStripeFinancialEvent({partnerId:f.conn.partnerId,stripeAccountId:f.mapping.stripeAccountId,
+      stripeEventId:`evt_${randomUUID()}`,eventType:'charge.refunded',livemode:false,providerCreated:1790946000,
+      paymentIntentId:f.mapping.stripePaymentIntentId!,chargeId:`ch_${randomUUID()}`,currency:'USD',
+      chargeAmountMinor:2501,refundedAmountMinor:1251})).toMatchObject({state:'applied'});
+    expect(await read(f.mapping.id)).toMatchObject({invoicePaymentId:null,feeReversedAmount:'12.50',paymentReceivedAt:'2026-10-01'});
+    await recordStripePayment(capture);
+  }
   expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(eligible);
-  if(eligible)expect(post.mock.calls[0]![1]).toMatchObject({direction:'receipt',amount:'12.50'});
+  expect(await read(f.mapping.id)).toMatchObject({paymentCapturedAt:capturedAt});
+  if(eligible)expect(post.mock.calls[0]![1]).toMatchObject({direction:'receipt',amount:feeOnly?'12.50':'25.00'});
   else expect(post).not.toHaveBeenCalled();
 });
 
