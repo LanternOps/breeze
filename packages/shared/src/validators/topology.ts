@@ -271,10 +271,13 @@ export const presentationNodeSchema = z.object({
    * nodes stay in `nodes`; `canonicalNodeIds` are the ones this card folds and
    * `members` the visible endpoints drawn inside it. `address_match` members are an
    * unverified address-range placement, never a membership claim.
+   * A `hidden` group is never drawn (#7879): it names canonical nodes the overview leaves
+   * out — `decommissioned` devices, and orphan network/gateway nodes with
+   * `no_current_evidence` — so clients fold them away and can say how many.
    */
   group: z.object({
-    kind: z.enum(['network', 'gateway', 'unidentified']),
-    basis: z.enum(['inferred_site_prefix', 'reported_gateway', 'unidentified']),
+    kind: z.enum(['network', 'gateway', 'unidentified', 'hidden']),
+    basis: z.enum(['inferred_site_prefix', 'reported_gateway', 'unidentified', 'decommissioned', 'no_current_evidence']),
     networkClass: z.enum(TOPOLOGY_NETWORK_CLASSES).nullable(),
     prefix: z.string().max(64).nullable(),
     address: z.string().max(64).nullable(),

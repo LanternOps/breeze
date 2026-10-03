@@ -135,4 +135,24 @@ describe('compileTopologyRender', () => {
     expect(render.edges.find((e) => e.id === P('sd-1'))).toMatchObject({ style: 'shared', target: P('net-lan2') });
     expect(render.nodes.find((n) => n.id === ids.a)?.parent).toBe(P('net-lan'));
   });
+
+  it('never draws a hidden group, folds its nodes away and counts decommissioned devices (#7879)', () => {
+    const { graph: g } = lan();
+    const [decom, orphan] = [id(50), id(51)];
+    g.nodes.push(node(decom, 'endpoint', 'DRT-CHECKOUT.decom-0a18819f'), node(orphan, 'network', '10.7.0.0/24'));
+    g.relationships.push(rel(id(150), 'network_member', decom, orphan));
+    const hidden = (basis: 'decommissioned' | 'no_current_evidence', ids: string[], memberCount: number): PresentationNode => ({ id: P(`hid-${basis}`), view: 'overview',
+      role: 'hidden_group', label: basis, memberCount, frontierToken: 't', authority: false, group: { kind: 'hidden', basis, networkClass: null, prefix: null, address: null,
+        gatewayAddresses: [], conflict: false, observerCount: 0, members: [], canonicalNodeIds: ids } });
+    g.presentation.nodes.push(hidden('decommissioned', [decom], 3), hidden('no_current_evidence', [orphan], 1));
+    for (const showAllNetworks of [false, true]) {
+      const render = compileTopologyRender(g, { showAllNetworks });
+      const drawn = new Set(render.nodes.map((n) => n.id));
+      for (const gone of [decom, orphan, P('hid-decommissioned'), P('hid-no_current_evidence')]) expect(drawn.has(gone)).toBe(false);
+      expect(render.edges.some((e) => e.id === id(150))).toBe(false);
+      expect(render.hiddenDeviceCount).toBe(3);
+    }
+    expect(compileTopologyRender(g, { showAllNetworks: false }).hiddenNetworkCount).toBe(1);
+    expect(compileTopologyRender(lan().graph, { showAllNetworks: false }).hiddenDeviceCount).toBe(0);
+  });
 });

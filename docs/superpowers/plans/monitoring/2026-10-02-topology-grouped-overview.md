@@ -197,6 +197,37 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
   tunnel classification (CIDR heuristics for Tailscale/CGNAT meanwhile; done in #7819), VPN half-default handling in the
   projector ("Selected path unknown").
 
+## Overview truth (#7879, binding)
+
+Found on a production site re-check; each rule is presentation-only and never authority.
+
+- **Scan presence.** `presence.source:'scan'` is `online` only when the asset appeared in the latest
+  completed scan of the profile that last saw it (`last_job_id` is the newest job that saw it, so a
+  later completed job of that profile is one that did not), `offline` otherwise, `unknown`
+  ("Not scanned") with no scan at all. Never `discovered_assets.is_online`: the disappeared sweep only
+  flips approved assets, so the column is sticky for everything else. Per profile, because one site's
+  profiles scan different subnets. A completed scan that found no hosts proves no absence (same
+  refusal as the sweep). A UniFi controller verdict (`status_source='unifi'`, rewritten every sync)
+  wins while dated within 1 h (`UNIFI_FRESHNESS_MS`).
+- **Node observation.** `evidence.lastObservedAt` is the latest of the node's own observation and its
+  incident relationships' observations, where a source that re-captured unchanged, still-published
+  content confirms them at `confirmed_through_at` — the same rule `observedFreshUntilSql` applies to
+  freshness. An agent node has no node-level observation of its own; its routes and memberships are
+  its evidence.
+- **Orphans.** An unbound network/gateway node with no relationship in the view to a shown, live node
+  folds into the card with the same prefix or the gateway group with the same next hop (never a
+  link-local next hop). Otherwise: no current evidence (no fresh incident relationship and no node
+  observation within 900 s, the `max(3 × cadence, 900 s)` floor) → a `hidden` group
+  (`no_current_evidence`); an evidenced non-LAN orphan → a memberless card of its class, governed by
+  the hidden-networks toggle; an evidenced LAN orphan stays a canonical node.
+- **Decommissioned devices.** A node with at least one device binding, all of them decommissioned, is a
+  retired agent: its stale memberships and routes never shape a card. If it also has a discovered-asset
+  binding that is online in its latest completed scan, it renders AS that asset (label, inventory and
+  presence from the asset; the agent's hostname and status dropped) and is placed by the asset's
+  address. Otherwise it is listed in a `hidden` group (`decommissioned`); the client never draws a
+  `hidden` group and shows "N removed devices hidden". (Prod shape: decommissioned agents usually also
+  carry an asset binding.)
+
 ## Quorum questions (original)
 
 - Q1. Server-side grouping in the existing `presentation` block with optional schema fields vs a new

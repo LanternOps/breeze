@@ -153,6 +153,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/softwarePolicyInstallPreview.ts': 'Dry-run device count shown to the operator before confirming a fleet install',
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',
   'services/topology/monitorOverlays.ts': 'Topology map health overlays for a human-scoped graph read',
+  'services/topology/presentationGroups.ts': 'Grouped-overview read model for a human-scoped topology graph read: reads device status only to hide decommissioned agents; selects nothing to act on',
   'services/vulnerabilityFleetQueries.ts': 'Fleet triage UI fetch layer, RLS-scoped request read',
   'services/vulnerabilityFleetSql.ts': 'Fleet work-queue aggregation for the triage UI, RLS-scoped',
 };

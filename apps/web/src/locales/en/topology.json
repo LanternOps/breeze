@@ -623,6 +623,8 @@
     "useLayout": "Use grouped layout",
     "showAllNetworks_one": "Show {{count}} link-local, VPN or single-host network",
     "showAllNetworks_other": "Show {{count}} link-local, VPN or single-host networks",
+    "hiddenDevices_one": "{{count}} removed device hidden",
+    "hiddenDevices_other": "{{count}} removed devices hidden",
     "evidenceSection": "Evidence and freshness",
     "type": "Type",
     "addresses": "Addresses",

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { topologyIpSchema, topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
-import { nodeFilter, observedFreshUntilSql, relationshipFilter, scoped, type ReadExposure } from './graphRead';
+import { assetScanPresenceSql, nodeFilter, observedFreshUntilSql, relationshipExposure, relationshipFilter, scoped, type ReadExposure } from './graphRead';
 import { cidrContains, parseIpAddress, parsePrefix, type Family } from './ipAddress';
 import { addressKey, buildNeighborEvidenceIndex, canonicalMac, readNeighborEvidence, type NeighborEvidenceIndex, type NeighborEvidenceRead, type NeighborTuple } from './neighborEvidence';
 
@@ -38,6 +38,20 @@ export type PresentationGroupInput = {
   inventoryPairsTruncated?: boolean;
   /** Published neighbour-cache evidence (neighborEvidence.ts); absent = not consulted. */
   neighbors?: NeighborEvidenceRead;
+  /**
+   * Network/gateway nodes with no binding and no relationship to a shown node in this view
+   * (#7879): they fold into no card on their own. `address` is a gateway's next hop;
+   * `evidenced` = the node still carries current evidence (readPresentationGroupInput).
+   */
+  orphans?: { id: string; kind: 'network' | 'gateway'; prefix: string | null; address: string | null; evidenced: boolean }[];
+  /**
+   * Retired agents (#7879): nodes with at least one device binding, every one of them decommissioned.
+   * Their stale agent memberships and routes never shape a card. Such a node whose bound discovered
+   * asset is online in its latest scan stays visible AS that asset (its `unplaced` addresses are the
+   * asset's); the rest are `decommissioned`: hidden from the overview and counted.
+   */
+  retired?: string[];
+  decommissioned?: string[];
 };
 export type PresentationGroupOptions = {
   view: GraphQuery['view'];
@@ -100,10 +114,71 @@ function gatewayMac(evidence: NeighborEvidenceIndex | null, route: Route): Neigh
 }
 
 /**
- * The grouping decisions themselves (candidates, gateway groups, placement, primary
- * parent), shared by the card builder and by group expansion so both see one answer.
+ * Retired agents (#7879): their stale memberships and routes never shape a card; a hidden
+ * (`decommissioned`) one places nothing at all. A retired agent shown as its online asset keeps
+ * its `unplaced` entry, which carries only the asset's addresses.
  */
-function analysePresentationGroups(input: PresentationGroupInput, now?: Date) {
+function withoutRetiredAgents(input: PresentationGroupInput): PresentationGroupInput {
+  const decommissioned = new Set(input.decommissioned ?? []);
+  const retired = new Set([...(input.retired ?? []), ...decommissioned]);
+  if (!retired.size) return input;
+  const live = (row: { endpointId: string }) => !decommissioned.has(row.endpointId);
+  const agentLive = (row: { endpointId: string }) => !retired.has(row.endpointId);
+  return { ...input, memberships: input.memberships.filter(agentLive), routes: input.routes.filter(agentLive), unplaced: input.unplaced.filter(live),
+    ...(input.inventoryPairs ? { inventoryPairs: input.inventoryPairs.filter(live) } : {}) };
+}
+
+type OrphanPlacement = {
+  /** Candidate or gateway-group key → orphan ids folded into that card. */
+  folds: Map<string, string[]>;
+  /** `orphan|<class>|<prefix>` → evidenced non-LAN orphans that form a memberless card of their class. */
+  byClass: Map<string, { networkClass: TopologyNetworkClass; prefix: string; ids: string[] }>;
+  unevidenced: string[];
+};
+/**
+ * Orphan placement (#7879). An orphan network folds into the card with its prefix (card
+ * order: LAN keys first, then the rest, so the smallest LAN key); an orphan gateway into the
+ * gateway group with its next hop — never a link-local one, which is per observer (D:82).
+ * Unfolded: no current evidence → hidden; evidenced non-LAN → a card of its class; evidenced
+ * LAN network or gateway → stays a canonical node.
+ */
+function placeOrphans(input: PresentationGroupInput, candidates: Map<string, Candidate>, gatewayGroups: Map<string, GatewayGroup>): OrphanPlacement {
+  const cardByPrefix = new Map<string, string>();
+  const keys = sorted(candidates.keys());
+  for (const key of [...keys.filter((k) => candidates.get(k)!.networkClass === 'lan'), ...keys.filter((k) => candidates.get(k)!.networkClass !== 'lan')]) {
+    const prefix = candidates.get(key)!.prefix;
+    if (!cardByPrefix.has(prefix)) cardByPrefix.set(prefix, key);
+  }
+  const gatewayByAddress = new Map<string, string>();
+  for (const key of sorted(gatewayGroups.keys())) {
+    const address = gatewayGroups.get(key)!.address.toLowerCase();
+    if (!linkLocalAddress(address) && !gatewayByAddress.has(address)) gatewayByAddress.set(address, key);
+  }
+  const placement: OrphanPlacement = { folds: new Map(), byClass: new Map(), unevidenced: [] };
+  for (const orphan of [...(input.orphans ?? [])].sort((a, b) => bySmallest(a.id, b.id))) {
+    const rawPrefix = orphan.prefix?.trim().toLowerCase();
+    const prefix = rawPrefix && rawPrefix.length <= TEXT_CAP && parsePrefix(rawPrefix) ? rawPrefix : null;
+    const address = orphan.address?.trim().toLowerCase();
+    const gateway = address && address.length <= TEXT_CAP && parseIpAddress(address) && !linkLocalAddress(address) ? address : null;
+    const target = orphan.kind === 'network' && prefix ? cardByPrefix.get(prefix) : orphan.kind === 'gateway' && gateway ? gatewayByAddress.get(gateway) : undefined;
+    if (target) { placement.folds.set(target, [...(placement.folds.get(target) ?? []), orphan.id]); continue; }
+    if (!orphan.evidenced) { placement.unevidenced.push(orphan.id); continue; }
+    const networkClass = orphan.kind === 'network' && prefix ? topologyNetworkClass(prefix) : null;
+    if (!prefix || !networkClass || networkClass === 'lan') continue;
+    const key = `orphan|${networkClass}|${prefix}`;
+    const entry = placement.byClass.get(key) ?? { networkClass, prefix, ids: [] };
+    entry.ids.push(orphan.id);
+    placement.byClass.set(key, entry);
+  }
+  return placement;
+}
+
+/**
+ * The grouping decisions themselves (candidates, gateway groups, placement, primary
+ * parent, orphan placement), shared by the card builder and by group expansion so both see one answer.
+ */
+function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
+  const input = withoutRetiredAgents(raw);
   const prefixes = new Map<string, string>();
   for (const network of input.networks) {
     const prefix = network.prefix?.trim().toLowerCase();
@@ -336,12 +411,15 @@ function analysePresentationGroups(input: PresentationGroupInput, now?: Date) {
   };
   const primary = new Map<string, string>();
   for (const [endpointId, keys] of endpointCandidates) primary.set(endpointId, [...keys].sort((a, b) => bySmallest(rank(a), rank(b)))[0]!);
-  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage };
+  const orphans = placeOrphans(raw, candidates, gatewayGroups);
+  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage, orphans };
 }
+type SiteGrouping = ReturnType<typeof analysePresentationGroups>;
 
 /** The group a frontier token names (#7818): its kind and the SHA-256 of its internal key. */
-export type PresentationGroupRef = { kind: 'network' | 'gateway' | 'unidentified'; key: string };
+export type PresentationGroupRef = { kind: 'network' | 'gateway' | 'unidentified' | 'hidden'; key: string };
 const UNIDENTIFIED_KEY = 'unidentified';
+const HIDDEN_KEY = { decommissioned: 'hidden|decommissioned', no_current_evidence: 'hidden|no_current_evidence' } as const;
 const groupRef = (kind: PresentationGroupRef['kind'], key: string): PresentationGroupRef =>
   ({ kind, key: createHash('sha256').update(key).digest('hex') });
 
@@ -357,13 +435,20 @@ export function presentationGroupMembers(input: PresentationGroupInput, ref: Pre
   let members: string[] = [];
   if (ref.kind === 'unidentified') {
     if (named(UNIDENTIFIED_KEY)) members = site.unidentified;
+  } else if (ref.kind === 'hidden') {
+    if (named(HIDDEN_KEY.decommissioned)) members = input.decommissioned ?? [];
+    else if (named(HIDDEN_KEY.no_current_evidence)) members = site.orphans.unevidenced;
   } else if (ref.kind === 'gateway') {
     const group = [...site.gatewayGroups.values()].find((entry) => named(entry.key));
-    if (group) members = group.routes.map((route) => route.gatewayId);
+    if (group) members = [...group.routes.map((route) => route.gatewayId), ...(site.orphans.folds.get(group.key) ?? [])];
   } else {
     const candidate = [...site.candidates.values()].find((entry) => named(entry.key));
     if (candidate) {
-      members = [...candidate.memberships.flatMap((m) => [m.networkId, m.endpointId]), ...candidate.addressMatches, ...candidate.neighborSeen.keys()];
+      members = [...candidate.memberships.flatMap((m) => [m.networkId, m.endpointId]), ...candidate.addressMatches, ...candidate.neighborSeen.keys(),
+        ...(site.orphans.folds.get(candidate.key) ?? [])];
+    } else {
+      const orphanCard = [...site.orphans.byClass.keys()].find(named);
+      if (orphanCard) members = site.orphans.byClass.get(orphanCard)!.ids;
     }
   }
   return members.length ? sorted(new Set(members)) : null;
@@ -372,11 +457,17 @@ export function presentationGroupMembers(input: PresentationGroupInput, ref: Pre
 /**
  * Pure grouping over complete-site inputs. Deterministic for a given input regardless
  * of row order: every list is sorted and every choice (primary parent, route owner)
- * is decided by candidate key, never by size.
+ * is decided by candidate key, never by size. Retired agents never shape a card, and
+ * orphan and decommissioned nodes are placed after the cards (#7879).
  */
 export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
+  const site = analysePresentationGroups(input, options.now);
+  return placeOverviewOutliers(buildCardGroups(site, options), input, site, options);
+}
+
+function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions): PresentationGroups {
   const { view, scopeHash, visibleNodeIds, tokenFor } = options;
-  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = analysePresentationGroups(input, options.now);
+  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = site;
   const visible = (ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
   const canonicalNetworks = (candidate: Candidate) => sorted(new Set(candidate.memberships.map((m) => m.networkId)));
   const nodeIds = new Map<string, string>();
@@ -484,6 +575,51 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   return { nodes, edges: edges.slice(0, options.maxEdges ?? CONTRIBUTING_CAP) };
 }
 
+/**
+ * Orphan and decommissioned placement (#7879), over the finished cards and never
+ * changing them except to fold a duplicate canonical node in. Presentation only: no
+ * relationship, membership or route is implied, and nothing here is authority.
+ *  - Orphans (placeOrphans) fold into their card or gateway group; unevidenced ones are hidden
+ *    (`no_current_evidence`); evidenced non-LAN ones form a memberless card of their class, so
+ *    the hidden-networks toggle governs them like any other.
+ *  - Retired agents with no online bound asset are hidden (`decommissioned`) and counted site-wide;
+ *    one whose asset is online stays, placed by the asset's address like any unplaced endpoint.
+ */
+function placeOverviewOutliers(grouped: PresentationGroups, input: PresentationGroupInput, site: SiteGrouping, options: PresentationGroupOptions): PresentationGroups {
+  const { view, scopeHash, visibleNodeIds, tokenFor } = options;
+  const nodes = grouped.nodes.map((node) => (node.group ? { ...node, group: { ...node.group, canonicalNodeIds: [...node.group.canonicalNodeIds] } } : node));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const [key, ids] of site.orphans.folds) {
+    // An orphan folds into the card (`net`) or gateway group (`gw`) its key names, when that card is on this page.
+    const card = byId.get(presentationId(view, scopeHash, site.candidates.has(key) ? 'net' : 'gw', key));
+    if (!card?.group) continue;
+    const listed = card.group.canonicalNodeIds;
+    for (const nodeId of ids) if (visibleNodeIds.has(nodeId) && listed.length < LIST_CAP && !listed.includes(nodeId)) listed.push(nodeId);
+    listed.sort(bySmallest);
+  }
+  for (const key of sorted(site.orphans.byClass.keys())) {
+    const { networkClass, prefix, ids } = site.orphans.byClass.get(key)!;
+    const canonicalNodeIds = sorted(ids).filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
+    if (!canonicalNodeIds.length) continue;
+    nodes.push({ id: presentationId(view, scopeHash, 'net', key), view, role: 'network_group', label: prefix.slice(0, 255), memberCount: 0,
+      frontierToken: tokenFor(groupRef('network', key)), authority: false,
+      group: { kind: 'network', basis: 'inferred_site_prefix', networkClass, prefix, address: null, gatewayAddresses: [], conflict: false,
+        observerCount: 0, members: [], canonicalNodeIds } });
+  }
+  const hidden = (basis: keyof typeof HIDDEN_KEY, label: string, ids: Iterable<string>) => {
+    const all = sorted(new Set(ids));
+    const canonicalNodeIds = all.filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
+    if (!canonicalNodeIds.length) return;
+    nodes.push({ id: presentationId(view, scopeHash, 'hid', basis), view, role: 'hidden_group', label, memberCount: all.length,
+      frontierToken: tokenFor(groupRef('hidden', HIDDEN_KEY[basis])), authority: false,
+      group: { kind: 'hidden', basis, networkClass: null, prefix: null, address: null, gatewayAddresses: [], conflict: false,
+        observerCount: 0, members: [], canonicalNodeIds } });
+  };
+  hidden('decommissioned', 'Decommissioned devices', input.decommissioned ?? []);
+  hidden('no_current_evidence', 'Network nodes with no current evidence', site.orphans.unevidenced);
+  return { nodes: nodes.slice(0, options.maxNodes ?? LIST_CAP), edges: grouped.edges };
+}
+
 const deviceAddress = sql.raw(`nullif(btrim(split_part(dn.ip_address, '/', 1)), '')`);
 /** Inventory (IP, MAC) pairs read per site; beyond it no neighbour placement is attempted. */
 export const INVENTORY_PAIR_CAP = 20_000;
@@ -498,7 +634,16 @@ export async function readPresentationGroupInput(
 ): Promise<PresentationGroupInput> {
   const siteNodes = nodeFilter(scope, { view, hops: 1, includeHealth: false, limit: 1 }, 'n', exposure);
   const [row] = await tx.execute<PresentationGroupInput>(sql`WITH site_nodes AS MATERIALIZED (
-      SELECT n.id, n.kind, n.attributes FROM topology_nodes n WHERE ${siteNodes}
+      SELECT n.id, n.kind, n.attributes, n.last_observed_at FROM topology_nodes n WHERE ${siteNodes}
+    ), retired AS MATERIALIZED (
+      -- #7879: at least one device binding, and every device binding is a decommissioned device (a missing row is live).
+      SELECT s.id FROM site_nodes s WHERE EXISTS (SELECT 1 FROM topology_node_bindings db WHERE ${scoped(scope, 'db')} AND db.node_id = s.id AND db.device_id IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM topology_node_bindings db LEFT JOIN devices dd ON dd.id = db.device_id AND dd.org_id = db.org_id
+          WHERE ${scoped(scope, 'db')} AND db.node_id = s.id AND db.device_id IS NOT NULL AND (dd.id IS NULL OR dd.status <> 'decommissioned'))
+    ), decommissioned AS MATERIALIZED (
+      -- Hidden unless a bound discovered asset is online in its latest completed scan: then the hardware is still there.
+      SELECT r.id FROM retired r WHERE NOT EXISTS (SELECT 1 FROM topology_node_bindings ab JOIN discovered_assets a ON a.id = ab.discovered_asset_id AND a.org_id = ab.org_id
+        WHERE ${scoped(scope, 'ab')} AND ab.node_id = r.id AND ${assetScanPresenceSql(scope)} = 'online')
     ), rels AS MATERIALIZED (
       SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, r.logical_context->>'contextKey' AS context,
         coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
@@ -523,9 +668,10 @@ export async function readPresentationGroupInput(
             SELECT host(a.ip_address) AS ip FROM topology_node_bindings b JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
               WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND a.ip_address IS NOT NULL
             UNION SELECT ${deviceAddress} FROM topology_node_bindings b JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
-              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL
+              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
           ) x), '[]'::jsonb)) ORDER BY e.id), '[]'::jsonb)
-        FROM site_nodes e WHERE e.kind = 'endpoint' AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id)) AS unplaced,
+        FROM site_nodes e WHERE e.kind = 'endpoint' AND (EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
+          OR NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id))) AS unplaced,
       -- Each pair comes from ONE inventory row (an asset, or one device_network row): never an address joined to another row's MAC.
       (SELECT coalesce(jsonb_agg(p.pair), '[]'::jsonb) FROM (
           SELECT jsonb_build_object('endpointId', e.id, 'ip', host(a.ip_address), 'mac', btrim(a.mac_address)) AS pair
@@ -536,8 +682,28 @@ export async function readPresentationGroupInput(
             FROM site_nodes e JOIN topology_node_bindings b ON ${scoped(scope, 'b')} AND b.node_id = e.id
             JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
             WHERE e.kind = 'endpoint' AND ${deviceAddress} IS NOT NULL AND nullif(btrim(dn.mac_address), '') IS NOT NULL
-          LIMIT ${INVENTORY_PAIR_CAP + 1}) p) AS "inventoryPairs"`);
-  const input: PresentationGroupInput = { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [] };
+              AND NOT EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
+          LIMIT ${INVENTORY_PAIR_CAP + 1}) p) AS "inventoryPairs",
+      -- #7879 orphans: unbound network/gateway nodes with no relationship in this view to a shown, live node.
+      -- Current evidence: a still-fresh incident relationship (any view, physical gate kept) to a live node, or a
+      -- node observation inside the freshness floor (max(3 x cadence, 900 s) with no cadence known: 900 s).
+      (SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'kind', s.kind, 'prefix', s.attributes->>'prefix',
+          'address', nullif(btrim(s.attributes->>'label'), ''),
+          'evidenced', coalesce(s.last_observed_at > now() - interval '900 seconds', false) OR EXISTS (
+            SELECT 1 FROM topology_relationships er WHERE ${scoped(scope, 'er')} AND er.deleted_at IS NULL AND er.lifecycle = 'active'
+              AND ${relationshipExposure({ physical: exposure.physical }, 'er')} AND (er.source_node_id = s.id OR er.target_node_id = s.id)
+              AND NOT EXISTS (SELECT 1 FROM retired d WHERE d.id = er.source_node_id OR d.id = er.target_node_id)
+              AND coalesce(${observedFreshUntilSql('er')} > now(), false))) ORDER BY s.id), '[]'::jsonb)
+        FROM site_nodes s WHERE s.kind IN ('network', 'gateway')
+          AND NOT EXISTS (SELECT 1 FROM topology_node_bindings ob WHERE ${scoped(scope, 'ob')} AND ob.node_id = s.id)
+          AND NOT EXISTS (SELECT 1 FROM topology_relationships xr WHERE ${relationshipFilter(scope, view, 'xr', exposure)}
+            AND (xr.source_node_id = s.id OR xr.target_node_id = s.id)
+            AND EXISTS (SELECT 1 FROM site_nodes o WHERE o.id = CASE WHEN xr.source_node_id = s.id THEN xr.target_node_id ELSE xr.source_node_id END
+              AND NOT EXISTS (SELECT 1 FROM retired d WHERE d.id = o.id)))) AS orphans,
+      (SELECT coalesce(jsonb_agg(d.id ORDER BY d.id), '[]'::jsonb) FROM retired d) AS retired,
+      (SELECT coalesce(jsonb_agg(d.id ORDER BY d.id), '[]'::jsonb) FROM decommissioned d) AS decommissioned`);
+  const input: PresentationGroupInput = { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [],
+    orphans: row?.orphans ?? [], retired: row?.retired ?? [], decommissioned: row?.decommissioned ?? [] };
   const pairs = row?.inventoryPairs ?? [];
   input.inventoryPairsTruncated = pairs.length > INVENTORY_PAIR_CAP;
   input.inventoryPairs = input.inventoryPairsTruncated ? [] : pairs;

@@ -25,7 +25,7 @@ const filterSchema = z.union([graphQuerySchema, nodeListQuerySchema.omit({ curso
  * (presentationGroups.ts). Membership is re-resolved from the complete site on use, under
  * the same revision binding as every other claim; the token never carries member ids.
  */
-const groupClaimSchema = z.object({ kind: z.enum(['network', 'gateway', 'unidentified']), key: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const groupClaimSchema = z.object({ kind: z.enum(['network', 'gateway', 'unidentified', 'hidden']), key: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const claimsSchema = topologyScopeSchema.extend({
   version: z.literal(1), kind: z.enum(['graph', 'nodes', 'evidence']), authority: z.string().regex(/^[a-f0-9]{64}$/),
   graphRevision: z.string().regex(/^(0|[1-9]\d*)$/), filter: filterSchema,

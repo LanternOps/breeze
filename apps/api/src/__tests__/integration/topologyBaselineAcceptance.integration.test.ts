@@ -500,8 +500,13 @@ async function sameLan(observers = 3) {
       await db.execute(sql`INSERT INTO device_network (device_id,org_id,interface_name,mac_address,ip_address,ip_type,is_primary)
         VALUES (${deviceId}::uuid,${orgId}::uuid,'eth0',${`02:00:00:00:00:0${index}`},${`10.1.2.${10 + index}`},'ipv4',true)`);
     }
-    await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type,is_online)
-      VALUES (${printerId}::uuid,${orgId}::uuid,${siteId}::uuid,'10.1.2.77','lan-printer','printer',true)`);
+    // Scan presence comes from the latest completed scan that saw the asset (#7879), not is_online.
+    const [profileId, jobId] = [crypto.randomUUID(), crypto.randomUUID()];
+    await db.execute(sql`INSERT INTO discovery_profiles (id,org_id,site_id,name) VALUES (${profileId}::uuid,${orgId}::uuid,${siteId}::uuid,'lan')`);
+    await db.execute(sql`INSERT INTO discovery_jobs (id,profile_id,org_id,site_id,status,started_at,completed_at)
+      VALUES (${jobId}::uuid,${profileId}::uuid,${orgId}::uuid,${siteId}::uuid,'completed',now() - interval '2 minutes',now() - interval '1 minute')`);
+    await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type,is_online,last_seen_at,last_job_id)
+      VALUES (${printerId}::uuid,${orgId}::uuid,${siteId}::uuid,'10.1.2.77','lan-printer','printer',true,now(),${jobId}::uuid)`);
   });
   let imported = await scoped(() => importLegacyTopologySite(scope));
   for (let attempt = 0; !imported.complete && attempt < 30; attempt++) imported = await scoped(() => drainTopologyOutbox(scope));

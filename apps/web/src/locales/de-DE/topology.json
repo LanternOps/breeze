@@ -623,6 +623,8 @@
     "useLayout": "Gruppiertes Layout verwenden",
     "showAllNetworks_one": "{{count}} Link-Local-, VPN- oder Einzelhost-Netzwerk anzeigen",
     "showAllNetworks_other": "{{count}} Link-Local-, VPN- oder Einzelhost-Netzwerke anzeigen",
+    "hiddenDevices_one": "{{count}} entferntes Gerät ausgeblendet",
+    "hiddenDevices_other": "{{count}} entfernte Geräte ausgeblendet",
     "evidenceSection": "Nachweise und Aktualität",
     "type": "Typ",
     "addresses": "Adressen",

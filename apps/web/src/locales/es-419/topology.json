@@ -623,6 +623,8 @@
     "useLayout": "Usar diseño agrupado",
     "showAllNetworks_one": "Mostrar {{count}} red de vínculo local, VPN o de un solo host",
     "showAllNetworks_other": "Mostrar {{count}} redes de vínculo local, VPN o de un solo host",
+    "hiddenDevices_one": "{{count}} dispositivo quitado oculto",
+    "hiddenDevices_other": "{{count}} dispositivos quitados ocultos",
     "evidenceSection": "Evidencia y vigencia",
     "type": "Tipo",
     "addresses": "Direcciones",

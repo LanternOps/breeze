@@ -17,7 +17,8 @@ export type RenderNode = {
 };
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
-export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number };
+/** `hiddenDeviceCount`: decommissioned devices the overview leaves out (#7879), site-wide. */
+export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number; hiddenDeviceCount: number };
 
 /**
  * Tile title + second line. A nameless device whose server label is only its address reads as
@@ -61,9 +62,11 @@ function summaryNode(group: PresentationNode): RenderNode {
 }
 
 export function compileTopologyRender(graph: GraphResponse, { showAllNetworks }: { showAllNetworks: boolean }): TopologyRender {
-  const groups = graph.presentation.nodes.filter((node) => node.group);
+  const allGroups = graph.presentation.nodes.filter((node) => node.group);
+  // A hidden group (#7879) is never drawn: it only folds away the nodes the overview leaves out.
+  const groups = allGroups.filter((group) => group.group!.kind !== 'hidden');
   const shownGroup = (group: PresentationNode) => group.group!.kind !== 'network' || showAllNetworks || group.group!.networkClass === 'lan';
-  const folded = new Set(groups.flatMap((group) => group.group!.canonicalNodeIds));
+  const folded = new Set(allGroups.flatMap((group) => group.group!.canonicalNodeIds));
   const visibleGroups = groups.filter(shownGroup);
   // Each member has exactly one visual home: its primary card when shown, otherwise the first shown card listing it.
   const home = new Map<string, { group: string; stale: boolean; placement: string }>();
@@ -117,5 +120,6 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks }:
     }
   }
   const hiddenNetworkCount = groups.filter((group) => group.group!.kind === 'network' && !renderedGroupIds.has(group.id)).length;
-  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount };
+  const hiddenDeviceCount = allGroups.filter((group) => group.group!.kind === 'hidden' && group.group!.basis === 'decommissioned').reduce((sum, group) => sum + group.memberCount, 0);
+  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount };
 }

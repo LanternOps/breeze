@@ -623,6 +623,8 @@
     "useLayout": "Utiliser la disposition groupée",
     "showAllNetworks_one": "Afficher {{count}} réseau à liaison locale, VPN ou à hôte unique",
     "showAllNetworks_other": "Afficher {{count}} réseaux à liaison locale, VPN ou à hôte unique",
+    "hiddenDevices_one": "{{count}} appareil retiré masqué",
+    "hiddenDevices_other": "{{count}} appareils retirés masqués",
     "evidenceSection": "Preuves et fraîcheur",
     "type": "Type",
     "addresses": "Adresses",

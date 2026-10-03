@@ -22,8 +22,8 @@ export type NodeRow = {
   bindings: GraphNode['bindings'];
   /** Live inventory facts through the node's first device (else asset) binding; null/absent when unbound. */
   inventory?: NonNullable<GraphNode['inventory']> | null;
-  /** Active, exposure-permitted incident relationships: count, latest support expiry, distinct (kind, method, legacy, class). */
-  support?: { count: string | number; freshUntil: string | null; kinds: [string, string | null, boolean, string][] } | null;
+  /** Active, exposure-permitted incident relationships: count, latest support expiry, latest observation, distinct (kind, method, legacy, class). */
+  support?: { count: string | number; freshUntil: string | null; observedAt?: string | null; kinds: [string, string | null, boolean, string][] } | null;
 };
 export type RelationshipRow = {
   id: string; kind: GraphRelationship['kind']; sourceNodeId: string; targetNodeId: string;
@@ -96,6 +96,14 @@ export function listFilter(scope: TopologyScope, query: NodeListQuery, exposure:
 const deviceOf = (b: string, d: string) => sql.raw(`devices ${d} ON ${d}.id = ${b}.device_id AND ${d}.org_id = ${b}.org_id`);
 const assetOf = (b: string, a: string) => sql.raw(`discovered_assets ${a} ON ${a}.id = ${b}.discovered_asset_id AND ${a}.org_id = ${b}.org_id`);
 const networkOf = (b: string, dn: string) => sql.raw(`device_network ${dn} ON ${dn}.device_id = ${b}.device_id AND ${dn}.org_id = ${b}.org_id`);
+/**
+ * A decommissioned agent never speaks for a node that also has a discovered-asset binding (#7879):
+ * the hardware outlived the agent, so label, inventory and presence come from the asset. Scope-free
+ * (no scan read) so nodeLabelSql stays embeddable; whether such a node is SHOWN at all is decided by
+ * the grouped overview (readPresentationGroupInput: shown only while that asset is online in its scan).
+ */
+const liveAgent = (b: string, d: string) => sql.raw(`NOT (${d}.status = 'decommissioned' AND EXISTS (SELECT 1 FROM topology_node_bindings xab
+  WHERE xab.org_id = ${b}.org_id AND xab.site_id = ${b}.site_id AND xab.node_id = ${b}.node_id AND xab.discovered_asset_id IS NOT NULL))`);
 /** device_network.ip_address is free text: drop any mask so the address reads like an asset's host(). */
 const deviceAddress = (dn: string) => sql.raw(`nullif(btrim(split_part(${dn}.ip_address, '/', 1)), '')`);
 const primaryNetworkOrder = (dn: string) => sql.raw(`${dn}.is_primary DESC, (${dn}.ip_type = 'ipv4') DESC, ${dn}.interface_name, ${dn}.id`);
@@ -109,7 +117,7 @@ const primaryNetworkOrder = (dn: string) => sql.raw(`${dn}.is_primary DESC, (${d
 export const nodeLabelSql = sql`coalesce(
   nullif(btrim(n.label_override), ''),
   (SELECT coalesce(nullif(btrim(ld.display_name), ''), nullif(btrim(ld.hostname), '')) FROM topology_node_bindings lb JOIN ${deviceOf('lb', 'ld')}
-    WHERE lb.org_id = n.org_id AND lb.site_id = n.site_id AND lb.node_id = n.id ORDER BY lb.id LIMIT 1),
+    WHERE lb.org_id = n.org_id AND lb.site_id = n.site_id AND lb.node_id = n.id AND ${liveAgent('lb', 'ld')} ORDER BY lb.id LIMIT 1),
   (SELECT coalesce(nullif(btrim(la.label), ''), nullif(btrim(la.hostname), ''), nullif(btrim(la.netbios_name), ''))
     FROM topology_node_bindings lb JOIN ${assetOf('lb', 'la')} WHERE lb.org_id = n.org_id AND lb.site_id = n.site_id AND lb.node_id = n.id ORDER BY lb.id LIMIT 1),
   nullif(btrim(n.attributes->>'label'), ''),
@@ -133,11 +141,39 @@ function nodeSearch(search: string): SQL {
 }
 const isoUtc = (column: string) => sql.raw(`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
 /**
+ * Scan presence of discovered asset alias `a` (#7879). `is_online` is sticky: the disappeared
+ * sweep only ever flips APPROVED assets, so a pending asset that left the network reads
+ * "online" forever. Presence is instead whether the asset appeared in the latest completed
+ * scan of the profile that last saw it (`last_job_id` is always the newest job that saw
+ * it, so a later completed job of that profile is one that did not). Per profile, because
+ * a site's profiles scan different subnets. No scan of the asset at all is `unknown`.
+ * A UniFi controller's verdict (rewritten every sync) wins while it is dated within 1 h.
+ * A completed scan that found no hosts at all is no evidence of absence (the disappeared sweep
+ * makes the same refusal: an agent on the wrong network must not dim a whole site).
+ * The latest-completion map is uncorrelated with the node, so Postgres reads
+ * discovery_jobs once per statement (an InitPlan), not once per node.
+ */
+export function assetScanPresenceSql(scope: TopologyScope): SQL {
+  const latestCompleted = sql`(SELECT coalesce(jsonb_object_agg(lj.profile_id::text, lj.completed_at), '{}'::jsonb) FROM (
+      SELECT dj.profile_id, max(dj.completed_at) AS completed_at FROM discovery_jobs dj
+      WHERE dj.org_id = ${scope.orgId}::uuid AND dj.site_id = ${scope.siteId}::uuid AND dj.status = 'completed' AND dj.completed_at IS NOT NULL
+        AND coalesce(dj.hosts_discovered, 1) > 0
+      GROUP BY dj.profile_id) lj)`;
+  // A UniFi controller rewrites is_online on every sync (status_source='unifi'): its verdict is current
+  // only while dated inside the reachability window (assetReachability.ts UNIFI_FRESHNESS_MS, 1 h).
+  return sql`CASE WHEN a.status_source = 'unifi' AND a.status_observed_at > now() - interval '1 hour'
+    THEN CASE WHEN a.is_online THEN 'online' ELSE 'offline' END
+    ELSE coalesce((SELECT CASE
+      WHEN coalesce(sj.completed_at, sj.started_at, sj.created_at) >= coalesce((${latestCompleted} ->> sj.profile_id::text)::timestamp, '-infinity'::timestamp)
+      THEN 'online' ELSE 'offline' END
+    FROM discovery_jobs sj WHERE sj.id = a.last_job_id AND sj.org_id = a.org_id), 'unknown') END`;
+}
+/**
  * Live inventory of node `n` (grouped overview §1): the first device binding, else the
  * first discovered-asset binding. Presence is agent/scan reachability, never health.
  * Topology `read` already requires devices:read (permissionPairs.ts), so nothing new is disclosed.
  */
-const nodeInventorySql = sql`coalesce(
+const nodeInventorySql = (scope: TopologyScope) => sql`coalesce(
   (SELECT jsonb_build_object('source', 'device', 'name', coalesce(nullif(btrim(d.display_name), ''), d.hostname),
       'addresses', coalesce((SELECT jsonb_agg(x.ip ORDER BY x.primary_rank, x.v4_rank, x.ip) FROM (
         SELECT ${deviceAddress('dn')} AS ip, min(CASE WHEN dn.is_primary THEN 0 ELSE 1 END) AS primary_rank, min(CASE WHEN dn.ip_type = 'ipv4' THEN 0 ELSE 1 END) AS v4_rank
@@ -152,13 +188,13 @@ const nodeInventorySql = sql`coalesce(
         'state', CASE WHEN d.status = 'online' THEN 'online' WHEN d.status IN ('offline', 'decommissioned', 'quarantined') THEN 'offline' ELSE 'unknown' END,
         'source', 'agent', 'agentStatus', d.status::text, 'lastSeenAt', ${isoUtc('d.last_seen_at')}))
     FROM topology_node_bindings ib JOIN ${deviceOf('ib', 'd')}
-    WHERE ib.org_id = n.org_id AND ib.site_id = n.site_id AND ib.node_id = n.id ORDER BY ib.id LIMIT 1),
+    WHERE ib.org_id = n.org_id AND ib.site_id = n.site_id AND ib.node_id = n.id AND ${liveAgent('ib', 'd')} ORDER BY ib.id LIMIT 1),
   (SELECT jsonb_build_object('source', 'discovered_asset',
       'name', coalesce(nullif(btrim(a.label), ''), nullif(btrim(a.hostname), ''), nullif(btrim(a.netbios_name), '')),
       'addresses', CASE WHEN a.ip_address IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(host(a.ip_address)) END,
       'mac', nullif(btrim(a.mac_address), ''), 'vendor', nullif(btrim(a.manufacturer), ''), 'model', nullif(btrim(a.model), ''),
       'os', NULL::text, 'type', nullif(a.asset_type::text, 'unknown'),
-      'presence', jsonb_build_object('state', CASE WHEN a.is_online THEN 'online' ELSE 'offline' END, 'source', 'scan',
+      'presence', jsonb_build_object('state', ${assetScanPresenceSql(scope)}, 'source', 'scan',
         'agentStatus', NULL::text, 'lastSeenAt', ${isoUtc('a.last_seen_at')}))
     FROM topology_node_bindings ib JOIN ${assetOf('ib', 'a')}
     WHERE ib.org_id = n.org_id AND ib.site_id = n.site_id AND ib.node_id = n.id ORDER BY ib.id LIMIT 1))`;
@@ -168,26 +204,42 @@ const nodeInventorySql = sql`coalesce(
  * node freshness and by the presentation-group read.
  */
 export function observedFreshUntilSql(alias: string): SQL {
+  return supportRollupSql(alias, sql`greatest(rs.fresh_until,cs.fresh_until)`, sql`rs.fresh_until`);
+}
+/**
+ * Latest observation of relationship `alias` under the same rule (#7879): a source that
+ * re-captured unchanged, still-published content confirmed the relationship at
+ * `confirmed_through_at`, even though no support row was rewritten. Without this a
+ * relationship that is fresh reads as last observed at its last content change.
+ */
+export function observedAtSql(alias: string): SQL {
+  return supportRollupSql(alias, sql`greatest(rs.last_positive_at,cs.confirmed_through_at)`, sql`rs.last_positive_at`);
+}
+function supportRollupSql(alias: string, confirmed: SQL, own: SQL): SQL {
   const r = sql.identifier(alias);
   return sql`(SELECT max(CASE WHEN cs.producer_epoch=rs.producer_epoch AND cs.revoked_at IS NULL
       AND cs.published_digest=cs.content_digest AND rs.content_digest=cs.published_digest AND cs.last_outcome IN ('complete','partial')
-    THEN greatest(rs.fresh_until,cs.fresh_until) ELSE rs.fresh_until END)
+    THEN ${confirmed} ELSE ${own} END)
    FROM topology_relationship_support rs JOIN topology_collection_sources cs ON cs.id=rs.source_id AND cs.org_id=rs.org_id AND cs.site_id=rs.site_id
    WHERE rs.org_id=${r}.org_id AND rs.site_id=${r}.site_id AND rs.relationship_id=${r}.id AND rs.lifecycle='active')`;
 }
-/** Node freshness/evidence (§3) from ALL active incident relationships this read may expose — never the bounded edge page. */
+/**
+ * Node freshness/evidence (§3) from ALL active incident relationships this read may expose — never the bounded edge page.
+ * `observedAt` is the latest of their observations (#7879): an agent node has no node-level
+ * observation of its own, so its routes and memberships ARE its evidence.
+ */
 function nodeSupportSql(exposure: NodeColumnsExposure): SQL {
-  return sql`(SELECT jsonb_build_object('count', count(*)::text, 'freshUntil', max(s.fresh_until),
+  return sql`(SELECT jsonb_build_object('count', count(*)::text, 'freshUntil', max(s.fresh_until), 'observedAt', max(s.observed_at),
       'kinds', coalesce(jsonb_agg(DISTINCT jsonb_build_array(s.kind, s.method, s.legacy, s.evidence_class)), '[]'::jsonb))
     FROM (SELECT ir.kind, ir.attributes->>'method' AS method, (ir.legacy_source_id IS NOT NULL) AS legacy, ir.evidence_class,
-        ${observedFreshUntilSql('ir')} AS fresh_until
+        ${observedFreshUntilSql('ir')} AS fresh_until, greatest(ir.last_supported_at, ${observedAtSql('ir')}) AS observed_at
       FROM topology_relationships ir WHERE ir.org_id = n.org_id AND ir.site_id = n.site_id AND ir.deleted_at IS NULL AND ir.lifecycle = 'active'
         AND (ir.source_node_id = n.id OR ir.target_node_id = n.id) AND ${relationshipExposure(exposure, 'ir')}) s)`;
 }
 type NodeColumnsExposure = Pick<ReadExposure, 'physical'> & Partial<Pick<ReadExposure, 'excluded'>>;
 export function nodeColumns(scope: TopologyScope, exposure: NodeColumnsExposure): SQL {
   return sql`n.id, n.kind, n.role, ${nodeLabelSql} AS label,
-    ${nodeInventorySql} as "inventory", ${nodeSupportSql(exposure)} as "support",
+    ${nodeInventorySql(scope)} as "inventory", ${nodeSupportSql(exposure)} as "support",
     n.lifecycle, n.last_observed_at AS "lastObservedAt", (n.legacy_source_id IS NOT NULL) AS legacy,
     coalesce((SELECT jsonb_agg(bounded.binding) FROM (
       SELECT jsonb_build_object('id', b.id, 'type', CASE WHEN b.device_id IS NOT NULL THEN 'device' WHEN b.discovered_asset_id IS NOT NULL THEN 'discovered_asset' ELSE 'manual_node' END,
@@ -204,6 +256,7 @@ export function unknownHealth(scope: 'node' | 'relationship') {
     freshness: 'unknown' as const, reasons: [{ code: 'monitoring_unavailable', message: 'Topology monitoring is not available in this milestone.' }] };
 }
 function timestamp(value: string | Date | null): string | null { return value ? new Date(value).toISOString() : null; }
+const latest = (a: string | null, b: string | null) => (a && b ? (a > b ? a : b) : a ?? b);
 const freshnessOf = (freshUntil: string | null | undefined): GraphNode['freshness'] =>
   freshUntil ? (Date.parse(freshUntil) > Date.now() ? 'fresh' : 'stale') : 'unknown';
 const text = (value: string | null | undefined, max: number) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null);
@@ -227,7 +280,7 @@ export function presentNode(row: NodeRow, canEdit: boolean, health?: GraphNode['
   return { id: row.id, kind: row.kind, role: row.role?.trim() || null, label: row.label.trim().slice(0, 255) || `${row.kind} ${row.id}`, bindings: row.bindings,
     lifecycle: row.lifecycle, freshness: freshnessOf(row.support?.freshUntil),
     evidence: { classes: EVIDENCE_CLASSES.filter((value) => classes.has(value)), methods: OBSERVATION_METHODS.filter((value) => methods.has(value)),
-      count, lastObservedAt: timestamp(row.lastObservedAt) },
+      count, lastObservedAt: latest(timestamp(row.lastObservedAt), timestamp(row.support?.observedAt ?? null)) },
     health: health ?? unknownHealth('node'), availableActions: canEdit && row.kind === 'manual' ? ['edit', 'delete'] : [],
     ...(row.inventory ? { inventory: presentInventory(row.inventory) } : {}) };
 }
