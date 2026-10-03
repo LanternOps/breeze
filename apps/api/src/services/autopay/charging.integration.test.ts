@@ -1343,3 +1343,50 @@ it.each(['cancelled','missing'] as const)('Send does not claim a %s notice was q
  const {sendInvoiceEmail}=await import('../invoicePdf');
  expect(await withSystemDbAccessContext(()=>sendInvoiceEmail(f.invoice.id,f.actor))).toMatchObject({emailed:false,reason:'send_failed'});
 });
+
+// Lab regression: provider/configuration outages leave collectible work for a later tick.
+it.each(['charging_disabled','stripe_unavailable'] as const)('resumes a real due schedule after %s clears',async reason=>{
+ const f=await fixture();const now=new Date();
+ await withSystemDbAccessContext(async()=>{
+  if(reason==='charging_disabled')await db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id));
+  else await db.update(stripeConnectAccounts).set({autopayMissingPermissions:['payment_intents.write']}).where(eq(stripeConnectAccounts.id,f.connection.id));
+ });
+ await runAutopayCollection(now);
+ expect(await scheduleFor(f)).toMatchObject({state:'scheduled',stateReason:reason,nextAttemptAt:new Date(now.getTime()+86_400_000)});
+ expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();
+ await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({autopayEnabled:true}).where(eq(partners.id,f.partner.id));
+  await db.update(stripeConnectAccounts).set({autopayMissingPermissions:[]}).where(eq(stripeConnectAccounts.id,f.connection.id));
+ });
+ await runAutopayCollection(new Date(now.getTime()+86_400_000));
+ expect((await attempts(f.invoice.id))[0]?.state).toBe('processing');expect(provider.create).toHaveBeenCalledOnce();
+});
+it('requires a fresh notice when terms changed during a charging deferral',async()=>{
+ const f=await fixture();const now=new Date();
+ await withSystemDbAccessContext(()=>db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id)));
+ await runAutopayCollection(now);
+ await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({autopayEnabled:true}).where(eq(partners.id,f.partner.id));
+  await db.update(invoiceAutopaySchedules).set({termsSnapshot:{...f.schedule.termsSnapshot as object,cardFeeBps:100}}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+ });
+ await runAutopayCollection(new Date(now.getTime()+86_400_000));
+ expect(await scheduleFor(f)).toMatchObject({state:'awaiting_notice',noticeSentAt:null});
+ expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();
+});
+
+it('dedupes charging-disabled attention across due invoices and daily reruns',async()=>{
+ const f=await fixture();const now=new Date();
+ const user=await withSystemDbAccessContext(async()=>{
+  const user=await createUser({partnerId:f.partner.id,withMembership:true});
+  await db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id));
+  const [second]=await db.insert(invoices).values({...f.invoice,id:randomUUID(),invoiceNumber:`T-${randomUUID()}`}).returning();
+  await db.insert(invoiceAutopaySchedules).values({...f.schedule,id:randomUUID(),invoiceId:second!.id,noticeOutboxId:null});
+  return user;
+ });
+ await runAutopayCollection(now);await runAutopayCollection(now);
+ const notices=()=>withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.userId,user.id)));
+ expect(await notices()).toHaveLength(1);
+ expect((await notices())[0]?.dedupeKey).toBe(`autopay:charging_disabled:${f.partner.id}:${now.toISOString().slice(0,10)}:${user.id}`);
+ await runAutopayCollection(new Date(now.getTime()+86_400_000));
+ expect(await notices()).toHaveLength(2);expect(provider.create).not.toHaveBeenCalled();
+});

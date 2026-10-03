@@ -2423,6 +2423,8 @@
     }
   },
   "autopay": {
+    "chargeConfirmTitle": "Conferma pagamento automatico",
+    "chargeConfirmMessage": "Addebitare fino a {{amount}}, incluse eventuali commissioni di elaborazione, per la fattura {{invoice}} tramite {{method}}?",
     "noticeQueued": "Avviso di pagamento automatico in coda",
     "requestDeliveryFailed": "Impossibile recapitare l’e-mail di richiesta. Inviala di nuovo.",
     "skipNoContact": "Nessun indirizzo e-mail di fatturazione disponibile. Aggiungine uno o indica un destinatario.",

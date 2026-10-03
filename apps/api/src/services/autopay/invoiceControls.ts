@@ -1,7 +1,7 @@
 import { parseAutopayTerms } from '@breeze/shared';
 import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
-import { toMinorUnits } from '../stripeMoney';
+import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
@@ -132,10 +132,16 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
         && Date.now() >= schedule.noticeSentAt.getTime() + terms.noticeLeadDays * 86_400_000;
     }
   }
+  const terms = schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
+  const chargePreview = canChargeNow && terms ? {
+    amount: fromMinorUnits(Math.min(toMinorUnits(invoice.balance, invoice.currencyCode),
+      toMinorUnits(terms.principal, invoice.currencyCode)) + toMinorUnits(terms.feeAmount, invoice.currencyCode), invoice.currencyCode),
+    currency: invoice.currencyCode, methodLabel: terms.methodLabel,
+  } : null;
   return { state: unapplied ? 'unapplied' : processing ? 'processing' : actionRequired ? 'action_required' : schedule?.state ?? 'not_needed',
     reason: pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
     noticeSentAt: schedule?.noticeSentAt?.toISOString() ?? null, excluded: invoice.autopayExcluded,
     canExclude: enabled && ['draft', 'sent', 'partially_paid', 'overdue'].includes(invoice.status)
       && !processing && !unapplied && !pending,
-    canChargeNow, processing, unapplied };
+    canChargeNow, processing, unapplied, chargePreview };
 }

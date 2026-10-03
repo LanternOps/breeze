@@ -81,3 +81,13 @@ it('links payment attention to its invoice independently of enrollment rollout',
   expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({link:`/billing/invoices/${invoiceId}`,priority:'high',
     dedupeKey:'attempt:unapplied:11111111-1111-4111-8111-111111111111'})]);
 });
+
+it('keeps partner-only configuration attention out of customer notifications',async()=>{
+ vi.clearAllMocks();h.rows.length=0;
+ h.rows.push([{userId:'partner-staff'}]);
+ await enqueueAutopayStaffNotifications(db,{orgId:'org',partnerId:'partner',partnerOnly:true,
+  event:'autopay.needs_attention',dedupeKey:'autopay:charging_disabled:partner:2026-10-03',message:'Automatic payments are disabled.'});
+ expect(h.rows).toEqual([]);
+ expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({userId:'partner-staff',
+  dedupeKey:'autopay:charging_disabled:partner:2026-10-03:partner-staff'})]);
+});

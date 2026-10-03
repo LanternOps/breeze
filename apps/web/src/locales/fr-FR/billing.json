@@ -2423,6 +2423,8 @@
     }
   },
   "autopay": {
+    "chargeConfirmTitle": "Confirmer le paiement automatique",
+    "chargeConfirmMessage": "Prélever jusqu’à {{amount}}, frais de traitement compris, pour la facture {{invoice}} avec {{method}} ?",
     "noticeQueued": "Avis de paiement automatique en attente d’envoi",
     "requestDeliveryFailed": "Le courriel de demande n’a pas pu être envoyé. Renvoyez la demande.",
     "skipNoContact": "Aucune adresse de facturation disponible. Ajoutez une adresse ou indiquez un destinataire.",

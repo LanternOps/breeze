@@ -98,16 +98,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // unconditionally for anyone with read access, and the per-line "Accounting
   // view" checkbox was a separate, unpersisted control — so hiding margin on a
   // quote didn't carry over here).
+  const [chargeConfirmOpen, setChargeConfirmOpen] = useState(false);
   const [chargePending, setChargePending] = useState(false);
   async function startAutopayCharge() {
-    if (chargePending) return;
+    if (chargePending || !detail.autopay?.canChargeNow || !detail.autopay.chargePreview) return;
     setChargePending(true);
     try {
       await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
         errorFallback: t('autopay.chargeFailed'), successMessage: t('autopay.chargeStarted'), onUnauthorized: UNAUTHORIZED });
       await onChanged();
     } catch (error) { handleActionError(error, t('autopay.chargeFailed')); }
-    finally { setChargePending(false); }
+    finally { setChargePending(false); setChargeConfirmOpen(false); }
   }
   const [autopaySaving, setAutopaySaving] = useState(false);
   const setAutopayExcluded = async (excluded: boolean) => {
@@ -538,8 +539,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               checked={detail.autopay.excluded} disabled={autopaySaving || !can('invoices', 'write') || !detail.autopay.canExclude}
               onChange={event => void setAutopayExcluded(event.target.checked)} />{t('autopay.excludeInvoice')}</label>
             <button type="button" data-testid="autopay-charge-now" className="rounded-md border px-3 py-2 text-sm disabled:opacity-50"
-              disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow}
-              onClick={() => void startAutopayCharge()}>{t('autopay.chargeNow')}</button>
+              disabled={chargePending || !can('invoices', 'write') || !detail.autopay.canChargeNow || !detail.autopay.chargePreview}
+              onClick={() => setChargeConfirmOpen(true)}>{t('autopay.chargeNow')}</button>
           </section>}
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="invoice-detail-summary">
             <div className="mb-3 flex items-center justify-between">
@@ -879,6 +880,24 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={chargeConfirmOpen}
+        onClose={() => { if (!chargePending) setChargeConfirmOpen(false); }}
+        onConfirm={() => void startAutopayCharge()}
+        title={t('autopay.chargeConfirmTitle')}
+        message={t('autopay.chargeConfirmMessage', {
+          amount: detail.autopay?.chargePreview ? formatMoney(detail.autopay.chargePreview.amount, detail.autopay.chargePreview.currency) : '',
+          invoice: invoice.invoiceNumber ?? invoice.id,
+          method: detail.autopay?.chargePreview?.methodLabel ?? '',
+        })}
+        confirmLabel={t('autopay.chargeNow')}
+        variant="warning"
+        isLoading={chargePending}
+        confirmDisabled={!detail.autopay?.canChargeNow || !detail.autopay.chargePreview || !can('invoices', 'write')}
+        confirmTestId="autopay-charge-confirm"
+        dialogTestId="autopay-charge-dialog"
+      />
 
       {/* Reverse-a-payment confirm dialog */}
       <ConfirmDialog

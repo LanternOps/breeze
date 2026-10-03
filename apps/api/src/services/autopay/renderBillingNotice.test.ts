@@ -94,7 +94,9 @@ it('preserves receipt fee disclosure despite a hostile template replacement', as
     custom: { html: '<p>No fee mentioned</p>', subject: null, heading: null, buttonLabel: null }, frozen: { amount: '100.00', fee: '3.00' } };
   const result = await renderBillingNotice('payment_receipt', { payment });
   expect(result.html).toContain('Processing fee: USD &lt;3.00&gt;');
-  expect(result.text).toContain('fee_amount: USD <3.00>');
+  expect(result.text).toContain('Processing fee: USD <3.00>');
+  expect(result.text).toContain('No fee mentioned');
+  expect(result.text).not.toContain('fee_amount:');
   expect(result.frozen).toEqual(payment.frozen);
   await expect(renderBillingNotice('payment_failed', { payment })).rejects.toThrow('Missing payment notice context');
 });

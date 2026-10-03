@@ -2423,6 +2423,8 @@
     }
   },
   "autopay": {
+    "chargeConfirmTitle": "Confirm automatic payment",
+    "chargeConfirmMessage": "Charge up to {{amount}}, including any processing fee, for invoice {{invoice}} using {{method}}?",
     "noticeQueued": "Automatic payment notice queued",
     "requestDeliveryFailed": "Request email could not be delivered. Resend the request.",
     "skipNoContact": "No billing contact email is available. Add an email or enter a recipient.",

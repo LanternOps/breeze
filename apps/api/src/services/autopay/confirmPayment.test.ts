@@ -16,14 +16,15 @@ vi.mock('../stripeSettle',()=>({assertNoHeldDbContextForStripe:()=>{expect(h.dep
 vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:h.mint,buildPublicInvoiceUrl:()=> 'https://portal.example.test/invoice/token'}));
 import { getConfirmPaymentView,confirmInvoicePayment } from './confirmPayment';
 import { billingNoticeOutbox,invoices,orgAutopayEnrollments,invoiceAutopaySchedules,invoiceCollectionAttempts } from '../../db/schema';
-const invoice={id:'invoice',orgId:'org',partnerId:'partner'};
+const invoice={id:'invoice',orgId:'org',partnerId:'partner',status:'sent',balance:'100.00',currencyCode:'USD',autopayExcluded:false};
 const attempt={id:'attempt',invoiceId:invoice.id,orgId:invoice.orgId,scheduleId:'schedule',attemptNo:1,stripePaymentIntentId:'pi_original',state:'requires_action',principalAmount:'100.00',currency:'USD'};
 const link={id:'token',invoiceId:invoice.id,orgId:invoice.orgId,enrollmentId:'enrollment',generation:1};
 beforeEach(()=>{vi.clearAllMocks();h.rows.clear();h.writes.length=0;h.depth=0;
  h.resolve.mockResolvedValue(link);h.mint.mockResolvedValue({token:'token'});
- h.resume.mockImplementation(async()=>{expect(h.depth).toBe(0);h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);});
+ h.resume.mockImplementation(async()=>{expect(h.depth).toBe(0);h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);
+  Object.assign(h.rows.get(invoiceAutopaySchedules)![0],{state:'cancelled',stateReason:'provider_canceled'});});
  h.history.mockResolvedValue({attempt:{...attempt,state:'canceled'},invoice,mapping:{invoicePaymentId:null}});
- h.rows.set(invoices,[invoice]);h.rows.set(orgAutopayEnrollments,[{id:link.enrollmentId,orgId:'org',generation:1}]);
+ h.rows.set(invoices,[invoice]);h.rows.set(orgAutopayEnrollments,[{id:link.enrollmentId,orgId:'org',generation:1,status:'active'}]);
  h.rows.set(billingNoticeOutbox,[{rendered:{frozen:{attemptId:'attempt',tokenId:'token',variant:'confirm'}}}]);
  h.rows.set(invoiceCollectionAttempts,[attempt]);
  h.rows.set(invoiceAutopaySchedules,[{id:'schedule',invoiceId:'invoice',orgId:'org',enrollmentId:'enrollment',enrollmentGeneration:1,attemptCount:1}]);
@@ -50,4 +51,26 @@ it.each(['generation','schedule','attempt','org'])('rejects stale %s bindings be
  if(kind==='attempt')h.rows.set(invoiceCollectionAttempts,[{...attempt,id:'newer'}]);
  if(kind==='org')h.rows.set(invoices,[{...invoice,orgId:'other'}]);
  await expect(confirmInvoicePayment('token')).rejects.toThrow();expect(h.resume).not.toHaveBeenCalled();
+});
+
+it('lands an already cancelled confirmation without provider calls or minting a pay link',async()=>{
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);
+ expect(await getConfirmPaymentView('token')).toMatchObject({state:'not_needed'});
+ expect(await confirmInvoicePayment('token')).toEqual({notNeeded:true});
+ expect(h.resume).not.toHaveBeenCalled();expect(h.mint).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
+});
+
+it.each(['skip','exclude','stop','renotice'])('lands a fenced %s confirmation without minting a link',async control=>{
+ h.rows.get(invoiceAutopaySchedules)![0].stateReason=`control_pending:${control}`;
+ expect(await getConfirmPaymentView('token')).toMatchObject({state:'not_needed'});
+ expect(await confirmInvoicePayment('token')).toEqual({notNeeded:true});
+ expect(h.resume).not.toHaveBeenCalled();expect(h.mint).not.toHaveBeenCalled();
+});
+it('does not mint a pay link when a control wins during cancellation',async()=>{
+ h.resume.mockImplementation(async()=>{
+  h.rows.set(invoiceCollectionAttempts,[{...attempt,state:'canceled'}]);
+  h.rows.get(invoiceAutopaySchedules)![0].stateReason='control_pending:exclude';
+ });
+ expect(await confirmInvoicePayment('token')).toEqual({notNeeded:true});
+ expect(h.mint).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
 });

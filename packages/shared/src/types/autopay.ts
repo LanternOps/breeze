@@ -142,6 +142,8 @@ export type CollectionResult =
  | {outcome:'failed'|'canceled'|'requires_action'|'unapplied';attemptId:string;state:CollectionAttemptState;failureClass:CollectionFailureClass|null;reason:string}
  | {outcome:'deferred'|'refused';attemptId:null;reason:string;state?:never;failureClass?:never};
 export interface InvoiceAutopayView {
+ /** Maximum noticed charge, including fees; collection may lower this amount. */
+ chargePreview?: { amount: string; currency: string; methodLabel: string } | null;
  state:AutopayScheduleState|'processing'|'unapplied';reason:string|null;collectOn:string|null;
  noticeSentAt:string|null;excluded:boolean;canExclude:boolean;canChargeNow:boolean;processing:boolean;unapplied:boolean;
 }

@@ -389,12 +389,13 @@ it('keeps unresolved-money attention visible with enrollment disabled, until res
 it('Charge now conflict surfaces an error without a successful workspace refresh',async()=>{
  window.location.hash='';
  const {showToast}=await import('../shared/Toast');vi.mocked(showToast).mockClear();
- const detail={...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:{state:'scheduled',reason:null,collectOn:'2099-01-01',noticeSentAt:'2020-01-01',excluded:false,canExclude:true,canChargeNow:true,processing:false,unapplied:false}};
+ const detail={...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:{state:'scheduled',reason:null,collectOn:'2099-01-01',noticeSentAt:'2020-01-01',excluded:false,canExclude:true,canChargeNow:true,chargePreview:{amount:'10.00',currency:'USD',methodLabel:'Visa ••4242'},processing:false,unapplied:false}};
  fetchMock.mockImplementation(async(input:string,init?:RequestInit)=>{
   if(input==='/invoices/inv-1/autopay/charge-now')return json({error:'notice_lead',code:'notice_lead'},false,409);
   return json({data:input==='/invoices/inv-1'?detail:[]});
  });
  render(<InvoiceWorkspace id="inv-1"/>);fireEvent.click(await screen.findByTestId('autopay-charge-now'));
+ fireEvent.click(screen.getByTestId('autopay-charge-confirm'));
  await waitFor(()=>expect(showToast).toHaveBeenCalledWith(expect.objectContaining({type:'error'})));
  expect(fetchMock).toHaveBeenCalledWith('/invoices/inv-1/autopay/charge-now',{method:'POST'});
  expect(fetchMock.mock.calls.filter(([path])=>path==='/invoices/inv-1')).toHaveLength(1);

@@ -67,22 +67,21 @@ async function prepareMethodAdmission(invoiceId: string) {
       .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
     if (!enrollment || enrollment.status !== 'active' || enrollment.partnerId !== invoice.partnerId
       || enrollment.orgId !== invoice.orgId) return refuse('enrollment_inactive');
-    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return refuse('charging_disabled');
+    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return defer('charging_disabled');
     const readiness = await getAutopayStripeReadiness(db, invoice.partnerId);
-    if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return refuse('stripe_unavailable');
+    if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return defer('stripe_unavailable');
     const method = await getAutopayMethod(db, invoice.orgId);
     if (!method || method.status !== 'active' || !method.isAutopayMethod || method.orgId !== invoice.orgId
       || method.enrollmentId !== enrollment.id || !enrollment.stripeCustomerId) return defer('method_not_usable');
-    if (method.type === 'us_bank_account' && (invoice.currencyCode !== 'USD' || !method.accountHolderType)) {
-      return refuse('ach_currency_unsupported');
-    }
+    if (method.type === 'us_bank_account' && !method.accountHolderType) return defer('method_not_usable');
+    if (method.type === 'us_bank_account' && invoice.currencyCode !== 'USD') return refuse('ach_currency_unsupported');
     return { invoice, enrollment, method };
   }, 'autopay.admission');
   if ('outcome' in snapshot) return snapshot;
   try {
     // The factory only reads credentials; close its short context before HTTP.
     const provider = await withSystemDbAccessContext(() => getPartnerStripeClient(snapshot.invoice.partnerId));
-    if (provider.stripeAccountId !== snapshot.enrollment.stripeAccountId) return refuse('stripe_unavailable');
+    if (provider.stripeAccountId !== snapshot.enrollment.stripeAccountId) return defer('stripe_unavailable');
     const live = await runOutsideDbContext(() => provider.stripe.paymentMethods.retrieve(snapshot.method.stripePaymentMethodId));
     return { ...snapshot, live };
   } catch (error) {
@@ -115,8 +114,8 @@ export async function reserveCollection(input: CollectionInput)
     const locked = await lockInvoiceForCollection(db, input.invoiceId);
     const invoice = locked.invoice;
     if (!['sent','partially_paid','overdue'].includes(invoice.status)) return refuse('not_payable');
-    if (toMinorUnits(locked.unreservedBalance, invoice.currencyCode) <= 0) return refuse('nothing_to_pay');
     if (toMinorUnits(locked.reservedAmount, invoice.currencyCode) > 0) return defer('collection_in_progress');
+    if (toMinorUnits(locked.unreservedBalance, invoice.currencyCode) <= 0) return refuse('nothing_to_pay');
     const [unrevoked] = await db.select({ id: invoiceStripePayments.id }).from(invoiceStripePayments).where(and(
       eq(invoiceStripePayments.invoiceId, invoice.id), eq(invoiceStripePayments.stripeObjectType, 'checkout_session'),
       eq(invoiceStripePayments.status, 'pending'), isNull(invoiceStripePayments.invoicePaymentId),
@@ -127,9 +126,9 @@ export async function reserveCollection(input: CollectionInput)
       .where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1).for('update');
     if (!enrollment || enrollment.status !== 'active' || enrollment.orgId !== invoice.orgId
       || enrollment.partnerId !== invoice.partnerId) return refuse('enrollment_inactive');
-    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return refuse('charging_disabled');
+    if (!await isAutopayEnabledForPartner(db, invoice.partnerId)) return defer('charging_disabled');
     const readiness = await getAutopayStripeReadiness(db, invoice.partnerId);
-    if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return refuse('stripe_unavailable');
+    if (!readiness.ready || readiness.stripeAccountId !== enrollment.stripeAccountId) return defer('stripe_unavailable');
     const method = await getAutopayMethod(db, invoice.orgId);
     if (!method || method.status !== 'active' || !method.isAutopayMethod || method.orgId !== invoice.orgId
       || method.enrollmentId !== enrollment.id) return defer('method_not_usable');
@@ -155,9 +154,8 @@ export async function reserveCollection(input: CollectionInput)
       });
       return defer('method_not_usable');
     }
-    if (method.type === 'us_bank_account' && (invoice.currencyCode !== 'USD' || !method.accountHolderType)) {
-      return refuse('ach_currency_unsupported');
-    }
+    if (method.type === 'us_bank_account' && !method.accountHolderType) return defer('method_not_usable');
+    if (method.type === 'us_bank_account' && invoice.currencyCode !== 'USD') return refuse('ach_currency_unsupported');
     const [invoiceSchedule] = await db.select().from(invoiceAutopaySchedules)
       .where(and(eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, invoice.orgId)))
       .limit(1).for('update');
@@ -1000,11 +998,17 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
           deferred++;
           console.info('[autopay] Collection not started',{orgId:row.orgId,invoiceId:row.invoiceId,scheduleId:row.id,...result});
           await withSystemDbAccessContext(async()=>{
-            await lockInvoiceForCollection(db,row.invoiceId);
+            const { invoice } = await lockInvoiceForCollection(db,row.invoiceId);
             await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
               ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}
-              : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+3_600_000)})
+              : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+(['charging_disabled','stripe_unavailable','method_not_usable'].includes(result.reason ?? '') ? 86_400_000 : 3_600_000))})
               .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])));
+            if (result.reason === 'charging_disabled') await enqueueAutopayStaffNotifications(db, {
+              orgId: invoice.orgId, partnerId: invoice.partnerId, partnerOnly: true,
+              event: 'autopay.needs_attention',
+              dedupeKey: `autopay:charging_disabled:${invoice.partnerId}:${now.toISOString().slice(0,10)}`,
+              message: 'Automatic payments are disabled. Due invoices will be checked again on the next daily run.',
+            });
           },'autopay.collectionDeferred');
         }
       } catch(error) {

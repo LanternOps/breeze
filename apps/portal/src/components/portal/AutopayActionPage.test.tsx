@@ -39,3 +39,18 @@ it('Confirm requires a click and reports processing without another payment',asy
  await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('Payment is processing'));
  expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
 });
+
+it('lands a cancelled confirmation without offering a payment action',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'not_needed'}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ expect((await screen.findByTestId('autopay-action-result')).textContent).toContain('no longer needed');
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();expect(apiPost).not.toHaveBeenCalled();
+});
+it('lands a cancellation between GET and POST without navigating to pay',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'requires_action'}});
+ vi.mocked(apiPost).mockResolvedValue({data:{notNeeded:true}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ fireEvent.click(await screen.findByTestId('autopay-confirm-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('no longer needed'));
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
+});

@@ -45,3 +45,14 @@ describe('reminder rendering', () => {
     })).rejects.toThrow('Invalid reminder pay URL');
   });
 });
+
+it.each(['payment_receipt','payment_failed'] as const)('renders readable %s text from the actual template',async kind=>{
+ const rendered=await renderBillingNotice(kind,{payment:{id:kind,custom:null,frozen:{},vars:{
+ org_name:'Example Org',partner_name:'Example MSP',invoice_number:'INV-1',amount_due:'USD 100.00',
+ amount_paid:'USD 100.00',fee_amount:'USD 3.00',total_charged:'USD 103.00',payment_method:'Visa ••4242',
+ paid_on:'2026-10-03',balance_remaining:'USD 0.00',failure_text:'Your bank requires confirmation.',
+ action_link:'https://portal.example.test/confirm',action_label:'Confirm payment'}}});
+ expect(rendered.subject).toContain('INV-1');expect(rendered.text).not.toMatch(/org_name:|amount_paid:|failure_text:/);
+ if(kind==='payment_failed') {expect(rendered.text).toContain('Your bank requires confirmation.');expect(rendered.text).toContain('https://portal.example.test/confirm');}
+ else {expect(rendered.text).toContain('Visa ••4242');expect(rendered.text).toContain('Processing fee: USD 3.00');}
+});

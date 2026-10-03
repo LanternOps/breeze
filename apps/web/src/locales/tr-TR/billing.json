@@ -2423,6 +2423,8 @@
     }
   },
   "autopay": {
+    "chargeConfirmTitle": "Otomatik ödemeyi onayla",
+    "chargeConfirmMessage": "{{invoice}} numaralı fatura için {{method}} kullanılarak işlem ücretleri dahil en fazla {{amount}} tahsil edilsin mi?",
     "noticeQueued": "Otomatik ödeme bildirimi sıraya alındı",
     "requestDeliveryFailed": "Talep e-postası teslim edilemedi. Talebi yeniden gönderin.",
     "skipNoContact": "Faturalandırma e-postası bulunamadı. Bir e-posta ekleyin veya alıcı belirtin.",

@@ -80,7 +80,7 @@ export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingN
       ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label,
       bodyAfterCta: kind === 'payment_receipt' ? `<p>Processing fee: ${escapeHtml(p.vars.fee_amount!)}</p>` : undefined });
     return { ...rendered, frozen: p.frozen,
-      text: Object.entries(p.vars).map(([key,value]) => `${key}: ${value}`).join('\n') };
+      text: [htmlToText(rendered.html), p.vars.action_link].filter(Boolean).join('\n\n') };
   }
   if ('charging' in ctx) {
     if (kind !== 'invoice_autopay') throw new Error('Wrong charging notice context');

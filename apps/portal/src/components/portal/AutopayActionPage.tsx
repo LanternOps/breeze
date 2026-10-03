@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api';
 import { navigateTo } from '@/lib/navigation';
 import { runAction } from '@/lib/runAction';
-type ActionResult = { success?: boolean; status?: 'pending' | 'skipped'; url?: string; processing?: boolean; paid?: boolean };
+type ActionResult = { success?: boolean; status?: 'pending' | 'skipped'; url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean };
 const pendingMessage = "Skip requested — a payment already in progress is being stopped; we'll confirm by email.";
 export default function AutopayActionPage({ token, action }: { token: string; action: 'skip' | 'confirm' }) {
   const [ready, setReady] = useState(false);
@@ -17,6 +17,7 @@ export default function AutopayActionPage({ token, action }: { token: string; ac
       if (result.data && !result.error) {
         if (action === 'skip' && result.data.control === 'skip') setMessage(pendingMessage);
         else if (action === 'skip' && result.data.state === 'skipped_by_client') setMessage('Automatic payment skipped. You can still pay the invoice directly.');
+        else if (action === 'confirm' && ['not_needed','canceled'].includes(result.data.state)) setMessage('Payment confirmation is no longer needed.');
         else setReady(true);
       } else setMessage('This link is unavailable.');
     }).catch(() => { if (!canceled) setMessage('This link is unavailable.'); });
@@ -36,7 +37,7 @@ export default function AutopayActionPage({ token, action }: { token: string; ac
         setReady(false);
         setMessage(result.status === 'pending' ? pendingMessage : action === 'skip'
           ? 'Automatic payment skipped. You can still pay the invoice directly.'
-          : result.processing ? 'Payment is processing.' : result.paid ? 'Payment received.' : 'Payment needs billing review.');
+          : result.notNeeded ? 'Payment confirmation is no longer needed.' : result.processing ? 'Payment is processing.' : result.paid ? 'Payment received.' : 'Payment needs billing review.');
       }
     }
     setBusy(false);

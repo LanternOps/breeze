@@ -2423,6 +2423,8 @@
     }
   },
   "autopay": {
+    "chargeConfirmTitle": "Confirmar pago automático",
+    "chargeConfirmMessage": "¿Cobrar hasta {{amount}}, incluida cualquier comisión de procesamiento, por la factura {{invoice}} mediante {{method}}?",
     "noticeQueued": "Aviso de pago automático en cola",
     "requestDeliveryFailed": "No se pudo entregar el correo de solicitud. Vuelve a enviarlo.",
     "skipNoContact": "No hay un correo de facturación disponible. Agrega uno o indica un destinatario.",

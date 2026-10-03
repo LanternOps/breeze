@@ -264,7 +264,7 @@ it('requires a schedule for charge-now and rejects one for on-session collection
 it.each(['EUR', 'USD'])('refuses unsupported ACH currency or unknown holder (%s)', async currencyCode => {
   update(invoices, { currencyCode });
   h.method.mockResolvedValue({ ...method, type: 'us_bank_account', accountHolderType: currencyCode === 'USD' ? null : 'individual' });
-  await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'ach_currency_unsupported' }); expect(attempts()).toEqual([]);
+  await expect(reserveCollection(input)).resolves.toMatchObject({ reason: currencyCode === 'USD' ? 'method_not_usable' : 'ach_currency_unsupported' }); expect(attempts()).toEqual([]);
 });
 it('uses elapsed individual ACH lead on the scheduled day and preserves selection until the later eligible tick', async () => {
   const bank = { ...method, type: 'us_bank_account', accountHolderType: 'individual', cardFunding: null };
@@ -969,4 +969,29 @@ it('persists unapplied-money attention before the outcome transaction exits',asy
  h.staff.mockImplementation(async()=>expect(h.depth).toBe(1));
  await applyAttemptOutcome(invoice.partnerId,attempt.id);
  expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({event:'payment.unapplied'}));
+});
+
+// Lab regressions: transient readiness cannot permanently abandon a due invoice.
+it.each(['charging_disabled', 'stripe_unavailable'])('defers %s until the next daily tick, then collects', async reason => {
+  recovery(); h.rows.set(invoiceCollectionAttempts, [{...attempt,state:'failed',createdAt:new Date(Date.now()+86_400_000)}]); update(invoiceAutopaySchedules, {...schedule});
+  const now = new Date();
+  mockCollectionCandidates([schedule], now);
+  if (reason === 'charging_disabled') h.gate.mockResolvedValue(false);
+  else h.readiness.mockResolvedValue({ready:false});
+  expect(await runAutopayCollection(now)).toEqual({attempted:0,deferred:1});
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({state:'scheduled',stateReason:reason,
+    nextAttemptAt:new Date(now.getTime()+86_400_000)});
+  expect(attempts()).toEqual([]); expect(h.create).not.toHaveBeenCalled();
+  if (reason === 'charging_disabled') expect(h.staff).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({
+    dedupeKey:`autopay:charging_disabled:${invoice.partnerId}:2026-10-20`,event:'autopay.needs_attention'}));
+  vi.restoreAllMocks(); vi.setSystemTime(new Date(now.getTime()+86_400_000));
+  h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true,stripeAccountId:'acct_test',accountCountry:'US'});
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]],new Date());
+  expect(await runAutopayCollection()).toEqual({attempted:1,deferred:0});
+  expect(currentAttempt().state).toBe('succeeded');
+});
+it('reports collection_in_progress for a fully reserved invoice', async () => {
+  h.reserved='100.00';h.balance='0.00';
+  expect(await reserveCollection({...input,initiatedBy:'msp_charge_now'})).toMatchObject({outcome:'deferred',reason:'collection_in_progress'});
+  expect(attempts()).toEqual([]);
 });

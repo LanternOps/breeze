@@ -509,3 +509,8 @@ it('allows MSP exclusion of an action-required reservation', async () => {
   const f = fixture({ state: 'action_required' }, [{ state: 'requires_action' }]);
   expect(await getInvoiceAutopayView(f.tx, invoice as never)).toMatchObject({ canExclude: true, canChargeNow: false });
 });
+
+it('provides a money-safe confirmation preview capped to the noticed principal plus fee',async()=>{
+ const f=fixture({noticeSentAt:new Date('2020-01-01'),termsSnapshot:{...schedule.termsSnapshot,principal:'20.00',feeAmount:'1.00',methodLabel:'Visa ••4242'}});
+ expect((await getInvoiceAutopayView(f.tx,f.inv as any))?.chargePreview).toEqual({amount:'11.00',currency:'USD',methodLabel:'Visa ••4242'});
+});

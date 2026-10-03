@@ -1,3 +1,5 @@
+import { collectionFenced, pendingInvoiceControl } from './collectionControl';
+import { toMinorUnits } from '../stripeMoney';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { billingNoticeOutbox, billingLinkTokens, invoiceCollectionAttempts, invoiceAutopaySchedules,
@@ -36,25 +38,35 @@ async function resolveConfirmation(token: string, lock = false) {
   const [latest] = await db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceId, invoice.id))
     .orderBy(desc(invoiceCollectionAttempts.createdAt), desc(invoiceCollectionAttempts.attemptNo)).limit(1);
   if (latest?.id !== attempt.id) throw unavailable();
+  let fenced = collectionFenced({ invoice, enrollment })
+    || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
+    || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0;
   if (attempt.scheduleId) {
     const [schedule] = await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, attempt.scheduleId)).limit(1);
     if (!schedule || schedule.id !== attempt.scheduleId || schedule.invoiceId !== invoice.id || schedule.orgId !== link.orgId
       || schedule.enrollmentId !== link.enrollmentId || schedule.enrollmentGeneration !== link.generation
       || schedule.attemptCount !== attempt.attemptNo) throw unavailable();
+    fenced ||= collectionFenced({ invoice, enrollment, schedule })
+      || !!pendingInvoiceControl(schedule.stateReason)
+      || ['skipped_by_client', 'excluded_by_msp'].includes(schedule.state)
+      // This request itself cancels the original PI before opening Checkout.
+      // Already-canceled attempts are rejected at the initial binding instead.
+      || (schedule.state === 'cancelled' && schedule.stateReason !== 'provider_canceled');
   }
-  return { link, invoice, attempt };
+  return { link, invoice, attempt, fenced };
 }
 
 export async function getConfirmPaymentView(token: string) {
   return withSystemDbAccessContext(async () => {
-    const { attempt } = await resolveConfirmation(token);
-    return { state: attempt.state, amount: attempt.principalAmount, currency: attempt.currency };
+    const { attempt, fenced } = await resolveConfirmation(token);
+    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency };
   });
 }
 
-export async function confirmInvoicePayment(token: string): Promise<{ url?: string; processing?: boolean; paid?: boolean }> {
+export async function confirmInvoicePayment(token: string): Promise<{ url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean }> {
   assertNoHeldDbContextForStripe('confirmInvoicePayment');
   const binding = await withSystemDbAccessContext(() => resolveConfirmation(token));
+  if (binding.attempt.state === 'canceled' || binding.fenced) return { notNeeded: true };
   // Uses original account/retained credentials, validates provider bindings, and
   // atomically finalizes the schedule with the reservation after verified cancel.
   // This is recovery of an existing PI; it deliberately has no rollout gate.
@@ -67,6 +79,7 @@ export async function confirmInvoicePayment(token: string): Promise<{ url?: stri
   return withSystemDbAccessContext(async () => {
     const fresh = await resolveConfirmation(token, true);
     if (fresh.attempt.id !== binding.attempt.id || fresh.attempt.state !== 'canceled') throw unavailable();
+    if (fresh.fenced) return { notNeeded: true };
     const consumed = await db.update(billingLinkTokens).set({ consumedAt: new Date() }).where(and(
       eq(billingLinkTokens.id, fresh.link.id), isNull(billingLinkTokens.consumedAt), isNull(billingLinkTokens.revokedAt),
       sql`${billingLinkTokens.expiresAt} > NOW()`,

@@ -5,14 +5,14 @@ import { getEmailService } from '../email';
 import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
-  orgId: string; partnerId: string; invoiceId?: string;
+  orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
   event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
     | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
   dedupeKey: string; message: string;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
 export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopayStaffNotice): Promise<void> {
-  const local = await db.select({ userId: organizationUsers.userId }).from(organizationUsers)
+  const local = input.partnerOnly ? [] : await db.select({ userId: organizationUsers.userId }).from(organizationUsers)
     .innerJoin(users, eq(users.id, organizationUsers.userId))
     .where(and(eq(organizationUsers.orgId,input.orgId),eq(users.status,'active')));
   const partnerStaff = await db.select({ userId: partnerUsers.userId }).from(partnerUsers)
