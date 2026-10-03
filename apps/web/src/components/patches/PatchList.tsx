@@ -345,6 +345,14 @@ export default function PatchList({
     </>
   );
 
+  // A missing release date (every APT patch, #7800) reads "Unknown" — never a
+  // stand-in date the vendor did not publish.
+  const renderReleaseDate = (patch: Patch) => (
+    <span data-testid={`patch-row-${patch.id}-release`}>
+      {patch.releaseDate ? formatDate(patch.releaseDate) : t('patchList.releaseUnknown')}
+    </span>
+  );
+
   const renderSeverityBadge = (patch: Patch) => {
     const severity = severityConfig[patch.severity];
     return (
@@ -763,7 +771,7 @@ export default function PatchList({
                       <td className="px-4 py-3">{renderSeverityBadge(patch)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{patch.source}</td>
                       <td className="px-4 py-3 text-muted-foreground">{patch.os}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{formatDate(patch.releaseDate)}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{renderReleaseDate(patch)}</td>
                       <td className="px-4 py-3">{renderApprovalBadge(patch)}</td>
                       <td className="px-4 py-3">{renderRowActions(patch)}</td>
                     </tr>
@@ -813,7 +821,7 @@ export default function PatchList({
                         <span className="text-muted-foreground">{patch.os}</span>
                       </CardField>
                       <CardField label={t('patchList.table.release')}>
-                        <span className="text-muted-foreground">{formatDate(patch.releaseDate)}</span>
+                        <span className="text-muted-foreground">{renderReleaseDate(patch)}</span>
                       </CardField>
                       <CardField label={t('patchList.table.approval')}>{renderApprovalBadge(patch)}</CardField>
                     </div>

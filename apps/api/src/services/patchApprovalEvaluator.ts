@@ -342,8 +342,9 @@ export interface PatchCandidate {
   version: string | null;
   /**
    * device_patches.createdAt — when this device first reported the patch as
-   * pending. Deferral fallback anchor for third-party patches, which carry no
-   * vendor releaseDate (#2218).
+   * pending. Deferral fallback anchor for third-party (#2218) and Linux
+   * (#7800) patches, which carry no vendor releaseDate — see
+   * usesFirstSeenDeferralFallback.
    */
   firstSeenAt?: Date | string | null;
 }
@@ -508,6 +509,27 @@ export function isHeldByDeferral(
 }
 
 /**
+ * Whether a patch with no releaseDate may anchor its deferral window on
+ * first-seen (device_patches.createdAt) instead of failing closed.
+ *
+ *  - third-party / custom (#2218): winget and Homebrew carry no vendor date.
+ *  - linux (#7800): the agent reads `apt list --upgradable` / `yum
+ *    check-update`, which report a package name and version and never a date,
+ *    so EVERY Linux patch lacks one. Failing closed there held every Linux
+ *    patch forever under any deferral above 0 — the window could never start.
+ *  - microsoft / apple: deliberately NOT included; they keep the fail-closed
+ *    hold from #2222 (manual approval releases them). Windows Update supplies
+ *    LastDeploymentChangeTime, so a Windows patch without a date is anomalous
+ *    and holding it is the safer failure. Note that the macOS `softwareupdate
+ *    -l` collector carries no date either, so on macOS this hold is routine,
+ *    not anomalous; #7800 scoped the change to Linux only — extending it to
+ *    'apple' is a separate decision.
+ */
+export function usesFirstSeenDeferralFallback(source: string | null | undefined): boolean {
+  return isThirdPartyPatchSource(source) || source === 'linux';
+}
+
+/**
  * The deferral rule, once. `until` is when the window ends — null when the
  * patch is held because it cannot prove its age (fail closed, logged).
  * `isHeldByDeferral` is the boolean view of this; never re-derive the window
@@ -528,13 +550,16 @@ export function deferralHold(
   let anchorLabel = 'releaseDate';
   let ageAnchor: Date | null = patch.releaseDate ? new Date(patch.releaseDate) : null;
 
-  if (!ageAnchor && isThirdPartyPatchSource(patch.source) && patch.firstSeenAt) {
-    // Third-party fallback (#2218): winget/homebrew entries carry no vendor
-    // releaseDate, so a configured deferral window used to hold them forever.
-    // Anchor the window on when this device first reported the patch
-    // (device_patches.createdAt) instead — a conservative proxy (never earlier
-    // than the vendor release), so the patch is held at least as long as the
-    // window intends. OS patches keep the fail-closed posture below.
+  const firstSeenFallback = usesFirstSeenDeferralFallback(patch.source);
+  if (!ageAnchor && firstSeenFallback && patch.firstSeenAt) {
+    // First-seen fallback for sources whose feed never carries a release date:
+    // winget/homebrew (#2218) and APT (#7800). Without it a configured deferral
+    // window held these patches forever. Anchor the window on when this device
+    // first reported the patch (device_patches.createdAt) instead — a
+    // conservative proxy (never earlier than the vendor release), so the patch
+    // is held at least as long as the window intends. Windows and macOS OS
+    // patches keep the fail-closed posture below — see
+    // usesFirstSeenDeferralFallback for why.
     anchorLabel = 'first-seen (device_patches.createdAt)';
     ageAnchor = new Date(patch.firstSeenAt);
   }
@@ -545,10 +570,10 @@ export function deferralHold(
     // consistent with pin rules. The reason names which anchor failed so a
     // broken first-seen fallback (e.g. the column dropped from the select, a
     // malformed timestamp) is distinguishable in logs from the routine
-    // "third-party patch has no releaseDate at all" case.
+    // "this source has no releaseDate at all" case.
     const reason = ageAnchor
       ? `its ${anchorLabel} value is unparseable`
-      : isThirdPartyPatchSource(patch.source)
+      : firstSeenFallback
         ? 'it has no releaseDate and no first-seen fallback timestamp'
         : 'it has no releaseDate';
     console.warn(
