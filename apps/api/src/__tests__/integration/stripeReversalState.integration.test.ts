@@ -689,12 +689,16 @@ runDb.each([
   { state: 'posted', reversed: '0.00', canDelete: true },
 ])('protects fee bookkeeping before erasure: %j', async ({ state, reversed, canDelete }) => {
   const f = await seed(false);
+  const connection=await withSystemDbAccessContext(()=>upsertConnection(db,f.partnerId,'quickbooks',{
+    realmId:'fee-test-realm',accessToken:'test',refreshToken:'test',accessTokenExpiresAt:new Date('2099-01-01'),environment:'sandbox',homeCurrency:'USD'}));
   await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
     feeAmount: '3.00', feeReversedAmount: reversed,
-    feeAccountingJournal: [{ state, payload: { direction: 'charge', amount: '3.00' } }],
+    feeAccountingJournal: [{ state, connectionId:connection.id, payload: { direction: 'receipt', amount: '3.00' } }],
   }).where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
   const deletion = withSystemDbAccessContext(() => db.delete(invoiceStripePayments)
     .where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
   if (canDelete) await expect(deletion).resolves.toBeDefined();
   else await expect(deletion).rejects.toMatchObject({ cause: { code: '23514', message: 'PROCESSING_FEE_ACCOUNTING_PENDING' } });
 });
+
+import {upsertConnection} from '../../services/accounting/accountingConnectionService';

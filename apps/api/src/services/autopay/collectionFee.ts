@@ -29,10 +29,16 @@ export async function acceptedCollectionFee(tx: Tx, input: {
     eq(orgAutopayConsents.orgId, input.orgId), eq(orgAutopayConsents.enrollmentId, input.enrollmentId),
     eq(orgAutopayConsents.generation, input.generation), eq(orgAutopayConsents.paymentMethodId, input.methodId),
   )).orderBy(desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id)).limit(1);
-  if (!consent) return null;
+  const missingConsent=async()=>{
+    await enqueueAutopayStaffNotifications(tx,{orgId:input.orgId,partnerId:input.partnerId,partnerOnly:true,
+      event:'autopay.needs_attention',dedupeKey:`autopay:consent_required:${input.enrollmentId}:${input.generation}:${input.methodId}`,
+      message:'Automatic payment authorization is missing for the saved method. Request updated authorization before collecting.'});
+    return null;
+  };
+  if (!consent) return missingConsent();
   const parsed = autopayFeeTermsSchema.safeParse(consent.feeTerms);
   const terms = parsed.success ? parsed.data : null;
-  if (terms && (terms.methodType !== input.methodType || terms.currency !== input.currency)) return null;
+  if (terms && (terms.methodType !== input.methodType || terms.currency !== input.currency)) return missingConsent();
   const none: FeeQuote = { feeAmount:'0.00', kind:'none', appliedBps:null, reason:'disabled' };
   if (!terms || !/^(?:0|[1-9]\d?)\.\d{2}$/.test(terms.achFeeAmount)
     || toMinorUnits(terms.achFeeAmount, 'USD') > 2500) {

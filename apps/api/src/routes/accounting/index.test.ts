@@ -1,3 +1,4 @@
+vi.mock('../../services/accounting/accountingFeeAbandonment',()=>({abandonAccountingFees:vi.fn().mockResolvedValue(undefined)}));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
@@ -41,6 +42,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       invoicesWrite: true,
     },
     mocks: {
+      systemContext:vi.fn(async (fn:()=>unknown,_label?:string)=>fn()),
       autopayEnabled: vi.fn(async () => true),
       dbFeeErrorWhere: vi.fn(async () => [{n:0}]),
       getConnection: vi.fn(),
@@ -121,7 +123,7 @@ vi.mock('../../db', () => ({
     })),
   },
   runOutsideDbContext: <T>(fn: () => T) => fn(),
-  withSystemDbAccessContext: <T>(fn: () => T) => fn(),
+  withSystemDbAccessContext: mocks.systemContext,
   // The callback holds no request DB context (no authMiddleware); the tenant
   // release path asserts exactly that (dbContextGuard).
   hasDbAccessContext: () => false,
@@ -1620,10 +1622,11 @@ it('denies selected-org callers before reading the fee-error aggregate',async()=
       expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'xero');
     });
 
-    it('disconnect runs every DB step through the request\'s auth runner (self-managed: the release is an outbound call)', async () => {
+    it('disconnect scopes reads and uses a separate system transaction for authorized staff fanout', async () => {
       await disconnect();
-      // ref read, full read, delete — each its own short context, none held across the release.
-      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(3);
+      // Scoped reads and system delete/fanout; no context spans provider I/O.
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(2);
+      expect(mocks.systemContext).toHaveBeenCalledWith(expect.any(Function),'accounting.disconnect');
       expect(mocks.withAuthDbAccessContext).toHaveBeenCalledWith(expect.objectContaining({ partnerId: authState.partnerId }), expect.any(Function));
     });
 
@@ -1738,7 +1741,8 @@ it('denies selected-org callers before reading the fee-error aggregate',async()=
       expect(res.status).toBe(200);
       expect(mocks.getConnection).not.toHaveBeenCalled();
       expect(mocks.releaseProviderConnection).not.toHaveBeenCalled();
-      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(2);
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(1);
+      expect(mocks.systemContext).toHaveBeenCalledWith(expect.any(Function),'accounting.disconnect');
       expect(mocks.deleteConnection).toHaveBeenCalledWith(expect.anything(), authState.partnerId, 'quickbooks');
       expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
         details: { provider: 'quickbooks', status: 'connected', providerRelease: 'skipped' },
@@ -1832,4 +1836,12 @@ it('denies selected-org callers before reading the fee-error aggregate',async()=
       expect(mocks.discardPendingTenantSelection).toHaveBeenCalledWith(expect.objectContaining({ partnerId: authState.partnerId, provider: 'xero' }));
     });
   });
+
+it('disconnect runs its authorized fee abandonment and staff fanout in a system transaction',async()=>{
+  mocks.getPartnerConnectionRef.mockResolvedValue({id:CONNECTION_ID,provider:'quickbooks',status:'connected'});
+  const res=await app.request('/accounting/quickbooks/disconnect',{method:'POST'});
+  expect(res.status).toBe(200);
+  expect(mocks.systemContext).toHaveBeenCalledWith(expect.any(Function),'accounting.disconnect');
+});
+
 });

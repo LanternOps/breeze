@@ -8,6 +8,7 @@ import { accountingProviderDisplayName, getAccountingProvider, providerSupports 
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingCapability, AccountingProviderId } from './types';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { abandonAccountingFees } from './accountingFeeAbandonment';
 import { captureException } from '../sentry';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
@@ -1334,6 +1335,7 @@ export async function deleteConnection(
       eq(accountingConnections.provider, provider)
     ))
     .returning({ id: accountingConnections.id });
+  for(const connection of deleted)await abandonAccountingFees(db,partnerId,connection.id);
   // The id is returned so the caller can identify the connection in an audit
   // entry AFTER the row is gone — the disconnect's owed-delete record has to
   // name the same subject as its realm-change twin (review wave 3, finding D3).

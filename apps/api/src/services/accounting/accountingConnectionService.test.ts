@@ -1,3 +1,5 @@
+vi.mock('./accountingFeeAbandonment',()=>({abandonAccountingFees:vi.fn().mockResolvedValue(undefined)}));
+import {abandonAccountingFees} from './accountingFeeAbandonment';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -1040,6 +1042,7 @@ describe('owed QuickBooks payment deletes on disconnect / realm change (review w
 
       const result = await deleteConnection(db, 'p1', 'quickbooks');
 
+      expect(abandonAccountingFees).toHaveBeenCalledWith(db,'p1','c1');
       expect(result.removed).toBe(true); // the disconnect is NEVER blocked
       expect(result.owedPaymentDeletes).toEqual({ count: 2, remoteEntityIds: ['181/145', '182/146'] });
       expect(warn).toHaveBeenCalledWith(

@@ -2536,7 +2536,8 @@
       "stop": "Pagamentos automáticos interrompidos",
       "client_request": "Solicitado pelo cliente",
       "no_billing_contact": "Nenhum contato de faturamento",
-      "delivery_failed": "Falha na entrega do aviso"
+      "delivery_failed": "Falha na entrega do aviso",
+      "consent_required": "A autorização de pagamento está ausente. Solicite uma nova autorização."
     },
     "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",

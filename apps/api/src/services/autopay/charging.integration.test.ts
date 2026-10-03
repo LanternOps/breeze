@@ -1449,7 +1449,12 @@ it.each([[0,'0.00',10000],[100,'1.00',10100]] as const)(
   });
 it('refuses scheduled collection without current consent', async () => {
   const f = await fixture(undefined,{consent:'missing'});
-  expect((await attemptCollection(inputFor(f))).outcome).toBe('refused');
+  await createUser({partnerId:f.partner.id,withMembership:true});
+  for(let n=0;n<2;n++)expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'refused',reason:'consent_required'});
+  const scheduled=await withSystemDbAccessContext(()=>planAutopayForInvoice(db,f.invoice.id,true));
+  expect(scheduled).toMatchObject({eligible:false,ineligibleReason:'consent_required'});
+  const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(notices.filter(n=>n.message?.includes('authorization is missing'))).toHaveLength(1);
   expect(await attempts(f.invoice.id)).toHaveLength(0);
   expect(provider.create).not.toHaveBeenCalled();
 });
@@ -1555,3 +1560,46 @@ async function deliverPendingFeeNotice() {
     expect(sendEmail).toHaveBeenCalledOnce();
   } finally { mail.mockRestore(); }
 }
+
+async function scheduledBankFee(accepted:string,current:string,noticed=accepted){
+  const f=await fixture(undefined,{cardFeeBps:0});
+  const bank=await bankSetup(f,'scheduled-fee',undefined,accepted);serveBank([bank]);
+  const terms=f.schedule.termsSnapshot as AutopayTerms;
+  const rendered=f.notice.rendered as {subject:string;html:string;text:string;frozen:Record<string,unknown>};
+  await withSystemDbAccessContext(async()=>{
+    await db.update(billingPaymentSettings).set({achFeeAmount:current}).where(eq(billingPaymentSettings.partnerId,f.partner.id));
+    await db.update(invoiceAutopaySchedules).set({state:'scheduled',termsSnapshot:{...terms,
+      methodType:'us_bank_account',methodId:bank.method.id,accountHolderType:'company',last4:'6789',methodLabel:'Test bank ••6789',
+      feeAmount:noticed,feeKind:noticed==='0.00'?'none':'ach_flat',achFeeAmount:accepted},noticeSentAt:f.schedule.noticeSentAt})
+      .where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+    await db.update(billingNoticeOutbox).set({rendered:{...rendered,
+      frozen:{...rendered.frozen,methodType:'us_bank_account',fee:noticed}}}).where(eq(billingNoticeOutbox.id,f.notice.id));
+  });
+  return {f,bank};
+}
+it('scheduled ACH charges the lower accepted 2.00 after settings rise to 5.00',async()=>{
+  const {f}=await scheduledBankFee('2.00','5.00');
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({feeAmount:'2.00'});
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:10200}),expect.anything());
+});
+it('scheduled ACH requires a new 2.00 notice after a decrease from 5.00',async()=>{
+  const {f}=await scheduledBankFee('5.00','2.00');
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('deferred');
+  expect(await scheduleFor(f)).toMatchObject({state:'awaiting_notice',termsSnapshot:{feeAmount:'2.00'}});
+  expect(provider.create).not.toHaveBeenCalled();
+});
+it.each(['26.00','2.001','02.00','NaN'])('scheduled ACH rejects invalid accepted fee %s with one attention',async bad=>{
+  const {f,bank}=await scheduledBankFee('2.00','5.00','0.00');
+  await withSystemDbAccessContext(async()=>{
+    const [consent]=await db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.paymentMethodId,bank.method.id));
+    await db.insert(orgAutopayConsents).values({...consent!,id:randomUUID(),createdAt:new Date(Date.now()+1000),feeTerms:{...consent!.feeTerms,achFeeAmount:bad}});
+  });
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  await resumeCollectionAttempt((await attempts(f.invoice.id))[0]!.id);
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({feeAmount:'0.00'});
+  const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(notices.filter(n=>n.message?.includes('fee terms'))).toHaveLength(1);
+});
+
+import {planAutopayForInvoice} from './scheduler';

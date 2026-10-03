@@ -8,7 +8,7 @@ import {getPartnerStripeClient} from '../partnerStripe';
 import {assertNoHeldDbContextForStripe} from '../stripeSettle';
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
-import {verifiedFeeText} from './feeDisclosure';
+import {verifiedFeeText,hasSupportedCardEvidence} from './feeDisclosure';
 import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
 import {notifyAutopayStaff} from './staffNotifications';
@@ -97,7 +97,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const holderType=method.us_bank_account?.account_holder_type;
   const values:typeof orgPaymentMethods.$inferInsert={orgId:attempt.orgId,enrollmentId:enrollment.id,stripePaymentMethodId:method.id,type:attempt.methodType,
    cardBrand:method.card?.brand??null,cardLast4:method.card?.last4??null,cardExpMonth:method.card?.exp_month??null,cardExpYear:method.card?.exp_year??null,
-   cardFunding:method.card?cardFunding(method.card.funding):null,cardCountry:method.card?.country??null,bankName:method.us_bank_account?.bank_name??null,
+   cardFunding:method.card?(method.card.funding==='credit'&&!hasSupportedCardEvidence(method.card)?'unknown':cardFunding(method.card.funding)):null,cardCountry:method.card?.country??null,bankName:method.us_bank_account?.bank_name??null,
    bankLast4:method.us_bank_account?.last4??null,accountHolderType:holderType==='individual'?'individual':holderType==='company'?'company':null,
    stripeMandateId:mandateId,stripeSetupIntentId:setupIntentId,status:outcome==='activated'?'active' as const:'pending_verification' as const,
    isAutopayMethod:true,removedAt:null,unusableReason:null};

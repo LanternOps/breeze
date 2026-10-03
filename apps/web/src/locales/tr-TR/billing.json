@@ -2536,7 +2536,8 @@
       "stop": "Otomatik ödemeler durduruldu",
       "client_request": "Müşteri tarafından istendi",
       "no_billing_contact": "Faturalandırma kişisi yok",
-      "delivery_failed": "Bildirim iletilemedi"
+      "delivery_failed": "Bildirim iletilemedi",
+      "consent_required": "Ödeme yetkilendirmesi eksik. Güncel bir yetkilendirme isteyin."
     },
     "noticeTemplate": "Otomatik ödeme bildirimi içeren fatura",
     "chargeFailed": "Ödeme başlatılamadı. Lütfen tekrar deneyin.",

@@ -130,7 +130,7 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
     orgId:invoice.orgId,partnerId:invoice.partnerId,enrollmentId:enrollment.id,generation:enrollment.generation,
     methodId:method.id,methodType:method.type,principal:invoice.balance,currency:invoice.currencyCode,quote:lawfulFee,
   }) : null;
-  if (!reason && !fee) reason = 'method_not_usable';
+  if (!reason && !fee) reason = 'consent_required';
   const snapshot = method ? {
     issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
     rule: settings.autopayOffsetRule.value, cap, methodType: method.type, methodId: method.id,

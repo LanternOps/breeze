@@ -61,6 +61,7 @@ import {
   orgAutopayEnrollments,
   organizations,
   partners,
+  orgAutopayConsents,
 } from '../../db/schema';
 const invoice = {
   id: '10000000-0000-4000-8000-000000000001',
@@ -105,6 +106,7 @@ function fixture(over: Record<string, unknown> = {}, attempts: unknown[] = []) {
   const sched = { ...schedule, ...over };
   const writes: { table: unknown; patch: any }[] = [];
   const data = new Map<unknown, any[]>([
+    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:false,cardFeeBps:0,achFeeAmount:'0.00'}}]],
     [invoices, [inv]],
     [invoiceAutopaySchedules, [sched]],
     [invoiceCollectionAttempts, attempts],
@@ -140,7 +142,7 @@ function fixture(over: Record<string, unknown> = {}, attempts: unknown[] = []) {
   function chain(table?: unknown, update = false) {
     let patch: any;
     const c: any = {};
-    for (const method of ['where', 'limit', 'for', 'innerJoin']) c[method] = () => c;
+    for (const method of ['where', 'limit', 'for', 'innerJoin', 'orderBy']) c[method] = () => c;
     c.from = (t: unknown) => {
       table = t;
       return c;

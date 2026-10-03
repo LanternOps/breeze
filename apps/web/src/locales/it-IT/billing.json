@@ -2536,7 +2536,8 @@
       "stop": "Pagamenti automatici interrotti",
       "client_request": "Richiesto dal cliente",
       "no_billing_contact": "Nessun contatto di fatturazione",
-      "delivery_failed": "Invio dell’avviso non riuscito"
+      "delivery_failed": "Invio dell’avviso non riuscito",
+      "consent_required": "L’autorizzazione al pagamento è mancante. Richiedi una nuova autorizzazione."
     },
     "noticeTemplate": "Fattura con avviso di pagamento automatico",
     "chargeFailed": "Impossibile avviare il pagamento. Riprova.",

@@ -1,5 +1,5 @@
 import {expect,it,vi} from 'vitest';
-import {adoptFeeEntry,feeEntryMarker,feeEntryDocumentNumber,requireFeeCreateWindow,feeEntrySettings} from './accountingFeeEntry';
+import {adoptFeeEntry,feeEntryMarker,feeEntryDocumentNumber,feeReplayWindowExpired,feeEntrySettings} from './accountingFeeEntry';
 import type {AccountingFeeEntryPayload} from './types';
 import type {AccountingConnection} from './accountingConnectionService';
 const e:AccountingFeeEntryPayload={operationId:'75c63cda-0d5c-41dc-978b-97efdd340abf',remoteCustomerId:'customer-1',amount:'2.50',
@@ -22,12 +22,12 @@ it('validates provider-specific fee settings before freezing an operation',()=>{
   expect(()=>feeEntrySettings({...conn,provider:'quickbooks',feeIncomeItemRef:null})).toThrow('income');
   expect(()=>feeEntrySettings({...conn,provider:'quickbooks',defaultPaymentAccountRef:null})).toThrow('payment account');
 });
-it('never creates again after the conservative replay window',()=>{
+it('requires repeated absence evidence after the conservative replay window',()=>{
   vi.useFakeTimers();try{
     vi.setSystemTime(new Date('2026-10-01T00:06:00Z'));
-    expect(()=>requireFeeCreateWindow('xero',e)).toThrow('uncertain');
-    expect(()=>requireFeeCreateWindow('quickbooks',e)).not.toThrow();
+    expect(feeReplayWindowExpired('xero',e)).toBe(true);
+    expect(feeReplayWindowExpired('quickbooks',e)).toBe(false);
     vi.setSystemTime(new Date('2026-10-02T00:00:00Z'));
-    expect(()=>requireFeeCreateWindow('quickbooks',e)).toThrow('uncertain');
+    expect(feeReplayWindowExpired('quickbooks',e)).toBe(true);
   }finally{vi.useRealTimers();}
 });

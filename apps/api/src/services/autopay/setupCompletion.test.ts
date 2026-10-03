@@ -295,7 +295,16 @@ it.each(['credit','link','missing-networks','missing-wallet','unknown-network'])
  const expected=kind==='credit'?accepted.feeText:'No processing fee applies to this card.';
  expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:expected});
  for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(expected);
+ expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:kind==='credit'?'credit':'unknown'}));
+ const stored=m.writes.find(row=>'cardFunding' in row)!;
+ const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit'|'unknown',principal:'100.00',
+  currency:'USD',stripeAccountCountry:'US',orgBillingCountry:'US',orgBillingRegion:'NY',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true});
+ expect(quote.feeAmount).toBe(kind==='credit'?'3.00':'0.00');
+ expect(paymentFeeLine('100.00',quote.feeAmount,'USD','card')).toBe(kind==='credit'?'$100.00 + $3.00 card processing fee':'$100.00; no processing fee');
  expect(m.method).toHaveBeenCalledExactlyOnceWith('pm_one');
  expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({feeTerms:accepted.feeTerms,consentTextHash:accepted.textHash})]);
  expect(m.rows).toHaveLength(0);
 });
+
+import {quoteProcessingFee} from './processingFee';
+import {paymentFeeLine} from './feeDisclosure';

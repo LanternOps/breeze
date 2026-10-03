@@ -272,6 +272,11 @@ export interface AccountingPaymentPayload {
   pushGeneration: number;
 }
 
+export interface AccountingFeeEntryHooks {
+  /** Persist the send timestamp after acquiring a provider slot, immediately before HTTP. */
+  beforeCreate?: () => Promise<void>;
+}
+
 export interface AccountingFeeEntryPayload {
   operationId:string; remoteCustomerId:string; amount:string; currencyCode:string; txnDate:string;
   direction:'receipt'|'refund'; incomeRef:string; bankAccountRef:string|null; exemptTaxCodeRef:string|null;
@@ -487,7 +492,7 @@ export interface AccountingProvider {
    */
   findRemoteInvoice?(conn: AccountingConnection, invoiceId: string): Promise<{ id: string; remoteVersion?: string } | null>;
   /** Post or adopt a separate cash entry for an already collected or refunded processing fee. */
-  postFeeEntry(conn: AccountingConnection, entry: AccountingFeeEntryPayload): Promise<RemoteRef>;
+  postFeeEntry(conn: AccountingConnection, entry: AccountingFeeEntryPayload, hooks?: AccountingFeeEntryHooks): Promise<RemoteRef>;
   /**
    * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
    * QuickBooks Payment's amount would rewrite receipt history, and Intuit models
@@ -582,5 +587,5 @@ export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';
 
 export interface AccountingFeeJournalEntry {
   connectionId:string; realmFingerprint:string; payload:AccountingFeeEntryPayload;
-  state:'pending'|'posted'; leaseToken:string|null; leaseUntil:string|null; remoteId:string|null; error:string|null;
+  state:'pending'|'posted'|'needs_mapping'|'abandoned'; leaseToken:string|null; leaseUntil:string|null; remoteId:string|null; error:string|null;
 }

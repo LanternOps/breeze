@@ -33,17 +33,31 @@ BEGIN
     RAISE EXCEPTION 'invoice_stripe_payments org RLS precondition missing';
   END IF;
 END $$;
--- Erasure is not a Stripe refund. Completed bookkeeping can be erased; an owed
--- operation or an unexported reversal cannot lose its durable identity.
+-- Immutable predicate supports an outstanding-only partial index; settled and
+-- abandoned history never enters the periodic drain.
+CREATE OR REPLACE FUNCTION breeze_fee_accounting_outstanding(fee numeric,reversed numeric,journal jsonb)
+RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE net numeric;
+BEGIN
+  IF fee<=0 THEN RETURN false; END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(journal) e WHERE e->>'state'='abandoned') THEN RETURN false; END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(journal) e WHERE e->>'state' IS DISTINCT FROM 'posted') THEN RETURN true; END IF;
+  SELECT COALESCE(sum(CASE WHEN e->'payload'->>'direction'='refund' THEN -1 ELSE 1 END*(e->'payload'->>'amount')::numeric),0)
+    INTO net FROM jsonb_array_elements(journal) e;
+  RETURN net<>fee-reversed;
+END $$;
+CREATE INDEX IF NOT EXISTS invoice_stripe_payments_fee_outstanding_idx ON invoice_stripe_payments(id)
+WHERE breeze_fee_accounting_outstanding(fee_amount,fee_reversed_amount,fee_accounting_journal);
+-- Erasure is not a Stripe refund and must never depend on provider availability.
 CREATE OR REPLACE FUNCTION breeze_guard_fee_journal_delete() RETURNS trigger
 LANGUAGE plpgsql AS $$
-DECLARE net numeric; unfinished boolean;
 BEGIN
+  IF current_setting('breeze.tenant_erasure',true)='1' THEN RETURN OLD; END IF;
   IF jsonb_array_length(OLD.fee_accounting_journal)=0 THEN RETURN OLD; END IF;
-  SELECT COALESCE(sum(CASE WHEN e->'payload'->>'direction'='refund' THEN -1 ELSE 1 END*(e->'payload'->>'amount')::numeric),0),
-    COALESCE(bool_or(e->>'state' IS DISTINCT FROM 'posted'),false)
-    INTO net,unfinished FROM jsonb_array_elements(OLD.fee_accounting_journal) e;
-  IF unfinished OR net<>OLD.fee_amount-OLD.fee_reversed_amount THEN
+  IF NOT EXISTS (SELECT 1 FROM accounting_connections c
+    WHERE c.id::text=OLD.fee_accounting_journal->0->>'connectionId'
+      AND c.status NOT IN ('disconnected','pending_tenant')) THEN RETURN OLD; END IF;
+  IF breeze_fee_accounting_outstanding(OLD.fee_amount,OLD.fee_reversed_amount,OLD.fee_accounting_journal) THEN
     RAISE EXCEPTION USING ERRCODE='23514', MESSAGE='PROCESSING_FEE_ACCOUNTING_PENDING';
   END IF;
   RETURN OLD;
@@ -51,3 +65,8 @@ END $$;
 DROP TRIGGER IF EXISTS invoice_stripe_payments_fee_delete_guard ON invoice_stripe_payments;
 CREATE TRIGGER invoice_stripe_payments_fee_delete_guard BEFORE DELETE ON invoice_stripe_payments
 FOR EACH ROW EXECUTE FUNCTION breeze_guard_fee_journal_delete();
+
+-- Missing accepted authority is distinct from an unusable payment method.
+ALTER TABLE invoice_autopay_schedules DROP CONSTRAINT IF EXISTS invoice_autopay_schedules_ineligible_reason_check;
+ALTER TABLE invoice_autopay_schedules ADD CONSTRAINT invoice_autopay_schedules_ineligible_reason_check
+  CHECK (ineligible_reason IN ('not_enrolled','enrolled_after_issue','consent_required','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable'));

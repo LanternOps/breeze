@@ -2536,7 +2536,8 @@
       "stop": "Automatische Zahlungen gestoppt",
       "client_request": "Vom Kunden angefordert",
       "no_billing_contact": "Kein Rechnungskontakt",
-      "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen"
+      "delivery_failed": "Zustellung der Benachrichtigung fehlgeschlagen",
+      "consent_required": "Die Zahlungsautorisierung fehlt. Fordern Sie eine neue Autorisierung an."
     },
     "noticeTemplate": "Rechnung mit Benachrichtigung zur automatischen Zahlung",
     "chargeFailed": "Die Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.",

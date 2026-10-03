@@ -138,6 +138,7 @@ function dispatchResponses(change: string) {
       accountHolderType: change === 'holder' ? 'company' : 'individual' }],
     [org], change === 'fee' ? [{ orgId: null, partnerId: partner.id, achFeeAmount: '1.00' }] : [],
     [{ id: enrollment.stripeConnectionId, partnerId: partner.id, accountCountry: 'US' }],
+    [{feeTerms:{methodType:'us_bank_account',currency:'USD',feeAttested:false,cardFeeBps:0,achFeeAmount:change==='fee'?'1.00':'0.00'}}],
   ];
   return { queued, responses };
 }

@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import { parseQboFault, qboErrorToProviderError, qboFaultOf } from './quickbooksFault';
-import { adoptFeeEntry, feeEntryDocumentNumber, feeEntryError, feeEntryMarker, requireFeeCreateWindow, validateFeeEntry } from './accountingFeeEntry';
+import { adoptFeeEntry, feeEntryDocumentNumber, feeEntryError, feeEntryMarker, findFeeEntry, validateFeeEntry } from './accountingFeeEntry';
 import { AccountingProviderError } from './accountingProviderError';
 import { withProviderCallSlot } from './accountingRateLimit';
 import { parseRetryAfterMs } from './retryAfter';
@@ -604,32 +604,33 @@ export class QuickbooksProvider implements AccountingProvider {
     return this.boundary('QuickBooks invoice void', () => this.voidInvoiceRaw(conn, invoice, mapping));
   }
 
-  async postFeeEntry(conn:AccountingConnection,entry:AccountingFeeEntryPayload):Promise<RemoteRef>{
+  async postFeeEntry(conn:AccountingConnection,entry:AccountingFeeEntryPayload,hooks:import('./types').AccountingFeeEntryHooks={}):Promise<RemoteRef>{
     return this.boundary('QuickBooks fee entry',async()=>{
       validateFeeEntry('quickbooks',entry);
       const entity=entry.direction==='receipt'?'SalesReceipt':'RefundReceipt';
       const doc=feeEntryDocumentNumber(entry);
       type Row={Id?:string;SyncToken?:string;PrivateNote?:string;TotalAmt?:number;CustomerRef?:{value?:string};CurrencyRef?:{value?:string}};
       const query=`select * from ${entity} where DocNumber = '${doc}' maxresults 2`;
+      const adopted=await findFeeEntry('quickbooks',entry,async()=>{
       const found=await this.qboRequest<{QueryResponse?:{SalesReceipt?:Row[];RefundReceipt?:Row[]}}>(conn,
         `query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`,'QuickBooks fee lookup');
       if(!found.QueryResponse)throw feeEntryError('quickbooks','Fee lookup could not be enumerated','transient');
-      const adopted=adoptFeeEntry('quickbooks',entry,(found.QueryResponse[entity]??[]).map(row=>({
+      return adoptFeeEntry('quickbooks',entry,(found.QueryResponse[entity]??[]).map(row=>({
         id:row.Id??'',marker:row.PrivateNote??'',amount:String(row.TotalAmt),customerId:row.CustomerRef?.value??'',
         currency:row.CurrencyRef?.value??conn.homeCurrency??'',remoteVersion:row.SyncToken,
       })));
+      });
       if(adopted)return adopted;
       // Adoption remains possible even when the old payload lacks a cash account.
       if(!entry.bankAccountRef)throw feeEntryError('quickbooks','Choose a processing fee payment account in Integrations');
-      requireFeeCreateWindow('quickbooks',entry);
-      const response=await this.qboRequest<{SalesReceipt?:Row;RefundReceipt?:Row}>(conn,
+      const response=await this.boundary('QuickBooks fee create',()=>this.qboRequest<{SalesReceipt?:Row;RefundReceipt?:Row}>(conn,
         `${entity.toLowerCase()}?minorversion=${QBO_API_MINOR_VERSION}&requestid=${encodeURIComponent(entry.operationId)}`,
         'QuickBooks fee create',{method:'POST',body:JSON.stringify({DocNumber:doc,PrivateNote:feeEntryMarker(entry),
           CustomerRef:{value:entry.remoteCustomerId},TxnDate:entry.txnDate,
           ...(entry.bankAccountRef?{DepositToAccountRef:{value:entry.bankAccountRef}}:{}),
           Line:[{Amount:Number(entry.amount),DetailType:'SalesItemLineDetail',Description:'Payment processing fee',
             SalesItemLineDetail:{ItemRef:{value:entry.incomeRef},Qty:1,UnitPrice:Number(entry.amount),TaxCodeRef:{value:'NON'}}}],
-        })});
+        })},hooks.beforeCreate));
       const row=response[entity];
       if(!row?.Id)throw feeEntryError('quickbooks','Fee response omitted its id','transient');
       return {id:row.Id,remoteVersion:row.SyncToken};
@@ -1480,6 +1481,7 @@ export class QuickbooksProvider implements AccountingProvider {
     path: string,
     operation: string,
     init: RequestInit = {},
+    beforeSend?: () => Promise<void>,
   ): Promise<T> {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
@@ -1489,6 +1491,7 @@ export class QuickbooksProvider implements AccountingProvider {
     // per request and never hold one while waiting for another, which would
     // deadlock at the per-connection concurrency cap.
     return withProviderCallSlot('quickbooks', this.limits.rate, conn.id, async () => {
+      await beforeSend?.();
       const response = await runOutsideDbContext(() => fetch(
         `${qboApiBase(conn.environment)}/v3/company/${conn.realmId}/${path}`,
         {

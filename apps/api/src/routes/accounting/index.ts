@@ -1,3 +1,4 @@
+import { abandonAccountingFees } from '../../services/accounting/accountingFeeAbandonment';
 import { isAutopayEnabledForPartner } from '../../services/autopay/autopayGate';
 import { Hono, type Context, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
@@ -529,6 +530,8 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
       partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
     });
     if (!result.discarded) return false;
+    await runOutsideDbContext(()=>withSystemDbAccessContext(
+      ()=>abandonAccountingFees(db,partner.partnerId,result.connectionId),'accounting.disconnect'));
     auditOwedDeletesDiscarded(c, { provider, connectionId: result.connectionId, reason: 'disconnect', owed: result.owedPaymentDeletes });
     return true;
   };
@@ -562,7 +565,11 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
     }
   }
   const providerRelease = full ? await releaseProviderConnection(full) : 'skipped';
-  const { removed, connectionId, owedPaymentDeletes } = await runInDb(() => deleteConnection(db, partner.partnerId, provider));
+  // Partner-wide authority and the scoped connection were checked above. The
+  // atomic disconnect also fans out user-scoped staff notifications, which
+  // cannot be inserted for other MSP staff in the caller's user context.
+  const { removed, connectionId, owedPaymentDeletes } = await runOutsideDbContext(()=>
+    withSystemDbAccessContext(()=>deleteConnection(db,partner.partnerId,provider),'accounting.disconnect'));
   if (!removed) return c.json({ error: 'Accounting connection not found' }, 404);
   audit(connectionId ?? ref.id, full?.status ?? ref.status, { providerRelease });
   // The disconnect is never blocked, but a QuickBooks payment deletion Breeze

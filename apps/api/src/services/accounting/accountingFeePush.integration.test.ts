@@ -1,15 +1,15 @@
 import '../../__tests__/integration/setup';
 import {randomUUID} from 'node:crypto';
 import {afterEach,expect,it,vi} from 'vitest';
-import {eq} from 'drizzle-orm';
+import {eq,sql} from 'drizzle-orm';
 import {db,hasDbAccessContext,withSystemDbAccessContext} from '../../db';
 import * as dbAccess from '../../db';
 import * as tokens from './accountingTokens';
-import {accountingConnections,accountingEntityMappings,invoicePayments,invoiceStripePayments,invoices,stripeConnectAccounts} from '../../db/schema';
-import {createPartner,createOrganization} from '../../__tests__/integration/db-utils';
-import {upsertConnection} from './accountingConnectionService';
+import {accountingConnections,accountingEntityMappings,invoicePayments,invoiceStripePayments,invoices,stripeConnectAccounts,userNotifications} from '../../db/schema';
+import {createPartner,createOrganization,createUser} from '../../__tests__/integration/db-utils';
+import {upsertConnection,deleteConnection} from './accountingConnectionService';
 import {getAccountingProvider} from './providerRegistry';
-import {pushFeeForStripeMapping} from './accountingFeePush';
+import {pushFeeForStripeMapping,drainAccountingFees} from './accountingFeePush';
 import JSZip from 'jszip';
 import {ingestStripeFinancialEvent} from '../stripeReversalState';
 import {recordStripePayment} from '../stripeReconcile';
@@ -252,4 +252,139 @@ it('does not clear an existing error while another worker owns the lease',async(
   const after=await read(f.mapping.id);
   expect(after.feeAccountingError).toBe(before.feeAccountingError);
   expect(after.feeAccountingJournal).toEqual(before.feeAccountingJournal);
+});
+
+async function expireLease(id:string){
+  const journal=(await read(id)).feeAccountingJournal as AccountingFeeJournalEntry[];
+  for(const entry of journal)entry.leaseUntil=new Date(0).toISOString();
+  await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeAccountingJournal:journal}).where(eq(invoiceStripePayments.id,id)));
+}
+it('retries lookup rate limits without starting the replay clock',async()=>{
+  const f=await seedFee('xero');
+  const post=vi.spyOn(getAccountingProvider('xero'),'postFeeEntry').mockRejectedValueOnce(new AccountingProviderError({
+    provider:'xero',kind:'rate_limited',operation:'Xero fee lookup',message:'throttled'})).mockResolvedValue({id:'fee-1'});
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(true);
+  expect(post).toHaveBeenCalledTimes(2);
+  expect(post.mock.calls[0]![1].firstSubmittedAt).toBe('');
+});
+it('refreezes a definitively rejected mapping after correction, with one staff attention',async()=>{
+  const f=await seedFee();await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  const post=vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockRejectedValueOnce(new AccountingProviderError({
+    provider:'quickbooks',kind:'validation',operation:'QuickBooks fee create',message:'sensitive invalid item'})).mockResolvedValue({id:'repaired'});
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('sensitive invalid item');
+  expect(((await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[])[0]!.state).toBe('needs_mapping');
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(false);
+  await withSystemDbAccessContext(()=>db.update(accountingConnections).set({feeIncomeItemRef:'correct-item'}).where(eq(accountingConnections.id,f.conn.id)));
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(true);
+  expect(post.mock.calls[1]![1].incomeRef).toBe('correct-item');
+  const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications));
+  expect(notices.filter(n=>n.message?.includes('fix fee income mapping'))).toHaveLength(1);
+});
+it('persists prepare errors with an existing journal and raises deduped attention',async()=>{
+  const f=await seedFee();await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'posted'});
+  await pushFeeForStripeMapping(f.mapping.id);
+  await withSystemDbAccessContext(async()=>{
+    await db.update(accountingConnections).set({homeCurrency:'CAD'}).where(eq(accountingConnections.id,f.conn.id));
+    await db.update(invoiceStripePayments).set({feeReversedAmount:'1.00'}).where(eq(invoiceStripePayments.id,f.mapping.id));
+  });
+  for(let n=0;n<2;n++)await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow();
+  expect((await read(f.mapping.id)).feeAccountingError).toBeTruthy();
+  expect(await withSystemDbAccessContext(()=>db.select().from(userNotifications))).toHaveLength(1);
+});
+it('does not mask corrupt journals in the error handler',async()=>{
+  const f=await seedFee();
+  await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeAccountingJournal:[{}]}).where(eq(invoiceStripePayments.id,f.mapping.id)));
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('Invalid processing fee journal');
+  expect((await read(f.mapping.id)).feeAccountingError).toBeTruthy();
+});
+it('drains only outstanding work and does not lock or rewrite settled mappings',async()=>{
+  const f=await seedFee();vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'posted'});
+  await pushFeeForStripeMapping(f.mapping.id);
+  const context=vi.spyOn(dbAccess,'withSystemDbAccessContext');
+  expect(await drainAccountingFees()).toEqual({posted:0,failed:0});
+  expect(context.mock.calls.some(([,label])=>label==='accountingFee.prepare')).toBe(false);
+});
+it('abandons disconnected bookkeeping, never replays it to a new connection, and permits deletion',async()=>{
+  const f=await seedFee();await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  const post=vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockRejectedValue(new Error('lost response'));
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('lost response');
+  await withSystemDbAccessContext(()=>deleteConnection(db,f.conn.partnerId,'quickbooks'));
+  expect((await read(f.mapping.id)).feeAccountingJournal).toEqual(expect.arrayContaining([expect.objectContaining({state:'abandoned'})]));
+  await withSystemDbAccessContext(()=>upsertConnection(db,f.conn.partnerId,'quickbooks',{realmId:'new-company',accessToken:'access',refreshToken:'refresh',accessTokenExpiresAt:new Date('2099-01-01'),environment:'sandbox',homeCurrency:'USD',pushPayments:true,pushMode:'auto'}));
+  await expireLease(f.mapping.id);expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(false);expect(post).toHaveBeenCalledTimes(1);
+  const notifications=await withSystemDbAccessContext(()=>db.select().from(userNotifications));
+  expect(notifications).toHaveLength(4);
+  expect(notifications.filter(n=>n.message?.includes('was abandoned'))).toHaveLength(2);
+  await withSystemDbAccessContext(()=>db.delete(invoiceStripePayments).where(eq(invoiceStripePayments.id,f.mapping.id)));
+});
+it('allows tenantCascade erasure with unfinished fees and a live connection',async()=>{
+  const f=await seedFee();vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockRejectedValue(new Error('lost response'));
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('lost response');
+  await cascadeDeleteOrg(f.mapping.orgId,(await createUser({partnerId:f.conn.partnerId,withMembership:true})).id);
+  expect(await read(f.mapping.id)).toBeUndefined();
+});
+
+import {AccountingProviderError} from './accountingProviderError';
+import {cascadeDeleteOrg} from '../tenantCascade';
+
+it('persists a categorized error for corrupt fee reversal with an existing journal',async()=>{
+  const f=await seedFee();await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'posted'});
+  await pushFeeForStripeMapping(f.mapping.id);
+  const admin=postgres(process.env.DATABASE_URL!,{max:1});
+  try{
+    // Simulate pre-existing corruption; production retains the CHECK constraint.
+    await admin`ALTER TABLE invoice_stripe_payments DROP CONSTRAINT invoice_stripe_payments_fee_reversed_check`;
+    await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeReversedAmount:'3.00'}).where(eq(invoiceStripePayments.id,f.mapping.id)));
+    await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('Fee reversal exceeds original fee');
+    expect((await read(f.mapping.id)).feeAccountingError).toContain('reversal exceeds the original fee');
+    expect(await withSystemDbAccessContext(()=>db.select().from(userNotifications))).toHaveLength(1);
+  }finally{
+    await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeReversedAmount:'0.00'}).where(eq(invoiceStripePayments.id,f.mapping.id)));
+    await admin`ALTER TABLE invoice_stripe_payments ADD CONSTRAINT invoice_stripe_payments_fee_reversed_check CHECK (fee_reversed_amount>=0 AND fee_reversed_amount<=fee_amount)`;
+    await admin.end();
+  }
+});
+it('allows deleting unfinished fee bookkeeping when no live accounting connection exists',async()=>{
+  const f=await seedFee();vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockRejectedValue(new Error('lost response'));
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toThrow('lost response');
+  await withSystemDbAccessContext(async()=>{
+    await db.delete(accountingConnections).where(eq(accountingConnections.id,f.conn.id));
+    await db.delete(invoiceStripePayments).where(eq(invoiceStripePayments.id,f.mapping.id));
+  });
+  expect(await read(f.mapping.id)).toBeUndefined();
+});
+import postgres from 'postgres';
+
+it('recovers on the next sweep twenty minutes after exhausting lookup 429 retries',async()=>{
+  const f=await seedFee('xero');
+  const post=vi.spyOn(getAccountingProvider('xero'),'postFeeEntry').mockRejectedValue(new AccountingProviderError({
+    provider:'xero',kind:'rate_limited',operation:'Xero fee lookup',httpStatus:429,message:'throttled'}));
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toMatchObject({kind:'rate_limited'});
+  expect(post).toHaveBeenCalledTimes(3);
+  expect(((await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[])[0]!.payload.firstSubmittedAt).toBe('');
+  vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date(Date.now()+20*60*1000));
+  post.mockImplementation(async(_conn,payload,hooks)=>{
+    expect(hasDbAccessContext()).toBe(false);await hooks!.beforeCreate!();
+    expect(hasDbAccessContext()).toBe(false);
+    expect(((await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[])[0]!.payload.firstSubmittedAt).toBe(payload.firstSubmittedAt);
+    expect(payload.firstSubmittedAt).toBe(new Date().toISOString());
+    return {id:'created-after-throttle'};
+  });
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(true);
+});
+
+it('keeps mapping frozen when a definitive rejection follows an ambiguous create in the same retry loop',async()=>{
+  const f=await seedFee();let calls=0;
+  vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockImplementation(async(_conn,_payload,hooks)=>{
+    await hooks!.beforeCreate!();
+    throw new AccountingProviderError({provider:'quickbooks',operation:'QuickBooks fee create',
+      kind:calls++===0?'transient':'validation',message:'provider failure'});
+  });
+  await expect(pushFeeForStripeMapping(f.mapping.id)).rejects.toMatchObject({kind:'validation'});
+  const [entry]=(await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[];
+  expect(entry).toMatchObject({state:'pending',payload:{incomeRef:'fee-item'}});
+  expect(entry!.payload.firstSubmittedAt).not.toBe('');
 });

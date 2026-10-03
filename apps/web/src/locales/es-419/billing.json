@@ -2536,7 +2536,8 @@
       "stop": "Pagos automáticos detenidos",
       "client_request": "Solicitado por el cliente",
       "no_billing_contact": "No hay contacto de facturación",
-      "delivery_failed": "No se pudo entregar el aviso"
+      "delivery_failed": "No se pudo entregar el aviso",
+      "consent_required": "Falta la autorización de pago. Solicita una nueva autorización."
     },
     "noticeTemplate": "Factura con aviso de pago automático",
     "chargeFailed": "No se pudo iniciar el pago. Inténtalo de nuevo.",

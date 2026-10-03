@@ -190,7 +190,7 @@ export const invoiceAutopaySchedules = pgTable('invoice_autopay_schedules', {
 }, (t) => [
   check('invoice_autopay_schedules_eligible_chk', sql`${t.eligible} = (${t.ineligibleReason} IS NULL)`),
   check('invoice_autopay_schedules_collect_on_chk', sql`${t.state} NOT IN ('scheduled','retry_scheduled') OR ${t.collectOn} IS NOT NULL`),
-  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable')`),
+  check('invoice_autopay_schedules_ineligible_reason_check', sql`${t.ineligibleReason} IN ('not_enrolled','enrolled_after_issue','consent_required','method_not_usable','over_cap','cap_currency_mismatch','ach_currency_unsupported','excluded_contract','excluded_invoice','charging_disabled','stripe_unavailable')`),
   check('invoice_autopay_schedules_attempt_count_check', sql`${t.attemptCount} >= 0`),
   check('invoice_autopay_schedules_authority_chk', sql`${t.enrollmentId} IS NOT NULL OR ${t.state} IN ('succeeded','failed','skipped_by_client','excluded_by_msp','cancelled','not_needed')`),
   unique().on(t.invoiceId),

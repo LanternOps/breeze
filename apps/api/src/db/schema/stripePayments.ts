@@ -176,6 +176,7 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (t) => [
+  index('invoice_stripe_payments_fee_outstanding_idx').on(t.id).where(sql`breeze_fee_accounting_outstanding(${t.feeAmount},${t.feeReversedAmount},${t.feeAccountingJournal})`),
   uniqueIndex('invoice_stripe_payments_id_org_uq').on(t.id, t.orgId),
   check('invoice_stripe_payments_fee_amount_chk', sql`${t.feeAmount} >= 0`),
   check('invoice_stripe_payments_fee_reversed_check',sql`${t.feeReversedAmount} >= 0 AND ${t.feeReversedAmount} <= ${t.feeAmount}`),

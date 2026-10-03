@@ -2536,7 +2536,8 @@
       "stop": "Automatic payments stopped",
       "client_request": "Requested by client",
       "no_billing_contact": "No billing contact",
-      "delivery_failed": "Notice delivery failed"
+      "delivery_failed": "Notice delivery failed",
+      "consent_required": "Payment authorization is missing. Request updated authorization."
     },
     "noticeTemplate": "Invoice with automatic payment notice",
     "chargeFailed": "Could not start payment. Please try again.",

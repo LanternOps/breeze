@@ -280,8 +280,8 @@ export class XeroProvider implements AccountingProvider {
     return createXeroPayment(callContext(conn), conn, payment, this.paymentMarker.embed(payment.reference, payment.marker));
   }
 
-  async postFeeEntry(conn:AccountingConnection,entry:AccountingFeeEntryPayload):Promise<RemoteRef>{
-    return postXeroFeeEntry(callContext(conn),entry);
+  async postFeeEntry(conn:AccountingConnection,entry:AccountingFeeEntryPayload,hooks:import('./types').AccountingFeeEntryHooks={}):Promise<RemoteRef>{
+    return postXeroFeeEntry(callContext(conn),entry,hooks);
   }
 
   async deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> {

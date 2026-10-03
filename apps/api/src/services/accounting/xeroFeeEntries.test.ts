@@ -26,3 +26,29 @@ it('refuses incomplete settings and malformed lookup bodies without writing',asy
   h.get.mockResolvedValue({});await expect(postXeroFeeEntry(ctx,entry)).rejects.toThrow('enumerated');
   expect(h.write).not.toHaveBeenCalled();
 });
+
+it('searches twice after expiry and creates only after both exact-identity searches are empty',async()=>{
+  const beforeCreate=vi.fn().mockResolvedValue(undefined);
+  expect(await postXeroFeeEntry(ctx,{...entry,firstSubmittedAt:'2020-01-01T00:00:00Z'}, {beforeCreate})).toEqual({id:'fee-1'});
+  expect(h.get).toHaveBeenCalledTimes(2);
+  expect(h.get.mock.calls[0]![1]).toBe(h.get.mock.calls[1]![1]);
+  expect(h.write).toHaveBeenCalledTimes(1);
+});
+it('allows an unstamped operation and leaves it unstamped when lookup is throttled',async()=>{
+  const beforeCreate=vi.fn();
+  h.get.mockRejectedValue(new Error('lookup throttled'));
+  await expect(postXeroFeeEntry(ctx,{...entry,firstSubmittedAt:''},{beforeCreate})).rejects.toThrow('lookup throttled');
+  expect(beforeCreate).not.toHaveBeenCalled();expect(h.write).not.toHaveBeenCalled();
+});
+it('adopts an eventually visible entry on the second search without creating',async()=>{
+  h.get.mockResolvedValueOnce({BankTransactions:[]}).mockResolvedValueOnce({BankTransactions:[{
+    BankTransactionID:'late-fee',Status:'AUTHORISED',Reference:`Breeze fee ${entry.operationId}`,
+    Total:1.5,Contact:{ContactID:'contact-1'},CurrencyCode:'USD'}]});
+  expect(await postXeroFeeEntry(ctx,{...entry,firstSubmittedAt:'2020-01-01T00:00:00Z'})).toMatchObject({id:'late-fee'});
+  expect(h.write).not.toHaveBeenCalled();
+});
+
+it('classifies an explicit Xero validation rejection as repairable mapping failure',async()=>{
+  h.write.mockResolvedValue({BankTransactions:[{HasValidationErrors:true,Status:'DRAFT'}]});
+  await expect(postXeroFeeEntry(ctx,entry)).rejects.toMatchObject({kind:'validation',operation:'Xero fee create'});
+});

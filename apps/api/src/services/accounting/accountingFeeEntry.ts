@@ -20,12 +20,22 @@ export function feeEntrySettings(conn:AccountingConnection):Pick<AccountingFeeEn
 export function validateFeeEntry(provider:AccountingProviderId,e:AccountingFeeEntryPayload):void{
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e.operationId)
     ||e.currencyCode!=='USD'||!/^\d{1,10}\.\d{2}$/.test(e.amount)||toMinorUnits(e.amount,'USD')<=0
-    ||!Number.isFinite(Date.parse(e.firstSubmittedAt))||!e.remoteCustomerId||!e.incomeRef
+    ||(e.firstSubmittedAt!==''&&!Number.isFinite(Date.parse(e.firstSubmittedAt)))||!e.remoteCustomerId||!e.incomeRef
     ||!/^\d{4}-\d{2}-\d{2}$/.test(e.txnDate))throw feeEntryError(provider,'Invalid processing fee entry');
 }
-export function requireFeeCreateWindow(provider:AccountingProviderId,e:AccountingFeeEntryPayload):void{
+/** An expired key needs a second exact-identity lookup after a consistency delay.
+ * Absence then permits a new create with the same durable operation identity. */
+export function feeReplayWindowExpired(provider:AccountingProviderId,e:AccountingFeeEntryPayload):boolean{
+  if(!e.firstSubmittedAt)return false;
   const age=Date.now()-Date.parse(e.firstSubmittedAt),limit=provider==='xero'?5*60*1000:23*60*60*1000;
-  if(age<0||age>=limit)throw feeEntryError(provider,'Processing fee outcome is uncertain; adoption will retry without creating another entry','transient');
+  return age<0||age>=limit;
+}
+export async function findFeeEntry(provider:AccountingProviderId,e:AccountingFeeEntryPayload,
+  lookup:()=>Promise<RemoteRef|null>):Promise<RemoteRef|null>{
+  const found=await lookup();
+  if(found||!feeReplayWindowExpired(provider,e))return found;
+  await new Promise(resolve=>setTimeout(resolve,1000));
+  return lookup();
 }
 export function adoptFeeEntry(provider:AccountingProviderId,e:AccountingFeeEntryPayload,hits:Array<{
   id:string;marker:string;amount:string;customerId:string;currency:string;remoteVersion?:string;deleted?:boolean;

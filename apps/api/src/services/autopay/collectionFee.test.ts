@@ -30,3 +30,10 @@ it('does not defer a fee-free JPY invoice for an ACH settings increase', () => {
   const quote = quoteProcessingFee({...input,currency:'JPY',cardFeeBps:0,achFeeAmount:'0.20'});
   expect(collectionFeePolicyChanged(terms,{cardFeeBps:0,achFeeAmount:'0.20'},quote)).toBe(false);
 });
+
+it.each([['2.00','5.00','2.00',false],['5.00','2.00','2.00',true]] as const)(
+  'ACH policy %s to %s with accepted quote %s requires re-notice=%s',(old,current,fee,changed)=>{
+    const terms={currency:'USD',feeAmount:old,cardFeeBps:0,achFeeAmount:old} as import('@breeze/shared').AutopayTerms;
+    const quote={feeAmount:fee,kind:'ach_flat',appliedBps:null,reason:'applied'} as import('./processingFee').FeeQuote;
+    expect(collectionFeePolicyChanged(terms,{cardFeeBps:0,achFeeAmount:current},quote)).toBe(changed);
+  });

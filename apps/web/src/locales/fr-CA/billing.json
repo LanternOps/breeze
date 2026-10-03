@@ -2536,7 +2536,8 @@
       "stop": "Paiements automatiques arrêtés",
       "client_request": "Demandé par le client",
       "no_billing_contact": "Aucun contact de facturation",
-      "delivery_failed": "Échec de l’envoi de l’avis"
+      "delivery_failed": "Échec de l’envoi de l’avis",
+      "consent_required": "L’autorisation de paiement est manquante. Demandez une nouvelle autorisation."
     },
     "noticeTemplate": "Facture avec avis de paiement automatique",
     "chargeFailed": "Impossible de lancer le paiement. Réessayez.",

@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnrollments,
-  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox } from '../../db/schema';
+  orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox, orgAutopayConsents } from '../../db/schema';
 import { mintBillingLinkToken } from './linkTokens';
 import { skipInvoice, setInvoiceAutopayExcluded } from './invoiceControls';
 import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
@@ -18,6 +18,7 @@ async function fixture() {
     const [connection] = await db.insert(stripeConnectAccounts).values({ partnerId: partner!.id, stripeAccountId: `acct_${suffix}`, apiKey: 'enc:synthetic', keyLast4: 'test', status: 'connected', livemode: false,accountCountry:'US',autopayCapabilitiesCheckedAt:new Date(),autopayMissingPermissions:[] }).returning();
     const [enrollment] = await db.insert(orgAutopayEnrollments).values({ orgId: org!.id, partnerId: partner!.id, status: 'active', effectiveFrom: new Date('2026-09-01'), generation: 1, stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId }).returning();
     const [method] = await db.insert(orgPaymentMethods).values({ orgId: org!.id, enrollmentId: enrollment!.id, stripePaymentMethodId: `pm_${suffix}`, type: 'card', status: 'active',isAutopayMethod:true }).returning();
+    await db.insert(orgAutopayConsents).values({orgId:org!.id,enrollmentId:enrollment!.id,generation:1,paymentMethodId:method!.id,consentTextVersion:'2026-10-01.v1',consentTextHash:'a'.repeat(64),source:'setup_page',contactEmail:'billing@example.test',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'}});
     const [invoice] = await db.insert(invoices).values({ orgId: org!.id, partnerId: partner!.id, currencyCode: 'USD', status: 'sent', invoiceNumber: `INV-${suffix}`, issueDate: '2026-10-01', dueDate: '2026-10-31', total: '100.00', subtotal: '100.00', balance: '100.00' }).returning();
     const [schedule] = await db.insert(invoiceAutopaySchedules).values({ orgId: org!.id, invoiceId: invoice!.id, enrollmentId: enrollment!.id, enrollmentGeneration: 1, eligible: true, state: 'scheduled', collectOn: '2026-10-31', termsSnapshot: {} }).returning();
     const token = await mintBillingLinkToken(db, { orgId: org!.id, invoiceId: invoice!.id, enrollmentId: enrollment!.id, generation:1, purpose:'skip_invoice',ttlDays:1 });
