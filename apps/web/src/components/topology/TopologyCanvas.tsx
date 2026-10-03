@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, type Bounds, type ZoomTier } from './semanticZoom';
+import { edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 
 /** Reads a design-system HSL token (`--primary: 225 62% 48%`) as a colour Cytoscape understands. */
@@ -236,6 +236,9 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           box.style.transform = `translate(${x1}px, ${y1}px)`;
           box.style.width = `${x2 - x1}px`; box.style.height = `${y2 - y1}px`;
           box.dataset.density = summaryDensity(x2 - x1, y2 - y1);
+          // A small card's summary shrinks to fit (to a legible floor), then overhangs its receded box.
+          const panel = box.querySelector<HTMLElement>('button');
+          if (panel) panel.style.transform = `scale(${summaryScale(panel.offsetWidth, panel.offsetHeight, x2 - x1, y2 - y1)})`;
         });
         placeAnchors();
       }

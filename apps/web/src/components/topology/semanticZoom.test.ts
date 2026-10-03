@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('switches to summaries below the enter zoom and back to tiles above the exit zoom', () => {
@@ -61,5 +61,16 @@ describe('summary anchors', () => {
   it('maps the summary panel on screen back into model space, so edges end at its border', () => {
     // Panel at screen (300, 200)–(500, 280); viewport pan (100, 40), zoom 0.5.
     expect(screenRectToModel({ left: 300, top: 200, width: 200, height: 80 }, { x: 100, y: 40 }, 0.5)).toEqual({ x: 600, y: 400, width: 400, height: 160 });
+  });
+});
+
+describe('summaryScale', () => {
+  it('leaves a summary that fits its card alone', () => {
+    expect(summaryScale(300, 140, 714, 474)).toBe(1);
+  });
+  it('shrinks a summary to a small card, down to a legible floor, then lets it overhang', () => {
+    expect(summaryScale(170, 80, 160, 70)).toBeCloseTo(1, 5); // fits within the 8px overhang either side
+    expect(summaryScale(200, 90, 170, 70)).toBeCloseTo(186 / 200, 5);
+    expect(summaryScale(400, 200, 100, 40)).toBe(0.8);
   });
 });

@@ -66,3 +66,13 @@ export const edgeEnd = (end: string, cards: ReadonlySet<string>, tier: ZoomTier)
 export function screenRectToModel(rect: { left: number; top: number; width: number; height: number }, pan: { x: number; y: number }, zoom: number) {
   return { x: (rect.left + rect.width / 2 - pan.x) / zoom, y: (rect.top + rect.height / 2 - pan.y) / zoom, width: rect.width / zoom, height: rect.height / zoom };
 }
+
+/**
+ * Scale for a summary panel in a card drawn `boxW` × `boxH` screen px. A panel may overhang its
+ * (receded) box by 8px a side; beyond that it shrinks to fit, but never under 0.8, where its type
+ * would stop reading. Past the floor it overhangs: the box has receded, the panel is the card.
+ */
+export function summaryScale(panelW: number, panelH: number, boxW: number, boxH: number): number {
+  if (!panelW || !panelH) return 1;
+  return Math.max(0.8, Math.min(1, (boxW + 16) / panelW, (boxH + 16) / panelH));
+}
