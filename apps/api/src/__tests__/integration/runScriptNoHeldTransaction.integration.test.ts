@@ -74,6 +74,8 @@ async function seed() {
       agentVersion: '0.0.0-test',
       status: 'online',
       enrolledAt: new Date(),
+      // trigger_agent_restart targets the watchdog, which must be reporting.
+      watchdogLastSeen: new Date(),
     })
     .returning({ id: devices.id });
   // `script_executions.ai_session_id` references a real chat session.
