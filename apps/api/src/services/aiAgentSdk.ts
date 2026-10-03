@@ -22,7 +22,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import { DIAGNOSTIC_STATES } from '@breeze/shared/validators/topology';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements, type GuardrailContext } from './aiGuardrails';
 import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
 import {
   guardrailCheckForTenantTool,
@@ -728,6 +728,24 @@ function reportLostTerminalCas(opts: {
 // ============================================
 
 /**
+ * #7906: the guardrail context for a CHAT tool call. An interactive
+ * `user_session` principal (same test as middleware/auth.ts
+ * `isInteractiveUserSession`, inlined to keep this module's import surface)
+ * that is not a Helper session opts in to the payload-aware read-only
+ * `event_logs_query` classification. Anything else — a Helper session (PAM
+ * governs its tier-2+ calls), or any non-user principal — passes the loaded
+ * proposal context through untouched and keeps the base Tier 3. Used by BOTH
+ * the gate and postToolUse so the two always resolve the same tier.
+ */
+function chatGuardrailContext(
+  session: ActiveSession,
+  base: GuardrailContext | undefined,
+): GuardrailContext | undefined {
+  const interactiveChat = session.auth.principal?.kind === 'user_session' && !session.auth.helperDeviceId;
+  return interactiveChat ? { ...base, chatSession: true } : base;
+}
+
+/**
  * Creates a PreToolUseCallback that enforces guardrails, RBAC, rate limits,
  * and the approval gate before MCP tool execution. This runs inside
  * makeHandler() in aiAgentSdkTools.ts and IS invoked for in-process MCP
@@ -811,10 +829,20 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // own — it maps straight to guardrailCheckForTenantTool's tier.
     const guardrailCheck = tenant
       ? guardrailCheckForTenantTool(tenant)
-      : checkGuardrails(toolName, input, await loadProposalGuardrailContext(input, session.orgId));
+      : checkGuardrails(
+        toolName,
+        input,
+        chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId)),
+      );
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
+    }
+
+    // #7906: a read-only event_logs_query was classified on a strictly-parsed
+    // payload; carry those exact values to dispatch on every allowed exit.
+    if (guardrailCheck.pinnedEventLogsQuery) {
+      verifiedToolContext = { pinnedEventLogsQuery: guardrailCheck.pinnedEventLogsQuery };
     }
 
     // RBAC permission check
@@ -1066,7 +1094,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           toolName,
           method: effectiveMode === 'auto_approve' ? 'auto_approve_mode' : 'read_only_auto',
         });
-        return { allowed: true };
+        return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
       }
 
       // Action plan / hybrid plan mode: check if tool matches an approved plan step.
@@ -1212,7 +1240,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
           session.currentPlanStepIndex = match.stepIndex + 1;
           lastApprovalBySession.set(session, { toolName, method: 'plan_step' });
-          return { allowed: true };
+          return { allowed: true, ...(verifiedToolContext ? { context: verifiedToolContext } : {}) };
         }
         if (match.matches) {
           // Matched an approved plan step but declined the shortcut: this
@@ -2425,7 +2453,7 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // Canonical session org (always set) — `auth.orgId` is null for partner-
     // scope logins, which left tool audit rows without an org attribution.
     const orgId = session.orgId;
-    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
+    const guardrailContext = chatGuardrailContext(session, await loadProposalGuardrailContext(input, session.orgId));
     const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
 
     // Script-builder "apply" tools deliver their payload (code / metadata) to
