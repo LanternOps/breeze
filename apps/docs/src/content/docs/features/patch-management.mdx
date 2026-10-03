@@ -60,6 +60,8 @@ A patch whose source published no severity is shown as a muted **Unrated** badge
 | **`skipped`** | Patch was not applied during a job run (e.g., device was rebooting or a dependency was missing) |
 | **`missing`** | Patch is approved and should be present but is not detected on the device |
 
+A patch whose latest install reported success but needs a restart stays pending on the device until it restarts. From v0.121.0 the device's **Patches** tab shows such a row as **Installed, reboot required** instead of an untouched pending patch, and it no longer counts as awaiting approval. An install started from the device's **Patches** tab (or from vulnerability remediation) also counts as an install attempt: a newer one replaces an older failed patch job in the **Install failed** status, and its own failure shows its own reason.
+
 ### Approval on a device's Patches tab
 
 The **Approval** column on a device's **Patches** tab shows what the next scheduled patch run would do with each pending patch. Breeze works this out with the same rules the scheduled run uses, against the update ring the device's patch policy links to:

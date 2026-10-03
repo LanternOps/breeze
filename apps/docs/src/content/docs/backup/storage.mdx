@@ -86,6 +86,14 @@ On S3 storage the `.gz` suffix is only part of the object name. Expect an S3 tar
 
 Breeze relies on this layout: restores, bare-metal recovery media, integrity verification and older agents all read S3 objects as raw bytes. Don't rename, compress or recompress objects in the bucket.
 
+### How destination credentials are stored
+
+From v0.121.0, the credentials in a storage configuration (access keys, secret keys, session tokens, and the equivalent Azure, Google Cloud Storage and Backblaze B2 fields) are stored encrypted with your instance's application encryption key. Bucket, region, endpoint and prefix stay readable. Existing configurations are encrypted by a background sweep on the first start after the upgrade, which logs one `[startup] Backup destination credentials sealed: …` line.
+
+<Aside type="caution" title="Roll forward only">
+  Once that sweep has run, do not roll back to a release older than v0.121.0. Older releases would hand the encrypted values to agents as storage credentials and S3 backups would fail. If you rotate `APP_ENCRYPTION_KEY`, follow [Secret Rotation](/security/secrets/#rotating-app-encryption-key); the re-encryption script covers these credentials.
+</Aside>
+
 ---
 
 ## Testing Connectivity
@@ -114,8 +122,8 @@ Click the **Edit** action on any configuration to reopen the wizard. Changes are
 
 Click **Delete** on a configuration to remove it. Configurations that are actively referenced by a backup policy should have the policy reassigned first.
 
-<Aside type="caution" title="Known issue: destinations with job history">
-  In v0.120.0, deleting a configuration that has any backup job history fails with a server error. Disable it instead — reassign its policies, then set `"enabled": false` with `PATCH /backup/configs/:id` — rather than deleting it.
+<Aside type="caution" title="Destinations with job history">
+  A configuration that has any backup job history can't be deleted: Breeze returns `409` and names what blocks it (v0.120.0 returned a server error instead). Disable it — reassign its policies, then set `"enabled": false` with `PATCH /backup/configs/:id`.
 </Aside>
 
 <Aside type="caution">
