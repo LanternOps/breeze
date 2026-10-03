@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '../lib/validation';
+import { zValidator, optionalJsonValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
@@ -751,7 +751,9 @@ approverDevicesRoutes.get('/', authMiddleware, async (c) => {
 approverDevicesRoutes.post(
   '/:id/revoke',
   authMiddleware,
-  zValidator('json', revokeSchema),
+  // #7811: body is optional (`reason` only) and the web's fetchWithAuth sends
+  // Content-Type: application/json with no body — plain zValidator 400s that.
+  optionalJsonValidator(revokeSchema),
   async (c) => {
     const auth = c.get('auth');
     const id = c.req.param('id');
