@@ -18,6 +18,44 @@ export const retestRequestSchema = z.object({
   tenantId: guidSchema,
 }).strict();
 
+/**
+ * Identity-first consent, phase 1: redeem a v2 OIDC code and verify the
+ * administrator's id_token. `expectedTenantId: null` means the sign-in ran at
+ * the `organizations` authority (initial connect); a GUID pins redemption and
+ * the `tid` equality check to that tenant (reconnect of a bound row, upgrade).
+ */
+export const verifyConsentIdentityRequestSchema = z.object({
+  correlationId: guidSchema,
+  consentAttemptId: guidSchema,
+  expectedTenantId: guidSchema.nullable(),
+  authorizationCode: z.string().min(1).max(8192),
+  codeVerifier: z.string().min(43).max(128),
+  nonce: z.string().min(1).max(512),
+  redirectUri: z.string().url().max(2048),
+}).strict();
+
+export const identityFailureCodeSchema = z.enum([
+  'admin_role_required',
+  'tenant_mismatch',
+  'credential_unavailable',
+  'identity_token_invalid',
+]);
+
+/** Identity proof only: no application-token, probe, grant, or token fields. */
+export const verifyConsentIdentityResultSchema = z.union([
+  z.object({
+    success: z.literal(true),
+    tenantId: guidSchema,
+    administratorObjectId: guidSchema,
+    administratorUsername: z.string().min(1).max(256).nullable(),
+    verifiedAt: timestampSchema,
+  }).strict(),
+  z.object({
+    success: z.literal(false),
+    errorCode: identityFailureCodeSchema,
+  }).strict(),
+]);
+
 export const executorFailureCodeSchema = z.enum([
   'admin_role_required',
   'tenant_mismatch',
@@ -100,6 +138,9 @@ export const retestResultSchema = z.union([
 
 export type CompleteConsentRequest = z.infer<typeof completeConsentRequestSchema>;
 export type RetestRequest = z.infer<typeof retestRequestSchema>;
+export type VerifyConsentIdentityRequest = z.infer<typeof verifyConsentIdentityRequestSchema>;
+export type VerifyConsentIdentityResult = z.infer<typeof verifyConsentIdentityResultSchema>;
+export type IdentityFailureCode = z.infer<typeof identityFailureCodeSchema>;
 export type ExecutorFailureCode = z.infer<typeof executorFailureCodeSchema>;
 export type CompleteConsentResult = z.infer<typeof completeConsentResultSchema>;
 export type RetestResult = z.infer<typeof retestResultSchema>;

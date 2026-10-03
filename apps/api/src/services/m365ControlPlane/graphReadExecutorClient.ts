@@ -7,6 +7,8 @@ import {
   readActionResultSchema,
   retestRequestSchema,
   retestResultSchema,
+  verifyConsentIdentityRequestSchema,
+  verifyConsentIdentityResultSchema,
   syncActionRequestSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
@@ -16,6 +18,8 @@ import {
   type ReadActionResult,
   type RetestRequest,
   type RetestResult,
+  type VerifyConsentIdentityRequest,
+  type VerifyConsentIdentityResult,
   type SyncActionRequest,
 } from '@breeze/shared/m365';
 import { importJWK, SignJWT, type CryptoKey, type JWK } from 'jose';
@@ -29,7 +33,7 @@ const SYNC_ACTION_TIMEOUT_MS = 130_000;
 const SYNC_ACTION_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_SYNC_CAPACITY_RETRY_SECONDS = 30;
 
-type ExecutorOperation = 'complete-consent' | 'retest' | 'read-action' | 'sync-action';
+type ExecutorOperation = 'complete-consent' | 'verify-identity' | 'retest' | 'read-action' | 'sync-action';
 
 /**
  * An outcome the executor reported. Distinct from GraphReadExecutorClientError,
@@ -67,6 +71,8 @@ export class GraphReadExecutorClientError extends Error {
 
 export interface GraphReadExecutorClient {
   completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
+  /** Identity-first consent, phase 1 (#7910). Not yet called by any route (W2). */
+  verifyConsentIdentity(input: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retestCustomerGraphRead(input: RetestRequest): Promise<RetestResult>;
   executeReadAction(input: ReadActionRequest): Promise<ReadActionResult>;
   syncAction(input: SyncActionRequest): Promise<M365SyncActionResult | GraphReadExecutorFailure>;
@@ -108,6 +114,7 @@ function exactExecutorOrigin(value: string): URL {
 
 const OPERATION_ENDPOINT_PATHS: Record<ExecutorOperation, string> = {
   'complete-consent': '/v1/complete-consent',
+  'verify-identity': '/v1/verify-identity',
   retest: '/v1/retest',
   'read-action': '/v1/read-action',
   'sync-action': '/v1/sync-action',
@@ -218,7 +225,7 @@ export function createGraphReadExecutorClient(
 
   async function invoke<T>(
     operation: ExecutorOperation,
-    input: CompleteConsentRequest | RetestRequest | ReadActionRequest,
+    input: CompleteConsentRequest | VerifyConsentIdentityRequest | RetestRequest | ReadActionRequest,
     parseResponse: (value: unknown) => T,
     maxBytes: number = maxResponseBytes,
   ): Promise<T> {
@@ -238,6 +245,11 @@ export function createGraphReadExecutorClient(
       const parsed = completeConsentRequestSchema.safeParse(input);
       if (!parsed.success) return Promise.reject(unavailable());
       return invoke('complete-consent', parsed.data, (value) => completeConsentResultSchema.parse(value));
+    },
+    verifyConsentIdentity(input) {
+      const parsed = verifyConsentIdentityRequestSchema.safeParse(input);
+      if (!parsed.success) return Promise.reject(unavailable());
+      return invoke('verify-identity', parsed.data, (value) => verifyConsentIdentityResultSchema.parse(value));
     },
     retestCustomerGraphRead(input) {
       const parsed = retestRequestSchema.safeParse(input);

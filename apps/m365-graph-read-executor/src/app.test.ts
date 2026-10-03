@@ -12,7 +12,7 @@ describe('executor HTTP app', () => {
     const completeConsent = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent,
+      completeConsent, verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction: vi.fn(),
       syncAction: vi.fn(),
@@ -37,7 +37,7 @@ describe('executor HTTP app', () => {
     const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
     const retest = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
     const app = createExecutorApp({
-      authenticator: { verify }, completeConsent: vi.fn(), retest, readAction: vi.fn(), syncAction: vi.fn(),
+      authenticator: { verify }, completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest, readAction: vi.fn(), syncAction: vi.fn(),
     });
 
     const response = await app.request('/v1/retest', {
@@ -59,7 +59,7 @@ describe('executor HTTP app', () => {
     const verify = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction: vi.fn(),
       syncAction: vi.fn(),
@@ -80,7 +80,7 @@ describe('executor HTTP app', () => {
   it('sanitizes operation exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' }) },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
       readAction: vi.fn(),
       syncAction: vi.fn(),
@@ -102,7 +102,7 @@ describe('executor HTTP app', () => {
     const serve = vi.fn().mockReturnValue({ close });
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction: vi.fn(),
       syncAction: vi.fn(),
@@ -120,7 +120,7 @@ describe('executor HTTP app', () => {
     const readAction = vi.fn().mockResolvedValue(stubbedResult);
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction,
       syncAction: vi.fn(),
@@ -147,7 +147,7 @@ describe('executor HTTP app', () => {
     const readAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction,
       syncAction: vi.fn(),
@@ -172,7 +172,7 @@ describe('executor HTTP app', () => {
     const readAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction,
       syncAction: vi.fn(),
@@ -227,7 +227,7 @@ describe('sync-action route', () => {
     const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
     const syncAction = vi.fn().mockResolvedValue(OK_SYNC);
     const app = createExecutorApp({
-      authenticator: { verify }, completeConsent: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
+      authenticator: { verify }, completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
     });
     const response = await post(app, '/v1/sync-action', SYNC_BODY);
     expect(response.status).toBe(200);
@@ -243,7 +243,7 @@ describe('sync-action route', () => {
     const readAction = vi.fn();
     const syncAction = vi.fn();
     const app = createExecutorApp({
-      authenticator: authenticated(), completeConsent: vi.fn(), retest: vi.fn(), readAction, syncAction,
+      authenticator: authenticated(), completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(), readAction, syncAction,
     });
     const refusedRead = await post(app, '/v1/read-action', SYNC_ON_READ_BODY);
     expect(refusedRead.status).toBe(400);
@@ -261,7 +261,7 @@ describe('sync-action route', () => {
     let release!: () => void;
     const syncAction = vi.fn(() => new Promise<typeof OK_SYNC>((resolve) => { release = () => resolve(OK_SYNC); }));
     const app = createExecutorApp({
-      authenticator: authenticated(), completeConsent: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
+      authenticator: authenticated(), completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
       gate: createInFlightGate({ syncMaxInFlight: 1, maxInFlight: 4 }),
     });
     const inflight = post(app, '/v1/sync-action', SYNC_BODY);
@@ -280,7 +280,7 @@ describe('sync-action route', () => {
     let release!: () => void;
     const app = createExecutorApp({
       authenticator: authenticated(),
-      completeConsent: vi.fn(), retest: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(),
       readAction: vi.fn().mockResolvedValue({ success: true, kind: 'resource', resource: {} }),
       syncAction: vi.fn(() => new Promise<typeof OK_SYNC>((resolve) => { release = () => resolve(OK_SYNC); })),
       gate: createInFlightGate({ syncMaxInFlight: 1, maxInFlight: 4 }),
@@ -296,7 +296,7 @@ describe('sync-action route', () => {
     let releases: Array<() => void> = [];
     const app = createExecutorApp({
       authenticator: authenticated(),
-      completeConsent: vi.fn(), retest: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(),
       readAction: vi.fn(() => new Promise<{ success: true; kind: 'resource'; resource: Record<string, unknown> }>((resolve) => { releases.push(() => resolve({ success: true, kind: 'resource', resource: {} })); })),
       syncAction: vi.fn(),
       gate: createInFlightGate({ syncMaxInFlight: 1, maxInFlight: 1 }),
@@ -312,7 +312,7 @@ describe('sync-action route', () => {
   it('answers 504 when the operation outruns the route timeout, and frees the slot', async () => {
     const gate = createInFlightGate({ syncMaxInFlight: 1, maxInFlight: 4 });
     const app = createExecutorApp({
-      authenticator: authenticated(), completeConsent: vi.fn(), retest: vi.fn(), readAction: vi.fn(),
+      authenticator: authenticated(), completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(), readAction: vi.fn(),
       syncAction: () => new Promise(() => {}),   // never settles
       gate,
       syncTimeoutMs: 5,
@@ -325,7 +325,7 @@ describe('sync-action route', () => {
 
   it('serves the metrics registry unauthenticated on the private interface', async () => {
     const app = createExecutorApp({
-      authenticator: { verify: vi.fn() }, completeConsent: vi.fn(), retest: vi.fn(),
+      authenticator: { verify: vi.fn() }, completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(),
       readAction: vi.fn(), syncAction: vi.fn(),
     });
     const response = await app.request('/metrics');
@@ -337,7 +337,7 @@ describe('sync-action route', () => {
   it('rejects a malformed sync body before the operation runs', async () => {
     const syncAction = vi.fn();
     const app = createExecutorApp({
-      authenticator: authenticated(), completeConsent: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
+      authenticator: authenticated(), completeConsent: vi.fn(), verifyIdentity: vi.fn(), retest: vi.fn(), readAction: vi.fn(), syncAction,
     });
     const response = await post(app, '/v1/sync-action', JSON.stringify({
       correlationId: '11111111-1111-4111-8111-111111111111',
@@ -362,7 +362,7 @@ describe('executor process lifecycle', () => {
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       readAction: vi.fn(),
       syncAction: vi.fn(),

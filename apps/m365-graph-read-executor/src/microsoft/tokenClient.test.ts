@@ -47,7 +47,7 @@ describe('Microsoft token client', () => {
     }));
 
     const identityToken = await client(fetchImpl).exchangeAuthorizationCode({
-      tenantId: TENANT_ID,
+      authority: TENANT_ID,
       code: 'authorization-code',
       codeVerifier: 'pkce-code-verifier',
     });
@@ -76,6 +76,44 @@ describe('Microsoft token client', () => {
     expect(body.has('client_secret')).toBe(false);
     expect(decodeProtectedHeader(body.get('client_assertion')!).alg).toBe('RS256');
     expect(decodeJwt(body.get('client_assertion')!).aud).toBe(TOKEN_ENDPOINT);
+  });
+
+  it('redeems a code at the organizations endpoint with a matching assertion audience', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => success({ id_token: 'opaque.identity.token' }));
+
+    const identityToken = await client(fetchImpl).exchangeAuthorizationCode({
+      authority: 'organizations',
+      code: 'authorization-code',
+      codeVerifier: 'pkce-code-verifier',
+    });
+
+    expect(identityToken).toBe('opaque.identity.token');
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toBe('https://login.microsoftonline.com/organizations/oauth2/v2.0/token');
+    const body = new URLSearchParams(String(init?.body));
+    expect(body.get('grant_type')).toBe('authorization_code');
+    expect(body.get('redirect_uri')).toBe(CALLBACK_URL);
+    expect(decodeJwt(body.get('client_assertion')!).aud).toBe(String(url));
+  });
+
+  it.each(['common', 'consumers', 'Organizations', TENANT_ID.toUpperCase(), `${TENANT_ID}/oauth2`, 'contoso.example', ''])(
+    'rejects code redemption at authority %j without making a request',
+    async (authority) => {
+      const fetchImpl = vi.fn<typeof fetch>();
+      await expect(client(fetchImpl).exchangeAuthorizationCode({
+        authority,
+        code: 'authorization-code',
+        codeVerifier: 'pkce-code-verifier',
+      })).rejects.toMatchObject({ code: 'token_request_invalid' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it('never requests an application token from the organizations authority', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(client(fetchImpl).acquireGraphAppToken({ tenantId: 'organizations' }))
+      .rejects.toMatchObject({ code: 'token_request_invalid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('acquires only the fixed Microsoft Graph app scope and keeps the token opaque', async () => {
