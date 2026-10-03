@@ -102,6 +102,18 @@ function retestOk(tenantId: string, manifestVersion = 3): RetestResult {
   };
 }
 
+/**
+ * Sanitized capture of the real Microsoft error redirect observed in production
+ * 2026-10-01: Conditional Access demanded device authentication (AADSTS50097).
+ * Note admin_consent=True rides along WITH the error.
+ */
+const REAL_CA_ERROR_QUERY = (state: string) => 'error=invalid_grant'
+  + '&error_description=AADSTS50097%3a+Device+authentication+is+required.+Trace+ID%3a+'
+  + '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d+Correlation+ID%3a+5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b'
+  + '+Timestamp%3a+2026-10-01+14%3a03%3a11Z'
+  + '&error_uri=https%3a%2f%2flogin.microsoftonline.com%2ferror%3fcode%3d50097'
+  + `&admin_consent=True&state=${state}`;
+
 const lifecycle = (code: string) => Object.assign(new Error(code), { code });
 
 interface Harness {
@@ -218,7 +230,69 @@ describe('M365 consent callback parser', () => {
   it('accepts a provider error without exposing its description', () => {
     expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
       state: 'state', error: 'access_denied', error_description: 'sensitive provider text',
-    }))).toEqual({ kind: 'provider_error', state: 'state' });
+    }))).toEqual({
+      kind: 'provider_error', state: 'state', error: 'access_denied', reason: 'cancelled', aadstsCode: null, providerCorrelationId: null,
+    });
+  });
+
+  it.each(['admin_consent', 'identity_verification'] as const)(
+    'classifies the real Microsoft Conditional Access error redirect as conditional_access (%s phase)',
+    (phase) => {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(REAL_CA_ERROR_QUERY('s')))).toEqual({
+        kind: 'provider_error',
+        state: 's',
+        error: 'invalid_grant',
+        reason: 'conditional_access',
+        aadstsCode: 50097,
+        providerCorrelationId: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+      });
+    },
+  );
+
+  it.each(['admin_consent', 'identity_verification'] as const)(
+    'never treats an error response as success, even with code / admin_consent=True alongside (%s phase)',
+    (phase) => {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(
+        `state=a&tenant=${TENANT_A}&admin_consent=True&error=server_error`,
+      ))).toMatchObject({ kind: 'provider_error', reason: 'other' });
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=a&code=c&error=server_error')))
+        .toBeNull();
+    },
+  );
+
+  it.each([
+    ['access_denied', 'state=s&error=access_denied', 'cancelled'],
+    ['subcode cancel', 'state=s&error=access_denied&error_subcode=cancel', 'cancelled'],
+    ['subcode cancel on another error', 'state=s&error=invalid_request&error_subcode=cancel', 'cancelled'],
+    ['CA code list', 'state=s&error=invalid_grant&error_codes=%5B53003%5D', 'conditional_access'],
+    // Entra reports a CA block on the authorize endpoint as access_denied + AADSTS53003.
+    ['CA block reported as access_denied', 'state=s&error=access_denied&error_description=AADSTS53003%3A+Access+has+been+blocked+by+Conditional+Access+policies', 'conditional_access'],
+    ['CA block with subcode cancel', 'state=s&error=access_denied&error_subcode=cancel&error_codes=53001', 'conditional_access'],
+    ['CA 53000', 'state=s&error=interaction_required&error_description=AADSTS53000%3A+Device+not+compliant', 'conditional_access'],
+    ['CA 50158', 'state=s&error=interaction_required&error_description=AADSTS50158%3A+External+security+challenge', 'conditional_access'],
+    ['unrelated code', 'state=s&error=invalid_client&error_description=AADSTS700016%3A+app+not+found', 'other'],
+    ['full Microsoft field set', 'state=s&error=server_error&error_description=x&error_uri=u&error_subcode=y&error_codes=%5B1%5D'
+      + '&admin_consent=False&tenant=t&timestamp=2026-10-01&trace_id=t1&correlation_id=c1&session_state=ss', 'other'],
+  ] as const)('classifies provider error (%s) identically in both phases', (_name, raw, reason) => {
+    for (const phase of ['identity_verification', 'admin_consent'] as const) {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(raw)))
+        .toMatchObject({ kind: 'provider_error', state: 's', reason });
+    }
+  });
+
+  it.each([
+    ['unknown key on the error path', 'state=s&error=access_denied&foo=bar'],
+    ['duplicate error', 'state=s&error=access_denied&error=server_error'],
+    ['duplicate tolerated key', 'state=s&error=access_denied&error_uri=a&error_uri=b'],
+    ['overlong error_uri', `state=s&error=access_denied&error_uri=${'u'.repeat(513)}`],
+    ['overlong description', `state=s&error=access_denied&error_description=${'d'.repeat(4097)}`],
+    ['control char in tolerated key', 'state=s&error=access_denied&trace_id=a%0Ab'],
+    ['overlong error', `state=s&error=${'e'.repeat(129)}`],
+    ['missing state', 'error=access_denied'],
+  ] as const)('rejects provider error with %s in both phases', (_name, raw) => {
+    for (const phase of ['identity_verification', 'admin_consent'] as const) {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(raw))).toBeNull();
+    }
   });
 });
 
@@ -645,32 +719,112 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
     expect(verifyIdentity).not.toHaveBeenCalled();
   });
 
-  it('production AADSTS50097 error redirect binds nothing and never reaches an executor', async () => {
-    const query = new URLSearchParams({
-      // Sanitized capture of the real production redirect (2026-10-01): note admin_consent=True
-      // arrives ALONGSIDE the error and must never be read as success.
-      error: 'invalid_grant',
-      error_description: 'AADSTS50097: Device authentication is required. Trace ID: 00000000-0000-0000-0000-000000000000 Correlation ID: 00000000-0000-0000-0000-000000000000 Timestamp: 2026-10-01 17:11:50Z',
-      error_uri: 'https://login.microsoftonline.com/error?code=50097',
-      admin_consent: 'True',
-      state: 'id-state',
-    });
+  const PHASES = [
+    ['identity', () => identityBinding(null), () => identitySession({ tenantHintHash: null })],
+    ['consent', () => consentBinding(TENANT_A), () => consentSession()],
+  ] as const;
+
+  it.each(PHASES)('production AADSTS50097 redirect in the %s phase is conditional_access_blocked, marks the attempt failed, binds nothing', async (_phase, makeBinding, makeSession) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const binding = makeBinding();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
     const verifyIdentity = vi.fn();
     const finalize = vi.fn();
     const transitionIdentityToConsent = vi.fn();
+    const beginFinalization = vi.fn();
+    const consumeSession = vi.fn().mockResolvedValue(makeSession());
+    const audit = vi.fn();
     const res = await h.app({
-      verifyBindingCookie: () => identityBinding(null),
-      verifyIdentity, finalize, transitionIdentityToConsent,
+      verifyBindingCookie: () => binding, consumeSession, markAttemptFailed, audit,
+      verifyIdentity, finalize, transitionIdentityToConsent, beginFinalization,
       loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
-    }).request(`${h.path}?${query}`, { headers: { cookie: 'x' } });
+    }).request(`${h.path}?${REAL_CA_ERROR_QUERY(binding.rawState)}`, { headers: { cookie: 'x' } });
 
-    // Strict error-key parser today: the extra keys fail closed. The
-    // provider-error classification change (#7915) maps this exact shape to
-    // conditional_access_blocked; either way nothing is bound.
-    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/conditional_access_blocked`);
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(consumeSession).toHaveBeenCalledWith(expect.objectContaining({ phase: binding.phase }));
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'conditional_access_blocked');
     expect(verifyIdentity).not.toHaveBeenCalled();
     expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+    expect(beginFinalization).not.toHaveBeenCalled();
     expect(finalize).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, outcome: 'conditional_access_blocked', actorId: USER_ID,
+    }));
+    // Support identifiers are logged; Microsoft's free text never is.
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain('50097');
+    expect(logged).toContain('5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b');
+    expect(logged).not.toContain('Device authentication');
+    expect(JSON.stringify(audit.mock.calls)).not.toContain('Device authentication');
+    warn.mockRestore();
+  });
+
+  it.each(PHASES)('access_denied + error_subcode=cancel in the %s phase is consent_cancelled', async (_phase, makeBinding, makeSession) => {
+    const binding = makeBinding();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const res = await h.app({
+      verifyBindingCookie: () => binding, markAttemptFailed,
+      consumeSession: vi.fn().mockResolvedValue(makeSession()),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=${binding.rawState}&error=access_denied&error_subcode=cancel`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_cancelled`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'consent_cancelled');
+  });
+
+  it.each(PHASES)('any other provider error in the %s phase is consent_provider_error', async (_phase, makeBinding, makeSession) => {
+    const binding = makeBinding();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const res = await h.app({
+      verifyBindingCookie: () => binding, markAttemptFailed,
+      consumeSession: vi.fn().mockResolvedValue(makeSession()),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=${binding.rawState}&error=server_error&error_description=AADSTS700016%3A+x`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_provider_error`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'consent_provider_error');
+  });
+
+  it.each(PHASES)('upgrade: a Conditional Access error in the %s phase leaves the live row untouched', async (_phase, makeBinding) => {
+    const binding = makeBinding();
+    const markAttemptFailed = vi.fn();
+    const session = binding.phase === 'identity_verification'
+      ? identitySession({ tenantHintHash: hashTenant(TENANT_A), purpose: 'upgrade' })
+      : consentSession({ purpose: 'upgrade' });
+    const res = await h.app({
+      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+      verifyBindingCookie: () => binding, markAttemptFailed,
+      consumeSession: vi.fn().mockResolvedValue(session),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
+    }).request(`${h.path}?${REAL_CA_ERROR_QUERY(binding.rawState)}`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/conditional_access_blocked`);
+    expect(markAttemptFailed).not.toHaveBeenCalled();
+  });
+
+  it.each(PHASES)('a provider error with the wrong state in the %s phase is consent_state_mismatch and consumes nothing', async (_phase, makeBinding) => {
+    const consumeSession = vi.fn();
+    const loadAttempt = vi.fn();
+    const markAttemptFailed = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => makeBinding(), consumeSession, loadAttempt, markAttemptFailed })
+      .request(`${h.path}?${REAL_CA_ERROR_QUERY('other-state')}`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(consumeSession).not.toHaveBeenCalled();
+    expect(markAttemptFailed).not.toHaveBeenCalled();
+  });
+
+  it.each(PHASES)('a provider error with an unknown key in the %s phase is consent_state_mismatch', async (_phase, makeBinding) => {
+    const binding = makeBinding();
+    const consumeSession = vi.fn();
+    const markAttemptFailed = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => binding, consumeSession, markAttemptFailed, loadAttempt: vi.fn() })
+      .request(`${h.path}?state=${binding.rawState}&error=access_denied&foo=bar`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(consumeSession).not.toHaveBeenCalled();
+    expect(markAttemptFailed).not.toHaveBeenCalled();
   });
 
   it.each(['legacy', 'expired'] as const)('a %s browser binding restarts with consent_expired and touches nothing', async (state) => {

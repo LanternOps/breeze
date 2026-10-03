@@ -91,7 +91,100 @@ type CallbackAttemptSnapshot = M365ConsentAttemptSnapshot<CallbackProfile>;
 export type ParsedM365ConsentCallback =
   /** Same shape for both phases; the admin-consent phase's code is discarded. */
   | { kind: 'code_success'; state: string; code: string }
-  | { kind: 'provider_error'; state: string };
+  | {
+    kind: 'provider_error';
+    state: string;
+    /** Microsoft's bounded OAuth error code (e.g. `invalid_grant`). */
+    error: string;
+    reason: M365ProviderErrorReason;
+    /** The AADSTS number only — never Microsoft's free-text description. */
+    aadstsCode: number | null;
+    /** Microsoft support identifier (GUID-shaped only), safe to log. */
+    providerCorrelationId: string | null;
+  };
+
+/**
+ * Bounded classification of a Microsoft consent error (#7915), so the route
+ * can show a specific outcome without echoing any Microsoft-supplied text.
+ * Identical for both identity-first phases.
+ */
+export type M365ProviderErrorReason = 'cancelled' | 'conditional_access' | 'other';
+
+/**
+ * Extra keys Microsoft's error redirects carry alongside `error`. They are
+ * tolerated (each must be single and bounded) but never used as authority.
+ * Values are the maximum accepted length.
+ */
+const PROVIDER_ERROR_EXTRA_KEYS: ReadonlyMap<string, number> = new Map([
+  ['error_description', 4_096],
+  // Validated for shape only — never followed, logged, or rendered.
+  ['error_uri', 512],
+  ['error_subcode', 512],
+  ['error_codes', 512],
+  ['admin_consent', 512],
+  ['tenant', 512],
+  ['timestamp', 512],
+  ['trace_id', 512],
+  ['correlation_id', 512],
+  ['session_state', 512],
+]);
+
+/**
+ * AADSTS codes that mean a Conditional Access policy (device auth, compliant
+ * device, blocked location, external MFA challenge) stopped the sign-in.
+ */
+const CONDITIONAL_ACCESS_AADSTS_CODES = new Set([50097, 50158, 53000, 53001, 53003]);
+
+const GUID_ANYCASE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function aadstsCodesFrom(description: string | null, errorCodes: string | null): number[] {
+  const codes: number[] = [];
+  for (const match of (description ?? '').matchAll(/AADSTS(\d{1,7})/g)) codes.push(Number(match[1]));
+  // `error_codes` arrives as a JSON-ish list ("[50097]") or comma-separated.
+  for (const match of (errorCodes ?? '').matchAll(/\d{1,7}/g)) codes.push(Number(match[0]));
+  return codes;
+}
+
+function parseProviderError(
+  params: URLSearchParams,
+  keys: string[],
+  state: string,
+): ParsedM365ConsentCallback | null {
+  const error = single(params, 'error');
+  if (!validOpaque(error, 128)) return null;
+  for (const key of keys) {
+    if (key === 'state' || key === 'error') continue;
+    const maxLength = PROVIDER_ERROR_EXTRA_KEYS.get(key);
+    // Unknown keys on the error path stay fail-closed (including `code`: an
+    // error and a code together is not a shape Microsoft sends).
+    if (maxLength === undefined) return null;
+    const value = single(params, key);
+    // An empty value is tolerated (Microsoft sends some fields blank); it only
+    // has to be single, bounded, and free of control characters.
+    if (value === null || (value !== '' && !validOpaque(value, maxLength))) return null;
+  }
+
+  const description = params.get('error_description');
+  const codes = aadstsCodesFrom(description, params.get('error_codes'));
+  const subcode = params.get('error_subcode')?.toLowerCase() ?? null;
+  // Conditional Access first: Entra reports a CA block on the authorize
+  // endpoint as `access_denied` + AADSTS53003, which is not a user cancel.
+  const reason: M365ProviderErrorReason = codes.some((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code))
+    ? 'conditional_access'
+    : error === 'access_denied' || subcode === 'cancel'
+      ? 'cancelled'
+      : 'other';
+  // Prefer the AADSTS number that drove the classification, if any.
+  const aadstsCode = codes.find((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code)) ?? codes[0] ?? null;
+  const correlationParam = params.get('correlation_id');
+  const correlationSource = correlationParam && GUID_ANYCASE.test(correlationParam)
+    ? correlationParam
+    : /Correlation ID:\s*([0-9a-f-]{36})/i.exec(description ?? '')?.[1] ?? null;
+  const providerCorrelationId = correlationSource
+    ? GUID_ANYCASE.exec(correlationSource)?.[0]?.toLowerCase() ?? null
+    : null;
+  return { kind: 'provider_error', state, error, reason, aadstsCode, providerCorrelationId };
+}
 
 function single(params: URLSearchParams, name: string): string | null {
   const values = params.getAll(name);
@@ -138,17 +231,11 @@ export function parseM365ConsentCallbackQuery(
 
   const hasError = params.has('error');
   const successKeys = new Set(['state', 'code', 'session_state']);
-  const errorKeys = new Set(['state', 'error', 'error_description']);
 
-  if (hasError) {
-    if (keys.some((key) => !errorKeys.has(key))) return null;
-    const error = single(params, 'error');
-    const description = params.has('error_description')
-      ? single(params, 'error_description')
-      : '';
-    if (!validOpaque(error, 128) || description === null || description.length > 4_096) return null;
-    return { kind: 'provider_error', state };
-  }
+  // Any request carrying `error` is a provider error and NEVER counts as
+  // success — even when `admin_consent=True` is present alongside it. Microsoft
+  // really does send both together (the production AADSTS50097 redirect).
+  if (hasError) return parseProviderError(params, keys, state);
 
   for (const key of keys) {
     if (successKeys.has(key)) continue;
@@ -172,6 +259,8 @@ type PublicOutcome =
   | 'consent_expired'
   | 'consent_state_mismatch'
   | 'consent_cancelled'
+  | 'conditional_access_blocked'
+  | 'consent_provider_error'
   | 'admin_role_required'
   | 'tenant_mismatch'
   | 'tenant_already_bound'
@@ -191,6 +280,7 @@ const PUBLIC_OUTCOMES = new Set<PublicOutcome>([
   'tenant_already_bound', 'credential_unavailable', 'identity_token_invalid',
   'application_token_invalid', 'grant_reconciliation_unavailable', 'grant_missing',
   'grant_unexpected', 'manifest_stale', 'organization_probe_failed', 'executor_unavailable',
+  'conditional_access_blocked', 'consent_provider_error',
 ]);
 interface CallbackRuntimeConfig {
   clientId: string;
@@ -651,6 +741,36 @@ export function createM365ConsentCallbackRoutes(
       return terminalFailure(outcome, attempt, actorId);
     };
 
+    /**
+     * A Microsoft error that matched this browser's state, in either phase:
+     * log only bounded support identifiers (never error_description), then
+     * fail the attempt with the classified outcome. Upgrades stay a no-op on
+     * the live row via failAttempt.
+     */
+    const failProviderError = (
+      providerError: Extract<ParsedM365ConsentCallback, { kind: 'provider_error' }>,
+      phase: M365ConsentBindingPhase,
+      attempt: CallbackAttemptSnapshot,
+      isUpgrade: boolean,
+      actorId: string,
+    ) => {
+      console.warn('[m365ConsentCallback] Microsoft returned a consent error', {
+        profile: dependencies.profile,
+        phase,
+        correlationId,
+        error: providerError.error,
+        reason: providerError.reason,
+        aadstsCode: providerError.aadstsCode,
+        providerCorrelationId: providerError.providerCorrelationId,
+      });
+      const outcome: PublicOutcome = providerError.reason === 'cancelled'
+        ? 'consent_cancelled'
+        : providerError.reason === 'conditional_access'
+          ? 'conditional_access_blocked'
+          : 'consent_provider_error';
+      return failAttempt(outcome, attempt, isUpgrade, actorId);
+    };
+
     const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
     if (binding === 'expired' || binding === 'legacy') {
       // A legacy cookie is an in-flight attempt from before the identity-first
@@ -725,7 +845,7 @@ export function createM365ConsentCallbackRoutes(
       const actorId = session.userId;
 
       if (parsed.kind === 'provider_error') {
-        return failAttempt('consent_cancelled', attempt, isUpgrade, actorId);
+        return failProviderError(parsed, binding.phase, attempt, isUpgrade, actorId);
       }
       if (!session.nonce || !session.codeVerifier) {
         return terminalFailure('consent_state_mismatch', attempt, actorId);
@@ -842,7 +962,7 @@ export function createM365ConsentCallbackRoutes(
       if ((session.purpose === 'upgrade') !== isUpgrade) {
         return terminalFailure('consent_state_mismatch', attempt, session.userId);
       }
-      return failAttempt('consent_cancelled', attempt, isUpgrade, session.userId);
+      return failProviderError(parsed, binding.phase, attempt, isUpgrade, session.userId);
     }
     // parsed.code is deliberately never read past this point: the consent
     // phase's authorization code is discarded, never redeemed or recorded.
