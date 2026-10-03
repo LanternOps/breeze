@@ -252,6 +252,8 @@ it('compacts the header: one status row, a secondary control group with accessib
   expect(screen.getByRole('button', { name: 'Configuration' })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.getByRole('button', { name: 'Operations' })).toHaveAttribute('aria-pressed', 'false');
   expect(screen.getByRole('searchbox', { name: 'Search this site by name or address' })).toBe(screen.getByTestId('topology-search'));
+  // Nothing outside the view: no "Outside this view: 0 nodes · 0 connections" taking up the row.
+  expect(screen.queryByText(/Outside this view/)).toBeNull();
 });
 
 it('collapses an expansion back to the base read (#7818)', async () => {
