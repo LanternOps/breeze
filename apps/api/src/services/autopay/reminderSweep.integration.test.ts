@@ -13,7 +13,7 @@ const { send } = vi.hoisted(() => ({ send: vi.fn().mockResolvedValue(undefined) 
 vi.mock('../email', () => ({ getEmailService: () => ({ sendEmail: send }) }));
 beforeEach(() => send.mockClear());
 
-async function fixture() {
+async function fixture(labels?: string[]) {
   return withSystemDbAccessContext(async () => {
     const suffix = randomUUID();
     const [partner] = await db.insert(partners).values({
@@ -29,7 +29,7 @@ async function fixture() {
       status: 'connected', livemode: false,
     }).returning();
     const created: { id: string; orgId: string; label: string }[] = [];
-    const cases = [
+    const cases = labels ?? [
       'sent', 'partially_paid', 'overdue', 'archived', 'purging', 'merging',
       'disabled', 'missing-contact', 'invalid-contact', 'paid', 'void', 'zero', 'null-date',
       'awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled',
@@ -93,12 +93,12 @@ describe('invoice reminder sweep against PostgreSQL', () => {
     }
     const partial = rows.find(row => row.invoiceId === f.created.find(i => i.label === 'partially_paid')!.id)!;
     expect(partial.rendered).toMatchObject({ frozen: { amount: '25.05', currency: 'EUR' } });
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 2 });
 
     // Pending/failed are already allocated, even though not yet sent.
     await withSystemDbAccessContext(() => db.update(billingNoticeOutbox).set({ status: 'failed' })
       .where(eq(billingNoticeOutbox.id, partial.id)));
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 2 });
     await withSystemDbAccessContext(() => db.update(billingNoticeOutbox).set({ status: 'pending' })
       .where(eq(billingNoticeOutbox.id, partial.id)));
     const dispatched = await Promise.all([
@@ -129,7 +129,7 @@ describe('invoice reminder sweep against PostgreSQL', () => {
     await withSystemDbAccessContext(() => db.update(invoices)
       .set({ status: 'paid', amountPaid: '100.00', balance: '0.00' })
       .where(inArray(invoices.id, f.created.map(row => row.id))));
-    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
   });
 });
 
@@ -173,9 +173,80 @@ describe('eligibility changes between discovery and locking', () => {
       await payment;
       await settled;
     }
-    expect(await sweep).toEqual({ enqueued: 5 });
+    expect(await sweep).toEqual({ enqueued: 5, skippedNoContact: 2 });
     const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
       .where(eq(billingNoticeOutbox.invoiceId, target.id)));
     expect(rows).toHaveLength(0);
+  });
+});
+
+const nonLiveStates = [
+  ...(['suspended', 'churned', 'offboarding', 'merging', 'archived', 'purging', 'deleted'] as const)
+    .map(state => ({ axis: 'org' as const, state })),
+  ...(['pending', 'suspended', 'churned', 'offboarding', 'deleted'] as const)
+    .map(state => ({ axis: 'partner' as const, state })),
+];
+async function makeNonLive(f: Awaited<ReturnType<typeof fixture>>, axis: 'org' | 'partner', state: string) {
+  await withSystemDbAccessContext(async () => {
+    if (axis === 'org') await db.update(organizations).set(state === 'deleted'
+      ? { deletedAt: new Date() } : { status: state as typeof organizations.$inferSelect.status })
+      .where(eq(organizations.id, f.created[0]!.orgId));
+    else await db.update(partners).set(state === 'deleted'
+      ? { deletedAt: new Date() } : { status: state as typeof partners.$inferSelect.status })
+      .where(eq(partners.id, f.partnerId));
+  });
+}
+
+describe('reminder liveness and dispatch validation', () => {
+  it.each(nonLiveStates)('excludes $axis $state with a live trial control', async ({ axis, state }) => {
+    const blocked = await fixture(['sent']);
+    const live = await fixture(['sent']);
+    await makeNonLive(blocked, axis, state);
+    await withSystemDbAccessContext(() => db.update(organizations).set({ status: 'trial' })
+      .where(eq(organizations.id, live.created[0]!.orgId)));
+    expect(await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+    const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox));
+    expect(rows.map(row => row.invoiceId)).toEqual([live.created[0]!.id]);
+  });
+  it.each(['paid', 'void', 'draft', 'zero', 'negative', 'open'] as const)('revalidates queued reminders when invoice is %s', async state => {
+    const f = await fixture(['sent', 'overdue']);
+    await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'));
+    if (state !== 'open') await withSystemDbAccessContext(() => db.update(invoices).set(
+      state === 'zero' || state === 'negative' ? { balance: state === 'zero' ? '0.00' : '-1.00' }
+        : { status: state, ...(state === 'paid' ? { balance: '0.00', amountPaid: '100.00' } : {}) },
+    ).where(inArray(invoices.id, f.created.map(row => row.id))));
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: state === 'open' ? 2 : 0, failed: 0 });
+    const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.status).toBe(state === 'open' ? 'sent' : 'cancelled');
+      if (state !== 'open') { expect(row.lastError).toBeTruthy(); }
+    }
+    await dispatchPendingBillingNotices(new Date(Date.now() + 86400000));
+    expect(send).toHaveBeenCalledTimes(state === 'open' ? 2 : 0);
+  });
+  it.each(nonLiveStates)('cancels queued reminders after $axis becomes $state', async ({ axis, state }) => {
+    const f = await fixture(['sent']);
+    await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'));
+    await makeNonLive(f, axis, state);
+    expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 0, failed: 0 });
+    expect(send).not.toHaveBeenCalled();
+    const [row] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox));
+    expect(row).toMatchObject({ status: 'cancelled' });
+    expect(row!.lastError).toBeTruthy();
+  });
+  it('keeps overdue sequence independent after upcoming sequences 1–3 have sent', async () => {
+    const f = await fixture(['sent']);
+    for (const day of ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-15', '2026-10-22']) {
+      expect(await runInvoiceReminderSweep(new Date(`${day}T06:18:00Z`))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+      expect(await dispatchPendingBillingNotices(new Date(Date.now() + 1000))).toEqual({ sent: 1, failed: 0 });
+    }
+    const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, f.created[0]!.id)));
+    expect(rows.map(row => `${row.kind}:${row.seq}:${row.status}`).sort()).toEqual([
+      'payment_overdue:1:sent', 'payment_overdue:2:sent',
+      'payment_reminder:1:sent', 'payment_reminder:2:sent', 'payment_reminder:3:sent',
+    ]);
+    expect(send).toHaveBeenCalledTimes(5);
   });
 });

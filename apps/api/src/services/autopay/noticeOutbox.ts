@@ -1,7 +1,9 @@
-import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { billingNoticeOutbox, organizations, partners } from '../../db/schema';
+import { billingNoticeOutbox, invoices, organizations, partners } from '../../db/schema';
+import { sqlOpenAr } from '../../db/schema/invoices';
+import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
 import { captureException } from '../sentry';
 import { getEmailService } from '../email';
 import type { Tx, RenderedNotice } from './types';
@@ -31,6 +33,24 @@ export function registerNoticeSentHandler(kind: BillingNoticeKind, handler: Noti
   handlers.set(kind, handler);
 }
 type Row = typeof billingNoticeOutbox.$inferSelect;
+/** Return a safe, fixed cancellation reason, or null to allow delivery. */
+export type NoticePreSendValidator = (tx: Tx, row: Row) => Promise<string | null>;
+const validators = new Map<BillingNoticeKind, NoticePreSendValidator>();
+export function registerNoticePreSendValidator(kind: BillingNoticeKind, validator: NoticePreSendValidator): void {
+  if (validators.has(kind)) throw new Error(`Billing pre-send validator already registered: ${kind}`);
+  validators.set(kind, validator);
+}
+const validateReminder: NoticePreSendValidator = async (tx, row) => {
+  if (!row.invoiceId) return 'Reminder invoice missing';
+  const [invoice] = await tx.select({ id: invoices.id }).from(invoices).where(and(
+    eq(invoices.id, row.invoiceId), eq(invoices.orgId, row.orgId),
+    sqlOpenAr(invoices), gt(invoices.balance, '0'), buildPublicLinkLiveOrgPredicate(invoices.orgId),
+  )).limit(1);
+  return invoice ? null : 'Reminder invoice or tenant no longer eligible';
+};
+registerNoticePreSendValidator('payment_reminder', validateReminder);
+registerNoticePreSendValidator('payment_overdue', validateReminder);
+
 const scope = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 const owns = (row: Row) => and(eq(billingNoticeOutbox.id, row.id),
   eq(billingNoticeOutbox.status, 'sending'), eq(billingNoticeOutbox.attempts, row.attempts));
@@ -72,6 +92,18 @@ export async function dispatchPendingBillingNotices(now = new Date()): Promise<{
     for (let row of claimed) {
       try {
         if (!row.sentAt) {
+          const validate = validators.get(row.kind);
+          if (validate) {
+            const allowed = await scope(() => db.transaction(async tx => {
+              const [current] = await tx.select().from(billingNoticeOutbox).where(owns(row)).for('update');
+              if (!current) return false;
+              const reason = await validate(tx, current);
+              if (!reason) return true;
+              await tx.update(billingNoticeOutbox).set({ status: 'cancelled', lastError: reason }).where(owns(current));
+              return false;
+            }));
+            if (!allowed) continue;
+          }
           const [sender] = await scope(() => db.select({ id: partners.id, name: partners.name, billingEmail: partners.billingEmail })
             .from(organizations).innerJoin(partners, eq(partners.id, organizations.partnerId)).where(eq(organizations.id, row.orgId)).limit(1));
           if (!sender) throw new Error('Billing notice organization missing');

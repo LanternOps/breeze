@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, organizations, partners, invoiceAutopaySchedules, billingNoticeOutbox } from '../../db/schema';
 import { sqlOpenAr } from '../../db/schema/invoices';
-import { buildAutomationEligibleOrgPredicate } from '../tenantStatus';
+import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
+import { captureException } from '../sentry';
 import { resolveBillingEmail } from '../invoicePdf';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
@@ -63,7 +64,7 @@ function system<T>(fn: () => Promise<T>): Promise<T> {
 function invoiceCandidate() {
   return and(
     sqlOpenAr(invoices), gt(invoices.balance, '0'), isNotNull(invoices.dueDate),
-    buildAutomationEligibleOrgPredicate(invoices.orgId),
+    buildPublicLinkLiveOrgPredicate(invoices.orgId),
     sql`NOT EXISTS (
       SELECT 1 FROM ${invoiceAutopaySchedules}
       WHERE ${invoiceAutopaySchedules.invoiceId} = ${invoices.id}
@@ -73,12 +74,23 @@ function invoiceCandidate() {
   );
 }
 
-export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enqueued: number }> {
+export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enqueued: number; skippedNoContact: number }> {
   const today = now.toISOString().slice(0, 10);
   utcDay(today);
   let orgCursor: string | undefined;
   let enqueued = 0;
-  const errors: unknown[] = [];
+  let skippedNoContact = 0;
+  let failureCount = 0;
+  const errors: Error[] = [];
+  const reportFailure = (orgId: string, invoiceId?: string) => {
+    failureCount++;
+    // Exceptions can carry recipient addresses or bearer links: retain only ids.
+    const tags = { service: 'invoiceReminderSweep', orgId, ...(invoiceId ? { invoiceId } : {}) };
+    const error = new Error('Invoice reminder sweep item failed');
+    console.error('[invoiceReminderSweep] item failed', tags);
+    captureException(error, undefined, tags);
+    if (errors.length < 100) errors.push(error);
+  };
   for (;;) {
     const orgs = await system(() => db.select({
       id: organizations.id, partnerId: organizations.partnerId, name: organizations.name,
@@ -87,20 +99,23 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
     }).from(organizations).innerJoin(partners, eq(partners.id, organizations.partnerId))
       .where(and(
         orgCursor ? gt(organizations.id, orgCursor) : undefined,
-        buildAutomationEligibleOrgPredicate(organizations.id),
+        buildPublicLinkLiveOrgPredicate(organizations.id),
         sql`EXISTS (SELECT 1 FROM ${invoices}
           WHERE ${invoices.orgId} = ${organizations.id} AND ${invoiceCandidate()})`,
       )).orderBy(organizations.id).limit(ORG_PAGE));
     if (orgs.length === 0) break;
     for (const org of orgs) {
       orgCursor = org.id;
-      const recipient = resolveBillingEmail(org.billingContact)?.trim();
-      if (!recipient || !z.string().email().safeParse(recipient).success) continue;
       try {
         const settings = await system(() => resolveBillingPaymentSettings(db, {
           partnerId: org.partnerId, orgId: org.id,
         }));
         if (!settings.remindersEnabled.value) continue;
+        const recipient = resolveBillingEmail(org.billingContact)?.trim();
+        if (!recipient || !z.string().email().safeParse(recipient).success) {
+          skippedNoContact++;
+          continue;
+        }
         let invoiceCursor: string | undefined;
         for (;;) {
           const ids = await system(() => db.select({ id: invoices.id }).from(invoices).where(and(
@@ -153,12 +168,13 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                 return result.created;
               });
               if (created) enqueued += 1;
-            } catch (error) { errors.push(error); }
+            } catch { reportFailure(org.id, id); }
           }
         }
-      } catch (error) { errors.push(error); }
+      } catch { reportFailure(org.id); }
     }
   }
-  if (errors.length) throw new AggregateError(errors, `Invoice reminder sweep failed for ${errors.length} items`);
-  return { enqueued };
+  if (skippedNoContact) console.warn('[invoiceReminderSweep] missing billing contact', { skippedNoContact });
+  if (failureCount) throw new AggregateError(errors, `Invoice reminder sweep failed for ${failureCount} items`);
+  return { enqueued, skippedNoContact };
 }

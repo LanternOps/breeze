@@ -59,7 +59,7 @@ type Query = { table?: unknown; predicate?: unknown; limit?: number; locked?: bo
 const mock = vi.hoisted(() => ({
   queries: [] as Query[], respond: undefined as undefined | ((query: Query) => unknown[]),
   results: [] as unknown[][], predicates: [] as unknown[], locks: vi.fn(),
-  settings: vi.fn(), enqueue: vi.fn(), render: vi.fn(), link: vi.fn(), system: vi.fn(),
+  settings: vi.fn(), enqueue: vi.fn(), render: vi.fn(), link: vi.fn(), system: vi.fn(), capture: vi.fn(),
 }));
 vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -78,6 +78,7 @@ vi.mock('../../db', () => ({
     return chain;
   } },
 }));
+vi.mock('../sentry', () => ({ captureException: mock.capture }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: mock.settings }));
 vi.mock('./noticeOutbox', () => ({ enqueueBillingNotice: mock.enqueue }));
 vi.mock('./renderBillingNotice', () => ({ renderBillingNotice: mock.render }));
@@ -107,7 +108,7 @@ function seedMock(rows = [invoice], maxSeq = 0) {
 
 describe('runInvoiceReminderSweep', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); mock.queries.length = 0; mock.respond = undefined; mock.results.length = 0; mock.predicates.length = 0;
+    vi.resetAllMocks(); mock.queries.length = 0; mock.respond = undefined; mock.results.length = 0; mock.predicates.length = 0;
     mock.settings.mockResolvedValue({
       remindersEnabled: { value: true, source: 'partner' },
       reminderBeforeDueDays: { value: 3, source: 'default' },
@@ -120,7 +121,7 @@ describe('runInvoiceReminderSweep', () => {
   });
   it('resolves once per org and enqueues both partial balances', async () => {
     seedMock([invoice, { ...invoice, id: '44444444-4444-4444-8444-444444444444' }]);
-    await expect(runInvoiceReminderSweep(now)).resolves.toEqual({ enqueued: 2 });
+    await expect(runInvoiceReminderSweep(now)).resolves.toEqual({ enqueued: 2, skippedNoContact: 0 });
     expect(mock.settings).toHaveBeenCalledTimes(1);
     expect(mock.settings).toHaveBeenCalledWith(expect.anything(), { partnerId: org.partnerId, orgId: org.id });
     expect(mock.locks).toHaveBeenCalledWith('update');
@@ -140,7 +141,7 @@ describe('runInvoiceReminderSweep', () => {
     const queries = mock.predicates.map((where) => dialect.sqlToQuery(where as Parameters<PgDialect['sqlToQuery']>[0]));
     const text = queries.map(q => q.sql).join('\n');
     const params = queries.flatMap(q => q.params);
-    expect(text).toContain('automation_eligible_org');
+    expect(text).toContain('public_link_live_org');
     expect(text).toContain("IN ('sent','partially_paid','overdue')");
     expect(text).toContain('invoice_autopay_schedules');
     expect(text).toMatch(/NOT EXISTS/i);
@@ -152,9 +153,9 @@ describe('runInvoiceReminderSweep', () => {
   });
   it('counts conflict insertion as zero and does not count an allocated sequence again', async () => {
     seedMock(); mock.enqueue.mockResolvedValue({ id: 'existing', created: false });
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 0 });
     mock.enqueue.mockClear(); seedMock([invoice], 1);
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 0 });
     expect(mock.enqueue).not.toHaveBeenCalled();
   });
   it.each(['disabled', 'missing', 'invalid'])('skips %s before enumerating eligible invoices', async (guard) => {
@@ -168,14 +169,15 @@ describe('runInvoiceReminderSweep', () => {
       return [{ seq: 0 }];
     };
     if (guard === 'disabled') mock.settings.mockResolvedValueOnce({ remindersEnabled: { value: false, source: 'org' } });
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: guard === 'disabled' ? 0 : 1 });
+    expect(mock.settings).toHaveBeenCalledOnce();
     expect(mock.queries.filter(q => q.table === invoices)).toHaveLength(0);
     expect(mock.enqueue).not.toHaveBeenCalled();
     expect(mock.link).not.toHaveBeenCalled();
   });
   it('rechecks after a payment removes the locked candidate', async () => {
     mock.results.push([org], [{ id: invoice.id }], [], [], []);
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 0 });
     expect(mock.enqueue).not.toHaveBeenCalled();
   });
   it('continues after a failed invoice, then rejects for a safe job retry', async () => {
@@ -183,10 +185,49 @@ describe('runInvoiceReminderSweep', () => {
     mock.enqueue.mockRejectedValueOnce(new Error('outbox unavailable'));
     await expect(runInvoiceReminderSweep(now)).rejects.toThrow('Invoice reminder sweep failed');
     expect(mock.enqueue).toHaveBeenCalledTimes(2);
+    expect(mock.capture).toHaveBeenCalledWith(expect.any(Error), undefined,
+      expect.objectContaining({ orgId: org.id, invoiceId: invoice.id }));
+  });
+  it('constrains history by invoice, org and kind independently', async () => {
+    seedMock(); await runInvoiceReminderSweep(now);
+    const history = mock.queries.find(q => q.table === billingNoticeOutbox)!;
+    const query = new PgDialect().sqlToQuery(history.predicate as Parameters<PgDialect['sqlToQuery']>[0]);
+    expect(query.sql).toMatch(/"invoice_id" = \$1/);
+    expect(query.sql).toMatch(/"org_id" = \$2/);
+    expect(query.sql).toMatch(/"kind" = \$3/);
+    expect(query.params).toEqual([invoice.id, org.id, 'payment_reminder']);
+  });
+  it('counts only enabled orgs without contacts and warns once without PII', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mock.results.push([
+      { ...org, billingContact: null }, { ...org, billingContact: { email: 'private-invalid' } },
+      { ...org, billingContact: null },
+    ], []);
+    mock.settings.mockResolvedValueOnce({ remindersEnabled: { value: false } });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 2 });
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[invoiceReminderSweep] missing billing contact', { skippedNoContact: 2 });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private-invalid');
+    warn.mockRestore();
+  });
+  it('reports every poison invoice with ids, caps aggregate errors and finishes its page', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rows = Array.from({ length: 102 }, (_, i) => ({ ...invoice, id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }));
+    seedMock(rows);
+    for (let i = 0; i < 101; i++) mock.enqueue.mockRejectedValueOnce(new Error('private bearer URL'));
+    const error = await runInvoiceReminderSweep(now).catch(error => error) as AggregateError;
+    expect(error.message).toBe('Invoice reminder sweep failed for 101 items');
+    expect(error.errors).toHaveLength(100);
+    expect(mock.enqueue).toHaveBeenCalledTimes(102);
+    expect(mock.capture).toHaveBeenCalledTimes(101);
+    expect(log).toHaveBeenCalledTimes(101);
+    expect(log).toHaveBeenCalledWith('[invoiceReminderSweep] item failed', expect.objectContaining({ orgId: org.id, invoiceId: rows[0]!.id }));
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private bearer URL');
+    expect(mock.capture.mock.calls.every(([error]) => !error.message.includes('private bearer URL'))).toBe(true);
+    log.mockRestore();
   });
   it('handles an empty fleet', async () => {
     mock.results.push([]);
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 0, skippedNoContact: 0 });
     expect(mock.settings).not.toHaveBeenCalled();
   });
 
@@ -197,7 +238,7 @@ describe('runInvoiceReminderSweep', () => {
     expect(locked).toHaveLength(1);
     const query = new PgDialect().sqlToQuery(locked[0]!.predicate as Parameters<PgDialect['sqlToQuery']>[0]);
     expect(query.sql).toContain("IN ('sent','partially_paid','overdue')");
-    expect(query.sql).toContain('automation_eligible_org');
+    expect(query.sql).toContain('public_link_live_org');
     expect(query.sql).toMatch(/"invoices"\."balance" > /);
     expect(query.sql).toContain('"invoices"."due_date" is not null');
     expect(query.sql).toMatch(/NOT EXISTS/i);
@@ -226,7 +267,7 @@ describe('runInvoiceReminderSweep', () => {
       const cursor = values.find(v => rows.some(r => r.id === v)) as string | undefined;
       return rows.filter(r => r.orgId === values[0] && (!cursor || r.id > cursor)).slice(0, q.limit).map(r => ({ id: r.id }));
     };
-    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 351 });
+    expect(await runInvoiceReminderSweep(now)).toEqual({ enqueued: 351, skippedNoContact: 0 });
     expect(mock.settings).toHaveBeenCalledTimes(101);
     const orgPages = mock.queries.filter(q => q.table === organizations);
     expect(orgPages).toHaveLength(3);
