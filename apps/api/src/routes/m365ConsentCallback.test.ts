@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { Hono } from 'hono';
+import { M365_PERMISSION_PROFILES, type RetestResult } from '@breeze/shared/m365';
 import {
   buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
@@ -10,6 +11,7 @@ import {
   m365ConsentCallbackRoutes,
   createM365ConsentCallbackRoutes,
   parseM365ConsentCallbackQuery,
+  type CreateM365ConsentCallbackRoutesOverrides,
 } from './m365ConsentCallback';
 
 const { syncMocks } = vi.hoisted(() => ({
@@ -33,1393 +35,813 @@ const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ATTEMPT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const USER_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-const TENANT_ID = '11111111-1111-1111-1111-111111111111';
+const CORRELATION_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const CLIENT_ID = '22222222-2222-4222-8222-222222222222';
+const TENANT_A = '11111111-1111-4111-8111-111111111111';
+const TENANT_B = '33333333-3333-4333-8333-333333333333';
+const HOME = '99999999-9999-4999-8999-999999999999';
+const ADMIN = '44444444-4444-4444-8444-444444444444';
+const NOW_ISO = '2026-10-03T12:00:00.000Z';
 
-function bindingCookie(binding: Record<string, unknown>): string {
-  return `binding=${Buffer.from(JSON.stringify(binding)).toString('base64url')}`;
-}
+type Profile = 'customer-graph-read' | 'customer-graph-actions';
+type Status = 'pending-consent' | 'verifying' | 'active' | 'degraded';
 
-function tenantHintHash(value: string): string {
+function hashTenant(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function attempt(status: 'pending-consent' | 'verifying') {
+function identityBinding(tenantId: string | null, rawState = 'id-state') {
+  return { phase: 'identity_verification' as const, rawState, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId };
+}
+
+function consentBinding(tenantId: string, rawState = 'consent-state') {
+  return { phase: 'admin_consent' as const, rawState, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId };
+}
+
+function identitySession(overrides: { tenantHintHash: string | null; purpose?: 'initial' | 'upgrade' }) {
   return {
-    id: CONNECTION_ID,
-    orgId: ORG_ID,
-    profile: 'customer-graph-read' as const,
-    consentAttemptId: ATTEMPT_ID,
-    status,
+    userId: USER_ID,
+    purpose: overrides.purpose ?? 'initial',
+    flowVersion: 2,
+    phase: 'identity_verification',
+    tenantHintHash: overrides.tenantHintHash,
+    nonce: 'identity-nonce',
+    codeVerifier: 'v'.repeat(43),
   };
 }
 
-function actionsAttempt(status: 'pending-consent' | 'verifying') {
+function consentSession(overrides: { purpose?: 'initial' | 'upgrade' } = {}) {
   return {
-    id: CONNECTION_ID,
-    orgId: ORG_ID,
-    profile: 'customer-graph-actions' as const,
-    consentAttemptId: ATTEMPT_ID,
-    status,
+    userId: USER_ID,
+    purpose: overrides.purpose ?? 'initial',
+    flowVersion: 2,
+    phase: 'admin_consent',
+    tenantHintHash: null,
+    nonce: null,
+    codeVerifier: null,
+    verifiedTenantId: TENANT_A,
+    verifiedAdminObjectId: ADMIN,
+    verifiedAdminUsername: null,
+    identityVerifiedAt: new Date(NOW_ISO),
   };
 }
 
-describe('M365 consent callback route', () => {
-  it('mounts the exact public callback path', async () => {
-    const app = new Hono();
-    app.route('/api/v1/m365', m365ConsentCallbackRoutes);
+function verified(tenantId: string) {
+  return { tenantId, administratorObjectId: ADMIN, administratorUsername: 'admin@tenant.example', verifiedAt: new Date(NOW_ISO) };
+}
 
-    const response = await app.request('/api/v1/m365/consent/callback');
+function identityOk(tenantId: string) {
+  return { success: true as const, tenantId, administratorObjectId: ADMIN, administratorUsername: 'admin@tenant.example', verifiedAt: NOW_ISO };
+}
 
-    expect(response.status).not.toBe(404);
+function retestOk(tenantId: string, manifestVersion = 3): RetestResult {
+  return {
+    success: true, tenantId, applicationId: CLIENT_ID, organizationDisplayName: 'Contoso',
+    manifestVersion, verifiedAt: NOW_ISO, grantReconciliation: 'complete',
+    observedGrants: [], missingGrants: [], unexpectedGrants: [], grantsVerifiedAt: NOW_ISO,
+  };
+}
+
+const lifecycle = (code: string) => Object.assign(new Error(code), { code });
+
+interface Harness {
+  name: string;
+  profile: Profile;
+  path: string;
+  redirectBase: string;
+  events: {
+    adminIdentityVerified: string;
+    adminConsentReturned: string;
+    tenantBindingVerified: string;
+    verificationFailed: string;
+  };
+  attempt(status: Status): { id: string; orgId: string; profile: Profile; consentAttemptId: string; status: Status };
+  snapshot(overrides?: Record<string, unknown>): Record<string, unknown>;
+  app(overrides?: CreateM365ConsentCallbackRoutesOverrides): Hono;
+}
+
+function harness(profile: Profile): Harness {
+  const segment = profile === 'customer-graph-actions' ? 'actions-consent' : 'consent';
+  const path = `/api/v1/m365/${segment}/callback`;
+  const eventPrefix = profile === 'customer-graph-actions' ? 'm365.customer_graph_actions' : 'm365.customer_graph_read';
+  const attempt = (status: Status) => ({ id: CONNECTION_ID, orgId: ORG_ID, profile, consentAttemptId: ATTEMPT_ID, status });
+  const snapshot = (overrides: Record<string, unknown> = {}) => ({
+    ...attempt('pending-consent'), tenantId: null, permissionManifestVersion: 3, lastErrorCode: null, ...overrides,
   });
+  const unexpected = (name: string) => vi.fn(async () => { throw new Error(`unexpected ${name}`); });
+  return {
+    name: profile,
+    profile,
+    path,
+    redirectBase: `/integrations#m365/${profile}`,
+    events: {
+      adminIdentityVerified: `${eventPrefix}.admin_identity_verified`,
+      adminConsentReturned: `${eventPrefix}.admin_consent_returned`,
+      tenantBindingVerified: `${eventPrefix}.tenant_binding_verified`,
+      verificationFailed: `${eventPrefix}.verification_failed`,
+    },
+    attempt,
+    snapshot,
+    app: (overrides = {}) => new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
+      profile,
+      readSessionPurpose: vi.fn(async () => 'initial' as const),
+      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+      buildBindingCookie: vi.fn(() => 'binding=next'),
+      loadConfig: vi.fn(() => ({ clientId: CLIENT_ID, callbackUrl: `https://breeze.example${path}` })),
+      correlationId: vi.fn(() => CORRELATION_ID),
+      audit: vi.fn(),
+      metric: vi.fn(),
+      loadAttempt: unexpected('loadAttempt'),
+      consumeSession: unexpected('consumeSession'),
+      verifyIdentity: unexpected('verifyIdentity'),
+      transitionIdentityToConsent: unexpected('transitionIdentityToConsent'),
+      beginFinalization: unexpected('beginFinalization'),
+      finalize: unexpected('finalize'),
+      applyFinalization: unexpected('applyFinalization'),
+      applyUpgradeFinalization: unexpected('applyUpgradeFinalization'),
+      markAttemptFailed: vi.fn(async () => snapshot() as never),
+      ...overrides,
+    })),
+  };
+}
 
-  it('accepts only the exact admin and identity success shapes', () => {
-    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams({
-      state: 'raw-state',
-      tenant: '11111111-1111-1111-1111-111111111111',
-      admin_consent: 'true',
-    }))).toEqual({
-      kind: 'admin_success',
-      state: 'raw-state',
-      tenantId: '11111111-1111-1111-1111-111111111111',
-    });
-    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams({
-      state: 'raw-state',
-      tenant: '11111111-1111-1111-1111-111111111111',
-      admin_consent: 'True',
-    }))).toEqual({
-      kind: 'admin_success',
-      state: 'raw-state',
-      tenantId: '11111111-1111-1111-1111-111111111111',
-    });
-    expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
-      state: 'identity-state',
-      code: 'authorization-code',
-    }))).toEqual({ kind: 'identity_success', state: 'identity-state', code: 'authorization-code' });
-    expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
-      state: 'identity-state',
-      code: 'authorization-code',
-      session_state: 'microsoft-session-state',
-    }))).toEqual({ kind: 'identity_success', state: 'identity-state', code: 'authorization-code' });
-  });
+const HARNESSES = [
+  ['read', harness('customer-graph-read')],
+  ['actions', harness('customer-graph-actions')],
+] as const;
 
-  it.each([
-    ['duplicate', 'admin_consent', 'state=a&state=b&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true'],
-    ['unknown', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&extra=x'],
-    ['missing state', 'identity_verification', 'code=value'],
-    ['bad tenant', 'admin_consent', 'state=a&tenant=not-a-guid&admin_consent=true'],
-    ['wrong boolean', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=yes'],
-    ['empty session state', 'identity_verification', 'state=a&code=value&session_state='],
-    ['extra identity field', 'identity_verification', 'state=a&code=value&tenant=11111111-1111-1111-1111-111111111111'],
-  ] as const)('rejects %s callback queries', (_name, phase, raw) => {
-    expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(raw))).toBeNull();
+beforeEach(() => {
+  vi.clearAllMocks();
+  syncMocks.flag.mockReturnValue(true);
+  syncMocks.consented.mockResolvedValue(undefined);
+  syncMocks.upgraded.mockResolvedValue(undefined);
+});
+
+describe('M365 consent callback parser', () => {
+  it('both phases accept {state, code[, session_state]} and reject the old admin-consent shape', () => {
+    for (const phase of ['identity_verification', 'admin_consent'] as const) {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c'))).toEqual({ kind: 'code_success', state: 's', code: 'c' });
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&session_state=x'))).toEqual({ kind: 'code_success', state: 's', code: 'c' });
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(`state=s&tenant=${TENANT_A}&admin_consent=True`))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&admin_consent=True'))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(`state=s&code=c&tenant=${TENANT_A}`))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&code=d'))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=a&state=b&code=c'))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('code=c'))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&session_state='))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&client_info=x'))).toBeNull();
+    }
   });
 
   it('accepts a provider error without exposing its description', () => {
     expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams({
-      state: 'state',
-      error: 'access_denied',
-      error_description: 'sensitive provider text',
-    }))).toEqual({
-      kind: 'provider_error', state: 'state', error: 'access_denied', reason: 'cancelled', aadstsCode: null, providerCorrelationId: null,
-    });
-  });
-
-  // The exact Microsoft /common/adminconsent error redirect observed in
-  // production 2026-10-01 (state replaced): Conditional Access demanded device
-  // authentication. Note admin_consent=True rides along WITH the error.
-  const REAL_CA_ERROR_QUERY = 'error=invalid_grant'
-    + '&error_description=AADSTS50097%3a+Device+authentication+is+required.+Trace+ID%3a+'
-    + '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d+Correlation+ID%3a+5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b'
-    + '+Timestamp%3a+2026-10-01+14%3a03%3a11Z'
-    + '&error_uri=https%3a%2f%2flogin.microsoftonline.com%2ferror%3fcode%3d50097'
-    + '&admin_consent=True&state=admin-state';
-
-  it.each(['admin_consent', 'identity_verification'] as const)(
-    'classifies the real Microsoft Conditional Access error redirect as conditional_access (%s phase)',
-    (phase) => {
-      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(REAL_CA_ERROR_QUERY))).toEqual({
-        kind: 'provider_error',
-        state: 'admin-state',
-        error: 'invalid_grant',
-        reason: 'conditional_access',
-        aadstsCode: 50097,
-        providerCorrelationId: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
-      });
-    },
-  );
-
-  it('never treats an error response as success even when admin_consent=True is present', () => {
-    const parsed = parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(
-      `state=a&tenant=${'11111111-1111-1111-1111-111111111111'}&admin_consent=True&error=server_error`,
-    ));
-    expect(parsed?.kind).toBe('provider_error');
-    expect(parsed).toMatchObject({ reason: 'other' });
-  });
-
-  it('treats a success shape mixed with an error as a provider error, never as admin success', () => {
-    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(
-      'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&error=denied',
-    ))).toMatchObject({ kind: 'provider_error', reason: 'other' });
-  });
-
-  it.each([
-    ['access_denied', 'state=s&error=access_denied', 'cancelled'],
-    ['subcode cancel', 'state=s&error=access_denied&error_subcode=cancel', 'cancelled'],
-    ['subcode cancel on another error', 'state=s&error=invalid_request&error_subcode=cancel', 'cancelled'],
-    ['CA code list', 'state=s&error=invalid_grant&error_codes=%5B53003%5D', 'conditional_access'],
-    // Entra reports a CA block on the authorize endpoint as access_denied + AADSTS53003.
-    ['CA block reported as access_denied', 'state=s&error=access_denied&error_description=AADSTS53003%3A+Access+has+been+blocked+by+Conditional+Access+policies', 'conditional_access'],
-    ['CA 53000', 'state=s&error=interaction_required&error_description=AADSTS53000%3A+Device+not+compliant', 'conditional_access'],
-    ['CA 50158', 'state=s&error=interaction_required&error_description=AADSTS50158%3A+External+security+challenge', 'conditional_access'],
-    ['unrelated code', 'state=s&error=invalid_client&error_description=AADSTS700016%3A+app+not+found', 'other'],
-    ['full Microsoft field set', 'state=s&error=server_error&error_description=x&error_uri=u&error_subcode=y&error_codes=%5B1%5D'
-      + '&admin_consent=False&tenant=t&timestamp=2026-10-01&trace_id=t1&correlation_id=c1&session_state=ss', 'other'],
-  ] as const)('classifies provider error (%s)', (_name, raw, reason) => {
-    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(raw)))
-      .toMatchObject({ kind: 'provider_error', state: 's', reason });
-  });
-
-  it.each([
-    ['unknown key on the error path', 'state=s&error=access_denied&foo=bar'],
-    ['duplicate error', 'state=s&error=access_denied&error=server_error'],
-    ['duplicate tolerated key', 'state=s&error=access_denied&error_uri=a&error_uri=b'],
-    ['overlong error_uri', `state=s&error=access_denied&error_uri=${'u'.repeat(513)}`],
-    ['overlong description', `state=s&error=access_denied&error_description=${'d'.repeat(4097)}`],
-    ['control char in tolerated key', 'state=s&error=access_denied&trace_id=a%0Ab'],
-    ['overlong error', `state=s&error=${'e'.repeat(129)}`],
-    ['missing state', 'error=access_denied'],
-  ] as const)('rejects provider error with %s', (_name, raw) => {
-    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(raw))).toBeNull();
-  });
-
-  it('consumes admin state and starts tenant-bound PKCE identity verification', async () => {
-    const adminBinding = {
-      phase: 'admin_consent' as const,
-      rawState: 'admin-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: null,
-    };
-    const identityCreated = {
-      rawState: 'identity-state',
-      codeChallenge: 'pkce-challenge',
-      nonce: 'identity-nonce',
-      codeVerifier: 'v'.repeat(43),
-      tenantHintHash: tenantHintHash(TENANT_ID),
-      expiresAt: new Date('2026-07-14T12:10:00.000Z'),
-    };
-    const consumeSession = vi.fn();
-    const transitionAdminPhase = vi.fn().mockResolvedValue({
-      connection: { status: 'verifying' },
-      identity: { rawState: 'identity-state', codeChallenge: 'pkce-challenge' },
-      actorId: USER_ID,
-    });
-    const audit = vi.fn();
-    const buildBindingCookie = vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/consent/callback');
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => adminBinding),
-      buildBindingCookie,
-      loadAttempt: vi.fn().mockResolvedValue({
-        id: CONNECTION_ID,
-        orgId: ORG_ID,
-        profile: 'customer-graph-read',
-        consentAttemptId: ATTEMPT_ID,
-        status: 'pending-consent',
-      }),
-      consumeSession,
-      prepareIdentitySession: vi.fn(() => identityCreated),
-      transitionAdminPhase,
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      audit,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-      { headers: { cookie: bindingCookie(adminBinding) } },
-    );
-
-    expect(response.status).toBe(302);
-    const location = new URL(response.headers.get('location')!);
-    expect(location.origin + location.pathname).toBe(
-      `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize`,
-    );
-    expect(Object.fromEntries(location.searchParams)).toMatchObject({
-      state: 'identity-state',
-      nonce: 'identity-nonce',
-      code_challenge: 'pkce-challenge',
-      code_challenge_method: 'S256',
-    });
-    expect(consumeSession).not.toHaveBeenCalled();
-    expect(transitionAdminPhase).toHaveBeenCalledWith(expect.objectContaining({
-      attempt: attempt('pending-consent'),
-      rawAdminState: 'admin-state',
-      prepared: identityCreated,
-    }));
-    expect(buildBindingCookie).toHaveBeenCalledWith(expect.objectContaining({
-      phase: 'identity_verification',
-      rawState: 'identity-state',
-      tenantHint: TENANT_ID,
-    }));
-    expect(response.headers.get('set-cookie')).toContain('new-binding=identity');
-    expect(audit).toHaveBeenCalledTimes(1);
-    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      event: 'm365.customer_graph_read.admin_consent_returned',
-      orgId: ORG_ID,
-      connectionId: CONNECTION_ID,
-      profile: 'customer-graph-read',
-      consentAttemptId: ATTEMPT_ID,
-      outcome: 'identity_verification_started',
-      actorId: USER_ID,
-    }));
-  });
-
-  it.each(['config', 'prepare', 'cookie', 'url'] as const)(
-    'preflights %s before any admin state lookup or mutation',
-    async (failure) => {
-      const adminBinding = {
-        phase: 'admin_consent' as const,
-        rawState: 'admin-state',
-        connectionId: CONNECTION_ID,
-        consentAttemptId: ATTEMPT_ID,
-        tenantHint: null,
-      };
-      const loadAttempt = vi.fn();
-      const transitionAdminPhase = vi.fn();
-      const loadConfig = vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      }));
-      const prepareIdentitySession = vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
-        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
-      }));
-      const buildBindingCookie = vi.fn(() => 'new-binding=identity');
-      const buildIdentityUrl = vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize');
-      if (failure === 'config') loadConfig.mockImplementation(() => { throw new Error('config failed'); });
-      if (failure === 'prepare') prepareIdentitySession.mockImplementation(() => { throw new Error('prepare failed'); });
-      if (failure === 'cookie') buildBindingCookie.mockImplementation(() => { throw new Error('cookie failed'); });
-      if (failure === 'url') buildIdentityUrl.mockImplementation(() => { throw new Error('url failed'); });
-      const routes = createM365ConsentCallbackRoutes({
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        verifyBindingCookie: vi.fn(() => adminBinding),
-        loadAttempt,
-        transitionAdminPhase,
-        loadConfig,
-        prepareIdentitySession,
-        buildBindingCookie,
-        buildIdentityUrl,
-      });
-      const app = new Hono().route('/api/v1/m365', routes);
-
-      const response = await app.request(
-        `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-      );
-
-      expect(response.status).toBe(503);
-      expect(response.headers.get('set-cookie')).toBeNull();
-      expect(loadAttempt).not.toHaveBeenCalled();
-      expect(transitionAdminPhase).not.toHaveBeenCalled();
-    },
-  );
-
-  it('preserves the retry cookie when the atomic admin transition rolls back', async () => {
-    const adminBinding = {
-      phase: 'admin_consent' as const,
-      rawState: 'admin-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: null,
-    };
-    const transitionAdminPhase = vi.fn().mockRejectedValue(new Error('identity insert failed'));
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => adminBinding),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('pending-consent')),
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      prepareIdentitySession: vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
-        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
-      })),
-      buildBindingCookie: vi.fn(() => 'new-binding=identity'),
-      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize'),
-      transitionAdminPhase,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-    );
-
-    expect(response.status).toBe(503);
-    expect(response.headers.get('set-cookie')).toBeNull();
-    expect(transitionAdminPhase).toHaveBeenCalledOnce();
-  });
-
-  it('completes identity outside state consumption and redirects only to the active fragment', async () => {
-    const identityBinding = {
-      phase: 'identity_verification' as const,
-      rawState: 'identity-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
-    };
-    const consumeSession = vi.fn().mockResolvedValue({
-      userId: USER_ID,
-      tenantHintHash: tenantHintHash(TENANT_ID),
-      nonce: 'identity-nonce',
-      codeVerifier: 'v'.repeat(43),
-    });
-    const completeIdentity = vi.fn().mockResolvedValue({
-      success: true,
-      tenantId: TENANT_ID,
-      administratorObjectId: USER_ID,
-      applicationId: '22222222-2222-2222-2222-222222222222',
-      organizationDisplayName: 'Contoso',
-      manifestVersion: 3,
-      verifiedAt: '2026-07-14T12:00:00.000Z',
-      grantReconciliation: 'complete',
-      observedGrants: [],
-      missingGrants: [],
-      unexpectedGrants: [],
-      grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
-    });
-    const applyIdentityResult = vi.fn().mockResolvedValue({
-      status: 'active',
-      lastErrorCode: null,
-    });
-    const audit = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Path=/api/v1/m365/consent/callback; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
-      consumeSession,
-      completeIdentity,
-      applyIdentityResult,
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      correlationId: vi.fn(() => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-      audit,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      '/api/v1/m365/consent/callback?state=identity-state&code=secret-authorization-code',
-      { headers: { cookie: bindingCookie(identityBinding) } },
-    );
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/active');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(completeIdentity).toHaveBeenCalledWith({
-      correlationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
-      authorizationCode: 'secret-authorization-code',
-      codeVerifier: 'v'.repeat(43),
-      nonce: 'identity-nonce',
-      redirectUri: 'https://breeze.example/api/v1/m365/consent/callback',
-    });
-    expect(applyIdentityResult).toHaveBeenCalledWith(attempt('verifying'), expect.objectContaining({
-      success: true,
-      tenantId: TENANT_ID,
-    }));
-    expect(JSON.stringify(audit.mock.calls)).not.toContain('secret-authorization-code');
-    expect(JSON.stringify(audit.mock.calls)).not.toContain('identity-nonce');
-    expect(audit).toHaveBeenCalledTimes(1);
-    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      event: 'm365.customer_graph_read.tenant_binding_verified',
-      orgId: ORG_ID,
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      manifestVersion: 3,
-      outcome: 'active',
-      correlationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-      verifiedTenantId: TENANT_ID,
-      actorId: USER_ID,
-    }));
-  });
-
-  it('rejects a tenant-hint hash mismatch after consumption without executor or mutation', async () => {
-    const identityBinding = {
-      phase: 'identity_verification' as const,
-      rawState: 'identity-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
-    };
-    const completeIdentity = vi.fn();
-    const applyIdentityResult = vi.fn();
-    const markAttemptFailed = vi.fn();
-    const audit = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
-      consumeSession: vi.fn().mockResolvedValue({
-        userId: USER_ID,
-        tenantHintHash: tenantHintHash('99999999-9999-9999-9999-999999999999'),
-        nonce: 'nonce',
-        codeVerifier: 'v'.repeat(43),
-      }),
-      completeIdentity,
-      applyIdentityResult,
-      markAttemptFailed,
-      audit,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      '/api/v1/m365/consent/callback?state=identity-state&code=code',
-      { headers: { cookie: bindingCookie(identityBinding) } },
-    );
-
-    expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/tenant_mismatch');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(completeIdentity).not.toHaveBeenCalled();
-    expect(applyIdentityResult).not.toHaveBeenCalled();
-    expect(markAttemptFailed).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      event: 'm365.customer_graph_read.verification_failed',
-      outcome: 'tenant_mismatch',
-      actorId: USER_ID,
-    }));
-  });
-
-  it('validates the browser binding before loading or consuming state', async () => {
-    const loadAttempt = vi.fn();
-    const consumeSession = vi.fn();
-    const audit = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => null),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt,
-      consumeSession,
-      audit,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      `/api/v1/m365/consent/callback?state=state&tenant=${TENANT_ID}&admin_consent=true`,
-    );
-
-    expect(response.headers.get('location')).toContain('consent_state_mismatch');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(loadAttempt).not.toHaveBeenCalled();
-    expect(consumeSession).not.toHaveBeenCalled();
-    expect(audit).not.toHaveBeenCalled();
-  });
-
-  it('maps a cryptographically valid expired binding to consent_expired before state lookup', async () => {
-    const loadAttempt = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => 'expired' as const),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request('/api/v1/m365/consent/callback?state=expired');
-
-    expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/consent_expired');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(loadAttempt).not.toHaveBeenCalled();
-  });
-
-  it('fails replayed or stale attempts closed without executor calls', async () => {
-    const adminBinding = {
-      phase: 'admin_consent' as const,
-      rawState: 'admin-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: null,
-    };
-    const completeIdentity = vi.fn();
-    const consumeSession = vi.fn();
-    const transitionAdminPhase = vi.fn().mockRejectedValue(
-      Object.assign(new Error('stale_attempt'), { code: 'stale_attempt' }),
-    );
-    const adminPreflight = {
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      prepareIdentitySession: vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'nonce', codeVerifier: 'v'.repeat(43), codeChallenge: 'challenge',
-        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
-      })),
-      buildBindingCookie: vi.fn(() => 'new-binding=identity'),
-      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/authorize'),
-    };
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => adminBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('pending-consent')),
-      consumeSession,
-      completeIdentity,
-      audit: vi.fn(),
-      transitionAdminPhase,
-      ...adminPreflight,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const replay = await app.request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-    );
-    expect(replay.headers.get('location')).toContain('consent_state_mismatch');
-    expect(completeIdentity).not.toHaveBeenCalled();
-
-    const staleLoad = vi.fn().mockResolvedValue(null);
-    const staleRoutes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => adminBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: staleLoad,
-      consumeSession,
-      transitionAdminPhase,
-      ...adminPreflight,
-    });
-    const staleApp = new Hono().route('/api/v1/m365', staleRoutes);
-    await staleApp.request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-    );
-    expect(consumeSession).not.toHaveBeenCalled();
-  });
-
-  it('sanitizes provider errors and clears the cookie on the terminal path', async () => {
-    const adminBinding = {
-      phase: 'admin_consent' as const,
-      rawState: 'admin-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: null,
-    };
-    const markAttemptFailed = vi.fn().mockResolvedValue({ status: 'pending-consent' });
-    const audit = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => adminBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('pending-consent')),
-      consumeSession: vi.fn().mockResolvedValue({ userId: USER_ID }),
-      markAttemptFailed,
-      audit,
-    });
-    const app = new Hono().route('/api/v1/m365', routes);
-
-    const response = await app.request(
-      '/api/v1/m365/consent/callback?state=admin-state&error=access_denied&error_description=provider-secret-description',
-    );
-
-    expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/consent_cancelled');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(markAttemptFailed).toHaveBeenCalledWith(attempt('pending-consent'), 'consent_cancelled');
-    expect(audit).toHaveBeenCalledTimes(1);
-    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      event: 'm365.customer_graph_read.verification_failed',
-      outcome: 'consent_cancelled',
-      actorId: USER_ID,
-    }));
-    expect(JSON.stringify({ location: response.headers.get('location'), audit: audit.mock.calls }))
-      .not.toContain('provider-secret-description');
-  });
-
-  describe.each([
-    ['customer-graph-read', '/api/v1/m365/consent/callback', attempt, 'm365.customer_graph_read.verification_failed'],
-    ['customer-graph-actions', '/api/v1/m365/actions-consent/callback', actionsAttempt, 'm365.customer_graph_actions.verification_failed'],
-  ] as const)('provider error outcomes (%s profile)', (profile, path, makeAttempt, failedEvent) => {
-    const adminBinding = {
-      phase: 'admin_consent' as const,
-      rawState: 'admin-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: null,
-    };
-    function build() {
-      const deps = {
-        markAttemptFailed: vi.fn().mockResolvedValue({ status: 'pending-consent' }),
-        audit: vi.fn(),
-        metric: vi.fn(),
-        completeIdentity: vi.fn(),
-        transitionAdminPhase: vi.fn(),
-        transitionUpgradePhase: vi.fn(),
-        consumeSession: vi.fn().mockResolvedValue({ userId: USER_ID }),
-        loadAttempt: vi.fn().mockResolvedValue(makeAttempt('pending-consent')),
-      };
-      const routes = createM365ConsentCallbackRoutes({
-        profile,
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        verifyBindingCookie: vi.fn(() => adminBinding),
-        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-        ...deps,
-      });
-      return { app: new Hono().route('/api/v1/m365', routes), deps };
-    }
-
-    it('surfaces the real Conditional Access redirect as conditional_access_blocked without binding a tenant', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const { app, deps } = build();
-
-      const response = await app.request(`${path}?${REAL_CA_ERROR_QUERY}`);
-
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/conditional_access_blocked`);
-      expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-      expect(deps.completeIdentity).not.toHaveBeenCalled();
-      expect(deps.transitionAdminPhase).not.toHaveBeenCalled();
-      expect(deps.transitionUpgradePhase).not.toHaveBeenCalled();
-      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'conditional_access_blocked');
-      expect(deps.audit).toHaveBeenCalledTimes(1);
-      expect(deps.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        event: failedEvent,
-        outcome: 'conditional_access_blocked',
-        actorId: USER_ID,
-      }));
-      const logged = JSON.stringify(warn.mock.calls);
-      expect(logged).toContain('50097');
-      expect(logged).toContain('5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b');
-      expect(logged).not.toContain('Device authentication');
-      expect(JSON.stringify(deps.audit.mock.calls)).not.toContain('Device authentication');
-      warn.mockRestore();
-    });
-
-    it('maps access_denied + error_subcode=cancel to consent_cancelled', async () => {
-      const { app, deps } = build();
-      const response = await app.request(`${path}?state=admin-state&error=access_denied&error_subcode=cancel`);
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_cancelled`);
-      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'consent_cancelled');
-    });
-
-    it('maps any other provider error to consent_provider_error', async () => {
-      const { app, deps } = build();
-      const response = await app.request(`${path}?state=admin-state&error=server_error&error_description=AADSTS700016%3A+x`);
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_provider_error`);
-      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'consent_provider_error');
-      expect(deps.completeIdentity).not.toHaveBeenCalled();
-      expect(deps.transitionAdminPhase).not.toHaveBeenCalled();
-    });
-
-    it('still reports consent_state_mismatch for an error with an unknown key', async () => {
-      const { app, deps } = build();
-      const response = await app.request(`${path}?state=admin-state&error=access_denied&foo=bar`);
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_state_mismatch`);
-      expect(deps.consumeSession).not.toHaveBeenCalled();
-      expect(deps.markAttemptFailed).not.toHaveBeenCalled();
-    });
-
-    it('still reports consent_state_mismatch when a provider error carries the wrong state', async () => {
-      const { app, deps } = build();
-      const response = await app.request(`${path}?${REAL_CA_ERROR_QUERY.replace('state=admin-state', 'state=other-state')}`);
-      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_state_mismatch`);
-      expect(deps.consumeSession).not.toHaveBeenCalled();
-      expect(deps.markAttemptFailed).not.toHaveBeenCalled();
-    });
-  });
-
-  it('emits verified binding and grant drift once each after signed proof', async () => {
-    const identityBinding = {
-      phase: 'identity_verification' as const,
-      rawState: 'identity-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
-    };
-    const audit = vi.fn();
-    const result = {
-      success: true as const,
-      tenantId: TENANT_ID,
-      administratorObjectId: 'must-not-audit-admin',
-      applicationId: '22222222-2222-2222-2222-222222222222',
-      organizationDisplayName: 'Contoso',
-      manifestVersion: 3,
-      verifiedAt: '2026-07-14T12:00:00.000Z',
-      grantReconciliation: 'complete' as const,
-      observedGrants: [], missingGrants: [], unexpectedGrants: [],
-      grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
-    };
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
-      consumeSession: vi.fn().mockResolvedValue({
-        userId: USER_ID, tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'must-not-audit-nonce', codeVerifier: 'must-not-audit-verifier',
-      }),
-      completeIdentity: vi.fn().mockResolvedValue(result),
-      applyIdentityResult: vi.fn().mockResolvedValue({
-        ...attempt('verifying'), tenantId: TENANT_ID, permissionManifestVersion: 3,
-        status: 'degraded', lastErrorCode: 'grant_missing',
-      }),
-      loadConfig: vi.fn(() => ({
-        clientId: result.applicationId,
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      correlationId: vi.fn(() => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-      audit,
-    });
-    const response = await new Hono().route('/api/v1/m365', routes).request(
-      '/api/v1/m365/consent/callback?state=identity-state&code=must-not-audit-code',
-    );
-
-    expect(response.headers.get('location')).toContain('/degraded');
-    expect(audit.mock.calls.map((call) => call[1].event)).toEqual([
-      'm365.customer_graph_read.tenant_binding_verified',
-      'm365.customer_graph_read.grant_drift_detected',
-    ]);
-    expect(audit.mock.calls[0]?.[1]).toMatchObject({ actorId: USER_ID });
-    expect(audit.mock.calls[1]?.[1]).toMatchObject({
-      outcome: 'grant_missing',
-      actorId: USER_ID,
-    });
-    expect(JSON.stringify(audit.mock.calls)).not.toMatch(
-      /must-not-audit-admin|must-not-audit-nonce|must-not-audit-verifier|must-not-audit-code/,
-    );
-  });
-
-  it('attributes an executor failure to the verified identity session user', async () => {
-    const identityBinding = {
-      phase: 'identity_verification' as const,
-      rawState: 'identity-state',
-      connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
-    };
-    const audit = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(attempt('verifying')),
-      consumeSession: vi.fn().mockResolvedValue({
-        userId: USER_ID,
-        tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'identity-nonce',
-        codeVerifier: 'v'.repeat(43),
-      }),
-      completeIdentity: vi.fn().mockRejectedValue(new Error('executor unavailable')),
-      markAttemptFailed: vi.fn().mockResolvedValue({ status: 'pending-consent' }),
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      audit,
-    });
-
-    const response = await new Hono().route('/api/v1/m365', routes).request(
-      '/api/v1/m365/consent/callback?state=identity-state&code=secret-code',
-    );
-
-    expect(response.headers.get('location')).toContain('/executor_unavailable');
-    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      event: 'm365.customer_graph_read.verification_failed',
-      outcome: 'executor_unavailable',
-      actorId: USER_ID,
-    }));
-    expect(JSON.stringify(audit.mock.calls)).not.toContain('secret-code');
-  });
-
-  describe('actions-profile callback instance', () => {
-    it('mounts the exact public actions callback path, distinct from the read path', async () => {
-      const app = new Hono();
-      app.route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
-
-      const response = await app.request('/api/v1/m365/actions-consent/callback');
-      expect(response.status).not.toBe(404);
-
-      const readPathViaActionsInstance = await app.request('/api/v1/m365/consent/callback');
-      expect(readPathViaActionsInstance.status).toBe(404);
-    });
-
-    it('drives an actions admin-consent-return + identity-verification callback to active and redirects to the actions fragment', async () => {
-      const adminBinding = {
-        phase: 'admin_consent' as const,
-        rawState: 'admin-state',
-        connectionId: CONNECTION_ID,
-        consentAttemptId: ATTEMPT_ID,
-        tenantHint: null,
-      };
-      const identityCreated = {
-        rawState: 'identity-state',
-        codeChallenge: 'pkce-challenge',
-        nonce: 'identity-nonce',
-        codeVerifier: 'v'.repeat(43),
-        tenantHintHash: tenantHintHash(TENANT_ID),
-        expiresAt: new Date('2026-07-14T12:10:00.000Z'),
-      };
-      const adminAudit = vi.fn();
-      const adminApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        profile: 'customer-graph-actions',
-        verifyBindingCookie: vi.fn(() => adminBinding),
-        buildBindingCookie: vi.fn(() => 'new-binding=identity; Path=/api/v1/m365/actions-consent/callback'),
-        loadAttempt: vi.fn().mockResolvedValue(actionsAttempt('pending-consent')),
-        prepareIdentitySession: vi.fn(() => identityCreated),
-        transitionAdminPhase: vi.fn().mockResolvedValue({
-          connection: { status: 'verifying' },
-          actorId: USER_ID,
-        }),
-        loadConfig: vi.fn(() => ({
-          clientId: '22222222-2222-2222-2222-222222222222',
-          callbackUrl: 'https://breeze.example/api/v1/m365/actions-consent/callback',
-        })),
-        audit: adminAudit,
-      }));
-
-      const adminResponse = await adminApp.request(
-        `/api/v1/m365/actions-consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-        { headers: { cookie: bindingCookie(adminBinding) } },
-      );
-
-      expect(adminResponse.status).toBe(302);
-      expect(adminAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        event: 'm365.customer_graph_actions.admin_consent_returned',
-        profile: 'customer-graph-actions',
-        outcome: 'identity_verification_started',
-        actorId: USER_ID,
-      }));
-
-      const identityBinding = {
-        phase: 'identity_verification' as const,
-        rawState: 'identity-state',
-        connectionId: CONNECTION_ID,
-        consentAttemptId: ATTEMPT_ID,
-        tenantHint: TENANT_ID,
-      };
-      const identityAudit = vi.fn();
-      const identityApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        profile: 'customer-graph-actions',
-        verifyBindingCookie: vi.fn(() => identityBinding),
-        clearBindingCookie: vi.fn(() => 'binding=; Path=/api/v1/m365/actions-consent/callback; Max-Age=0'),
-        loadAttempt: vi.fn().mockResolvedValue(actionsAttempt('verifying')),
-        consumeSession: vi.fn().mockResolvedValue({
-          userId: USER_ID,
-          tenantHintHash: tenantHintHash(TENANT_ID),
-          nonce: 'identity-nonce',
-          codeVerifier: 'v'.repeat(43),
-        }),
-        completeIdentity: vi.fn().mockResolvedValue({
-          success: true,
-          tenantId: TENANT_ID,
-          administratorObjectId: USER_ID,
-          applicationId: '22222222-2222-2222-2222-222222222222',
-          organizationDisplayName: 'Contoso',
-          manifestVersion: 3,
-          verifiedAt: '2026-07-14T12:00:00.000Z',
-          grantReconciliation: 'complete',
-          observedGrants: [],
-          missingGrants: [],
-          unexpectedGrants: [],
-          grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
-        }),
-        applyIdentityResult: vi.fn().mockResolvedValue({
-          status: 'active',
-          lastErrorCode: null,
-        }),
-        loadConfig: vi.fn(() => ({
-          clientId: '22222222-2222-2222-2222-222222222222',
-          callbackUrl: 'https://breeze.example/api/v1/m365/actions-consent/callback',
-        })),
-        correlationId: vi.fn(() => 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'),
-        audit: identityAudit,
-      }));
-
-      const identityResponse = await identityApp.request(
-        '/api/v1/m365/actions-consent/callback?state=identity-state&code=secret-authorization-code',
-        { headers: { cookie: bindingCookie(identityBinding) } },
-      );
-
-      expect(identityResponse.status).toBe(302);
-      expect(identityResponse.headers.get('location')).toBe('/integrations#m365/customer-graph-actions/active');
-      expect(identityAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        event: 'm365.customer_graph_actions.tenant_binding_verified',
-        profile: 'customer-graph-actions',
-        outcome: 'active',
-      }));
-    });
-
-    it('rejects a read-profile binding replayed against the actions instance, and vice versa', async () => {
-      // A tiny fake connections store, mirroring the real DB's `WHERE profile = <instance profile>`
-      // guard: a row only resolves for the instance whose profile matches the row's own profile,
-      // even though the browser-binding cookie itself carries no profile field.
-      const store = new Map<string, { profile: 'customer-graph-read' | 'customer-graph-actions'; status: 'pending-consent' | 'verifying' }>([
-        [CONNECTION_ID, { profile: 'customer-graph-read', status: 'verifying' }],
-      ]);
-      function loadAttemptScopedTo(profile: 'customer-graph-read' | 'customer-graph-actions') {
-        return vi.fn(async (binding: { connectionId: string }) => {
-          const row = store.get(binding.connectionId);
-          if (!row || row.profile !== profile) return null;
-          return {
-            id: binding.connectionId,
-            orgId: ORG_ID,
-            profile,
-            consentAttemptId: ATTEMPT_ID,
-            status: row.status,
-          };
-        });
-      }
-
-      const identityBinding = {
-        phase: 'identity_verification' as const,
-        rawState: 'identity-state',
-        connectionId: CONNECTION_ID,
-        consentAttemptId: ATTEMPT_ID,
-        tenantHint: TENANT_ID,
-      };
-      const consumeSession = vi.fn();
-      const actionsLoadAttempt = loadAttemptScopedTo('customer-graph-actions');
-      const actionsApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        profile: 'customer-graph-actions',
-        verifyBindingCookie: vi.fn(() => identityBinding),
-        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-        loadAttempt: actionsLoadAttempt,
-        consumeSession,
-      }));
-
-      const crossedResponse = await actionsApp.request(
-        '/api/v1/m365/actions-consent/callback?state=identity-state&code=code',
-        { headers: { cookie: bindingCookie(identityBinding) } },
-      );
-
-      expect(crossedResponse.headers.get('location')).toBe(
-        '/integrations#m365/customer-graph-actions/consent_state_mismatch',
-      );
-      expect(actionsLoadAttempt).toHaveBeenCalledOnce();
-      expect(consumeSession).not.toHaveBeenCalled();
-
-      // Vice versa: an actions-profile row replayed against the read instance.
-      store.set(CONNECTION_ID, { profile: 'customer-graph-actions', status: 'verifying' });
-      const readLoadAttempt = loadAttemptScopedTo('customer-graph-read');
-      const readConsumeSession = vi.fn();
-      const readApp = new Hono().route('/api/v1/m365', createM365ConsentCallbackRoutes({
-        readSessionPurpose: vi.fn(async () => 'initial' as const),
-        verifyBindingCookie: vi.fn(() => identityBinding),
-        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-        loadAttempt: readLoadAttempt,
-        consumeSession: readConsumeSession,
-      }));
-
-      const readCrossedResponse = await readApp.request(
-        '/api/v1/m365/consent/callback?state=identity-state&code=code',
-        { headers: { cookie: bindingCookie(identityBinding) } },
-      );
-
-      expect(readCrossedResponse.headers.get('location')).toBe(
-        '/integrations#m365/customer-graph-read/consent_state_mismatch',
-      );
-      expect(readLoadAttempt).toHaveBeenCalledOnce();
-      expect(readConsumeSession).not.toHaveBeenCalled();
-    });
-
-    describe('cookie-layer rejection with the real (unmocked) binding functions', () => {
-      // Exercises the DEFAULT verifyBindingCookie/clearBindingCookie wiring
-      // (no DI overrides for those), proving the browser-binding cookie
-      // itself — distinct cookie name + HMAC context per profile, per
-      // browserBinding.ts — rejects a cross-profile cookie before any DB
-      // call. This is the layer a real browser's cookie Path scoping backs
-      // up; here we bypass Path (as an attacker forging a header could) and
-      // confirm the signature/name mismatch still holds.
-      const ORIGINAL_KEY = process.env.APP_ENCRYPTION_KEY;
-
-      beforeEach(() => {
-        process.env.APP_ENCRYPTION_KEY = 'test-cross-profile-binding-key';
-      });
-
-      afterEach(() => {
-        if (ORIGINAL_KEY === undefined) delete process.env.APP_ENCRYPTION_KEY;
-        else process.env.APP_ENCRYPTION_KEY = ORIGINAL_KEY;
-      });
-
-      function cookieHeaderOnly(setCookie: string): string {
-        return setCookie.slice(0, setCookie.indexOf(';'));
-      }
-
-      it('rejects a real read-issued binding cookie presented to the actions callback', async () => {
-        const identityBinding = {
-          phase: 'identity_verification' as const,
-          rawState: 'identity-state',
-          connectionId: CONNECTION_ID,
-          consentAttemptId: ATTEMPT_ID,
-          tenantHint: TENANT_ID,
-        };
-        const readCookie = buildM365ConsentBindingCookie(identityBinding);
-
-        const app = new Hono().route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
-        const response = await app.request(
-          '/api/v1/m365/actions-consent/callback?state=identity-state&code=code',
-          { headers: { cookie: cookieHeaderOnly(readCookie) } },
-        );
-
-        expect(response.headers.get('location')).toBe(
-          '/integrations#m365/customer-graph-actions/consent_state_mismatch',
-        );
-      });
-
-      it('rejects a real actions-issued binding cookie presented to the read callback', async () => {
-        const identityBinding = {
-          phase: 'identity_verification' as const,
-          rawState: 'identity-state',
-          connectionId: CONNECTION_ID,
-          consentAttemptId: ATTEMPT_ID,
-          tenantHint: TENANT_ID,
-        };
-        const actionsCookie = buildM365ActionsConsentBindingCookie(identityBinding);
-
-        const app = new Hono().route('/api/v1/m365', m365ConsentCallbackRoutes);
-        const response = await app.request(
-          '/api/v1/m365/consent/callback?state=identity-state&code=code',
-          { headers: { cookie: cookieHeaderOnly(actionsCookie) } },
-        );
-
-        expect(response.headers.get('location')).toBe(
-          '/integrations#m365/customer-graph-read/consent_state_mismatch',
-        );
-      });
-    });
+      state: 'state', error: 'access_denied', error_description: 'sensitive provider text',
+    }))).toEqual({ kind: 'provider_error', state: 'state' });
   });
 });
 
-describe('upgrade consent callback', () => {
-  const upgradeAdminBinding = {
-    phase: 'admin_consent' as const,
-    rawState: 'admin-state',
-    connectionId: CONNECTION_ID,
-    consentAttemptId: ATTEMPT_ID,
-    tenantHint: null,
-  };
-  const upgradeIdentityBinding = {
-    phase: 'identity_verification' as const,
-    rawState: 'identity-state',
-    connectionId: CONNECTION_ID,
-    consentAttemptId: ATTEMPT_ID,
-    tenantHint: TENANT_ID,
-  };
-  function executableAttempt(status: 'active' | 'degraded' = 'active') {
-    return {
-      id: CONNECTION_ID,
-      orgId: ORG_ID,
-      profile: 'customer-graph-read' as const,
+describe('M365 consent callback mounts', () => {
+  it('mounts the exact public read and actions callback paths', async () => {
+    const read = new Hono().route('/api/v1/m365', m365ConsentCallbackRoutes);
+    const actions = new Hono().route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
+    expect((await read.request('/api/v1/m365/consent/callback')).status).not.toBe(404);
+    expect((await actions.request('/api/v1/m365/actions-consent/callback')).status).not.toBe(404);
+    expect((await read.request('/api/v1/m365/actions-consent/callback')).status).toBe(404);
+  });
+});
+
+describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
+  it('identity phase verifies via executor, rotates state, and redirects to the v1 consent URL for the VERIFIED tenant', async () => {
+    const verifyIdentity = vi.fn().mockResolvedValue(identityOk(TENANT_A));
+    const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A });
+    const buildBindingCookie = vi.fn(() => 'binding=consent');
+    const audit = vi.fn();
+    const consumeSession = vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null }));
+    const app = h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession, verifyIdentity, transitionIdentityToConsent, buildBindingCookie, audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=id-state&code=id-code&session_state=ss`, { headers: { cookie: 'x' } });
+
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get('location')!);
+    expect(loc.origin + loc.pathname).toBe(`https://login.microsoftonline.com/${TENANT_A}/oauth2/authorize`);
+    expect(Object.fromEntries(loc.searchParams)).toEqual({
+      client_id: CLIENT_ID, response_type: 'code', redirect_uri: `https://breeze.example${h.path}`,
+      resource: 'https://graph.microsoft.com', prompt: 'admin_consent', state: 'consent-state',
+    });
+    expect(consumeSession).toHaveBeenCalledWith(expect.objectContaining({ phase: 'identity_verification', rawState: 'id-state', profile: h.profile }));
+    expect(verifyIdentity).toHaveBeenCalledWith({
+      correlationId: CORRELATION_ID,
       consentAttemptId: ATTEMPT_ID,
-      status,
-    };
-  }
-  function appFor(routes: Hono): Hono {
-    const target = new Hono();
-    target.route('/api/v1/m365', routes);
-    return target;
-  }
-
-  it('accepts an ACTIVE connection on the admin phase and uses the upgrade transition', async () => {
-    const transitionUpgradePhase = vi.fn().mockResolvedValue({
-      connection: { status: 'active' }, actorId: USER_ID,
+      expectedTenantId: null,
+      authorizationCode: 'id-code',
+      codeVerifier: 'v'.repeat(43),
+      nonce: 'identity-nonce',
+      redirectUri: `https://breeze.example${h.path}`,
     });
-    const transitionAdminPhase = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      verifyBindingCookie: vi.fn(() => upgradeAdminBinding),
-      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
-      loadAttempt: vi.fn(async () => executableAttempt()),
-      transitionUpgradePhase,
-      transitionAdminPhase,
-      prepareIdentitySession: vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'n', codeVerifier: 'v'.repeat(43), codeChallenge: 'c',
-        expiresAt: new Date('2026-09-08T12:10:00.000Z'),
-      })),
-      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize'),
-      buildBindingCookie: vi.fn(() => 'binding=identity'),
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      audit: vi.fn(),
-      metric: vi.fn(),
+    expect(transitionIdentityToConsent).toHaveBeenCalledWith({
+      attempt: h.attempt('pending-consent'), purpose: 'initial', actorId: USER_ID,
+      verified: verified(TENANT_A), nextPhase: 'admin_consent',
     });
-
-    const response = await appFor(routes).request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-      { headers: { cookie: bindingCookie(upgradeAdminBinding) } },
-    );
-
-    expect(response.status).toBe(302);
-    expect(transitionUpgradePhase).toHaveBeenCalledTimes(1);
-    expect(transitionAdminPhase).not.toHaveBeenCalled();
+    expect(buildBindingCookie).toHaveBeenCalledWith({
+      phase: 'admin_consent', rawState: 'consent-state', connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId: TENANT_A,
+    });
+    expect(res.headers.get('set-cookie')).toContain('binding=consent');
+    expect(res.headers.get('set-cookie')).not.toContain('Max-Age=0');
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.adminIdentityVerified, outcome: 'identity_verified', verifiedTenantId: TENANT_A,
+      verifiedAdministratorObjectId: ADMIN, actorId: USER_ID, correlationId: CORRELATION_ID,
+    }));
+    expect(JSON.stringify(audit.mock.calls)).not.toMatch(/id-code|identity-nonce|admin@tenant\.example/);
   });
 
-  it('never marks the attempt failed when the administrator cancels an upgrade', async () => {
-    // markConsentAttemptFailed writes status = 'pending-consent'. Reaching it
-    // here would take a live connection out of service on a CANCEL.
-    const markAttemptFailed = vi.fn();
-    const routes = createM365ConsentCallbackRoutes({
-      verifyBindingCookie: vi.fn(() => upgradeIdentityBinding),
-      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
-      loadAttempt: vi.fn(async () => executableAttempt()),
-      consumeSession: vi.fn(async () => ({
-        userId: USER_ID, purpose: 'upgrade',
-        tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
-      })) as never,
-      markAttemptFailed,
-      audit: vi.fn(),
-      metric: vi.fn(),
+  it('identity phase on a bound reconnect pins the executor to the bound tenant', async () => {
+    const verifyIdentity = vi.fn().mockResolvedValue(identityOk(TENANT_A));
+    const app = h.app({
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) })),
+      verifyIdentity,
+      transitionIdentityToConsent: vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A }),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
     });
 
-    const response = await appFor(routes).request(
-      '/api/v1/m365/consent/callback?state=identity-state&error=access_denied&error_description=x',
-      { headers: { cookie: bindingCookie(upgradeIdentityBinding) } },
-    );
+    const res = await app.request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
 
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain('consent_cancelled');
+    expect(new URL(res.headers.get('location')!).pathname).toBe(`/${TENANT_A}/oauth2/authorize`);
+    expect(verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ expectedTenantId: TENANT_A }));
+  });
+
+  it('consent phase never forwards the Microsoft code and binds only after application proof', async () => {
+    const finalize = vi.fn().mockResolvedValue(retestOk(TENANT_A));
+    const applyFinalization = vi.fn().mockResolvedValue(h.snapshot({ status: 'active', tenantId: TENANT_A }));
+    const beginFinalization = vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID });
+    const audit = vi.fn();
+    const markAttemptFailed = vi.fn();
+    const app = h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization, finalize, applyFinalization, audit, markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=consent-state&code=SECRET-CONSENT-CODE&session_state=ss`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/active`);
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(beginFinalization).toHaveBeenCalledWith({ attempt: h.attempt('pending-consent'), rawConsentState: 'consent-state' });
+    expect(finalize).toHaveBeenCalledWith({ correlationId: CORRELATION_ID, tenantId: TENANT_A });
+    expect(applyFinalization).toHaveBeenCalledWith(h.attempt('verifying'), { verifiedTenantId: TENANT_A, result: retestOk(TENANT_A) });
+    expect(markAttemptFailed).not.toHaveBeenCalled();
+    expect(JSON.stringify([
+      beginFinalization.mock.calls, finalize.mock.calls, applyFinalization.mock.calls, audit.mock.calls,
+    ])).not.toContain('SECRET-CONSENT-CODE');
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.adminConsentReturned, outcome: 'application_verification_started', actorId: USER_ID,
+    }));
+    // The consent-returned event never names the verified administrator: Breeze
+    // cannot see who clicked Accept on Microsoft's consent screen.
+    expect(audit.mock.calls.find(([, input]) => input.event === h.events.adminConsentReturned)![1])
+      .not.toHaveProperty('verifiedAdministratorObjectId');
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.tenantBindingVerified, outcome: 'active', verifiedTenantId: TENANT_A,
+      verifiedAdministratorObjectId: ADMIN, actorId: USER_ID,
+    }));
+  });
+
+  it('a binding cookie naming tenant A cannot finalize a session verified for tenant B', async () => {
+    const finalize = vi.fn();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const app = h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A, 's'),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_B), actorId: USER_ID }),
+      finalize, markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=s&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+    expect(finalize).not.toHaveBeenCalled();
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('verifying'), 'tenant_mismatch');
+  });
+
+  it('forged tenant hint: an identity cookie whose tenant does not hash to the session hint fails before the executor', async () => {
+    const verifyIdentity = vi.fn();
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const app = h.app({
+      verifyBindingCookie: () => identityBinding(TENANT_B, 'id'),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) })),
+      verifyIdentity, markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=id&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'tenant_mismatch');
+  });
+
+  it.each([
+    ['organizations cookie, pinned session', null, hashTenant(TENANT_A)],
+    ['pinned cookie, organizations session', TENANT_A, null],
+  ] as const)('forged authority (%s) fails before the executor', async (_label, cookieTenant, sessionHash) => {
+    const verifyIdentity = vi.fn();
+    const app = h.app({
+      verifyBindingCookie: () => identityBinding(cookieTenant),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: sessionHash })),
+      verifyIdentity,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
+  it('forged tenant hint: a query `tenant` parameter is rejected outright', async () => {
+    const loadAttempt = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => identityBinding(null), loadAttempt })
+      .request(`${h.path}?state=id-state&code=c&tenant=${TENANT_B}`, { headers: { cookie: 'x' } });
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(loadAttempt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['identity_token_invalid'], ['admin_role_required'], ['tenant_mismatch'], ['credential_unavailable'],
+  ] as const)('identity failure %s marks an initial attempt failed and never reaches consent', async (code) => {
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const transitionIdentityToConsent = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue({ success: false, errorCode: code }),
+      markAttemptFailed, transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/${code}`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), code);
+    expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+  });
+
+  it('a verified tenant different from the pinned one never continues, even if the executor claimed success', async () => {
+    const transitionIdentityToConsent = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_B)),
+      transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+    expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+  });
+
+  it('replayed identity state: consumed session ⇒ mismatch, executor not called', async () => {
+    const verifyIdentity = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null), consumeSession: vi.fn().mockResolvedValue(null), verifyIdentity,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
+  it('an attempt that is no longer pending-consent cannot run either phase of a first-time consent', async () => {
+    const consumeSession = vi.fn();
+    const beginFinalization = vi.fn();
+    for (const binding of [identityBinding(null), consentBinding(TENANT_A)]) {
+      const res = await h.app({
+        verifyBindingCookie: () => binding, consumeSession, beginFinalization,
+        loadAttempt: vi.fn().mockResolvedValue(h.attempt('verifying')),
+      }).request(`${h.path}?state=${binding.rawState}&code=c`, { headers: { cookie: 'x' } });
+      expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    }
+    expect(consumeSession).not.toHaveBeenCalled();
+    expect(beginFinalization).not.toHaveBeenCalled();
+  });
+
+  it('a consumed identity session whose purpose disagrees with the routed purpose fails closed', async () => {
+    const verifyIdentity = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null, purpose: 'upgrade' })),
+      verifyIdentity,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['tenant_mismatch', 'tenant_mismatch', true],
+    ['stale_attempt', 'consent_state_mismatch', false],
+  ] as const)('a %s lifecycle error at the identity → consent transition redirects %s', async (code, outcome, marks) => {
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_B)),
+      transitionIdentityToConsent: vi.fn().mockRejectedValue(lifecycle(code)),
+      markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/${outcome}`);
+    if (marks) expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'tenant_mismatch');
+    else expect(markAttemptFailed).not.toHaveBeenCalled();
+  });
+
+  it('concurrent duplicate consent callbacks: only one finalizes', async () => {
+    let consumed = false;
+    const beginFinalization = vi.fn(async () => {
+      if (consumed) throw lifecycle('stale_attempt');
+      consumed = true;
+      return { attempt: h.attempt('verifying'), purpose: 'initial' as const, verified: verified(TENANT_A), actorId: USER_ID };
+    });
+    const finalize = vi.fn().mockResolvedValue(retestOk(TENANT_A));
+    const app = h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A), beginFinalization, finalize,
+      applyFinalization: vi.fn().mockResolvedValue(h.snapshot({ status: 'active', tenantId: TENANT_A })),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const [a, b] = await Promise.all([1, 2].map(() => app.request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } })));
+
+    expect([a!.headers.get('location'), b!.headers.get('location')].sort())
+      .toEqual([`${h.redirectBase}/active`, `${h.redirectBase}/consent_state_mismatch`].sort());
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('a non-lifecycle failure while starting finalization is retryable (503, cookie kept)', async () => {
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockRejectedValue(new Error('db down')),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('upgrade: identity pinned to the bound tenant uses the upgrade transition and writes no failure', async () => {
+    const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A });
+    const verifyIdentity = vi.fn().mockResolvedValue(identityOk(TENANT_A));
+    const res = await h.app({
+      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A), purpose: 'upgrade' })),
+      verifyIdentity, transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(new URL(res.headers.get('location')!).pathname).toBe(`/${TENANT_A}/oauth2/authorize`);
+    expect(verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ expectedTenantId: TENANT_A }));
+    expect(transitionIdentityToConsent).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'upgrade', attempt: h.attempt('active') }));
+  });
+
+  it('upgrade: an identity failure never marks the live connection failed', async () => {
+    const markAttemptFailed = vi.fn();
+    const res = await h.app({
+      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A), purpose: 'upgrade' })),
+      verifyIdentity: vi.fn().mockResolvedValue({ success: false, errorCode: 'admin_role_required' }),
+      markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/admin_role_required`);
     expect(markAttemptFailed).not.toHaveBeenCalled();
   });
 
-  it('redirects active after a promotion and degraded-with-cause when the version did not move', async () => {
-    const cases = [
-      { manifestVersion: 3, status: 'active', lastErrorCode: null, failureCode: null, expected: 'active' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: 'grant_missing', failureCode: 'grant_missing', expected: 'grant_missing' },
-      // The row is untouched on these, so only the in-band failure code can
-      // tell the administrator why the approval did not take. Without it all
-      // three would collapse into the generic manifest_stale redirect.
-      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'tenant_mismatch', expected: 'tenant_mismatch' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'application_token_invalid', expected: 'application_token_invalid' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: 'grant_reconciliation_unavailable', expected: 'grant_reconciliation_unavailable' },
-      { manifestVersion: 2, status: 'active', lastErrorCode: null, failureCode: null, expected: 'manifest_stale' },
-    ] as const;
-    for (const scenario of cases) {
-      const applyIdentityResult = vi.fn();
-      const routes = createM365ConsentCallbackRoutes({
-        verifyBindingCookie: vi.fn(() => upgradeIdentityBinding),
-        readSessionPurpose: vi.fn(async () => 'upgrade' as const),
-        loadAttempt: vi.fn(async () => executableAttempt()),
-        consumeSession: vi.fn(async () => ({
-          userId: USER_ID, purpose: 'upgrade',
-          tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
-        })) as never,
-        completeIdentity: vi.fn(async () => ({
-          success: true, tenantId: TENANT_ID, manifestVersion: scenario.manifestVersion,
-        })) as never,
-        applyUpgradeResult: vi.fn(async () => ({
-          connection: {
-            id: CONNECTION_ID,
-            status: scenario.status,
-            lastErrorCode: scenario.lastErrorCode,
-            permissionManifestVersion: scenario.manifestVersion,
-          },
-          failureCode: scenario.failureCode,
-        })) as never,
-        applyIdentityResult,
-        loadConfig: vi.fn(() => ({
-          clientId: '22222222-2222-2222-2222-222222222222',
-          callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-        })),
-        audit: vi.fn(),
-        metric: vi.fn(),
-      });
-
-      const response = await appFor(routes).request(
-        '/api/v1/m365/consent/callback?state=identity-state&code=auth-code',
-        { headers: { cookie: bindingCookie(upgradeIdentityBinding) } },
-      );
-
-      expect(response.headers.get('location')).toContain(scenario.expected);
-      expect(applyIdentityResult).not.toHaveBeenCalled();
-    }
-  });
-
-  it('rejects an upgrade callback against a connection that is no longer executable', async () => {
-    const routes = createM365ConsentCallbackRoutes({
-      verifyBindingCookie: vi.fn(() => upgradeAdminBinding),
+  it('upgrade: cancel at consent leaves the row untouched', async () => {
+    const markAttemptFailed = vi.fn();
+    const res = await h.app({
       readSessionPurpose: vi.fn(async () => 'upgrade' as const),
-      loadAttempt: vi.fn(async () => ({ ...executableAttempt(), status: 'revoked' as const })),
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      prepareIdentitySession: vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'n', codeVerifier: 'v'.repeat(43), codeChallenge: 'c',
-        expiresAt: new Date('2026-09-08T12:10:00.000Z'),
-      })),
-      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize'),
-      buildBindingCookie: vi.fn(() => 'binding=identity'),
-      audit: vi.fn(),
-      metric: vi.fn(),
-    });
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(consentSession({ purpose: 'upgrade' })), markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
+    }).request(`${h.path}?state=consent-state&error=access_denied&error_description=AADSTS65004`, { headers: { cookie: 'x' } });
 
-    const response = await appFor(routes).request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-      { headers: { cookie: bindingCookie(upgradeAdminBinding) } },
-    );
-
-    expect(response.headers.get('location')).toContain('consent_state_mismatch');
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_cancelled`);
+    expect(markAttemptFailed).not.toHaveBeenCalled();
   });
 
-  it('still requires pending-consent for a first-time session', async () => {
-    // The purpose router must not loosen the initial flow.
-    const routes = createM365ConsentCallbackRoutes({
-      verifyBindingCookie: vi.fn(() => upgradeAdminBinding),
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      loadAttempt: vi.fn(async () => executableAttempt()),
-      loadConfig: vi.fn(() => ({
-        clientId: '22222222-2222-2222-2222-222222222222',
-        callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-      })),
-      prepareIdentitySession: vi.fn(() => ({
-        rawState: 'identity-state', tenantHintHash: tenantHintHash(TENANT_ID),
-        nonce: 'n', codeVerifier: 'v'.repeat(43), codeChallenge: 'c',
-        expiresAt: new Date('2026-09-08T12:10:00.000Z'),
-      })),
-      buildIdentityUrl: vi.fn(() => 'https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize'),
-      buildBindingCookie: vi.fn(() => 'binding=identity'),
-      audit: vi.fn(),
-      metric: vi.fn(),
+  it('upgrade: finalization applies in place and reports the in-band failure', async () => {
+    const current = M365_PERMISSION_PROFILES[h.profile].version;
+    const applyUpgradeFinalization = vi.fn()
+      .mockResolvedValueOnce({ connection: h.snapshot({ status: 'active', tenantId: TENANT_A, permissionManifestVersion: current }), failureCode: null })
+      .mockResolvedValueOnce({ connection: h.snapshot({ status: 'active', tenantId: TENANT_A, permissionManifestVersion: current - 1 }), failureCode: 'tenant_mismatch' });
+    const app = h.app({
+      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('active'), purpose: 'upgrade', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue(retestOk(TENANT_A)),
+      applyUpgradeFinalization,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
     });
 
-    const response = await appFor(routes).request(
-      `/api/v1/m365/consent/callback?state=admin-state&tenant=${TENANT_ID}&admin_consent=true`,
-      { headers: { cookie: bindingCookie(upgradeAdminBinding) } },
-    );
+    const promoted = await app.request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+    const refused = await app.request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
 
-    expect(response.headers.get('location')).toContain('consent_state_mismatch');
+    expect(applyUpgradeFinalization).toHaveBeenCalledWith(h.attempt('active'), { verifiedTenantId: TENANT_A, result: retestOk(TENANT_A) });
+    expect(promoted.headers.get('location')).toBe(`${h.redirectBase}/active`);
+    expect(refused.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+  });
+
+  it("guest admin home tenant: identity verified in the admin's home tenant targets consent at THAT tenant, never the org's intended one, and the audit records it", async () => {
+    // /organizations resolved the admin's home tenant HOME; Breeze cannot know the intent.
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue({ ...identityOk(HOME), administratorUsername: 'tech@msp.example' }),
+      transitionIdentityToConsent: vi.fn().mockResolvedValue({ rawState: 'cs', verifiedTenantId: HOME }), audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(new URL(res.headers.get('location')!).pathname).toBe(`/${HOME}/oauth2/authorize`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: h.events.adminIdentityVerified, verifiedTenantId: HOME }));
+    // W3 Task 14 replaces this redirect with the confirm-tenant interstitial for organizations sign-ins.
+  });
+
+  it.each(['identity', 'consent'] as const)('a provider error in the %s phase is consent_cancelled and marks the initial attempt failed', async (phase) => {
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const verifyIdentity = vi.fn();
+    const binding = phase === 'identity' ? identityBinding(null) : consentBinding(TENANT_A);
+    const session = phase === 'identity' ? identitySession({ tenantHintHash: null }) : consentSession();
+    const consumeSession = vi.fn().mockResolvedValue(session);
+    const res = await h.app({
+      verifyBindingCookie: () => binding, consumeSession, markAttemptFailed, verifyIdentity,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=${binding.rawState}&error=access_denied&error_description=AADSTS65004`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_cancelled`);
+    expect(consumeSession).toHaveBeenCalledWith(expect.objectContaining({ phase: binding.phase }));
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'consent_cancelled');
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
+  it('production AADSTS50097 error redirect binds nothing and never reaches an executor', async () => {
+    const query = new URLSearchParams({
+      // Sanitized capture of the real production redirect (2026-10-01): note admin_consent=True
+      // arrives ALONGSIDE the error and must never be read as success.
+      error: 'invalid_grant',
+      error_description: 'AADSTS50097: Device authentication is required. Trace ID: 00000000-0000-0000-0000-000000000000 Correlation ID: 00000000-0000-0000-0000-000000000000 Timestamp: 2026-10-01 17:11:50Z',
+      error_uri: 'https://login.microsoftonline.com/error?code=50097',
+      admin_consent: 'True',
+      state: 'id-state',
+    });
+    const verifyIdentity = vi.fn();
+    const finalize = vi.fn();
+    const transitionIdentityToConsent = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      verifyIdentity, finalize, transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?${query}`, { headers: { cookie: 'x' } });
+
+    // Strict error-key parser today: the extra keys fail closed. The
+    // provider-error classification change (#7915) maps this exact shape to
+    // conditional_access_blocked; either way nothing is bound.
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+    expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+    expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it.each(['legacy', 'expired'] as const)('a %s browser binding restarts with consent_expired and touches nothing', async (state) => {
+    const loadAttempt = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => state, loadAttempt })
+      .request(`${h.path}?state=old&tenant=${TENANT_A}&admin_consent=True`, { headers: { cookie: 'x' } });
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_expired`);
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(loadAttempt).not.toHaveBeenCalled();
+  });
+
+  it('a missing or invalid binding is consent_state_mismatch before any state lookup', async () => {
+    const loadAttempt = vi.fn();
+    const readSessionPurpose = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => null, loadAttempt, readSessionPurpose })
+      .request(`${h.path}?state=s&code=c`);
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(loadAttempt).not.toHaveBeenCalled();
+    expect(readSessionPurpose).not.toHaveBeenCalled();
+  });
+
+  it('a pre-W1 executor (verify-identity 404 → client throws) is executor_unavailable and marks the attempt failed', async () => {
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const transitionIdentityToConsent = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockRejectedValue(new Error('m365_executor_http_404')), markAttemptFailed, transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'executor_unavailable');
+    expect(transitionIdentityToConsent).not.toHaveBeenCalled();
+  });
+
+  it('an executor failure during finalization marks the verifying attempt failed and binds nothing', async () => {
+    const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
+    const applyFinalization = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockRejectedValue(new Error('executor down')), markAttemptFailed, applyFinalization,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/executor_unavailable`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('verifying'), 'executor_unavailable');
+    expect(applyFinalization).not.toHaveBeenCalled();
+  });
+
+  it('a failed application proof redirects its specific outcome and audits verification_failed', async () => {
+    const audit = vi.fn();
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' }),
+      applyFinalization: vi.fn().mockResolvedValue(h.snapshot({ status: 'pending-consent', lastErrorCode: 'application_token_invalid' })),
+      audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/application_token_invalid`);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.verificationFailed, outcome: 'application_token_invalid', actorId: USER_ID,
+    }));
+    expect(audit).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: h.events.tenantBindingVerified }));
+  });
+
+  it('maps a tenant_already_bound binding conflict to its own outcome', async () => {
+    const res = await h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+      finalize: vi.fn().mockResolvedValue(retestOk(TENANT_A)),
+      applyFinalization: vi.fn().mockRejectedValue(lifecycle('tenant_already_bound')),
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_already_bound`);
+  });
+});
+
+describe('cross-profile isolation', () => {
+  it('a binding whose connection belongs to the other profile resolves no attempt', async () => {
+    const store = new Map<string, Profile>([[CONNECTION_ID, 'customer-graph-read']]);
+    function loadAttemptScopedTo(profile: Profile) {
+      return vi.fn(async (binding: { connectionId: string }) => (store.get(binding.connectionId) === profile
+        ? { id: binding.connectionId, orgId: ORG_ID, profile, consentAttemptId: ATTEMPT_ID, status: 'pending-consent' as const }
+        : null));
+    }
+    const actions = harness('customer-graph-actions');
+    const actionsLoad = loadAttemptScopedTo('customer-graph-actions');
+    const consumeSession = vi.fn();
+    const crossed = await actions.app({ verifyBindingCookie: () => identityBinding(null), loadAttempt: actionsLoad, consumeSession })
+      .request(`${actions.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+    expect(crossed.headers.get('location')).toBe(`${actions.redirectBase}/consent_state_mismatch`);
+    expect(actionsLoad).toHaveBeenCalledOnce();
+    expect(consumeSession).not.toHaveBeenCalled();
+
+    store.set(CONNECTION_ID, 'customer-graph-actions');
+    const read = harness('customer-graph-read');
+    const readLoad = loadAttemptScopedTo('customer-graph-read');
+    const readCrossed = await read.app({ verifyBindingCookie: () => identityBinding(null), loadAttempt: readLoad, consumeSession })
+      .request(`${read.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+    expect(readCrossed.headers.get('location')).toBe(`${read.redirectBase}/consent_state_mismatch`);
+    expect(consumeSession).not.toHaveBeenCalled();
+  });
+
+  describe('cookie layer with the real (unmocked) binding functions', () => {
+    const ORIGINAL_KEY = process.env.APP_ENCRYPTION_KEY;
+    const KEY = 'test-cross-profile-binding-key';
+
+    beforeEach(() => { process.env.APP_ENCRYPTION_KEY = KEY; });
+    afterEach(() => {
+      if (ORIGINAL_KEY === undefined) delete process.env.APP_ENCRYPTION_KEY;
+      else process.env.APP_ENCRYPTION_KEY = ORIGINAL_KEY;
+    });
+
+    function cookieHeaderOnly(setCookie: string): string {
+      return setCookie.slice(0, setCookie.indexOf(';'));
+    }
+
+    it('rejects a real read-issued binding cookie presented to the actions callback', async () => {
+      const readCookie = buildM365ConsentBindingCookie(identityBinding(null));
+      const renamed = cookieHeaderOnly(readCookie).replace('breeze_m365_graph_read_consent=', 'breeze_m365_graph_actions_consent=');
+      const app = new Hono().route('/api/v1/m365', m365ActionsConsentCallbackRoutes);
+      for (const cookie of [cookieHeaderOnly(readCookie), renamed]) {
+        const response = await app.request('/api/v1/m365/actions-consent/callback?state=id-state&code=code', { headers: { cookie } });
+        expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-actions/consent_state_mismatch');
+      }
+    });
+
+    it('rejects a real actions-issued binding cookie presented to the read callback', async () => {
+      const actionsCookie = buildM365ActionsConsentBindingCookie(consentBinding(TENANT_A));
+      const app = new Hono().route('/api/v1/m365', m365ConsentCallbackRoutes);
+      const response = await app.request('/api/v1/m365/consent/callback?state=consent-state&code=code', {
+        headers: { cookie: cookieHeaderOnly(actionsCookie) },
+      });
+      expect(response.headers.get('location')).toBe('/integrations#m365/customer-graph-read/consent_state_mismatch');
+    });
+
+    it.each([
+      ['read', 'breeze_m365_graph_read_consent', 'breeze:m365-customer-graph-read:browser-binding:v1', m365ConsentCallbackRoutes, '/api/v1/m365/consent/callback', 'customer-graph-read'],
+      ['actions', 'breeze_m365_graph_actions_consent', 'breeze:m365-customer-graph-actions:browser-binding:v1', m365ActionsConsentCallbackRoutes, '/api/v1/m365/actions-consent/callback', 'customer-graph-actions'],
+    ] as const)('a real in-flight v1 (%s) cookie from before the deploy restarts with consent_expired', async (_n, name, context, routes, path, profile) => {
+      const payload = Buffer.from(JSON.stringify({
+        phase: 'admin_consent', rawState: 'old', connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID,
+        tenantHint: null, expiresAt: Math.floor(Date.now() / 1000) + 300,
+      })).toString('base64url');
+      const mac = createHmac('sha256', KEY).update(`${context}.${payload}`).digest('base64url');
+      const app = new Hono().route('/api/v1/m365', routes);
+      const response = await app.request(`${path}?state=old&tenant=${TENANT_A}&admin_consent=True`, {
+        headers: { cookie: `${name}=${payload}.${mac}` },
+      });
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_expired`);
+    });
   });
 });
 
 describe('tenant sync lifecycle from the consent callback (W05, spec §5.8/§10.1)', () => {
-  const identityBinding = {
-    phase: 'identity_verification' as const,
-    rawState: 'identity-state',
-    connectionId: CONNECTION_ID,
-    consentAttemptId: ATTEMPT_ID,
-    tenantHint: TENANT_ID,
-  };
-  const verified = {
-    success: true as const,
-    tenantId: TENANT_ID,
-    applicationId: '22222222-2222-2222-2222-222222222222',
-    organizationDisplayName: 'Contoso',
-    manifestVersion: 3,
-    verifiedAt: '2026-07-14T12:00:00.000Z',
-    grantReconciliation: 'complete' as const,
-    observedGrants: [], missingGrants: [], unexpectedGrants: [],
-    grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
-  };
-  const loadConfig = vi.fn(() => ({
-    clientId: verified.applicationId,
-    callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
-  }));
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    syncMocks.flag.mockReturnValue(true);
-    syncMocks.consented.mockResolvedValue(undefined);
-    syncMocks.upgraded.mockResolvedValue(undefined);
-  });
-
-  function request(routes: Hono, path = 'consent') {
-    return new Hono().route('/api/v1/m365', routes).request(
-      `/api/v1/m365/${path}/callback?state=identity-state&code=auth-code`,
-      { headers: { cookie: bindingCookie(identityBinding) } },
-    );
-  }
-
-  /** Drives the identity (first-time) branch with the file's DI overrides; lifecycle hooks are the real defaults. */
-  function initialConsent(applied: { status: 'active' | 'degraded' | 'pending-consent'; lastErrorCode: string | null }, profile: 'customer-graph-read' | 'customer-graph-actions' = 'customer-graph-read') {
-    return createM365ConsentCallbackRoutes({
-      profile,
-      readSessionPurpose: vi.fn(async () => 'initial' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn().mockResolvedValue(profile === 'customer-graph-read' ? attempt('verifying') : actionsAttempt('verifying')),
-      consumeSession: vi.fn().mockResolvedValue({
-        userId: USER_ID, tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
+  function initialConsent(applied: { status: 'active' | 'degraded' | 'pending-consent'; lastErrorCode: string | null }, profile: Profile = 'customer-graph-read') {
+    const h = harness(profile);
+    return {
+      h,
+      app: h.app({
+        verifyBindingCookie: () => consentBinding(TENANT_A),
+        beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID }),
+        finalize: vi.fn().mockResolvedValue(retestOk(TENANT_A)),
+        applyFinalization: vi.fn().mockResolvedValue(h.snapshot({
+          tenantId: applied.status === 'pending-consent' ? null : TENANT_A, status: applied.status, lastErrorCode: applied.lastErrorCode,
+        })),
+        // Lifecycle hooks stay the real defaults (the module is mocked above).
+        loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
       }),
-      completeIdentity: vi.fn().mockResolvedValue(verified),
-      applyIdentityResult: vi.fn().mockResolvedValue({
-        ...attempt('verifying'), profile, tenantId: applied.status === 'pending-consent' ? null : TENANT_ID,
-        permissionManifestVersion: 3, status: applied.status, lastErrorCode: applied.lastErrorCode,
-      }),
-      loadConfig,
-      audit: vi.fn(),
-      metric: vi.fn(),
-    });
+    };
   }
 
   function upgradeConsent(manifestVersion: number, failureCode: string | null = null) {
-    return createM365ConsentCallbackRoutes({
-      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
-      verifyBindingCookie: vi.fn(() => identityBinding),
-      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
-      loadAttempt: vi.fn(async () => ({ ...attempt('verifying'), status: 'active' as const })),
-      consumeSession: vi.fn(async () => ({
-        userId: USER_ID, purpose: 'upgrade',
-        tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
-      })) as never,
-      completeIdentity: vi.fn(async () => ({ ...verified, manifestVersion })) as never,
-      applyUpgradeResult: vi.fn(async () => ({
-        connection: {
-          id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID, status: 'active',
-          lastErrorCode: null, permissionManifestVersion: manifestVersion,
-        },
-        failureCode,
-      })) as never,
-      applyIdentityResult: vi.fn(),
-      loadConfig,
-      audit: vi.fn(),
-      metric: vi.fn(),
-    });
+    const h = harness('customer-graph-read');
+    return {
+      h,
+      app: h.app({
+        readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+        verifyBindingCookie: () => consentBinding(TENANT_A),
+        beginFinalization: vi.fn().mockResolvedValue({ attempt: h.attempt('active'), purpose: 'upgrade', verified: verified(TENANT_A), actorId: USER_ID }),
+        finalize: vi.fn().mockResolvedValue(retestOk(TENANT_A, manifestVersion)),
+        applyUpgradeFinalization: vi.fn().mockResolvedValue({
+          connection: h.snapshot({ tenantId: TENANT_A, status: 'active', permissionManifestVersion: manifestVersion }),
+          failureCode,
+        }),
+        loadAttempt: vi.fn().mockResolvedValue(h.attempt('active')),
+      }),
+    };
+  }
+
+  async function run({ h, app }: { h: Harness; app: Hono }) {
+    return app.request(`${h.path}?state=consent-state&code=c`, { headers: { cookie: 'x' } });
   }
 
   it('seeds the sync when a first-time consent verifies ACTIVE', async () => {
-    const response = await request(initialConsent({ status: 'active', lastErrorCode: null }));
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain('active');
-    expect(syncMocks.consented).toHaveBeenCalledWith({
-      id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID, status: 'active',
-    });
+    const response = await run(initialConsent({ status: 'active', lastErrorCode: null }));
+    expect(response.headers.get('location')).toContain('/active');
+    expect(syncMocks.consented).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_A, status: 'active' });
     expect(syncMocks.upgraded).not.toHaveBeenCalled();
   });
 
   it('seeds a DEGRADED connection too', async () => {
-    await request(initialConsent({ status: 'degraded', lastErrorCode: 'grant_missing' }));
+    await run(initialConsent({ status: 'degraded', lastErrorCode: 'grant_missing' }));
     expect(syncMocks.consented).toHaveBeenCalledWith(expect.objectContaining({ status: 'degraded' }));
   });
 
   it('does not seed when verification did not leave the connection executable', async () => {
-    await request(initialConsent({ status: 'pending-consent', lastErrorCode: 'consent_expired' }));
+    await run(initialConsent({ status: 'pending-consent', lastErrorCode: 'tenant_mismatch' }));
     expect(syncMocks.consented).not.toHaveBeenCalled();
   });
 
   it('does not seed when the tenant-sync flag is off', async () => {
     syncMocks.flag.mockReturnValue(false);
-    await request(initialConsent({ status: 'active', lastErrorCode: null }));
+    await run(initialConsent({ status: 'active', lastErrorCode: null }));
     expect(syncMocks.consented).not.toHaveBeenCalled();
   });
 
   it('never seeds from the ACTIONS profile callback — the sync reads only through the read connection', async () => {
-    const response = await request(
-      initialConsent({ status: 'active', lastErrorCode: null }, 'customer-graph-actions'),
-      'actions-consent',
-    );
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain('active');
+    const response = await run(initialConsent({ status: 'active', lastErrorCode: null }, 'customer-graph-actions'));
+    expect(response.headers.get('location')).toContain('/active');
     expect(syncMocks.consented).not.toHaveBeenCalled();
   });
 
@@ -1427,39 +849,31 @@ describe('tenant sync lifecycle from the consent callback (W05, spec §5.8/§10.
     syncMocks.consented.mockRejectedValueOnce(new Error('seed boom'));
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const response = await request(initialConsent({ status: 'active', lastErrorCode: null }));
-      expect(response.status).toBe(302);
-      expect(response.headers.get('location')).toContain('active');
-      expect(response.headers.get('location')).not.toContain('executor_unavailable');
+      const response = await run(initialConsent({ status: 'active', lastErrorCode: null }));
+      expect(response.headers.get('location')).toContain('/active');
     } finally { spy.mockRestore(); }
   });
 
   it('re-arms needs_consent domains after an upgrade PROMOTED the manifest, and does not re-seed', async () => {
-    const response = await request(upgradeConsent(3));
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toContain('active');
+    const response = await run(upgradeConsent(3));
+    expect(response.headers.get('location')).toContain('/active');
     expect(syncMocks.upgraded).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID });
     expect(syncMocks.consented).not.toHaveBeenCalled();
   });
 
   it('does not re-arm when the upgrade failed in band (a deliberate no-op on the row)', async () => {
-    await request(upgradeConsent(2, 'tenant_mismatch'));
+    await run(upgradeConsent(2, 'tenant_mismatch'));
     expect(syncMocks.upgraded).not.toHaveBeenCalled();
   });
 
   it('does not re-arm when the flag is off', async () => {
     syncMocks.flag.mockReturnValue(false);
-    await request(upgradeConsent(3));
+    await run(upgradeConsent(3));
     expect(syncMocks.upgraded).not.toHaveBeenCalled();
   });
 
-  it('still redirects successfully when the upgrade hook throws', async () => {
-    syncMocks.upgraded.mockRejectedValueOnce(new Error('reseed boom'));
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const response = await request(upgradeConsent(3));
-      expect(response.status).toBe(302);
-      expect(response.headers.get('location')).toContain('active');
-    } finally { spy.mockRestore(); }
+  it('redirects degraded-with-cause when the upgrade did not move the manifest', async () => {
+    const response = await run(upgradeConsent(2, 'grant_missing'));
+    expect(response.headers.get('location')).toContain('/grant_missing');
   });
 });
