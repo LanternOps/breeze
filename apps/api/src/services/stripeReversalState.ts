@@ -1,3 +1,4 @@
+import { allocateReversal } from './autopay/refundAllocation';
 import { reportCollectionError } from './autopay/collectionErrors';
 import { enqueueAutopayStaffNotifications } from './autopay/staffNotifications';
 import { applyAttemptOutcome } from './autopay/collectionEngine';
@@ -194,18 +195,6 @@ function disputeEventIsNewer(mapping: typeof invoiceStripePayments.$inferSelect,
   return event.disputeFundsWithdrawn === false && mapping.disputeFundsWithdrawn;
 }
 
-export function remainingPrincipalMinor(principalMinor: number, feeMinor: number | null, reversedGrossMinor: number): number {
-  const principal = BigInt(principalMinor);
-  const gross = principal + BigInt(feeMinor ?? 0);
-  if (gross <= 0n) throw new Error('Stripe mapping has a non-positive gross amount');
-  const reversed = BigInt(reversedGrossMinor);
-  const bounded = reversed < 0n ? 0n : reversed > gross ? gross : reversed;
-  // Cumulative half-up allocation; computing from total-to-date eliminates
-  // per-event rounding drift and a full reversal removes the final cent.
-  const allocatedPrincipal = (principal * bounded * 2n + gross) / (2n * gross);
-  return Number(principal - allocatedPrincipal);
-}
-
 /** Provider return details are fetched before acquiring any ledger locks. A failed
  * lookup leaves the durable inbox pending; unknown bank codes classify hard. */
 async function retrieveBankReturn(stripeEventId: string) {
@@ -373,7 +362,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       if(attempt?.state==='unapplied' && refunded===originalMinor && event.eventType==='charge.refunded'){
         await db.update(invoiceCollectionAttempts).set({state:'canceled',failureCode:'unapplied_refunded',updatedAt:new Date()})
           .where(eq(invoiceCollectionAttempts.id,attempt.id));
-        await db.update(invoiceStripePayments).set({status:'refunded',refundedAmountMinor:String(originalMinor),updatedAt:new Date()})
+        await db.update(invoiceStripePayments).set({status:'refunded',refundedAmountMinor:String(originalMinor),feeReversedAmount:mapping.feeAmount,updatedAt:new Date()})
           .where(eq(invoiceStripePayments.id,mapping.id));
         await db.update(stripeFinancialEvents).set({status:'applied',processedAt:new Date(),lastError:null,updatedAt:new Date()})
           .where(eq(stripeFinancialEvents.id,event.id));
@@ -420,7 +409,11 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     }
 
     const reversedGrossMinor = Math.min(originalMinor, refunded + (disputeWithdrawn ? disputeAmount : 0));
-    const targetMinor = remainingPrincipalMinor(principalMinor, feeMinor, reversedGrossMinor);
+    const allocation = allocateReversal({
+      principal: mapping.amount, fee: mapping.feeAmount,
+      cumulativeReversedGross: fromMinorUnits(reversedGrossMinor, mapping.currency),
+    });
+    const targetMinor = principalMinor - toMinorUnits(allocation.principalReversed, mapping.currency);
     const nextStatus = refunded >= originalMinor
       ? 'refunded' as const
       : disputeWithdrawn
@@ -444,6 +437,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         // would otherwise violate the non-deferrable succeeded-has-payment CHECK.
         await db.update(invoiceStripePayments).set({
           status: nextStatus, invoicePaymentId: null,
+          feeReversedAmount: allocation.feeReversed,
           refundedAmountMinor: refunded.toString(), disputeAmountMinor: disputeAmount.toString(),
           disputeFundsWithdrawn: disputeWithdrawn, lastDisputeEventCreated: disputeCreated,
           lastDisputeEventId: disputeEventId, lastEventAt: new Date(event.providerCreated * 1000), updatedAt: new Date(),
@@ -506,6 +500,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     if (!(mapping.invoicePaymentId && targetMinor === 0)) {
       await db.update(invoiceStripePayments).set({
         status: nextStatus, invoicePaymentId: paymentId ?? null,
+        feeReversedAmount: allocation.feeReversed,
         refundedAmountMinor: refunded.toString(), disputeAmountMinor: disputeAmount.toString(),
         disputeFundsWithdrawn: disputeWithdrawn, lastDisputeEventCreated: disputeCreated,
         lastDisputeEventId: disputeEventId, lastEventAt: new Date(event.providerCreated * 1000), updatedAt: new Date(),

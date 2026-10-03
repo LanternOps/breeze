@@ -141,6 +141,9 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
   stripePaymentIntentId: text('stripe_payment_intent_id'),
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
   feeAmount: numeric('fee_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+  feeReversedAmount: numeric('fee_reversed_amount', { precision: 12, scale: 2 }).notNull().default('0.00'),
+  feeAccountingJournal: jsonb('fee_accounting_journal').$type<unknown[]>().notNull().default([]),
+  feeAccountingError: text('fee_accounting_error'),
   paymentMethodType: text('payment_method_type').$type<'card' | 'us_bank_account'>(),
   source: text('source').$type<'checkout' | 'autopay'>().notNull().default('checkout'),
   currency: char('currency', { length: 3 }).notNull(),
@@ -173,6 +176,8 @@ export const invoiceStripePayments = pgTable('invoice_stripe_payments', {
 }, (t) => [
   uniqueIndex('invoice_stripe_payments_id_org_uq').on(t.id, t.orgId),
   check('invoice_stripe_payments_fee_amount_chk', sql`${t.feeAmount} >= 0`),
+  check('invoice_stripe_payments_fee_reversed_check',sql`${t.feeReversedAmount} >= 0 AND ${t.feeReversedAmount} <= ${t.feeAmount}`),
+  check('invoice_stripe_payments_fee_journal_check',sql`jsonb_typeof(${t.feeAccountingJournal}) = 'array'`),
   check('invoice_stripe_payments_method_type_chk', sql`${t.paymentMethodType} IN ('card','us_bank_account')`),
   check('invoice_stripe_payments_source_chk', sql`${t.source} IN ('checkout','autopay')`),
   uniqueIndex('invoice_stripe_payments_object_uq').on(t.stripeObjectId),
