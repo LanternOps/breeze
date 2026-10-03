@@ -161,14 +161,15 @@ explain_unsafe_legacy_dir() {
 #     confirms is running is success, not failure.
 # A genuine failure is retried, then reported with recovery steps; returns 1.
 bootstrap_system_daemon() {
-    local label="$1" plist="$2" out="" tries=0
-    launchctl enable "system/$label" 2>/dev/null ||
-        echo "Warning: could not enable system/$label; trying to load it anyway" >&2
+    local label="$1" plist="$2" out="" tries=0 stale=0
+    out=$(launchctl enable "system/$label" 2>&1) ||
+        echo "Warning: could not enable system/$label ($out); trying to load it anyway" >&2
     launchctl bootout "system/$label" 2>/dev/null || true
     while launchctl print "system/$label" >/dev/null 2>&1; do
         tries=$((tries + 1))
-        if [ "$tries" -ge 10 ]; then
+        if [ "$tries" -ge 20 ]; then
             echo "Warning: system/$label is still loaded ${tries}s after bootout" >&2
+            stale=1
             break
         fi
         sleep 1
@@ -178,10 +179,20 @@ bootstrap_system_daemon() {
         if out=$(launchctl bootstrap system "$plist" 2>&1); then
             return 0
         fi
-        if launchctl print "system/$label" >/dev/null 2>&1 &&
-            launchctl kickstart "system/$label" >/dev/null 2>&1; then
-            echo "launchctl bootstrap reported '$out', but $label is loaded and running; continuing"
-            return 0
+        # Only a label that left launchd after our bootout can have been
+        # re-loaded by someone else from the plist on disk. If the old
+        # instance never left, the loaded job is the OLD definition (perhaps
+        # still naming the pre-relocation path), so it is not success.
+        # Judge "running" from launchd's own state, not kickstart's exit code.
+        if [ "$stale" -eq 0 ] && launchctl print "system/$label" >/dev/null 2>&1; then
+            launchctl kickstart "system/$label" >/dev/null 2>&1 || true
+            sleep 1
+            case "$(launchctl print "system/$label" 2>/dev/null)" in
+                *"state = running"*)
+                    echo "launchctl bootstrap reported '$out', but $label was already loaded and is running; continuing"
+                    return 0
+                    ;;
+            esac
         fi
         tries=$((tries + 1))
         [ "$tries" -ge 3 ] && break

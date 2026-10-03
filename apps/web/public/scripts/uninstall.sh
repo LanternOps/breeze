@@ -76,12 +76,16 @@ breeze_remove_auxiliary() {
     "/Library/Application Support/Breeze/agent.sock" || return 1
   # Remove the tree only while empty: anything else in it is not ours to delete.
   rmdir /Library/Breeze/pkg-staging /Library/Breeze/bin /Library/Breeze 2>/dev/null || true
+  if [ -d /Library/Breeze ]; then
+    echo "Note: left /Library/Breeze in place because it is not empty" >&2
+  fi
   # self_uninstall disables the agent label so a reboot mid-teardown cannot
   # restart it. With the plists gone that is no longer needed, and a label left
   # disabled makes the next install's bootstrap fail with EIO 5 (#7831).
-  for label in com.breeze.agent com.breeze.watchdog; do
-    launchctl enable "system/$label" 2>/dev/null ||
-      echo "Warning: could not clear the launchd disable for $label; a reinstall re-enables it" >&2
+  # POSIX sh has no `local`: prefixed names keep these out of callers' way.
+  for _breeze_label in com.breeze.agent com.breeze.watchdog; do
+    _breeze_out="$(launchctl enable "system/$_breeze_label" 2>&1)" ||
+      echo "Warning: could not clear the launchd disable for $_breeze_label ($_breeze_out); the .pkg and 'breeze-agent service install' re-enable it" >&2
   done
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1

@@ -24,6 +24,10 @@ import (
 //	raced     another bootstrapper (the watchdog's recovery) loads the label
 //	          first, so our bootstrap fails because it is already loaded
 //	broken    launchd refuses the plist outright and never loads it
+//	stuck     a label is loaded (bootstrap reports EIO 5) but cannot be
+//	          started: loaded is not the same as running
+//	stale     the old instance never leaves launchd after bootout; the loaded
+//	          job is the OLD definition, even though it is running
 //	ok        everything works first time
 const fakeLaunchctl = `#!/bin/bash
 echo "launchctl $*" >> "$FAKE_STATE/calls"
@@ -37,18 +41,23 @@ case "$1" in
   enable) touch "$FAKE_STATE/enabled"; exit 0 ;;
   bootout)
     [ "$SCENARIO" = lag ] && echo 2 > "$FAKE_STATE/lag"
+    [ "$SCENARIO" = stale ] && exit 0
     rm -f "$FAKE_STATE/loaded"; exit 0 ;;
   print)
     lagging && exit 0
-    loaded && exit 0
+    if loaded; then
+      [ "$SCENARIO" = stuck ] && echo "state = spawn scheduled" || echo "state = running"
+      exit 0
+    fi
     exit 113 ;;
   bootstrap)
     fail() { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
     case "$SCENARIO" in
       disabled) [ -f "$FAKE_STATE/enabled" ] || fail ;;
       lag) [ "$(cat "$FAKE_STATE/lag" 2>/dev/null || echo 0)" -gt 0 ] && fail ;;
-      raced) touch "$FAKE_STATE/loaded"; fail ;;
+      raced|stuck) touch "$FAKE_STATE/loaded"; fail ;;
       broken) fail ;;
+      stale) loaded && fail ;;
     esac
     touch "$FAKE_STATE/loaded"; exit 0 ;;
   kickstart) loaded && exit 0; exit 113 ;;
@@ -60,6 +69,13 @@ exit 0
 // runBootstrap runs bootstrap_system_daemon for the agent label against the
 // fake launchctl and returns (stdout+stderr, exit code, recorded calls).
 func runBootstrap(t *testing.T, scenario string) (string, int, string) {
+	t.Helper()
+	return runBootstrapWith(t, scenario, false)
+}
+
+// runBootstrapWith optionally starts with the label already loaded (an old
+// instance from the previous install).
+func runBootstrapWith(t *testing.T, scenario string, preloaded bool) (string, int, string) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -77,6 +93,11 @@ func runBootstrap(t *testing.T, scenario string) (string, int, string) {
 	if err := os.WriteFile(filepath.Join(bin, "sleep"), []byte("#!/bin/sh\necho \"sleep $*\" >> \"$FAKE_STATE/calls\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if preloaded {
+		if err := os.WriteFile(filepath.Join(state, "loaded"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	plist := filepath.Join(t.TempDir(), "com.breeze.agent.plist")
 	if err := os.WriteFile(plist, []byte("<plist/>"), 0o644); err != nil {
 		t.Fatal(err)
@@ -93,7 +114,9 @@ func runBootstrap(t *testing.T, scenario string) (string, int, string) {
 		t.Fatalf("bash: %v", err)
 	}
 	calls, _ := os.ReadFile(filepath.Join(state, "calls"))
-	if _, statErr := os.Stat(filepath.Join(state, "loaded")); (statErr == nil) != (code == 0) {
+	// "stuck" and "stale" end with a label loaded that is not the install's
+	// running job, so loaded and success part ways there.
+	if _, statErr := os.Stat(filepath.Join(state, "loaded")); scenario != "stuck" && scenario != "stale" && (statErr == nil) != (code == 0) {
 		t.Errorf("exit %d does not match whether the daemon ended up loaded (%v)\noutput:\n%s\ncalls:\n%s", code, statErr == nil, out, calls)
 	}
 	return string(out), code, string(calls)
@@ -143,6 +166,32 @@ func TestBootstrapSystemDaemonAcceptsALabelLoadedByARacer(t *testing.T) {
 	}
 }
 
+// A label that is loaded but will not start is not success: accepting any
+// loaded label would report a dead agent as installed.
+func TestBootstrapSystemDaemonRejectsALoadedLabelThatWillNotStart(t *testing.T) {
+	out, code, calls := runBootstrap(t, "stuck")
+	if code == 0 {
+		t.Fatalf("a loaded label kickstart cannot start must fail the install\noutput:\n%s\ncalls:\n%s", out, calls)
+	}
+	if !strings.Contains(out, "launchd would not load com.breeze.agent") {
+		t.Errorf("want the failure explanation, got:\n%s", out)
+	}
+}
+
+// An old instance that never left launchd is still running the OLD job
+// definition: it must not pass as the install's daemon.
+func TestBootstrapSystemDaemonRejectsAStaleInstance(t *testing.T) {
+	out, code, calls := runBootstrapWith(t, "stale", true)
+	if code == 0 {
+		t.Fatalf("a label still held by the old instance must fail the install\noutput:\n%s\ncalls:\n%s", out, calls)
+	}
+	for _, want := range []string{"still loaded 20s after bootout", "launchd would not load com.breeze.agent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // A genuine failure still fails the install, and says what to do next rather
 // than leaving the operator with a bare "Input/output error".
 func TestBootstrapSystemDaemonExplainsAFailure(t *testing.T) {
@@ -185,6 +234,88 @@ func TestExplainUnsafeLegacyDirNamesTheOffendingDirectory(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("explanation missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A symlinked component has no safe one-line chown fix; suggesting one would
+// be wrong advice.
+func TestExplainUnsafeLegacyDirSymlinkGetsNoChownAdvice(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "bin")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runLib(t, "", "explain_unsafe_legacy_dir '"+link+"'")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, link+" is a symlink") || strings.Contains(out, "sudo chown") {
+		t.Errorf("want a symlink explanation without chown advice:\n%s", out)
+	}
+}
+
+// When the directory itself does not exist yet, the offending component is an
+// ancestor, and that is the directory the fix must name.
+func TestExplainUnsafeLegacyDirNamesTheOffendingAncestor(t *testing.T) {
+	if isRoot() {
+		t.Skip("fixture relies on the test process not being root")
+	}
+	parent := t.TempDir()
+	out, code := runLib(t, "", "explain_unsafe_legacy_dir '"+filepath.Join(parent, "missing", "bin")+"'")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "sudo chown root:wheel "+parent+" ") {
+		t.Errorf("want the fix to name the user-owned ancestor %s:\n%s", parent, out)
+	}
+}
+
+// Run the postinstall's daemon-loading block for real (helper stubbed): an
+// agent failure fails the install before the watchdog is tried, and a
+// watchdog failure only warns. Under `set -e` a bare call would abort an
+// install whose agent is already up.
+func TestPostinstallDaemonLoadingFailurePolicy(t *testing.T) {
+	data, err := os.ReadFile("macos/postinstall")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	start := strings.Index(s, "# Load the agent daemon")
+	end := strings.Index(s, "# Load the user helper LaunchAgent")
+	if start < 0 || end < start {
+		t.Fatal("could not find the daemon-loading block in postinstall")
+	}
+	block := s[start:end]
+	watchdogPlist := filepath.Join(t.TempDir(), "com.breeze.watchdog.plist")
+	if err := os.WriteFile(watchdogPlist, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		fail      string
+		wantCode  int
+		wantCalls string
+		wantOut   string
+	}{
+		{fail: "", wantCode: 0, wantCalls: "com.breeze.agent\ncom.breeze.watchdog\n"},
+		{fail: "com.breeze.watchdog", wantCode: 0, wantCalls: "com.breeze.agent\ncom.breeze.watchdog\n", wantOut: "watchdog did not load"},
+		{fail: "com.breeze.agent", wantCode: 1, wantCalls: "com.breeze.agent\n"},
+	} {
+		t.Run("fail="+tc.fail, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			script := "set -e\nDAEMON_PLIST=/x/agent.plist\nWATCHDOG_PLIST='" + watchdogPlist + "'\n" +
+				"bootstrap_system_daemon() { echo \"$1\" >> '" + calls + "'; [ \"$1\" != '" + tc.fail + "' ]; }\n" +
+				block + "\nexit 0\n"
+			out, err := exec.Command("bash", "-c", script).CombinedOutput()
+			code := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			got, _ := os.ReadFile(calls)
+			if code != tc.wantCode || string(got) != tc.wantCalls || !strings.Contains(string(out), tc.wantOut) {
+				t.Errorf("exit=%d calls=%q out=%q; want exit=%d calls=%q out~%q", code, got, out, tc.wantCode, tc.wantCalls, tc.wantOut)
+			}
+		})
 	}
 }
 

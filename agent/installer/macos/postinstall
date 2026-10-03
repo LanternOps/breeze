@@ -149,7 +149,7 @@ fi
 # warns rather than failing an install whose agent is already up.
 if [ -f "$WATCHDOG_PLIST" ]; then
     if ! bootstrap_system_daemon com.breeze.watchdog "$WATCHDOG_PLIST"; then
-        echo "Warning: the watchdog did not load; the agent is running without supervision" >&2
+        echo "Warning: the watchdog did not load; the agent was loaded but has no supervisor" >&2
     fi
 fi
 
