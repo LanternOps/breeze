@@ -27,7 +27,7 @@ export function summaryDensity(width: number, height: number): SummaryDensity {
   return 'minimal';
 }
 
-export type FitBox = { id: string; x1: number; y1: number; x2: number; y2: number; /** A card, or a node an edge ties to a card. */ anchor: boolean };
+export type FitBox = { id: string; x1: number; y1: number; x2: number; y2: number; /** A card: the cards define the main structure. */ anchor: boolean };
 export type Bounds = { x1: number; y1: number; x2: number; y2: number };
 
 /** How far from the cards an item may sit and still be part of the main structure (model px). */

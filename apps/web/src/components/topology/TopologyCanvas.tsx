@@ -171,11 +171,14 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         overlay.current?.querySelectorAll<HTMLElement>('[data-card-id]').forEach((box) => {
           const card = renderer.getElementById(box.dataset.cardId!);
           if (!card.length) { box.style.display = 'none'; return; }
+          // Centred in the part of the card that is on screen, so panning a big card never loses its summary.
           const bb = card.renderedBoundingBox({ includeLabels: false });
+          const x1 = Math.max(bb.x1, 0), y1 = Math.max(bb.y1, 0), x2 = Math.min(bb.x2, width), y2 = Math.min(bb.y2, height);
+          if (x2 <= x1 || y2 <= y1) { box.style.display = 'none'; return; }
           box.style.display = '';
-          box.style.transform = `translate(${bb.x1}px, ${bb.y1}px)`;
-          box.style.width = `${bb.w}px`; box.style.height = `${bb.h}px`;
-          box.dataset.density = summaryDensity(bb.w, bb.h);
+          box.style.transform = `translate(${x1}px, ${y1}px)`;
+          box.style.width = `${x2 - x1}px`; box.style.height = `${y2 - y1}px`;
+          box.dataset.density = summaryDensity(x2 - x1, y2 - y1);
         });
       }
       const off = outsideRef.current.filter((id) => {
@@ -200,8 +203,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       if (!top.length) return;
       const focus = fitFocus(top.map((node) => {
         const bb = node.boundingBox({});
-        const anchor = node.isParent() || node.connectedEdges().connectedNodes(':parent').length > 0;
-        return { id: node.id(), x1: bb.x1, y1: bb.y1, x2: bb.x2, y2: bb.y2, anchor };
+        // Only cards anchor the frame: a far-away node does not join it just because an edge reaches a card.
+        return { id: node.id(), x1: bb.x1, y1: bb.y1, x2: bb.x2, y2: bb.y2, anchor: node.isParent() };
       }));
       outsideRef.current = focus.outside;
       if (focus.bounds) viewportTo(focus.bounds, FIT_MAX_ZOOM);

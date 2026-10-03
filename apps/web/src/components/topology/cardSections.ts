@@ -69,7 +69,7 @@ export function sectionHeaders(members: readonly PlacedMember[]): SectionHeader[
   for (const [parent, tiles] of [...cards].sort(([a], [b]) => a.localeCompare(b, 'en'))) {
     const bySection = new Map<TopologySection, PlacedMember[]>();
     for (const tile of tiles) { const section = sectionOf(tile.glyph); bySection.set(section, [...(bySection.get(section) ?? []), tile]); }
-    if (bySection.size < 2) continue;
+    if (!hasSections(tiles.map((tile) => sectionIndex(tile.glyph)))) continue;
     const x1 = Math.min(...tiles.map((t) => t.x - t.width / 2)), x2 = Math.max(...tiles.map((t) => t.x + t.width / 2));
     for (const section of SECTION_ORDER) {
       const rows = bySection.get(section);
@@ -82,5 +82,11 @@ export function sectionHeaders(members: readonly PlacedMember[]): SectionHeader[
   return headers;
 }
 
-/** Whether a card's members span more than one section (the layout reserves header bands only then). */
-export const hasSections = (sections: Iterable<number | undefined>) => new Set([...sections].filter((s) => s !== undefined)).size > 1;
+/** A card smaller than this reads at a glance; section headers would only add noise. */
+export const SECTION_MIN_MEMBERS = 6;
+/**
+ * Whether a card gets role sections: its members span more than one section and there are enough of
+ * them to need it. The layout reserves header bands, and the canvas draws headers, only then.
+ */
+export const hasSections = (sections: readonly (number | undefined)[]) =>
+  sections.length >= SECTION_MIN_MEMBERS && new Set(sections.filter((s) => s !== undefined)).size > 1;

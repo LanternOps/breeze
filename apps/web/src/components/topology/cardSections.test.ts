@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RenderNode } from './renderProjection';
 import type { TopologyGlyph } from './topologyGlyphs';
-import { SECTION_ORDER, cardSummaries, memberRank, sectionHeaders, sectionOf } from './cardSections';
+import { SECTION_ORDER, cardSummaries, hasSections, memberRank, sectionHeaders, sectionOf } from './cardSections';
 
 const tile = (id: string, glyph: TopologyGlyph, extra: Partial<RenderNode> = {}): RenderNode => ({ id, label: id, detail: null, kind: 'device', glyph, parent: 'card', presence: null,
   agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: null, ...extra });
@@ -46,8 +46,9 @@ describe('sectionHeaders', () => {
   const at = (id: string, glyph: TopologyGlyph, x: number, y: number) => ({ ...tile(id, glyph), x, y, width: 200, height: 60 });
 
   it('places one header per section above its first row, spanning the card members', () => {
-    const headers = sectionHeaders([at('r', 'router', 100, 100), at('s', 'switch', 330, 100), at('w1', 'workstation', 100, 230), at('w2', 'workstation', 330, 230), at('w3', 'laptop', 560, 300)]);
-    expect(headers.map((h) => [h.section, h.count])).toEqual([['network', 2], ['computers', 3]]);
+    const headers = sectionHeaders([at('r', 'router', 100, 100), at('s', 'switch', 330, 100), at('w1', 'workstation', 100, 230), at('w2', 'workstation', 330, 230), at('w3', 'laptop', 560, 300),
+      at('w4', 'laptop', 100, 300)]);
+    expect(headers.map((h) => [h.section, h.count])).toEqual([['network', 2], ['computers', 4]]);
     const [network, computers] = headers;
     expect(network!.parent).toBe('card');
     expect(network!.id).toBe('section:card:network');
@@ -62,5 +63,18 @@ describe('sectionHeaders', () => {
 
   it('draws no headers on a card with a single section', () => {
     expect(sectionHeaders([at('w1', 'workstation', 100, 100), at('w2', 'laptop', 330, 100)])).toEqual([]);
+  });
+
+  it('draws no headers on a small card: a handful of tiles reads without them', () => {
+    expect(sectionHeaders([at('s', 'server', 100, 100), at('w1', 'workstation', 100, 230), at('w2', 'laptop', 330, 230)])).toEqual([]);
+  });
+});
+
+describe('hasSections', () => {
+  it('bands a card only when it mixes roles and has enough members to need sections', () => {
+    expect(hasSections([0, 2, 2, 2, 2, 2])).toBe(true);
+    expect(hasSections([2, 2, 2, 2, 2, 2])).toBe(false);
+    expect(hasSections([1, 2, 2])).toBe(false);
+    expect(hasSections([undefined, undefined, undefined, undefined, undefined, undefined])).toBe(false);
   });
 });

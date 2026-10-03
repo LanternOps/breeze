@@ -21,8 +21,14 @@ const CardSummaryOverlay = forwardRef<HTMLDivElement, { cards: SummaryCard[]; vi
     {cards.map((card) => {
       const { summary } = card;
       const agents = summary.agentsOnline + summary.agentsOffline;
+      const presence = agents === 0 ? t('grouped.summary.noAgents')
+        : [t('grouped.summary.agentsOnline', { count: summary.agentsOnline }),
+          summary.agentsOffline ? t('grouped.summary.agentsOffline', { count: summary.agentsOffline }) : null].filter(Boolean).join(' · ');
+      const chips = summary.sections.map(({ section, count }) => `${t(/* i18n-dynamic */ `grouped.section.${section}`)} ${count}`).join(', ');
+      // The visible text is laid out for the eye; the accessible name says the same thing in reading order.
+      const label = [[card.title, card.detail].filter(Boolean).join(', '), chips, presence, t('grouped.summary.zoomIn')].join('. ');
       return <div key={card.id} data-card-id={card.id} data-density="full" className="group absolute left-0 top-0 flex items-center justify-center p-2">
-        <button type="button" data-testid="topology-card-summary" onClick={() => onZoom(card.id)} title={t('grouped.summary.zoomIn')}
+        <button type="button" data-testid="topology-card-summary" onClick={() => onZoom(card.id)} title={t('grouped.summary.zoomIn')} aria-label={label}
           className="pointer-events-auto max-w-full rounded-xl border border-border/80 bg-card px-4 py-3 text-left group-data-[density=large]:px-5 group-data-[density=large]:py-4 shadow-[0_1px_2px_hsl(var(--foreground)/0.06),0_8px_24px_-12px_hsl(var(--foreground)/0.18)] transition-colors hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary group-data-[density=compact]:px-3 group-data-[density=compact]:py-2 group-data-[density=minimal]:px-2 group-data-[density=minimal]:py-1">
           <span className="block truncate text-[15px] font-semibold leading-5 tracking-[-0.01em] text-foreground group-data-[density=large]:text-xl group-data-[density=large]:leading-7 group-data-[density=minimal]:text-xs">{card.title}</span>
           {card.detail && <span className="block truncate text-xs leading-4 text-muted-foreground group-data-[density=large]:text-sm group-data-[density=large]:leading-5 group-data-[density=minimal]:hidden">{card.detail}</span>}
@@ -31,13 +37,10 @@ const CardSummaryOverlay = forwardRef<HTMLDivElement, { cards: SummaryCard[]; vi
               <img src={glyphTileUri(SECTION_GLYPH[section])} alt="" className="h-3.5 w-3.5 group-data-[density=large]:h-4 group-data-[density=large]:w-4" />
               <span className="text-muted-foreground">{t(/* i18n-dynamic */ `grouped.sectionShort.${section}`)}</span>
               <span className="font-semibold tabular-nums text-foreground">{count}</span>
-              <span className="sr-only">,</span>
             </span>)}
           </span>
           <span className="mt-2 block truncate text-xs leading-4 text-muted-foreground group-data-[density=large]:mt-3 group-data-[density=large]:text-sm group-data-[density=minimal]:hidden">
-            {agents === 0 ? t('grouped.summary.noAgents')
-              : [t('grouped.summary.agentsOnline', { count: summary.agentsOnline }),
-                summary.agentsOffline ? t('grouped.summary.agentsOffline', { count: summary.agentsOffline }) : null].filter(Boolean).join(' · ')}
+            {presence}
           </span>
         </button>
       </div>;
