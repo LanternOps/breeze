@@ -76,3 +76,12 @@ export function summaryScale(panelW: number, panelH: number, boxW: number, boxH:
   if (!panelW || !panelH) return 1;
   return Math.max(0.8, Math.min(1, (boxW + 16) / panelW, (boxH + 16) / panelH));
 }
+
+/**
+ * Canvas height that fills the window below the canvas's top edge (measured with the page scrolled
+ * to the top), less the page's bottom gutter, and never under `min` (480px): the map uses the screen
+ * it has instead of a fixed height that either leaves empty page or pushes the map under the fold.
+ */
+export function canvasFillHeight({ viewportHeight, canvasTop, bottomGap, min = 480 }: { viewportHeight: number; canvasTop: number; bottomGap: number; min?: number }): number {
+  return Math.max(min, Math.floor(viewportHeight - canvasTop - bottomGap));
+}

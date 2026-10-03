@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, type Bounds, type ZoomTier } from './semanticZoom';
+import { canvasFillHeight, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 import NodeChipOverlay, { type NodeChip } from './NodeChipOverlay';
 
@@ -159,6 +159,32 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   /** Items Fit map left out (fitFocus); the badge counts those currently off screen. */
   const outsideRef = useRef<string[]>([]), [offscreen, setOffscreen] = useState(0);
   const frame = useRef(0), schedule = useRef<() => void>(() => {});
+  /** Canvas height (canvasFillHeight): fills the window below the canvas, recomputed on resize and when content above it changes. */
+  const [fillHeight, setFillHeight] = useState<number>();
+  useEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    // The app scrolls inside <main>; measure as if it were scrolled to the top.
+    let scroller: HTMLElement | null = element.parentElement;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    let pending = 0;
+    const measure = () => {
+      pending = 0;
+      const rect = element.getBoundingClientRect();
+      if (scroller) {
+        const box = scroller.getBoundingClientRect();
+        setFillHeight(canvasFillHeight({ viewportHeight: scroller.clientHeight, canvasTop: rect.top - box.top + scroller.scrollTop,
+          bottomGap: parseFloat(getComputedStyle(scroller).paddingBottom) || 0 }));
+      } else setFillHeight(canvasFillHeight({ viewportHeight: window.innerHeight, canvasTop: rect.top + window.scrollY, bottomGap: 16 }));
+    };
+    const queue = () => { if (!pending) pending = requestAnimationFrame(measure); };
+    measure();
+    window.addEventListener('resize', queue);
+    // Content above the canvas (operations panel, warnings, the inspector stacking on mobile) moves its top.
+    const section = element.closest('section') ?? element.parentElement!;
+    const observer = new ResizeObserver(queue); observer.observe(section);
+    return () => { cancelAnimationFrame(pending); window.removeEventListener('resize', queue); observer.disconnect(); };
+  }, []);
   const chips = useMemo<NodeChip[]>(() => render.nodes.filter((node) => !node.parent && node.kind !== 'group' && node.kind !== 'unidentified' && node.kind !== 'outside')
     .map((node) => ({ id: node.id, title: node.label, detail: node.detail, glyph: node.glyph })), [render]);
   const summaries = useMemo<SummaryCard[]>(() => {
@@ -394,7 +420,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
 
   return <div className="relative min-w-0 flex-1">
     <div ref={container} data-testid="topology-canvas" aria-hidden="true" className="min-w-0 bg-card text-card-foreground"
-      style={{ height: 'max(560px, calc(100vh - 300px))', backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
+      style={{ height: fillHeight ? `${fillHeight}px` : 'max(480px, calc(100vh - 300px))', backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
     <CardSummaryOverlay ref={overlay} cards={summaries} visible={tier === 'summary'} onZoom={zoomToCard} />
     <NodeChipOverlay ref={chipLayer} chips={chips} visible={tier === 'summary'} selectedId={selection?.kind === 'node' ? selection.id : undefined} onSelect={(id) => onSelect({ kind: 'node', id })} />
     {offscreen > 0 && <button type="button" data-testid="topology-show-all" onClick={showAll}
