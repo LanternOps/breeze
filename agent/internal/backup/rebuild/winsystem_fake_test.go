@@ -127,6 +127,8 @@ type fakeWinSystem struct {
 	lookPathErr map[string]error
 
 	inWinPE          bool
+	hostBuild        uint32 // HostBuild()'s answer (0 = unknown)
+	hostBuildErr     error
 	systemDiskNumber int // -1 = none / RAM disk; default -1
 	mediaDiskNumbers []int
 	diskInfo         map[int]WinDiskInfo // preset by the test before calling winPreflight
@@ -277,6 +279,7 @@ func (f *fakeWinSystem) LookPath(name string) (string, error) {
 	return `C:\PATH\` + name, nil
 }
 func (f *fakeWinSystem) InWinPE() bool                    { return f.inWinPE }
+func (f *fakeWinSystem) HostBuild() (uint32, error)       { return f.hostBuild, f.hostBuildErr }
 func (f *fakeWinSystem) SystemDiskNumber() (int, error)   { return f.systemDiskNumber, nil }
 func (f *fakeWinSystem) MediaDiskNumbers() ([]int, error) { return f.mediaDiskNumbers, nil }
 func (f *fakeWinSystem) DiskInfo(n int) (WinDiskInfo, error) {

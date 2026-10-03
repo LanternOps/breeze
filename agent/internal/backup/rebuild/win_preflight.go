@@ -136,6 +136,15 @@ func winPreflight(ctx context.Context, r *run) error {
 			return &RefusalError{Reason: fmt.Sprintf("source is a domain controller (%s); pass --allow-domain-controller and read the DC recovery guidance", dc.Evidence)}
 		}
 	}
+	if r.opts.Target.Kind == TargetDisk {
+		ref, err := r.checkGuestBuild()
+		if err != nil {
+			return err
+		}
+		if ref != nil {
+			return ref
+		}
+	}
 	r.progress(PhasePreflight, "verified", 3, 3)
 	return nil
 }

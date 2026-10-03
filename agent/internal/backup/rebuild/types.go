@@ -374,6 +374,10 @@ type RefusalError struct {
 // typed OVERWRITE for it.
 const RefusalCodeDiskHasWindows = "disk_has_windows"
 
+// RefusalCodeWinPETooOld marks the refusal for recovery media whose WinPE
+// build is older than the backed-up Windows build.
+const RefusalCodeWinPETooOld = "winpe_older_than_guest"
+
 // DriverInjectionUnsupportedReason is the refusal for a non-empty
 // Options.DriverDirs (and the CLI's --drivers). It is operator-facing: the
 // restored machine boots with inbox drivers and the operator installs the
