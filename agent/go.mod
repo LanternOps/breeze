@@ -5,7 +5,7 @@ go 1.26.6
 require (
 	cloud.google.com/go/storage v1.68.0
 	github.com/0xrawsec/golang-etw v1.6.2
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.2
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.1
 	github.com/Backblaze/blazer v0.8.0
 	github.com/Microsoft/go-winio v0.6.2
