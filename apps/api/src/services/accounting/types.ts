@@ -579,3 +579,8 @@ export function isInvoiceRemoteDeletedMarker(lastError: string | null | undefine
 
 /** @deprecated pre-W01 name for the QuickBooks marker; kept for existing test imports. */
 export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';
+
+export interface AccountingFeeJournalEntry {
+  connectionId:string; realmFingerprint:string; payload:AccountingFeeEntryPayload;
+  state:'pending'|'posted'; leaseToken:string|null; leaseUntil:string|null; remoteId:string|null; error:string|null;
+}

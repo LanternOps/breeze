@@ -976,7 +976,16 @@ describe('processReconcileConnectionJob: cursor', () => {
 // Sweep
 // ---------------------------------------------------------------------------
 
+vi.mock('../services/accounting/accountingFeePush',()=>({drainAccountingFees:vi.fn(async()=>({posted:0,failed:0}))}));
+
+
 describe('processReconcileSweep', () => {
+it('runs the independent fee debt drain on every reconcile sweep',async()=>{
+  const {drainAccountingFees}=await import('../services/accounting/accountingFeePush');
+  await processReconcileSweep();
+  expect(drainAccountingFees).toHaveBeenCalled();
+});
+
   it('enqueues one sweep job per reconcilable connection, with nothing held', async () => {
     listReconcilableConnectionsMock.mockImplementation(async () => {
       record('listReconcilableConnections');

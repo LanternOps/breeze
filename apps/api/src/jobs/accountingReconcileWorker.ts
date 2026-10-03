@@ -88,6 +88,7 @@ import {
 import { connectionOwesUnresolvedPaymentDelete, listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
 import { reconcileWindowTruncatedError, reconcileWindowTruncatedMessage } from '../services/accounting/accountingPaymentMessages';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from './accountingSyncWorker';
+import { drainAccountingFees } from '../services/accounting/accountingFeePush';
 import { reapStalePendingTenants } from '../services/accounting/accountingTenantSelection';
 
 export const ACCOUNTING_RECONCILE_QUEUE = 'accounting-reconcile';
@@ -766,6 +767,9 @@ export async function processReconcileSweep(): Promise<{
         service: 'accountingReconcileWorker', accounting_reconcile_phase: 'sweep.reapPendingTenants',
       });
     }
+
+    const feeResult = await drainAccountingFees();
+    console.info('[AccountingReconcileWorker] processing fee sync', feeResult);
 
     console.log(
       '[AccountingReconcileWorker] sweep complete',

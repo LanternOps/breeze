@@ -17,6 +17,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
+      'src/services/accounting/accountingFeePush.integration.test.ts',
       'src/index.autopay.integration.test.ts',
       'src/db/schema/autopaySetupAttempts.integration.test.ts',
       'src/services/autopay/enrollmentService.integration.test.ts',
