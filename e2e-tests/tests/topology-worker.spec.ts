@@ -155,6 +155,12 @@ test('a layout result whose fence no longer matches is discarded', async ({ page
   });
 
   await topology.openNetworkDevice(f.ids.networkDeviceId);
+  // The automatic arrangement on load is applied but is not an unsaved change (#7880).
+  await expect(topology.layoutApplied()).toBeVisible();
+  await expect(topology.unsavedLayout()).toHaveCount(0);
+  await expect(topology.saveLayout()).toBeDisabled();
+  // A user arrangement runs through the same replaying worker: stale reply first, fresh second.
+  await topology.arrange().click();
   await expect(topology.unsavedLayout()).toBeVisible();
   await topology.saveLayout().click();
 
@@ -190,6 +196,10 @@ test('list and canvas are keyboard-equivalent and Escape returns focus', async (
 test('a conflicting shared-layout save is surfaced and the local preview survives', async ({ page }) => {
   const f = await seedBaselineTopology(page), topology = new TopologyPage(page);
   await topology.openNetworkDevice(f.ids.networkDeviceId);
+  await expect(topology.layoutApplied()).toBeVisible();
+  await expect(topology.unsavedLayout()).toHaveCount(0);
+  // Only a user action makes the layout a local preview worth saving (#7880).
+  await topology.arrange().click();
   await expect(topology.unsavedLayout()).toBeVisible();
 
   f.failNextLayoutSave();

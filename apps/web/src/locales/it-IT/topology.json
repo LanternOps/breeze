@@ -161,6 +161,7 @@
   },
   "chooseSite": "Scegli un sito",
   "chooseSiteExplanation": "Seleziona un sito autorizzato per mantenere separate la sua rete e la sua diagnostica.",
+  "siteNotInOrganization": "Questo sito non appartiene all'organizzazione corrente oppure non hai accesso. Scegli un sito dall'elenco.",
   "reloadConfiguration": "Scarta bozza e ricarica la configurazione attuale",
   "applyToSites": "Applica le versioni selezionate ai siti autorizzati",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "La diagnostica viene eseguita dal dispositivo che scegli, lungo la sua route.",
     "stale": "obsoleto",
     "unverified": "non verificato",
+    "sharedAddress_one": "Stesso IP di {{count}} altro dispositivo",
+    "sharedAddress_other": "Stesso IP di altri {{count}} dispositivi",
     "networkExplanation_one": "{{count}} dispositivo segnala un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",
     "networkExplanation_other": "{{count}} dispositivi segnalano un'interfaccia in {{prefix}}. Il raggruppamento per intervallo di indirizzi è dedotto: non dimostra che i dispositivi condividano uno switch.",
     "unidentifiedExplanation": "Questi dispositivi non segnalano alcuna appartenenza a una rete e il loro indirizzo non rientra in una sola rete nota di questo sito.",

@@ -20,7 +20,7 @@ function palette() {
 const clip = (text: string, max: number) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const display = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified'
   ? [node.label, node.detail].filter(Boolean).join('   ·   ')
-  : [clip(node.label, node.kind === 'gateway' ? 26 : 22), node.detail ? clip(node.detail, 28) : null].filter(Boolean).join('\n');
+  : [clip(node.label, node.kind === 'gateway' ? 26 : 22), node.detail ? clip(node.detail, 28) : null, node.note ? clip(node.note, 48) : null].filter(Boolean).join('\n');
 
 function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
   return [
@@ -58,7 +58,9 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
 
 export default function TopologyCanvas({ render, positions, boxes, selection, editable, onSelect, onMove, fitRef, fitKey }: {
   render: TopologyRender; positions: LayoutPosition[]; boxes: LayoutBox[]; selection?: TopologySelection; editable: boolean;
-  onSelect: (selection: TopologySelection) => void; onMove: (position: LayoutPosition) => void; fitRef: React.MutableRefObject<(() => void) | null>;
+  onSelect: (selection: TopologySelection) => void;
+  /** One call per drop: a dragged card reports all its members at once, so the explorer re-arranges once. */
+  onMove: (positions: LayoutPosition[]) => void; fitRef: React.MutableRefObject<(() => void) | null>;
   /** Changes when the set of drawn things changes (view, network toggle); the map re-fits once per key. */
   fitKey: string;
 }) {
@@ -74,7 +76,9 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     renderer.on('dragfree', 'node', (event) => {
       // Moving a card moves its members; positions persist for canonical nodes only.
       const moved = event.target.isParent() ? event.target.children() : event.target;
-      moved.forEach((node: cytoscape.NodeSingular) => { if (!node.data('presentation')) callbacks.current.onMove({ nodeId: node.id(), ...node.position(), pinned: true }); });
+      const positions: LayoutPosition[] = [];
+      moved.forEach((node: cytoscape.NodeSingular) => { if (!node.data('presentation')) positions.push({ nodeId: node.id(), ...node.position(), pinned: true }); });
+      if (positions.length) callbacks.current.onMove(positions);
     });
     fitRef.current = () => renderer.fit(undefined, 48);
     const observer = new ResizeObserver(() => {

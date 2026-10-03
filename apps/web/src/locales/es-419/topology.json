@@ -161,6 +161,7 @@
   },
   "chooseSite": "Elegir un sitio",
   "chooseSiteExplanation": "Seleccione un sitio autorizado para mantener su red y diagnósticos separados.",
+  "siteNotInOrganization": "Este sitio no pertenece a la organización actual o no tiene acceso a él. Elija un sitio de la lista.",
   "reloadConfiguration": "Descartar borrador y volver a cargar la configuración actual",
   "applyToSites": "Aplicar las versiones seleccionadas a los sitios autorizados",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "Los diagnósticos se ejecutan desde el dispositivo que elija, por su propia ruta.",
     "stale": "desactualizado",
     "unverified": "no verificado",
+    "sharedAddress_one": "Misma IP que {{count}} dispositivo más",
+    "sharedAddress_other": "Misma IP que otros {{count}} dispositivos",
     "networkExplanation_one": "{{count}} dispositivo informa una interfaz en {{prefix}}. La agrupación por rango de direcciones es inferida: no prueba que los dispositivos compartan un conmutador.",
     "networkExplanation_other": "{{count}} dispositivos informan una interfaz en {{prefix}}. La agrupación por rango de direcciones es inferida: no prueba que los dispositivos compartan un conmutador.",
     "unidentifiedExplanation": "Estos dispositivos no informan pertenencia a ninguna red, y su dirección no está dentro de exactamente una red conocida de este sitio.",

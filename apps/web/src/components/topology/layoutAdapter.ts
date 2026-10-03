@@ -1,4 +1,5 @@
 import type { ElkNode } from 'elkjs/lib/elk-api';
+import { compareIpAddresses } from './ipOrder';
 import type { LayoutBox, LayoutPosition, LayoutRequest, LayoutResult } from './layoutTypes';
 
 const GAP = 32;
@@ -125,7 +126,8 @@ export async function computeTopologyLayout(request: LayoutRequest, engine: { la
 // Stage 1 packs each card's members into a grid (ELK Layered would stack edge-less
 // members in one layer: the production "vertical strip"). Stage 2 lays out a flat
 // graph of cards, gateways and ungrouped tiles with Layered DOWN. Stage 3 translates
-// members by their card's origin. Cards themselves never get a position.
+// members by their card's origin. Cards themselves never get a position; pins on members only
+// anchor their card (revised Q3, see packCard).
 const GROUP_ROLES = new Set(['group', 'unidentified']);
 /** Space above the first row for the card's header label, and inner padding (the canvas compound padding). */
 export const GROUP_HEADER = 40, GROUP_PADDING = 24;
@@ -134,40 +136,42 @@ export function isGroupedRequest(request: LayoutRequest) {
   const groups = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
   return groups.size > 0 && request.nodes.some((node) => node.groupId && groups.has(node.groupId));
 }
+/** `fixed`: the centre its pinned members anchor it at, moved clear of pinned ungrouped nodes (groupedStages). */
 type Card = { id: string; width: number; height: number; local: Map<string, { x: number; y: number }>; fixed?: { x: number; y: number } };
 const fixedPositions = (request: LayoutRequest) => new Map(request.positions
   .filter((p) => request.mode === 'incremental' || p.pinned).map((p) => [p.nodeId, p]));
 
-function packCard(group: LayoutBox, members: LayoutBox[], fixed: Map<string, LayoutPosition>): Card {
-  const ordered = [...members].sort((a, b) => (a.rank ?? 9) - (b.rank ?? 9) || (a.name ?? a.id).localeCompare(b.name ?? b.id, 'en') || a.id.localeCompare(b.id, 'en'));
-  const free = ordered.filter((member) => !fixed.has(member.id)), pinned = ordered.filter((member) => fixed.has(member.id));
+/**
+ * Revised Q3 (2026-10-03, #7880): members of a card are ALWAYS packed by the card's grid; a saved
+ * pin never places a member inside its card. Pins on members only anchor the card: it is translated
+ * so that its pinned members' grid centroid lands on the centroid of their saved pins. A card dragged
+ * whole (every member pinned at its grid spot, shifted) therefore stays exactly where it was dropped,
+ * and a pile of legacy flat-map pins moves the card without distorting it. Saved pins are left as
+ * they are: they still apply wherever the view is not grouped.
+ */
+function packCard(group: LayoutBox, members: LayoutBox[], pins: Map<string, LayoutPosition>): Card {
+  const ordered = [...members].sort((a, b) => (a.rank ?? 9) - (b.rank ?? 9) || compareIpAddresses(a.address, b.address)
+    || (a.name ?? a.id).localeCompare(b.name ?? b.id, 'en') || a.id.localeCompare(b.id, 'en'));
   const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP, cellH = Math.max(1, ...members.map((m) => m.height)) + CELL_GAP;
   // Roughly 3:2 cards: wide enough to read as a network, never a one-tile strip.
-  const cols = Math.max(1, Math.min(free.length, Math.ceil(Math.sqrt(free.length * 1.5 * cellH / cellW))));
-  const rows = Math.ceil(free.length / cols);
+  const cols = Math.max(1, Math.min(ordered.length, Math.ceil(Math.sqrt(ordered.length * 1.5 * cellH / cellW))));
+  const rows = Math.ceil(ordered.length / cols);
   const local = new Map<string, { x: number; y: number }>();
-  free.forEach((member, index) => local.set(member.id, { x: GROUP_PADDING + (index % cols) * cellW + member.width / 2, y: GROUP_HEADER + Math.floor(index / cols) * cellH + member.height / 2 }));
-  const gridW = 2 * GROUP_PADDING + Math.max(0, cols * cellW - CELL_GAP), gridH = GROUP_HEADER + GROUP_PADDING + Math.max(0, rows * cellH - CELL_GAP);
-  if (!pinned.length) return { id: group.id, width: Math.max(gridW, 240), height: Math.max(gridH, GROUP_HEADER + GROUP_PADDING), local };
-  // A card holding a pinned member is anchored: pins stay put, the free grid sits directly below them.
-  const boxes = new Map(members.map((m) => [m.id, m]));
-  const x1 = Math.min(...pinned.map((m) => fixed.get(m.id)!.x - boxes.get(m.id)!.width / 2)) - GROUP_PADDING;
-  const y1 = Math.min(...pinned.map((m) => fixed.get(m.id)!.y - boxes.get(m.id)!.height / 2)) - GROUP_HEADER;
-  const x2 = Math.max(...pinned.map((m) => fixed.get(m.id)!.x + boxes.get(m.id)!.width / 2)) + GROUP_PADDING;
-  const pinnedBottom = Math.max(...pinned.map((m) => fixed.get(m.id)!.y + boxes.get(m.id)!.height / 2)) + CELL_GAP;
-  const anchored = new Map<string, { x: number; y: number }>();
-  for (const [id, point] of local) anchored.set(id, { x: point.x - GROUP_PADDING + x1 + GROUP_PADDING, y: point.y - GROUP_HEADER + pinnedBottom });
-  for (const m of pinned) anchored.set(m.id, { x: fixed.get(m.id)!.x, y: fixed.get(m.id)!.y });
-  const width = Math.max(x2 - x1, gridW), height = pinnedBottom - y1 + (rows ? gridH - GROUP_HEADER : 0) + GROUP_PADDING;
-  // Store anchored member positions relative to the card's top-left so stage 3 is uniform.
-  const rel = new Map([...anchored].map(([id, p]) => [id, { x: p.x - x1, y: p.y - y1 }]));
-  return { id: group.id, width, height, local: rel, fixed: { x: x1 + width / 2, y: y1 + height / 2 } };
+  ordered.forEach((member, index) => local.set(member.id, { x: GROUP_PADDING + (index % cols) * cellW + member.width / 2, y: GROUP_HEADER + Math.floor(index / cols) * cellH + member.height / 2 }));
+  const width = Math.max(2 * GROUP_PADDING + Math.max(0, cols * cellW - CELL_GAP), 240);
+  const height = Math.max(GROUP_HEADER + GROUP_PADDING + Math.max(0, rows * cellH - CELL_GAP), GROUP_HEADER + GROUP_PADDING);
+  const pinned = ordered.filter((member) => pins.has(member.id));
+  if (!pinned.length) return { id: group.id, width, height, local };
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  const pinX = mean(pinned.map((m) => pins.get(m.id)!.x)), pinY = mean(pinned.map((m) => pins.get(m.id)!.y));
+  const gridX = mean(pinned.map((m) => local.get(m.id)!.x)), gridY = mean(pinned.map((m) => local.get(m.id)!.y));
+  return { id: group.id, width, height, local, fixed: { x: pinX - gridX + width / 2, y: pinY - gridY + height / 2 } };
 }
 
 function groupedStages(request: LayoutRequest) {
   const fixed = fixedPositions(request);
-  // Inside a card only real pins hold a member: unpinned saved coordinates (an old flat layout, or a
-  // previous grouped arrangement) must not stretch or freeze the card; it re-packs deterministically.
+  // Only real pins anchor a card: unpinned saved coordinates (an old flat layout, or a previous
+  // grouped arrangement) must not move or freeze the card; it re-packs deterministically.
   const pinnedOnly = new Map([...fixed].filter(([, p]) => p.pinned));
   const groupIds = new Set(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => node.id));
   const membersOf = new Map<string, LayoutBox[]>();
@@ -182,25 +186,38 @@ function groupedStages(request: LayoutRequest) {
   const seen = new Set<string>();
   const topEdges = request.edges.map((edge) => ({ id: edge.id, source: lift(edge.source), target: lift(edge.target) }))
     .filter((edge) => edge.source !== edge.target && !seen.has(`${edge.source}>${edge.target}`) && seen.add(`${edge.source}>${edge.target}`));
-  const topPositions = [
-    ...request.positions.filter((p) => !homeOf.has(p.nodeId) && !groupIds.has(p.nodeId)),
-    ...[...cards.values()].filter((card) => card.fixed).map((card) => ({ nodeId: card.id, ...card.fixed!, pinned: true })),
-  ];
+  const topPositions = request.positions.filter((p) => !homeOf.has(p.nodeId) && !groupIds.has(p.nodeId));
+  // An anchored card is then a fixed obstacle. Positions the top stage keeps fixed (pins; in incremental
+  // mode every saved top-level position) are exact and win: a card whose anchor would cover one, or an
+  // earlier anchored card, moves straight down until it is clear.
+  const boxOf = new Map(topNodes.map((node) => [node.id, node]));
+  const obstacles = topPositions.filter((p) => (p.pinned || request.mode === 'incremental') && boxOf.has(p.nodeId));
+  for (const card of [...cards.values()].sort((a, b) => a.id.localeCompare(b.id, 'en'))) {
+    if (!card.fixed) continue;
+    const box = boxOf.get(card.id)!;
+    let point: LayoutPosition = { nodeId: card.id, ...card.fixed, pinned: true };
+    for (let guard = 0; guard < 1000; guard++) {
+      const hit = obstacles.find((other) => intersects(point, box, other, boxOf.get(other.nodeId)!));
+      if (!hit) break;
+      point = { ...point, y: hit.y + boxOf.get(hit.nodeId)!.height / 2 + GAP + box.height / 2 };
+    }
+    card.fixed = { x: point.x, y: point.y }; obstacles.push(point); topPositions.push(point);
+  }
   const top: LayoutRequest = { ...request, nodes: topNodes, edges: topEdges, positions: topPositions };
   return { top, cards, homeOf, fixed, pinnedOnly };
 }
 
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
-  // Cards that hold pins are fixed obstacles; their pins are reported, not "pinned overlap" of the card itself.
+  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages).
   const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
   const positions: LayoutPosition[] = [];
   for (const point of placed.positions) if (!cards.has(point.nodeId)) positions.push({ ...point, pinned: fixed.get(point.nodeId)?.pinned ?? false });
   for (const [member, group] of homeOf) {
     const card = cards.get(group)!, c = centre.get(group)!, local = card.local.get(member)!;
-    const pin = pinnedOnly.get(member);
-    positions.push(pin ? { ...pin } : { nodeId: member, x: c.x - card.width / 2 + local.x, y: c.y - card.height / 2 + local.y, pinned: false });
+    // Always the grid spot. `pinned` reports the saved flag; the saved coordinates stay in the draft (TopologyLayoutDraft.applyLayout).
+    positions.push({ nodeId: member, x: c.x - card.width / 2 + local.x, y: c.y - card.height / 2 + local.y, pinned: pinnedOnly.has(member) });
   }
   const { requestId, graphRevision, layoutRevision, measurementRevision, algorithmVersion } = request;
   return { requestId, graphRevision, layoutRevision, measurementRevision, algorithmVersion,

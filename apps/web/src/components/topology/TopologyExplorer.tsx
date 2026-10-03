@@ -23,9 +23,15 @@ import RecentChangesPanel from './RecentChangesPanel';
 
 const sameBoxes = (a: LayoutBox[], b: LayoutBox[]) => a.length === b.length && a.every((box, index) => {
   const other = b[index]!;
-  return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height && box.groupId === other.groupId;
+  return box.id === other.id && box.role === other.role && box.width === other.width && box.height === other.height && box.groupId === other.groupId
+    && box.rank === other.rank && box.address === other.address && box.name === other.name;
 });
 const isCard = (node: RenderNode) => node.kind === 'group' || node.kind === 'unidentified';
+/** Tiles drawn inside a card: always packed by the card grid, whatever their saved pin says (revised Q3, #7880). */
+const cardMemberIds = (boxes: LayoutBox[]) => {
+  const cards = new Set(boxes.filter((box) => box.role === 'group' || box.role === 'unidentified').map((box) => box.id));
+  return new Set(boxes.filter((box) => box.groupId && cards.has(box.groupId)).map((box) => box.id));
+};
 /** Inside a card: infrastructure first, then servers, workstations, printers, phones, the rest; unverified placements last. */
 const GLYPH_RANK: Record<string, number> = { router: 0, firewall: 0, switch: 1, access_point: 1, server: 2, nas: 2, workstation: 3, laptop: 3, printer: 4, phone: 5, camera: 6, iot: 6 };
 const memberRank = (node: RenderNode) => (GLYPH_RANK[node.glyph] ?? 7) + (node.unverified && (GLYPH_RANK[node.glyph] ?? 7) > 1 ? 10 : 0);
@@ -68,8 +74,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   };
   // A bounded expansion can change the visible projection without changing the
   // site's structural revision. Health-only updates keep this key unchanged.
-  const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks }) : undefined, [graph, showAllNetworks]);
-  const measurementKey = JSON.stringify(render ? render.nodes.map((node) => [node.id, node.label, node.detail, node.kind, node.parent]) : []);
+  const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks, sharedAddress: (count) => t('grouped.sharedAddress', { count }) }) : undefined, [graph, showAllNetworks, t]);
+  const measurementKey = JSON.stringify(render ? render.nodes.map((node) => [node.id, node.label, node.detail, node.note, node.address, node.kind, node.parent]) : []);
   const nodes = useMemo(() => render?.nodes ?? [], [measurementKey, graph?.view]);
   useEffect(() => {
     if (!navigation.search.trim()) { setSearchNodes([]); return; }
@@ -103,7 +109,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
         const rect = elements.get(node.id)?.getBoundingClientRect();
         const width = node.kind === 'gateway' || node.kind === 'internet' ? 236 : 208;
         return { id: node.id, role: node.kind, width, height: Math.min(96, Math.max(60, rect?.height || 60)),
-          ...(node.parent ? { groupId: node.parent, rank: memberRank(node), name: node.label } : {}) };
+          ...(node.parent ? { groupId: node.parent, rank: memberRank(node), ...(node.address ? { address: node.address } : {}), name: node.label } : {}) };
       });
       // Within one run of this effect, a repeat measurement with unchanged sizes
       // (fonts.ready plus the ResizeObserver's initial callback) is dropped. A new
@@ -118,7 +124,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     const observer = new ResizeObserver(measure); if (measured.current) observer.observe(measured.current);
     return () => { alive = false; observer.disconnect(); };
   }, [nodes, graph?.revisions.layout, draft]);
-  const arrange = useCallback(async (mode: 'incremental' | 'reflow') => {
+  /** `userAction`: Arrange, Reflow, Use grouped layout or a drag. Only those make the draft an unsaved change (#7880). */
+  const arrange = useCallback(async (mode: 'incremental' | 'reflow', userAction: boolean) => {
     if (!graph || !boxes.length) return;
     const result = await controller.run({ requestId: crypto.randomUUID(), graphRevision: graph.revisions.graph, layoutRevision: draft.revision,
       measurementRevision: JSON.stringify(boxes), algorithmVersion: LAYOUT_VERSION, nodes: boxes,
@@ -130,18 +137,25 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       }),
       positions: [...draft.positions.values()], mode });
     if (!result) return;
-    draft.preview(result.positions); setPositions(result.positions); setWarning(result.warning); setAnnouncement(t('arranged'));
+    draft.applyLayout(result.positions, { cardMembers: cardMemberIds(boxes), userAction });
+    setPositions(result.positions); setWarning(result.warning); setAnnouncement(t('arranged'));
   }, [graph?.revisions.graph, boxes, controller, draft, t, render]);
   /** Discards saved and pinned coordinates in this draft and lays the map out fresh; nothing persists until Save. */
   const useGroupedLayout = () => {
     for (const [nodeId, point] of draft.positions) draft.positions.set(nodeId, { ...point, pinned: false });
-    void arrange('reflow');
+    void arrange('reflow', true);
   };
   const hasPins = [...draft.positions.values()].some((point) => point.pinned);
-  useEffect(() => { if (boxes.length) void arrange('incremental'); }, [boxes, controller]);
-  const changePosition = (position: LayoutPosition) => {
-    if (!graph?.permissions.canEdit) return;
-    draft.positions.set(position.nodeId, position); draft.preview([...draft.positions.values()]); setPositions([...draft.positions.values()]);
+  // Automatic: placing the map on load or after a resize is not a change the user made (#7880).
+  useEffect(() => { if (boxes.length) void arrange('incremental', false); }, [boxes, controller]);
+  const changePositions = (moved: LayoutPosition[]) => {
+    if (!graph?.permissions.canEdit || !moved.length) return;
+    for (const position of moved) draft.positions.set(position.nodeId, position);
+    draft.dirty = true;
+    // A card member is never drawn at its pin: the pin re-anchors its card, and the card re-packs (revised Q3).
+    const members = cardMemberIds(boxes);
+    if (moved.some((position) => members.has(position.nodeId))) { void arrange('incremental', true); return; }
+    setPositions((current) => { const next = new Map(current.map((point) => [point.nodeId, point])); for (const position of moved) next.set(position.nodeId, position); return [...next.values()]; });
   };
   const save = async () => {
     if (!graph?.permissions.canEdit || conflict) return;
@@ -149,7 +163,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     try {
       const ids = new Set(graph.nodes.map((node) => node.id));
       const result = await saveTopologyLayout({ siteId }, view, draft.revision, [...draft.positions.values()].filter((p) => ids.has(p.nodeId)).map(({ nodeId, x, y, pinned }) => ({ nodeId, x, y, pinned })));
-      draft.accept(result); setPositions([...draft.positions.values()]); setAnnouncement(t('saved'));
+      // The canvas keeps what it draws: the draft holds saved pins, which are not where card members are drawn (revised Q3).
+      draft.accept(result); setAnnouncement(t('saved'));
     } catch (cause) { if (cause instanceof ActionError && cause.status === 409) setConflict(true); handleActionError(cause, t('loadFailed'));  }
     finally { setSaving(false); }
   };
@@ -168,7 +183,9 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   } : undefined;
   const aiNotConfigured = settings.capabilities.ai?.reason === 'ai_not_configured';
   const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
-  return <section data-testid="topology-explorer" className="min-w-0 space-y-3">
+  // `data-layout-applied`: a layout result reached the canvas. Browser gates wait on it; the unsaved
+  // indicator is no signal since an automatic arrangement is not an unsaved change (#7880).
+  return <section data-testid="topology-explorer" data-layout-applied={positions.length ? 'true' : undefined} className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-end gap-3">
       <label className="min-w-40 flex-1 text-sm">{t('search')}<input data-testid="topology-search" className="mt-1 w-full rounded border bg-background px-3 py-2" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
       <label className="text-sm">{t('view')}<select data-testid="topology-view" className="ml-2 rounded border bg-background p-2" value={view} onChange={(event) => navigate({ ...navigation, view: event.target.value as TopologyView, selection: undefined })}><option value="overview">{t('overview')}</option><option value="logical">{t('logical')}</option><option value="physical" disabled={!settings.capabilities.physical.available}>{t('physical')}</option></select></label>
@@ -192,8 +209,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       <div className="flex flex-wrap items-center gap-2">
         {expanded && <button data-testid="topology-collapse" className="rounded border px-3 py-2 text-sm" onClick={collapse}>{t('collapse')}</button>}
         <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>
-        <button data-testid="topology-arrange" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('incremental')}>{t('arrange')}</button>
-        <button data-testid="topology-reflow" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('reflow')}>{t('reflow')}</button>
+        <button data-testid="topology-arrange" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('incremental', true)}>{t('arrange')}</button>
+        <button data-testid="topology-reflow" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('reflow', true)}>{t('reflow')}</button>
         {graph.permissions.canEdit && <button data-testid="topology-layout-save" className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" disabled={!draft.dirty || saving || conflict} onClick={() => void save()}>{saving ? t('saving') : t('saveLayout')}</button>}
         {render?.grouped && (hasPins || warning === 'pinned_overlap') && <button data-testid="topology-grouped-layout" className="rounded border px-3 py-2 text-sm" onClick={useGroupedLayout}>{t('grouped.useLayout')}</button>}
         {render && (render.hiddenNetworkCount > 0 || showAllNetworks) && <label className="flex items-center gap-2 text-sm"><input data-testid="topology-show-all-networks" type="checkbox" checked={showAllNetworks} onChange={(event) => setShowAllNetworks(event.target.checked)} />{t('grouped.showAllNetworks', { count: render.hiddenNetworkCount })}</label>}
@@ -207,15 +224,15 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
           <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
         : <p className="py-12 text-center text-muted-foreground">{t('empty')}</p>) : <div className="flex flex-col overflow-hidden rounded-lg border lg:flex-row">
         <div className="min-w-0 flex-1">{list || navigation.search ? <TopologyList graph={navigation.search ? { ...graph, nodes: searchNodes, relationships: [], presentation: { nodes: [], edges: [] } } : graph} onSelect={select}
-          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePosition} fitRef={fitRef} fitKey={`${view}:${showAllNetworks}:${render?.grouped}`} />}</div>
+          hidden={navigation.search ? undefined : { items: hidden, canEdit: graph.permissions.canEdit, onRestore: (item) => void restore(item), ...(hiddenError ? { error: hiddenError } : {}) }} /> : <TopologyCanvas render={render!} positions={positions} boxes={boxes} selection={selection} editable={graph.permissions.canEdit} onSelect={select} onMove={changePositions} fitRef={fitRef} fitKey={`${view}:${showAllNetworks}:${render?.grouped}`} />}</div>
         {selection && (selected || hiddenSelected) && <TopologyInspector graph={graph} selection={selection} siteId={siteId} view={view} onChanged={changed} canDiagnose={!!selected && !isPresentation(selected) && canDiagnose && settings.capabilities.diagnostics.available} onDiagnose={() => setDiagnostic(selection)} onClose={closeInspector} onExpand={(token) => void expand(token)} operations={operations}
-          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePosition({ ...point, pinned: !point.pinned }); } : undefined} />}
+          historyInterfaceId={navigation.interfaceId} onHistory={(interfaceId) => navigate({ ...navigation, interfaceId })} onSelectNode={(id) => select({ kind: 'node', id })} explain={explain} aiNotConfigured={aiNotConfigured} pinned={draft.positions.get(selection.id)?.pinned} onPin={graph.permissions.canEdit ? () => { const point = draft.positions.get(selection.id); if (point) changePositions([{ ...point, pinned: !point.pinned }]); } : undefined} />}
       </div>}
       <p className="text-xs text-muted-foreground">{t('legend')}</p>
       {graph.frontier.map((frontier) => <button key={frontier.token} data-testid="topology-frontier" className="mr-2 rounded border px-3 py-2 text-sm" onClick={() => void expand(frontier.token)}>{frontier.label} ({frontier.memberCount})</button>)}
       {diagnostic && <TopologyDiagnosticsPanel siteId={siteId} graphRevision={graph.revisions.graph} subject={{ kind: diagnostic.kind === 'edge' ? 'relationship' : 'node', id: diagnostic.id }} onClose={() => setDiagnostic(undefined)} />}
     </>}
     <div aria-live="polite" className="sr-only">{announcement}</div>
-    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-14 pr-3 text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}</div>)}</div>
+    <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-14 pr-3 text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}{node.note && <div>{node.note}</div>}</div>)}</div>
   </section>;
 }
