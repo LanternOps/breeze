@@ -161,6 +161,7 @@
   },
   "chooseSite": "Choose a site",
   "chooseSiteExplanation": "Select one authorized site to keep its network and diagnostics separate.",
+  "siteNotInOrganization": "This site is not in the current organization, or you do not have access to it. Choose a site from the list.",
   "reloadConfiguration": "Discard draft and reload current configuration",
   "applyToSites": "Apply selected versions to authorized sites",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "Diagnostics run from the device you pick, along its own route.",
     "stale": "stale",
     "unverified": "unverified",
+    "sharedAddress_one": "Same IP as {{count}} other device",
+    "sharedAddress_other": "Same IP as {{count}} other devices",
     "networkExplanation_one": "{{count}} device reports an interface in {{prefix}}. Grouping by address range is inferred: it does not prove the devices share a switch.",
     "networkExplanation_other": "{{count}} devices report an interface in {{prefix}}. Grouping by address range is inferred: it does not prove the devices share a switch.",
     "unidentifiedExplanation": "These devices report no network membership, and their address is not inside exactly one known network at this site.",

@@ -4,7 +4,7 @@ import TopologyExplorer from './TopologyExplorer';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from './topologyFixtures';
 import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
-vi.mock('./TopologyCanvas', () => ({ default: () => <div data-testid="topology-canvas" /> }));
+vi.mock('./TopologyCanvas', () => ({ default: ({ positions }: { positions: unknown[] }) => <div data-testid="topology-canvas" data-positions={positions.length} /> }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 beforeEach(() => {
   window.location.hash = '#topology';
@@ -22,6 +22,16 @@ it('renders a passive snapshot, and local arrangement never persists', async () 
   await screen.findByTestId('topology-unsaved-layout');
   expect(vi.mocked(fetchWithAuth).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });
+it('the automatic arrangement on load is not an unsaved change; only a user action is (#7880)', async () => {
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await waitFor(() => expect(Number(screen.getByTestId('topology-canvas').getAttribute('data-positions'))).toBeGreaterThan(0));
+  await waitFor(() => expect(screen.getByText('Layout preview complete')).toBeInTheDocument());
+  expect(screen.queryByTestId('topology-unsaved-layout')).not.toBeInTheDocument();
+  expect(screen.getByTestId('topology-layout-save')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('topology-arrange'));
+  expect(await screen.findByTestId('topology-unsaved-layout')).toHaveTextContent('Unsaved layout preview');
+  expect(screen.getByTestId('topology-layout-save')).toBeEnabled();
+});
 it('pluralizes the node and connection counts', async () => {
   const graph = topologyGraphFixture(); graph.counts = { ...graph.counts, visibleNodes: 1, visibleRelationships: 1, omittedNodes: 1, omittedRelationships: 0 };
   vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(graph)));
@@ -38,6 +48,7 @@ it('provides keyboard-equivalent list inspection and preserves conflict drafts',
   fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
   expect(await screen.findByTestId('topology-inspector')).toBeVisible();
   expect(screen.getByRole('heading', { name: 'Reported gateway' })).toHaveFocus();
+  fireEvent.click(screen.getByTestId('topology-arrange'));
   await screen.findByTestId('topology-unsaved-layout');
   fireEvent.click(screen.getByTestId('topology-layout-save'));
   expect(await screen.findByTestId('topology-layout-conflict')).toBeVisible();

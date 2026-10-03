@@ -70,12 +70,76 @@ describe('grouped two-stage layout', () => {
     expect((await computeTopologyLayout(request, new ELK())).positions).toEqual((await computeTopologyLayout(request, new ELK())).positions);
   });
 
-  it('keeps a pinned member exactly where it was and packs the rest of its card around it', async () => {
-    const pin = { nodeId: 'pc-05', x: 5_000, y: 5_000, pinned: true };
-    const request = groupedRequest('reflow', [pin]);
+  // Revised Q3 (2026-10-03, #7880): a pin never places a member inside its card.
+  it('packs pinned card members in the card grid, never at their saved coordinates', async () => {
+    // Two scattered legacy pins: the old rule kept both and hung the rest of the grid below them.
+    const pins = [{ nodeId: 'pc-05', x: 5_000, y: 5_000, pinned: true }, { nodeId: 'pc-20', x: 2_000, y: 9_000, pinned: true }];
+    const unpinned = await computeTopologyLayout(groupedRequest(), new ELK());
+    for (const mode of ['reflow', 'incremental'] as const) {
+      const request = groupedRequest(mode, pins);
+      const result = await computeTopologyLayout(request, new ELK());
+      for (const pin of pins) {
+        const placed = result.positions.find((p) => p.nodeId === pin.nodeId)!;
+        expect({ x: placed.x, y: placed.y }).not.toEqual({ x: pin.x, y: pin.y });
+        expect(placed.pinned).toBe(true);
+      }
+      expect(findOverlaps(result, request)).toEqual([]);
+      // The card is the unpinned grid, moved as one block: every member is shifted by the same offset.
+      const shift = (id: string) => {
+        const a = result.positions.find((p) => p.nodeId === id)!, b = unpinned.positions.find((p) => p.nodeId === id)!;
+        return [Math.round(a.x - b.x), Math.round(a.y - b.y)];
+      };
+      const offsets = new Set(members(request, 'lan').map((id) => JSON.stringify(shift(id))));
+      expect(offsets.size).toBe(1);
+    }
+  });
+
+  it('anchors a card so its pinned members sit on the centroid of their saved pins', async () => {
+    const pins = [{ nodeId: 'pc-05', x: 5_000, y: 5_000, pinned: true }, { nodeId: 'pc-20', x: 5_400, y: 5_200, pinned: true }];
+    const request = groupedRequest('reflow', pins);
     const result = await computeTopologyLayout(request, new ELK());
-    expect(result.positions.find((p) => p.nodeId === 'pc-05')).toEqual(pin);
+    const placed = pins.map((pin) => result.positions.find((p) => p.nodeId === pin.nodeId)!);
+    // Neither member is at its own pin: the pins move the card, the grid places the members.
+    expect(placed[0]!.x).not.toBeCloseTo(5_000); expect(placed[1]!.x).not.toBeCloseTo(5_400);
+    expect((placed[0]!.x + placed[1]!.x) / 2).toBeCloseTo(5_200);
+    expect((placed[0]!.y + placed[1]!.y) / 2).toBeCloseTo(5_100);
     expect(findOverlaps(result, request)).toEqual([]);
+  });
+
+  it('turns a pile of legacy member pins into a readable grid (Whalers: 37 pins on one card)', async () => {
+    const pile = Array.from({ length: 20 }, (_, i) => ({ nodeId: `pc-${String(i).padStart(2, '0')}`, x: 100 + (i % 4) * 30, y: 100 + (i % 5) * 20, pinned: true }));
+    const request = groupedRequest('incremental', pile);
+    const result = await computeTopologyLayout(request, new ELK());
+    expect(findOverlaps(result, request)).toEqual([]);
+    const lan = bounds(result, request, members(request, 'lan'));
+    const aspect = (lan.x2 - lan.x1) / (lan.y2 - lan.y1);
+    expect(aspect).toBeGreaterThan(1 / 3); expect(aspect).toBeLessThan(3);
+  });
+
+  it('a whole-card drag (every member pinned at its grid spot, shifted) keeps the card exactly where it was dropped', async () => {
+    const first = await computeTopologyLayout(groupedRequest(), new ELK());
+    const lanIds = new Set(members(groupedRequest(), 'lan'));
+    const dropped = first.positions.filter((p) => lanIds.has(p.nodeId)).map((p) => ({ ...p, x: p.x + 3_000, y: p.y + 1_000, pinned: true }));
+    const again = await computeTopologyLayout(groupedRequest('incremental', dropped), new ELK());
+    for (const pin of dropped) {
+      const placed = again.positions.find((p) => p.nodeId === pin.nodeId)!;
+      expect(placed.x).toBeCloseTo(pin.x, 6); expect(placed.y).toBeCloseTo(pin.y, 6); expect(placed.pinned).toBe(true);
+    }
+  });
+
+  it('still honours pins on ungrouped nodes (gateway, loose device)', async () => {
+    const pins = [{ nodeId: 'gw', x: -3_000, y: -3_000, pinned: true }, { nodeId: 'loose', x: 9_000, y: 40, pinned: true }];
+    const result = await computeTopologyLayout(groupedRequest('reflow', pins), new ELK());
+    for (const pin of pins) expect(result.positions.find((p) => p.nodeId === pin.nodeId)).toEqual(pin);
+  });
+
+  it('orders card members by IP numerically, then by name', async () => {
+    const request = groupedRequest();
+    const lan2 = request.nodes.filter((node) => node.groupId === 'lan2');
+    lan2[0]!.address = '10.1.2.137'; lan2[1]!.address = '10.1.2.14'; lan2[2]!.address = undefined;
+    const result = await computeTopologyLayout(request, new ELK());
+    const order = result.positions.filter((p) => p.nodeId.startsWith('home-')).sort((a, b) => a.y - b.y || a.x - b.x).map((p) => p.nodeId);
+    expect(order).toEqual(['home-1', 'home-0', 'home-2']);
   });
 
   it('never anchors a card on unpinned saved positions (old flat layouts); only real pins hold a member in place', async () => {

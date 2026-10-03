@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { graphResponseSchema } from '@breeze/shared/validators/topology';
 import type { GraphResponse, TopologyView } from '@breeze/shared';
 import { topologyApi, topologyHealthSchema, topologyRead, TopologyReadError } from './topologyApi';
+import { takePrefetchedGraph } from './topologyPrefetch';
 
 /** Server codes for an expansion token that is no longer usable (graphCursor.ts, graph.ts). */
 const STALE_EXPANSION: ReadonlySet<string> = new Set(['invalid_topology_cursor', 'graph_revision_changed', 'presentation_group_changed']);
@@ -44,9 +45,12 @@ export function useTopologyGraph(scope: { siteId: string }, query: { view: Topol
       graphBusy = true; if (!graphRef.current) setLoading(true);
       const token = expansionRef.current;
       try {
+        const params = new URLSearchParams({ view: query.view, includeHealth: 'true', ...(query.focusNodeId ? { focusNodeId: query.focusNodeId, hops: '1' } : {}) });
+        // The first unfocused read may already be in flight, started alongside the settings read (#7880).
+        const prefetched = !token && !graphRef.current && !query.focusNodeId ? takePrefetchedGraph(scope.siteId, query.view) : undefined;
         const next = token
           ? await topologyRead(`/topology/sites/${scope.siteId}/expansions/${encodeURIComponent(token)}`, graphResponseSchema, controller.signal)
-          : await topologyApi.graph(scope.siteId, new URLSearchParams({ view: query.view, includeHealth: 'true', ...(query.focusNodeId ? { focusNodeId: query.focusNodeId, hops: '1' } : {}) }), controller.signal);
+          : await (prefetched ?? topologyApi.graph(scope.siteId, params, controller.signal));
         if (valid() && token === expansionRef.current) { setGraph(next); setError(null); }
       } catch (cause) {
         // A response for a view the user already left is moot, success or failure.

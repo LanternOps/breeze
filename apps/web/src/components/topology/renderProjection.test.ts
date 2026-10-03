@@ -69,6 +69,31 @@ describe('compileTopologyRender', () => {
     expect(byId.get(ids.b)).toMatchObject({ label: 'FRONT-DESK', detail: '10.1.2.58 · Agent offline' });
   });
 
+  it('exposes each tile\'s primary address for numeric ordering inside its card (#7880)', () => {
+    const { graph: g, ids } = lan();
+    const byId = new Map(compileTopologyRender(g, { showAllNetworks: false }).nodes.map((n) => [n.id, n]));
+    expect(byId.get(ids.a)?.address).toBe('10.1.2.57');
+    expect(byId.get(ids.phone)?.address).toBe('10.1.2.200');
+    expect(byId.get(P('net-lan'))?.address).toBeNull();
+  });
+
+  it('keeps every tile that shares an IP and notes the collision on each of them (#7880)', () => {
+    const { graph: g, ids } = lan();
+    // A second device reports the phone's address (Whalers: .210, .212, .233); IPv6 spellings of one address also collide.
+    const twin = node(id(50), 'endpoint', 'LOBBY-PC', { inventory: { source: 'device', name: 'LOBBY-PC', addresses: ['10.1.2.200'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+    const v6a = node(id(51), 'endpoint', 'v6-a', { inventory: { source: 'device', name: 'v6-a', addresses: ['fe80::1'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+    const v6b = node(id(52), 'endpoint', 'v6-b', { inventory: { source: 'device', name: 'v6-b', addresses: ['FE80:0::0001'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+    g.nodes.push(twin, v6a, v6b);
+    const sharedAddress = (count: number) => `shared with ${count}`;
+    const byId = new Map(compileTopologyRender(g, { showAllNetworks: false, sharedAddress }).nodes.map((n) => [n.id, n]));
+    expect(byId.get(ids.phone)?.note).toBe('shared with 1');
+    expect(byId.get(id(50))?.note).toBe('shared with 1');
+    expect(byId.get(id(51))?.note).toBe('shared with 1');
+    expect(byId.get(ids.a)?.note).toBeNull();
+    // Without a formatter (no translator), nothing is noted rather than English leaking into a localized UI.
+    expect(compileTopologyRender(g, { showAllNetworks: false }).nodes.find((n) => n.id === ids.phone)?.note).toBeNull();
+  });
+
   it('marks a neighbour-cache placement as corroborated, never as unverified or observed (#7816)', () => {
     const { graph: g, ids } = lan();
     const lanCard = g.presentation.nodes.find((n) => n.id === P('net-lan'))!;

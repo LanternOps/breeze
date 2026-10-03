@@ -161,6 +161,7 @@
   },
   "chooseSite": "Standort wählen",
   "chooseSiteExplanation": "Wählen Sie einen autorisierten Standort, um dessen Netzwerk und Diagnosen getrennt zu halten.",
+  "siteNotInOrganization": "Dieser Standort gehört nicht zur aktuellen Organisation, oder Sie haben keinen Zugriff darauf. Wählen Sie einen Standort aus der Liste.",
   "reloadConfiguration": "Entwurf verwerfen und aktuelle Konfiguration neu laden",
   "applyToSites": "Ausgewählte Versionen auf autorisierte Standorte anwenden",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "Diagnosen laufen auf dem ausgewählten Gerät, über dessen eigene Route.",
     "stale": "veraltet",
     "unverified": "nicht verifiziert",
+    "sharedAddress_one": "Gleiche IP wie {{count}} weiteres Gerät",
+    "sharedAddress_other": "Gleiche IP wie {{count}} weitere Geräte",
     "networkExplanation_one": "{{count}} Gerät meldet eine Schnittstelle in {{prefix}}. Die Gruppierung nach Adressbereich ist abgeleitet: Sie belegt nicht, dass die Geräte einen Switch teilen.",
     "networkExplanation_other": "{{count}} Geräte melden eine Schnittstelle in {{prefix}}. Die Gruppierung nach Adressbereich ist abgeleitet: Sie belegt nicht, dass die Geräte einen Switch teilen.",
     "unidentifiedExplanation": "Diese Geräte melden keine Netzwerkzugehörigkeit, und ihre Adresse liegt nicht in genau einem bekannten Netzwerk dieses Standorts.",

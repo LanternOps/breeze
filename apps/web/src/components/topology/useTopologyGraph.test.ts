@@ -177,3 +177,15 @@ it('does not fetch at all when disabled', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   expect(vi.mocked(fetchWithAuth)).not.toHaveBeenCalled();
 });
+
+it('takes the graph read already started alongside the settings read instead of requesting it again (#7880)', async () => {
+  const { prefetchTopologyGraph, clearTopologyPrefetch } = await import('./topologyPrefetch');
+  clearTopologyPrefetch();
+  vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse(topologyGraphFixture()));
+  prefetchTopologyGraph(SITE, 'overview');
+  expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  const { result } = renderHook(() => useTopologyGraph({ siteId: SITE }, { view: 'overview' }));
+  await waitFor(() => expect(result.current.graph).not.toBeNull());
+  expect(vi.mocked(fetchWithAuth).mock.calls.filter(([url]) => String(url).includes('/graph?'))).toHaveLength(1);
+  clearTopologyPrefetch();
+});

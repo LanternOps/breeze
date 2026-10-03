@@ -167,6 +167,15 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
   to contain it. When pins distort the grouped map the explorer offers **"Use grouped layout"**: editors
   get a draft with every position cleared, saved through the normal shared-layout save; nothing moves
   until they save.
+  **Amended 2026-10-03 (#7880, owner decision from prod evidence):** members of a group card are
+  ALWAYS packed by the card's grid; a saved pin never places a member inside its card. On US prod,
+  Whalers' 37 mostly legacy pins (layout revision 37, saved for the old flat map) turned the top third
+  of an 85-device card into an unreadable pile, while the "Use grouped layout" preview of the same
+  site was clean. Pins on members now only anchor the card: it is translated so its pinned members'
+  grid centroid sits on the centroid of their saved pins (a card dragged whole stays where it was
+  dropped). Pins on ungrouped nodes (Internet, gateway tiles, loose devices) are still honoured. Saved
+  pins are never deleted or rewritten by the grouped layout and still apply in views without grouping.
+  "Use grouped layout" stays available to editors who want to clear pins, through the normal save.
 - **Q4 — deliberate spec extension, labelled.** Discovered-only endpoints whose inventory address falls in
   exactly one `lan` candidate across the complete site are drawn inside it with per-member placement
   `address_match` and copy "Address in this range — membership not verified". No canonical relationship

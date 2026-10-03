@@ -161,6 +161,7 @@
   },
   "chooseSite": "Choisir un site",
   "chooseSiteExplanation": "Sélectionnez un site autorisé pour garder son réseau et ses diagnostics séparés.",
+  "siteNotInOrganization": "Ce site n'appartient pas à l'organisation actuelle, ou vous n'y avez pas accès. Choisissez un site dans la liste.",
   "reloadConfiguration": "Abandonner le brouillon et recharger la configuration actuelle",
   "applyToSites": "Appliquer les versions sélectionnées aux sites autorisés",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "Les diagnostics s'exécutent depuis l'appareil choisi, via sa propre route.",
     "stale": "périmé",
     "unverified": "non vérifié",
+    "sharedAddress_one": "Même IP que {{count}} autre appareil",
+    "sharedAddress_other": "Même IP que {{count}} autres appareils",
     "networkExplanation_one": "{{count}} appareil signale une interface dans {{prefix}}. Le regroupement par plage d'adresses est déduit : il ne prouve pas que les appareils partagent un commutateur.",
     "networkExplanation_other": "{{count}} appareils signalent une interface dans {{prefix}}. Le regroupement par plage d'adresses est déduit : il ne prouve pas que les appareils partagent un commutateur.",
     "unidentifiedExplanation": "Ces appareils ne signalent aucune appartenance à un réseau, et leur adresse ne se trouve pas dans exactement un réseau connu de ce site.",

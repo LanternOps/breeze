@@ -161,6 +161,7 @@
   },
   "chooseSite": "Bir site seçin",
   "chooseSiteExplanation": "Ağını ve tanılamasını ayrı tutmak için yetkili bir site seçin.",
+  "siteNotInOrganization": "Bu site geçerli kuruluşta değil veya bu siteye erişiminiz yok. Listeden bir site seçin.",
   "reloadConfiguration": "Taslağı at ve mevcut yapılandırmayı yeniden yükle",
   "applyToSites": "Seçilen sürümleri yetkili sitelere uygula",
   "emptyState": {
@@ -654,6 +655,8 @@
     "diagnoseHint": "Tanılamalar, seçtiğiniz cihazdan, o cihazın kendi rotası üzerinden çalışır.",
     "stale": "eski",
     "unverified": "doğrulanmadı",
+    "sharedAddress_one": "{{count}} başka cihazla aynı IP",
+    "sharedAddress_other": "{{count}} başka cihazla aynı IP",
     "networkExplanation_one": "{{count}} cihaz, {{prefix}} içinde bir arayüz bildiriyor. Adres aralığına göre gruplama çıkarsanmıştır: cihazların aynı anahtarı paylaştığını kanıtlamaz.",
     "networkExplanation_other": "{{count}} cihaz, {{prefix}} içinde bir arayüz bildiriyor. Adres aralığına göre gruplama çıkarsanmıştır: cihazların aynı anahtarı paylaştığını kanıtlamaz.",
     "unidentifiedExplanation": "Bu cihazlar herhangi bir ağ üyeliği bildirmiyor ve adresleri bu sitedeki bilinen ağlardan tam olarak birinin içinde değil.",
