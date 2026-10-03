@@ -49,13 +49,15 @@ describe('identity authorization URL (phase 1, v2 OIDC + PKCE)', () => {
       nonce: 'n',
       code_challenge: 'c',
       code_challenge_method: 'S256',
+      prompt: 'select_account',
     });
-    expect(url.searchParams.has('prompt')).toBe(false);
   });
 
-  it('pins the authority to a bound tenant GUID', () => {
+  it('pins the authority to a bound tenant GUID and still forces the account picker', () => {
     const url = new URL(identity({ authority: TENANT }));
     expect(url.pathname).toBe(`/${TENANT}/oauth2/v2.0/authorize`);
+    // Reconnect / manifest upgrade gets the same picker as initial connect.
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account']);
   });
 
   it('builds the actions-profile URL against the actions callback path', () => {

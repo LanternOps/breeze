@@ -91,6 +91,12 @@ export function buildMicrosoftIdentityAuthorizationUrl(
   url.searchParams.set('nonce', requireOpaque(input.nonce));
   url.searchParams.set('code_challenge', requireOpaque(input.codeChallenge));
   url.searchParams.set('code_challenge_method', 'S256');
+  // Stopgap: an MSP tech is usually already signed into their OWN tenant in
+  // this browser, and without a prompt Microsoft silently signs them in as
+  // that account — the wrong tenant gets verified. `select_account` forces the
+  // account picker on initial connect AND reconnect/upgrade. It is a UX
+  // nudge, not a security control: W03's confirm-tenant step is the real guard.
+  url.searchParams.set('prompt', 'select_account');
   return url.toString();
 }
 
