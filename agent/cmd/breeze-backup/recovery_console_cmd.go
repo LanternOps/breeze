@@ -193,6 +193,17 @@ func readBakedRecoveryConfig(path string) string {
 	return strings.TrimSpace(string(raw))
 }
 
+// loadRecoveryMediaRoots installs the media's exported root store (see
+// bmr.LoadMediaRoots) when the host has one. An unreadable or malformed
+// store is fatal: there is no fallback to unverified TLS.
+func loadRecoveryMediaRoots(h consoleHost, errOut io.Writer) error {
+	if _, err := bmr.LoadMediaRoots(h.BakedRoots); err != nil {
+		_, _ = fmt.Fprintf(errOut, "recovery media root store is unreadable; rebuild the media (%v)\n", err)
+		return fmt.Errorf("recovery media root store is unreadable; rebuild the media: %w", err)
+	}
+	return nil
+}
+
 func newRecoveryConsoleCommand() *cobra.Command {
 	var server, cmdlinePath, trustPin string
 	var allowHost, unattended bool
@@ -215,6 +226,12 @@ func newRecoveryConsoleCommand() *cobra.Command {
 				if err := h.HostCheck(); err != nil {
 					return err
 				}
+			}
+
+			// Load the media's own TLS roots (WinPE only; no-op when the host
+			// has none) before anything touches the network. Fail closed.
+			if err := loadRecoveryMediaRoots(h, cmd.ErrOrStderr()); err != nil {
+				return err
 			}
 
 			// An explicit --kernel-cmdline (tests, diagnostics) wins over
