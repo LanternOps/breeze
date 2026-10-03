@@ -29,6 +29,51 @@ func TestCheckWinPEBuild(t *testing.T) {
 	}
 }
 
+// TestCheckWinPEBuild_EnablementPackages: feature updates shipped as
+// enablement packages record a higher CurrentBuildNumber than their servicing
+// base, and no ADK/WinPE exists for those builds — compare against the base.
+func TestCheckWinPEBuild_EnablementPackages(t *testing.T) {
+	for _, tc := range []struct{ host, guest uint32 }{
+		{26100, 26200}, // Win11 25H2 on 24H2 WinPE
+		{22621, 22631}, // Win11 23H2 on 22H2 WinPE
+		{19041, 19045}, // Win10 22H2 on 2004 WinPE
+		{19041, 19042},
+		{19041, 19043},
+		{19041, 19044},
+	} {
+		if ref := checkWinPEBuild(tc.host, tc.guest); ref != nil {
+			t.Errorf("guest %d on WinPE %d must pass (servicing base): %v", tc.guest, tc.host, ref)
+		}
+	}
+	if ref := checkWinPEBuild(22621, 26100); ref == nil || ref.Code != RefusalCodeWinPETooOld {
+		t.Fatalf("26100 on 22621 must still refuse: %+v", ref)
+	}
+	ref := checkWinPEBuild(22621, 26200)
+	if ref == nil || ref.Code != RefusalCodeWinPETooOld {
+		t.Fatalf("26200 on 22621 must refuse: %+v", ref)
+	}
+	for _, want := range []string{"22621", "26200", "26100"} {
+		if !strings.Contains(ref.Reason, want) {
+			t.Errorf("refusal %q must name %s", ref.Reason, want)
+		}
+	}
+	// An exact-match refusal does not invent a servicing base.
+	if ref := checkWinPEBuild(22621, 26100); strings.Contains(ref.Reason, "servicing base") {
+		t.Errorf("refusal for a base build must not mention a servicing base: %q", ref.Reason)
+	}
+}
+
+func TestServicingBaseBuild(t *testing.T) {
+	for in, want := range map[uint32]uint32{
+		19041: 19041, 19042: 19041, 19043: 19041, 19044: 19041, 19045: 19041,
+		22621: 22621, 22631: 22621, 26100: 26100, 26200: 26100, 20348: 20348, 0: 0,
+	} {
+		if got := servicingBaseBuild(in); got != want {
+			t.Errorf("servicingBaseBuild(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
 // softwareHiveWithBuild is a SOFTWARE fake carrying CurrentBuildNumber
 // (empty build = the key exists without the value).
 func softwareHiveWithBuild(build string) *winhive.Fake {

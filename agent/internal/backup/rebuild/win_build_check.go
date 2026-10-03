@@ -16,14 +16,47 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/winhive"
 )
 
+// enablementPackageBases maps a Windows build delivered as an enablement
+// package (a feature update that only switches on features already present in
+// an existing servicing branch) to the servicing base build it runs on. Those
+// builds share the base's NTFS/BCD/servicing stack and no Windows ADK/WinPE is
+// released for them, so the newest WinPE that can exist for such a guest is
+// the base build's.
+var enablementPackageBases = map[uint32]uint32{
+	19042: 19041, // Windows 10 20H2
+	19043: 19041, // Windows 10 21H1
+	19044: 19041, // Windows 10 21H2
+	19045: 19041, // Windows 10 22H2
+	22631: 22621, // Windows 11 23H2
+	26200: 26100, // Windows 11 25H2
+}
+
+// servicingBaseBuild returns the servicing base build of an enablement-package
+// build, and any other build unchanged.
+func servicingBaseBuild(build uint32) uint32 {
+	if base, ok := enablementPackageBases[build]; ok {
+		return base
+	}
+	return build
+}
+
 // checkWinPEBuild refuses when the WinPE host build is older than the guest's
-// recorded build. A guest build of 0 means unknown and never refuses.
+// servicing base build (see servicingBaseBuild). A guest build of 0 means
+// unknown and never refuses.
 func checkWinPEBuild(host, guest uint32) *RefusalError {
-	if guest == 0 || host >= guest {
+	if guest == 0 {
 		return nil
 	}
+	base := servicingBaseBuild(guest)
+	if host >= base {
+		return nil
+	}
+	guestDesc := strconv.FormatUint(uint64(guest), 10)
+	if base != guest {
+		guestDesc = fmt.Sprintf("%d (compared as its servicing base build %d)", guest, base)
+	}
 	return &RefusalError{Code: RefusalCodeWinPETooOld, Reason: fmt.Sprintf(
-		"this recovery media runs Windows PE build %d, older than the backed-up Windows build %d; rebuild the media with a current Windows ADK", host, guest)}
+		"this recovery media runs Windows PE build %d, older than the backed-up Windows build %s; rebuild the media with a current Windows ADK", host, guestDesc)}
 }
 
 // checkGuestBuild refuses a disk: rebuild whose WinPE is older than the
