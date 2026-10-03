@@ -54,12 +54,12 @@ async function sign(
 }
 
 function verify(token: OpaqueIdentityToken, overrides: Partial<{
-  tenantHint: string;
+  expectedTenantId: string | null;
   clientId: string;
   nonce: string;
 }> = {}) {
   return verifyMicrosoftAdminIdentity(token, {
-    tenantHint: TENANT_ID,
+    expectedTenantId: TENANT_ID,
     clientId: CLIENT_ID,
     nonce: NONCE,
     ...overrides,
@@ -79,6 +79,7 @@ describe('verifyMicrosoftAdminIdentity', () => {
       await expect(verify(token)).resolves.toEqual({
         tenantId: TENANT_ID,
         administratorObjectId: ADMIN_ID,
+        administratorUsername: null,
       });
     },
   );
@@ -109,7 +110,7 @@ describe('verifyMicrosoftAdminIdentity', () => {
   });
 
   it.each([
-    ['tenant hint', {}, { tenantHint: TENANT_ID.toUpperCase() }],
+    ['tenant hint', {}, { expectedTenantId: TENANT_ID.toUpperCase() }],
     ['client audience', {}, { clientId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA' }],
   ])('requires a canonical expected %s', async (_label, claims, expected) => {
     await expect(verify(await sign(claims), expected)).rejects.toMatchObject({
@@ -124,6 +125,7 @@ describe('verifyMicrosoftAdminIdentity', () => {
     await expect(verify(await sign(claims))).resolves.toEqual({
       tenantId: TENANT_ID,
       administratorObjectId: ADMIN_ID,
+      administratorUsername: null,
     });
   });
 
@@ -167,4 +169,73 @@ describe('verifyMicrosoftAdminIdentity', () => {
       message: 'admin_role_required',
     });
   });
+
+  describe('without an expected tenant (organizations sign-in)', () => {
+    const OTHER_TENANT = '44444444-4444-4444-8444-4444444444ef';
+    const otherIssuer = `https://login.microsoftonline.com/${OTHER_TENANT}/v2.0`;
+
+    it('accepts any verified tenant and returns it', async () => {
+      await expect(verify(await sign({ tid: OTHER_TENANT, iss: otherIssuer }), { expectedTenantId: null }))
+        .resolves.toEqual({ tenantId: OTHER_TENANT, administratorObjectId: ADMIN_ID, administratorUsername: null });
+    });
+
+    it('still rejects a different tenant when one is expected (reconnect / upgrade)', async () => {
+      await expect(verify(await sign({ tid: OTHER_TENANT, iss: otherIssuer }), { expectedTenantId: TENANT_ID }))
+        .rejects.toMatchObject({ code: 'tenant_mismatch' });
+    });
+
+    it('derives the issuer from tid: a token for one tenant cannot claim another', async () => {
+      await expect(verify(await sign({ tid: OTHER_TENANT }), { expectedTenantId: null }))
+        .rejects.toMatchObject({ code: 'identity_token_invalid' });
+    });
+
+    it.each([
+      ['wrong signature', async () => sign({}, otherPrivateKey)],
+      ['wrong algorithm', async () => sign({}, otherAlgorithmKey, 'ES256')],
+      ['wrong audience', async () => sign({ aud: '99999999-9999-4999-8999-999999999999' })],
+      ['wrong nonce', async () => sign({ nonce: 'replayed' })],
+      ['missing oid', async () => sign({ oid: undefined })],
+      ['missing tid', async () => sign({ tid: undefined })],
+      ['missing wids', async () => sign({ wids: undefined })],
+      ['expired', async () => sign({ exp: NOW_SECONDS - 1 })],
+      ['not yet valid', async () => sign({ nbf: NOW_SECONDS + 1 })],
+      ['common issuer', async () => sign({ iss: 'https://login.microsoftonline.com/common/v2.0' })],
+      ['organizations issuer', async () => sign({ iss: 'https://login.microsoftonline.com/organizations/v2.0' })],
+      ['v1 issuer', async () => sign({ iss: `https://sts.windows.net/${TENANT_ID}/` })],
+    ])('rejects %s', async (_label, makeToken) => {
+      await expect(verify(await makeToken(), { expectedTenantId: null }))
+        .rejects.toMatchObject({ code: 'identity_token_invalid', message: 'identity_token_invalid' });
+    });
+
+    it('rejects an ineligible role set', async () => {
+      // User Administrator is not an accepted consent role
+      await expect(verify(await sign({ wids: ['fe930be7-5e62-47db-91af-98c3a49a38b1'] }), { expectedTenantId: null }))
+        .rejects.toMatchObject({ code: 'admin_role_required' });
+      await expect(verify(await sign({ wids: [] }), { expectedTenantId: null }))
+        .rejects.toMatchObject({ code: 'admin_role_required' });
+    });
+
+    it('accepts a Privileged Role Administrator', async () => {
+      await expect(verify(await sign({ wids: [PRIVILEGED_ROLE_ADMIN_ROLE_ID] }), { expectedTenantId: null }))
+        .resolves.toMatchObject({ tenantId: TENANT_ID });
+    });
+  });
+
+  it('returns preferred_username only when it is a bounded printable string', async () => {
+    expect((await verify(await sign({ preferred_username: 'admin@tenant.example' }), { expectedTenantId: null }))
+      .administratorUsername).toBe('admin@tenant.example');
+    expect((await verify(await sign({ preferred_username: 'x'.repeat(256) }), { expectedTenantId: null }))
+      .administratorUsername).toBe('x'.repeat(256));
+    for (const preferred_username of ['x'.repeat(257), '', 42, null, ['a@b.example'], 'admin\n@tenant.example', 'a\u007f@b.example']) {
+      expect((await verify(await sign({ preferred_username }), { expectedTenantId: null })).administratorUsername)
+        .toBeNull();
+    }
+  });
+
+  it.each(['organizations', 'common', TENANT_ID.toUpperCase(), ''])(
+    'rejects a non-canonical expected tenant %j before verifying the token',
+    async (expectedTenantId) => {
+      await expect(verify(await sign(), { expectedTenantId })).rejects.toMatchObject({ code: 'identity_token_invalid' });
+    },
+  );
 });

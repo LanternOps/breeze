@@ -150,7 +150,7 @@ export async function completeConsentOperation(
         codeVerifier: request.codeVerifier,
       });
       identity = await dependencies.verifyIdentity(idToken, {
-        tenantHint: request.tenantHint,
+        expectedTenantId: request.tenantHint,
         clientId: dependencies.clientId,
         nonce: request.nonce,
       });
