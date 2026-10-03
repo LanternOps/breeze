@@ -1,10 +1,11 @@
+import { captureException } from '../sentry';
 import { classifyCollectionFailure } from './failureClassifier';
 import { retryAt } from './retryDates';
 import { enqueueAttemptNotice, notifyPaymentAttention } from './paymentNotices';
-import { resolveMergedOrgIds } from '../orgMerge';
+import { resolveMergedOrgIds } from '../orgMergeProvenance';
 import { requestInvoiceSessionRevocation } from '../stripeSessionRevocation';
 import { collectionFenced, finalizeInvoiceControl, pendingInvoiceControl } from './collectionControl';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments, orgPaymentMethods,
   invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, billingNoticeOutbox } from '../../db/schema';
@@ -738,4 +739,29 @@ async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
       achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: terms.noticeSeq + 1 } })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
   await enqueueAutopayNotice(db, schedule.id);
+}
+
+export async function runAutopayCollection(now = new Date()): Promise<{ attempted: number; deferred: number }> {
+  assertNoHeldDbContextForStripe('runAutopayCollection');
+  let attempted = 0;
+  let deferred = 0;
+  let cursor: string | undefined;
+  for (;;) {
+    const due = await withSystemDbAccessContext(() => db.select({id:invoiceAutopaySchedules.id,
+      invoiceId:invoiceAutopaySchedules.invoiceId}).from(invoiceAutopaySchedules).where(and(
+      inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled']),
+      lte(invoiceAutopaySchedules.collectOn,now.toISOString().slice(0,10)),
+      or(isNull(invoiceAutopaySchedules.nextAttemptAt),lte(invoiceAutopaySchedules.nextAttemptAt,now)),
+      cursor ? gt(invoiceAutopaySchedules.id,cursor) : undefined,
+    )).orderBy(asc(invoiceAutopaySchedules.id)).limit(200));
+    if (!due.length) break;
+    for (const row of due) {
+      try {
+        const result=await attemptCollection({invoiceId:row.invoiceId,scheduleId:row.id,initiatedBy:'scheduler'});
+        if(result.outcome==='created')attempted++;else deferred++;
+      } catch(error) {deferred++;captureException(error instanceof Error?error:new Error(String(error)));}
+    }
+    cursor=due[due.length-1]!.id;
+  }
+  return { attempted, deferred };
 }

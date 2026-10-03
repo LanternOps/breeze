@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { normalizeStripeFinancialEvent } from './stripeFinancialEventPoller';
+import { STRIPE_FINANCIAL_EVENT_TYPES, normalizeStripeFinancialEvent } from './stripeFinancialEventPoller';
 
 const base = {
   partnerId: '11111111-1111-4111-8111-111111111111',
@@ -77,4 +77,15 @@ describe('normalizeStripeFinancialEvent', () => {
       data: { object: { id: 'ch_1', payment_intent: 'pi_1', amount: 10000, amount_refunded: 1000, currency: 'usd' } },
     } as any })).rejects.toThrow(/account/);
   });
+});
+
+it.each(['payment_intent.succeeded', 'payment_intent.payment_failed',
+  'payment_intent.processing', 'payment_intent.requires_action'])('normalizes durable %s identity', async type => {
+  expect(STRIPE_FINANCIAL_EVENT_TYPES).toContain(type);
+  const result = await normalizeStripeFinancialEvent({ ...base, stripe: {} as any, event: {
+    id: 'evt_pi', type, account: base.stripeAccountId, livemode: false, created: 106,
+    data: { object: { id: 'pi_1', amount: 10300, currency: 'usd' } },
+  } as any });
+  expect(result).toEqual({ ...base, stripeEventId: 'evt_pi', eventType: type,
+    livemode: false, providerCreated: 106, paymentIntentId: 'pi_1', chargeAmountMinor: 10300, currency: 'usd' });
 });

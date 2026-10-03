@@ -3,13 +3,15 @@ import { readFileSync } from 'node:fs';
 const mocks = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue({}), close: vi.fn().mockResolvedValue(undefined),
   work: vi.fn(), dispatch: vi.fn().mockResolvedValue({ sent: 1, failed: 0 }),
-  expiry: vi.fn(), register: vi.fn(),
+  expiry: vi.fn(), register: vi.fn(), collection: vi.fn(), controls: vi.fn(),
   drain: vi.fn().mockResolvedValue(undefined), observe: vi.fn(),
 }));
 vi.mock('bullmq', () => ({
   Queue: class { add = mocks.add; close = mocks.close; },
   Worker: class { constructor(name: string, processor: unknown) { mocks.work(name, processor); } on() { return this; } close = mocks.close; },
 }));
+vi.mock('../services/autopay/collectionEngine', () => ({ runAutopayCollection: mocks.collection }));
+vi.mock('../services/autopay/collectionControl', () => ({ reconcilePendingControls: mocks.controls }));
 vi.mock('../services/autopay/chargingNotice', () => ({ registerAutopayNoticeHandlers: mocks.register }));
 vi.mock('../services/autopay/reminderSweep', () => ({ runInvoiceReminderSweep: vi.fn() }));
 vi.mock('../services/autopay/cardExpiryCheck', () => ({ checkExpiringAutopayCards: mocks.expiry }));
@@ -47,7 +49,7 @@ describe('autopay worker registration', () => {
       jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
     }));
     expect(jobSchedule('autopay-card-expiry-check')).toBe('28 6 * * *');
-    expect(mocks.add).toHaveBeenCalledTimes(3);
+    expect(mocks.add).toHaveBeenCalledTimes(5);
     expect(mocks.add).toHaveBeenCalledWith('card-expiry-check', { type: 'card-expiry-check' }, expect.objectContaining({
       jobId: 'autopay-card-expiry-check', repeat: { pattern: '28 6 * * *', tz: 'UTC' },
     }));
@@ -66,7 +68,7 @@ describe('autopay worker registration', () => {
     expect(mocks.close).toHaveBeenCalledTimes(2);
 
     await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-    expect(mocks.add).toHaveBeenCalledTimes(4);
+    expect(mocks.add).toHaveBeenCalledTimes(6);
     await shutdownAutopayWorkers();
   });
   it('is selected by the real worker registry and actual entrypoint uses that registry', () => {
@@ -117,7 +119,7 @@ it('cleans up and retries when the expiry schedule fails', async () => {
   await expect(initializeAutopayWorkers()).rejects.toThrow('expiry registration failed');
   expect(mocks.close).toHaveBeenCalledTimes(2);
   await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-  expect(mocks.add).toHaveBeenCalledTimes(5);
+  expect(mocks.add).toHaveBeenCalledTimes(7);
   await shutdownAutopayWorkers();
 });
 
@@ -128,11 +130,28 @@ it('cleans up and retries when the reminder schedule fails', async () => {
     await expect(initializeAutopayWorkers()).rejects.toThrow('reminder registration failed');
     expect(mocks.close).toHaveBeenCalledTimes(2);
     await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-    expect(mocks.add).toHaveBeenCalledTimes(6);
+    expect(mocks.add).toHaveBeenCalledTimes(8);
     await initializeAutopayWorkers();
-    expect(mocks.add).toHaveBeenCalledTimes(6);
+    expect(mocks.add).toHaveBeenCalledTimes(8);
   } finally {
     await shutdownAutopayWorkers();
   }
   expect(mocks.close).toHaveBeenCalledTimes(4);
+});
+
+it('registers and dispatches collection and pending controls in UTC with stable identities', async () => {
+  await initializeAutopayWorkers();
+  try {
+    expect(mocks.add).toHaveBeenCalledWith('collection-run', { type: 'collection-run' }, expect.objectContaining({
+      jobId: 'autopay-collection-run', repeat: { pattern: '26 * * * *', tz: 'UTC' },
+    }));
+    expect(mocks.add).toHaveBeenCalledWith('control-reconcile', { type: 'control-reconcile' }, expect.objectContaining({
+      jobId: 'autopay-control-reconcile', repeat: { pattern: '* * * * *', tz: 'UTC' },
+    }));
+    mocks.collection.mockResolvedValueOnce({ attempted: 2, deferred: 1 });
+    expect(await processAutopayJob({ type: 'collection-run' })).toEqual({ attempted: 2, deferred: 1 });
+    await processAutopayJob({ type: 'control-reconcile' });
+    expect(mocks.controls).toHaveBeenCalledOnce();
+    expect(mocks.collection).toHaveBeenCalledOnce();
+  } finally { await shutdownAutopayWorkers(); }
 });

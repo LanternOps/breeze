@@ -1,6 +1,8 @@
+import { invoiceCollectionAttempts } from '../db/schema/autopay';
+import { resumeCollectionAttempt, applyAttemptOutcome } from '../services/autopay/collectionEngine';
 import { reconcileAutopaySetups } from '../services/autopay/setupReconciliation';
 import { Job, Queue, Worker } from 'bullmq';
-import { sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { db } from '../db';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
@@ -75,10 +77,29 @@ export async function reconcilePendingStripePayments(): Promise<number> {
     LIMIT ${MAX_PER_RUN}
   `), 'stripeReconcileSweep.candidates')) as unknown as { rows?: Array<{ partner_id: string; stripe_object_id: string }> };
   const list = rows.rows ?? (rows as unknown as Array<{ partner_id: string; stripe_object_id: string }>);
-  if (!Array.isArray(list) || list.length === 0) return 0;
+  let cursor: string | undefined;
+  for (;;) {
+    const attempts = await runWithSystemDbAccess(() => db.select({id:invoiceCollectionAttempts.id,
+      state:invoiceCollectionAttempts.state,partnerId:invoices.partnerId}).from(invoiceCollectionAttempts)
+      .innerJoin(invoices,eq(invoices.id,invoiceCollectionAttempts.invoiceId)).where(and(
+        inArray(invoiceCollectionAttempts.state,['reserved','created','confirming','processing','requires_action']),
+        cursor?gt(invoiceCollectionAttempts.id,cursor):undefined,
+      )).orderBy(asc(invoiceCollectionAttempts.id)).limit(200));
+    if(!attempts.length)break;
+    for(const attempt of attempts){
+      try{
+        if(['reserved','created','confirming'].includes(attempt.state))await resumeCollectionAttempt(attempt.id);
+        else await applyAttemptOutcome(attempt.partnerId,attempt.id);
+      }catch(error){
+        if(error instanceof HeldDbContextForStripeError)throw error;
+        captureException(error instanceof Error?error:new Error(String(error)));
+      }
+    }
+    cursor=attempts[attempts.length-1]!.id;
+  }
 
   let settled = 0;
-  for (const r of list) {
+  for (const r of Array.isArray(list) ? list : []) {
     try {
       const res = await settleCheckoutSession(r.partner_id, r.stripe_object_id);
       if (res.settled) settled++;

@@ -14,7 +14,7 @@ vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: client }));
 vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
   if (h.depth) throw new Error('Held DB context');
 }, settlePaymentIntent: h.settle }));
-vi.mock('../orgMerge', () => ({ resolveMergedOrgIds: h.provenance }));
+vi.mock('../orgMergeProvenance', () => ({ resolveMergedOrgIds: h.provenance }));
 vi.mock('../stripeSessionRevocation', () => ({ requestInvoiceSessionRevocation: h.revocation }));
 vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));

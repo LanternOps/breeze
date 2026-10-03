@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => ({
   queueNames: [] as string[], workerNames: [] as string[],
 }));
 vi.mock('../services/autopay/reminderSweep', () => ({ runInvoiceReminderSweep: mocks.sweep }));
+vi.mock('../services/autopay/collectionEngine', () => ({ runAutopayCollection: vi.fn() }));
+vi.mock('../services/autopay/collectionControl', () => ({ reconcilePendingControls: vi.fn() }));
+vi.mock('../services/autopay/chargingNotice', () => ({ registerAutopayNoticeHandlers: vi.fn() }));
 vi.mock('../services/redis', async original => ({
   ...(await original<typeof import('../services/redis')>()), getBullMQConnection: () => ({}),
 }));

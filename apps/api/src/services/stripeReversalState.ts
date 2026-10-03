@@ -1,3 +1,4 @@
+import { applyAttemptOutcome } from './autopay/collectionEngine';
 import { invoiceCollectionAttempts, invoiceAutopaySchedules, orgPaymentMethods } from '../db/schema';
 import { enqueueAttemptNotice, notifyPaymentAttention } from './autopay/paymentNotices';
 import { classifyCollectionFailure } from './autopay/failureClassifier';
@@ -260,6 +261,8 @@ async function retrieveBankReturn(stripeEventId: string) {
 
 export async function applyStripeFinancialEvent(stripeEventId: string): Promise<ApplyResult> {
   assertOutsideHeldDbContext('applyStripeFinancialEvent');
+  const intentResult = await applyPaymentIntentInboxEvent(stripeEventId);
+  if (intentResult) return intentResult;
   const bankReturn = await retrieveBankReturn(stripeEventId);
   const outcome = await withSystemDbAccessContext(async (): Promise<ApplyResult> => {
     const [preEvent] = await db.select().from(stripeFinancialEvents)
@@ -599,7 +602,7 @@ export async function processPendingStripeFinancialEvents(limit = 200): Promise<
     .from(stripeFinancialEvents)
     .where(and(
       inArray(stripeFinancialEvents.status, ['pending']),
-      like(stripeFinancialEvents.eventType, 'charge.%'),
+      or(like(stripeFinancialEvents.eventType, 'charge.%'), like(stripeFinancialEvents.eventType, 'payment_intent.%')),
       // Fresh next_attempt_at values come from PostgreSQL's DEFAULT NOW(). Use
       // that same clock for eligibility: an application host a few milliseconds
       // behind the database must not hide a newly durable reversal until the
@@ -649,4 +652,43 @@ export async function processPendingStripeFinancialEventsForPayment(
     if (result.state === 'applied') applied += 1;
   }
   return applied;
+}
+
+async function applyPaymentIntentInboxEvent(stripeEventId:string):Promise<ApplyResult|null> {
+  const admission = await withSystemDbAccessContext(async()=>{
+    const [event]=await db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId,stripeEventId)).limit(1);
+    if (!event || !event.eventType.startsWith('payment_intent.')) return null;
+    if (event.status === 'applied' || event.status === 'ignored') return {done:true as const};
+    if (event.status !== 'pending') return {blocked:true as const};
+    const rows=await db.select({attempt:invoiceCollectionAttempts,mapping:invoiceStripePayments,invoice:invoices})
+      .from(invoiceStripePayments).innerJoin(invoiceCollectionAttempts,
+        eq(invoiceCollectionAttempts.invoiceStripePaymentId,invoiceStripePayments.id))
+      .innerJoin(invoices,eq(invoices.id,invoiceStripePayments.invoiceId)).where(and(
+        eq(invoiceStripePayments.stripeAccountId,event.stripeAccountId),
+        eq(invoiceStripePayments.stripeObjectType,'payment_intent'),
+        eq(invoiceStripePayments.stripeObjectId,event.paymentIntentId!),
+      )).limit(2);
+    if (!rows.length) {
+      await db.update(stripeFinancialEvents).set(pendingRetryUpdate(event,'payment_mapping_not_ready'))
+        .where(and(eq(stripeFinancialEvents.id,event.id),eq(stripeFinancialEvents.status,'pending')));
+      return {pending:true as const};
+    }
+    const row=rows[0]!;
+    if (rows.length !== 1 || row.invoice.partnerId !== event.partnerId
+      || row.attempt.invoiceId !== row.invoice.id || row.attempt.orgId !== row.invoice.orgId
+      || row.mapping.orgId !== row.invoice.orgId || row.mapping.currency !== event.currency
+      || row.attempt.stripePaymentIntentId !== event.paymentIntentId) throw new Error('PI inbox binding mismatch');
+    return {event,row};
+  });
+  if (!admission) return null;
+  if ('done' in admission) return {state:'already_processed'};
+  if ('blocked' in admission) return {state:'blocked'};
+  if ('pending' in admission) return {state:'pending'};
+  await applyAttemptOutcome(admission.event.partnerId,admission.row.attempt.id);
+  await withSystemDbAccessContext(()=>db.update(stripeFinancialEvents).set({status:'applied',
+    processedAt:new Date(),nextAttemptAt:null,lastError:null,updatedAt:new Date()})
+    .where(and(eq(stripeFinancialEvents.id,admission.event.id),eq(stripeFinancialEvents.status,'pending'))));
+  return {state:'applied',invoiceId:admission.row.invoice.id,orgId:admission.row.invoice.orgId,
+    partnerId:admission.event.partnerId,change:'unchanged'};
 }
