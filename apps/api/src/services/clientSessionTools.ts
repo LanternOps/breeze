@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { ActiveSession } from './streamingSessionManager';
+import { sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 
 // ============================================
 // Declaration validation (zod)
@@ -279,6 +280,8 @@ export type ClientDeclaredToolHandlerResult = {
 export type ClientToolDispatch = (
   toolName: string,
   input: Record<string, unknown>,
+  /** The model's tool_use id as the SDK sent it with the call (#7931), if any. */
+  sdkToolUseId?: string,
 ) => Promise<ClientToolDispatchResult>;
 
 function textResult(text: string, isError = false): ClientDeclaredToolHandlerResult {
@@ -290,8 +293,8 @@ function textResult(text: string, isError = false): ClientDeclaredToolHandlerRes
  * map its result to a CallToolResult. Extracted for direct unit testing.
  */
 export function makeClientDeclaredToolHandler(toolName: string, dispatch: ClientToolDispatch) {
-  return async (args: Record<string, unknown>): Promise<ClientDeclaredToolHandlerResult> => {
-    const result = await dispatch(toolName, args ?? {});
+  return async (args: Record<string, unknown>, extra?: unknown): Promise<ClientDeclaredToolHandlerResult> => {
+    const result = await dispatch(toolName, args ?? {}, sdkToolUseIdFromExtra(extra));
     if (result.error !== undefined) {
       return textResult(result.error, true);
     }

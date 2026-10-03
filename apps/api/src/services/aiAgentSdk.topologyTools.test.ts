@@ -365,7 +365,7 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
   it('publishes only a fixed progress phase for a tool result, and persists no tool output', async () => {
     const values = mockInsertValues();
     const session = makeActiveSession({ topologyInvestigation: topologyRuntime(), pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
-    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ nodes: [{ alias: 'host-1', secret: 'FOREIGN-SITE-SECRET' }] }), false, 5);
+    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ nodes: [{ alias: 'host-1', secret: 'FOREIGN-SITE-SECRET' }] }), false, 5, undefined, undefined, 'tool-use-1');
     expect(session.eventBus.publish).toHaveBeenCalledTimes(1);
     expect(session.eventBus.publish).toHaveBeenCalledWith({ type: 'topology_progress', phase: 'analyzing' });
     expect(JSON.stringify(values.mock.calls)).not.toContain('FOREIGN-SITE-SECRET');

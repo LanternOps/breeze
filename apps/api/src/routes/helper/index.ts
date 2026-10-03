@@ -38,6 +38,7 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, helperDbAccessContext, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
+import { claimToolUseId } from '../../services/aiToolUseCorrelation';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { LlmNotConfiguredError } from '../../services/llm/llmAvailability';
 import type { ResolveFailureReason } from '../../services/aiModels/eligibility';
@@ -392,9 +393,10 @@ helperRoutes.post(
           _onPostToolUse: unknown,
           getSession: () => ActiveSession,
         ) => ({
-          server: createClientDeclaredMcpServer(clientTools, (toolName, input) => {
+          server: createClientDeclaredMcpServer(clientTools, (toolName, input, sdkToolUseId) => {
             const session = getSession();
-            const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
+            // Pair by the SDK's own tool_use id, never by queue position (#7931).
+            const toolUseId = claimToolUseId(session, toolName, sdkToolUseId) ?? crypto.randomUUID();
             return requestClientDeclaredTool(session, toolUseId, toolName, input);
           }),
           name: CLIENT_DECLARED_MCP_SERVER_NAME,

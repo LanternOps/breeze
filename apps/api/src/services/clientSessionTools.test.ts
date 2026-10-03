@@ -181,9 +181,16 @@ describe('makeClientDeclaredToolHandler', () => {
     const dispatch = vi.fn().mockResolvedValue({ output: { files: ['a'] } });
     const handler = makeClientDeclaredToolHandler('find_files', dispatch);
     const result = await handler({ q: 'x' });
-    expect(dispatch).toHaveBeenCalledWith('find_files', { q: 'x' });
+    expect(dispatch).toHaveBeenCalledWith('find_files', { q: 'x' }, undefined);
     expect(result.isError).toBeFalsy();
     expect(result.content[0]?.text).toBe(JSON.stringify({ files: ['a'] }));
+  });
+
+  it('forwards the SDK tool_use id from extra._meta to dispatch (#7931)', async () => {
+    const dispatch = vi.fn().mockResolvedValue({ output: 'ok' });
+    const handler = makeClientDeclaredToolHandler('find_files', dispatch);
+    await handler({ q: 'x' }, { _meta: { 'claudecode/toolUseId': 'toolu_sdk_1' } });
+    expect(dispatch).toHaveBeenCalledWith('find_files', { q: 'x' }, 'toolu_sdk_1');
   });
 
   it('maps a dispatch error to an isError CallToolResult', async () => {
