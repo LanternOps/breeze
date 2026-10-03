@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} connexions",
   "notMeasured": "Non mesuré",
   "fit": "Ajuster la carte",
+  "moreActions": "Autres actions",
+  "layoutActions": "Disposition de la carte",
   "arrange": "Organiser les nouveaux appareils",
   "reflow": "Réorganiser les éléments non épinglés",
   "saving": "Enregistrement…",
@@ -686,6 +688,46 @@
     "neighborCoverageLimited": "Les données du cache des voisins de ce réseau sont incomplètes : l’absence d’un appareil dans un cache ne prouve pas qu’il est absent.",
     "conflictGatewayMac": "Les appareils de cette plage signalent la même adresse de passerelle, mais leurs caches des voisins indiquent des adresses MAC de passerelle différentes ; elle est donc scindée en cartes distinctes.",
     "gatewayMac_one": "MAC de la passerelle {{mac}} : dans le cache des voisins de {{count}} appareil ; dernière confirmation : {{when}}",
-    "gatewayMac_other": "MAC de la passerelle {{mac}} : dans les caches des voisins de {{count}} appareils ; dernière confirmation : {{when}}"
+    "gatewayMac_other": "MAC de la passerelle {{mac}} : dans les caches des voisins de {{count}} appareils ; dernière confirmation : {{when}}",
+    "section": {
+      "network": "Équipements réseau",
+      "servers": "Serveurs",
+      "computers": "Ordinateurs",
+      "phones": "Téléphones",
+      "printers": "Imprimantes",
+      "other": "Autres appareils"
+    },
+    "sectionShort": {
+      "network": "Réseau",
+      "servers": "Serveurs",
+      "computers": "Ordinateurs",
+      "phones": "Téléphones",
+      "printers": "Imprimantes",
+      "other": "Autres"
+    },
+    "summary": {
+      "agentsOnline_one": "{{count}} agent en ligne",
+      "agentsOnline_other": "{{count}} agents en ligne",
+      "agentsOffline_one": "{{count}} hors ligne",
+      "agentsOffline_other": "{{count}} hors ligne",
+      "noAgents": "Aucun agent Breeze",
+      "zoomIn": "Zoomez pour voir les appareils"
+    },
+    "bundle_one": "{{count}} connexion",
+    "bundle_other": "{{count}} connexions",
+    "outside_one": "{{count}} élément hors de la vue",
+    "outside_other": "{{count}} éléments hors de la vue",
+    "showAll": "Tout afficher",
+    "gatewayFor_one": "Passerelle de {{count}} appareil",
+    "gatewayFor_other": "Passerelle de {{count}} appareils",
+    "cardVia": "par {{gateways}}",
+    "gatewaysDiffer": "passerelles différentes",
+    "sharedEdge_one": "{{count}} partagé",
+    "sharedEdge_other": "{{count}} partagés",
+    "sharedIpBadge": "IP partagée",
+    "linkVia": "par {{name}}",
+    "siteNetworks_one": "{{count}} réseau",
+    "siteNetworks_other": "{{count}} réseaux",
+    "noObservedLink": "Aucun lien observé entre {{network}} et {{primary}}"
   }
 }

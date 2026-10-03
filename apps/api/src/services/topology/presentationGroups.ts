@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { topologyIpSchema, topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
+import { topologyInterfaceKindEvidence, topologyIpSchema, topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
 import { assetScanPresenceSql, nodeFilter, observedFreshUntilSql, relationshipExposure, relationshipFilter, scoped, type ReadExposure } from './graphRead';
 import { cidrContains, parseIpAddress, parsePrefix, type Family } from './ipAddress';
@@ -25,8 +25,13 @@ export type PresentationGroupInput = {
    * decides the network class before any CIDR heuristic. Absent/null = unknown.
    */
   memberships: { id: string; endpointId: string; networkId: string; interfaceId: string | null; fresh: boolean; context?: string | null; interfaceKind?: string | null }[];
-  /** Every active `default_route` row (endpoint → gateway); `address` is the gateway node's reported next hop. */
-  routes: { id: string; endpointId: string; gatewayId: string; address: string | null; interfaceId: string | null; fresh: boolean; context?: string | null }[];
+  /**
+   * Every active `default_route` row (endpoint → gateway); `address` is the gateway node's reported next hop.
+   * `interfaceKind` is the route interface's agent-reported kind (#7819) and `halfDefault` the route's
+   * 0/1 + 128/1 pair marker (#7820): either marks a VPN tunnel's default, an overlay path, never a LAN gateway.
+   */
+  routes: { id: string; endpointId: string; gatewayId: string; address: string | null; interfaceId: string | null; fresh: boolean; context?: string | null;
+    interfaceKind?: string | null; halfDefault?: boolean }[];
   /** Active endpoints with no `network_member` row at all, with their live inventory addresses. */
   unplaced: { endpointId: string; addresses: string[] }[];
   /**
@@ -74,6 +79,8 @@ const TEXT_CAP = 64;
 
 type Membership = PresentationGroupInput['memberships'][number] & { prefix: string; family: Family; networkClass: TopologyNetworkClass };
 type Route = PresentationGroupInput['routes'][number] & { address: string; family: Family };
+/** A default route through a VPN tunnel (tunnel interface, or the half-default pair a full-tunnel client installs). */
+const overlayRoute = (route: Pick<Route, 'interfaceKind' | 'halfDefault'>) => topologyInterfaceKindEvidence(route.interfaceKind) === 'tunnel' || route.halfDefault === true;
 type ConflictBasis = 'gateway_address' | 'gateway_mac';
 type Candidate = {
   key: string; family: Family; prefix: string; networkClass: TopologyNetworkClass; conflict: boolean; conflictBasis: Set<ConflictBasis>;
@@ -81,7 +88,8 @@ type Candidate = {
   /** Unplaced endpoints corroborated by an in-candidate observer's neighbour cache (#7816). */
   neighborSeen: Map<string, NeighborTuple>;
 };
-type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[] };
+/** `overlay`: a VPN tunnel's gateway (step 3b), shown only with the hidden networks; never a LAN card's gateway. */
+type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[]; overlay: boolean };
 
 const sorted = <T>(values: Iterable<T>) => [...values].sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
 const bySmallest = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -216,7 +224,7 @@ function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
   for (const m of memberships) {
     if (m.networkClass !== 'lan') continue;
     const single = lanCount.get(`${m.endpointId}|${m.family}`) === 1;
-    const routes = (routesByObserver.get(m.endpointId) ?? []).filter((route) => route.family === m.family
+    const routes = (routesByObserver.get(m.endpointId) ?? []).filter((route) => route.family === m.family && !overlayRoute(route)
       && (route.interfaceId && m.interfaceId ? route.interfaceId === m.interfaceId : single));
     const fresh = routes.filter((route) => route.fresh);
     matched.set(m.id, routes);
@@ -315,10 +323,23 @@ function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
       if (!current || key < current.candidateKey) routeOwner.set(route.id, { route, candidateKey: key });
     }
   }
+  // 3b. A VPN tunnel's default (tunnel interface or half-default pair) is an overlay path: its gateway
+  //     folds under the observer's overlay card on that interface (else its only overlay card of the
+  //     family), so it is shown only with the hidden-networks toggle and is never a LAN card's gateway.
+  //     With no overlay card to own it, it still folds into its own gateway group, which no card routes to.
+  //     Either way the gateway group is marked overlay (networkClass 'overlay'): the client shows an
+  //     unrouted one with the hidden networks, so the folded canonical gateway is never lost (#7892).
+  const overlayRouteIds = new Set<string>();
+  for (const route of [...routesByObserver.values()].flat().filter(overlayRoute)) {
+    overlayRouteIds.add(route.id);
+    const own = memberships.filter((m) => m.endpointId === route.endpointId && m.networkClass === 'overlay' && m.family === route.family);
+    const owner = (route.interfaceId ? own.find((m) => m.interfaceId === route.interfaceId) : undefined) ?? (own.length === 1 ? own[0] : undefined);
+    routeOwner.set(route.id, { route, candidateKey: owner ? membershipCandidate.get(owner.id)! : `overlay-route|${route.family}` });
+  }
   const gatewayGroups = new Map<string, GatewayGroup>();
   for (const { route, candidateKey } of routeOwner.values()) {
     const key = `${candidateKey}|gw|${route.address}${linkLocalAddress(route.address) ? `|${route.gatewayId}` : ''}`;
-    const group = gatewayGroups.get(key) ?? { key, candidateKey, address: route.address, routes: [] };
+    const group = gatewayGroups.get(key) ?? { key, candidateKey, address: route.address, routes: [], overlay: overlayRouteIds.has(route.id) };
     group.routes.push(route);
     gatewayGroups.set(key, group);
   }
@@ -519,7 +540,7 @@ function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions):
     nodeIds.set(group.key, id);
     return { id, view, role: 'gateway_group', label: `Reported gateway ${group.address}`.slice(0, 255), memberCount: canonical.length,
       frontierToken: tokenFor(groupRef('gateway', group.key)), authority: false,
-      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: group.address, gatewayAddresses: [],
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: group.overlay ? 'overlay' : null, prefix: null, address: group.address, gatewayAddresses: [],
         conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds,
         ...(gatewayMacs.length ? { gatewayMacs } : {}) } };
   };
@@ -646,7 +667,7 @@ export async function readPresentationGroupInput(
         WHERE ${scoped(scope, 'ab')} AND ab.node_id = r.id AND ${assetScanPresenceSql(scope)} = 'online')
     ), rels AS MATERIALIZED (
       SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, r.logical_context->>'contextKey' AS context,
-        coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
+        coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh, coalesce((r.attributes->>'halfDefault')::boolean, false) AS half_default
       FROM topology_relationships r
       WHERE ${relationshipFilter(scope, view, 'r', exposure)} AND r.kind IN ('network_member', 'default_route')
         AND EXISTS (SELECT 1 FROM site_nodes s WHERE s.id = r.source_node_id) AND EXISTS (SELECT 1 FROM site_nodes t WHERE t.id = r.target_node_id)
@@ -662,8 +683,11 @@ export async function readPresentationGroupInput(
           'interfaceId', m.source_interface_id, 'fresh', m.fresh, 'context', m.context, 'interfaceKind', m.interface_kind) ORDER BY m.id), '[]'::jsonb)
         FROM memberships m) AS memberships,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'endpointId', r.source_node_id, 'gatewayId', r.target_node_id,
-          'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh, 'context', r.context) ORDER BY r.id), '[]'::jsonb)
-        FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'gateway' WHERE r.kind = 'default_route') AS routes,
+          'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh, 'context', r.context,
+          'interfaceKind', ri.kind, 'halfDefault', r.half_default) ORDER BY r.id), '[]'::jsonb)
+        FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'gateway'
+          LEFT JOIN topology_interfaces ri ON ri.id = r.source_interface_id AND ${scoped(scope, 'ri')}
+        WHERE r.kind = 'default_route') AS routes,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('endpointId', e.id, 'addresses', coalesce((SELECT jsonb_agg(x.ip ORDER BY x.ip) FROM (
             SELECT host(a.ip_address) AS ip FROM topology_node_bindings b JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
               WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND a.ip_address IS NOT NULL

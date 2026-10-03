@@ -82,8 +82,16 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     return () => controller.abort();
   }, [selectedSite, deviceId, assetId]);
   const notInOrganization = linked === 'missing' || (linked === 'sameOrg' && sites.length > 0);
-  return <div className="space-y-4" data-testid="topology-entry">
-    {!siteId && <label className="block text-sm">{t('site')}<select data-testid="topology-site" className="ml-3 rounded border bg-background p-2" value={selectedSite ?? ''} onChange={(event) => { setHashSite(event.target.value); writeTopologyHash({ siteId: event.target.value, view: 'overview', search: '' }); }}><option value="">{t('chooseSite')}</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>}
+  // The site select lives in ONE place for the entry's whole life: the entry's own toolbar row. The
+  // explorer fills the rest of that row through a portal into `toolbarSlot`. Moving the select into the
+  // explorer remounted it on every site change (the explorer unmounts while the new site loads), which
+  // dropped keyboard focus to <body>.
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLDivElement | null>(null);
+  return <div className={siteId ? 'space-y-4' : 'space-y-3'} data-testid="topology-entry">
+    {!siteId && <div data-testid="topology-entry-toolbar" className="flex flex-wrap items-center gap-2">
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">{t('site')}<select data-testid="topology-site" className="h-9 rounded-md border bg-background px-2 text-sm text-foreground" value={selectedSite ?? ''} onChange={(event) => { setHashSite(event.target.value); writeTopologyHash({ siteId: event.target.value, view: 'overview', search: '' }); }}><option value="">{t('chooseSite')}</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
+      <div ref={setToolbarSlot} className="contents" />
+    </div>}
     {notInOrganization && <p role="alert" data-testid="topology-site-not-in-org" className="text-sm">{t('siteNotInOrganization')}</p>}
     {linked === 'failed' && <p role="alert" data-testid="topology-site-lookup-failed" className="text-destructive">{t('loadFailed')}</p>}
     {linked && linked !== 'failed' && !notInOrganization && <p role="status">{t('loading')}</p>}
@@ -91,6 +99,6 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {selectedSite && !settings && !error && <p role="status">{t('loading')}</p>}
     {settings && !settings.capabilities.ui.available && (legacy ?? <TopologyEmptyState reason={settings.capabilities.ui.reason} />)}
-    {settings?.capabilities.ui.available && bindingResolved && selectedSite && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} focusNodeId={focus} settings={settings} /></Suspense>}
+    {settings?.capabilities.ui.available && bindingResolved && selectedSite && (siteId || toolbarSlot) && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} siteName={sites.find((site) => site.id === selectedSite)?.name} focusNodeId={focus} settings={settings} toolbarSlot={siteId ? undefined : toolbarSlot ?? undefined} /></Suspense>}
   </div>;
 }

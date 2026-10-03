@@ -221,6 +221,48 @@ it('saving keeps card members in the grid; the saved legacy pins are sent unchan
   expect(drawn()).toEqual(grid);
 });
 
+it('frames the overview as networks within one site and says when a second network has no observed link', async () => {
+  const graph = topologyGraphFixture();
+  const lan = (card: string, prefix: string, members: [string, string][]) => {
+    for (const [id, ip] of members) graph.nodes.push({ ...graph.nodes[0]!, id, kind: 'endpoint', role: null, label: `PC-${ip}`, bindings: [], availableActions: [],
+      inventory: { source: 'device', name: `PC-${ip}`, addresses: [ip], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+    graph.presentation.nodes.push({ id: card, view: 'overview', role: 'network_group', label: prefix, memberCount: members.length, frontierToken: 't', authority: false,
+      group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix, address: null, gatewayAddresses: [], conflict: false, observerCount: members.length,
+        members: members.map(([nodeId]) => ({ nodeId, placement: 'observed' as const, primary: true, stale: false })), canonicalNodeIds: [] } });
+  };
+  lan('presentation:overview:scope:net-a', '10.1.2.0/24', [['10000000-0000-4000-8000-000000000061', '10.1.2.61'], ['10000000-0000-4000-8000-000000000062', '10.1.2.62']]);
+  lan('presentation:overview:scope:net-b', '10.1.5.0/24', [['10000000-0000-4000-8000-000000000071', '10.1.5.71']]);
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(graph)));
+  render(<TopologyExplorer siteId={SITE} siteName="Harbor Dental — Main Office" settings={topologySettingsFixture()} />);
+  const header = await screen.findByTestId('topology-site-header');
+  expect(header).toHaveTextContent('Harbor Dental — Main Office');
+  expect(header).toHaveTextContent('2 networks · 3 devices');
+  expect(screen.getByTestId('topology-unlinked-note')).toHaveTextContent('No observed link between 10.1.5.0/24 and 10.1.2.0/24');
+});
+
+it('compacts the header: one status row, a secondary control group with accessible names, and the toolbar in the entry\'s row beside the site control', async () => {
+  // The entry's own toolbar row (TopologyEntry): the site select, then the slot the explorer fills.
+  const row = document.body.appendChild(document.createElement('div'));
+  row.innerHTML = '<select data-testid="topology-site" aria-label="Site"><option>Main</option></select><div data-testid="slot"></div>';
+  const slot = row.querySelector<HTMLElement>('[data-testid="slot"]')!;
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} toolbarSlot={slot} />);
+  const status = await screen.findByTestId('topology-status');
+  for (const id of ['topology-coverage', 'topology-health-internet', 'topology-counts']) expect(status).toContainElement(screen.getByTestId(id));
+  const toolbar = screen.getByTestId('topology-toolbar');
+  expect(slot).toContainElement(toolbar);
+  expect(screen.getByTestId('topology-explorer')).not.toContainElement(toolbar);
+  for (const id of ['topology-site', 'topology-search', 'topology-view', 'topology-list-toggle', 'topology-refresh', 'topology-configure', 'topology-operations-toggle']) {
+    expect(row).toContainElement(screen.getByTestId(id));
+  }
+  expect(screen.getByRole('button', { name: 'Refresh snapshot' })).toBe(screen.getByTestId('topology-refresh'));
+  expect(screen.getByRole('button', { name: 'Configuration' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByRole('button', { name: 'Operations' })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByRole('searchbox', { name: 'Search this site by name or address' })).toBe(screen.getByTestId('topology-search'));
+  // Nothing outside the view: no "Outside this view: 0 nodes · 0 connections" taking up the row.
+  expect(screen.queryByText(/Outside this view/)).toBeNull();
+  cleanup(); row.remove();
+});
+
 it('collapses an expansion back to the base read (#7818)', async () => {
   const initial = topologyGraphFixture();
   const added = { ...initial.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Expanded peer' };

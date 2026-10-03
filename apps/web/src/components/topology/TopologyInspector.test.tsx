@@ -132,6 +132,14 @@ describe('grouped overview inspector (2026-10-02)', () => {
     expect(screen.getByTestId('topology-identity')).toHaveTextContent('10.1.2.57');
     expect(screen.getByTestId('topology-identity')).toHaveTextContent('windows 10.0.19045');
     expect(screen.getByText('Evidence and freshness').closest('details')).not.toHaveAttribute('open');
+    expect(screen.queryByTestId('topology-shared-address')).toBeNull();
+  });
+
+  it('spells out a shared IP in full under the addresses (the tile only carries a compact marker)', () => {
+    const graph = topologyGraphFixture();
+    graph.nodes[0] = { ...graph.nodes[0]!, kind: 'endpoint', label: 'DRT-HYG3', inventory };
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: NODE }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} sharedAddressCount={2} />);
+    expect(screen.getByTestId('topology-shared-address')).toHaveTextContent('Same IP as 2 other devices');
   });
 
   it('lists each reporter of a folded gateway and selects that reporter’s own canonical gateway', () => {

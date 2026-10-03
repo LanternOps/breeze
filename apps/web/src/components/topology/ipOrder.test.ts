@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareIpAddresses, ipSortKey } from './ipOrder';
+import { compareIpAddresses, inIpv4Prefix, ipSortKey } from './ipOrder';
 
 describe('ipSortKey', () => {
   it('normalises IPv4 to a fixed-width numeric key', () => {
@@ -27,5 +27,15 @@ describe('compareIpAddresses', () => {
 
   it('puts IPv4 before IPv6, and addresses before tiles with no address', () => {
     expect([null, 'fe80::2', 'fe80::10', '10.0.0.1', 'not an ip'].sort(compareIpAddresses)).toEqual(['10.0.0.1', 'fe80::2', 'fe80::10', null, 'not an ip']);
+  });
+});
+
+describe('inIpv4Prefix', () => {
+  it('tests IPv4 containment by prefix length', () => {
+    expect(inIpv4Prefix('10.1.5.1', '10.1.5.0/24')).toBe(true);
+    expect(inIpv4Prefix('10.1.2.1', '10.1.5.0/24')).toBe(false);
+    expect(inIpv4Prefix('10.1.5.200', '10.1.4.0/23')).toBe(true);
+    expect(inIpv4Prefix('fe80::1', 'fe80::/64')).toBe(false);
+    expect(inIpv4Prefix('10.1.5.1', 'nonsense')).toBe(false);
   });
 });

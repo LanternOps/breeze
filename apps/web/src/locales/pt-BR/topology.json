@@ -49,6 +49,8 @@
   "connectionCount_other": "{{count}} conexões",
   "notMeasured": "Não medido",
   "fit": "Ajustar mapa",
+  "moreActions": "Mais ações",
+  "layoutActions": "Disposição do mapa",
   "arrange": "Organizar novos dispositivos",
   "reflow": "Reorganizar os não fixados",
   "saving": "Salvando…",
@@ -686,6 +688,46 @@
     "neighborCoverageLimited": "Os dados do cache de vizinhos desta rede estão incompletos: um dispositivo ausente de um cache não prova que ele não está presente.",
     "conflictGatewayMac": "Os dispositivos desta faixa reportam o mesmo endereço de gateway, mas seus caches de vizinhos mostram endereços MAC de gateway diferentes, então ela é dividida em cartões separados.",
     "gatewayMac_one": "MAC do gateway {{mac}}: no cache de vizinhos de {{count}} dispositivo; última confirmação: {{when}}",
-    "gatewayMac_other": "MAC do gateway {{mac}}: nos caches de vizinhos de {{count}} dispositivos; última confirmação: {{when}}"
+    "gatewayMac_other": "MAC do gateway {{mac}}: nos caches de vizinhos de {{count}} dispositivos; última confirmação: {{when}}",
+    "section": {
+      "network": "Equipamentos de rede",
+      "servers": "Servidores",
+      "computers": "Computadores",
+      "phones": "Telefones",
+      "printers": "Impressoras",
+      "other": "Outros dispositivos"
+    },
+    "sectionShort": {
+      "network": "Rede",
+      "servers": "Servidores",
+      "computers": "Computadores",
+      "phones": "Telefones",
+      "printers": "Impressoras",
+      "other": "Outros"
+    },
+    "summary": {
+      "agentsOnline_one": "{{count}} agente online",
+      "agentsOnline_other": "{{count}} agentes online",
+      "agentsOffline_one": "{{count}} agente offline",
+      "agentsOffline_other": "{{count}} agentes offline",
+      "noAgents": "Nenhum agente Breeze",
+      "zoomIn": "Aproxime para ver os dispositivos"
+    },
+    "bundle_one": "{{count}} conexão",
+    "bundle_other": "{{count}} conexões",
+    "outside_one": "{{count}} item fora da visualização",
+    "outside_other": "{{count}} itens fora da visualização",
+    "showAll": "Mostrar tudo",
+    "gatewayFor_one": "Gateway de {{count}} dispositivo",
+    "gatewayFor_other": "Gateway de {{count}} dispositivos",
+    "cardVia": "via gateway {{gateways}}",
+    "gatewaysDiffer": "gateways diferentes",
+    "sharedEdge_one": "{{count}} compartilhado",
+    "sharedEdge_other": "{{count}} compartilhados",
+    "sharedIpBadge": "IP compartilhado",
+    "linkVia": "por meio de {{name}}",
+    "siteNetworks_one": "{{count}} rede",
+    "siteNetworks_other": "{{count}} redes",
+    "noObservedLink": "Nenhum vínculo observado entre {{network}} e {{primary}}"
   }
 }

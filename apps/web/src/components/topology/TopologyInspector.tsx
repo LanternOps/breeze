@@ -52,9 +52,9 @@ function useRelationshipDetail(siteId: string | undefined, relationshipId: strin
   return { detail, evidence, error, loadMore };
 }
 
-export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured }: {
+export default function TopologyInspector({ selection, graph, canDiagnose, onDiagnose, onClose, onExpand, onPin, pinned, siteId, view, onChanged, operations, historyInterfaceId, onHistory, onSelectNode, explain, aiNotConfigured, sharedAddressCount }: {
   selection: TopologySelection; graph: GraphResponse; canDiagnose: boolean; onDiagnose: () => void; onClose: () => void;
-  onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean;
+  onExpand: (token: string) => void; onPin?: () => void; pinned?: boolean; sharedAddressCount?: number;
   /** With a site, an edge selection also reads its authorized detail/evidence (M2 D11) and offers exclusion (D17). */
   siteId?: string; view?: TopologyView; onChanged?: () => void;
   /** M3 (Task 11): with a site and capabilities, the inspector adds link health, port history, monitoring status, port measurement and impact. */
@@ -83,7 +83,7 @@ export default function TopologyInspector({ selection, graph, canDiagnose, onDia
     {schematic && !('group' in entity && entity.group) && <p>{t('schematicExplanation')}</p>}
     {'group' in entity && entity.group && <GroupSummary graph={graph} group={entity} onSelectNode={onSelectNode} />}
     {'kind' in entity && !('inventory' in entity && entity.inventory) && <p className="text-sm text-muted-foreground">{entity.kind.replaceAll('_', ' ')}</p>}
-    {'inventory' in entity && entity.inventory && <NodeIdentity graph={graph} node={entity} onSelectNode={onSelectNode} />}
+    {'inventory' in entity && entity.inventory && <NodeIdentity graph={graph} node={entity} onSelectNode={onSelectNode} sharedAddressCount={sharedAddressCount} />}
     {'evidence' in entity && <details className="rounded border px-3 py-2 text-sm" open={!('inventory' in entity && entity.inventory)}><summary className="cursor-pointer font-medium">{t('grouped.evidenceSection')}</summary><dl className="mt-2 space-y-3 text-sm">
       <div><dt className="font-medium">{t('evidence')}</dt><dd>{entity.evidence.classes.join(', ') || t('none')} · {entity.evidence.methods.join(', ') || t('none')}</dd></div>
       <div><dt className="font-medium">{t('freshness')}</dt><dd>{entity.freshness} · {entity.evidence.lastObservedAt ? new Date(entity.evidence.lastObservedAt).toLocaleString() : t('notObserved')}</dd></div>

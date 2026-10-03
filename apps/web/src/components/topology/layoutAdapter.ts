@@ -1,4 +1,5 @@
 import type { ElkNode } from 'elkjs/lib/elk-api';
+import { SECTION_BAND, hasSections } from './cardSections';
 import { compareIpAddresses } from './ipOrder';
 import type { LayoutBox, LayoutPosition, LayoutRequest, LayoutResult } from './layoutTypes';
 
@@ -25,6 +26,22 @@ export function layeredThoroughness(elements: number): number {
   return 1; // V1000 (3,000) up to the 5,000-element packing cap
 }
 
+/**
+ * Model order for ELK (2026-10-03): by role as before, then the primary (largest) network first. A
+ * card's weight is its area; a gateway or other node weighs as much as the largest card it links to,
+ * so the main network and its gateway lead the row and smaller networks sit beside it. Ties keep id order.
+ */
+function primaryFirst(request: LayoutRequest): LayoutBox[] {
+  const area = new Map(request.nodes.filter((node) => GROUP_ROLES.has(node.role)).map((node) => [node.id, node.width * node.height]));
+  const weight = new Map(area);
+  for (const edge of request.edges) {
+    for (const [end, other] of [[edge.source, edge.target], [edge.target, edge.source]] as const) {
+      if (area.has(other) && !area.has(end)) weight.set(end, Math.max(weight.get(end) ?? 0, area.get(other)!));
+    }
+  }
+  return [...request.nodes].sort((a, b) => (roleOrder[a.role] ?? 4) - (roleOrder[b.role] ?? 4) || (weight.get(b.id) ?? 0) - (weight.get(a.id) ?? 0) || a.id.localeCompare(b.id, 'en'));
+}
+
 export function toElkGraph(request: LayoutRequest, direction: 'RIGHT' | 'DOWN' = 'RIGHT'): ElkNode {
   // Interface ports (M2): an edge with a known endpoint port attaches to an ELK
   // port on that node, so parallel cables between one pair stay distinct.
@@ -38,7 +55,7 @@ export function toElkGraph(request: LayoutRequest, direction: 'RIGHT' | 'DOWN' =
   };
   const edges = [...request.edges].sort((a, b) => a.id.localeCompare(b.id, 'en'))
     .map((edge) => ({ id: edge.id, sources: [endpoint(edge.source, edge.sourcePort)], targets: [endpoint(edge.target, edge.targetPort)] }));
-  const children: ElkNode[] = sorted(request.nodes).map((node) => ({ id: node.id, width: node.width, height: node.height,
+  const children: ElkNode[] = primaryFirst(request).map((node) => ({ id: node.id, width: node.width, height: node.height,
     ...(ports.has(node.id) ? { ports: [...ports.get(node.id)!].sort((a, b) => a.localeCompare(b, 'en')).map((id) => ({ id, width: 1, height: 1 })) } : {}) }));
   const groups = new Map<string, ElkNode>();
   for (const node of sorted(request.nodes)) {
@@ -116,7 +133,11 @@ export async function computeTopologyLayout(request: LayoutRequest, engine: { la
   if (request.nodes.length + request.edges.length > 5000) return packTopologyLayout(request, undefined, true);
   if (isGroupedRequest(request)) {
     const { top } = groupedStages(request);
-    return packGroupedLayout(request, elkPositions(await engine.layout(toElkGraph(top, 'DOWN'))));
+    const graph = toElkGraph(top, 'DOWN');
+    // The card graph is small (cards, gateways, loose tiles), so ELK can afford to keep the model order
+    // within a layer: the primary network and its gateway lead (primaryFirst). Not for big flat graphs (#7285).
+    if (top.nodes.length <= 200) graph.layoutOptions = { ...graph.layoutOptions, 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES' };
+    return packGroupedLayout(request, elkPositions(await engine.layout(graph)));
   }
   const layout = await engine.layout(toElkGraph(request));
   return packTopologyLayout(request, elkPositions(layout));
@@ -150,16 +171,35 @@ const fixedPositions = (request: LayoutRequest) => new Map(request.positions
  * they are: they still apply wherever the view is not grouped.
  */
 function packCard(group: LayoutBox, members: LayoutBox[], pins: Map<string, LayoutPosition>): Card {
-  const ordered = [...members].sort((a, b) => (a.rank ?? 9) - (b.rank ?? 9) || compareIpAddresses(a.address, b.address)
+  const ordered = [...members].sort((a, b) => (a.section ?? 0) - (b.section ?? 0) || (a.rank ?? 9) - (b.rank ?? 9) || compareIpAddresses(a.address, b.address)
     || (a.name ?? a.id).localeCompare(b.name ?? b.id, 'en') || a.id.localeCompare(b.id, 'en'));
-  const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP, cellH = Math.max(1, ...members.map((m) => m.height)) + CELL_GAP;
-  // Roughly 3:2 cards: wide enough to read as a network, never a one-tile strip.
-  const cols = Math.max(1, Math.min(ordered.length, Math.ceil(Math.sqrt(ordered.length * 1.5 * cellH / cellW))));
-  const rows = Math.ceil(ordered.length / cols);
+  const cellW = Math.max(1, ...members.map((m) => m.width)) + CELL_GAP;
+  const cellH = members.reduce((sum, m) => sum + m.height, 0) / Math.max(1, members.length) + CELL_GAP;
+  // Roughly 16:9 cards, the shape of the canvas they are fitted into: wide enough to read as a network,
+  // never a one-tile strip. Rows take their own height, so the average tile height sets the shape.
+  const cols = Math.max(1, Math.min(ordered.length, Math.ceil(Math.sqrt(ordered.length * 1.8 * cellH / cellW))));
+  // Role sections (2026-10-03): each section starts a new row under a header band. A card whose
+  // members share one section gets no band, so small single-role cards stay compact.
+  const banded = hasSections(ordered.map((member) => member.section));
+  const rows: { members: LayoutBox[]; band: boolean }[] = [];
+  let section: number | undefined;
+  for (const member of ordered) {
+    const newSection = banded && member.section !== section;
+    const last = rows[rows.length - 1];
+    if (!last || last.members.length >= cols || newSection) rows.push({ members: [member], band: newSection });
+    else last.members.push(member);
+    section = member.section;
+  }
+  // Each row is as tall as its tallest tile: one three-line tile no longer spaces out the whole card.
   const local = new Map<string, { x: number; y: number }>();
-  ordered.forEach((member, index) => local.set(member.id, { x: GROUP_PADDING + (index % cols) * cellW + member.width / 2, y: GROUP_HEADER + Math.floor(index / cols) * cellH + member.height / 2 }));
+  let top = GROUP_HEADER;
+  for (const row of rows) {
+    if (row.band) top += SECTION_BAND;
+    row.members.forEach((member, column) => local.set(member.id, { x: GROUP_PADDING + column * cellW + member.width / 2, y: top + member.height / 2 }));
+    top += Math.max(...row.members.map((member) => member.height)) + CELL_GAP;
+  }
   const width = Math.max(2 * GROUP_PADDING + Math.max(0, cols * cellW - CELL_GAP), 240);
-  const height = Math.max(GROUP_HEADER + GROUP_PADDING + Math.max(0, rows * cellH - CELL_GAP), GROUP_HEADER + GROUP_PADDING);
+  const height = Math.max(rows.length ? top - CELL_GAP + GROUP_PADDING : 0, GROUP_HEADER + GROUP_PADDING);
   const pinned = ordered.filter((member) => pins.has(member.id));
   if (!pinned.length) return { id: group.id, width, height, local };
   const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -209,7 +249,16 @@ function groupedStages(request: LayoutRequest) {
 
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
-  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages).
+  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages). The auto-layout
+  // moves with the largest anchored card (2026-10-03): ELK's whole proposal is translated so that card
+  // lands on its anchor, so its gateway row stays above it and sibling cards keep their places around
+  // it, instead of each colliding tile being pushed below the card one by one.
+  const anchor = [...cards.values()].filter((card) => card.fixed && proposed.has(card.id))
+    .sort((a, b) => b.local.size - a.local.size || a.id.localeCompare(b.id, 'en'))[0];
+  if (anchor) {
+    const at = proposed.get(anchor.id)!, dx = anchor.fixed!.x - at.x, dy = anchor.fixed!.y - at.y;
+    proposed = new Map([...proposed].map(([id, point]) => [id, { x: point.x + dx, y: point.y + dy }]));
+  }
   const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
   const positions: LayoutPosition[] = [];
