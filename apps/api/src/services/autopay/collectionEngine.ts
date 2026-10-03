@@ -277,6 +277,11 @@ export async function loadAttemptForReconciliation(attemptId: string) {
 }
 type AttemptHistory = Awaited<ReturnType<typeof loadAttemptForReconciliation>>;
 
+// Durable cancellation intent in the existing schedule state_reason field.
+// Commit under the invoice lock before Stripe cancellation; consume only after
+// verified cancellation and release of every invoice reservation.
+const RENOTICE_PENDING = 'control_pending:renotice';
+
 function attemptStateGuard(attempt: typeof invoiceCollectionAttempts.$inferSelect) {
   return and(eq(invoiceCollectionAttempts.id, attempt.id), eq(invoiceCollectionAttempts.state, attempt.state),
     eq(invoiceCollectionAttempts.updatedAt, attempt.updatedAt));
@@ -332,17 +337,39 @@ async function validateIntent(data: AttemptHistory, pi: Stripe.PaymentIntent): P
 async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
   schedule: typeof invoiceAutopaySchedules.$inferSelect | undefined, enrollment: Enrollment | undefined,
   reason: string | null): Promise<void> {
-  if (!schedule || ['succeeded', 'failed'].includes(schedule.state)) return;
+  if (!schedule) return;
   const [reserving] = await db.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
     .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
   if (reserving) return;
-  const control = pendingInvoiceControl(schedule.stateReason)
+  const pending = pendingInvoiceControl(schedule.stateReason);
+  // A client attempt may coexist with terminal schedule history. Its pending
+  // control still needs finalization in the transaction releasing the attempt.
+  if (pending === 'skip' || pending === 'exclude') {
+    await finalizeInvoiceControl(db, invoice, schedule, pending);
+    return;
+  }
+  if (pending === 'stop') {
+    await db.update(invoiceAutopaySchedules).set({ state: 'cancelled', stateReason: 'stop', nextAttemptAt: null })
+      .where(eq(invoiceAutopaySchedules.id, schedule.id));
+    return;
+  }
+  if (['succeeded', 'failed'].includes(schedule.state)) return;
+  const control = pending
     ?? (schedule.mspExcludedAt || invoice.autopayExcluded ? 'exclude'
       : schedule.clientSkippedAt ? 'skip' : enrollment?.status !== 'active' ? 'stop' : null);
   if (control === 'skip' || control === 'exclude') {
     await finalizeInvoiceControl(db, invoice, schedule, control);
     return;
+  }
+  if (schedule.stateReason === RENOTICE_PENDING && !collectionFenced({ ...schedule,
+    autopayExcluded: invoice.autopayExcluded, enrollmentStatus: enrollment?.status ?? null })) {
+    const method = await getAutopayMethod(db, invoice.orgId);
+    if (method?.status === 'active' && method.enrollmentId === enrollment?.id) {
+      await renoticeCanceledAttempt(invoice, schedule, method);
+      return;
+    }
+    reason = 'authority_changed';
   }
   await db.update(invoiceAutopaySchedules).set({ state: control === 'stop' ? 'cancelled'
     : reason === 'excluded_contract' ? 'excluded_by_msp' : 'cancelled',
@@ -362,9 +389,16 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     // Invoice-wide fence includes unscheduled client attempts.
     const [schedule] = await db.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1).for('update');
-    const cancel = (reason: string) => ({ action: 'cancel' as const, reason });
+    const cancel = async (reason: string) => {
+      if (reason === 'renotice_required' && schedule && schedule.stateReason !== RENOTICE_PENDING) {
+        await db.update(invoiceAutopaySchedules).set({ stateReason: RENOTICE_PENDING })
+          .where(eq(invoiceAutopaySchedules.id, schedule.id));
+      }
+      return { action: 'cancel' as const, reason };
+    };
     if (collectionFenced({ ...schedule, autopayExcluded: locked.invoice.autopayExcluded,
       enrollmentStatus: enrollment?.status ?? null })) return cancel('collection_fenced');
+    if (schedule?.stateReason === RENOTICE_PENDING) return cancel('renotice_required');
     const readiness = await getAutopayStripeReadiness(db, locked.invoice.partnerId);
     if (!enrollment || !method || method.status !== 'active'
       || !method.isAutopayMethod || method.enrollmentId !== enrollment.id
@@ -632,18 +666,18 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
         .where(attemptStateGuard(attempt));
       return null;
     }
-    if (state === 'canceled' && attempt.state === 'canceled') return null;
+    if (state === 'canceled' && attempt.state === 'canceled') {
+      if (pendingInvoiceControl(schedule?.stateReason ?? null) || schedule?.stateReason === RENOTICE_PENDING) {
+        await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, cancellationReason);
+      }
+      return null;
+    }
     if (state === 'canceled' && (!attempt.failureClass || attempt.failureClass === 'auth_required' || cancellationReason
+      || pendingInvoiceControl(schedule?.stateReason ?? null) || schedule?.stateReason === RENOTICE_PENDING
       || collectionFenced({ ...schedule, autopayExcluded: locked.invoice.autopayExcluded, enrollmentStatus: enrollment.status }))) {
       await db.update(invoiceCollectionAttempts).set({ state: 'canceled', updatedAt: new Date() })
         .where(attemptStateGuard(attempt));
-      if (cancellationReason === 'renotice_required' && schedule && !collectionFenced({ ...schedule,
-        autopayExcluded: locked.invoice.autopayExcluded, enrollmentStatus: enrollment.status })) {
-        const currentMethod = await getAutopayMethod(db, locked.invoice.orgId);
-        if (currentMethod?.status === 'active' && currentMethod.enrollmentId === enrollment.id) {
-          await renoticeCanceledAttempt(locked.invoice, schedule, currentMethod);
-        } else await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, 'authority_changed');
-      } else await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, cancellationReason);
+      await finalizeCanceledSchedule(locked.invoice, schedule, enrollment, cancellationReason);
       return null;
     }
     const failureClass = (state === 'canceled' ? attempt.failureClass : null) ?? classifyCollectionFailure({ methodType: data.methodType,

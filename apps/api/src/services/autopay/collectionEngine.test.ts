@@ -71,7 +71,8 @@ vi.mock('../../db', () => {
   } };
 });
 import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure } from './collectionEngine';
-import { reconcilePendingControls } from './collectionControl';
+import { reconcilePendingControls, requestInvoiceControl } from './collectionControl';
+import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
 import { billingNoticeOutbox, invoices, invoiceStripePayments, orgAutopayEnrollments,
   invoiceAutopaySchedules, invoiceLines, organizations, invoiceCollectionAttempts, orgPaymentMethods, partners } from '../../db/schema';
@@ -559,4 +560,94 @@ it('cancels and re-notices a replacement rail before confirmation', async () => 
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
     termsSnapshot: expect.objectContaining({ methodId: replacement.id, methodType: 'us_bank_account', noticeSeq: 2 }) });
   expect(h.notice).toHaveBeenCalledOnce();
+});
+
+it.each(['recovery', 'outcome'])('replays durable re-notice intent after interruption following provider cancellation (%s)', async replay => {
+  recovery(true);
+  const replacement = { ...method, id: 'replacement-method', type: 'us_bank_account', accountHolderType: 'company' };
+  h.method.mockResolvedValue(replacement);
+  h.cancel.mockImplementationOnce(async () => {
+    expect(h.depth).toBe(0);
+    h.piRetrieve.mockResolvedValue({ ...pi, status: 'canceled' });
+    // Provider committed cancellation, but the process fails before applying it locally.
+    h.provenance.mockRejectedValueOnce(new Error('interrupted after cancellation'));
+    return { ...pi, status: 'canceled' };
+  });
+  await expect(resumeCollectionAttempt(attempt.id)).rejects.toThrow('interrupted after cancellation');
+  expect(currentAttempt().state).toBe('created');
+  expect(h.rows.get(invoiceAutopaySchedules)![0].stateReason).toBe('control_pending:renotice');
+  if (replay === 'recovery') await resumeCollectionAttempt(attempt.id);
+  else await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
+    stateReason: 'renotice_required', termsSnapshot: expect.objectContaining({ methodId: replacement.id, noticeSeq: 2 }) });
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(h.notice).toHaveBeenCalledOnce();
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(h.confirm).not.toHaveBeenCalled();
+});
+
+it.each([true, false])('finalizes exclusion on a failed schedule after cancellation and completes request replay (scheduled=%s)', async scheduled => {
+  recovery(true);
+  update(invoiceAutopaySchedules, { state: 'failed', stateReason: 'soft' });
+  if (!scheduled) update(invoiceCollectionAttempts, { scheduleId: null, initiatedBy: 'client_on_session' });
+  const request = () => withSystemDbAccessContext(() => requestInvoiceControl(db, {
+    invoiceId: invoice.id, kind: 'exclude', actor: { userId: null, partnerId: invoice.partnerId, accessibleOrgIds: null },
+  }));
+  await expect(request()).resolves.toEqual({ status: 'pending', control: 'exclude' });
+  await expect(request()).resolves.toEqual({ status: 'pending', control: 'exclude' });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'control_pending:exclude' });
+  await reconcilePendingControls();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude' });
+  await expect(request()).resolves.toEqual({ status: 'excluded' });
+  await reconcilePendingControls();
+  await expect(request()).resolves.toEqual({ status: 'excluded' });
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(h.confirm).not.toHaveBeenCalled();
+  expect(h.staff).not.toHaveBeenCalled();
+});
+
+it('re-notices exactly once when another reconciler applies cancellation first', async () => {
+  recovery(true);
+  h.method.mockResolvedValue({ ...method, id: 'replacement-method' });
+  h.cancel.mockImplementationOnce(async () => {
+    expect(h.depth).toBe(0);
+    expect(h.rows.get(invoiceAutopaySchedules)![0].stateReason).toBe('control_pending:renotice');
+    h.piRetrieve.mockResolvedValue({ ...pi, status: 'canceled' });
+    await applyAttemptOutcome(invoice.partnerId, attempt.id);
+    return { ...pi, status: 'canceled' };
+  });
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
+    termsSnapshot: expect.objectContaining({ noticeSeq: 2 }) });
+  expect(h.notice).toHaveBeenCalledOnce();
+  expect(h.confirm).not.toHaveBeenCalled();
+});
+
+it('retains re-notice intent across cancel timeout even if the original method is restored', async () => {
+  recovery(true);
+  h.method.mockResolvedValueOnce({ ...method, id: 'replacement-method' });
+  h.cancel.mockRejectedValueOnce(new Error('cancel timeout'));
+  await resumeCollectionAttempt(attempt.id);
+  expect(currentAttempt().state).toBe('created');
+  expect(h.rows.get(invoiceAutopaySchedules)![0].stateReason).toBe('control_pending:renotice');
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.rows.get(invoiceAutopaySchedules)![0].state).toBe('awaiting_notice');
+  expect(h.notice).toHaveBeenCalledOnce();
+  expect(h.cancel).toHaveBeenCalledTimes(2);
+  expect(h.confirm).not.toHaveBeenCalled();
+});
+
+it('finalizes pending exclusion when replaying an already canceled client attempt', async () => {
+  recovery(true);
+  update(invoiceCollectionAttempts, { scheduleId: null, state: 'canceled', initiatedBy: 'client_on_session' });
+  update(invoices, { autopayExcluded: true });
+  update(invoiceAutopaySchedules, { state: 'failed', stateReason: 'control_pending:exclude', mspExcludedAt: new Date() });
+  h.piRetrieve.mockResolvedValue({ ...pi, status: 'canceled' });
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude' });
+  const writes = h.writes.length;
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(h.writes).toHaveLength(writes);
 });
