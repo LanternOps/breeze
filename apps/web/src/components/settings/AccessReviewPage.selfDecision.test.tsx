@@ -17,7 +17,8 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: translate }) }));
 const fetchWithAuth = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth, handleSessionExpired: vi.fn() }));
 
-import AccessReviewPage from './AccessReviewPage';
+import AccessReviewPage, { decisionErrorMessage } from './AccessReviewPage';
+import enErrors from '../../locales/en/errors.json';
 
 const REVIEW_ID = 'rev-1';
 const OWN = { id: 'item-own', userId: 'u-me', userName: 'Me Admin', userEmail: 'me@example.test' };
@@ -142,5 +143,31 @@ describe('AccessReviewPage separation of duties', () => {
     await waitFor(() => expect(patchCalls()).toHaveLength(1));
     expect(patchCalls()).toEqual([`/access-reviews/${REVIEW_ID}/items/${OTHER.id}`]);
     expect(patchCalls().some((u) => u.includes(OWN.id))).toBe(false);
+  });
+});
+
+describe('decisionErrorMessage', () => {
+  const res = (body: unknown, json = true) =>
+    ({ json: async () => { if (!json) throw new SyntaxError('not json'); return body; } }) as unknown as Response;
+
+  it('prefers the localized string for a known error code over the API prose', async () => {
+    const msg = await decisionErrorMessage(
+      res({ error: 'server prose', code: 'ACCESS_REVIEW_SELF_DECISION' }),
+      'fallback'
+    );
+    expect(msg).toBe(enErrors.ACCESS_REVIEW_SELF_DECISION);
+  });
+
+  it('uses the API prose when there is no known code', async () => {
+    expect(await decisionErrorMessage(res({ error: 'Cannot modify completed review' }), 'fallback')).toBe(
+      'Cannot modify completed review'
+    );
+    expect(await decisionErrorMessage(res({ error: 'x', code: 'NOT_A_REAL_CODE' }), 'fallback')).toBe('x');
+  });
+
+  it('falls back on a non-JSON body or an empty / non-string error', async () => {
+    expect(await decisionErrorMessage(res(null, false), 'fallback')).toBe('fallback');
+    expect(await decisionErrorMessage(res({ error: '' }), 'fallback')).toBe('fallback');
+    expect(await decisionErrorMessage(res({ error: 42 }), 'fallback')).toBe('fallback');
   });
 });

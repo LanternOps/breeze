@@ -50,13 +50,22 @@ function isOwnItemBlocked(review: AccessReviewDetail, item: AccessReviewItem): b
   );
 }
 
-async function decisionErrorMessage(response: Response, fallback: string): Promise<string> {
+/**
+ * User-facing message for a failed decision PATCH: the localized `errors:<CODE>`
+ * string when the API sent a known code (e.g. ACCESS_REVIEW_SELF_DECISION),
+ * else the API's `error` prose, else `fallback`. Same precedence as runAction.
+ */
+export async function decisionErrorMessage(response: Response, fallback: string): Promise<string> {
+  let body: { error?: unknown; code?: unknown } | null = null;
   try {
-    const body = (await response.json()) as { error?: unknown };
-    return typeof body?.error === 'string' && body.error ? body.error : fallback;
+    body = (await response.json()) as { error?: unknown; code?: unknown };
   } catch {
     return fallback;
   }
+  if (typeof body?.code === 'string' && i18n.exists(`errors:${body.code}`)) {
+    return i18n.t(/* i18n-dynamic */ `errors:${body.code}`);
+  }
+  return typeof body?.error === 'string' && body.error ? body.error : fallback;
 }
 
 type ModalMode = 'closed' | 'create' | 'review';

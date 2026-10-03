@@ -344,6 +344,41 @@ describe('access review routes', () => {
       expect(canSelfDecideMock).not.toHaveBeenCalled();
     });
 
+    it('does not gate (or evaluate) your own item once the review is completed', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'review-1', name: 'R', description: null, status: 'completed', reviewerId: 'user-123', dueDate: null, createdAt: new Date(), completedAt: new Date() }
+              ])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  { id: 'item-own', userId: 'user-123', userName: 'Me', userEmail: 'me@example.com', roleId: 'role-1', roleName: 'Admin', decision: 'approved', notes: null, reviewedAt: new Date(), selfDecided: true }
+                ])
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) })
+          })
+        } as any);
+
+      const res = await app.request('/access-reviews/review-1');
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).viewer).toEqual({ userId: 'user-123', selfDecision: null });
+      expect(canSelfDecideMock).not.toHaveBeenCalled();
+    });
+
     it.each([
       [false, 'blocked'],
       [true, 'single_admin_exception'],

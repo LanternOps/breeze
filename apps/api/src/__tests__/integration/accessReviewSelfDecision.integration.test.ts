@@ -248,4 +248,29 @@ describe('access review separation of duties (real Postgres)', () => {
     const refused = await call(app, admin, 'PATCH', `/access-reviews/${second.id}/items/${secondOwn}`, { decision: 'approved' });
     expect(refused.status).toBe(403);
   });
+
+  it('partner reviews: an all-orgs co-admin whose role lacks users:write does not block the exception', async () => {
+    const app = buildApp();
+    const unique = randomUUID().slice(0, 8);
+    const partner = await createPartner();
+    const adminRole = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(adminRole.id, USERS_RW);
+    const readOnlyRole = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(readOnlyRole.id, [{ resource: 'users', action: 'read' }]);
+    const adminUser = await createUser({ partnerId: partner.id, orgId: null, email: `sod-p2-admin-${unique}@example.test` });
+    await assignUserToPartner(adminUser.id, partner.id, adminRole.id, 'all');
+    const viewer = await createUser({ partnerId: partner.id, orgId: null, email: `sod-p2-ro-${unique}@example.test` });
+    await assignUserToPartner(viewer.id, partner.id, readOnlyRole.id, 'all');
+    const admin: Actor = {
+      id: adminUser.id,
+      email: adminUser.email,
+      token: await tokenFor(adminUser, adminRole.id, { partnerId: partner.id, orgId: null, scope: 'partner' }),
+    };
+
+    const { id, detail } = await createReview(app, admin);
+    expect(detail.viewer.selfDecision).toBe('single_admin_exception');
+    const own = itemFor(detail, admin.id);
+    expect((await call(app, admin, 'PATCH', `/access-reviews/${id}/items/${own}`, { decision: 'approved' })).status).toBe(200);
+    expect(await itemRow(own)).toMatchObject({ selfDecided: true });
+  });
 });
