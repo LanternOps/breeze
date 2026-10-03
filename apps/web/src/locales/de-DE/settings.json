@@ -2167,7 +2167,12 @@
     "sending": "Senden...",
     "notifyReviewers": "Prüfer benachrichtigen",
     "completing": "Abschluss...",
-    "completeReview": "Überprüfung abschließen"
+    "completeReview": "Überprüfung abschließen",
+    "selfDecided": "Selbst entschieden",
+    "selfDecidedHint": "Vom betroffenen Benutzer selbst entschieden, da kein anderer Administrator die Prüfung übernehmen konnte (Ausnahme für einzigen Administrator).",
+    "ownItemBlocked": "Sie können nicht über Ihren eigenen Zugriff entscheiden. Ein anderer Administrator mit Benutzerverwaltungsrechten muss diesen Eintrag prüfen.",
+    "ownItemBlockedShort": "Anderer Prüfer erforderlich",
+    "ownItemSelfDecisionWarning": "Sie sind der einzige Administrator, der dies prüfen kann, und dürfen daher über Ihren eigenen Zugriff entscheiden. Dies wird als Selbstentscheidung protokolliert."
   },
   "aiUsagePage": {
     "aIUsageBudget": "KI-Nutzung",

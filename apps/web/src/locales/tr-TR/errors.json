@@ -21,5 +21,6 @@
   "RE_ENROLLMENT_REQUIRED": "This device needs to be re-enrolled",
   "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "Software inventory update is busy right now — try again shortly",
   "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor",
-  "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor."
+  "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor.",
+  "ACCESS_REVIEW_SELF_DECISION": "You can't decide on your own access — another administrator must review this item"
 }

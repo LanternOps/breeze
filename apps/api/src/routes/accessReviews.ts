@@ -24,6 +24,9 @@ import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { sweepPendingFactorArtifacts } from '../services/mfaFactorReset';
 import { assertCanManageTarget } from '../services/roleAssignment';
+import { canSelfDecideAccessReviewItem } from '../services/accessReviewSelfDecision';
+import { jsonError } from '../lib/jsonError';
+import { ERROR_CODES } from '@breeze/shared';
 
 export const accessReviewRoutes = new Hono();
 
@@ -252,7 +255,8 @@ accessReviewRoutes.get(
         roleName: roles.name,
         decision: accessReviewItems.decision,
         notes: accessReviewItems.notes,
-        reviewedAt: accessReviewItems.reviewedAt
+        reviewedAt: accessReviewItems.reviewedAt,
+        selfDecided: accessReviewItems.selfDecided
       })
       .from(accessReviewItems)
       .innerJoin(users, eq(accessReviewItems.userId, users.id))
@@ -285,9 +289,20 @@ accessReviewRoutes.get(
       permissions: permissionsByRole.get(item.roleId) ?? []
     }));
 
+    // How the caller's OWN item (if any) may be decided, so the UI can disable
+    // or warn before the PATCH refuses. Advisory only — PATCH re-evaluates.
+    // null: no own item in an open review, nothing to gate.
+    let selfDecision: 'blocked' | 'single_admin_exception' | null = null;
+    if (review.status !== 'completed' && items.some((item) => item.userId === auth.user.id)) {
+      selfDecision = (await canSelfDecideAccessReviewItem(scopeContext, auth.user.id))
+        ? 'single_admin_exception'
+        : 'blocked';
+    }
+
     return c.json({
       ...review,
-      items: itemsWithPermissions
+      items: itemsWithPermissions,
+      viewer: { userId: auth.user.id, selfDecision }
     });
   }
 );
@@ -404,6 +419,38 @@ accessReviewRoutes.patch(
       return c.json({ error: 'Cannot modify completed review' }, 400);
     }
 
+    const [item] = await db
+      .select({ id: accessReviewItems.id, userId: accessReviewItems.userId })
+      .from(accessReviewItems)
+      .where(
+        and(
+          eq(accessReviewItems.id, itemId),
+          eq(accessReviewItems.reviewId, reviewId)
+        )
+      )
+      .limit(1);
+
+    if (!item) {
+      return c.json({ error: 'Review item not found' }, 404);
+    }
+
+    // Separation of duties: nobody decides the item about their own access,
+    // unless no one else in this review's scope could decide it (single-admin
+    // exception) — then it is allowed and flagged on the item. Any write to
+    // your own item counts, including a reset to 'pending'.
+    const isOwnItem = item.userId === auth.user.id;
+    if (isOwnItem && !(await canSelfDecideAccessReviewItem(scopeContext, auth.user.id))) {
+      return jsonError(
+        c,
+        403,
+        ERROR_CODES.ACCESS_REVIEW_SELF_DECISION,
+        'You cannot decide on your own access. Another administrator must review this item.'
+      );
+    }
+    // Only a standing decision is flagged; a reset to 'pending' clears it, and
+    // a decision by someone else replaces (and clears) an earlier self-decision.
+    const selfDecided = isOwnItem && data.decision !== 'pending';
+
     // Update the item
     const [updated] = await db
       .update(accessReviewItems)
@@ -411,7 +458,8 @@ accessReviewRoutes.patch(
         decision: data.decision,
         notes: data.notes,
         reviewedAt: new Date(),
-        reviewedBy: auth.user.id
+        reviewedBy: auth.user.id,
+        selfDecided
       })
       .where(
         and(
@@ -423,7 +471,8 @@ accessReviewRoutes.patch(
         id: accessReviewItems.id,
         decision: accessReviewItems.decision,
         notes: accessReviewItems.notes,
-        reviewedAt: accessReviewItems.reviewedAt
+        reviewedAt: accessReviewItems.reviewedAt,
+        selfDecided: accessReviewItems.selfDecided
       });
 
     if (!updated) {
@@ -445,7 +494,9 @@ accessReviewRoutes.patch(
       resourceId: updated.id,
       details: {
         reviewId,
-        decision: data.decision
+        decision: data.decision,
+        subjectUserId: item.userId,
+        selfDecided
       }
     });
 

@@ -2167,7 +2167,12 @@
     "sending": "Gönderiliyor...",
     "notifyReviewers": "İncelemecilere Bildir",
     "completing": "Tamamlanıyor...",
-    "completeReview": "İncelemeyi Tamamla"
+    "completeReview": "İncelemeyi Tamamla",
+    "selfDecided": "Kendi kararı",
+    "selfDecidedHint": "Başka hiçbir yönetici inceleyemediği için, ilgili kullanıcının kendisi tarafından karara bağlandı (tek yönetici istisnası).",
+    "ownItemBlocked": "Kendi erişiminiz hakkında karar veremezsiniz. Kullanıcı yönetimi yetkisi olan başka bir yönetici bu öğeyi incelemelidir.",
+    "ownItemBlockedShort": "Başka bir inceleyici gerekli",
+    "ownItemSelfDecisionWarning": "Bunu inceleyebilecek tek yönetici sizsiniz, bu yüzden kendi erişiminiz hakkında karar verebilirsiniz. Bu, kendi kararı olarak kaydedilecek."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Yapay Zeka Kullanımı",
