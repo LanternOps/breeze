@@ -721,6 +721,7 @@
     "cardVia": "par {{gateways}}",
     "gatewaysDiffer": "passerelles différentes",
     "sharedEdge_one": "{{count}} partagé",
-    "sharedEdge_other": "{{count}} partagés"
+    "sharedEdge_other": "{{count}} partagés",
+    "sharedIpBadge": "IP partagée"
   }
 }

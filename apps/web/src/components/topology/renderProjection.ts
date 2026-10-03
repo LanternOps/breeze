@@ -19,8 +19,10 @@ export type RenderNode = {
   stale: boolean; unverified: boolean; corroborated: boolean; networkClass: TopologyNetworkClass | null; memberCount: number;
   /** Primary inventory address: orders members inside a card numerically (#7880). */
   address: string | null;
-  /** Extra tile line, e.g. "IP shared with 1 other device" when several tiles report one address (#7880). */
+  /** Full "Same IP as N other devices" text when several tiles report one address (#7880): the tile's tooltip. */
   note: string | null;
+  /** How many other tiles report this tile's address; drives the tile's compact "Shared IP" marker. */
+  sharedWith: number;
 };
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
@@ -46,26 +48,26 @@ function canonicalNode(node: GraphNode, strings: RenderText, parent?: string, me
   return { id: node.id, label: text.title, detail: text.detail, kind, glyph: topologyGlyph(node), ...(parent ? { parent } : {}),
     presence: node.inventory?.presence.state ?? null, agentPresence: node.inventory?.presence.source === 'agent' ? node.inventory.presence.state : null, health: node.health.status === 'unknown' ? null : node.health.status,
     stale: member ? member.stale : false, unverified: member?.placement === 'address_match', corroborated: member?.placement === 'neighbor_seen',
-    networkClass: null, memberCount: 0, address: node.inventory?.addresses[0] ?? null, note: null };
+    networkClass: null, memberCount: 0, address: node.inventory?.addresses[0] ?? null, note: null, sharedWith: 0 };
 }
 
 function groupNode(group: PresentationNode, text: RenderText): RenderNode {
   const g = group.group!;
   if (g.kind === 'gateway') {
     return { id: group.id, label: g.address ?? group.label, detail: text.gatewayFor(g.observerCount), kind: 'gateway', glyph: 'router',
-      presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: group.memberCount, address: null, note: null };
+      presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: group.memberCount, address: null, note: null, sharedWith: 0 };
   }
   const devices = text.devices(group.memberCount);
   const detail = [devices, g.gatewayAddresses.length ? text.via(g.gatewayAddresses.join(', ')) : null, g.conflict ? text.gatewaysDiffer : null].filter(Boolean).join(' · ');
   return { id: group.id, label: group.label, detail: g.kind === 'unidentified' ? devices : detail,
     kind: g.kind === 'unidentified' ? 'unidentified' : 'group', glyph: 'network', presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false,
-    networkClass: g.networkClass, memberCount: group.memberCount, address: null, note: null };
+    networkClass: g.networkClass, memberCount: group.memberCount, address: null, note: null, sharedWith: 0 };
 }
 
 /** A network whose devices are all drawn in other cards: a compact tile, never an empty compound card. */
 function summaryNode(group: PresentationNode, text: RenderText): RenderNode {
   return { id: group.id, label: group.label, detail: text.devices(group.memberCount), kind: 'network', glyph: 'network',
-    presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: group.group!.networkClass, memberCount: group.memberCount, address: null, note: null };
+    presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: group.group!.networkClass, memberCount: group.memberCount, address: null, note: null, sharedWith: 0 };
 }
 
 /** Every string the render draws. The explorer passes translations; the English default serves tests and fixtures. */
@@ -124,16 +126,17 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   }
   for (const node of graph.presentation.nodes) {
     if (!node.group) nodes.push({ id: node.id, label: node.label, detail: null, kind: 'outside', glyph: 'device', presence: null, agentPresence: null, health: null, stale: false,
-      unverified: false, corroborated: false, networkClass: null, memberCount: node.memberCount, address: null, note: null });
+      unverified: false, corroborated: false, networkClass: null, memberCount: node.memberCount, address: null, note: null, sharedWith: 0 });
   }
   // Tiles that report one address stay separate tiles (they are separate inventory rows); each says so (#7880).
-  if (sharedAddress) {
-    const byAddress = new Map<string, RenderNode[]>();
-    for (const tile of nodes) {
-      const key = tile.kind === 'device' ? ipSortKey(tile.address) : null;
-      if (key) byAddress.set(key, [...(byAddress.get(key) ?? []), tile]);
-    }
-    for (const tiles of byAddress.values()) if (tiles.length > 1) for (const tile of tiles) tile.note = sharedAddress(tiles.length - 1);
+  const byAddress = new Map<string, RenderNode[]>();
+  for (const tile of nodes) {
+    const key = tile.kind === 'device' ? ipSortKey(tile.address) : null;
+    if (key) byAddress.set(key, [...(byAddress.get(key) ?? []), tile]);
+  }
+  for (const tiles of byAddress.values()) if (tiles.length > 1) for (const tile of tiles) {
+    tile.sharedWith = tiles.length - 1;
+    if (sharedAddress) tile.note = sharedAddress(tiles.length - 1);
   }
   const rendered = new Set(nodes.map((node) => node.id));
   const edges: RenderEdge[] = [];

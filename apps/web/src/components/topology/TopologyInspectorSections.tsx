@@ -18,7 +18,9 @@ function NeighborSeenNote({ member }: { member: GroupMember }) {
 const groupsOf = (graph: GraphResponse, nodeId: string) => graph.presentation.nodes.filter((node) => node.group?.members.some((member) => member.nodeId === nodeId));
 
 /** What the device is, before how we know it: name, type, addresses, vendor, OS, presence, network. */
-export function NodeIdentity({ graph, node, onSelectNode }: { graph: GraphResponse; node: GraphNode; onSelectNode?: (id: string) => void }) {
+export function NodeIdentity({ graph, node, onSelectNode, sharedAddressCount = 0 }: { graph: GraphResponse; node: GraphNode; onSelectNode?: (id: string) => void;
+  /** Other map tiles reporting this node's address (#7880); the tile shows only a "Shared IP" marker, so the full sentence lives here. */
+  sharedAddressCount?: number }) {
   const { t } = useTranslation('topology');
   const inventory = node.inventory!;
   const presence = inventory.presence;
@@ -40,7 +42,8 @@ export function NodeIdentity({ graph, node, onSelectNode }: { graph: GraphRespon
   return <div data-testid="topology-identity" className="space-y-3 text-sm">
     <p className="text-muted-foreground" data-testid="topology-presence">{presenceText}{seen ? ` · ${t('grouped.lastSeen', { when: seen })}` : ''}</p>
     <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
-      {rows.filter(([, value]) => value).map(([label, value]) => <div key={label} className="contents"><dt className="text-muted-foreground">{label}</dt><dd className="break-words">{value}</dd></div>)}
+      {rows.filter(([, value]) => value).map(([label, value]) => <div key={label} className="contents"><dt className="text-muted-foreground">{label}</dt><dd className="break-words">{value}
+        {label === t('grouped.addresses') && sharedAddressCount > 0 && <span data-testid="topology-shared-address" className="block text-xs text-muted-foreground">{t('grouped.sharedAddress', { count: sharedAddressCount })}</span>}</dd></div>)}
     </dl>
     {groups.length > 0 && <div><p className="font-medium">{t('grouped.networks')}</p><ul className="mt-1 space-y-1">{groups.map((group) => {
       const member = group.group!.members.find((m) => m.nodeId === node.id)!;

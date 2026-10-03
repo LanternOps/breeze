@@ -102,6 +102,10 @@ describe('compileTopologyRender', () => {
     expect(byId.get(ids.a)?.note).toBeNull();
     // Without a formatter (no translator), nothing is noted rather than English leaking into a localized UI.
     expect(compileTopologyRender(g, { showAllNetworks: false }).nodes.find((n) => n.id === ids.phone)?.note).toBeNull();
+    // The count drives the tile's compact "Shared IP" marker and the inspector line, translator or not.
+    const plain = new Map(compileTopologyRender(g, { showAllNetworks: false }).nodes.map((n) => [n.id, n]));
+    expect(plain.get(ids.phone)?.sharedWith).toBe(1);
+    expect(plain.get(ids.a)?.sharedWith).toBe(0);
   });
 
   it('marks a neighbour-cache placement as corroborated, never as unverified or observed (#7816)', () => {

@@ -46,12 +46,28 @@ function clipToWidth(text: string, width: number, font: string): string {
 const TEXT_INSET = 54;
 /** Right padding of tile text; with TEXT_INSET it matches the measurement tile (pl-[54px] pr-[14px]). */
 const TEXT_END = 14;
-function display(node: RenderNode, width: number, family: string) {
+/** `reserve`: width kept free at the end of the address line (the "Shared IP" marker). */
+function display(node: RenderNode, width: number, family: string, reserve = 0) {
   if (node.kind === 'group' || node.kind === 'unidentified') return [node.label, node.detail].filter(Boolean).join('   ·   ');
   const text = width - TEXT_INSET - TEXT_END, strong = node.kind === 'gateway' || node.kind === 'internet';
-  return [clipToWidth(node.label, text, `${strong ? 600 : 500} ${strong ? 13 : 12}px ${family}`), node.detail ? clipToWidth(node.detail, text, `500 12px ${family}`) : null,
-    node.note].filter(Boolean).join('\n');
+  return [clipToWidth(node.label, text, `${strong ? 600 : 500} ${strong ? 13 : 12}px ${family}`), detailLine(node, width, family, reserve) || null].filter(Boolean).join('\n');
 }
+/** The address line. With a marker to fit, trailing parts ("· Agent offline") give way before the address is cut. */
+function detailLine(node: RenderNode, width: number, family: string, reserve: number) {
+  if (!node.detail) return '';
+  const room = width - TEXT_INSET - TEXT_END - reserve, font = `500 12px ${family}`;
+  const full = clipToWidth(node.detail, room, font);
+  if (!reserve || full === node.detail) return full;
+  return clipToWidth(node.detail.split(' · ')[0]!, room, font);
+}
+/** The compact shared-IP marker: a small pill closing the tile's address line (#7880 note, shortened). */
+const BADGE_FONT = (family: string) => `600 10px ${family}`, BADGE_HEIGHT = 16, BADGE_PAD = 6;
+const badgeWidth = (label: string, family: string) => {
+  if (measureContext === undefined) clipToWidth('', 0, BADGE_FONT(family));
+  if (!measureContext) return label.length * 6 + 2 * BADGE_PAD;
+  measureContext.font = BADGE_FONT(family);
+  return Math.ceil(measureContext.measureText(label).width) + 2 * BADGE_PAD;
+};
 /** Fit never zooms past this: a three-tile site should not fill the screen with 2.5× tiles. */
 const FIT_MAX_ZOOM = 1.25;
 /** Zoom a summary click lands on: tiles are legible, and the card's first sections are in view. */
@@ -78,6 +94,9 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     // Drawing only: never selectable, draggable or a tap target.
     { selector: 'node[kind="section"]', style: { shape: 'rectangle', 'background-color': c.border, 'background-opacity': 1, 'border-width': 0, 'background-image': 'none',
       'font-size': 11.5, 'font-weight': 600, color: c.muted, 'text-valign': 'top', 'text-margin-y': -4, 'text-wrap': 'none', events: 'no' } },
+    { selector: 'node[kind="badge"]', style: { shape: 'round-rectangle', 'background-color': c.mutedBg, 'background-opacity': 1, 'border-width': 1, 'border-color': c.border,
+      'background-image': 'none', label: 'data(display)', 'font-size': 10, 'font-weight': 600, color: c.muted, 'text-halign': 'center', 'text-valign': 'center', 'text-justification': 'center', 'text-margin-x': 0, 'text-wrap': 'none',
+      'min-zoomed-font-size': 6, events: 'no' } },
     { selector: 'node[presence="offline"]', style: { opacity: 0.6 } },
     { selector: 'node[?stale]', style: { 'border-style': 'dashed' } },
     { selector: 'node[?unverified]', style: { 'border-style': 'dashed', 'background-color': c.mutedBg } },
@@ -109,7 +128,7 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     { selector: 'edge:selected', style: { 'line-color': c.primary, 'line-opacity': 1, width: 3 } },
     // ── Zoomed out (semantic zoom): cards hand over to their HTML summaries; nothing moves. ──
     // `visibility` (not `display`) keeps every member in the card's bounds, so the card keeps its size.
-    { selector: 'node.overview[?member], node.overview[kind="section"]', style: { visibility: 'hidden' } },
+    { selector: 'node.overview[?member], node.overview[kind="section"], node.overview[kind="badge"]', style: { visibility: 'hidden' } },
     { selector: ':parent.overview', style: { 'text-opacity': 0, 'background-opacity': 0.06, 'border-opacity': 0.5 } },
     // Loose tiles (gateways, ungrouped devices) keep one short line, sized to read at overview zoom.
     { selector: 'node.overview[!member][kind!="section"][kind!="outside"]:childless', style: { label: 'data(short)', 'font-size': 26, 'font-weight': 600, 'text-wrap': 'ellipsis',
@@ -150,6 +169,9 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       const ids: string[] | undefined = event.target.data('relationshipIds');
       callbacks.current.onSelect({ kind: event.target.isNode() ? 'node' : 'edge', id: ids?.[0] ?? event.target.id() });
     });
+    // Native tooltip for tiles that carry one (the full shared-IP sentence behind the compact marker).
+    renderer.on('mouseover', 'node', (event) => { if (container.current) container.current.title = event.target.data('tooltip') ?? ''; });
+    renderer.on('mouseout', 'node', () => { if (container.current) container.current.title = ''; });
     renderer.on('dragfree', 'node', (event) => {
       // Moving a card moves its members; positions persist for canonical nodes only.
       const moved = event.target.isParent() ? event.target.children() : event.target;
@@ -225,13 +247,14 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     const parentOf = new Map(render.nodes.filter((node) => node.parent).map((node) => [node.id, node.parent!]));
     const labelOf = new Map(render.nodes.map((node) => [node.id, node.label]));
     const family = fontFamily();
+    const badgeLabel = t('grouped.sharedIpBadge'), badgeW = badgeWidth(badgeLabel, family);
     renderer.batch(() => {
       // Parents first so children can reference them.
       const ordered = [...render.nodes].sort((a, b) => Number(!!a.parent) - Number(!!b.parent));
       const nodes: cytoscape.ElementDefinition[] = ordered.map((node) => {
         const width = sizes.get(node.id)?.width ?? 208, height = sizes.get(node.id)?.height ?? 60;
         const card = node.kind === 'group' || node.kind === 'unidentified';
-        return { group: 'nodes', data: { id: node.id, display: display(node, width, family), short: clipToWidth(node.label, width - TEXT_INSET - 6, `600 26px ${family}`), kind: node.kind, width, height,
+        return { group: 'nodes', data: { id: node.id, display: display(node, width, family, node.sharedWith > 0 ? badgeW + 6 : 0), tooltip: node.note ?? undefined, short: clipToWidth(node.label, width - TEXT_INSET - 6, `600 26px ${family}`), kind: node.kind, width, height,
           textWidth: card ? '4000px' : `${Math.max(80, width - TEXT_INSET - TEXT_END)}px`, textShift: card || node.kind === 'outside' ? 0 : TEXT_INSET - width,
           icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined, member: !!node.parent,
           health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, corroborated: node.corroborated, networkClass: node.networkClass ?? undefined,
@@ -251,7 +274,18 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       const edges: cytoscape.ElementDefinition[] = drawn.map((edge) => ({ group: 'edges', data: { id: edge.id, source: edge.source, target: edge.target, style: edge.style,
         relationshipIds: edge.relationshipIds, toCard: edge.style !== 'route' && (cards.has(edge.source) || cards.has(edge.target)),
         ...(edge.label ? { label: edge.label } : {}), ...(edge.sourceEnd ? { sourceEnd: edge.sourceEnd } : {}), ...(edge.targetEnd ? { targetEnd: edge.targetEnd } : {}) } }));
-      const elements = [...nodes, ...headers, ...edges];
+      // Shared-IP markers close the address line; the full sentence is the tile's tooltip and in the inspector.
+      const badges: cytoscape.ElementDefinition[] = render.nodes.filter((node) => node.sharedWith > 0 && points.has(node.id)).map((node) => {
+        const point = points.get(node.id)!, width = sizes.get(node.id)?.width ?? 208;
+        // Right after the address text (clipped to leave the marker room), not floating at the tile's edge.
+        const detail = detailLine(node, width, family, badgeW + 6);
+        const textEnd = measureContext ? (measureContext.font = `500 12px ${family}`, measureContext.measureText(detail).width) : detail.length * 6.5;
+        return { group: 'nodes', selectable: false, data: { id: `badge:${node.id}`, kind: 'badge', presentation: true, member: false, display: badgeLabel, width: badgeW, height: BADGE_HEIGHT,
+          textShift: 0, textWidth: `${badgeW + 40}px`, icon: 'none', ...(node.parent ? { parent: node.parent } : {}) },
+          // Address line centre: two 12px lines at 1.35 line height, centred in the tile.
+          position: { x: point.x - width / 2 + TEXT_INSET + textEnd + 6 + badgeW / 2, y: point.y + 8 } };
+      });
+      const elements = [...nodes, ...headers, ...badges, ...edges];
       const ids = new Set(elements.map((element) => element.data.id));
       renderer.elements().filter((element) => !ids.has(element.id())).remove();
       for (const element of elements) {
@@ -264,7 +298,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         existing.data(data);
         if (element.position) existing.position(element.position);
       }
-      renderer.nodes().ungrabify(); if (editable) renderer.nodes('[kind!="section"]').grabify();
+      renderer.nodes().ungrabify(); if (editable) renderer.nodes('[kind!="section"][kind!="badge"]').grabify();
       renderer.elements().unselect();
       if (selection) {
         const target = selection.kind === 'edge' ? renderer.edges().filter((edge) => (edge.data('relationshipIds') as string[] | undefined)?.includes(selection.id) ?? edge.id() === selection.id)

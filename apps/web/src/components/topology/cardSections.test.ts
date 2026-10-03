@@ -4,7 +4,7 @@ import type { TopologyGlyph } from './topologyGlyphs';
 import { SECTION_ORDER, cardSummaries, hasSections, memberRank, sectionHeaders, sectionOf } from './cardSections';
 
 const tile = (id: string, glyph: TopologyGlyph, extra: Partial<RenderNode> = {}): RenderNode => ({ id, label: id, detail: null, kind: 'device', glyph, parent: 'card', presence: null,
-  agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: null, ...extra });
+  agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: null, sharedWith: 0, ...extra });
 
 describe('sectionOf', () => {
   it('maps every glyph into the fixed section order', () => {
