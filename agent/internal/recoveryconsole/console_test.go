@@ -531,6 +531,38 @@ func TestConsole_ServerRefusesOldMediaBeforeClaim(t *testing.T) {
 	}
 }
 
+// TestConsole_MediaPlatformMismatchIsTerminal: a 409 media_platform_mismatch
+// (W07a) goes through the same terminal refusal path as helper_version_too_old.
+func TestConsole_MediaPlatformMismatchIsTerminal(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "abc-def-ghj"}}
+	var exchangeCalls int
+	deps := &fakeDeps{
+		exchangeFn: func(ctx context.Context, server, code string) (string, *bmr.BootstrapResponse, error) {
+			exchangeCalls++
+			return "", nil, &bmr.RecoveryNegotiationError{
+				Code:    "media_platform_mismatch",
+				Message: "This recovery is for a Windows backup; boot the Breeze Windows recovery media instead. The recovery code was not used.",
+			}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.120.0"), Cmdline: "breeze.media=1"}
+
+	err := c.Run(context.Background())
+	var negErr *bmr.RecoveryNegotiationError
+	if !errors.As(err, &negErr) || negErr.Code != "media_platform_mismatch" {
+		t.Fatalf("Run() error = %v, want wrapping RecoveryNegotiationError{media_platform_mismatch}", err)
+	}
+	if exchangeCalls != 1 {
+		t.Errorf("exchange calls = %d, want 1 (no re-prompt on a terminal refusal)", exchangeCalls)
+	}
+	if !strings.Contains(io.transcript.String(), "The recovery code was not used") {
+		t.Errorf("transcript missing the server's message; got:\n%s", io.transcript.String())
+	}
+	if len(deps.progressCalls) != 0 {
+		t.Errorf("progress calls = %v, want none", statusesOf(deps.progressCalls))
+	}
+}
+
 func TestConsole_CIModeAnswersEverything(t *testing.T) {
 	io := &fakeIO{FailReadLine: true}
 	deps := &fakeDeps{

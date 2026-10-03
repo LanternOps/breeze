@@ -483,7 +483,7 @@ bmrRecoveryPublicRoutes.post(
       return c.json({ error: 'code_invalid' }, 404);
     }
 
-    const { capabilities: clientCapabilities, helperVersion } = c.req.valid('json');
+    const { capabilities: clientCapabilities, helperVersion, mediaPlatform } = c.req.valid('json');
 
     // #5629: refuse recovery media older than the server floor BEFORE the
     // code is claimed. The console used to learn the floor only from the
@@ -508,6 +508,29 @@ bmrRecoveryPublicRoutes.post(
           error: 'helper_version_too_old',
           message: `This recovery media (v${helperVersion}) is older than the server requires (v${BMR_MIN_HELPER_VERSION}); download the current ISO. The recovery code was not used.`,
           details: { helperVersion, minHelperVersion: BMR_MIN_HELPER_VERSION },
+        },
+        409
+      );
+    }
+
+    // W07a: refuse media for the wrong platform BEFORE the code is claimed
+    // (same terminal 409 shape as helper_version_too_old). Skipped for old
+    // media that omits mediaPlatform and for legacy rows with no platform.
+    if (mediaPlatform !== undefined && rec.platform && rec.platform !== mediaPlatform) {
+      writeAuditEvent(c, {
+        orgId: rec.orgId,
+        action: 'bmr.recovery.exchange',
+        resourceType: 'bare_metal_recovery',
+        resourceId: rec.id,
+        result: 'failure',
+        details: { reason: 'media_platform_mismatch', recoveryPlatform: rec.platform, mediaPlatform },
+      });
+      const want = rec.platform === 'windows' ? 'Windows' : 'Linux';
+      return c.json(
+        {
+          error: 'media_platform_mismatch',
+          message: `This recovery is for a ${want} backup; boot the Breeze ${want} recovery media instead. The recovery code was not used.`,
+          details: { recoveryPlatform: rec.platform, mediaPlatform },
         },
         409
       );
