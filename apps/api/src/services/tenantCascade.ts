@@ -1915,6 +1915,21 @@ function quoteIdent(table: string): string {
   return `"${table}"`;
 }
 
+/**
+ * Tables with a `partner_id` column that the partner sweep in
+ * cascadeDeletePartner must NOT delete from.
+ *
+ * - `audit_logs` (#7696): `partner_id` there is FK-less attribution on
+ *   partner-scoped (org_id NULL) rows, not ownership. Those rows sit in the ONE
+ *   shared NULL-org hash chain (audit_log_chain is keyed on org_id) alongside
+ *   platform rows and every other partner's partner-level rows, so deleting a
+ *   partner's slice would punch holes in a chain other tenants' evidence depends
+ *   on. They also need the breeze_audit_admin path, not this breeze_app sweep.
+ *   They are retained, exactly like the partner's purge_started/purged rows.
+ *   The partner's child orgs' audit_logs are still erased by cascadeDeleteOrg.
+ */
+const PARTNER_SWEEP_RETAINED_TABLES: ReadonlySet<string> = new Set<string>(['audit_logs']);
+
 export interface PartnerCascadeStats {
   orgsDeleted: number;
   tablesSwept: number;
@@ -2140,7 +2155,9 @@ export async function cascadeDeletePartner(
       AND column_name = 'partner_id'
       AND table_name <> 'organizations'
   `)) as unknown as Array<{ table_name: string }>;
-  const partnerTables = partnerTableRows.map((r) => r.table_name);
+  const partnerTables = partnerTableRows
+    .map((r) => r.table_name)
+    .filter((t) => !PARTNER_SWEEP_RETAINED_TABLES.has(t));
   const order = await self.topologicalCascadeOrder(partnerTables);
   const orderedSet = new Set(order);
   const sweep = [...order, ...partnerTables.filter((t) => !orderedSet.has(t))];
