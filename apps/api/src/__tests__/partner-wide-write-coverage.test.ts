@@ -74,7 +74,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Derived aggregate recomputed from fix_outcomes by background system-context
   // jobs (outcome watcher, sweeper, tenant-erasure rebuild). No caller chooses
   // an owner axis: owner is resolved from the fix's own current ownership.
-  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; no caller-facing write and no caller-chosen owner axis',
+  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; its only caller-facing write is retireFixMemory, and routes/fixMemory.ts gates partner-owned rows on canManagePartnerWidePolicies (org rows on canAccessOrg); no caller-chosen owner axis',
+  'services/fixMemory/instructions.ts': 'Sole writer of fix_instructions; its only request-path caller, routes/fixMemory.ts, gates every write on canManagePartnerWidePolicies (403 pinned in fixMemory.test.ts).',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
