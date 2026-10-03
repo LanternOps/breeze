@@ -113,6 +113,10 @@ describe('en/*.json values are not humanized key placeholders (#2649)', () => {
     for (const file of enFiles) {
       enByNamespace.set(file.replace(/\.json$/, ''), JSON.parse(readFileSync(join(EN_DIR, file), 'utf8')));
     }
+    const flattenedByNamespace = new Map<string, Map<string, string>>();
+    for (const [namespace, json] of enByNamespace) {
+      flattenedByNamespace.set(namespace, new Map(flattenJson(json)));
+    }
     const stale: string[] = [];
     for (const dottedKey of BASELINE) {
       const [namespace, ...rest] = dottedKey.split('.');
@@ -122,7 +126,7 @@ describe('en/*.json values are not humanized key placeholders (#2649)', () => {
         continue;
       }
       const leafPath = rest.join('.');
-      const flat = new Map(flattenJson(json));
+      const flat = flattenedByNamespace.get(namespace)!;
       const value = flat.get(leafPath);
       if (value === undefined) {
         stale.push(`${dottedKey}: key no longer exists in en/${namespace}.json`);
