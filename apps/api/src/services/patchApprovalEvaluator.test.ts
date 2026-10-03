@@ -33,6 +33,7 @@ import {
   isCategoryAllowed,
   parseRingAutoApprove,
   decidePatchApproval,
+  deferralHold,
   THIRD_PARTY_PATCH_SOURCES,
   type ApprovalEvaluationConfig,
   type RingConfig,
@@ -2116,5 +2117,140 @@ describe('decidePatchApproval — held_by_deferral reports holdUntil per call si
     const auto = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 7 });
     const d = decidePatchApproval(candidate(), ring() as never, new Set(), new Map(), auto, NOW);
     expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(released.getTime() + 7 * DAY) });
+  });
+});
+
+// #7800: APT never supplies a release date, so the fail-closed OS rule held
+// every Linux patch forever under any deferral > 0. Linux now anchors on
+// first-seen like third-party; Windows/macOS keep the fail-closed hold.
+describe('deferral first-seen fallback for Linux OS patches (#7800)', () => {
+  const NOW = new Date('2026-10-03T12:00:00.000Z');
+  const DAY = 86_400_000;
+  const candidate = (o: Record<string, unknown> = {}) => ({
+    patchId: 'p-apt', category: null, severity: 'unknown', releaseDate: null,
+    source: 'linux', packageId: null, version: null, firstSeenAt: null, ...o,
+  });
+  const ring = (o: Record<string, unknown> = {}) => ({ ringId: 'ring-1', categoryRules: [], autoApprove: {}, deferralDays: 0, sources: ['os'], ...o });
+  // The reporter's Pilot ring: unrated auto-approve on, one-day deferral.
+  const pilot = parseRingAutoApprove({ enabled: true, severities: ['critical'], deferralDays: 1, autoApproveUnrated: true });
+
+  it('approves an unrated linux patch with no release date once first-seen is past the window', () => {
+    const d = decidePatchApproval(
+      candidate({ firstSeenAt: new Date(NOW.getTime() - 2 * DAY) }) as never,
+      ring() as never, new Set(), new Map(), pilot, NOW,
+    );
+    expect(d).toEqual({ approved: 'ring_auto_approve' });
+  });
+
+  it('holds a linux patch first seen inside the window, until first-seen + deferral', () => {
+    const firstSeen = new Date(NOW.getTime() - 12 * 3600 * 1000);
+    const d = decidePatchApproval(candidate({ firstSeenAt: firstSeen }) as never, ring() as never, new Set(), new Map(), pilot, NOW);
+    expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(firstSeen.getTime() + DAY) });
+  });
+
+  it('accepts first-seen as an ISO string (the shape a JSON round-trip produces)', () => {
+    const firstSeen = new Date(NOW.getTime() - 3 * DAY);
+    expect(deferralHold(candidate({ firstSeenAt: firstSeen.toISOString() }) as never, 7, NOW, 'ring'))
+      .toEqual({ held: true, until: new Date(firstSeen.getTime() + 7 * DAY) });
+    expect(deferralHold(candidate({ firstSeenAt: firstSeen.toISOString() }) as never, 2, NOW, 'ring'))
+      .toEqual({ held: false });
+  });
+
+  it('prefers a linux releaseDate over first-seen when one is present', () => {
+    const released = new Date(NOW.getTime() - DAY);
+    expect(deferralHold(
+      candidate({ releaseDate: released.toISOString(), firstSeenAt: new Date(NOW.getTime() - 10 * DAY) }) as never,
+      7, NOW, 'ring',
+    )).toEqual({ held: true, until: new Date(released.getTime() + 7 * DAY) });
+  });
+
+  it('applies the fallback on a category-rule deferral too', () => {
+    const rule = { category: 'security', autoApprove: true, deferralDaysOverride: 5 };
+    const firstSeen = new Date(NOW.getTime() - 2 * DAY);
+    const d = decidePatchApproval(
+      candidate({ category: 'security', firstSeenAt: firstSeen }) as never,
+      ring() as never, new Set(), new Map([['security', rule]]), parseRingAutoApprove({}), NOW,
+    );
+    expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: new Date(firstSeen.getTime() + 5 * DAY) });
+  });
+
+  it('still fails closed for a linux patch with neither releaseDate nor firstSeenAt', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(deferralHold(candidate() as never, 1, NOW, 'ring')).toEqual({ held: true, until: null });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('it has no releaseDate and no first-seen fallback timestamp'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('fails closed for a linux patch with an unparseable releaseDate (no fall-through to first-seen)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(deferralHold(
+        candidate({ releaseDate: 'not-a-date', firstSeenAt: new Date(NOW.getTime() - 10 * DAY) }) as never,
+        1, NOW, 'ring',
+      )).toEqual({ held: true, until: null });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('its releaseDate value is unparseable'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it.each(['microsoft', 'apple'])(
+    'keeps the fail-closed hold (no expiry) for a %s patch with no release date, however long ago it was first seen',
+    (source) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const d = decidePatchApproval(
+          candidate({ source, firstSeenAt: new Date(NOW.getTime() - 365 * DAY) }) as never,
+          ring() as never, new Set(), new Map(), pilot, NOW,
+        );
+        expect(d).toEqual({ denied: 'held_by_deferral', holdUntil: null });
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('but it has no releaseDate, so it cannot prove its age'));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(['third_party', 'custom'])('leaves the existing %s first-seen fallback unchanged', (source) => {
+    const firstSeen = new Date(NOW.getTime() - 2 * DAY);
+    expect(deferralHold(candidate({ source, firstSeenAt: firstSeen }) as never, 7, NOW, 'ring'))
+      .toEqual({ held: true, until: new Date(firstSeen.getTime() + 7 * DAY) });
+    expect(deferralHold(candidate({ source, firstSeenAt: firstSeen }) as never, 1, NOW, 'ring'))
+      .toEqual({ held: false });
+  });
+
+  describe('through resolveApprovedPatchesForDevice (first-seen plumbed from device_patches.createdAt)', () => {
+    beforeEach(() => {
+      vi.mocked(db.select).mockReset();
+    });
+    const linuxRing: RingConfig = {
+      ringId: RING_ID,
+      categoryRules: [],
+      autoApprove: { enabled: true, severities: ['critical'], deferralDays: 1, autoApproveUnrated: true },
+      deferralDays: 0,
+      sources: ['os'],
+    };
+
+    it('approves an APT patch first seen two days ago on a one-day deferral ring', async () => {
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'linux', severity: 'unknown', category: null, releaseDate: null, firstSeenAt: new Date(Date.now() - 2 * DAY) })],
+        []
+      );
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, linuxRing);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.approvalReason).toBe('ring_auto_approve');
+    });
+
+    it('holds an APT patch first seen an hour ago', async () => {
+      mockPendingAndApprovals(
+        [pendingRow({ patchId: P1, source: 'linux', severity: 'unknown', category: null, releaseDate: null, firstSeenAt: new Date(Date.now() - 3600 * 1000) })],
+        []
+      );
+      const result = await resolveApprovedPatchesForDevice(DEVICE_ID, ORG_ID, linuxRing);
+      expect(result).toEqual([]);
+    });
   });
 });

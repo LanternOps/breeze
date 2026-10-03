@@ -296,3 +296,26 @@ describe('normalizePatch — install failure overlay (#4223)', () => {
     expect(normalizePatch({ id: 'p1', installFailure: { error: 'x' } }, 0).installFailure).toBeUndefined();
   });
 });
+
+// #7800: APT patches carry no release date. The row's createdAt is when the
+// catalog first imported the patch, not when the vendor released it, so it
+// must never stand in for the release date.
+describe('normalizePatch releaseDate (#7800)', () => {
+  it('leaves releaseDate empty when it is null, instead of using the import date', () => {
+    const patch = normalizePatch(
+      { id: 'p1', title: 'libssl3', releaseDate: null, createdAt: '2026-10-02T08:00:00.000Z' },
+      0,
+    );
+    expect(patch.releaseDate).toBe('');
+  });
+
+  it('leaves releaseDate empty when it is absent, even with a createdAt present', () => {
+    expect(normalizePatch({ id: 'p1', createdAt: '2026-09-30T08:00:00.000Z' }, 0).releaseDate).toBe('');
+  });
+
+  it('still uses a real release date from any of the accepted field names', () => {
+    expect(normalizePatch({ id: 'p1', releaseDate: '2026-09-01', createdAt: '2026-10-02' }, 0).releaseDate).toBe('2026-09-01');
+    expect(normalizePatch({ id: 'p1', releasedAt: '2026-09-02' }, 0).releaseDate).toBe('2026-09-02');
+    expect(normalizePatch({ id: 'p1', release_date: '2026-09-03' }, 0).releaseDate).toBe('2026-09-03');
+  });
+});
