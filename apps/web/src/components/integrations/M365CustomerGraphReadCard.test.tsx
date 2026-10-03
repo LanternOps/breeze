@@ -258,6 +258,8 @@ describe("M365CustomerGraphReadCard", () => {
     ["active", "Microsoft consent completed. The refreshed connection status is shown below."],
     ["degraded", "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."],
     ["consent_expired", "The consent session expired. Start consent again."],
+    ["conditional_access_blocked", "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin."],
+    ["consent_provider_error", "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs."],
     ["executor_unavailable", "The verification service is unavailable. Retest later."],
   ] as const)("shows safe callback copy for %s and refreshes once", async (callbackResult, message) => {
     fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));

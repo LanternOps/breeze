@@ -42,6 +42,8 @@ const STABLE_ERROR_CODES = [
   "consent_expired",
   "consent_state_mismatch",
   "consent_cancelled",
+  "conditional_access_blocked",
+  "consent_provider_error",
   "admin_role_required",
   "tenant_mismatch",
   "tenant_already_bound",

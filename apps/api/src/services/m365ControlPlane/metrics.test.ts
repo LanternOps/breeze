@@ -39,6 +39,10 @@ describe('M365 customer Graph read observability', () => {
     ]);
     expect(new Set(M365_CUSTOMER_GRAPH_READ_OUTCOMES).size)
       .toBe(M365_CUSTOMER_GRAPH_READ_OUTCOMES.length);
+    // The consent callback's provider-error outcomes must be recordable
+    // labels, or their audit/metric would be silently dropped.
+    expect(M365_CUSTOMER_GRAPH_READ_OUTCOMES).toContain('conditional_access_blocked');
+    expect(M365_CUSTOMER_GRAPH_READ_OUTCOMES).toContain('consent_provider_error');
   });
 
   it('records only fixed enum label pairs and drops unbounded runtime labels', () => {

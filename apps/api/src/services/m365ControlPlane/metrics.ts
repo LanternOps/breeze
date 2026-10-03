@@ -43,6 +43,10 @@ export const M365_CUSTOMER_GRAPH_READ_OUTCOMES = [
   'manifest_stale',
   'organization_probe_failed',
   'executor_unavailable',
+  // Appended: Microsoft returned a consent error (Conditional Access block, or
+  // any other non-cancel provider error).
+  'conditional_access_blocked',
+  'consent_provider_error',
 ] as const;
 
 export type M365CustomerGraphReadOutcome = typeof M365_CUSTOMER_GRAPH_READ_OUTCOMES[number];

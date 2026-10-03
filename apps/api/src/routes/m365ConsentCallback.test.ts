@@ -106,7 +106,6 @@ describe('M365 consent callback route', () => {
   it.each([
     ['duplicate', 'admin_consent', 'state=a&state=b&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true'],
     ['unknown', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&extra=x'],
-    ['mixed', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&error=denied'],
     ['missing state', 'identity_verification', 'code=value'],
     ['bad tenant', 'admin_consent', 'state=a&tenant=not-a-guid&admin_consent=true'],
     ['wrong boolean', 'admin_consent', 'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=yes'],
@@ -121,7 +120,75 @@ describe('M365 consent callback route', () => {
       state: 'state',
       error: 'access_denied',
       error_description: 'sensitive provider text',
-    }))).toEqual({ kind: 'provider_error', state: 'state' });
+    }))).toEqual({
+      kind: 'provider_error', state: 'state', error: 'access_denied', reason: 'cancelled', aadstsCode: null, providerCorrelationId: null,
+    });
+  });
+
+  // The exact Microsoft /common/adminconsent error redirect observed in
+  // production 2026-10-01 (state replaced): Conditional Access demanded device
+  // authentication. Note admin_consent=True rides along WITH the error.
+  const REAL_CA_ERROR_QUERY = 'error=invalid_grant'
+    + '&error_description=AADSTS50097%3a+Device+authentication+is+required.+Trace+ID%3a+'
+    + '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d+Correlation+ID%3a+5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b'
+    + '+Timestamp%3a+2026-10-01+14%3a03%3a11Z'
+    + '&error_uri=https%3a%2f%2flogin.microsoftonline.com%2ferror%3fcode%3d50097'
+    + '&admin_consent=True&state=admin-state';
+
+  it.each(['admin_consent', 'identity_verification'] as const)(
+    'classifies the real Microsoft Conditional Access error redirect as conditional_access (%s phase)',
+    (phase) => {
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(REAL_CA_ERROR_QUERY))).toEqual({
+        kind: 'provider_error',
+        state: 'admin-state',
+        error: 'invalid_grant',
+        reason: 'conditional_access',
+        aadstsCode: 50097,
+        providerCorrelationId: '5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b',
+      });
+    },
+  );
+
+  it('never treats an error response as success even when admin_consent=True is present', () => {
+    const parsed = parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(
+      `state=a&tenant=${'11111111-1111-1111-1111-111111111111'}&admin_consent=True&error=server_error`,
+    ));
+    expect(parsed?.kind).toBe('provider_error');
+    expect(parsed).toMatchObject({ reason: 'other' });
+  });
+
+  it('treats a success shape mixed with an error as a provider error, never as admin success', () => {
+    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(
+      'state=a&tenant=11111111-1111-1111-1111-111111111111&admin_consent=true&error=denied',
+    ))).toMatchObject({ kind: 'provider_error', reason: 'other' });
+  });
+
+  it.each([
+    ['access_denied', 'state=s&error=access_denied', 'cancelled'],
+    ['subcode cancel', 'state=s&error=access_denied&error_subcode=cancel', 'cancelled'],
+    ['subcode cancel on another error', 'state=s&error=invalid_request&error_subcode=cancel', 'cancelled'],
+    ['CA code list', 'state=s&error=invalid_grant&error_codes=%5B53003%5D', 'conditional_access'],
+    ['CA 53000', 'state=s&error=interaction_required&error_description=AADSTS53000%3A+Device+not+compliant', 'conditional_access'],
+    ['CA 50158', 'state=s&error=interaction_required&error_description=AADSTS50158%3A+External+security+challenge', 'conditional_access'],
+    ['unrelated code', 'state=s&error=invalid_client&error_description=AADSTS700016%3A+app+not+found', 'other'],
+    ['full Microsoft field set', 'state=s&error=server_error&error_description=x&error_uri=u&error_subcode=y&error_codes=%5B1%5D'
+      + '&admin_consent=False&tenant=t&timestamp=2026-10-01&trace_id=t1&correlation_id=c1&session_state=ss', 'other'],
+  ] as const)('classifies provider error (%s)', (_name, raw, reason) => {
+    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(raw)))
+      .toMatchObject({ kind: 'provider_error', state: 's', reason });
+  });
+
+  it.each([
+    ['unknown key on the error path', 'state=s&error=access_denied&foo=bar'],
+    ['duplicate error', 'state=s&error=access_denied&error=server_error'],
+    ['duplicate tolerated key', 'state=s&error=access_denied&error_uri=a&error_uri=b'],
+    ['overlong error_uri', `state=s&error=access_denied&error_uri=${'u'.repeat(513)}`],
+    ['overlong description', `state=s&error=access_denied&error_description=${'d'.repeat(4097)}`],
+    ['control char in tolerated key', 'state=s&error=access_denied&trace_id=a%0Ab'],
+    ['overlong error', `state=s&error=${'e'.repeat(129)}`],
+    ['missing state', 'error=access_denied'],
+  ] as const)('rejects provider error with %s', (_name, raw) => {
+    expect(parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(raw))).toBeNull();
   });
 
   it('consumes admin state and starts tenant-bound PKCE identity verification', async () => {
@@ -571,6 +638,97 @@ describe('M365 consent callback route', () => {
     }));
     expect(JSON.stringify({ location: response.headers.get('location'), audit: audit.mock.calls }))
       .not.toContain('provider-secret-description');
+  });
+
+  describe.each([
+    ['customer-graph-read', '/api/v1/m365/consent/callback', attempt, 'm365.customer_graph_read.verification_failed'],
+    ['customer-graph-actions', '/api/v1/m365/actions-consent/callback', actionsAttempt, 'm365.customer_graph_actions.verification_failed'],
+  ] as const)('provider error outcomes (%s profile)', (profile, path, makeAttempt, failedEvent) => {
+    const adminBinding = {
+      phase: 'admin_consent' as const,
+      rawState: 'admin-state',
+      connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID,
+      tenantHint: null,
+    };
+    function build() {
+      const deps = {
+        markAttemptFailed: vi.fn().mockResolvedValue({ status: 'pending-consent' }),
+        audit: vi.fn(),
+        metric: vi.fn(),
+        completeIdentity: vi.fn(),
+        transitionAdminPhase: vi.fn(),
+        transitionUpgradePhase: vi.fn(),
+        consumeSession: vi.fn().mockResolvedValue({ userId: USER_ID }),
+        loadAttempt: vi.fn().mockResolvedValue(makeAttempt('pending-consent')),
+      };
+      const routes = createM365ConsentCallbackRoutes({
+        profile,
+        readSessionPurpose: vi.fn(async () => 'initial' as const),
+        verifyBindingCookie: vi.fn(() => adminBinding),
+        clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+        ...deps,
+      });
+      return { app: new Hono().route('/api/v1/m365', routes), deps };
+    }
+
+    it('surfaces the real Conditional Access redirect as conditional_access_blocked without binding a tenant', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { app, deps } = build();
+
+      const response = await app.request(`${path}?${REAL_CA_ERROR_QUERY}`);
+
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/conditional_access_blocked`);
+      expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
+      expect(deps.completeIdentity).not.toHaveBeenCalled();
+      expect(deps.transitionAdminPhase).not.toHaveBeenCalled();
+      expect(deps.transitionUpgradePhase).not.toHaveBeenCalled();
+      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'conditional_access_blocked');
+      expect(deps.audit).toHaveBeenCalledTimes(1);
+      expect(deps.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        event: failedEvent,
+        outcome: 'conditional_access_blocked',
+        actorId: USER_ID,
+      }));
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).toContain('50097');
+      expect(logged).toContain('5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b');
+      expect(logged).not.toContain('Device authentication');
+      expect(JSON.stringify(deps.audit.mock.calls)).not.toContain('Device authentication');
+      warn.mockRestore();
+    });
+
+    it('maps access_denied + error_subcode=cancel to consent_cancelled', async () => {
+      const { app, deps } = build();
+      const response = await app.request(`${path}?state=admin-state&error=access_denied&error_subcode=cancel`);
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_cancelled`);
+      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'consent_cancelled');
+    });
+
+    it('maps any other provider error to consent_provider_error', async () => {
+      const { app, deps } = build();
+      const response = await app.request(`${path}?state=admin-state&error=server_error&error_description=AADSTS700016%3A+x`);
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_provider_error`);
+      expect(deps.markAttemptFailed).toHaveBeenCalledWith(makeAttempt('pending-consent'), 'consent_provider_error');
+      expect(deps.completeIdentity).not.toHaveBeenCalled();
+      expect(deps.transitionAdminPhase).not.toHaveBeenCalled();
+    });
+
+    it('still reports consent_state_mismatch for an error with an unknown key', async () => {
+      const { app, deps } = build();
+      const response = await app.request(`${path}?state=admin-state&error=access_denied&foo=bar`);
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_state_mismatch`);
+      expect(deps.consumeSession).not.toHaveBeenCalled();
+      expect(deps.markAttemptFailed).not.toHaveBeenCalled();
+    });
+
+    it('still reports consent_state_mismatch when a provider error carries the wrong state', async () => {
+      const { app, deps } = build();
+      const response = await app.request(`${path}?${REAL_CA_ERROR_QUERY.replace('state=admin-state', 'state=other-state')}`);
+      expect(response.headers.get('location')).toBe(`/integrations#m365/${profile}/consent_state_mismatch`);
+      expect(deps.consumeSession).not.toHaveBeenCalled();
+      expect(deps.markAttemptFailed).not.toHaveBeenCalled();
+    });
   });
 
   it('emits verified binding and grant drift once each after signed proof', async () => {

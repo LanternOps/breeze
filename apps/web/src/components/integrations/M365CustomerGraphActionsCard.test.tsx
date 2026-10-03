@@ -307,6 +307,32 @@ describe("M365CustomerGraphActionsCard", () => {
     expect(screen.queryByText("provider-secret-detail")).not.toBeInTheDocument();
   });
 
+  it("localizes a Conditional Access block from the callback and from the stored error code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "pending-consent",
+        lastErrorCode: "conditional_access_blocked",
+      }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="conditional_access_blocked" />);
+
+    expect(await screen.findAllByText("Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin.")).not.toHaveLength(0);
+    expect(screen.queryByText("conditional_access_blocked")).not.toBeInTheDocument();
+  });
+
+  it("localizes a generic Microsoft provider error from the callback and stored error code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "pending-consent",
+        lastErrorCode: "consent_provider_error",
+      }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="consent_provider_error" />);
+
+    expect(await screen.findAllByText("Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.")).not.toHaveLength(0);
+    expect(screen.queryByText("consent_provider_error")).not.toBeInTheDocument();
+  });
+
   it("starts consent through runAction and navigates only to the validated Microsoft URL", async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(makeResponse(envelope()))
