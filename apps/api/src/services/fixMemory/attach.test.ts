@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   flag: vi.fn(async () => true), sig: vi.fn(), partner: vi.fn(async () => 'p-1'), lookup: vi.fn(),
-  values: vi.fn(), onConflict: vi.fn(async () => undefined),
+  values: vi.fn(), onConflict: vi.fn(async () => undefined), onConflictNothing: vi.fn(async () => undefined), instructions: vi.fn(),
   systemCtx: vi.fn((fn: () => unknown) => fn()),
 }));
 vi.mock('../../db', () => ({
-  db: { insert: vi.fn(() => ({ values: (v: unknown) => { h.values(v); return { onConflictDoUpdate: h.onConflict }; } })) },
+  db: { insert: vi.fn(() => ({ values: (v: unknown) => { h.values(v); return { onConflictDoUpdate: h.onConflict, onConflictDoNothing: h.onConflictNothing }; } })) },
 }));
 vi.mock('../mlFeatureFlags', () => ({ shouldProduceMlOutput: h.flag }));
 vi.mock('./signatureLoader', () => ({
@@ -15,6 +15,7 @@ vi.mock('./signatureLoader', () => ({
 }));
 vi.mock('./catalog', () => ({ resolveOrgPartnerId: h.partner }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
+vi.mock('./instructions', async (orig) => ({ ...(await orig<typeof import('./instructions')>()), loadActiveInstructions: h.instructions }));
 vi.mock('../outcomeProbes', () => ({ inSystemDbContext: h.systemCtx }));
 const capture = vi.hoisted(() => vi.fn());
 const research = vi.hoisted(() => vi.fn(async (_input: unknown) => ({ status: 'started', runId: 'r', depth: 'quick' }) as unknown));
@@ -25,6 +26,47 @@ import { attachProvenFixes, handleAlertTriggeredForFixMemory, memoryRationale } 
 
 const proven = { memoryId: 'm-1', scope: 'all_clients', fixKind: 'partner_script', scriptId: 's-1', scriptName: 'Restart spooler', attempts: 8, verified: 7, successRate: 0.88, lastVerifiedAt: '2026-11-01T00:00:00.000Z' };
 const signature = { version: 1, key: 'k', broadKey: 'b', broad: false, facets: { osFamily: 'windows' } };
+
+describe('attach built-in and reviewed-steps fixes (W2 Task 16)', () => {
+  const nonScript = { ...proven, scriptId: null, scriptName: null, builtinAction: null, instructionsRef: null, instructionsTitle: null };
+  const sigWith = (discriminator: unknown) => ({ signature: { ...signature, facets: { osFamily: 'windows', discriminator } }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.flag.mockResolvedValue(true);
+    h.partner.mockResolvedValue('p-1');
+  });
+
+  it('a proven restart_service on a service signature attaches with derived params and a clamped risk floor', async () => {
+    h.sig.mockResolvedValue(sigWith({ kind: 'service', value: 'spooler' }));
+    h.lookup.mockResolvedValue({ proven: [{ ...nonScript, fixKind: 'builtin_action', builtinAction: 'restart_service' }], similar: [] });
+    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toEqual({ proven: 1, attached: 1 });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ targetType: 'builtin_action', builtinAction: 'restart_service', parameters: { serviceName: 'spooler' }, riskTier: 'medium', origin: 'memory' }));
+    expect(h.onConflictNothing).toHaveBeenCalled();
+  });
+
+  it('a proven disk_cleanup is counted as proven but never attached (no stored cleaner ids)', async () => {
+    h.sig.mockResolvedValue(sigWith(null));
+    h.lookup.mockResolvedValue({ proven: [{ ...nonScript, fixKind: 'builtin_action', builtinAction: 'disk_cleanup' }], similar: [] });
+    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toEqual({ proven: 1, attached: 0 });
+    expect(h.values).not.toHaveBeenCalled();
+  });
+
+  it('reviewed steps attach as manual_steps rows linked to the reviewed row', async () => {
+    h.sig.mockResolvedValue(sigWith(null));
+    h.lookup.mockResolvedValue({ proven: [{ ...nonScript, fixKind: 'manual_steps', instructionsRef: 'fi-1', instructionsTitle: 'Clear print queue' }], similar: [] });
+    h.instructions.mockResolvedValueOnce({ id: 'fi-1', title: 'Clear print queue', steps: ['a', 'b'], retiredAt: null });
+    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toEqual({ proven: 1, attached: 1 });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ targetType: 'manual_steps', instructionsId: 'fi-1', parameters: { steps: ['a', 'b'] }, origin: 'memory' }));
+  });
+
+  it('reviewed steps that were retired or are invisible are not attached', async () => {
+    h.sig.mockResolvedValue(sigWith(null));
+    h.lookup.mockResolvedValue({ proven: [{ ...nonScript, fixKind: 'manual_steps', instructionsRef: 'fi-1', instructionsTitle: 'x' }], similar: [] });
+    h.instructions.mockResolvedValueOnce(null);
+    await expect(attachProvenFixes({ sourceType: 'alert', sourceId: 'a-1', orgId: 'org-1' })).resolves.toEqual({ proven: 1, attached: 0 });
+    expect(h.values).not.toHaveBeenCalled();
+  });
+});
 
 describe('attachProvenFixes', () => {
   beforeEach(() => {

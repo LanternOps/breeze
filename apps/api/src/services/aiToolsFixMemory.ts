@@ -15,10 +15,19 @@ import { sanitizeThrownToolError } from './aiToolErrors';
 import { findAlertWithAccess } from './aiToolsAlerts';
 import { deviceIdSiteDenied } from './aiToolsSiteScope';
 import { resolveDeviceOs, resolveOrgPartnerId } from './fixMemory/catalog';
-import { lookupFixes } from './fixMemory/lookup';
+import { lookupFixes, type FixLookupResult } from './fixMemory/lookup';
 import { FIX_PROBLEM_LEAF_TYPES, fixProblemSchema, signatureForProblem } from './fixMemory/problemSignature';
 import { signatureForSource, type FixSourceRef } from './fixMemory/signatureLoader';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+
+/** Reviewed-step titles are human-authored text: ids and counts only reach model context. */
+function toToolOutput(result: FixLookupResult): string {
+  const strip = <T extends { instructionsTitle?: unknown }>(r: T): Omit<T, 'instructionsTitle'> => {
+    const { instructionsTitle: _omit, ...rest } = r;
+    return rest;
+  };
+  return JSON.stringify({ ...result, proven: result.proven.map(strip), similar: result.similar.map(strip) });
+}
 
 export const findProvenFixesInputSchema = z.object({
   alertId: z.string().guid().optional(),
@@ -90,7 +99,7 @@ export function registerFixMemoryTools(tools: Map<string, AiTool>): void {
           }
           const partnerId = await resolveOrgPartnerId(orgId);
           if (!partnerId) return JSON.stringify({ error: 'Organization not found' });
-          return JSON.stringify(await lookupFixes({ orgId, partnerId, signature, limit }));
+          return toToolOutput(await lookupFixes({ orgId, partnerId, signature, limit }));
         }
         let orgId: string;
         let ref: FixSourceRef;
@@ -114,7 +123,7 @@ export function registerFixMemoryTools(tools: Map<string, AiTool>): void {
         }
         const partnerId = await resolveOrgPartnerId(orgId);
         if (!partnerId) return JSON.stringify({ error: 'Organization not found' });
-        return JSON.stringify(await lookupFixes({ orgId, partnerId, signature: resolved.signature, limit }));
+        return toToolOutput(await lookupFixes({ orgId, partnerId, signature: resolved.signature, limit }));
       } catch (error) {
         return JSON.stringify({ error: sanitizeThrownToolError('find_proven_fixes', error) });
       }

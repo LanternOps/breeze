@@ -13,6 +13,7 @@ import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from 
 import { executeScriptOnDevices } from '../services/scriptExecution';
 import { requestResearch, researchSourceDeviceId, researchStatusForSource } from '../services/fixMemory/research';
 import { lookupFixes } from '../services/fixMemory/lookup';
+import { loadActiveInstructions } from '../services/fixMemory/instructions';
 import { dispatchBuiltinAction } from '../services/fixMemory/builtinActions';
 import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
@@ -75,6 +76,9 @@ function resolveOrgForSource(auth: AuthContext, orgId: string | undefined): stri
   if (orgId) return auth.canAccessOrg(orgId) ? orgId : null;
   return auth.orgId ?? null;
 }
+
+// Done on manual steps; instructionsId names a reviewed (active) fix_instructions row. An empty body is valid.
+const doneBodySchema = z.object({ instructionsId: z.string().uuid().optional() }).strict();
 
 const updateBodySchema = z.object({
   status: z.enum(['accepted', 'edited', 'rejected', 'executed', 'failed']),
@@ -1343,6 +1347,7 @@ remediationSuggestionRoutes.post(
   '/:id/done',
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_EXECUTE.resource, PERMISSIONS.SCRIPTS_EXECUTE.action),
+  zValidator('json', doneBodySchema),
   async (c) => {
     const auth = c.get('auth');
     const perms = c.get('permissions') as UserPermissions | undefined;
@@ -1363,15 +1368,24 @@ remediationSuggestionRoutes.post(
     }
     const deviceId = singleTargetDeviceId(existing);
     if (!deviceId) return c.json({ error: 'Marking manual steps done requires exactly one target device' }, 400);
-    const outcome = await createManualStepsOutcome({ suggestion: existing, deviceId });
+    const { instructionsId } = c.req.valid('json');
+    if (instructionsId) {
+      // Request RLS: only the caller's own partner's active reviewed rows are visible.
+      const reviewed = await loadActiveInstructions(instructionsId);
+      if (!reviewed) return c.json({ error: 'Reviewed steps not found or retired' }, 404);
+    }
+    const outcome = await createManualStepsOutcome({ suggestion: existing, deviceId, instructionsId: instructionsId ?? null });
     if (!outcome) return c.json({ error: 'This suggestion was already marked done' }, 409);
+    if (instructionsId) {
+      await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() }).where(eq(remediationSuggestions.id, existing.id));
+    }
     writeRouteAudit(c, {
       orgId: existing.orgId,
       action: 'ml.remediation_suggestion.done',
       resourceType: 'remediation_suggestion',
       resourceId: existing.id,
       resourceName: existing.title,
-      details: { sourceType: existing.sourceType, sourceId: existing.sourceId },
+      details: { sourceType: existing.sourceType, sourceId: existing.sourceId, instructionsId: instructionsId ?? null },
     });
     return c.json({ data: { outcome } }, 201);
   }

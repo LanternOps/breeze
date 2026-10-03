@@ -56,6 +56,14 @@ describe('find_proven_fixes', () => {
     expect(out.proven).toHaveLength(1);
   });
 
+  it('keeps the reviewed-steps id but never the human-authored title in model context (W2 Task 16)', async () => {
+    h.lookup.mockResolvedValueOnce({ signature: { version: 1 }, proven: [{ memoryId: 'm', fixKind: 'manual_steps', instructionsRef: 'fi-1', instructionsTitle: 'Clear print queue' }], similar: [{ memoryId: 'm2', instructionsTitle: 'Other' }] });
+    const raw = await tools.get('find_proven_fixes')!.handler({ alertId: ALERT }, auth);
+    expect(raw).toContain('fi-1');
+    expect(raw).not.toContain('Clear print queue');
+    expect(raw).not.toContain('instructionsTitle');
+  });
+
   it('denies an alert the caller cannot see (cross-org)', async () => {
     h.findAlert.mockResolvedValueOnce(null);
     expect((await run({ alertId: ALERT })).error).toBe('Alert not found or access denied');

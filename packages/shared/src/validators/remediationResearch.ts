@@ -39,3 +39,10 @@ export const RESEARCH_SUBMISSION_SHAPE = {
 };
 
 export const researchSubmissionSchema = z.object(RESEARCH_SUBMISSION_SHAPE).strict() as unknown as z.ZodType<ResearchSubmission>;
+
+/** A partner operator's REVIEWED generic steps — the only manual steps that can become shared memory. */
+export const reviewedInstructionsSchema = z.object({
+  title: text(160),
+  steps: z.array(text(400)).min(1).max(RESEARCH_MAX_STEPS),
+  osType: z.enum(['windows', 'macos', 'linux']).nullable(),
+}).strict();

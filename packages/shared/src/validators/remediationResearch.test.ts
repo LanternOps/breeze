@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AI_AGENT_KINDS, AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_POLICY_SNAPSHOT_VERSION, AI_AGENT_RUN_PROFILES,
   RESEARCH_BUILTIN_ACTIONS, RESEARCH_BUILTIN_PARAM_SCHEMAS, RESEARCH_EDITABLE_LIMIT_KEYS, aiAgentLimitsPatchSchema, allowedModesForKind,
-  createAiAgentSchema, researchSubmissionSchema,
+  createAiAgentSchema, researchSubmissionSchema, reviewedInstructionsSchema,
 } from '../index';
 
 const base = { title: 'Restart the spooler', reasoning: 'The spooler service is stopped and the alert names it.', riskTier: 'low' as const };
@@ -85,5 +85,15 @@ describe('RESEARCH_BUILTIN_PARAM_SCHEMAS', () => {
     expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.restart_service.safeParse({ serviceName: 'Spooler' }).success).toBe(true);
     expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.restart_service.safeParse({ serviceName: '' }).success).toBe(false);
     expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.disk_cleanup.safeParse({ actionIds: [] }).success).toBe(false);
+  });
+});
+
+describe('reviewedInstructionsSchema', () => {
+  it('trims, requires 1..12 steps and a known OS or null, and is strict', () => {
+    expect(reviewedInstructionsSchema.parse({ title: ' T ', steps: [' a '], osType: null })).toEqual({ title: 'T', steps: ['a'], osType: null });
+    expect(reviewedInstructionsSchema.safeParse({ title: 't', steps: [], osType: null }).success).toBe(false);
+    expect(reviewedInstructionsSchema.safeParse({ title: 't', steps: Array(13).fill('a'), osType: null }).success).toBe(false);
+    expect(reviewedInstructionsSchema.safeParse({ title: 't', steps: ['a'], osType: 'beos' }).success).toBe(false);
+    expect(reviewedInstructionsSchema.safeParse({ title: 't', steps: ['a'], osType: null, extra: 1 }).success).toBe(false);
   });
 });

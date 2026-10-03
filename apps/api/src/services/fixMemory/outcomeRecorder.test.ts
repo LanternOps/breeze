@@ -166,3 +166,17 @@ describe('recordBuiltinOutcome (W2 Task 15)', () => {
     err.mockRestore();
   });
 });
+
+describe('Done with reviewed steps (W2 Task 16)', () => {
+  const manual = { id: 'sg-3', orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1' };
+  it('reviewed steps give a shareable identity', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    await createManualStepsOutcome({ suggestion: manual, deviceId: 'd-1', instructionsId: 'fi-1' });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ fixKind: 'manual_steps', instructionsRef: 'fi-1', fixIdentity: 'instructions:fi-1' }));
+  });
+  it('unreviewed AI steps never aggregate (identity stays null)', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    await createManualStepsOutcome({ suggestion: manual, deviceId: 'd-1' });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ instructionsRef: null, fixIdentity: null }));
+  });
+});

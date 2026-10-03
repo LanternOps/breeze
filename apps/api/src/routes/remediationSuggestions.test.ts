@@ -18,6 +18,7 @@ const dbMocks = vi.hoisted(() => ({
   recordOutcomeMock: vi.fn(async () => ({ state: 'pending', stateReason: null, humanVote: null })),
   recordVoteMock: vi.fn(),
   createDoneMock: vi.fn(),
+  loadActiveInstructionsMock: vi.fn(),
   loadSummariesMock: vi.fn(async () => new Map()),
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns; `depth` says whether a DB call ran inside one.
@@ -116,6 +117,7 @@ vi.mock('../services/fixMemory/research', () => ({
   researchStatusForSource: dbMocks.researchStatusMock,
   researchSourceDeviceId: dbMocks.sourceDeviceMock,
 }));
+vi.mock('../services/fixMemory/instructions', () => ({ loadActiveInstructions: dbMocks.loadActiveInstructionsMock }));
 vi.mock('../services/fixMemory/lookup', () => ({ lookupFixes: dbMocks.lookupMock }));
 vi.mock('../services/fixMemory/signatureLoader', () => ({
   signatureForSource: vi.fn(async () => ({ signature: { broad: false } })),
@@ -1313,6 +1315,43 @@ describe('remediation suggestion routes', () => {
 
     mockSuggestionLoad({ ...baseSuggestion, status: 'accepted' });
     expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({}))).status).toBe(400);
+  });
+
+  const RID = '66666666-6666-4666-8666-666666666666';
+  const manualAccepted = () => mockSuggestionLoad({ ...baseSuggestion, targetType: 'manual_steps', scriptId: null, status: 'accepted' });
+
+  it('Done with an invisible or retired reviewed row is a 404, not a silent unreviewed Done', async () => {
+    manualAccepted();
+    dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce(null);
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: RID }));
+    expect(res.status).toBe(404);
+    expect(dbMocks.createDoneMock).not.toHaveBeenCalled();
+  });
+
+  it('Done with reviewed steps passes the id through', async () => {
+    manualAccepted();
+    dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce({ id: RID, osType: null });
+    const where = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockReturnValue({ where });
+    dbMocks.updateMock.mockReturnValueOnce({ set });
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: RID }));
+    expect(res.status).toBe(201);
+    expect(dbMocks.createDoneMock).toHaveBeenCalledWith(expect.objectContaining({ instructionsId: RID }));
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ instructionsId: RID }));
+  });
+
+  it('Done with no body is an unreviewed Done (no instructions lookup)', async () => {
+    manualAccepted();
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+    expect(res.status).toBe(201);
+    expect(dbMocks.loadActiveInstructionsMock).not.toHaveBeenCalled();
+    expect(dbMocks.createDoneMock).toHaveBeenCalledWith(expect.objectContaining({ instructionsId: null }));
+  });
+
+  it('Done rejects a non-uuid instructionsId at validation', async () => {
+    expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: 'nope' }))).status).toBe(400);
   });
 
   it('lists suggestions with origin and their outcome', async () => {

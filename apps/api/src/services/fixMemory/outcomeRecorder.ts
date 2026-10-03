@@ -142,18 +142,21 @@ export async function recordOutcomeVote(input: { suggestionId: string; orgId: st
 }
 
 /**
- * Done on manual steps: the attempt starts at awaiting_recovery (spec). W1 has
- * no reviewed-instructions library, so fix_identity is NULL: the attempt is
- * watched and votable but never aggregated into shareable memory.
+ * Done on manual steps: the attempt starts at awaiting_recovery (spec).
+ * Reviewed steps (W2: `instructionsId` names an active fix_instructions row)
+ * get a shareable identity and aggregate partner-wide; AI-written steps never
+ * do (fix_identity NULL): they are watched and votable but not shared memory.
  */
 export async function createManualStepsOutcome(input: {
   suggestion: Pick<typeof remediationSuggestions.$inferSelect, 'id' | 'orgId' | 'sourceType' | 'sourceId' | 'alertId'>;
   deviceId: string;
+  instructionsId?: string | null;
 }): Promise<OutcomeSummary | null> {
   const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
     .where(eq(organizations.id, input.suggestion.orgId)).limit(1);
   if (!org) return null;
   const now = new Date();
+  const instructionsRef = input.instructionsId ?? null;
   const [row] = await db.insert(fixOutcomes).values({
     orgId: input.suggestion.orgId,
     partnerId: org.partnerId,
@@ -163,7 +166,8 @@ export async function createManualStepsOutcome(input: {
     sourceId: input.suggestion.sourceId,
     alertId: input.suggestion.alertId,
     fixKind: 'manual_steps',
-    fixIdentity: null,
+    instructionsRef,
+    fixIdentity: fixIdentityFor({ fixKind: 'manual_steps', instructionsRef }),
     state: 'awaiting_recovery',
     stateReason: 'manual_steps_done',
     deadlineAt: new Date(now.getTime() + FIX_OUTCOME_WINDOWS.recoveryTimeoutHours * HOUR_MS),

@@ -1,21 +1,25 @@
 /**
  * Free fix-memory attach (AI Suggested Fixes W1, spec P3): a PROVEN hit for a
  * new problem becomes a remediation_suggestions row with origin 'memory'. No
- * LLM, no cost. Broad signatures never auto-attach. W1 attaches script fixes
- * only (the only execution rail /execute has today). An existing untouched
+ * LLM, no cost. Broad signatures never auto-attach. Script, built-in
+ * (params derived from the signature's structured discriminator; disk_cleanup
+ * never) and reviewed-steps fixes attach. An existing untouched
  * ('suggested') keyword-matcher row for the same script is upgraded in place.
  */
 import { sql } from 'drizzle-orm';
+import type { ResearchBuiltinAction } from '@breeze/shared';
 import { db } from '../../db';
 import { remediationSuggestions } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { inSystemDbContext } from '../outcomeProbes';
+import { clampBuiltinRisk } from './builtinRisk';
 import { resolveOrgPartnerId } from './catalog';
+import { builtinParamsFromSignature, loadActiveInstructions } from './instructions';
 import { lookupFixes, type FixTrackRecord } from './lookup';
 import { requestResearch } from './research';
-import { signatureForSource, sourceRefFor } from './signatureLoader';
+import { signatureForSource, sourceRefFor, type ResolvedFixSource } from './signatureLoader';
 
 const ATTACH_LIMIT = 3;
 
@@ -24,11 +28,68 @@ export function memoryRationale(fix: Pick<FixTrackRecord, 'verified' | 'attempts
   return `Proven fix: worked ${fix.verified} of ${fix.attempts} times ${where}.`;
 }
 
-export async function attachProvenFixes(input: {
-  sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca';
-  sourceId: string;
-  orgId: string;
-}): Promise<{ proven: number; attached: number }> {
+type Insert = typeof remediationSuggestions.$inferInsert;
+type AttachInput = { sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca'; sourceId: string; orgId: string };
+
+/** One memory-origin row per proven fix kind; null = proven but not attachable runnable (still counts as proven). */
+async function memorySuggestionValues(fix: FixTrackRecord, resolved: ResolvedFixSource, input: AttachInput): Promise<Insert | null> {
+  const common = {
+    orgId: input.orgId, sourceType: input.sourceType, sourceId: input.sourceId, deviceId: resolved.deviceId,
+    alertId: input.sourceType === 'alert' ? input.sourceId : null,
+    anomalyId: input.sourceType === 'anomaly' ? input.sourceId : null,
+    correlationGroupId: input.sourceType === 'correlation' ? input.sourceId : null,
+    rationale: memoryRationale(fix), status: 'suggested' as const, confidence: null, origin: 'memory' as const,
+    targetDeviceIds: [resolved.deviceId],
+    evidence: {
+      origin: 'memory', memoryId: fix.memoryId, scope: fix.scope, attempts: fix.attempts, verifiedCount: fix.verified,
+      successRate: fix.successRate, lastVerifiedAt: fix.lastVerifiedAt, signatureVersion: resolved.signature.version,
+    },
+  };
+  if (fix.scriptId && fix.scriptName) {
+    return {
+      ...common, targetType: 'script', scriptId: fix.scriptId, title: fix.scriptName.slice(0, 255), riskTier: 'medium', parameters: {},
+      expectedAction: `Run script "${fix.scriptName}" through the existing script execution flow.`,
+    };
+  }
+  if (fix.fixKind === 'builtin_action' && fix.builtinAction) {
+    const action = fix.builtinAction as ResearchBuiltinAction;
+    const params = builtinParamsFromSignature(action, resolved.signature.facets.discriminator);
+    if (!params) return null;
+    const label = action.replace('_', ' ');
+    return {
+      ...common, targetType: 'builtin_action', builtinAction: action, parameters: params, riskTier: clampBuiltinRisk(action, 'low'),
+      title: `Built-in: ${label}`, expectedAction: `Run the built-in ${label} action on this device.`,
+    };
+  }
+  if (fix.fixKind === 'manual_steps' && fix.instructionsRef) {
+    const reviewed = await loadActiveInstructions(fix.instructionsRef);
+    if (!reviewed) return null;
+    return {
+      ...common, targetType: 'manual_steps', instructionsId: reviewed.id, parameters: { steps: reviewed.steps }, riskTier: 'low',
+      title: reviewed.title, expectedAction: reviewed.steps.map((step, i) => `${i + 1}. ${step}`).join('\n'),
+    };
+  }
+  return null;
+}
+
+async function insertMemorySuggestion(values: Insert): Promise<void> {
+  const q = db.insert(remediationSuggestions).values(values);
+  if (values.targetType === 'script') {
+    // W1's upgrade-in-place for an untouched matcher row of the same script.
+    await q.onConflictDoUpdate({
+      target: [remediationSuggestions.orgId, remediationSuggestions.sourceType, remediationSuggestions.sourceId, remediationSuggestions.scriptId],
+      targetWhere: sql`target_type = 'script'`,
+      set: { origin: 'memory', evidence: values.evidence, rationale: values.rationale, updatedAt: new Date() },
+      setWhere: sql`${remediationSuggestions.status} = 'suggested'`,
+    });
+    return;
+  }
+  // Built-in / reviewed-steps memory rows: one per source + action / + reviewed row (partial unique indexes,
+  // 2026-12-07-100200: origin <> 'ai_research'). A bare ON CONFLICT DO NOTHING matches either index.
+  await q.onConflictDoNothing();
+}
+
+export async function attachProvenFixes(input: AttachInput): Promise<{ proven: number; attached: number }> {
   const none = { proven: 0, attached: 0 };
   if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return none;
   const ref = sourceRefFor({ sourceType: input.sourceType, sourceId: input.sourceId });
@@ -41,39 +102,9 @@ export async function attachProvenFixes(input: {
   const { proven } = await lookupFixes({ orgId: input.orgId, partnerId, signature: resolved.signature, limit: ATTACH_LIMIT });
   let attached = 0;
   for (const fix of proven) {
-    if (!fix.scriptId || !fix.scriptName) continue;
-    const rationale = memoryRationale(fix);
-    const evidence = {
-      origin: 'memory', memoryId: fix.memoryId, scope: fix.scope, attempts: fix.attempts, verifiedCount: fix.verified,
-      successRate: fix.successRate, lastVerifiedAt: fix.lastVerifiedAt, signatureVersion: resolved.signature.version,
-    };
-    const now = new Date();
-    await db.insert(remediationSuggestions).values({
-      orgId: input.orgId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      deviceId: resolved.deviceId,
-      alertId: input.sourceType === 'alert' ? input.sourceId : null,
-      anomalyId: input.sourceType === 'anomaly' ? input.sourceId : null,
-      correlationGroupId: input.sourceType === 'correlation' ? input.sourceId : null,
-      targetType: 'script',
-      scriptId: fix.scriptId,
-      title: fix.scriptName.slice(0, 255),
-      rationale,
-      expectedAction: `Run script "${fix.scriptName}" through the existing script execution flow.`,
-      riskTier: 'medium',
-      status: 'suggested',
-      confidence: null,
-      evidence,
-      parameters: {},
-      targetDeviceIds: [resolved.deviceId],
-      origin: 'memory',
-    }).onConflictDoUpdate({
-      target: [remediationSuggestions.orgId, remediationSuggestions.sourceType, remediationSuggestions.sourceId, remediationSuggestions.scriptId],
-      targetWhere: sql`target_type = 'script'`,
-      set: { origin: 'memory', evidence, rationale, updatedAt: now },
-      setWhere: sql`${remediationSuggestions.status} = 'suggested'`,
-    });
+    const values = await memorySuggestionValues(fix, resolved, input);
+    if (!values) continue;
+    await insertMemorySuggestion(values);
     attached += 1;
   }
   return { proven: proven.length, attached };
