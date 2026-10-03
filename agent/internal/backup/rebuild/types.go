@@ -190,20 +190,23 @@ type Options struct {
 
 // Result is Run's structured outcome.
 type Result struct {
-	SnapshotID    string        `json:"snapshotId"`
-	Target        Target        `json:"target"`
-	Identity      IdentityMode  `json:"identity"`
-	Status        string        `json:"status"` // completed | refused | failed
-	PhaseReached  Phase         `json:"phaseReached"`
-	Phases        []PhaseResult `json:"phases"`
-	Plan          *Plan         `json:"plan,omitempty"`
-	Refusal       string        `json:"refusal,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	Warnings      []string      `json:"warnings,omitempty"`
-	FilesRestored int           `json:"filesRestored"`
-	BytesRestored int64         `json:"bytesRestored"`
-	DurationMs    int64         `json:"durationMs"`
-	Resumed       bool          `json:"resumed"`
+	SnapshotID   string        `json:"snapshotId"`
+	Target       Target        `json:"target"`
+	Identity     IdentityMode  `json:"identity"`
+	Status       string        `json:"status"` // completed | refused | failed
+	PhaseReached Phase         `json:"phaseReached"`
+	Phases       []PhaseResult `json:"phases"`
+	Plan         *Plan         `json:"plan,omitempty"`
+	Refusal      string        `json:"refusal,omitempty"`
+	// RefusalCode is a stable machine-readable class for the refusal (empty
+	// for untyped refusals). The recovery console keys on it.
+	RefusalCode   string   `json:"refusalCode,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
+	FilesRestored int      `json:"filesRestored"`
+	BytesRestored int64    `json:"bytesRestored"`
+	DurationMs    int64    `json:"durationMs"`
+	Resumed       bool     `json:"resumed"`
 	// FilesFailed is the total count of files the restore phase could not
 	// place. FailedFilesSample is a deterministic (sorted) prefix of those
 	// paths, capped at 50 entries so a mass-failure run never balloons the
@@ -310,6 +313,7 @@ func (r *Result) CloneWithTrimmedFailedFiles(max int) any {
 
 	clone.Error = truncateResultRunes(clone.Error, maxResultReasonRunes)
 	clone.Refusal = truncateResultRunes(clone.Refusal, maxResultReasonRunes)
+	clone.RefusalCode = truncateResultRunes(clone.RefusalCode, maxResultReasonRunes)
 
 	return &clone
 }
@@ -338,6 +342,9 @@ func (r *Result) SummaryFields() map[string]any {
 	if r.Refusal != "" {
 		m["refusal"] = r.Refusal
 	}
+	if r.RefusalCode != "" {
+		m["refusalCode"] = r.RefusalCode
+	}
 	return m
 }
 
@@ -356,7 +363,16 @@ type ObjectAdmission interface {
 
 // RefusalError carries an operator-facing reason; Run maps it to Status
 // "refused" without touching the target.
-type RefusalError struct{ Reason string }
+type RefusalError struct {
+	Reason string
+	// Code is an optional stable machine-readable class (see RefusalCode*).
+	Code string
+}
+
+// RefusalCodeDiskHasWindows marks the refusal for a target disk that already
+// holds a Windows installation; the recovery console offers an explicit,
+// typed OVERWRITE for it.
+const RefusalCodeDiskHasWindows = "disk_has_windows"
 
 // DriverInjectionUnsupportedReason is the refusal for a non-empty
 // Options.DriverDirs (and the CLI's --drivers). It is operator-facing: the

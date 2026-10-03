@@ -290,6 +290,109 @@ func TestConsole_RefusedPlanPostsRefusedAndOffersRetry(t *testing.T) {
 	}
 }
 
+func diskHasWindowsDeps(t *testing.T) *fakeDeps {
+	return &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun && !opts.ForceDisk {
+				return &rebuild.Result{
+						Status:      "refused",
+						Refusal:     "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+						RefusalCode: rebuild.RefusalCodeDiskHasWindows,
+					}, &rebuild.RefusalError{
+						Reason: "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+						Code:   rebuild.RefusalCodeDiskHasWindows,
+					}
+			}
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+}
+
+func TestConsole_DiskHasWindowsOffersOverwrite(t *testing.T) {
+	// Order: dry run refused -> OVERWRITE -> dry run (ForceDisk) -> serial confirm -> real run.
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "6002248"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	calls := deps.rebuildCalls
+	if len(calls) != 3 || calls[0].ForceDisk || !calls[1].ForceDisk || !calls[1].DryRun || !calls[2].ForceDisk || calls[2].DryRun {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if !strings.Contains(io.transcript.String(), "already contains a Windows installation") {
+		t.Fatal(io.transcript.String())
+	}
+	// refused is terminal server-side: it must NOT be posted before the operator decides.
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "planned,restoring,validated,rebooted" {
+		t.Fatalf("progress statuses = %s", got)
+	}
+}
+
+func TestConsole_DiskHasWindowsWrongSerialStillBlocksAfterOverwrite(t *testing.T) {
+	// OVERWRITE is in addition to the serial confirmation, never instead of it.
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "wrong", "wrong", "6002248"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if n := len(deps.rebuildCalls); n != 3 {
+		t.Fatalf("rebuild calls = %d, want 3", n)
+	}
+}
+
+func TestConsole_DiskHasWindowsDeclineFallsThroughAndPostsRefused(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "overwrite", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("lowercase overwrite must not force: %+v", deps.rebuildCalls)
+		}
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want refused", got)
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("power = %v", deps.powerCalls)
+	}
+}
+
+func TestConsole_OtherRefusalNoOverwrite(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "OVERWRITE", "p"}}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			return &rebuild.Result{Status: "refused", Refusal: "disk /dev/sda is currently in use"}, &rebuild.RefusalError{Reason: "disk /dev/sda is currently in use"}
+		},
+	}
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("other refusals must never force: %+v", deps.rebuildCalls)
+		}
+	}
+	if !strings.Contains(io.transcript.String(), "Please choose r, s, or p.") {
+		t.Fatalf("OVERWRITE should be an invalid choice:\n%s", io.transcript.String())
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("power = %v", deps.powerCalls)
+	}
+}
+
 func TestConsole_OldMediaRefused(t *testing.T) {
 	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj"}}
 	deps := &fakeDeps{

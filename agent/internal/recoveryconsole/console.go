@@ -316,6 +316,24 @@ func (c *Console) Run(ctx context.Context) error {
 		plan, planErr := c.Deps.Rebuild(ctx, dry)
 		if planErr != nil || plan == nil || plan.Status == "refused" || plan.Status == "failed" {
 			reason := refusalReason(plan, planErr)
+			// A disk that already holds Windows is the common real
+			// bare-metal case (the machine's own broken disk). Offer an
+			// explicit typed OVERWRITE BEFORE posting `refused`: refused is
+			// terminal server-side, so posting it first would make the
+			// recovery unrecoverable even if the operator proceeds. It is
+			// posted below only when they decline. The serial/ERASE
+			// confirmation still follows the re-run; CI never auto-overwrites.
+			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows && !baseOpts.ForceDisk && !ci {
+				c.IO.Print("Disk %s already contains a Windows installation. Everything on it will be erased.\n", disk.Path)
+				line, err := c.IO.ReadLine("Type OVERWRITE to erase it, or press Enter for other options: ")
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(line) == "OVERWRITE" {
+					baseOpts.ForceDisk = true
+					continue
+				}
+			}
 			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
 			c.IO.Print("Recovery cannot proceed: %s\n", reason)
 			action, err := c.offerFailureOptions(ci)

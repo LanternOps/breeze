@@ -88,7 +88,7 @@ func winPreflight(ctx context.Context, r *run) error {
 					return err
 				}
 				if has {
-					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber)}
+					return &RefusalError{Reason: fmt.Sprintf("target disk %d contains a Windows installation; pass --force-disk to overwrite it", diskNumber), Code: RefusalCodeDiskHasWindows}
 				}
 			}
 		}
