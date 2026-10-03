@@ -135,7 +135,7 @@ export async function completeConsentOperation(
     let idToken: OpaqueIdentityToken;
     try {
       idToken = await tokenClient.exchangeAuthorizationCode({
-        tenantId: request.tenantHint,
+        authority: request.tenantHint,
         code: request.authorizationCode,
         codeVerifier: request.codeVerifier,
       });

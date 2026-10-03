@@ -13,21 +13,35 @@ export class ClientAssertionError extends Error {
   }
 }
 
-function tokenEndpoint(tenantId: string): string {
-  if (!CANONICAL_UUID.test(tenantId)) throw new ClientAssertionError();
-  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+const ORGANIZATIONS_AUTHORITY = 'organizations';
+
+/**
+ * A Microsoft identity-platform authority segment: a canonical lower-case
+ * tenant GUID, or exactly `organizations` (multi-tenant work/school sign-in).
+ * `organizations` is only meaningful for authorization-code redemption; the
+ * token client refuses it for application (client-credentials) tokens.
+ */
+export type MicrosoftAuthority = 'organizations' | (string & {});
+
+/** Returns the v2 token endpoint for a validated authority, else throws. */
+export function tokenEndpointForAuthority(authority: MicrosoftAuthority): string {
+  if (authority !== ORGANIZATIONS_AUTHORITY && !CANONICAL_UUID.test(authority)) {
+    throw new ClientAssertionError();
+  }
+  return `https://login.microsoftonline.com/${authority}/oauth2/v2.0/token`;
 }
 
 export async function createClientAssertion(input: {
   clientId: string;
-  tenantId: string;
+  /** The assertion audience is the token endpoint of exactly this authority. */
+  authority: MicrosoftAuthority;
   certificatePem: string;
   privateKeyPem: string;
   now?: Date;
 }): Promise<string> {
   try {
     if (!CANONICAL_UUID.test(input.clientId)) throw new ClientAssertionError();
-    const audience = tokenEndpoint(input.tenantId);
+    const audience = tokenEndpointForAuthority(input.authority);
     const now = input.now ?? new Date();
     const issuedAt = Math.floor(now.getTime() / 1_000);
     if (!Number.isFinite(issuedAt)) throw new ClientAssertionError();
