@@ -9,6 +9,7 @@ import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
 import { edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
+import NodeChipOverlay, { type NodeChip } from './NodeChipOverlay';
 
 /** Reads a design-system HSL token (`--primary: 225 62% 48%`) as a colour Cytoscape understands. */
 function token(name: string, fallback: string) {
@@ -133,9 +134,8 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     { selector: ':parent.overview', style: { 'text-opacity': 0, 'background-opacity': 0.012, 'border-width': 1, 'border-opacity': 0.16, 'border-style': 'solid' } },
     // Invisible stand-in for a summary panel (semanticZoom.summaryAnchorId): edges end at the panel's border.
     { selector: 'node[kind="anchor"]', style: { shape: 'round-rectangle', opacity: 0, 'background-image': 'none', label: '', events: 'no' } },
-    // Loose tiles (gateways, ungrouped devices) keep one short line, sized to read at overview zoom.
-    { selector: 'node.overview[!member][kind!="section"][kind!="outside"][kind!="anchor"][kind!="badge"]:childless', style: { label: 'data(short)', 'font-size': 26, 'font-weight': 600, 'text-wrap': 'ellipsis',
-      'background-width': 36, 'background-height': 36 } },
+    // Loose tiles (gateways, ungrouped devices) hand over to their HTML chips (NodeChipOverlay); the node stays for its edges.
+    { selector: 'node.overview[?chip]', style: { opacity: 0 } },
     { selector: 'edge.overview[label]', style: { 'font-size': 22 } },
     // Zoomed out, the edges and summaries carry the picture: lines a touch stronger than at tile zoom.
     { selector: 'edge.overview', style: { 'line-opacity': 0.9 } },
@@ -152,13 +152,15 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   fitKey: string;
 }) {
   const { t } = useTranslation('topology');
-  const container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
+  const container = useRef<HTMLDivElement>(null), overlay = useRef<HTMLDivElement>(null), chipLayer = useRef<HTMLDivElement>(null), cy = useRef<Core | null>(null);
   const callbacks = useRef({ onSelect, onMove }); callbacks.current = { onSelect, onMove };
   const fitted = useRef<string | undefined>(undefined);
   const tierRef = useRef<ZoomTier>('detail'), [tier, setTier] = useState<ZoomTier>('detail');
   /** Items Fit map left out (fitFocus); the badge counts those currently off screen. */
   const outsideRef = useRef<string[]>([]), [offscreen, setOffscreen] = useState(0);
   const frame = useRef(0), schedule = useRef<() => void>(() => {});
+  const chips = useMemo<NodeChip[]>(() => render.nodes.filter((node) => !node.parent && node.kind !== 'group' && node.kind !== 'unidentified' && node.kind !== 'outside')
+    .map((node) => ({ id: node.id, title: node.label, detail: node.detail, glyph: node.glyph })), [render]);
   const summaries = useMemo<SummaryCard[]>(() => {
     const counts = cardSummaries(render.nodes);
     return render.nodes.filter((node) => counts.has(node.id)).map((node) => ({ id: node.id, title: node.label, detail: node.detail, summary: counts.get(node.id)! }));
@@ -240,6 +242,15 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           const panel = box.querySelector<HTMLElement>('button');
           if (panel) panel.style.transform = `scale(${summaryScale(panel.offsetWidth, panel.offsetHeight, x2 - x1, y2 - y1)})`;
         });
+        // Each chip sits centred on its node and at least as large as it, so the node's edges meet the chip.
+        chipLayer.current?.querySelectorAll<HTMLElement>('[data-node-id]').forEach((box) => {
+          const node = renderer.getElementById(box.dataset.nodeId!);
+          if (!node.length) { box.style.display = 'none'; return; }
+          const bb = node.renderedBoundingBox({ includeLabels: false });
+          box.style.display = '';
+          box.style.transform = `translate(${(bb.x1 + bb.x2) / 2}px, ${(bb.y1 + bb.y2) / 2}px) translate(-50%, -50%)`;
+          box.style.minWidth = `${bb.w}px`; box.style.minHeight = `${bb.h}px`;
+        });
         placeAnchors();
       }
       const off = outsideRef.current.filter((id) => {
@@ -293,7 +304,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       const nodes: cytoscape.ElementDefinition[] = ordered.map((node) => {
         const width = sizes.get(node.id)?.width ?? 208, height = sizes.get(node.id)?.height ?? 60;
         const card = node.kind === 'group' || node.kind === 'unidentified';
-        return { group: 'nodes', data: { id: node.id, display: display(node, width, family, node.sharedWith > 0 ? badgeW + 6 : 0), tooltip: node.note ?? undefined, short: clipToWidth(node.label, width - TEXT_INSET - 6, `600 26px ${family}`), kind: node.kind, width, height,
+        return { group: 'nodes', data: { id: node.id, display: display(node, width, family, node.sharedWith > 0 ? badgeW + 6 : 0), tooltip: node.note ?? undefined, chip: !node.parent && !card && node.kind !== 'outside', kind: node.kind, width, height,
           textWidth: card ? '4000px' : `${Math.max(80, width - TEXT_INSET - TEXT_END)}px`, textShift: card || node.kind === 'outside' ? 0 : TEXT_INSET - width,
           icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined, member: !!node.parent,
           health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, corroborated: node.corroborated, networkClass: node.networkClass ?? undefined,
@@ -384,6 +395,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     <div ref={container} data-testid="topology-canvas" aria-hidden="true" className="min-w-0 bg-card text-card-foreground"
       style={{ height: 'max(560px, calc(100vh - 300px))', backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
     <CardSummaryOverlay ref={overlay} cards={summaries} visible={tier === 'summary'} onZoom={zoomToCard} />
+    <NodeChipOverlay ref={chipLayer} chips={chips} visible={tier === 'summary'} selectedId={selection?.kind === 'node' ? selection.id : undefined} onSelect={(id) => onSelect({ kind: 'node', id })} />
     {offscreen > 0 && <button type="button" data-testid="topology-show-all" onClick={showAll}
       className="absolute right-3 top-3 rounded-md border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
       {t('grouped.outside', { count: offscreen })} · <span className="font-medium text-foreground">{t('grouped.showAll')}</span>
