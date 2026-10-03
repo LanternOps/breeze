@@ -42,6 +42,16 @@ describe('research persistence', () => {
     ]));
     expect(out).toEqual({ inserted: 1 });
     expect(h.values).toHaveBeenCalledTimes(2);
+    expect(h.values.mock.calls.map((c) => (c[0] as { researchOrdinal: number }).researchOrdinal)).toEqual([0, 1]);
+  });
+
+  it('persists only accepted items — rejected entries never reach an insert', async () => {
+    h.values.mockClear();
+    h.returning.push([{ id: 'r1' }]);
+    const i = input([{ kind: 'manual_steps', steps: ['a'], ...base }]);
+    (i.outcome as { rejected: unknown[] }).rejected = [{ index: 1, reason: 'script_not_visible' }];
+    await persistResearchSuggestions(i);
+    expect(h.values).toHaveBeenCalledTimes(1);
   });
 
   it('no safe fix → nothing inserted', async () => {

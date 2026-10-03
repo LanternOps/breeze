@@ -11,6 +11,7 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS, researchSubmissionSchema,
   type ResearchOutcome, type ResearchRejection, type ResearchSuggestionItem,
 } from '@breeze/shared';
+import { researchItemTooLarge } from '../fixMemory/researchParameters';
 
 export interface ResearchToolRefs {
   deviceOs: 'windows' | 'macos' | 'linux';
@@ -33,6 +34,9 @@ export function cleanupActionsForOs(os: ResearchToolRefs['deviceOs']): ReadonlyS
 }
 
 function rejectionFor(item: ResearchSuggestionItem, refs: ResearchToolRefs): ResearchRejection['reason'] | null {
+  // Byte bound of the persisted parameters JSON (multi-byte text can exceed the
+  // DB's 8192-octet CHECK well within the character limits the schema allows).
+  if (researchItemTooLarge(item)) return 'item_too_large';
   switch (item.kind) {
     case 'catalog':
       if (item.ref.type === 'playbook') return refs.playbookIds.has(item.ref.id) ? null : 'playbook_not_visible';

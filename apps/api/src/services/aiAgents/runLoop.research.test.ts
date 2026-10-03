@@ -534,6 +534,23 @@ describe('remediation_research in the run loop (W2)', () => {
     expect(finalTransition()!.patch.errorCode).toBe('research_missing');
   });
 
+  it('a loop that throws after a submission persists nothing and fails the run', async () => {
+    seedResearchRun('quick');
+    queryMock.mockImplementationOnce((params: { options: Record<string, unknown> }) => {
+      lastQueryOptions = params.options;
+      const generator = (async function* () {
+        await hooks.pre!('submit_suggestions', { summary: 's', items: [] });
+        await hooks.post!('submit_suggestions', { summary: 's', items: [] }, '{"status":"recorded"}', false, 5);
+        throw new Error('sdk crashed');
+        yield undefined;
+      })();
+      return Object.assign(generator, { close: closeMock, interrupt: vi.fn() });
+    });
+    await executeAgentRun(RUN_ID);
+    expect(persistResearchSuggestions).not.toHaveBeenCalled();
+    expect(finalTransition()).toMatchObject({ to: 'failed' });
+  });
+
   it('a persist failure finishes with research_persist_failed', async () => {
     seedResearchRun('quick');
     persistResearchSuggestions.mockRejectedValueOnce(new Error('db down'));

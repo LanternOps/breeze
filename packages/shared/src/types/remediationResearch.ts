@@ -40,7 +40,7 @@ export interface ResearchSubmission { summary: string; items: ResearchSuggestion
 
 export const RESEARCH_REJECTION_REASONS = [
   'script_not_visible', 'script_os_incompatible', 'playbook_not_visible', 'cleanup_action_not_allowed',
-  'draft_language_os_incompatible',
+  'draft_language_os_incompatible', 'item_too_large',
 ] as const;
 export type ResearchRejectionReason = (typeof RESEARCH_REJECTION_REASONS)[number];
 export interface ResearchRejection { index: number; reason: ResearchRejectionReason }

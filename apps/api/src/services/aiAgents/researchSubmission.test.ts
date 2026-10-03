@@ -59,3 +59,19 @@ describe('validateResearchSubmission (Review Focus 1)', () => {
     expect(cleanupActionsForOs('windows').has('win_cleanmgr')).toBe(true);
   });
 });
+
+describe('persisted parameters byte bound (parameters_size_check = 8192 octets)', () => {
+  const steps = (ch: string) => ({ kind: 'manual_steps', steps: Array(12).fill(ch.repeat(400)), ...base });
+
+  it('drops multi-byte steps that fit the character limits but not the byte bound; ASCII of the same length is kept', () => {
+    const out = validateResearchSubmission({ summary: 's', items: [steps('é'), steps('日'), steps('a')] }, refs);
+    expect(out.rejected).toEqual([{ index: 0, reason: 'item_too_large' }, { index: 1, reason: 'item_too_large' }]);
+    expect(out.items).toHaveLength(1);
+  });
+
+  it('keeps the largest legal draft brief (2000 three-byte chars = 6 KB, under the bound)', () => {
+    const out = validateResearchSubmission({ summary: 's', items: [{ kind: 'draft_request', brief: '日'.repeat(2000), language: 'powershell', ...base }] }, refs);
+    expect(out.rejected).toEqual([]);
+    expect(out.items).toHaveLength(1);
+  });
+});

@@ -641,6 +641,8 @@ async function isRunStillRunning(runId: string, orgId: string): Promise<boolean>
  */
 export async function finalizeResearch(ctx: RunContext, result: LoopResult): Promise<string | null> {
   if (!isResearchProfile(ctx.run)) return null;
+  // A loop that threw after spending fails the run; the spec writes NO rows on failure.
+  if (result.failure) return null;
   const research = result.outcome.research;
   if (!research || !ctx.research) {
     result.outcome.runVerdict = 'needs_attention';

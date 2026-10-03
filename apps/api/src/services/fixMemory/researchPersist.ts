@@ -11,6 +11,7 @@ import type { ResearchOutcome, ResearchSuggestionItem } from '@breeze/shared';
 import { db } from '../../db';
 import { remediationSuggestions } from '../../db/schema';
 import type { ResearchRunContext } from '../aiAgents/researchContext';
+import { researchItemParameters } from './researchParameters';
 
 export interface PersistResearchInput { runId: string; orgId: string; research: ResearchRunContext; outcome: ResearchOutcome }
 
@@ -41,7 +42,7 @@ export function suggestionValuesFor(input: PersistResearchInput, item: ResearchS
     agentRunId: input.runId,
     researchOrdinal: ordinal,
     evidence: { origin: 'ai_research', runId: input.runId, depth: input.research.depth },
-    parameters: {},
+    parameters: researchItemParameters(item),
     targetType: 'diagnostic',
     expectedAction: '',
   };
@@ -56,23 +57,28 @@ export function suggestionValuesFor(input: PersistResearchInput, item: ResearchS
     case 'builtin_action':
       return {
         ...common, targetType: 'builtin_action', builtinAction: item.action,
-        parameters: item.params as Record<string, unknown>,
         expectedAction: `Run the built-in ${item.action.replace('_', ' ')} action on this device.`,
       };
     case 'manual_steps':
       return {
-        ...common, targetType: 'manual_steps', parameters: { steps: item.steps },
+        ...common, targetType: 'manual_steps',
         evidence: { ...(common.evidence as Record<string, unknown>), aiWritten: true },
         expectedAction: item.steps.map((s, i) => `${i + 1}. ${s}`).join('\n'),
       };
     case 'draft_request':
       return {
-        ...common, targetType: 'script_draft', parameters: { brief: item.brief, language: item.language },
+        ...common, targetType: 'script_draft',
         expectedAction: 'Open the script builder with this brief; a technician writes and reviews the script.',
       };
   }
 }
 
+/**
+ * MUST run inside ONE caller-owned transaction (the finalizer's system DB
+ * context): items are inserted one by one, and the spec forbids partial rows,
+ * so a mid-batch failure has to roll back every earlier insert. Calling it
+ * outside a transaction would commit items individually.
+ */
 export async function persistResearchSuggestions(input: PersistResearchInput): Promise<{ inserted: number }> {
   let inserted = 0;
   for (const [ordinal, item] of input.outcome.items.entries()) {
