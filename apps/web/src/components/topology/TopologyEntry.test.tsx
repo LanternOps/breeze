@@ -2,7 +2,6 @@ import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import TopologyEntry from './TopologyEntry';
 import { topologyApi, TopologyReadError } from './topologyApi';
-import { useOrgStore } from '../../stores/orgStore';
 import { clearTopologyPrefetch } from './topologyPrefetch';
 import { topologySettingsFixture, SITE } from './topologyFixtures';
 
@@ -24,7 +23,7 @@ const uiOff = (reason: string | null) => {
 };
 
 beforeEach(() => { window.location.hash = ''; });
-afterEach(() => { cleanup(); vi.clearAllMocks(); clearTopologyPrefetch(); useOrgStore.setState({ currentOrgId: null }); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); clearTopologyPrefetch(); });
 
 it('renders the empty state instead of the raw reason code when the ui capability is unavailable', async () => {
   vi.mocked(topologyApi.settings).mockResolvedValue(uiOff('materialization_disabled'));
@@ -66,15 +65,15 @@ it('never silently shows the current organization\'s site for a link to a site i
 it('switches to the organization that owns a linked site when the user can open it (#7880)', async () => {
   window.location.hash = `#topology/site/${OTHER}/view/overview`;
   const selectOrganization = vi.fn();
-  useOrgStore.setState({ currentOrgId: 'org-1', selectOrganization });
+  const organization = { currentOrgId: 'org-1', selectOrganization };
   vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: 'org-2' });
   vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
-  const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
+  const view = render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={organization} />);
   await waitFor(() => expect(selectOrganization).toHaveBeenCalledWith('org-2'));
   expect(screen.queryByTestId('topology-explorer')).toBeNull();
   expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
   // The owning org's site list arrives: the linked site opens.
-  view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }, { id: SITE, name: 'HQ' }]} />);
+  view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }, { id: SITE, name: 'HQ' }]} organization={organization} />);
   expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
   expect(topologyApi.settings).toHaveBeenCalledWith(OTHER, expect.anything());
 });
@@ -110,15 +109,15 @@ it('opens a linked site that is the organization\'s only site (the first-commit 
 it('a same-org link waits for the site list, then opens the site with the reads it started early (#7880)', async () => {
   const org = '55555555-5555-4555-8555-555555555555';
   window.location.hash = `#topology/site/${OTHER}/view/overview`;
-  useOrgStore.setState({ currentOrgId: org });
+  const organization = { currentOrgId: org, selectOrganization: vi.fn() };
   vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: org });
   vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
-  const view = render(<TopologyEntry sites={[]} />);
+  const view = render(<TopologyEntry sites={[]} organization={organization} />);
   await waitFor(() => expect(topologyApi.settings).toHaveBeenCalledWith(OTHER));
   expect(topologyApi.graph).toHaveBeenCalledTimes(1);
   expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
   expect(screen.getByRole('status')).toHaveTextContent('Loading topology');
-  view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} />);
+  view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} organization={organization} />);
   expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
   expect(topologyApi.settings).toHaveBeenCalledTimes(1);
 });
@@ -126,8 +125,17 @@ it('a same-org link waits for the site list, then opens the site with the reads 
 it('says the site is not in this organization when its owner is the current org but the loaded list lacks it', async () => {
   const org = '55555555-5555-4555-8555-555555555555';
   window.location.hash = `#topology/site/${OTHER}/view/overview`;
-  useOrgStore.setState({ currentOrgId: org });
+  const organization = { currentOrgId: org, selectOrganization: vi.fn() };
   vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: org });
+  render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} organization={organization} />);
+  expect(await screen.findByTestId('topology-site-not-in-org')).toBeInTheDocument();
+  expect(screen.queryByTestId('topology-explorer')).toBeNull();
+});
+
+
+it('without an organization selector, a linked site owned by another organization is reported, never switched to or shown', async () => {
+  window.location.hash = `#topology/site/${OTHER}/view/overview`;
+  vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: '66666666-6666-4666-8666-666666666666' });
   render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
   expect(await screen.findByTestId('topology-site-not-in-org')).toBeInTheDocument();
   expect(screen.queryByTestId('topology-explorer')).toBeNull();

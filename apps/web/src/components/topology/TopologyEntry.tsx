@@ -1,7 +1,6 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useHashState } from '../../lib/useHashState';
-import { useOrgStore } from '../../stores/orgStore';
 import { parseTopologyHash, writeTopologyHash } from './topologyHash';
 import { topologyApi, topologyNodeListSchema, topologyRead, TopologyReadError, type TopologySettings } from './topologyApi';
 import { clearTopologyPrefetch, prefetchTopologyGraph, prefetchTopologySettings, takePrefetchedSettings } from './topologyPrefetch';
@@ -10,15 +9,21 @@ const loadExplorer = () => import('./TopologyExplorer');
 const TopologyExplorer = lazy(loadExplorer);
 /** A `#topology/site/<id>` link to a site missing from this organization's list (#7880). */
 type LinkedSite = 'checking' | 'switching' | 'sameOrg' | 'missing' | 'failed';
-export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy }: {
-  siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode;
+/**
+ * The organization selector, passed by a caller that lists `sites` (DiscoveryPage). Passed in rather
+ * than read from the org store so this component stays free of store wiring for site-bound callers.
+ */
+export type TopologyOrganization = { currentOrgId: string | null; selectOrganization: (orgId: string) => void };
+export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy, organization }: {
+  siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode; organization?: TopologyOrganization;
 }) {
   const { t } = useTranslation('topology');
   const [hashSite, setHashSite] = useHashState<string | undefined>(undefined, (hash) => parseTopologyHash(hash)?.siteId);
   // A linked site is shown only once this organization's list contains it: never fall back to another site (#7880).
   const linkedSite = !siteId && hashSite && !sites.some((site) => site.id === hashSite) ? hashSite : undefined;
   const selectedSite = siteId ?? (hashSite ? (linkedSite ? undefined : hashSite) : sites.length === 1 ? sites[0].id : undefined);
-  const currentOrgId = useOrgStore((state) => state.currentOrgId);
+  const currentOrgId = organization?.currentOrgId ?? null;
+  const organizationRef = useRef(organization); organizationRef.current = organization;
   const [linked, setLinked] = useState<LinkedSite>();
   useEffect(() => clearTopologyPrefetch, [currentOrgId]);
   const [settings, setSettings] = useState<TopologySettings>(), [focus, setFocus] = useState<string>(), [error, setError] = useState<string>(), [bindingResolved, setBindingResolved] = useState(false);
@@ -32,14 +37,16 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     // access to the owning org, and only then does the selector move to it.
     void topologyApi.siteOwner(linkedSite, controller.signal).then((owner) => {
       if (controller.signal.aborted) return;
-      const store = useOrgStore.getState();
-      if (owner.orgId === store.currentOrgId) {
+      const org = organizationRef.current;
+      if (owner.orgId === (org?.currentOrgId ?? null)) {
         // Usually the org's site list is just still loading: start this site's reads so they overlap it.
         // Nothing renders until the list contains the site.
         prefetchTopologySettings(linkedSite); prefetchTopologyGraph(linkedSite);
         setLinked('sameOrg'); return;
       }
-      store.selectOrganization(owner.orgId); setLinked('switching');
+      // Without a selector to move, a site owned by another organization cannot be shown here.
+      if (!org) { setLinked('missing'); return; }
+      org.selectOrganization(owner.orgId); setLinked('switching');
     }).catch((cause) => {
       if (controller.signal.aborted) return;
       // Only "no such site / no access" means not in this organization; anything else is a load failure.

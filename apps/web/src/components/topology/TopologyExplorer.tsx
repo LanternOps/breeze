@@ -183,7 +183,9 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   } : undefined;
   const aiNotConfigured = settings.capabilities.ai?.reason === 'ai_not_configured';
   const operations = { interfaceHealth: !!settings.capabilities.interfaceHealth?.available, monitoring: !!settings.capabilities.recurringMonitoring?.available, canConfigure: canConfigureMonitoring };
-  return <section data-testid="topology-explorer" className="min-w-0 space-y-3">
+  // `data-layout-applied`: a layout result reached the canvas. Browser gates wait on it; the unsaved
+  // indicator is no signal since an automatic arrangement is not an unsaved change (#7880).
+  return <section data-testid="topology-explorer" data-layout-applied={positions.length ? 'true' : undefined} className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-end gap-3">
       <label className="min-w-40 flex-1 text-sm">{t('search')}<input data-testid="topology-search" className="mt-1 w-full rounded border bg-background px-3 py-2" value={navigation.search} maxLength={200} onChange={(event) => navigate({ ...navigation, search: event.target.value })} /></label>
       <label className="text-sm">{t('view')}<select data-testid="topology-view" className="ml-2 rounded border bg-background p-2" value={view} onChange={(event) => navigate({ ...navigation, view: event.target.value as TopologyView, selection: undefined })}><option value="overview">{t('overview')}</option><option value="logical">{t('logical')}</option><option value="physical" disabled={!settings.capabilities.physical.available}>{t('physical')}</option></select></label>

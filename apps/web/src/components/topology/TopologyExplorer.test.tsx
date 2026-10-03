@@ -29,6 +29,8 @@ it('the automatic arrangement on load is not an unsaved change; only a user acti
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   await waitFor(() => expect(Number(screen.getByTestId('topology-canvas').getAttribute('data-positions'))).toBeGreaterThan(0));
   await waitFor(() => expect(screen.getByText('Layout preview complete')).toBeInTheDocument());
+  // Browser gates wait on this marker, not on the unsaved indicator.
+  expect(screen.getByTestId('topology-explorer')).toHaveAttribute('data-layout-applied', 'true');
   expect(screen.queryByTestId('topology-unsaved-layout')).not.toBeInTheDocument();
   expect(screen.getByTestId('topology-layout-save')).toBeDisabled();
   fireEvent.click(screen.getByTestId('topology-arrange'));
