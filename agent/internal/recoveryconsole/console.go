@@ -310,6 +310,10 @@ func (c *Console) Run(ctx context.Context) error {
 		Integrity:         expectation,
 	}
 
+	// refusedPosted records that a terminal `refused` was posted for this
+	// recovery; OVERWRITE is never offered after that, or the disk would be
+	// erased while the server record stays refused.
+	refusedPosted := false
 	for {
 		dry := baseOpts
 		dry.DryRun = true
@@ -323,7 +327,7 @@ func (c *Console) Run(ctx context.Context) error {
 			// recovery unrecoverable even if the operator proceeds. It is
 			// posted below only when they decline. The serial/ERASE
 			// confirmation still follows the re-run; CI never auto-overwrites.
-			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows && !baseOpts.ForceDisk && !ci {
+			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows && !baseOpts.ForceDisk && !ci && !refusedPosted {
 				c.IO.Print("Disk %s already contains a Windows installation. Everything on it will be erased.\n", disk.Path)
 				line, err := c.IO.ReadLine("Type OVERWRITE to erase it, or press Enter for other options: ")
 				if err != nil {
@@ -334,8 +338,16 @@ func (c *Console) Run(ctx context.Context) error {
 					continue
 				}
 			}
-			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
-			c.IO.Print("Recovery cannot proceed: %s\n", reason)
+			if !refusedPosted {
+				c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
+				refusedPosted = statusForFailure(plan) == "refused"
+			}
+			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows {
+				c.IO.Print("Recovery cannot proceed: disk %s already contains a Windows installation. "+
+					"This recovery is now marked refused; to overwrite the disk, start a new recovery and enter its new recovery code.\n", disk.Path)
+			} else {
+				c.IO.Print("Recovery cannot proceed: %s\n", reason)
+			}
 			action, err := c.offerFailureOptions(ci)
 			if err != nil {
 				return err

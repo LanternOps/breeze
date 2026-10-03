@@ -297,13 +297,13 @@ func diskHasWindowsDeps(t *testing.T) *fakeDeps {
 		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
 			if opts.DryRun && !opts.ForceDisk {
 				return &rebuild.Result{
-						Status:      "refused",
-						Refusal:     "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
-						RefusalCode: rebuild.RefusalCodeDiskHasWindows,
-					}, &rebuild.RefusalError{
-						Reason: "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
-						Code:   rebuild.RefusalCodeDiskHasWindows,
-					}
+					Status:      "refused",
+					Refusal:     "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+					RefusalCode: rebuild.RefusalCodeDiskHasWindows,
+				}, &rebuild.RefusalError{
+					Reason: "target disk 0 contains a Windows installation; pass --force-disk to overwrite it",
+					Code:   rebuild.RefusalCodeDiskHasWindows,
+				}
 			}
 			if opts.DryRun {
 				return samplePlan(), nil
@@ -344,6 +344,69 @@ func TestConsole_DiskHasWindowsWrongSerialStillBlocksAfterOverwrite(t *testing.T
 	}
 	if n := len(deps.rebuildCalls); n != 3 {
 		t.Fatalf("rebuild calls = %d, want 3", n)
+	}
+	if got := strings.Count(io.transcript.String(), "That does not match. Try again."); got != 2 {
+		t.Fatalf("serial-mismatch message printed %d times, want 2:\n%s", got, io.transcript.String())
+	}
+}
+
+// After a decline the `refused` post is terminal server-side; OVERWRITE must
+// never be offered again for this recovery, or the disk would be erased while
+// the server record stays refused.
+func TestConsole_DiskHasWindowsNoOverwriteAfterRefusedPosted(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "r", "OVERWRITE", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk || !o.DryRun {
+			t.Fatalf("no forced/real run after a posted refusal: %+v", deps.rebuildCalls)
+		}
+	}
+	if n := strings.Count(io.transcript.String(), "Type OVERWRITE"); n != 1 {
+		t.Fatalf("OVERWRITE offered %d times, want 1:\n%s", n, io.transcript.String())
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want a single refused", got)
+	}
+}
+
+func TestConsole_DiskHasWindowsDeclineMessageIsConsoleAppropriate(t *testing.T) {
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "p"}}
+	deps := diskHasWindowsDeps(t)
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	out := io.transcript.String()
+	if strings.Contains(out, "--force-disk") {
+		t.Fatalf("console must not mention the CLI flag:\n%s", out)
+	}
+	if !strings.Contains(out, "new recovery code") {
+		t.Fatalf("missing new-code guidance:\n%s", out)
+	}
+}
+
+func TestConsole_DiskHasWindowsCIModeNeverOverwrites(t *testing.T) {
+	io := &fakeIO{FailReadLine: true}
+	deps := diskHasWindowsDeps(t)
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: cmdline}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if io.readLineCalls != 0 {
+		t.Fatalf("ReadLine called %d times in CI mode", io.readLineCalls)
+	}
+	for _, o := range deps.rebuildCalls {
+		if o.ForceDisk {
+			t.Fatalf("CI must never force: %+v", deps.rebuildCalls)
+		}
+	}
+	if got := strings.Join(statusesOf(deps.progressCalls), ","); got != "refused" {
+		t.Fatalf("progress statuses = %s, want refused", got)
 	}
 }
 
