@@ -178,19 +178,41 @@ beforeEach(() => {
 });
 
 describe('M365 consent callback parser', () => {
-  it('both phases accept {state, code[, session_state]} and reject the old admin-consent shape', () => {
+  it('both phases accept {state, code[, session_state]} and reject the old code-less admin-consent shape', () => {
     for (const phase of ['identity_verification', 'admin_consent'] as const) {
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c'))).toEqual({ kind: 'code_success', state: 's', code: 'c' });
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&session_state=x'))).toEqual({ kind: 'code_success', state: 's', code: 'c' });
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(`state=s&tenant=${TENANT_A}&admin_consent=True`))).toBeNull();
-      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&admin_consent=True'))).toBeNull();
-      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams(`state=s&code=c&tenant=${TENANT_A}`))).toBeNull();
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&code=d'))).toBeNull();
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=a&state=b&code=c'))).toBeNull();
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('code=c'))).toBeNull();
       expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&session_state='))).toBeNull();
-      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&client_info=x'))).toBeNull();
+      expect(parseM365ConsentCallbackQuery(phase, new URLSearchParams('state=s&code=c&foo=bar'))).toBeNull();
     }
+  });
+
+  it('identity phase tolerates nothing beyond session_state', () => {
+    for (const extra of ['admin_consent=True', `tenant=${TENANT_A}`, 'client_info=x']) {
+      expect(parseM365ConsentCallbackQuery('identity_verification', new URLSearchParams(`state=s&code=c&${extra}`))).toBeNull();
+    }
+  });
+
+  it('consent phase tolerates bounded admin_consent / tenant / client_info and drops them from the result', () => {
+    const ok = { kind: 'code_success', state: 's', code: 'c' };
+    const parse = (query: string) => parseM365ConsentCallbackQuery('admin_consent', new URLSearchParams(query));
+    expect(parse(`state=s&code=c&session_state=x&admin_consent=True&tenant=${TENANT_B}`)).toEqual(ok);
+    expect(parse('state=s&code=c&admin_consent=True')).toEqual(ok);
+    expect(parse(`state=s&code=c&tenant=${TENANT_B}`)).toEqual(ok);
+    expect(parse(`state=s&code=c&client_info=${'e'.repeat(2_048)}`)).toEqual(ok);
+    expect(parse(`state=s&code=c&tenant=${'t'.repeat(512)}`)).toEqual(ok);
+    // Bounded: oversize, duplicated, or control characters fail closed.
+    expect(parse(`state=s&code=c&tenant=${'t'.repeat(513)}`)).toBeNull();
+    expect(parse(`state=s&code=c&admin_consent=${'a'.repeat(513)}`)).toBeNull();
+    expect(parse(`state=s&code=c&client_info=${'e'.repeat(2_049)}`)).toBeNull();
+    expect(parse(`state=s&code=c&tenant=${TENANT_A}&tenant=${TENANT_B}`)).toBeNull();
+    expect(parse('state=s&code=c&admin_consent=True%0A')).toBeNull();
+    // Unknown keys still fail closed.
+    expect(parse('state=s&code=c&admin_consent=True&foo=bar')).toBeNull();
   });
 
   it('accepts a provider error without exposing its description', () => {
@@ -309,6 +331,38 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
       event: h.events.tenantBindingVerified, outcome: 'active', verifiedTenantId: TENANT_A,
       verifiedAdministratorObjectId: ADMIN, actorId: USER_ID,
     }));
+  });
+
+  it('consent phase: a query `tenant` naming a DIFFERENT tenant is ignored — binding uses only the verified tenant', async () => {
+    const finalize = vi.fn().mockResolvedValue(retestOk(TENANT_A));
+    const applyFinalization = vi.fn().mockResolvedValue(h.snapshot({ status: 'active', tenantId: TENANT_A }));
+    const beginFinalization = vi.fn().mockResolvedValue({ attempt: h.attempt('verifying'), purpose: 'initial', verified: verified(TENANT_A), actorId: USER_ID });
+    const audit = vi.fn();
+    const app = h.app({
+      verifyBindingCookie: () => consentBinding(TENANT_A),
+      beginFinalization, finalize, applyFinalization, audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(
+      `${h.path}?state=consent-state&code=c&admin_consent=True&tenant=${TENANT_B}&session_state=ss`,
+      { headers: { cookie: 'x' } },
+    );
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/active`);
+    expect(finalize).toHaveBeenCalledWith({ correlationId: CORRELATION_ID, tenantId: TENANT_A });
+    expect(applyFinalization).toHaveBeenCalledWith(h.attempt('verifying'), { verifiedTenantId: TENANT_A, result: retestOk(TENANT_A) });
+    expect(JSON.stringify([
+      beginFinalization.mock.calls, finalize.mock.calls, applyFinalization.mock.calls, audit.mock.calls,
+    ])).not.toContain(TENANT_B);
+  });
+
+  it('consent phase: an unknown query key fails closed before any state lookup', async () => {
+    const loadAttempt = vi.fn();
+    const res = await h.app({ verifyBindingCookie: () => consentBinding(TENANT_A), loadAttempt })
+      .request(`${h.path}?state=consent-state&code=c&admin_consent=True&foo=bar`, { headers: { cookie: 'x' } });
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/consent_state_mismatch`);
+    expect(loadAttempt).not.toHaveBeenCalled();
   });
 
   it('a binding cookie naming tenant A cannot finalize a session verified for tenant B', async () => {

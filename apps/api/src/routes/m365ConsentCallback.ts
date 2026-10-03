@@ -106,13 +106,29 @@ function validOpaque(value: string | null, maxLength: number): value is string {
 }
 
 /**
+ * Keys Microsoft's v1 `/oauth2/authorize?prompt=admin_consent` success
+ * redirect may carry beyond `{state, code, session_state}` (unverified against
+ * a live capture). Tolerated on the admin-consent phase ONLY, each single and
+ * bounded (value = max length), and dropped: they are never authority. The
+ * tenant that gets bound is the server-side identity-verified tenant, proven
+ * again by the executor's application-token retest — a `tenant` here naming
+ * a different tenant changes nothing.
+ */
+const ADMIN_CONSENT_SUCCESS_IGNORED_KEYS: ReadonlyMap<string, number> = new Map([
+  ['admin_consent', 512],
+  ['tenant', 512],
+  ['client_info', 2_048],
+]);
+
+/**
  * Strict allowlist parser. Both phases are authorization-code responses with
- * `response_mode=query`; any other key (including the legacy
- * `/adminconsent` `tenant` / `admin_consent` pair) fails closed so an
- * unauthenticated tenant hint can never re-enter the flow.
+ * `response_mode=query`. Any key outside the phase's allowlist fails closed.
+ * The identity phase rejects `tenant` / `admin_consent` outright so an
+ * unauthenticated tenant hint can never enter the flow; the admin-consent
+ * phase tolerates and discards them (ADMIN_CONSENT_SUCCESS_IGNORED_KEYS).
  */
 export function parseM365ConsentCallbackQuery(
-  _phase: M365ConsentBindingPhase,
+  phase: M365ConsentBindingPhase,
   params: URLSearchParams,
 ): ParsedM365ConsentCallback | null {
   const keys = [...params.keys()];
@@ -134,7 +150,13 @@ export function parseM365ConsentCallbackQuery(
     return { kind: 'provider_error', state };
   }
 
-  if (keys.some((key) => !successKeys.has(key))) return null;
+  for (const key of keys) {
+    if (successKeys.has(key)) continue;
+    const maxLength = phase === 'admin_consent' ? ADMIN_CONSENT_SUCCESS_IGNORED_KEYS.get(key) : undefined;
+    if (maxLength === undefined) return null;
+    const value = single(params, key);
+    if (value === null || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  }
   const code = single(params, 'code');
   if (!validOpaque(code, 8_192)) return null;
   // Entra commonly appends session_state to a successful authorization-code
