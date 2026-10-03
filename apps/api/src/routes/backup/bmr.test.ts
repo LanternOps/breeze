@@ -944,6 +944,46 @@ describe('bmr routes', () => {
     expect(updateMock.mock.calls.some((c: any[]) => c[0]?.status === 'authenticated')).toBe(false);
   });
 
+  it('authenticate (#6490): a SELF-CONTAINED snapshot whose live destination drifted from its pinned identity is refused before the status flips', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([{
+        id: TOKEN_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: SNAPSHOT_ID,
+        restoreType: 'bare_metal', targetConfig: null, status: 'active',
+        createdAt: new Date('2026-03-29T00:00:00.000Z'), expiresAt: new Date('2099-04-01T00:00:00.000Z'),
+        authenticatedAt: null, completedAt: null, negotiatedCapabilities: null,
+      }]))
+      .mockReturnValueOnce(chainMock([{
+        id: SNAPSHOT_ID, orgId: ORG_ID, deviceId: DEVICE_ID, jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        configId: null, snapshotId: 'snap-ext-001', label: 'Backup', location: null,
+        timestamp: new Date('2026-03-29T12:34:56.000Z'), size: 1234, fileCount: 12,
+        // Resolved destination is now `new-bucket`; the snapshot was written to `old-bucket`.
+        metadata: { providerType: 's3', providerConfig: { bucket: 'new-bucket' } },
+        backupType: 'file', isIncremental: false, hardwareProfile: null,
+        systemStateManifest: null, storageIdentity: 's3::::old-bucket',
+      }]))
+      .mockReturnValueOnce(chainMock([{ configId: null }]))
+      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, hostname: 'srv-01', osType: 'windows' }]))
+      // readSnapshotFileIndexState: snapshot row (no index) + referencedFiles NULL (self-contained)
+      .mockReturnValueOnce(chainMock([{
+        status: 'none', manifestSha256: null, externalCount: null, error: null,
+        jobId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', storageIdentity: 's3::::old-bucket',
+      }]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: null }]));
+
+    const res = await app.request('/backup/bmr/recover/authenticate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: VALID_RECOVERY_TOKEN }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('storage_identity_drift');
+    expect(body.message).toContain('backup destination for this device has changed');
+    expect(JSON.stringify(body)).not.toContain('old-bucket');
+    expect(updateMock.mock.calls.some((c: any[]) => c[0]?.status === 'authenticated')).toBe(false);
+  });
+
   it('authenticate: capable client on a complete index is granted and bootstrap.download.capabilities/bootstrap.snapshot.fileIndex are populated', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([{
