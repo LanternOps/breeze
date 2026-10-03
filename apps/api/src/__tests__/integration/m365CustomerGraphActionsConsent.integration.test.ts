@@ -1,8 +1,8 @@
 /**
  * Integration test — M365 customer-graph-actions consent lifecycle (real PG)
  *
- * Drives the full HTTP consent round trip (initiate → admin-consent callback
- * → identity-verification callback) through the real actions route + real
+ * Drives the full HTTP consent round trip (initiate → identity-verification
+ * callback → tenant-pinned admin-consent callback) through the real actions route + real
  * actions callback route, against a real database, with a stubbed executor
  * client injected via `createExecutorClient`. Also exercises the fail-closed
  * cross-org / cross-profile scoping directly at the service layer, matching
@@ -20,7 +20,8 @@ import {
   canonicalGrantKey,
   M365_PERMISSION_PROFILES,
   type CanonicalAppRoleAssignment,
-  type CompleteConsentResult,
+  type RetestResult,
+  type VerifyConsentIdentityResult,
 } from '@breeze/shared/m365';
 import { db, withSystemDbAccessContext } from '../../db';
 import { m365Connections, m365ConsentSessions } from '../../db/schema';
@@ -140,16 +141,22 @@ async function mintMfaToken(env: Awaited<ReturnType<typeof setupTestEnvironment>
 }
 
 /** Builds the real actions route + real actions callback route on one app,
- * with a stubbed executor client injected via `createExecutorClient`. */
-function buildApp(completeIdentityVerification: (
-  input: unknown,
-) => Promise<CompleteConsentResult>) {
+ * with a stubbed executor client injected via `createExecutorClient`: phase 1
+ * verifies the administrator as `tenantId`, phase 2's retest returns `retest`. */
+function buildApp(tenantId: string, retest: () => Promise<RetestResult>) {
+  const verifyConsentIdentity = vi.fn(async (): Promise<VerifyConsentIdentityResult> => ({
+    success: true,
+    tenantId,
+    administratorObjectId: '77777777-7777-4777-8777-777777777777',
+    administratorUsername: null,
+    verifiedAt: new Date().toISOString(),
+  }));
   const app = new Hono();
   app.route('/api/v1/m365/customer-graph-actions', m365CustomerGraphActionsRoutes);
   app.route('/api/v1/m365', createM365ConsentCallbackRoutes({
     profile: 'customer-graph-actions',
     loadRuntimeConfig: () => FAKE_ACTIONS_CONFIG,
-    createExecutorClient: () => ({ completeIdentityVerification }),
+    createExecutorClient: () => ({ verifyConsentIdentity, retest }),
     connectionService: actionsConnectionService,
   }));
   return app;
@@ -158,7 +165,7 @@ function buildApp(completeIdentityVerification: (
 function completeConsentResult(input: {
   tenantId: string;
   observedGrants: CanonicalAppRoleAssignment[];
-}): CompleteConsentResult {
+}): RetestResult {
   const requiredKeys = new Set(REQUIRED_GRANTS.map(canonicalGrantKey));
   const observedKeys = new Set(input.observedGrants.map(canonicalGrantKey));
   return {
@@ -168,7 +175,6 @@ function completeConsentResult(input: {
     organizationDisplayName: 'Contoso Actions',
     manifestVersion: PROFILE_MANIFEST.version,
     verifiedAt: new Date().toISOString(),
-    administratorObjectId: randomUUID(),
     grantReconciliation: 'complete',
     observedGrants: input.observedGrants,
     missingGrants: REQUIRED_GRANTS.filter((grant) => !observedKeys.has(canonicalGrantKey(grant))),
@@ -188,9 +194,9 @@ function redirectHash(location: string | null): string {
   return new URL(location, 'http://localhost.invalid').hash;
 }
 
-/** Drives initiate → admin-consent callback, returning the identity-phase
- * state + cookie needed to complete the flow. */
-async function driveToIdentityPhase(
+/** Drives initiate → identity callback, returning the consent-phase state +
+ * cookie needed to complete the flow. */
+async function driveToConsentPhase(
   app: Hono,
   token: string,
   orgId: string,
@@ -202,32 +208,37 @@ async function driveToIdentityPhase(
   );
   expect(initiateRes.status).toBe(200);
   const { adminConsentUrl } = await initiateRes.json() as { adminConsentUrl: string };
-  const adminState = new URL(adminConsentUrl).searchParams.get('state')!;
-  const adminCookie = cookiePair(initiateRes.headers.get('set-cookie'));
-
-  const adminCallbackRes = await app.request(
-    `/api/v1/m365/actions-consent/callback?state=${encodeURIComponent(adminState)}&tenant=${tenantId}&admin_consent=true`,
-    { headers: { cookie: adminCookie } },
+  const identityUrl = new URL(adminConsentUrl);
+  // Identity first: a first connect signs in at /organizations.
+  expect(identityUrl.origin + identityUrl.pathname).toBe(
+    'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize',
   );
-  expect(adminCallbackRes.status).toBe(302);
-  const authorizationUrl = new URL(adminCallbackRes.headers.get('location')!);
-  expect(authorizationUrl.origin + authorizationUrl.pathname).toBe(
-    `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
-  );
-  const identityState = authorizationUrl.searchParams.get('state')!;
-  const identityCookie = cookiePair(adminCallbackRes.headers.get('set-cookie'));
+  const identityState = identityUrl.searchParams.get('state')!;
+  const identityCookie = cookiePair(initiateRes.headers.get('set-cookie'));
 
-  return { identityState, identityCookie };
+  const identityCallbackRes = await app.request(
+    `/api/v1/m365/actions-consent/callback?state=${encodeURIComponent(identityState)}&code=fake-identity-code`,
+    { headers: { cookie: identityCookie } },
+  );
+  expect(identityCallbackRes.status).toBe(302);
+  const consentUrl = new URL(identityCallbackRes.headers.get('location')!);
+  expect(consentUrl.origin + consentUrl.pathname).toBe(
+    `https://login.microsoftonline.com/${tenantId}/oauth2/authorize`,
+  );
+  const consentState = consentUrl.searchParams.get('state')!;
+  const consentCookie = cookiePair(identityCallbackRes.headers.get('set-cookie'));
+
+  return { consentState, consentCookie };
 }
 
-async function completeIdentityPhase(
+async function completeConsentPhase(
   app: Hono,
-  identityState: string,
-  identityCookie: string,
+  consentState: string,
+  consentCookie: string,
 ) {
   return app.request(
-    `/api/v1/m365/actions-consent/callback?state=${encodeURIComponent(identityState)}&code=fake-authorization-code`,
-    { headers: { cookie: identityCookie } },
+    `/api/v1/m365/actions-consent/callback?state=${encodeURIComponent(consentState)}&code=discarded-consent-code`,
+    { headers: { cookie: consentCookie } },
   );
 }
 
@@ -238,15 +249,15 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
       observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW],
     }));
 
-    const { identityState, identityCookie } = await driveToIdentityPhase(
+    const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeIdentityPhase(app, identityState, identityCookie);
+    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     expect(redirectHash(finalRes.headers.get('location'))).toBe('#m365/customer-graph-actions/active');
 
@@ -268,15 +279,15 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
       observedGrants: [GRANT_USER_RW],
     }));
 
-    const { identityState, identityCookie } = await driveToIdentityPhase(
+    const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeIdentityPhase(app, identityState, identityCookie);
+    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     // The callback route redirects on connection status (active/degraded),
     // not the finer-grained lastErrorCode — the drift detail is asserted via
@@ -300,15 +311,15 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
     const tenantId = randomUUID();
-    const app = buildApp(async () => completeConsentResult({
+    const app = buildApp(tenantId, async () => completeConsentResult({
       tenantId,
       observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW, EXTRA_GRANT],
     }));
 
-    const { identityState, identityCookie } = await driveToIdentityPhase(
+    const { consentState, consentCookie } = await driveToConsentPhase(
       app, token, env.organization.id, tenantId,
     );
-    const finalRes = await completeIdentityPhase(app, identityState, identityCookie);
+    const finalRes = await completeConsentPhase(app, consentState, consentCookie);
     expect(finalRes.status).toBe(302);
     expect(redirectHash(finalRes.headers.get('location'))).toBe('#m365/customer-graph-actions/degraded');
 
@@ -334,8 +345,8 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     });
 
     await expect(consumeConsentSession({
-      rawState: initiatedA.rawState,
-      phase: 'admin_consent',
+      rawState: initiatedA.binding.rawState,
+      phase: 'identity_verification',
       connectionId: initiatedA.connection.id,
       orgId: ownerB.orgId,
       consentAttemptId: initiatedA.connection.consentAttemptId,
@@ -344,8 +355,8 @@ describe('customer Graph-actions consent lifecycle integration', () => {
 
     // Positive control: the same session is still consumable under its own org.
     await expect(consumeConsentSession({
-      rawState: initiatedA.rawState,
-      phase: 'admin_consent',
+      rawState: initiatedA.binding.rawState,
+      phase: 'identity_verification',
       connectionId: initiatedA.connection.id,
       orgId: ownerA.orgId,
       consentAttemptId: initiatedA.connection.consentAttemptId,
@@ -368,16 +379,17 @@ describe('customer Graph-actions consent lifecycle integration', () => {
       status: 'verifying',
     }).where(eq(m365Connections.id, readInitiated.connection.id)));
 
-    await expect(actionsConnectionService.applyIdentityVerificationResult({
+    const tenantId = randomUUID();
+    await expect(actionsConnectionService.applyConsentFinalizationResult({
       id: readInitiated.connection.id,
       orgId: owner.orgId,
       profile: 'customer-graph-actions',
       consentAttemptId: readInitiated.connection.consentAttemptId,
       status: 'verifying',
-    }, completeConsentResult({
-      tenantId: randomUUID(),
-      observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW],
-    }))).rejects.toMatchObject({ code: 'stale_attempt' });
+    }, {
+      verifiedTenantId: tenantId,
+      result: completeConsentResult({ tenantId, observedGrants: [GRANT_USER_RW, GRANT_PASSWORD_RW] }),
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
 
     const readRow = await withSystemDbAccessContext(() => db.select().from(m365Connections)
       .where(eq(m365Connections.id, readInitiated.connection.id)));
@@ -394,8 +406,8 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     });
 
     await expect(consumeConsentSession({
-      rawState: actionsInitiated.rawState,
-      phase: 'admin_consent',
+      rawState: actionsInitiated.binding.rawState,
+      phase: 'identity_verification',
       connectionId: actionsInitiated.connection.id,
       orgId: owner.orgId,
       consentAttemptId: actionsInitiated.connection.consentAttemptId,
@@ -404,8 +416,8 @@ describe('customer Graph-actions consent lifecycle integration', () => {
 
     // Positive control: consuming with the correct profile still works.
     await expect(consumeConsentSession({
-      rawState: actionsInitiated.rawState,
-      phase: 'admin_consent',
+      rawState: actionsInitiated.binding.rawState,
+      phase: 'identity_verification',
       connectionId: actionsInitiated.connection.id,
       orgId: owner.orgId,
       consentAttemptId: actionsInitiated.connection.consentAttemptId,
@@ -420,7 +432,7 @@ describe('customer Graph-actions consent lifecycle integration', () => {
     onboardingState.enabled = false;
     const env = await setupTestEnvironment({ scope: 'organization' });
     const token = await mintMfaToken(env);
-    const app = buildApp(async () => {
+    const app = buildApp(randomUUID(), async () => {
       throw new Error('executor must not be called when onboarding is disabled');
     });
 

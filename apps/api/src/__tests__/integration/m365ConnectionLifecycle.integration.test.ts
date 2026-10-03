@@ -6,7 +6,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { m365Connections, m365ConsentSessions } from '../../db/schema';
 import { consumeConsentSession } from '../../services/m365ControlPlane/consentSessionService';
 import {
-  applyUpgradeVerificationResult,
+  applyUpgradeFinalizationResult,
   deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
@@ -222,16 +222,16 @@ describe('customer Graph-read lifecycle transaction integration', () => {
     expect(stale).toBeDefined();
 
     await expect(consumeConsentSession({
-      rawState: stale!.rawState,
-      phase: 'admin_consent',
+      rawState: stale!.binding.rawState,
+      phase: 'identity_verification',
       connectionId: stale!.connection.id,
       orgId: owner.orgId,
       consentAttemptId: stale!.connection.consentAttemptId,
       profile: 'customer-graph-read',
     })).resolves.toBeNull();
     await expect(consumeConsentSession({
-      rawState: usable!.rawState,
-      phase: 'admin_consent',
+      rawState: usable!.binding.rawState,
+      phase: 'identity_verification',
       connectionId: usable!.connection.id,
       orgId: owner.orgId,
       consentAttemptId: usable!.connection.consentAttemptId,
@@ -277,8 +277,8 @@ describe('customer Graph-read lifecycle transaction integration', () => {
     }
 
     await expect(consumeConsentSession({
-      rawState: original.rawState,
-      phase: 'admin_consent',
+      rawState: original.binding.rawState,
+      phase: 'identity_verification',
       connectionId: original.connection.id,
       orgId: owner.orgId,
       consentAttemptId: original.connection.consentAttemptId,
@@ -345,7 +345,10 @@ describe('customer Graph-read upgrade consent integration', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0]!.purpose).toBe('upgrade');
     expect(sessions[0]!.consentAttemptId).toBe(before?.consentAttemptId);
-    expect(initiated.consentUrl).toContain('adminconsent');
+    expect(sessions[0]!.phase).toBe('identity_verification');
+    expect(sessions[0]!.flowVersion).toBe(2);
+    // Upgrade pins the identity sign-in to the bound tenant.
+    expect(new URL(initiated.authorizationUrl).pathname).toBe(`/${fixture.tenantId}/oauth2/v2.0/authorize`);
   });
 
   runDb('rejects a purpose outside the two legal values', async () => {
@@ -379,13 +382,13 @@ describe('customer Graph-read upgrade consent integration', () => {
     const conn = await currentConnection(fixture.orgId);
     const manifest = M365_PERMISSION_PROFILES['customer-graph-read'];
 
-    const applied = await applyUpgradeVerificationResult({
+    const applied = await applyUpgradeFinalizationResult({
       id: conn!.id,
       orgId: fixture.orgId,
       profile: 'customer-graph-read',
       consentAttemptId: conn!.consentAttemptId!,
       status: 'active',
-    }, {
+    }, { verifiedTenantId: fixture.tenantId, result: {
       success: true,
       tenantId: fixture.tenantId,
       applicationId: '55555555-5555-4555-8555-555555555555',
@@ -400,7 +403,7 @@ describe('customer Graph-read upgrade consent integration', () => {
       // returns, so the fixture has to do the same.
       observedGrants: [...(manifest.applicationPermissionAssignments ?? [])]
         .sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right))),
-    } as never);
+    } as never });
 
     expect(applied.failureCode).toBeNull();
     expect(applied.connection.permissionManifestVersion).toBe(manifest.version);
@@ -418,15 +421,15 @@ describe('customer Graph-read upgrade consent integration', () => {
     });
     const conn = await currentConnection(fixture.orgId);
 
-    const applied = await applyUpgradeVerificationResult({
+    const applied = await applyUpgradeFinalizationResult({
       id: conn!.id,
       orgId: fixture.orgId,
       profile: 'customer-graph-read',
       consentAttemptId: conn!.consentAttemptId!,
       status: 'active',
-    }, { success: false, errorCode: 'consent_cancelled' } as never);
+    }, { verifiedTenantId: fixture.tenantId, result: { success: false, errorCode: 'organization_probe_failed' } });
 
-    expect(applied.failureCode).toBe('consent_cancelled');
+    expect(applied.failureCode).toBe('organization_probe_failed');
     const after = await currentConnection(fixture.orgId);
     expect(after?.status).toBe('active');
     expect(after?.permissionManifestVersion).toBe(2);

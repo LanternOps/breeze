@@ -10,7 +10,7 @@ import {
 } from '../../db';
 import { m365Connections, m365ConsentSessions } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
-import { transitionAdminConsentToIdentity } from '../../services/m365ControlPlane/connectionService';
+import { beginConsentFinalization } from '../../services/m365ControlPlane/connectionService';
 import { hashTenantHint } from '../../services/m365ControlPlane/consentSessionService';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -162,28 +162,32 @@ describe('m365_consent_sessions forced system-only RLS', () => {
     }))).rejects.toMatchObject({ cause: { code: '23503' } });
   });
 
-  runDb('rolls back admin consume and verifying CAS when prepared identity insertion fails', async () => {
+  runDb('rolls back the consent-session consume when the verifying CAS loses', async () => {
     const fx = await seedFixture();
-    const adminRawState = 'real-admin-state';
-    const identityRawState = 'prepared-identity-state';
+    const consentRawState = 'real-consent-state';
     const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
     await withSystemDbAccessContext(async () => {
-      await db.update(m365ConsentSessions).set({ stateHash: sha256(adminRawState) })
-        .where(eq(m365ConsentSessions.id, fx.session.id));
       await db.insert(m365ConsentSessions).values({
-        stateHash: sha256(identityRawState),
+        stateHash: sha256(consentRawState),
         phase: 'admin_consent',
+        flowVersion: 2,
         connectionId: fx.connection.id,
         orgId: fx.org.id,
         profile: 'customer-graph-read',
         consentAttemptId,
         userId: fx.user.id,
+        verifiedTenantId: tenantId,
+        verifiedAdminObjectId: '55555555-5555-4555-8555-555555555555',
+        identityVerifiedAt: new Date(),
         expiresAt: new Date(Date.now() + 300_000),
       });
+      // A concurrent writer moved the row off pending-consent.
+      await db.update(m365Connections).set({ status: 'degraded' })
+        .where(eq(m365Connections.id, fx.connection.id));
     });
 
-    await expect(transitionAdminConsentToIdentity({
+    await expect(beginConsentFinalization({
       attempt: {
         id: fx.connection.id,
         orgId: fx.org.id,
@@ -191,31 +195,44 @@ describe('m365_consent_sessions forced system-only RLS', () => {
         consentAttemptId,
         status: 'pending-consent',
       },
-      rawAdminState: adminRawState,
-      prepared: {
-        rawState: identityRawState,
-        tenantHintHash: hashTenantHint(tenantId),
-        nonce: 'n'.repeat(43),
-        codeVerifier: 'v'.repeat(43),
-        codeChallenge: 'c'.repeat(43),
-        expiresAt: new Date(Date.now() + 600_000),
-      },
-    })).rejects.toThrow('m365_consent_state_collision');
+      rawConsentState: consentRawState,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
 
     const after = await withSystemDbAccessContext(async () => ({
       connection: await db.select({ status: m365Connections.status })
         .from(m365Connections).where(eq(m365Connections.id, fx.connection.id)),
-      sessions: await db.select({
-        stateHash: m365ConsentSessions.stateHash,
-        phase: m365ConsentSessions.phase,
-      }).from(m365ConsentSessions).where(eq(m365ConsentSessions.connectionId, fx.connection.id)),
+      sessions: await db.select({ stateHash: m365ConsentSessions.stateHash })
+        .from(m365ConsentSessions)
+        .where(eq(m365ConsentSessions.stateHash, sha256(consentRawState))),
+    }));
+    expect(after.connection).toEqual([{ status: 'degraded' }]);
+    // The consume rolled back with the failed CAS: the session is still there.
+    expect(after.sessions).toEqual([{ stateHash: sha256(consentRawState) }]);
+  });
+
+  runDb('a legacy flow-1 admin_consent row is never consumed by finalization', async () => {
+    const fx = await seedFixture();
+    const legacyRawState = 'legacy-admin-state';
+    const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+    await withSystemDbAccessContext(() => db.update(m365ConsentSessions)
+      .set({ stateHash: sha256(legacyRawState) })
+      .where(eq(m365ConsentSessions.id, fx.session.id)));
+
+    await expect(beginConsentFinalization({
+      attempt: {
+        id: fx.connection.id, orgId: fx.org.id, profile: 'customer-graph-read', consentAttemptId, status: 'pending-consent',
+      },
+      rawConsentState: legacyRawState,
+    })).rejects.toMatchObject({ code: 'stale_attempt' });
+
+    const after = await withSystemDbAccessContext(async () => ({
+      connection: await db.select({ status: m365Connections.status })
+        .from(m365Connections).where(eq(m365Connections.id, fx.connection.id)),
+      session: await db.select({ id: m365ConsentSessions.id, flowVersion: m365ConsentSessions.flowVersion })
+        .from(m365ConsentSessions).where(eq(m365ConsentSessions.id, fx.session.id)),
     }));
     expect(after.connection).toEqual([{ status: 'pending-consent' }]);
-    expect(after.sessions).toEqual(expect.arrayContaining([
-      { stateHash: sha256(adminRawState), phase: 'admin_consent' },
-      { stateHash: sha256(identityRawState), phase: 'admin_consent' },
-    ]));
-    expect(after.sessions).not.toContainEqual(expect.objectContaining({ phase: 'identity_verification' }));
+    expect(after.session).toEqual([{ id: fx.session.id, flowVersion: 1 }]);
   });
 });
 
