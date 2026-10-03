@@ -1159,7 +1159,7 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'breeze-uninstall-exec-'));
     const calls = join(tmp, 'calls');
     try {
-      for (const name of ['id', 'uname', 'launchctl', 'pkgutil', 'rm', 'ps']) {
+      for (const name of ['id', 'uname', 'launchctl', 'pkgutil', 'rm', 'rmdir', 'ps']) {
         let body = '#!/bin/sh\nprintf "%s %s\\n" "${0##*/}" "$*" >> "$FIXTURE_CALLS"\n';
         if (name === 'id') body += 'echo 0\n';
         if (name === 'uname') body += 'echo Darwin\n';
@@ -1187,7 +1187,13 @@ describe('GET /uninstall.sh — generated uninstaller script', () => {
       }
       for (const binary of ['breeze-agent', 'breeze-watchdog', 'breeze-backup', 'breeze-desktop-helper']) {
         expect(commands).toContain(`/usr/local/bin/${binary}`);
+        // #7831: both install locations, whichever one was live.
+        expect(commands).toContain(`/Library/Breeze/bin/${binary}`);
       }
+      // #7831: the empty trusted-dir tree goes, and a launchd disable left by
+      // self_uninstall is cleared so a reinstall's bootstrap does not hit EIO 5.
+      expect(commands).toContain('rmdir /Library/Breeze/pkg-staging /Library/Breeze/bin /Library/Breeze');
+      expect(commands).toContain('launchctl enable system/com.breeze.agent');
       expect(commands).not.toContain('rm -rf');
       expect(commands).not.toContain('com.breeze.agent-user');
       expect(commands).not.toContain('com.breeze.helper');

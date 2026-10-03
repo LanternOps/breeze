@@ -776,14 +776,31 @@ breeze_stop_helpers() {
   done
 }
 
+# Callers stop every job and remove the live agent binary first. This removes
+# every Breeze binary from BOTH install directories: an agent relocated to
+# /Library/Breeze/bin can still leave a pre-relocation copy in /usr/local/bin.
+# Logs in /Library/Logs/Breeze are kept on purpose (they record the uninstall).
 breeze_remove_auxiliary() {
   rm -f /Library/LaunchDaemons/com.breeze.watchdog.plist \\
     /Library/LaunchAgents/com.breeze.desktop-helper-user.plist \\
     /Library/LaunchAgents/com.breeze.desktop-helper-loginwindow.plist \\
-    /usr/local/bin/breeze-watchdog /usr/local/bin/breeze-desktop-helper \\
-    /usr/local/bin/breeze-backup \\
-    /Library/Breeze/bin/breeze-watchdog /Library/Breeze/bin/breeze-backup \\
+    /usr/local/bin/breeze-agent /usr/local/bin/breeze-watchdog \\
+    /usr/local/bin/breeze-desktop-helper /usr/local/bin/breeze-backup \\
+    /Library/Breeze/bin/breeze-agent /Library/Breeze/bin/breeze-watchdog \\
+    /Library/Breeze/bin/breeze-desktop-helper /Library/Breeze/bin/breeze-backup \\
+    /Library/Breeze/pkg-staging/breeze-agent \\
+    /Library/Breeze/pkg-staging/breeze-watchdog \\
+    /Library/Breeze/pkg-staging/breeze-backup \\
     "/Library/Application Support/Breeze/agent.sock" || return 1
+  # Remove the tree only while empty: anything else in it is not ours to delete.
+  rmdir /Library/Breeze/pkg-staging /Library/Breeze/bin /Library/Breeze 2>/dev/null || true
+  # self_uninstall disables the agent label so a reboot mid-teardown cannot
+  # restart it. With the plists gone that is no longer needed, and a label left
+  # disabled makes the next install's bootstrap fail with EIO 5 (#7831).
+  for label in com.breeze.agent com.breeze.watchdog; do
+    launchctl enable "system/$label" 2>/dev/null ||
+      echo "Warning: could not clear the launchd disable for $label; a reinstall re-enables it" >&2
+  done
   # Only forget this package's receipt; configuration and logs retain their policy.
   receipts="$(pkgutil --pkgs)" || return 1
   # Consume all input: grep -q can SIGPIPE printf under Bash pipefail.
@@ -804,6 +821,7 @@ uninstall_macos() {
   echo "Breeze Agent uninstalled."
   echo "Config at /Library/Application Support/Breeze/ was preserved."
   echo "To remove config: sudo rm -rf '/Library/Application Support/Breeze'"
+  echo "Logs at /Library/Logs/Breeze/ were kept. To remove them: sudo rm -rf /Library/Logs/Breeze"
 }
 
 uninstall_linux() {
