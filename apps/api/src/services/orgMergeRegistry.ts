@@ -253,6 +253,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // repoint UPDATE raises `action_intents content is immutable` and aborts
   // the entire merge the moment the loser org holds a single intent; the
   // Wave-2 gauntlet never caught it because its fixture creates none.
+  // diagnostic_access_grants: a source-org administrator's read approval for
+  // one device. The device-move trigger restamps grant rows with the device, so
+  // live ones are fenced first (orgMergeCustomExecutors.fenceDiagnosticAccessGrants).
+  diagnostic_access_grants: { kind: 'custom', note: 'pending requests expire and active grants are revoked in the resolve phase (the device trigger then restamps the dead rows with their device) — a source-org approval never authorizes reads in the survivor org' },
   action_intents: { kind: 'leave-for-erasure', note: 'org_id is trigger-immutable (action_intents_block_content_update, since 2026-07-18) — a repoint raises and aborts the merge; durable approval records die with the loser shell' },
   // ai_agent_runs: org_id joined the immutable set in
   // migrations/2026-09-06-a-agent-runs-org-immutable.sql, which also encodes

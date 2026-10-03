@@ -271,15 +271,16 @@ var sensitiveReadPatterns = []string{
 // sensitiveReadBasenames are lowercased filenames that are credential stores
 // regardless of directory (browser password databases, etc.).
 var sensitiveReadBasenames = map[string]bool{
-	"login data":       true, // Chrome / Edge / Brave / Chromium
-	"key4.db":          true, // Firefox NSS key DB
-	"logins.json":      true, // Firefox saved logins
-	"signons.sqlite":   true, // legacy Firefox logins
-	"cookies.sqlite":   true, // Firefox cookies (session theft)
-	"cookies":          true, // Chrome / Edge / Brave / Chromium cookie DB (no extension)
-	"local state":      true, // Chrome / Edge / Brave / Chromium (holds the AES master key for encrypted cookies/passwords)
-	".git-credentials": true, // git credential.helper=store plaintext token cache
-	".env":             true, // application secrets/config (API keys, DB connection strings)
+	"login data":            true, // Chrome / Edge / Brave / Chromium
+	"key4.db":               true, // Firefox NSS key DB
+	"logins.json":           true, // Firefox saved logins
+	"signons.sqlite":        true, // legacy Firefox logins
+	"cookies.sqlite":        true, // Firefox cookies (session theft)
+	"cookies":               true, // Chrome / Edge / Brave / Chromium cookie DB (no extension)
+	"cookies.binarycookies": true, // Safari cookie store (macOS)
+	"local state":           true, // Chrome / Edge / Brave / Chromium (holds the AES master key for encrypted cookies/passwords)
+	".git-credentials":      true, // git credential.helper=store plaintext token cache
+	".env":                  true, // application secrets/config (API keys, DB connection strings)
 }
 
 // matchesPathFragment reports whether frag occurs in norm at a path-component
@@ -326,7 +327,7 @@ func isSensitiveReadPath(p string) bool {
 	if i := strings.LastIndex(norm, "/"); i >= 0 {
 		base = norm[i+1:]
 	}
-	if sensitiveReadBasenames[base] {
+	if sensitiveReadBasenames[base] || sensitiveReadBasenames[diagStripSidecar(base)] {
 		return true
 	}
 

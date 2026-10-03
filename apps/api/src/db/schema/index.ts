@@ -1,6 +1,7 @@
 export * from './accountDeletion';
 export * from './actionIntents';
 export * from './approvals';
+export * from './diagnosticAccess';
 export * from './elevations';
 export * from './pam';
 export * from './orgs';

@@ -81,9 +81,9 @@ func TestParseMAC_Invalid(t *testing.T) {
 	cases := []string{
 		"",
 		"not-a-mac",
-		"aa:bb:cc:dd:ee",                // 5 octets
-		"00:11:22:33:44:55:66:77",       // EUI-64
-		"zz:bb:cc:dd:ee:ff",             // invalid hex
+		"aa:bb:cc:dd:ee",          // 5 octets
+		"00:11:22:33:44:55:66:77", // EUI-64
+		"zz:bb:cc:dd:ee:ff",       // invalid hex
 	}
 	for _, c := range cases {
 		if _, err := parseMAC(c); err == nil {
