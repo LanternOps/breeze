@@ -17,7 +17,8 @@ interface RegisteredBillingNoticeContext {
 }
 
 export type BillingNoticeContext = RegisteredBillingNoticeContext | { autopay: AutopayNoticeContext }
-  | { charging: ChargingNoticeContext };
+  | { charging: ChargingNoticeContext }
+  | { payment: { id: 'payment_receipt' | 'payment_failed'; vars: Record<string, string>; custom: PartnerEmailCustom | null; frozen: RenderedNotice['frozen'] } };
 
 export type BillingNoticeRenderer = (ctx: RegisteredBillingNoticeContext) => Promise<{
   email: Omit<RenderPartnerEmailArgs, 'bodyBeforeCta' | 'bodyAfterCta'>;
@@ -72,6 +73,15 @@ export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice
 }
 
 export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext, executor?: Tx): Promise<RenderedNotice> {
+  if ('payment' in ctx) {
+    if ((kind !== 'payment_receipt' && kind !== 'payment_failed') || ctx.payment.id !== kind) throw new Error('Missing payment notice context');
+    const p = ctx.payment;
+    const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars,
+      ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label,
+      bodyAfterCta: kind === 'payment_receipt' ? `<p>Processing fee: ${escapeHtml(p.vars.fee_amount!)}</p>` : undefined });
+    return { ...rendered, frozen: p.frozen,
+      text: Object.entries(p.vars).map(([key,value]) => `${key}: ${value}`).join('\n') };
+  }
   if ('charging' in ctx) {
     if (kind !== 'invoice_autopay') throw new Error('Wrong charging notice context');
     return renderChargingNotice(ctx.charging);

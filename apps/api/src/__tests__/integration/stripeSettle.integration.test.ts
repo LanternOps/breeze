@@ -9,18 +9,18 @@
 import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, invoices, invoiceStripePayments, invoicePayments } from '../../db/schema';
+import { billingNoticeOutbox, partners, organizations, users, invoices, invoiceStripePayments, invoicePayments } from '../../db/schema';
 import { getTestDb } from './setup';
 
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
-const { retrieveMock, clientConstructed } = vi.hoisted(() => ({ retrieveMock: vi.fn(), clientConstructed: vi.fn() }));
+const { retrieveMock, clientConstructed, intentRetrieveMock } = vi.hoisted(() => ({ retrieveMock: vi.fn(), clientConstructed: vi.fn(), intentRetrieveMock: vi.fn() }));
 // Settlement reads the session via the partner's key — mock that client.
 vi.mock('../../services/partnerStripe', () => ({
-  getPartnerStripeClient: async () => { clientConstructed(); return ({ stripe: { checkout: { sessions: { retrieve: retrieveMock } } }, stripeAccountId: 'acct_test' }); },
+  getPartnerStripeClient: async () => { clientConstructed(); return ({ stripe: { paymentIntents: { retrieve: intentRetrieveMock }, checkout: { sessions: { retrieve: retrieveMock } } }, stripeAccountId: 'acct_test' }); },
   // Imported by routes/portal/invoices.ts (the pay route's error mapping).
   PartnerStripeError: class PartnerStripeError extends Error {},
 }));
@@ -59,6 +59,18 @@ describe('Stripe settlement (API-key model)', () => {
     vi.clearAllMocks();
     retrieveMock.mockResolvedValue({ id: 'cs_settle_1', payment_status: 'paid', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' });
   });
+
+runDb('enqueues one receipt for a paid Checkout and none on settlement replay', async () => {
+  const {f,inv}=await seedPendingPayment();
+  await withSystemDbAccessContext(()=>db.update(organizations).set({billingContact:{email:'billing@example.test'}})
+    .where(eq(organizations.id,f.orgId)));
+  await settleCheckoutSession(f.partnerId,'cs_settle_1');
+  await settleCheckoutSession(f.partnerId,'cs_settle_1');
+  const notices=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId,inv.id),eq(billingNoticeOutbox.kind,'payment_receipt'))));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]!.rendered).toMatchObject({frozen:{amount:'100.00',fee:'0.00'}});
+});
 
   runDb('settleCheckoutSession marks the invoice paid when the session is paid', async () => {
     const { f, inv } = await seedPendingPayment();
@@ -298,4 +310,57 @@ runDb('C1 cross-partner PaymentIntent settlement refuses before constructing Str
   await expect(settlePaymentIntent(other.partnerId, 'pi_1')).rejects.toMatchObject({ status: 404, code: 'INVOICE_NOT_FOUND' });
   expect(clientConstructed).not.toHaveBeenCalled();
   expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, inv.id)))).toHaveLength(0);
+});
+
+import * as paymentNotices from '../../services/autopay/paymentNotices';
+import { emitInvoiceEvent } from '../../services/invoiceEvents';
+runDb('receipt enqueue failure rolls back capture; replay commits one payment and receipt', async () => {
+  const { f, inv } = await seedPendingPayment();
+  await withSystemDbAccessContext(() => db.update(organizations).set({ billingContact: { email: 'billing@example.test' } }).where(eq(organizations.id, f.orgId)));
+  retrieveMock.mockResolvedValue({ id: 'cs_settle_1', payment_status: 'paid', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' });
+  const enqueue = vi.spyOn(paymentNotices, 'enqueueOnlineReceipt').mockRejectedValueOnce(new Error('crash before receipt intent'));
+  await expect(settleCheckoutSession(f.partnerId, 'cs_settle_1')).rejects.toThrow('crash before receipt intent');
+  enqueue.mockRestore();
+  expect(await withSystemDbAccessContext(() => db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId, inv.id)))).toHaveLength(0);
+  const notices = () => withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, inv.id)));
+  expect(await notices()).toHaveLength(0);
+  // A crash/failure after commit cannot strand the receipt outside the sweep.
+  vi.mocked(emitInvoiceEvent).mockRejectedValueOnce(new Error('crash after ledger commit'));
+  await settleCheckoutSession(f.partnerId, 'cs_settle_1');
+  await settleCheckoutSession(f.partnerId, 'cs_settle_1');
+  expect(await notices()).toHaveLength(1);
+});
+
+runDb('unpaid Checkout, unapplied capture and manual cash do not enqueue receipts', async () => {
+  const { f, inv } = await seedPendingPayment();
+  await withSystemDbAccessContext(() => db.update(organizations).set({ billingContact: { email: 'billing@example.test' } }).where(eq(organizations.id, f.orgId)));
+  retrieveMock.mockResolvedValue({ id: 'cs_settle_1', payment_status: 'unpaid', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' });
+  await settleCheckoutSession(f.partnerId, 'cs_settle_1');
+  await withSystemDbAccessContext(() => paymentNotices.enqueueOnlineReceipt(db, '00000000-0000-4000-8000-000000000001'));
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({ revocationState: 'revoked' }).where(eq(invoiceStripePayments.invoiceId, inv.id)));
+  await withSystemDbAccessContext(() => svc.recordPayment(inv.id, { amount: 100, method: 'cash', receivedAt: '2026-09-06' },
+    { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: [f.orgId] }));
+  retrieveMock.mockResolvedValue({ id: 'cs_settle_1', payment_status: 'paid', payment_intent: 'pi_1', amount_total: 10000, currency: 'usd' });
+  await settleCheckoutSession(f.partnerId, 'cs_settle_1');
+  expect(await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, inv.id)))).toHaveLength(0);
+});
+
+runDb('PaymentIntent and sweep captures each commit one receipt without browser return', async () => {
+  const a = await seedPendingPayment('cs_pi', 'pi_receipt');
+  const b = await seedPendingPayment('cs_sweep', 'pi_sweep');
+  await withSystemDbAccessContext(async () => {
+    for (const f of [a.f, b.f]) await db.update(organizations).set({ billingContact: { email: 'billing@example.test' } }).where(eq(organizations.id, f.orgId));
+    await db.update(invoiceStripePayments).set({ stripeObjectType: 'payment_intent', stripeObjectId: 'pi_receipt' }).where(eq(invoiceStripePayments.invoiceId, a.inv.id));
+    await db.update(invoiceStripePayments).set({ createdAt: sql`now() - interval '5 minutes'` as unknown as Date }).where(eq(invoiceStripePayments.invoiceId, b.inv.id));
+  });
+  intentRetrieveMock.mockResolvedValue({ id: 'pi_receipt', status: 'succeeded', amount_received: 10000, currency: 'usd' });
+  await settlePaymentIntent(a.f.partnerId, 'pi_receipt');
+  await settlePaymentIntent(a.f.partnerId, 'pi_receipt');
+  retrieveMock.mockResolvedValue({ id: 'cs_sweep', payment_status: 'paid', payment_intent: 'pi_sweep', amount_total: 10000, currency: 'usd' });
+  await reconcilePendingStripePayments();
+  for (const f of [a, b]) {
+    const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, f.inv.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe('payment_receipt');
+  }
 });

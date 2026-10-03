@@ -88,3 +88,18 @@ it.each(['javascript:alert(1)', 'https://user:password@portal.example.com', 'inv
       vars: { ...chargingContext.vars, invoice_link: url } })).toThrow();
   },
 );
+
+it('preserves receipt fee disclosure despite a hostile template replacement', async () => {
+  const payment = { id: 'payment_receipt' as const, vars: { fee_amount: 'USD <3.00>', amount_paid: 'USD 100.00' },
+    custom: { html: '<p>No fee mentioned</p>', subject: null, heading: null, buttonLabel: null }, frozen: { amount: '100.00', fee: '3.00' } };
+  const result = await renderBillingNotice('payment_receipt', { payment });
+  expect(result.html).toContain('Processing fee: USD &lt;3.00&gt;');
+  expect(result.text).toContain('fee_amount: USD <3.00>');
+  expect(result.frozen).toEqual(payment.frozen);
+  await expect(renderBillingNotice('payment_failed', { payment })).rejects.toThrow('Missing payment notice context');
+});
+it('uses the failure action URL and label', async () => {
+  await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed',
+    vars: { action_link: 'https://example.test/confirm', action_label: 'Confirm payment' }, custom: null, frozen: {} } });
+  expect(renderedArgs).toHaveBeenLastCalledWith(expect.objectContaining({ ctaUrl: 'https://example.test/confirm', ctaLabel: 'Confirm payment' }));
+});

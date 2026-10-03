@@ -1,3 +1,4 @@
+import { enqueueOnlineReceipt } from './autopay/paymentNotices';
 import { and, eq, isNull, isNotNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
@@ -204,6 +205,8 @@ export async function recordStripePayment(
       invoicePaymentId: payment!.id, invoiceId: inv.id, partnerId: inv.partnerId,
     });
     const [updated] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
+    // Receipt intent commits with the ledger for Checkout, PI and sweep captures.
+    await enqueueOnlineReceipt(db, mapping.id);
     return { kind: 'recorded', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId,
              paymentId: payment!.id, paid: updated?.status === 'paid', paymentPushMappingId };
   };

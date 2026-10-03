@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
+// Real receipt atomicity is covered by stripeSettle.integration.test.ts. Keep
+// this ledger mock's queued results scoped to its own statements.
+vi.mock('./autopay/paymentNotices', () => ({ enqueueOnlineReceipt: vi.fn(async () => undefined) }));
+
 // Controllable Drizzle chain mock (same pattern as invoiceService.test.ts): every
 // builder method returns the same chain; an awaited query resolves to the next
 // queued result. Tests queue the rows each db call should resolve to, in order.

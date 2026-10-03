@@ -15,6 +15,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'card_expiring',
   'payment_reminder',
   'payment_overdue',
+  'payment_receipt', 'payment_failed',
 ] as const;
 
 export type EmailTemplateId = (typeof EMAIL_TEMPLATE_IDS)[number];
@@ -42,7 +43,9 @@ export type EmailTemplateVarKey =
   | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
   | 'expires_on' | 'update_link'
   | 'amount_due' | 'pay_link' | 'days_overdue'
-  | 'charge_date' | 'fee_amount' | 'invoice_link';
+  | 'charge_date' | 'fee_amount' | 'invoice_link'
+  | 'amount_paid' | 'total_charged' | 'paid_on' | 'balance_remaining'
+  | 'failure_text' | 'action_link' | 'action_label';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -110,6 +113,9 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
   payment_reminder: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'pay_link', 'cta_button'],
   payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button'],
+  payment_receipt: ['org_name','partner_name','invoice_number','amount_paid','fee_amount',
+    'total_charged','payment_method','paid_on','balance_remaining'],
+  payment_failed: ['org_name','partner_name','invoice_number','amount_due','failure_text','action_link','action_label'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -128,6 +134,8 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   card_expiring: 'Saved card expiring',
   payment_reminder: 'Payment reminder',
   payment_overdue: 'Overdue payment reminder',
+  payment_receipt: 'Online payment receipt',
+  payment_failed: 'Payment could not be completed',
 };
 
 const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
@@ -146,6 +154,8 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   card_expiring: true,
   payment_reminder: true,
   payment_overdue: true,
+  payment_receipt: false,
+  payment_failed: true,
 };
 
 export function varsForEmailTemplate(id: EmailTemplateId): readonly EmailTemplateVarKey[] {
@@ -290,6 +300,10 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
 <p>This invoice is {{days_overdue}} days overdue.</p>
 <p>{{cta_button}}</p>`,
   },
+  payment_receipt: { subject: 'Payment receipt for {{invoice_number}}', heading: 'Payment received',
+    buttonLabel: '', html: '<p>Paid: {{amount_paid}}. Processing fee: {{fee_amount}}. Total charged: {{total_charged}}.</p><p>{{payment_method}} on {{paid_on}}. Remaining balance: {{balance_remaining}}.</p>' },
+  payment_failed: { subject: 'Action needed for invoice {{invoice_number}}', heading: 'Payment needs attention',
+    buttonLabel: 'Review payment', html: '<p>{{failure_text}}</p><p>Amount due: {{amount_due}}.</p>' },
 };
 
 export function emailTemplateFieldDefaults(id: EmailTemplateId): EmailTemplateFieldDefaults {

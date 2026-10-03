@@ -21,6 +21,8 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   card_expiring: 'Update your saved payment method.',
   payment_reminder: 'A payment is coming due.',
   payment_overdue: 'An invoice payment is overdue.',
+  payment_receipt: 'Your online payment receipt.',
+  payment_failed: 'Your payment needs attention.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -39,6 +41,8 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   card_expiring: undefined,
   payment_reminder: undefined,
   payment_overdue: undefined,
+  payment_receipt: undefined,
+  payment_failed: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {

@@ -1,6 +1,12 @@
+import { invoiceCollectionAttempts, invoiceAutopaySchedules, orgPaymentMethods } from '../db/schema';
+import { enqueueAttemptNotice, notifyPaymentAttention } from './autopay/paymentNotices';
+import { classifyCollectionFailure } from './autopay/failureClassifier';
+import { markPaymentMethodUnusable } from './autopay/paymentMethods';
+import { getPartnerStripeClient, PartnerStripeError } from './partnerStripe';
+import { findLatestArchivedCredentialForAccount } from './stripeCredentialArchive';
 import { createHash } from 'node:crypto';
 import { and, asc, eq, inArray, isNotNull, isNull, like, or, sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
 import { accountingEntityMappings } from '../db/schema/accounting';
 import { invoiceStripePayments, stripeConnectAccounts, stripeFinancialEvents } from '../db/schema/stripePayments';
@@ -45,6 +51,8 @@ type ApplyResult =
   | {
       state: 'applied'; invoiceId: string; orgId: string; partnerId: string; paymentId?: string;
       change: 'reduced' | 'restored' | 'unchanged';
+      returnAttention?: { partnerId: string; orgId: string; invoiceId: string; attemptId: string;
+        returnIdentity: string; event: 'payment.ach_returned' };
       accountingDeleteMappingId?: string | null;
       accountingPushMappingId?: string | null;
       audit?: {
@@ -195,7 +203,64 @@ export function remainingPrincipalMinor(principalMinor: number, feeMinor: number
   return Number(principal - allocatedPrincipal);
 }
 
+/** Provider return details are fetched before acquiring any ledger locks. A failed
+ * lookup leaves the durable inbox pending; unknown bank codes classify hard. */
+async function retrieveBankReturn(stripeEventId: string) {
+  const snapshot = await withSystemDbAccessContext(async () => {
+    const [event] = await db.select().from(stripeFinancialEvents)
+      .where(eq(stripeFinancialEvents.stripeEventId, stripeEventId)).limit(1);
+    if (!event || (event.status === 'applied' || event.status === 'ignored') || event.disputeFundsWithdrawn !== true || !event.paymentIntentId) return null;
+    const [mapping] = await db.select().from(invoiceStripePayments).where(and(
+      eq(invoiceStripePayments.stripeAccountId, event.stripeAccountId),
+      eq(invoiceStripePayments.stripePaymentIntentId, event.paymentIntentId),
+      eq(invoiceStripePayments.source, 'autopay'), eq(invoiceStripePayments.paymentMethodType, 'us_bank_account'),
+    )).limit(1);
+    if (!mapping) return null;
+    const [invoice] = await db.select().from(invoices).where(eq(invoices.id, mapping.invoiceId)).limit(1);
+    if (!invoice || invoice.partnerId !== event.partnerId || mapping.currency.toUpperCase() !== event.currency.toUpperCase()) return null;
+    return { mapping, event };
+  });
+  if (!snapshot) return null;
+  const { mapping, event } = snapshot;
+  const archived = (credentialId: string) => withSystemDbAccessContext(() => getPartnerStripeClient(event.partnerId,
+    { archivedCredentialId: credentialId, invoiceStripePaymentId: mapping.id }));
+  let client: Awaited<ReturnType<typeof getPartnerStripeClient>> | null = null;
+  if (mapping.revocationCredentialId) client = await archived(mapping.revocationCredentialId);
+  else {
+    try { client = await withSystemDbAccessContext(() => getPartnerStripeClient(event.partnerId)); }
+    catch (error) { if (!(error instanceof PartnerStripeError) || error.code !== 'NO_STRIPE_KEY') throw error; }
+    if (!client || client.stripeAccountId !== mapping.stripeAccountId) {
+      const credential = await withSystemDbAccessContext(() => findLatestArchivedCredentialForAccount(event.partnerId, mapping.stripeAccountId));
+      if (!credential) throw new Error('No credential remains for returned payment account');
+      client = await archived(credential.id);
+    }
+  }
+  if (client.stripeAccountId !== mapping.stripeAccountId) throw new Error('Returned payment account binding changed');
+  const objectId = (value: string | { id: string } | null) => typeof value === 'string' ? value : value?.id;
+  let code: string | null;
+  if (event.disputeId) {
+    const dispute = await runOutsideDbContext(() => client!.stripe.disputes.retrieve(event.disputeId!));
+    if (dispute.id !== event.disputeId || objectId(dispute.payment_intent) !== event.paymentIntentId
+      || (event.chargeId && objectId(dispute.charge) !== event.chargeId) || dispute.livemode !== event.livemode
+      || dispute.currency.toUpperCase() !== event.currency.toUpperCase()
+      || dispute.amount !== Number(event.disputeAmountMinor)) throw new Error('Returned dispute binding mismatch');
+    code = dispute.network_reason_code ?? null;
+  } else {
+    if (!event.chargeId) throw new Error('Returned payment has no provider object');
+    const charge = await runOutsideDbContext(() => client!.stripe.charges.retrieve(event.chargeId!));
+    if (charge.id !== event.chargeId || objectId(charge.payment_intent) !== event.paymentIntentId
+      || charge.livemode !== event.livemode || charge.currency.toUpperCase() !== event.currency.toUpperCase()
+      || charge.amount !== Number(event.chargeAmountMinor)) throw new Error('Returned charge binding mismatch');
+    code = charge.failure_code;
+  }
+  return { mappingId: mapping.id, code, failureClass: classifyCollectionFailure({
+    methodType: 'us_bank_account', code: null, declineCode: null, achReturnCode: code, piStatus: 'succeeded',
+  }) };
+}
+
 export async function applyStripeFinancialEvent(stripeEventId: string): Promise<ApplyResult> {
+  assertOutsideHeldDbContext('applyStripeFinancialEvent');
+  const bankReturn = await retrieveBankReturn(stripeEventId);
   const outcome = await withSystemDbAccessContext(async (): Promise<ApplyResult> => {
     const [preEvent] = await db.select().from(stripeFinancialEvents)
       .where(eq(stripeFinancialEvents.stripeEventId, stripeEventId)).limit(1);
@@ -294,6 +359,21 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
         processedAt: new Date(), updatedAt: new Date(),
       }).where(eq(stripeFinancialEvents.id, event.id));
       return { state: 'blocked' };
+    }
+
+    if(mapping.source==='autopay' && !mapping.invoicePaymentId && !mapping.paymentReceivedAt){
+      const [attempt]=await db.select().from(invoiceCollectionAttempts)
+        .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId,mapping.id)).limit(1).for('update');
+      const refunded=event.refundedAmountMinor===null?null:Number(event.refundedAmountMinor);
+      if(attempt?.state==='unapplied' && refunded===originalMinor && event.eventType==='charge.refunded'){
+        await db.update(invoiceCollectionAttempts).set({state:'canceled',failureCode:'unapplied_refunded',updatedAt:new Date()})
+          .where(eq(invoiceCollectionAttempts.id,attempt.id));
+        await db.update(invoiceStripePayments).set({status:'refunded',refundedAmountMinor:String(originalMinor),updatedAt:new Date()})
+          .where(eq(invoiceStripePayments.id,mapping.id));
+        await db.update(stripeFinancialEvents).set({status:'applied',processedAt:new Date(),lastError:null,updatedAt:new Date()})
+          .where(eq(stripeFinancialEvents.id,event.id));
+        return {state:'applied',invoiceId:invoice.id,orgId:invoice.orgId,partnerId:invoice.partnerId,change:'unchanged'};
+      }
     }
 
     if (!mapping.invoicePaymentId && (mapping.status === 'pending' || mapping.status === 'failed')) {
@@ -428,6 +508,27 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
     }
 
     await recomputeInvoiceStatus(mapping.invoiceId);
+    let returnAttention: Extract<ApplyResult,{state:'applied'}>['returnAttention'];
+    if (mapping.source === 'autopay' && mapping.paymentMethodType === 'us_bank_account'
+      && event.disputeFundsWithdrawn === true && targetMinor < previousMinor) {
+      if (bankReturn?.mappingId !== mapping.id) throw new Error('Returned payment details missing');
+      const [attempt] = await db.select().from(invoiceCollectionAttempts)
+        .where(eq(invoiceCollectionAttempts.invoiceStripePaymentId,mapping.id)).limit(1).for('update');
+      if (!attempt) throw new Error('Returned autopay mapping has no attempt');
+      // Merges clear paymentMethodId. Never reacquire collection authority from history.
+      if (attempt.paymentMethodId && bankReturn?.mappingId === mapping.id
+        && (bankReturn.failureClass === 'hard' || bankReturn.failureClass === 'revoked')) {
+        const [method] = await db.select().from(orgPaymentMethods)
+          .where(and(eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1);
+        if (method) await markPaymentMethodUnusable(db, method.id, bankReturn.code ?? 'bank_return_unknown');
+      }
+      const returnIdentity = `${mapping.id}:${event.disputeId ?? event.stripeEventId}`;
+      await enqueueAttemptNotice(db,attempt.id,'returned',returnIdentity);
+      if (attempt.scheduleId) await db.update(invoiceAutopaySchedules).set({stateReason:'payment_reversed',nextAttemptAt:null})
+        .where(eq(invoiceAutopaySchedules.id,attempt.scheduleId));
+      returnAttention = {partnerId:invoice.partnerId,orgId:invoice.orgId,invoiceId:invoice.id,
+        attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
+    }
     await db.update(stripeFinancialEvents).set({
       status: 'applied', attemptCount: event.attemptCount + 1, lastError: null,
       lastAttemptAt: new Date(), nextAttemptAt: null, processedAt: new Date(), updatedAt: new Date(),
@@ -436,6 +537,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       state: 'applied', invoiceId: mapping.invoiceId, orgId: mapping.orgId,
       partnerId: invoice.partnerId, paymentId,
       change: targetMinor < previousMinor ? 'reduced' : targetMinor > previousMinor ? 'restored' : 'unchanged',
+      returnAttention,
       accountingDeleteMappingId,
       accountingPushMappingId,
       audit,
@@ -443,6 +545,14 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
   });
 
   if (outcome.state === 'applied') {
+    if (outcome.returnAttention) {
+      try { await notifyPaymentAttention(outcome.returnAttention); }
+      catch (error) {
+        console.error('[stripeReversalState] staff return notification failed after commit',{
+          invoiceId:outcome.invoiceId,error:error instanceof Error?error.message:String(error),
+        });
+      }
+    }
     if (outcome.accountingDeleteMappingId) {
       try {
         await enqueueAccountingPaymentDelete(outcome.accountingDeleteMappingId, outcome.partnerId);

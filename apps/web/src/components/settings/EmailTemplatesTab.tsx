@@ -20,6 +20,8 @@ const BILLING_TEMPLATE_IDS=new Set<EmailTemplateId>(['quote_send','invoice_send'
 BILLING_TEMPLATE_IDS.add('payment_reminder');
 BILLING_TEMPLATE_IDS.add('invoice_autopay');
 BILLING_TEMPLATE_IDS.add('payment_overdue');
+BILLING_TEMPLATE_IDS.add('payment_receipt');
+BILLING_TEMPLATE_IDS.add('payment_failed');
 
 function asOverride(row: unknown): EmailTemplateOverride | undefined {
   if (!row || typeof row !== 'object') return undefined;

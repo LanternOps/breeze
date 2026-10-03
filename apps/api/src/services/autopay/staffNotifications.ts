@@ -5,8 +5,9 @@ import { getEmailService } from '../email';
 import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
-  orgId: string; partnerId: string;
-  event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped';
+  orgId: string; partnerId: string; invoiceId?: string;
+  event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
+    | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
   dedupeKey: string; message: string;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
@@ -19,14 +20,15 @@ export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopaySta
     .where(and(eq(partnerUsers.partnerId,input.partnerId),eq(users.status,'active'),or(
       eq(partnerUsers.orgAccess,'all'),
       and(eq(partnerUsers.orgAccess,'selected'),sql`${input.orgId} = ANY(${partnerUsers.orgIds})`))));
+  const urgent = input.event === 'autopay.needs_attention' || input.event.startsWith('payment.');
   const ids = [...new Set([...local,...partnerStaff].map((row) => row.userId))];
   if (ids.length) await db.insert(userNotifications).values(ids.map((userId) => ({
     userId, orgId: input.orgId, type: 'billing' as const,
-    priority: input.event === 'autopay.needs_attention' ? 'high' as const : 'normal' as const,
+    priority: urgent ? 'high' as const : 'normal' as const,
     title: input.event === 'autopay.enrolled' ? 'Automatic payments enabled'
       : input.event === 'autopay.skipped' ? 'Automatic payment skipped'
-      : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Automatic payments need attention',
-    message: input.message, link: '/billing/autopay', metadata: { event: input.event },
+      : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Payment needs attention',
+    message: input.message, link: input.invoiceId ? `/billing/invoices/${input.invoiceId}` : '/billing/autopay', metadata: { event: input.event },
     dedupeKey: `${input.dedupeKey}:${userId}`, read: false,
   }))).onConflictDoNothing();
 }
