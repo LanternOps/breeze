@@ -22,5 +22,5 @@
   "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "Software inventory update is busy right now — try again shortly",
   "tool_source_unavailable": "La fuente de esta herramienta no está disponible en este momento",
   "ai_not_configured": "La IA no está configurada en este servidor. Un administrador debe agregar una clave de un proveedor de modelos.",
-  "ACCESS_REVIEW_SELF_DECISION": "You can't decide on your own access — another administrator must review this item"
+  "ACCESS_REVIEW_SELF_DECISION": "No puedes decidir sobre tu propio acceso: otro administrador debe revisar este elemento"
 }
