@@ -16,7 +16,7 @@ func TestHandleNetworkHttpCheck_ErrorOmitsRequestURL(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	ln.Close() // nothing listens here any more: the request is refused
+	_ = ln.Close() // nothing listens here any more: the request is refused
 
 	tests := []struct {
 		name string
