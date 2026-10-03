@@ -60,6 +60,11 @@ import {
 // tracked for a follow-up sweep; see the audit narrative referenced by the
 // SP2 launch-readiness plan.
 const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
+  // Customer-portal hardware health (#7731): the caller is a portal user bound to
+  // ONE customer org (orgId comes from portalAuth, never the request) and portal
+  // users have no site scope. The read model filters devices by that orgId, so a
+  // site gate would be dead code; same reasoning as routes/portal/assets.ts.
+  'routes/portal/hardwareHealth.ts:GET /hardware-health/devices/:deviceId',
   // -- routes/snmp -----------------------------------------------------------
   // Deprecated SNMP metric/threshold endpoints — every handler is a 4-line
   // stub that returns the deprecation payload (HTTP 410) and never reaches a

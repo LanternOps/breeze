@@ -1862,6 +1862,10 @@
           "label": "Hardware-Lebenszyklus",
           "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
         },
+        "enableHardwareHealth": {
+          "label": "Hardware-Zustand",
+          "description": "Zeigt Komponentenzustand, Ereignisse, Laufwerke und Akku der Geräte Ihres Kunden an."
+        },
         "enableNetworkVisibility": {
           "label": "Netzwerksichtbarkeit",
           "description": "Zeigt im Kundenportal den Netzwerkzustand und erkannte Assets schreibgeschützt an."

@@ -84,6 +84,7 @@ vi.mock('../db/schema', () => ({
     enableService: 'enableService',
     enableDocuments: 'enableDocuments',
     enableLifecycle: 'enableLifecycle',
+    enableHardwareHealth: 'enableHardwareHealth',
     enableNetworkVisibility: 'enableNetworkVisibility',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
@@ -121,6 +122,7 @@ const FULL_ROW = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  enableHardwareHealth: false,
   enableNetworkVisibility: false,
   chromeAccent: 'navy',
   supportEmail: 'help@msp.example',
@@ -179,6 +181,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableHardwareHealth: false,
       enableNetworkVisibility: false,
       chromeAccent: 'navy',
       supportEmail: 'help@msp.example',
@@ -213,6 +216,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableService: false,
       enableDocuments: false,
       enableLifecycle: false,
+      enableHardwareHealth: false,
       enableNetworkVisibility: false,
       enableNetworkAlerts: false,
       chromeAccent: null,
@@ -380,6 +384,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableService: true,
       enableDocuments: false,
       enableLifecycle: true,
+      enableHardwareHealth: true,
       enableNetworkVisibility: true
     }]);
 
@@ -388,6 +393,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableReports: true,
       enableService: true,
       enableLifecycle: true,
+      enableHardwareHealth: true,
       enableNetworkVisibility: true
     });
 
@@ -401,6 +407,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableService: true,
       enableDocuments: false,
       enableLifecycle: true,
+      enableHardwareHealth: true,
       enableNetworkVisibility: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
@@ -411,6 +418,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableReports: true,
         enableService: true,
         enableLifecycle: true,
+        enableHardwareHealth: true,
         enableNetworkVisibility: true
       },
       current: {
@@ -422,6 +430,7 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableService: true,
         enableDocuments: false,
         enableLifecycle: true,
+        enableHardwareHealth: true,
         enableNetworkVisibility: true
       }
     });

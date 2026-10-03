@@ -1862,6 +1862,10 @@
           "label": "Donanım yaşam döngüsü",
           "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
         },
+        "enableHardwareHealth": {
+          "label": "Donanım sağlığı",
+          "description": "Müşterinizin makinelerindeki bileşen sağlığını, olayları, diskleri ve pil durumunu gösterir."
+        },
         "enableNetworkVisibility": {
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."

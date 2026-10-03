@@ -1862,6 +1862,10 @@
           "label": "Ciclo de vida do hardware",
           "description": "Mostra o plano de substituição atualizado dos equipamentos do seu cliente."
         },
+        "enableHardwareHealth": {
+          "label": "Saúde do hardware",
+          "description": "Mostra a saúde dos componentes, eventos, discos e bateria das máquinas do seu cliente."
+        },
         "enableNetworkVisibility": {
           "label": "Visibilidade de rede",
           "description": "Exibe no portal do cliente a integridade da rede e os ativos descobertos em modo somente leitura."
