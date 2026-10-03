@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, asc, eq, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { createTicketFormSchema, updateTicketFormSchema } from '@breeze/shared';
+import { createTicketFormSchema, updateTicketFormSchema, ERROR_CODES } from '@breeze/shared';
 import { db } from '../../db';
 import { organizations, ticketForms } from '../../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
@@ -124,14 +124,14 @@ ticketFormRoutes.get(
     const { orgId } = c.req.valid('query');
     // Access check BEFORE any fetch — this endpoint feeds the ticket-creation
     // picker and must not leak form existence for an org the caller can't see.
-    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access denied to this organization' }, 403);
+    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access denied to this organization', code: ERROR_CODES.ACCESS_DENIED }, 403);
     const orgRows = await db
       .select({ id: organizations.id, partnerId: organizations.partnerId })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1);
     const org = orgRows[0];
-    if (!org) return c.json({ error: 'Organization not found' }, 404);
+    if (!org) return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
     const forms = await listTicketFormsForOrg({ id: org.id, partnerId: org.partnerId });
     return c.json({ data: forms });
   }
@@ -151,7 +151,7 @@ ticketFormRoutes.post(
     // Fail fast, before any DB work: visibleOrgIds is only meaningful on a
     // partner-wide form (org-owned forms have no partner allowlist axis).
     if (payload.visibleOrgIds !== undefined && payload.ownerScope !== 'partner') {
-      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR, code: ERROR_CODES.VALIDATION_FAILED }, 400);
     }
 
     // Ownership axis (Partner-Wide First, epic #2135, mirrors software
@@ -159,19 +159,19 @@ ticketFormRoutes.post(
     // token — a client-supplied partner id is NEVER trusted.
     let owner: { orgId: string | null; partnerId: string | null };
     if (payload.ownerScope === 'partner') {
-      if (!auth.partnerId) return c.json({ error: 'Partner-wide forms require partner scope' }, 403);
-      if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      if (!auth.partnerId) return c.json({ error: 'Partner-wide forms require partner scope', code: ERROR_CODES.ACCESS_DENIED }, 403);
+      if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
       owner = { orgId: null, partnerId: auth.partnerId };
     } else {
       const requestedOrgId = payload.orgId ?? c.req.query('orgId') ?? undefined;
       if (auth.scope === 'organization') {
         if (!auth.orgId || (requestedOrgId && requestedOrgId !== auth.orgId)) {
-          return c.json({ error: 'Organization context required' }, 403);
+          return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
         }
         owner = { orgId: auth.orgId, partnerId: null };
       } else {
         if (!requestedOrgId || !auth.canAccessOrg(requestedOrgId)) {
-          return c.json({ error: 'orgId is required and must be accessible' }, 400);
+          return c.json({ error: 'orgId is required and must be accessible', code: ERROR_CODES.VALIDATION_FAILED }, 400);
         }
         owner = { orgId: requestedOrgId, partnerId: null };
       }
@@ -258,16 +258,16 @@ ticketFormRoutes.put(
     const payload = c.req.valid('json');
 
     const row = await getFormWithAccess(id, auth);
-    if (!row) return c.json({ error: 'Ticket form not found' }, 404);
+    if (!row) return c.json({ error: 'Ticket form not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     if (row.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     // visibleOrgIds is only meaningful on a partner-wide row (org-owned forms
     // have no partner allowlist axis).
     if (payload.visibleOrgIds !== undefined && row.orgId !== null) {
-      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR, code: ERROR_CODES.VALIDATION_FAILED }, 400);
     }
 
     if (payload.categoryId) {
@@ -338,10 +338,10 @@ ticketFormRoutes.delete(
     const { id } = c.req.valid('param');
 
     const row = await getFormWithAccess(id, auth);
-    if (!row) return c.json({ error: 'Ticket form not found' }, 404);
+    if (!row) return c.json({ error: 'Ticket form not found', code: ERROR_CODES.NOT_FOUND }, 404);
 
     if (row.orgId === null && !canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     // Hard delete per spec — existing tickets keep the rendered description +

@@ -8,6 +8,7 @@ import {
   checklistItemPatchSchema,
   checklistReorderSchema,
   applyChecklistTemplateSchema,
+  ERROR_CODES,
 } from '@breeze/shared';
 import { applyChecklistTemplateToTicket } from '../../services/ticketChecklistTemplateService';
 import { HumanWorkStepWaitingError } from '../../services/aiOperator/humanWorkService';
@@ -94,7 +95,7 @@ ticketChecklistRoutes.patch(
       // Re-check scope through the item's OWN ticket — the item id alone
       // carries no tenancy. A foreign or soft-deleted ticket is a bare 404.
       if (!(await getScopedTicketOr404(auth, item.ticketId))) {
-        return c.json({ error: 'Checklist item not found' }, 404);
+        return c.json({ error: 'Checklist item not found', code: ERROR_CODES.NOT_FOUND }, 404);
       }
       return c.json({ data: await patchChecklistItem(item.id, patch, actorFrom(c)) });
     } catch (err) {
@@ -113,7 +114,7 @@ ticketChecklistRoutes.delete(
     try {
       const item = await getChecklistItemOr404(c.req.valid('param').itemId);
       if (!(await getScopedTicketOr404(auth, item.ticketId))) {
-        return c.json({ error: 'Checklist item not found' }, 404);
+        return c.json({ error: 'Checklist item not found', code: ERROR_CODES.NOT_FOUND }, 404);
       }
       await deleteChecklistItem(item.id);
       return c.json({ data: { deleted: true } });
@@ -130,7 +131,7 @@ ticketChecklistRoutes.get(
   zValidator('param', idParam),
   async (c) => {
     const ticket = await getScopedTicketOr404(c.get('auth'), c.req.valid('param').id);
-    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+    if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     return c.json({ data: await listChecklist(ticket.id) });
   },
 );
@@ -143,7 +144,7 @@ ticketChecklistRoutes.post(
   zValidator('json', checklistItemCreateSchema),
   async (c) => {
     const ticket = await getScopedTicketOr404(c.get('auth'), c.req.valid('param').id);
-    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+    if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     try {
       const item = await addChecklistItem(
         { id: ticket.id, orgId: ticket.orgId },
@@ -168,7 +169,7 @@ ticketChecklistRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
-    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+    if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     try {
       // Deliberately NOT gated on isInteractiveUserSession: applying a template
       // creates UNTICKED steps and asserts nothing about work performed. Only
@@ -196,7 +197,7 @@ ticketChecklistRoutes.post(
   zValidator('json', checklistReorderSchema),
   async (c) => {
     const ticket = await getScopedTicketOr404(c.get('auth'), c.req.valid('param').id);
-    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+    if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
     try {
       return c.json({ data: await reorderChecklist(ticket.id, c.req.valid('json').itemIds) });
     } catch (err) {

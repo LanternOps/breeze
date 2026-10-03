@@ -54,6 +54,7 @@ import {
   getMailboxCallbackUri,
   getMailboxPlatformConfig,
 } from '../../services/ticketMailbox/mailboxToken';
+import { ERROR_CODES } from '@breeze/shared';
 
 const partnerScopes = requireScope('partner', 'system');
 const requireMailboxRead = requirePermission(
@@ -386,12 +387,12 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const platform = getMailboxPlatformConfig();
-    if (!platform) return c.json({ error: 'M365 ticket mailbox app is not configured' }, 400);
+    if (!platform) return c.json({ error: 'M365 ticket mailbox app is not configured', code: ERROR_CODES.VALIDATION_FAILED }, 400);
 
     const { mailboxAddress, displayName } = c.req.valid('json');
     const connection = await createPendingConnection({
@@ -444,7 +445,7 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
@@ -756,15 +757,15 @@ mailboxRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const { id } = c.req.valid('param');
     const connection = await getMailboxConnection(id, resolved.partnerId);
-    if (!connection) return c.json({ error: 'Connection not found' }, 404);
+    if (!connection) return c.json({ error: 'Connection not found', code: ERROR_CODES.NOT_FOUND }, 404);
     if (!['connected', 'error'].includes(connection.status) || !connection.tenantId) {
-      return c.json({ error: 'Mailbox re-consent required' }, 409);
+      return c.json({ error: 'Mailbox re-consent required', code: ERROR_CODES.MAILBOX_RECONSENT_REQUIRED }, 409);
     }
     const snapshot = {
       id: connection.id,
@@ -813,7 +814,7 @@ mailboxRoutes.post(
         probe.ok ? undefined : probe.reason,
       ),
     });
-    if (!changed) return c.json({ error: 'Mailbox connection changed during retest' }, 409);
+    if (!changed) return c.json({ error: 'Mailbox connection changed during retest', code: ERROR_CODES.CONFLICT }, 409);
     return c.json({ ok: probe.ok, ...(probe.ok ? {} : { error: failureMessage(probe.reason) }) });
   },
 );
@@ -828,13 +829,13 @@ mailboxRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!canManagePartnerWidePolicies(auth)) {
-      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const id = c.req.valid('param').id;
     const connection = await getMailboxConnection(id, resolved.partnerId);
-    if (!connection) return c.json({ error: 'Connection not found' }, 404);
+    if (!connection) return c.json({ error: 'Connection not found', code: ERROR_CODES.NOT_FOUND }, 404);
     await disableConnection(id, resolved.partnerId);
     writeRouteAudit(c, {
       orgId: null,

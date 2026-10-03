@@ -20,6 +20,11 @@
   "RACE_LOST": "Outra solicitação já tratou isso primeiro",
   "RE_ENROLLMENT_REQUIRED": "Este dispositivo precisa ser reinscrito",
   "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "A atualização de inventário de software está ocupada agora — tente novamente em instantes",
+  "TICKET_TRIAGE_DISABLED": "As sugestões de triagem por IA estão desativadas para esta organização",
+  "TICKET_TRIAGE_UNAVAILABLE": "Nenhuma sugestão de triagem por IA está disponível para este chamado agora",
+  "TICKET_TRIAGE_PRIORITY_MISMATCH": "A prioridade sugerida mudou — revise antes de aplicar",
+  "TICKET_TRIAGE_CATEGORY_MISMATCH": "A categoria sugerida mudou — revise antes de aplicar",
+  "MAILBOX_RECONSENT_REQUIRED": "Esta caixa de email precisa ser reconectada para continuar sincronizando chamados",
   "tool_source_unavailable": "A fonte desta ferramenta está indisponível no momento",
   "ai_not_configured": "A IA não está configurada neste servidor. Um administrador precisa adicionar uma chave de provedor de modelos."
 }
