@@ -2489,5 +2489,37 @@
     "empty": "Keine Kunden gefunden.",
     "requestedCount_one": "Anfrage an {{count}} Kunden gesendet.",
     "requestedCount_other": "Anfragen an {{count}} Kunden gesendet."
+  },
+  "reminders": {
+    "title": "Zahlungserinnerungen",
+    "description": "Erinnerungen für unbezahlte Rechnungen an den Rechnungskontakt der Organisation senden. Erinnerungen funktionieren auch ohne automatische Zahlungen.",
+    "enabled": "Zahlungserinnerungen senden",
+    "on": "Aktiviert",
+    "off": "Deaktiviert",
+    "inherit": "{{source}} verwenden: {{value}}",
+    "before": "Tage vor dem Fälligkeitsdatum",
+    "repeat": "Vor Fälligkeit wiederholen alle (Tage)",
+    "overdue": "Bei Überfälligkeit erinnern alle (Tage)",
+    "noRepeat": "Keine Wiederholung",
+    "orgRepeatHelp": "Ein leeres Feld übernimmt die Partnereinstellung. Wenn der Partner Erinnerungen vor Fälligkeit wiederholt, können Sie hier nicht nur diese Wiederholungen deaktivieren. Deaktivieren Sie Erinnerungen für diese Organisation, um alle Erinnerungen zu stoppen.",
+    "partnerRepeatHelp": "Lassen Sie das Wiederholungsintervall leer, um einmal vor Fälligkeit zu erinnern. Leere Felder verwenden ansonsten den angezeigten Standardwert.",
+    "cadenceHelp": "Am Fälligkeitstag wird keine Erinnerung gesendet. Die erste Erinnerung nach Fälligkeit wird nach Ablauf eines Überfälligkeitsintervalls gesendet. Änderungen an Daten oder Intervallen führen nicht zum erneuten Versand bereits zugeteilter Erinnerungen.",
+    "invalid": "Geben Sie ganze Tage von 1 bis 31 ein oder lassen Sie das Feld leer, um den Wert zu übernehmen.",
+    "sources": {
+      "org": "Organisation",
+      "partner": "Partnerstandard",
+      "default": "Systemstandard"
+    },
+    "save": "Zahlungseinstellungen speichern",
+    "saving": "Wird gespeichert…",
+    "saved": "Erinnerungseinstellungen gespeichert",
+    "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
+    "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
+    "retry": "Erneut versuchen",
+    "loading": "Zahlungseinstellungen werden geladen…",
+    "templates": {
+      "paymentReminder": "Zahlungserinnerung",
+      "paymentOverdue": "Erinnerung an überfällige Zahlung"
+    }
   }
 }

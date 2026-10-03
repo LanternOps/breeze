@@ -12,6 +12,8 @@ export const EMAIL_TEMPLATE_IDS = [
   'autopay_enrolled',
   'autopay_stopped', 'autopay_paused', 'autopay_resumed',
   'card_expiring',
+  'payment_reminder',
+  'payment_overdue',
 ] as const;
 
 export type EmailTemplateId = (typeof EMAIL_TEMPLATE_IDS)[number];
@@ -37,7 +39,8 @@ export type EmailTemplateVarKey =
   | 'cta_button'
   | 'client_name' | 'setup_link' | 'ach_mode_text' | 'payment_method'
   | 'schedule_text' | 'fee_text' | 'stopped_by' | 'open_invoices_text'
-  | 'expires_on' | 'update_link';
+  | 'expires_on' | 'update_link'
+  | 'amount_due' | 'pay_link' | 'days_overdue';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -101,6 +104,8 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   autopay_paused: ['partner_name','org_name','client_name'],
   autopay_resumed: ['partner_name','org_name','client_name'],
   card_expiring: ['partner_name','org_name','cta_button','client_name','payment_method','expires_on','update_link'],
+  payment_reminder: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'pay_link', 'cta_button'],
+  payment_overdue: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link', 'cta_button'],
 };
 
 const LABEL_BY_ID: Record<EmailTemplateId, string> = {
@@ -116,6 +121,8 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   autopay_paused: 'Automatic payments paused',
   autopay_resumed: 'Automatic payments resumed',
   card_expiring: 'Saved card expiring',
+  payment_reminder: 'Payment reminder',
+  payment_overdue: 'Overdue payment reminder',
 };
 
 const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
@@ -131,6 +138,8 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   autopay_paused: false,
   autopay_resumed: false,
   card_expiring: true,
+  payment_reminder: true,
+  payment_overdue: true,
 };
 
 export function varsForEmailTemplate(id: EmailTemplateId): readonly EmailTemplateVarKey[] {
@@ -256,6 +265,19 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     html: `<p>Hi {{client_name}},</p><p>Your {{payment_method}} expires on {{expires_on}}.</p>
 <p>Please update your payment method to keep future automatic payments running.</p><p>{{cta_button}}</p>
 <p>Updating your method keeps your existing automatic-payment enrollment.</p>`,
+  },
+  payment_reminder: {
+    subject: 'Payment reminder: invoice {{invoice_number}}',
+    heading: 'Payment reminder', buttonLabel: 'View & pay invoice',
+    html: `<p>This is a reminder about invoice <strong>{{invoice_number}}</strong> with a total payable of <strong>{{amount_due}}</strong>. Payment is due by <strong>{{due_date}}</strong>.</p>
+<p>{{cta_button}}</p>`,
+  },
+  payment_overdue: {
+    subject: 'OVERDUE payment reminder: invoice {{invoice_number}}',
+    heading: 'Overdue payment reminder', buttonLabel: 'View & pay invoice',
+    html: `<p>This is an OVERDUE reminder about invoice <strong>{{invoice_number}}</strong> with a total payable of <strong>{{amount_due}}</strong>. Payment was due by <strong>{{due_date}}</strong>.</p>
+<p>This invoice is {{days_overdue}} days overdue.</p>
+<p>{{cta_button}}</p>`,
   },
 };
 

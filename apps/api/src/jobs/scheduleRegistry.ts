@@ -108,6 +108,7 @@ export const JOB_SCHEDULES = {
   'tdsynnex-sftp-sync': '38 5 * * *',
   'auth-browser-transition-cleanup': '58 5 * * *',
   'invoice-overdue-sweep': '8 6 * * *',
+  'invoice-reminder-sweep': '18 6 * * *',
   // AI model registry W01 (#7599): daily Anthropic model discovery for the platform key.
   'ai-model-discovery-sync': '38 6 * * *',
   // AI model registry W03 (#7601): daily fan-out of one discovery job per

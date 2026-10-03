@@ -97,9 +97,15 @@ describe('billing Rates has one settings home', () => {
 
 it('Payments has one hash-addressed settings home', () => {
   expect(SETTINGS_CATALOG.filter(entry => entry.id === 'billing-payments')).toEqual([
-    expect.objectContaining({ href: '/settings/billing#payments', requiresAutopay: true }),
+    expect.objectContaining({ href: '/settings/billing#payments', requiredPermission: { resource: 'billing', action: 'manage' } }),
   ]);
   const page = readFileSync(join(WEB_SRC, 'components/billing/PartnerBillingSettingsPage.tsx'), 'utf8');
   expect(page).toContain("activeTab === 'payments'"); expect(page).toContain('<PaymentsSettingsTab');
   expect(page).toContain('useHashTab');
+});
+
+it('Payments is reachable independently of autopay rollout', () => {
+  const entry = SETTINGS_CATALOG.find(entry => entry.id === 'billing-payments');
+  expect(entry).toMatchObject({ href: '/settings/billing#payments', requiredPermission: { resource: 'billing', action: 'manage' } });
+  expect(entry?.requiresAutopay).toBeUndefined();
 });

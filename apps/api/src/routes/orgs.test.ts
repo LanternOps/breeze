@@ -1890,6 +1890,20 @@ describe('org routes', () => {
   });
 
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
+
+    it.each(['payment_reminder', 'payment_overdue'])('accepts %s', async (id) => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const captured = mockUpdateCapture();
+      const fields = {
+        subject: 'Invoice {{invoice_number}}', heading: 'Payment reminder',
+        buttonLabel: 'Pay invoice', html: '<p>{{amount_due}} by {{due_date}}</p>',
+      };
+      const response = await patchMe({ settings: { emailTemplates: { [id]: fields } } });
+      expect(response.status).toBe(200);
+      expect(captured().settings.emailTemplates[id]).toEqual(fields);
+    });
+
     function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({

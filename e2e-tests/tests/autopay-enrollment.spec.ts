@@ -50,7 +50,9 @@ test('ACH-only never offers card and stop page GET never submits', async ({ clea
 });
 test('Payments hash mounts inheritance without a second save action', async ({ authedPage }) => {
   const inherited = { autopayOffsetDays: { value: 7, source: 'partner' }, autopayOffsetRule: { value: 'later', source: 'partner' },
-    autopayCap: { value: { enabled: false }, source: 'partner' }, achMode: { value: 'ach_preferred', source: 'partner' } };
+    autopayCap: { value: { enabled: false }, source: 'partner' }, achMode: { value: 'ach_preferred', source: 'partner' },
+    remindersEnabled: { value: false, source: 'default' }, reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' }, overdueReminderEveryDays: { value: 7, source: 'default' } };
   await authedPage.route(/\/api\/v1\/partner\/billing\/payment-settings(\?.*)?$/, route => route.fulfill({ json: { autopayEnabled: true,
     values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null }, inherited, effective: inherited } }));
   const page = new AutopayEnrollmentPage(authedPage); await page.openPayments();

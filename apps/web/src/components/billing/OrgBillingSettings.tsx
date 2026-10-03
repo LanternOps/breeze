@@ -251,11 +251,13 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const termsDaysInvalid = termsTrimmed !== ''
     && !(/^\d+$/.test(termsTrimmed) && Number(termsTrimmed) <= 365);
 
+  const paymentSettingsBlockSave = canManageAutopay && !!paymentSettings.view &&
+    (paymentSettings.invalid || paymentSettings.saving);
   const save = useCallback(async () => {
-    if (saving || termsDaysInvalid || paymentSettings.invalid || paymentSettings.saving) return;
+    if (saving || termsDaysInvalid || paymentSettingsBlockSave) return;
     setSaving(true);
     try {
-      if (canManageAutopay && paymentSettings.view?.autopayEnabled) await paymentSettings.save();
+      if (canManageAutopay && paymentSettings.view && paymentSettings.reminders) await paymentSettings.save();
       const pct = taxPercent.trim();
       await runAction({
         request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
@@ -290,7 +292,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [paymentSettings, canManageAutopay, saving, termsDaysInvalid, termsDays, taxId, taxExempt, taxPercent, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
+  }, [paymentSettings, paymentSettingsBlockSave, canManageAutopay, saving, termsDaysInvalid, termsDays, taxId, taxExempt, taxPercent, line1, line2, city, region, postal, country, orgId, load, billingProfile.billingProfileId, billingProfile.markSaved, t]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('orgBillingSettings.loading')}</p>;
   if (loadError) {
@@ -585,15 +587,16 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </div>
       </section>
 
-      {paymentSettings.view?.autopayEnabled && <>
+      {paymentSettings.view && paymentSettings.reminders && <>
         <OrgPaymentsSettingsSection view={paymentSettings.view} setValues={paymentSettings.setValues}
+          reminders={paymentSettings.reminders} setReminders={paymentSettings.setReminders}
           disabled={saving || paymentSettings.saving || !canManageAutopay} />
-        {canManageAutopay && <OrgAutopayCard orgId={orgId} />}
+        {paymentSettings.view.autopayEnabled && canManageAutopay && <OrgAutopayCard orgId={orgId} />}
       </>}
 
       <div className="flex justify-end">
         <button
-          type="button" onClick={() => void save()} disabled={saving || termsDaysInvalid || paymentSettings.invalid || paymentSettings.saving}
+          type="button" onClick={() => void save()} disabled={saving || termsDaysInvalid || paymentSettingsBlockSave}
           data-testid="org-billing-save"
           className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >

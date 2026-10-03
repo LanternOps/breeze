@@ -39,13 +39,20 @@ it('preserves an explicit unlimited org cap without overwriting the inherited di
   expect(view.effective.autopayCap).toEqual({ value: { enabled: false }, source: 'org' });
   expect(view.inherited.autopayCap.value).toEqual({ enabled: true, amount: '500.00', currency: 'USD' });
 });
-it('returns the exact code defaults as the partner inherited tier and fails closed on rollout', async () => {
+it('exposes reminder defaults even with autopay rollout disabled', async () => {
   const cx = connection(null); mocks.enabled.mockResolvedValue(false);
   const view = await paymentSettingsView(cx.value, partnerId);
   expect(view.autopayEnabled).toBe(false);
-  expect(view.inherited).toEqual({ autopayOffsetDays: { value: 0, source: 'default' },
-    autopayOffsetRule: { value: 'later', source: 'default' }, autopayCap: { value: { enabled: false }, source: 'default' },
-    achMode: { value: 'ach_preferred', source: 'default' } });
-  expect(view.values).toEqual({ autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
-    autopayCapAmount: null, autopayCapCurrency: null, achMode: null });
+  expect(view.inherited).toEqual({
+    autopayOffsetDays: { value: 0, source: 'default' },
+    autopayOffsetRule: { value: 'later', source: 'default' },
+    autopayCap: { value: { enabled: false }, source: 'default' },
+    achMode: { value: 'ach_preferred', source: 'default' },
+    remindersEnabled: { value: false, source: 'default' },
+    reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' },
+    overdueReminderEveryDays: { value: 7, source: 'default' },
+  });
+  expect(view.values).toEqual({ autopayOffsetDays: null, autopayOffsetRule: null,
+    autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null });
 });

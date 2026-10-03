@@ -14,7 +14,6 @@ import BillingDefaultsTab from './BillingDefaultsTab';
 import BillingDocumentsTab from './BillingDocumentsTab';
 import BillingConnectionsTab from './BillingConnectionsTab';
 import PaymentsSettingsTab from './PaymentsSettingsTab';
-import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import BillingRatesTab from './BillingRatesTab';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -45,7 +44,6 @@ export default function PartnerBillingSettingsPage() {
   const [saving, setSaving] = useState(false);
   // Same grant the PATCH /partner/billing-settings route requires (invoices:write).
   const { can } = usePermissions();
-  const autopayEnabled = useAutopayEnabled();
   const hasWriteGrant = can('invoices', 'write');
   // The route ALSO requires partner-wide access (requirePartnerWideBillingAdmin →
   // canManagePartnerWidePolicies). Read the API's answer from /users/me instead of
@@ -197,7 +195,7 @@ export default function PartnerBillingSettingsPage() {
     { id: 'payments', labelKey: 'partnerBillingSettingsTabs.payments' },
     { id: 'connections', labelKey: 'partnerBillingSettingsTabs.connections' },
   ];
-  const renderedTabs = TABS.filter(tab => !tab.reserved && (tab.id !== 'payments' || autopayEnabled));
+  const renderedTabs = TABS.filter(tab => !tab.reserved);
   const overflowTabs: OverflowTab[] = renderedTabs.map((tab) => ({
     id: tab.id,
     testId: tab.id === 'payments' ? 'autopay-payments-tab' : undefined,
@@ -263,7 +261,7 @@ export default function PartnerBillingSettingsPage() {
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
-      {activeTab === 'payments' && autopayEnabled && <PaymentsSettingsTab />}
+      {activeTab === 'payments' && <PaymentsSettingsTab />}
       </div>
 
       {canWrite && activeTab !== 'rates' && activeTab !== 'connections' && activeTab !== 'payments' && <div className="flex justify-end">

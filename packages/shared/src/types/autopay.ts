@@ -81,6 +81,10 @@ export interface PaymentValues {
 }
 export type EffectivePaymentSetting<T>={value:T;source:'org'|'partner'|'default'};
 export interface ResolvedPaymentSettings {
+ remindersEnabled:EffectivePaymentSetting<boolean>;
+ reminderBeforeDueDays:EffectivePaymentSetting<number>;
+ reminderRepeatDays:EffectivePaymentSetting<number|null>;
+ overdueReminderEveryDays:EffectivePaymentSetting<number>;
  autopayOffsetDays:EffectivePaymentSetting<number>;autopayOffsetRule:EffectivePaymentSetting<AutopayOffsetRule>;
  autopayCap:EffectivePaymentSetting<AutopayScheduleTerms['cap']>;achMode:EffectivePaymentSetting<AchMode>;
 }

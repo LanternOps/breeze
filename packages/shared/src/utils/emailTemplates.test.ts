@@ -23,6 +23,8 @@ describe('email template catalog', () => {
       'autopay_paused',
       'autopay_resumed',
       'card_expiring',
+      'payment_reminder',
+      'payment_overdue',
     ]);
   });
 
@@ -193,4 +195,17 @@ describe('emailTemplateFieldDefaults', () => {
     expect(fields.html).toContain('{{due_date}}');
     expect(fields.html).toContain('no sign-in needed');
   });
+});
+
+it.each([
+  ['payment_reminder', ['invoice_number', 'amount_due', 'due_date', 'pay_link']],
+  ['payment_overdue', ['invoice_number', 'amount_due', 'due_date', 'days_overdue', 'pay_link']],
+] as const)('registers the closed %s variable set', (id, businessVars) => {
+  expect(EMAIL_TEMPLATE_IDS).toContain(id);
+  expect([...varsForEmailTemplate(id)].sort()).toEqual(
+    [...businessVars, 'org_name', 'partner_name', 'cta_button'].sort(),
+  );
+  expect(emailTemplateHasCta(id)).toBe(true);
+  expect(emailTemplateFieldDefaults(id).html).toContain('{{amount_due}}');
+  expect(emailTemplateFieldDefaults(id).html).not.toContain('PDF');
 });

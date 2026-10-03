@@ -2489,5 +2489,37 @@
     "empty": "Aucun client trouvé.",
     "requestedCount_one": "Demande envoyée à {{count}} client.",
     "requestedCount_other": "Demandes envoyées à {{count}} clients."
+  },
+  "reminders": {
+    "title": "Rappels de paiement",
+    "description": "Envoyer des rappels de factures impayées au contact de facturation de l’organisation. Les rappels fonctionnent sans paiements automatiques.",
+    "enabled": "Envoyer des rappels de paiement",
+    "on": "Activés",
+    "off": "Désactivés",
+    "inherit": "Utiliser {{source}} : {{value}}",
+    "before": "Jours avant la date d’échéance",
+    "repeat": "Répéter avant l’échéance tous les (jours)",
+    "overdue": "Rappeler après l’échéance tous les (jours)",
+    "noRepeat": "Sans répétition",
+    "orgRepeatHelp": "Un champ vide reprend le paramètre du partenaire. Vous ne pouvez pas désactiver uniquement les répétitions avant l’échéance si le partenaire les a activées; désactivez les rappels pour cette organisation pour tous les arrêter.",
+    "partnerRepeatHelp": "Laissez l’intervalle de répétition vide pour envoyer un seul rappel avant l’échéance. Les autres champs vides utilisent la valeur par défaut affichée.",
+    "cadenceHelp": "Aucun rappel n’est envoyé le jour de l’échéance. Le premier rappel de retard est envoyé un intervalle après l’échéance. Modifier les dates ou les intervalles ne renvoie pas les rappels déjà attribués.",
+    "invalid": "Entrez un nombre entier de jours entre 1 et 31, ou laissez le champ vide pour hériter de la valeur.",
+    "sources": {
+      "org": "organisation",
+      "partner": "valeur par défaut du partenaire",
+      "default": "valeur par défaut du système"
+    },
+    "save": "Enregistrer les paramètres de paiement",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de rappel enregistrés",
+    "saveFailed": "Impossible d’enregistrer les paramètres de rappel",
+    "loadFailed": "Impossible de charger les paramètres de rappel",
+    "retry": "Réessayer",
+    "loading": "Chargement des paramètres de paiement…",
+    "templates": {
+      "paymentReminder": "Rappel de paiement",
+      "paymentOverdue": "Rappel de paiement en retard"
+    }
   }
 }

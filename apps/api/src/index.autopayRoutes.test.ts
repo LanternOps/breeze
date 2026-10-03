@@ -80,6 +80,25 @@ beforeEach(() => {
   m.orgRows = [{ partnerId }];
 });
 describe('autopay routes through exported API application', () => {
+it('returns reminder inheritance through the app and accepts all reminder fields with rollout off', async () => {
+  m.enabled = false;
+  const partner = await request(partnerPath);
+  expect(partner.status).toBe(200);
+  expect((await partner.json()).inherited).toMatchObject({
+    remindersEnabled: { value: false, source: 'default' },
+    reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' },
+    overdueReminderEveryDays: { value: 7, source: 'default' },
+  });
+  const patch = { remindersEnabled: false, reminderBeforeDueDays: 31, reminderRepeatDays: null, overdueReminderEveryDays: 1 };
+  expect((await request(partnerPath, 'PUT', patch)).status).toBe(200);
+  expect(m.partnerWrite).toHaveBeenCalledWith(expect.anything(), partnerId, patch, m.auth.user.id);
+  expect((await request(orgPath, 'PUT', patch)).status).toBe(200);
+  expect(m.orgWrite).toHaveBeenCalledWith(expect.anything(), orgId, patch, m.auth.user.id);
+  expect((await request(orgPath, 'PUT', { reminderRepeatDays: 0 })).status).toBe(400);
+  expect((await request(partnerPath, 'PUT', { reminderBeforeDueDays: 32 })).status).toBe(400);
+});
+
   it('mounts both GET routes and returns the partner rollout flag', async () => {
     const partner = await request(partnerPath);
     expect(partner.status).toBe(200); expect(await partner.json()).toMatchObject({ autopayEnabled: false });

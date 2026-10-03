@@ -4,6 +4,7 @@ import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
+import RemindersSettingsSection, { reminderDraft, reminderPatch, reminderDraftInvalid, type ReminderDraft } from './RemindersSettingsSection';
 import InheritedField from '../shared/InheritedField';
 import type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
@@ -12,54 +13,60 @@ export function usePaymentSettings(orgId?: string) {
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';
   // Each identity owns its requests, including save-triggered reloads.
   const scope = useMemo(() => ({ path, active: false, request: 0 }), [path]);
-  const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null,
+  const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null, reminders: null as ReminderDraft | null,
     error: false, loading: true, saving: false });
-  const { view, error, loading, saving } = state.scope === scope
-    ? state : { view: null, error: false, loading: true, saving: false };
+  const { view, reminders, error, loading, saving } = state.scope === scope
+    ? state : { view: null, reminders: null, error: false, loading: true, saving: false };
   const load = useCallback(async () => {
     if (!scope.active) return;
     const request = ++scope.request;
     const isCurrent = () => scope.active && scope.request === request;
-    setState(current => ({ ...current, scope, view: null, loading: true, error: false }));
+    setState(current => ({ ...current, scope, view: null, reminders: null, loading: true, error: false }));
     try {
       const response = await fetchWithAuth(scope.path);
       if (!response.ok) throw new Error('load');
       const nextView: PaymentSettingsView = await response.json();
-      if (isCurrent()) setState(current => ({ ...current, view: nextView }));
+      if (!nextView.values || !nextView.effective?.remindersEnabled || !nextView.inherited?.remindersEnabled) throw new Error('shape');
+      if (isCurrent()) setState(current => ({ ...current, view: nextView,
+        reminders: reminderDraft(nextView.effective, orgId ? 'org' : 'partner') }));
     } catch {
-      if (isCurrent()) setState(current => ({ ...current, view: null, error: true }));
+      if (isCurrent()) setState(current => ({ ...current, view: null, reminders: null, error: true }));
     } finally {
       if (isCurrent()) setState(current => ({ ...current, loading: false }));
     }
-  }, [scope]);
+  }, [scope, orgId]);
   useEffect(() => {
     scope.active = true;
-    setState({ scope, view: null, error: false, loading: true, saving: false });
+    setState({ scope, view: null, reminders: null, error: false, loading: true, saving: false });
     void load();
     return () => { scope.active = false; ++scope.request; };
   }, [scope, load]);
   const values = view?.values;
-  const invalid = !!values && ((values.autopayOffsetDays !== null &&
+  const autopayInvalid = !!view?.autopayEnabled && !!values && ((values.autopayOffsetDays !== null &&
     (!Number.isInteger(values.autopayOffsetDays) || values.autopayOffsetDays < 0 || values.autopayOffsetDays > 60)) ||
     (values.autopayCapEnabled === true && (!/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(values.autopayCapAmount ?? '') ||
       !/[1-9]/.test(values.autopayCapAmount ?? '') || !/^[A-Z]{3}$/.test(values.autopayCapCurrency ?? ''))));
+  const invalid = !view || !reminders || reminderDraftInvalid(reminders) || autopayInvalid;
   const save = async () => {
-    if (!scope.active || !view?.autopayEnabled || invalid || loading || saving) return;
+    if (!scope.active || !view || !reminders || invalid || loading || saving) return;
     const payload = { ...view.values };
     if (payload.autopayCapEnabled === true && payload.autopayCapAmount !== null) {
       const [whole, fraction = ''] = payload.autopayCapAmount.split('.');
       payload.autopayCapAmount = `${whole}.${fraction.padEnd(2, '0')}`;
     }
+    const body = { ...(view.autopayEnabled ? payload : {}), ...reminderPatch(reminders) };
     setState(current => ({ ...current, saving: true }));
     try {
-      await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', body: JSON.stringify(payload) }),
-        errorFallback: t('autopay.error'), successMessage: t('autopay.saved') });
+      await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        errorFallback: t('reminders.saveFailed'), successMessage: t('reminders.saved') });
       await load();
     } finally {
       if (scope.active) setState(current => ({ ...current, saving: false }));
     }
   };
-  return { view, loading, saving, invalid, error, load, save,
+  return { view, reminders, loading, saving, invalid, error, load, save,
+    setReminders: (value: ReminderDraft) => setState(current =>
+      scope.active && current.scope === scope ? { ...current, reminders: value } : current),
     setValues: (patch: Partial<PaymentValues>) => setState(current =>
       scope.active && current.scope === scope && current.view
         ? { ...current, view: { ...current.view, values: { ...current.view.values, ...patch } } } : current) };
@@ -107,12 +114,18 @@ export default function PaymentsSettingsTab({ orgId }: { orgId?: string }) {
   const { can } = usePermissions(); const canManage = can('billing', 'manage');
   if (model.loading) return <p data-testid="autopay-settings-loading">{t('autopay.loading')}</p>;
   if (model.error) return <p role="alert" data-testid="autopay-settings-error">{t('autopay.error')}</p>;
-  if (!model.view?.autopayEnabled) return null;
-  return <section data-testid="autopay-settings" className="space-y-4">
-    <h2>{t('autopay.title')}</h2>
-    <PaymentFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving} />
+  if (!model.view || !model.reminders) return null;
+  return <div className="space-y-6" data-testid="autopay-payments-shell">
+    <RemindersSettingsSection scope={orgId ? 'org' : 'partner'} value={model.reminders}
+      inherited={model.view.inherited} onChange={model.setReminders} disabled={!canManage || model.saving} />
+    {model.view.autopayEnabled && <section data-testid="autopay-settings-section" className="space-y-4">
+      <h2>{t('autopay.title')}</h2>
+      <PaymentFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving} />
+    </section>}
     {model.invalid && <p role="alert">{t('autopay.invalid')}</p>}
     {canManage && <button data-testid="autopay-settings-save" disabled={model.invalid || model.saving}
-      onClick={() => void model.save().catch(e => handleActionError(e, t('autopay.error')))}>{t('autopay.save')}</button>}
-  </section>;
+      onClick={() => void model.save().catch(e => handleActionError(e, t('reminders.saveFailed')))}>
+      {model.saving ? t('reminders.saving') : t('reminders.save')}
+    </button>}
+  </div>;
 }

@@ -2489,5 +2489,37 @@
     "empty": "Nenhum cliente encontrado.",
     "requestedCount_one": "Solicitação enviada a {{count}} cliente.",
     "requestedCount_other": "Solicitações enviadas a {{count}} clientes."
+  },
+  "reminders": {
+    "title": "Lembretes de pagamento",
+    "description": "Envie lembretes de faturas não pagas ao contato de faturamento da organização. Os lembretes funcionam sem pagamentos automáticos.",
+    "enabled": "Enviar lembretes de pagamento",
+    "on": "Ativados",
+    "off": "Desativados",
+    "inherit": "Usar {{source}}: {{value}}",
+    "before": "Dias antes do vencimento",
+    "repeat": "Repetir antes do vencimento a cada (dias)",
+    "overdue": "Lembrar após o vencimento a cada (dias)",
+    "noRepeat": "Sem repetição",
+    "orgRepeatHelp": "Em branco, herda a configuração do parceiro. Não é possível desativar apenas as repetições antes do vencimento quando o parceiro as ativa; desative os lembretes para esta organização para interromper todos.",
+    "partnerRepeatHelp": "Deixe o intervalo de repetição em branco para enviar um único lembrete antes do vencimento. Os demais campos em branco usam o valor padrão exibido.",
+    "cadenceHelp": "Nenhum lembrete é enviado no dia do vencimento. O primeiro lembrete de atraso é enviado um intervalo após o vencimento. Alterar datas ou intervalos não reenvia lembretes já alocados.",
+    "invalid": "Informe um número inteiro de dias entre 1 e 31 ou deixe em branco para herdar o valor.",
+    "sources": {
+      "org": "organização",
+      "partner": "padrão do parceiro",
+      "default": "padrão do sistema"
+    },
+    "save": "Salvar configurações de pagamento",
+    "saving": "Salvando…",
+    "saved": "Configurações de lembretes salvas",
+    "saveFailed": "Não foi possível salvar as configurações de lembretes",
+    "loadFailed": "Não foi possível carregar as configurações de lembretes",
+    "retry": "Tentar novamente",
+    "loading": "Carregando configurações de pagamento…",
+    "templates": {
+      "paymentReminder": "Lembrete de pagamento",
+      "paymentOverdue": "Lembrete de pagamento em atraso"
+    }
   }
 }

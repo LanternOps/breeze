@@ -2489,5 +2489,37 @@
     "empty": "Müşteri bulunamadı.",
     "requestedCount_one": "{{count}} müşteriye istek gönderildi.",
     "requestedCount_other": "{{count}} müşteriye istek gönderildi."
+  },
+  "reminders": {
+    "title": "Ödeme hatırlatmaları",
+    "description": "Ödenmemiş faturalar için kuruluşun faturalandırma yetkilisine hatırlatma gönderin. Hatırlatmalar otomatik ödemeler olmadan da çalışır.",
+    "enabled": "Ödeme hatırlatmaları gönder",
+    "on": "Etkin",
+    "off": "Devre dışı",
+    "inherit": "{{source}} kullan: {{value}}",
+    "before": "Son ödeme tarihinden kaç gün önce",
+    "repeat": "Son ödeme tarihinden önce tekrar aralığı (gün)",
+    "overdue": "Son ödeme tarihinden sonra hatırlatma aralığı (gün)",
+    "noRepeat": "Tekrar yok",
+    "orgRepeatHelp": "Boş bırakılırsa iş ortağının ayarı devralınır. İş ortağı son ödeme tarihinden önceki hatırlatmaları tekrarlıyorsa burada yalnızca bu tekrarları devre dışı bırakamazsınız; tüm hatırlatmaları durdurmak için bu kuruluşun hatırlatmalarını devre dışı bırakın.",
+    "partnerRepeatHelp": "Son ödeme tarihinden önce tek bir hatırlatma göndermek için tekrar aralığını boş bırakın. Diğer alanlar boş bırakıldığında gösterilen varsayılan değer kullanılır.",
+    "cadenceHelp": "Son ödeme tarihinde hatırlatma gönderilmez. İlk gecikme hatırlatması, son ödeme tarihinden bir gecikme aralığı sonra gönderilir. Tarih veya aralık değişiklikleri, önceden ayrılmış hatırlatmaların yeniden gönderilmesine neden olmaz.",
+    "invalid": "1 ile 31 arasında tam gün sayısı girin veya değeri devralmak için boş bırakın.",
+    "sources": {
+      "org": "kuruluş",
+      "partner": "iş ortağı varsayılanı",
+      "default": "sistem varsayılanı"
+    },
+    "save": "Ödeme ayarlarını kaydet",
+    "saving": "Kaydediliyor…",
+    "saved": "Hatırlatma ayarları kaydedildi",
+    "saveFailed": "Hatırlatma ayarları kaydedilemedi",
+    "loadFailed": "Hatırlatma ayarları yüklenemedi",
+    "retry": "Yeniden dene",
+    "loading": "Ödeme ayarları yükleniyor…",
+    "templates": {
+      "paymentReminder": "Ödeme hatırlatması",
+      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
+    }
   }
 }

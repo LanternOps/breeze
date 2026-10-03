@@ -11,7 +11,7 @@ export class AutopayEnrollmentPage extends BasePage {
   stopConfirm = () => this.page.getByTestId('autopay-stop-confirm');
   stop = () => this.page.getByTestId('autopay-stop-submit');
   feedback = () => this.page.getByTestId('autopay-feedback');
-  settings = () => this.page.getByTestId('autopay-settings');
+  settings = () => this.page.getByTestId('autopay-settings-section');
   offset = () => this.page.getByTestId('autopay-offset-days');
   async openList() { await this.page.goto('/billing/autopay'); await this.page.getByTestId('autopay-list').waitFor(); }
   async openSetup() { await this.page.goto('/portal/autopay/test-token'); await this.consent().waitFor(); }

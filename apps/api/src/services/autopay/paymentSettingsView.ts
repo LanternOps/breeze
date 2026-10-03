@@ -13,7 +13,11 @@ export async function paymentSettingsView(connection: typeof db, partnerId: stri
   const inherited:ResolvedPaymentSettings = orgId
     ? await resolveBillingPaymentSettings(connection, { partnerId })
     : { autopayOffsetDays: { value: defaults.autopayOffsetDays, source: 'default' }, autopayOffsetRule: { value: defaults.autopayOffsetRule, source: 'default' },
-        autopayCap: { value: defaults.autopayCap, source: 'default' }, achMode: { value: defaults.achMode, source: 'default' } };
+        autopayCap: { value: defaults.autopayCap, source: 'default' }, achMode: { value: defaults.achMode, source: 'default' },
+        remindersEnabled: { value: false, source: 'default' },
+        reminderBeforeDueDays: { value: 3, source: 'default' },
+        reminderRepeatDays: { value: null, source: 'default' },
+        overdueReminderEveryDays: { value: 7, source: 'default' }, };
   return {
     autopayEnabled: await isAutopayEnabledForPartner(connection, partnerId), effective, inherited,
     values: {
