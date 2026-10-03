@@ -17,6 +17,7 @@ import { TIER2_READONLY_TOOLS, checkGuardrails, isReadOnlyResolution } from '../
 import { PATCH_OUTCOME_TOOL_NAME, PATCH_TOOL_ALLOWLIST, patchToolAllowlist } from './patchProfile';
 import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS } from '@breeze/shared';
 import { outcomeToolsForProfile } from './outcomeTools';
+import { RESEARCH_TOOL_ALLOWLIST, researchToolAllowlist } from './researchProfile';
 
 const FORBIDDEN = [
   'services/aiGuardrails.ts',
@@ -178,6 +179,14 @@ describe('every run profile and schedule kind has an arm in its switch', () => {
       expect(Array.isArray(tools), profile).toBe(true);
       expect(tools.includes(PATCH_OUTCOME_TOOL_NAME as never), profile)
         .toBe(profile === 'patch');
+    }
+  });
+
+  it('remediation_research owns exactly submit_suggestions, and it is the last entry of the research floor', () => {
+    expect(outcomeToolsForProfile('remediation_research')).toEqual(['submit_suggestions']);
+    expect(researchToolAllowlist(['run_script'])).toEqual([...RESEARCH_TOOL_ALLOWLIST, 'submit_suggestions']);
+    for (const profile of AI_AGENT_RUN_PROFILES) {
+      if (profile !== 'remediation_research') expect(outcomeToolsForProfile(profile) as string[], profile).not.toContain('submit_suggestions');
     }
   });
 
