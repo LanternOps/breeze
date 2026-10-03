@@ -5,7 +5,7 @@ import path from 'path';
 export default defineConfig({
   resolve: {
     alias: {
-      '@breeze/shared': path.resolve(__dirname, '../../packages/shared/src'),
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
     },
   },
   test: {

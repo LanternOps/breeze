@@ -8,8 +8,9 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(),
-  unusable: vi.fn(), provenance: vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
+  capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
+vi.mock('../sentry', () => ({ captureException: h.capture }));
 vi.mock('../partnerStripe', () => ({ getPartnerStripeClient: client }));
 vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
   if (h.depth) throw new Error('Held DB context');
@@ -70,7 +71,7 @@ vi.mock('../../db', () => {
     try { return await fn(); } finally { h.depth--; }
   } };
 });
-import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure } from './collectionEngine';
+import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
 import { reconcilePendingControls, requestInvoiceControl } from './collectionControl';
 import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
@@ -121,7 +122,7 @@ beforeEach(() => {
   client.mockResolvedValue({ stripeAccountId: 'acct_test', stripe: { paymentMethods: { retrieve: h.retrieve },
     paymentIntents: { create: h.create, retrieve: h.piRetrieve, confirm: h.confirm, cancel: h.cancel } } });
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 it('requires actual delivery and the full ACH notice period for charge-now', () => {
   expect(collectionNoticeAllows(null, 10, new Date('2026-10-20T00:00Z'))).toBe(false);
@@ -650,4 +651,96 @@ it('finalizes pending exclusion when replaying an already canceled client attemp
   const writes = h.writes.length;
   await applyAttemptOutcome(invoice.partnerId, attempt.id);
   expect(h.writes).toHaveLength(writes);
+});
+
+
+// Intercept only the sweep projection; individual invoice admission/reservation
+// and provider processing still use the existing engine doubles above.
+function mockCollectionCandidates(candidates: (Omit<typeof schedule, 'nextAttemptAt'> & { nextAttemptAt: Date | null })[], now: Date) {
+  const originalSelect = db.select;
+  const queries: ReturnType<PgDialect['sqlToQuery']>[] = [];
+  vi.spyOn(db, 'select').mockImplementation(((projection?: Record<string, unknown>) => {
+    if (!projection || !('id' in projection && 'invoiceId' in projection)) return originalSelect(projection as never);
+    let predicate: SQL;
+    const chain = {
+      from: (table: unknown) => { expect(table).toBe(invoiceAutopaySchedules); return chain; },
+      where: (value: SQL) => { predicate = value; return chain; },
+      orderBy: (value: SQL) => {
+        expect(new PgDialect().sqlToQuery(value).sql).toBe('"invoice_autopay_schedules"."id" asc');
+        return chain;
+      },
+      limit: async (limit: number) => {
+        expect(h.depth).toBe(1); expect(limit).toBe(200);
+        const query = new PgDialect().sqlToQuery(predicate); queries.push(query);
+        expect(query.sql).toMatch(/"state" in \(\$1, \$2\)/);
+        expect(query.sql).toContain('"collect_on" <= $3');
+        expect(query.sql).toContain('("invoice_autopay_schedules"."next_attempt_at" is null or "invoice_autopay_schedules"."next_attempt_at" <= $4)');
+        expect(query.params.slice(0, 4)).toEqual(['scheduled', 'retry_scheduled', now.toISOString().slice(0, 10), now.toISOString()]);
+        const cursor = query.params[4] as string | undefined;
+        if (queries.length > 1) {
+          expect(query.sql).toContain('"id" > $5');
+          expect(cursor).toBeDefined();
+        }
+        return candidates.filter(row => ['scheduled', 'retry_scheduled'].includes(row.state)
+          && row.collectOn <= now.toISOString().slice(0, 10)
+          && (!row.nextAttemptAt || row.nextAttemptAt <= now)
+          && (!cursor || row.id > cursor)).sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
+      },
+    };
+    return chain;
+  }) as typeof db.select);
+  return queries;
+}
+
+it('selects UTC due dates and inclusive retry instants, excluding future or inactive schedules', async () => {
+  const now = new Date('2026-10-20T23:30:00-06:00'); // UTC collection date is October 21
+  const rows = [
+    { collectOn: '2026-10-20', nextAttemptAt: null },
+    { collectOn: '2026-10-21', nextAttemptAt: null },
+    { collectOn: '2026-10-21', state: 'retry_scheduled', nextAttemptAt: new Date(now.getTime() - 1) },
+    { collectOn: '2026-10-21', state: 'retry_scheduled', nextAttemptAt: now },
+    { collectOn: '2026-10-21', state: 'retry_scheduled', nextAttemptAt: new Date(now.getTime() + 1) },
+    { collectOn: '2026-10-22', nextAttemptAt: null },
+    { collectOn: '2026-10-20', state: 'collecting', nextAttemptAt: null },
+    { collectOn: '2026-10-20', state: 'requires_action', nextAttemptAt: null },
+  ].map((patch, i) => ({ ...schedule, ...patch,
+    id: `60000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+    invoiceId: `10000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}` }));
+  const queries = mockCollectionCandidates(rows, now);
+  h.revocation.mockImplementation(async () => {
+    expect(h.depth).toBe(0); return { charged: 0, blocked: 1, stillPending: 0 };
+  });
+  await expect(runAutopayCollection(now)).resolves.toEqual({ attempted: 0, deferred: 4 });
+  expect(h.revocation.mock.calls.map(([request]) => request.invoiceId)).toEqual(rows.slice(0, 4).map(row => row.invoiceId));
+  expect(queries).toHaveLength(2);
+  expect(queries[1]!.params[4]).toBe(rows[3]!.id);
+  expect(client).not.toHaveBeenCalled(); expect(h.capture).not.toHaveBeenCalled();
+});
+
+it('continues beyond 200 failed collections and counts failure, deferral, and creation once each', async () => {
+  const now = new Date('2026-10-20T00:00Z');
+  const rows = Array.from({ length: 202 }, (_, i) => ({ ...schedule,
+    id: `60000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+    invoiceId: i === 201 ? invoice.id : `10000000-0000-4000-8000-${String(i + 2).padStart(12, '0')}` }));
+  const queries = mockCollectionCandidates(rows, now);
+  recovery();
+  update(invoiceCollectionAttempts, { state: 'failed' });
+  update(invoiceAutopaySchedules, { ...schedule, id: rows[201]!.id });
+  const failure = new Error('revocation unavailable');
+  let visits = 0;
+  h.revocation.mockImplementation(async () => {
+    expect(h.depth).toBe(0); visits++;
+    if (visits <= 200) throw failure;
+    return { charged: 0, blocked: visits === 201 ? 1 : 0, stillPending: 0 };
+  });
+  // Only the final candidate reaches admission; it uses the valid invoice fixture.
+  // The call list independently proves every candidate was visited once.
+  await expect(runAutopayCollection(now)).resolves.toEqual({ attempted: 1, deferred: 201 });
+  expect(h.revocation.mock.calls.map(([request]) => request.invoiceId)).toEqual(rows.map(row => row.invoiceId));
+  expect(h.capture).toHaveBeenCalledTimes(200);
+  expect(h.capture).toHaveBeenCalledWith(failure);
+  expect(queries).toHaveLength(3);
+  expect(queries[1]!.params[4]).toBe(rows[199]!.id);
+  expect(queries[2]!.params[4]).toBe(rows[201]!.id);
+  expect(h.create).toHaveBeenCalledOnce(); expect(h.confirm).toHaveBeenCalledOnce();
 });

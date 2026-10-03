@@ -10,6 +10,9 @@ vi.mock('../db',()=>({hasDbAccessContext:()=>m.depth>0,runOutsideDbContext:async
   withSystemDbAccessContext:async(fn:()=>Promise<unknown>)=>{m.depth++;try{return await fn();}finally{m.depth--;}},
   db:{execute:m.execute,select:m.select}}));
 vi.mock('../services/partnerStripe',()=>({getPartnerStripeClient:m.client}));
+// Checkout save/enrollment is outside this orchestration test; keep its import
+// graph from initializing provider SDKs. The real settlement context guard remains.
+vi.mock('../services/autopay/payAndSave',()=>({finishCardPayAndSave:vi.fn()}));
 vi.mock('../services/stripeReconcile',()=>({recordStripePayment:vi.fn()}));
 vi.mock('../services/autopay/collectionEngine',()=>({resumeCollectionAttempt:m.resume,applyAttemptOutcome:m.apply}));
 vi.mock('../services/stripeFinancialEventPoller',()=>({pollStripeFinancialEvents:m.poll}));
