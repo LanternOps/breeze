@@ -1354,8 +1354,12 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
   it('production AADSTS50097 error redirect is a terminal provider error that binds nothing', async () => {
     const markAttemptFailed = vi.fn().mockResolvedValue(h.snapshot());
     const query = new URLSearchParams({
-      error: 'interaction_required',
-      error_description: 'AADSTS50097: Device authentication is required. Trace ID: 00000000-0000-0000-0000-000000000000 Correlation ID: 00000000-0000-0000-0000-000000000000 Timestamp: 2026-10-03 00:00:00Z',
+      // Sanitized capture of the real production redirect (2026-10-01): note admin_consent=True
+      // arrives ALONGSIDE the error and must never be read as success.
+      error: 'invalid_grant',
+      error_description: 'AADSTS50097: Device authentication is required. Trace ID: 00000000-0000-0000-0000-000000000000 Correlation ID: 00000000-0000-0000-0000-000000000000 Timestamp: 2026-10-01 17:11:50Z',
+      error_uri: 'https://login.microsoftonline.com/error?code=50097',
+      admin_consent: 'True',
       state: 'id-state',
     });
     const res = await h.app({ verifyBindingCookie: () => identityBinding(null),
@@ -1726,5 +1730,5 @@ ALTER TABLE m365_consent_sessions ALTER COLUMN flow_version SET DEFAULT 2;
 
 1. **Confirm-tenant interstitial (W3 Task 14)?** Recommend yes for `/organizations` sign-ins only — it is the only guard against a guest administrator binding their own home tenant. If no, W2's direct redirect stands and Task 14 is dropped.
 2. **Guest administrators:** offer an optional "customer tenant ID" field on Connect that pins the identity authority to that tenant (lets a guest GA authenticate as a guest of the customer tenant)? Recommend deferring until a real request; runbook + interstitial copy cover it.
-3. **AADSTS50097 fixture:** the Task 11 test uses the standard `error`/`error_description` redirect shape. If the captured production response differs (error code, or whether Microsoft redirects at all), swap the literal for the sanitized capture.
+3. **AADSTS50097 fixture:** RESOLVED — Task 11 uses the sanitized production capture (`error=invalid_grant`, `error_description=AADSTS50097…`, `error_uri`, `admin_consent=True`, `state`).
 4. **W4 timing:** one release after W2 is deployed to both regions, or bundle with the next M365 wave.
