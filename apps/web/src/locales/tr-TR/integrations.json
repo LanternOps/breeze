@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
     "showAllContacts_other": "Tüm kişileri göster ({{count}} yalnızca tedarikçi gizli)",
     "archived": "Arşivlendi"
+  },
+  "accountingFees": {
+    "title": "İşlem ücreti geliri",
+    "item": "QuickBooks işlem ücreti kalem kimliği",
+    "account": "Xero işlem ücreti gelir hesabı kodu",
+    "help": "Ücretler, aynı müşteri için ayrı ve vergiye tabi olmayan gelir kayıtlarıdır. Otomatik ödeme aktarımı ve bir ödeme veya yatırma hesabı yapılandırılmalıdır; Xero ayrıca bir vergi muafiyeti kodu gerektirir. Boş bırakılırsa ücret dışa aktarımı bir eşleme bekler. Mevcut kayıtlar özgün hedeflerini ve eşlemelerini korur.",
+    "save": "Ücret eşlemesini kaydet",
+    "saved": "İşlem ücreti eşlemesi kaydedildi",
+    "failed": "İşlem ücreti eşlemesi kaydedilemedi. İzinlerinizi kontrol edip tekrar deneyin.",
+    "attention": "İşlem ücreti muhasebesi müdahale gerektiriyor. Gelir eşlemesini ve bağlantıyı kontrol edin. Durumu belirsiz kayıtlar yeniden denenmeden önce kontrol edilir."
   }
 }

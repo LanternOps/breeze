@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Mostra tutti i contatti ({{count}} solo fornitore nascosto)",
     "showAllContacts_other": "Mostra tutti i contatti ({{count}} solo fornitori nascosti)",
     "archived": "Archiviato"
+  },
+  "accountingFees": {
+    "title": "Ricavi da commissioni di elaborazione",
+    "item": "ID articolo QuickBooks per le commissioni di elaborazione",
+    "account": "Codice conto ricavi Xero per le commissioni di elaborazione",
+    "help": "Le commissioni sono registrazioni di ricavi separate e non imponibili per lo stesso cliente. Occorre configurare l’invio automatico dei pagamenti e un conto di pagamento o deposito; Xero richiede anche un codice di esenzione fiscale. Se il campo è vuoto, l’esportazione delle commissioni resta in attesa di un’associazione. Le registrazioni esistenti mantengono la destinazione e l’associazione originali.",
+    "save": "Salva associazione delle commissioni",
+    "saved": "Associazione delle commissioni di elaborazione salvata",
+    "failed": "Impossibile salvare l’associazione delle commissioni di elaborazione. Verifica le autorizzazioni e riprova.",
+    "attention": "La contabilizzazione delle commissioni di elaborazione richiede attenzione. Verifica l’associazione dei ricavi e la connessione. Le registrazioni con stato incerto vengono controllate prima di ogni nuovo tentativo."
   }
 }

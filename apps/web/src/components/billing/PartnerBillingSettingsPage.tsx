@@ -261,7 +261,7 @@ export default function PartnerBillingSettingsPage() {
       )}
       {activeTab === 'rates' && <BillingRatesTab currencyCode={currencyCode} />}
       {activeTab === 'connections' && <BillingConnectionsTab />}
-      {activeTab === 'payments' && <PaymentsSettingsTab />}
+      {activeTab === 'payments' && <div data-testid="autopay-fee-settings-page"><PaymentsSettingsTab /></div>}
       </div>
 
       {canWrite && activeTab !== 'rates' && activeTab !== 'connections' && activeTab !== 'payments' && <div className="flex justify-end">

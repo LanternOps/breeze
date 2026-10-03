@@ -41,6 +41,8 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       invoicesWrite: true,
     },
     mocks: {
+      autopayEnabled: vi.fn(async () => true),
+      dbFeeErrorWhere: vi.fn(async () => [{n:0}]),
       getConnection: vi.fn(),
       resolveActiveConnectionRef: vi.fn(),
       getPartnerConnectionRef: vi.fn(),
@@ -103,8 +105,10 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
   };
 });
 
+vi.mock('../../services/autopay/autopayGate',()=>({isAutopayEnabledForPartner:mocks.autopayEnabled}));
 vi.mock('../../db', () => ({
   db: {
+    select:vi.fn(()=>({from:vi.fn(()=>({innerJoin:vi.fn(()=>({where:mocks.dbFeeErrorWhere}))}))})),
     update: vi.fn(() => ({
       set: vi.fn((patch: Record<string, unknown>) => {
         mocks.dbUpdateSet(patch);
@@ -284,6 +288,8 @@ describe('accounting routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.autopayEnabled.mockResolvedValue(true);
+    mocks.dbFeeErrorWhere.mockResolvedValue([{n:0}]);
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.partnerOrgAccess = 'all';
@@ -913,6 +919,70 @@ describe('accounting routes', () => {
     await expect(res.json()).resolves.toMatchObject({ error: 'MFA required' });
     expect(mocks.deleteConnection).not.toHaveBeenCalled();
   });
+
+it('writes only the supplied fee mapping and refuses the wrong provider field',async()=>{
+  mocks.providerSupports.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) || (id === 'xero' && cap === 'connect'));
+  mocks.dbUpdateReturning.mockResolvedValueOnce([{status:'connected',feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null}]);
+  const request=(provider:string,body:unknown)=>app.request(`/accounting/${provider}/settings`,{
+    method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  expect((await request('quickbooks',{feeIncomeItemRef:'fee-item'})).status).toBe(200);
+  expect(mocks.dbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({feeIncomeItemRef:'fee-item'}));
+  expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).not.toHaveProperty('pushPayments');
+  expect((await request('xero',{feeIncomeItemRef:'wrong-kind'})).status).toBe(400);
+  expect((await request('quickbooks',{feeIncomeAccountRef:'200'})).status).toBe(400);
+  expect((await request('quickbooks',{feeIncomeItemRef:'x'.repeat(65)})).status).toBe(400);
+  authState.scope='organization';
+  expect((await request('quickbooks',{feeIncomeItemRef:'fee-item'})).status).toBe(403);
+});
+
+it.each([
+  ['quickbooks',{feeIncomeItemRef:'fee-item'}],
+  ['quickbooks',{feeIncomeItemRef:null}],
+  ['xero',{feeIncomeAccountRef:'200'}],
+  ['xero',{feeIncomeAccountRef:null}],
+  ['quickbooks',{feeIncomeAccountRef:null,pushPayments:false}],
+  ['xero',{feeIncomeItemRef:null,pushMode:'manual'}],
+] as const)('refuses fee fields for %s with rollout off, including clears and mixed writes',async(provider,body)=>{
+  mocks.providerSupports.mockImplementation((id: string, cap: string) => defaultProviderSupports(id, cap) || (id === 'xero' && cap === 'connect'));
+  mocks.autopayEnabled.mockResolvedValue(false);
+  const res=await app.request(`/accounting/${provider}/settings`,{method:'PATCH',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  expect(res.status).toBe(404);
+  expect(await res.json()).toMatchObject({code:'autopay_not_enabled'});
+  expect(mocks.autopayEnabled).toHaveBeenCalledWith(expect.anything(),authState.partnerId);
+  expect(mocks.dbUpdateSet).not.toHaveBeenCalled();
+});
+it('preserves ordinary accounting settings with rollout off',async()=>{
+  mocks.autopayEnabled.mockResolvedValue(false);
+  mocks.dbUpdateReturning.mockResolvedValueOnce([{status:'connected',pushMode:'manual'}]);
+  const res=await app.request('/accounting/quickbooks/settings',{method:'PATCH',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({pushMode:'manual'})});
+  expect(res.status).toBe(200);
+  expect(mocks.dbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({pushMode:'manual'}));
+  expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).not.toHaveProperty('feeIncomeItemRef');
+  expect(mocks.dbUpdateSet.mock.calls.at(-1)![0]).not.toHaveProperty('feeIncomeAccountRef');
+});
+it.each([true,false])('projects the existing partner rollout flag %s on accounting status',async enabled=>{
+  mocks.autopayEnabled.mockResolvedValue(enabled);
+  const res=await app.request('/accounting/quickbooks');
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({autopayEnabled:enabled});
+  expect(mocks.autopayEnabled).toHaveBeenCalledWith(expect.anything(),authState.partnerId);
+});
+
+it('reports only the partner fee-error count even with no surviving connection',async()=>{
+  mocks.autopayEnabled.mockResolvedValue(false);
+  mocks.getConnection.mockResolvedValueOnce(null);
+  mocks.dbFeeErrorWhere.mockResolvedValueOnce([{n:2}]);
+  const res=await app.request('/accounting/quickbooks');
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({status:'disconnected',autopayEnabled:false,feeAccountingErrorCount:2});
+});
+it('denies selected-org callers before reading the fee-error aggregate',async()=>{
+  authState.partnerOrgAccess='selected';
+  expect((await app.request('/accounting/quickbooks')).status).toBe(403);
+  expect(mocks.dbFeeErrorWhere).not.toHaveBeenCalled();
+});
 
   describe('POST /:provider/settings/refresh', () => {
     it('refreshes and returns the realm settings, and audits the action', async () => {

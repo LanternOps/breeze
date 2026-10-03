@@ -587,12 +587,12 @@ export default function OrgBillingSettings({ orgId }: Props) {
         </div>
       </section>
 
-      {paymentSettings.view && paymentSettings.reminders && <>
+      {paymentSettings.view && paymentSettings.reminders && <div data-testid="autopay-org-fee-settings-page">
         <OrgPaymentsSettingsSection view={paymentSettings.view} setValues={paymentSettings.setValues}
           reminders={paymentSettings.reminders} setReminders={paymentSettings.setReminders}
           disabled={saving || paymentSettings.saving || !canManageAutopay} />
         {paymentSettings.view.autopayEnabled && canManageAutopay && <OrgAutopayCard orgId={orgId} />}
-      </>}
+      </div>}
 
       <div className="flex justify-end">
         <button

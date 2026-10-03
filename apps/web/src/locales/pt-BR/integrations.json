@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Mostrar todos os contatos ({{count}} apenas fornecedor oculto)",
     "showAllContacts_other": "Mostrar todos os contatos ({{count}} apenas fornecedores ocultos)",
     "archived": "Arquivado"
+  },
+  "accountingFees": {
+    "title": "Receita de taxas de processamento",
+    "item": "ID do item de taxas de processamento no QuickBooks",
+    "account": "Código da conta de receita de taxas de processamento no Xero",
+    "help": "As taxas são lançamentos de receita separados e não tributáveis para o mesmo cliente. É necessário configurar o envio automático de pagamentos e uma conta de pagamento ou depósito; o Xero também exige um código de isenção fiscal. Se o campo ficar em branco, a exportação de taxas aguardará um mapeamento. Os lançamentos existentes mantêm o destino e o mapeamento originais.",
+    "save": "Salvar mapeamento de taxas",
+    "saved": "Mapeamento de taxas de processamento salvo",
+    "failed": "Não foi possível salvar o mapeamento de taxas de processamento. Verifique suas permissões e tente novamente.",
+    "attention": "A contabilização de taxas de processamento precisa de atenção. Verifique o mapeamento de receita e a conexão. Lançamentos com status incerto são verificados antes de qualquer nova tentativa."
   }
 }
