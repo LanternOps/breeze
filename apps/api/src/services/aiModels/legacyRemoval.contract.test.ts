@@ -22,6 +22,10 @@ const ALLOWED_FILES = new Set([
   // "revoked key must not persist" behaviour until W08b drops the table.
   // W08b removes the helper and this entry.
   'apps/api/src/services/aiModels/connectionRemap.ts',
+  // CORE_NON_DRIZZLE_TABLES must name the still-existing legacy table, or the
+  // boot tripwire refuses to start the API (it has no Drizzle model any more).
+  // W08b removes the entry and this allowlist line with the table.
+  'apps/api/src/extensions/tenancyTripwire.ts',
 ]);
 
 export const DELETED_PATHS: readonly string[] = [
