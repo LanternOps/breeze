@@ -21,7 +21,7 @@ vi.mock('../../db', () => {
 });
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
-import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote } from './outcomeRecorder';
+import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote } from './outcomeRecorder';
 import { captureException } from '../sentry';
 
 // ONE top-level reset of ALL shared mock state. Every describe in this file
@@ -133,5 +133,36 @@ describe('votes and Done', () => {
     const map = await loadOutcomeSummaries(['sg-1', 'sg-2']);
     expect(map.get('sg-1')).toEqual({ state: 'holding', stateReason: 'condition_cleared', humanVote: null });
     expect(map.has('sg-2')).toBe(false);
+  });
+});
+
+describe('recordBuiltinOutcome (W2 Task 15)', () => {
+  const builtin = { id: 'sg-2', orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', alertId: 'a-1', builtinAction: 'restart_service' as const };
+  it('writes a builtin_action attempt that follows the command and aggregates by action', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    await expect(recordBuiltinOutcome({ suggestion: builtin, deviceId: 'd-1', commandId: 'cmd-1', cleanupRunId: null }))
+      .resolves.toEqual({ state: 'pending', stateReason: null, humanVote: null });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({
+      fixKind: 'builtin_action', fixIdentity: 'builtin:restart_service', builtinAction: 'restart_service',
+      actionCommandId: 'cmd-1', actionCleanupRunId: null, state: 'pending',
+    }));
+    expect(h.values.mock.calls[0]![0]).not.toHaveProperty('scriptExecutionId');
+  });
+  it('disk_cleanup carries the cleanup run id', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    await recordBuiltinOutcome({ suggestion: { ...builtin, builtinAction: 'disk_cleanup' }, deviceId: 'd-1', commandId: 'cmd-1', cleanupRunId: 'run-1' });
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ fixIdentity: 'builtin:disk_cleanup', actionCleanupRunId: 'run-1' }));
+  });
+  it('a row without a built-in action records nothing', async () => {
+    await expect(recordBuiltinOutcome({ suggestion: { ...builtin, builtinAction: null }, deviceId: 'd-1', commandId: 'cmd-1', cleanupRunId: null })).resolves.toBeNull();
+    expect(h.values).not.toHaveBeenCalled();
+  });
+  it('never throws and reports to Sentry', async () => {
+    h.rows.push([{ partnerId: 'p-1' }]);
+    h.insertThrows = true;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(recordBuiltinOutcome({ suggestion: builtin, deviceId: 'd-1', commandId: 'cmd-1', cleanupRunId: null })).resolves.toBeNull();
+    expect(captureException).toHaveBeenCalled();
+    err.mockRestore();
   });
 });

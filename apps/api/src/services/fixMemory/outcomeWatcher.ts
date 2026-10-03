@@ -22,7 +22,7 @@ import { and, asc, eq, gt, isNotNull, lte, ne, or, sql, type SQL } from 'drizzle
 import { FIX_OUTCOME_WINDOWS, isFixOutcomeTerminal, type FixOutcomeState } from '@breeze/shared';
 import { db } from '../../db';
 import {
-  alerts, deviceCommands, devices, fixOutcomes, metricAnomalies, metricAnomalyEpisodes, scriptExecutions, type FixOutcomeRow,
+  alerts, deviceCommands, deviceFilesystemCleanupRuns, devices, fixOutcomes, metricAnomalies, metricAnomalyEpisodes, scriptExecutions, type FixOutcomeRow,
 } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import {
@@ -177,6 +177,34 @@ async function readScript(executionId: string | null, deviceId: string): Promise
  * it was written with (scriptDispatch sets it from a JS Date), so it compares
  * directly with the timestamptz recovery times.
  */
+/** device_commands.status → the pending decision's reading (W2 built-ins). */
+export function readingFromCommand(status: string | null): ScriptReading | null {
+  if (!status) return null;
+  if (status === 'completed') return { status: 'completed', exitCode: 0 };
+  if (status === 'failed' || status === 'timeout' || status === 'cancelled') return { status, exitCode: null };
+  return { status: 'running', exitCode: null }; // pending / sent: not finished yet
+}
+
+/** OS-native cleanup run status (filesystem_cleanup_run_status enum). */
+export function readingFromCleanupRun(status: string | null, _error: string | null): ScriptReading | null {
+  if (!status) return null;
+  if (status === 'executed') return { status: 'completed', exitCode: 0 };
+  if (status === 'failed') return { status: 'failed', exitCode: null };
+  return { status: 'running', exitCode: null };
+}
+
+/** A built-in attempt follows its queued command, or the cleanup run for disk_cleanup. */
+async function readActionReading(row: FixOutcomeRow): Promise<ScriptReading | null> {
+  if (row.actionCleanupRunId) {
+    const [run] = await db.select({ status: deviceFilesystemCleanupRuns.status, error: deviceFilesystemCleanupRuns.error })
+      .from(deviceFilesystemCleanupRuns).where(eq(deviceFilesystemCleanupRuns.id, row.actionCleanupRunId)).limit(1);
+    return readingFromCleanupRun(run?.status ?? null, run?.error ?? null);
+  }
+  const [cmd] = await db.select({ status: deviceCommands.status }).from(deviceCommands)
+    .where(and(eq(deviceCommands.id, row.actionCommandId!), eq(deviceCommands.deviceId, row.deviceId))).limit(1);
+  return readingFromCommand(cmd?.status ?? null);
+}
+
 async function readScriptStartedAt(executionId: string | null): Promise<Date | null> {
   if (!executionId) return null;
   const [s] = await db.select({ startedAt: scriptExecutions.startedAt })
@@ -310,7 +338,11 @@ async function decide(
 ): Promise<OutcomeTransition | null> {
   if (row.state === 'pending') {
     if (moved) return { to: 'cancelled', reason: 'device_moved' };
-    return decidePending({ script: overrides.script ?? await readScript(row.scriptExecutionId, row.deviceId), deadlineAt: row.deadlineAt, now });
+    const script = overrides.script
+      ?? (row.actionCommandId || row.actionCleanupRunId
+        ? await readActionReading(row)
+        : await readScript(row.scriptExecutionId, row.deviceId));
+    return decidePending({ script, deadlineAt: row.deadlineAt, now });
   }
   if (row.state === 'awaiting_recovery') {
     const reading: RecoveryReading = moved ? { kind: 'device_moved' } : await readRecovery(row, overrides.alert);

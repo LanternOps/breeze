@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { aiAgentRuns, aiAgents, alerts, devices, scripts } from '../../db/schema';
+import {
+  aiAgentRuns, aiAgents, alerts, deviceCommands, deviceFilesystemCleanupRuns, devices, fixOutcomes, remediationSuggestions, scripts,
+} from '../../db/schema';
+import { advanceOutcome } from '../../services/fixMemory/outcomeWatcher';
+import { recordBuiltinOutcome } from '../../services/fixMemory/outcomeRecorder';
 import { handleAlertTriggeredForFixMemory } from '../../services/fixMemory/attach';
 import { requestResearch } from '../../services/fixMemory/research';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
@@ -226,5 +230,77 @@ describe('requestResearch (real Postgres)', () => {
     expect(result).toMatchObject({ status: 'denied', code: 'source_not_found' });
     const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, a.orgId)));
     expect(runs).toHaveLength(0);
+  });
+});
+
+describe('built-in attempts follow their command or cleanup run (real Postgres, W2 Task 15)', () => {
+  async function fixture() {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const [device] = await withSystemDbAccessContext(() => db.insert(devices).values({
+      orgId: org.id, siteId: site.id, agentId: randomUUID(), hostname: 'WS-B', osType: 'windows', osVersion: '11',
+      architecture: 'x86_64', agentVersion: '0.0.0-test', status: 'online',
+    }).returning({ id: devices.id }));
+    const [alert] = await withSystemDbAccessContext(() => db.insert(alerts).values({
+      orgId: org.id, deviceId: device!.id, severity: 'high', title: 'exit 3',
+      context: { source: 'script_exit_code', scriptId: randomUUID(), exitCode: 3 },
+    }).returning({ id: alerts.id }));
+    return { partner, org, device: device!, alert: alert! };
+  }
+  type Fx = Awaited<ReturnType<typeof fixture>>;
+  const outcome = (fx: Fx, extra: Record<string, unknown>) => withSystemDbAccessContext(async () => {
+    const [o] = await db.insert(fixOutcomes).values({
+      orgId: fx.org.id, partnerId: fx.partner.id, deviceId: fx.device.id, sourceType: 'alert', sourceId: fx.alert.id, alertId: fx.alert.id,
+      fixKind: 'builtin_action', state: 'pending', deadlineAt: new Date(Date.now() + 86_400_000), ...extra,
+    } as never).returning({ id: fixOutcomes.id });
+    return o!.id;
+  });
+
+  it('a completed restart_service command moves the attempt to awaiting_recovery; failed counts as failed; sent stays pending', async () => {
+    const fx = await fixture();
+    const mk = async (status: string) => {
+      const [cmd] = await withSystemDbAccessContext(() => db.insert(deviceCommands)
+        .values({ deviceId: fx.device.id, type: 'restart_service', payload: { name: 'Spooler' }, status } as never)
+        .returning({ id: deviceCommands.id }));
+      return outcome(fx, { fixIdentity: 'builtin:restart_service', builtinAction: 'restart_service', actionCommandId: cmd!.id });
+    };
+    expect(await advanceOutcome(await mk('completed'))).toBe('awaiting_recovery');
+    expect(await advanceOutcome(await mk('failed'))).toBe('failed');
+    expect(await advanceOutcome(await mk('sent'))).toBe('pending');
+  });
+
+  it('a disk_cleanup attempt follows the cleanup run row, not the command', async () => {
+    const fx = await fixture();
+    const mk = async (status: 'executed' | 'failed' | 'running') => {
+      const [run] = await withSystemDbAccessContext(() => db.insert(deviceFilesystemCleanupRuns)
+        .values({ deviceId: fx.device.id, orgId: fx.org.id, status } as never).returning({ id: deviceFilesystemCleanupRuns.id }));
+      return outcome(fx, { fixIdentity: 'builtin:disk_cleanup', builtinAction: 'disk_cleanup', actionCommandId: randomUUID(), actionCleanupRunId: run!.id });
+    };
+    expect(await advanceOutcome(await mk('executed'))).toBe('awaiting_recovery');
+    expect(await advanceOutcome(await mk('failed'))).toBe('failed');
+    expect(await advanceOutcome(await mk('running'))).toBe('pending');
+  });
+
+  it('recordBuiltinOutcome writes one pending builtin_action row per suggestion (idempotent), partner-owned by the org', async () => {
+    const fx = await fixture();
+    const [sg] = await withSystemDbAccessContext(() => db.insert(remediationSuggestions).values({
+      orgId: fx.org.id, sourceType: 'alert', sourceId: fx.alert.id, alertId: fx.alert.id, deviceId: fx.device.id,
+      targetDeviceIds: [fx.device.id], targetType: 'builtin_action', builtinAction: 'restart_service', title: 'Restart spooler',
+      rationale: 'r', expectedAction: 'e', status: 'executed', parameters: { serviceName: 'Spooler' },
+    } as never).returning());
+    const [cmd] = await withSystemDbAccessContext(() => db.insert(deviceCommands)
+      .values({ deviceId: fx.device.id, type: 'restart_service', payload: { name: 'Spooler' }, status: 'sent' } as never)
+      .returning({ id: deviceCommands.id }));
+    const input = { suggestion: sg!, deviceId: fx.device.id, commandId: cmd!.id, cleanupRunId: null };
+    const first = await withSystemDbAccessContext(() => recordBuiltinOutcome(input));
+    expect(first).toEqual({ state: 'pending', stateReason: null, humanVote: null });
+    await withSystemDbAccessContext(() => recordBuiltinOutcome(input));
+    const rows = await withSystemDbAccessContext(() => db.select().from(fixOutcomes).where(eq(fixOutcomes.suggestionId, sg!.id)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      fixKind: 'builtin_action', fixIdentity: 'builtin:restart_service', builtinAction: 'restart_service',
+      actionCommandId: cmd!.id, actionCleanupRunId: null, partnerId: fx.partner.id, scriptExecutionId: null, state: 'pending',
+    });
   });
 });

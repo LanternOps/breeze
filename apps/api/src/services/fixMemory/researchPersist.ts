@@ -11,6 +11,7 @@ import type { ResearchOutcome, ResearchSuggestionItem } from '@breeze/shared';
 import { db } from '../../db';
 import { remediationSuggestions } from '../../db/schema';
 import type { ResearchRunContext } from '../aiAgents/researchContext';
+import { clampBuiltinRisk } from './builtinRisk';
 import { researchItemParameters } from './researchParameters';
 
 export interface PersistResearchInput { runId: string; orgId: string; research: ResearchRunContext; outcome: ResearchOutcome }
@@ -57,6 +58,7 @@ export function suggestionValuesFor(input: PersistResearchInput, item: ResearchS
     case 'builtin_action':
       return {
         ...common, targetType: 'builtin_action', builtinAction: item.action,
+        riskTier: clampBuiltinRisk(item.action, item.riskTier),
         expectedAction: `Run the built-in ${item.action.replace('_', ' ')} action on this device.`,
       };
     case 'manual_steps':

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AI_AGENT_KINDS, AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_POLICY_SNAPSHOT_VERSION, AI_AGENT_RUN_PROFILES,
-  RESEARCH_BUILTIN_ACTIONS, RESEARCH_EDITABLE_LIMIT_KEYS, aiAgentLimitsPatchSchema, allowedModesForKind,
+  RESEARCH_BUILTIN_ACTIONS, RESEARCH_BUILTIN_PARAM_SCHEMAS, RESEARCH_EDITABLE_LIMIT_KEYS, aiAgentLimitsPatchSchema, allowedModesForKind,
   createAiAgentSchema, researchSubmissionSchema,
 } from '../index';
 
@@ -75,5 +75,15 @@ describe('researchSubmissionSchema', () => {
 
   it('an empty item list is valid (no safe fix)', () => {
     expect(researchSubmissionSchema.parse({ summary: 'Nothing safe to suggest.', items: [] }).items).toEqual([]);
+  });
+});
+
+describe('RESEARCH_BUILTIN_PARAM_SCHEMAS', () => {
+  it('has one strict schema per built-in action', () => {
+    expect(Object.keys(RESEARCH_BUILTIN_PARAM_SCHEMAS).sort()).toEqual([...RESEARCH_BUILTIN_ACTIONS].sort());
+    expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.reboot.safeParse({ force: true }).success).toBe(false);
+    expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.restart_service.safeParse({ serviceName: 'Spooler' }).success).toBe(true);
+    expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.restart_service.safeParse({ serviceName: '' }).success).toBe(false);
+    expect(RESEARCH_BUILTIN_PARAM_SCHEMAS.disk_cleanup.safeParse({ actionIds: [] }).success).toBe(false);
   });
 });

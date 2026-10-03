@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
@@ -13,9 +13,10 @@ import { canAccessSite, hasPermission, PERMISSIONS, type UserPermissions } from 
 import { executeScriptOnDevices } from '../services/scriptExecution';
 import { requestResearch, researchSourceDeviceId, researchStatusForSource } from '../services/fixMemory/research';
 import { lookupFixes } from '../services/fixMemory/lookup';
+import { dispatchBuiltinAction } from '../services/fixMemory/builtinActions';
 import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
-import { createManualStepsOutcome, loadOutcomeSummaries, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
+import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
 
@@ -98,7 +99,9 @@ function remediationFeedbackDedupeKey(input: {
   toolExecutionId?: string | null;
   scriptExecutionId?: string | null;
   playbookExecutionId?: string | null;
+  actionCommandId?: string | null;
 }): string {
+  if (input.actionCommandId) return `${input.status}:command:${input.actionCommandId}`;
   if (input.scriptExecutionId) return `${input.status}:script:${input.scriptExecutionId}`;
   if (input.playbookExecutionId) return `${input.status}:playbook:${input.playbookExecutionId}`;
   if (input.toolExecutionId) return `${input.status}:tool:${input.toolExecutionId}`;
@@ -313,6 +316,8 @@ function serializeSuggestion(row: typeof remediationSuggestions.$inferSelect, ou
     rejectedAt: row.rejectedAt?.toISOString() ?? null,
     executedAt: row.executedAt?.toISOString() ?? null,
     origin: row.origin,
+    builtinAction: row.builtinAction,
+    agentRunId: row.agentRunId,
     outcome,
   };
 }
@@ -866,8 +871,9 @@ remediationSuggestionRoutes.post(
     if (!requiresExecutionApproval(existing.riskTier)) {
       return c.json({ error: 'Only high-risk remediation suggestions require elevation approval' }, 400);
     }
-    if (existing.targetType !== 'script' || !existing.scriptId) {
-      return c.json({ error: 'Only script remediation suggestions can request elevation approval' }, 400);
+    const isBuiltin = existing.targetType === 'builtin_action' && Boolean(existing.builtinAction);
+    if (!isBuiltin && (existing.targetType !== 'script' || !existing.scriptId)) {
+      return c.json({ error: 'Only script or built-in action suggestions can request elevation approval' }, 400);
     }
 
     const deviceId = singleTargetDeviceId(existing);
@@ -911,7 +917,7 @@ remediationSuggestionRoutes.post(
         flowType: 'tech_jit_admin',
         subjectUserId: auth.user.id,
         subjectUsername: auth.user.email ?? auth.user.name ?? auth.user.id,
-        reason: `Remediation suggestion "${existing.title}" requires approval before script execution`,
+        reason: `Remediation suggestion "${existing.title}" requires approval before it runs`,
         status: 'pending',
         requestedAt: now,
         riskTier,
@@ -921,6 +927,7 @@ remediationSuggestionRoutes.post(
           sourceType: existing.sourceType,
           sourceId: existing.sourceId,
           scriptId: existing.scriptId,
+          builtinAction: existing.builtinAction,
           riskTier: existing.riskTier,
         },
       })
@@ -946,6 +953,7 @@ remediationSuggestionRoutes.post(
         sourceType: existing.sourceType,
         sourceId: existing.sourceId,
         scriptId: existing.scriptId,
+        builtinAction: existing.builtinAction,
       },
       occurredAt: now,
     });
@@ -989,6 +997,103 @@ remediationSuggestionRoutes.post(
     }, 201);
   }
 );
+
+/**
+ * /execute for a built-in action (W2). Same three phases as the script path
+ * (the route is self-managed, #7109): the gate already ran in a short context;
+ * the dispatch holds NO context (dispatchBuiltinAction pins the org with
+ * expectedOrgId and escapes any context itself); the link + outcome record run
+ * in a second short context. A refused dispatch returns before phase 3, so it
+ * leaves the suggestion accepted and writes no fix_outcomes row.
+ */
+async function runBuiltinExecution(
+  c: Context,
+  auth: AuthContext,
+  gate: {
+    existing: typeof remediationSuggestions.$inferSelect;
+    deviceId: string;
+    builtinAction: NonNullable<(typeof remediationSuggestions.$inferSelect)['builtinAction']>;
+    device: { id: string; orgId: string; osType: string; agentVersion: string | null; status: string };
+  },
+) {
+  const { existing, deviceId, builtinAction, device } = gate;
+  const dispatched = await dispatchBuiltinAction({
+    action: builtinAction,
+    parameters: existing.parameters,
+    device,
+    userId: auth.user.id,
+  });
+  if (!dispatched.ok) {
+    return c.json({ error: dispatched.error }, dispatched.status);
+  }
+
+  // The command is already sent: a failure below leaves it unlinked, exactly as
+  // on the script path.
+  const phase3 = await withAuthDbAccessContext(auth, async () => {
+    const now = new Date();
+    const [row] = await db
+      .update(remediationSuggestions)
+      .set({ status: 'executed', executedBy: auth.user.id, executedAt: now, updatedAt: now })
+      .where(eq(remediationSuggestions.id, existing.id))
+      .returning();
+    if (!row) return undefined;
+
+    await emitRemediationSuggestionFeedback({
+      orgId: row.orgId,
+      suggestionId: row.id,
+      eventType: 'suggestion.executed',
+      dedupeKey: remediationFeedbackDedupeKey({ status: 'executed', actionCommandId: dispatched.commandId }),
+      outcome: 'executed',
+      actorUserId: auth.user.id,
+      metadata: {
+        route: 'remediation_suggestions.execute',
+        sourceType: row.sourceType,
+        sourceId: row.sourceId,
+        targetType: row.targetType,
+        builtinAction: row.builtinAction,
+        actionCommandId: dispatched.commandId,
+        elevationRequestId: row.elevationRequestId,
+        riskTier: row.riskTier,
+      },
+    });
+
+    // SAVEPOINT + never throws, like the script path's recorder.
+    const outcome = await recordBuiltinOutcome({
+      suggestion: row,
+      deviceId,
+      commandId: dispatched.commandId,
+      cleanupRunId: dispatched.cleanupRunId,
+    });
+    return { row, outcome };
+  });
+  if (!phase3) {
+    return c.json({ error: 'Failed to update suggestion' }, 500);
+  }
+  const { row: updated, outcome } = phase3;
+
+  writeRouteAudit(c, {
+    orgId: updated.orgId,
+    action: 'ml.remediation_suggestion.execute',
+    resourceType: 'remediation_suggestion',
+    resourceId: updated.id,
+    resourceName: updated.title,
+    details: {
+      sourceType: updated.sourceType,
+      sourceId: updated.sourceId,
+      targetType: 'builtin_action',
+      builtinAction: updated.builtinAction,
+      commandId: dispatched.commandId,
+      cleanupRunId: dispatched.cleanupRunId,
+      elevationRequestId: updated.elevationRequestId,
+      riskTier: updated.riskTier,
+    },
+  });
+
+  return c.json({
+    data: serializeSuggestion(updated, outcome),
+    execution: { commandId: dispatched.commandId, cleanupRunId: dispatched.cleanupRunId },
+  }, 201);
+}
 
 remediationSuggestionRoutes.post(
   '/:id/execute',
@@ -1034,8 +1139,37 @@ remediationSuggestionRoutes.post(
       if (existing.scriptExecutionId) {
         return { ok: false as const, error: 'Suggestion already has a linked script execution', status: 409 as const };
       }
+      if (existing.targetType === 'builtin_action') {
+        // W2: a built-in needs devices:execute on top of the route's scripts:execute.
+        if (!perms || !hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)) {
+          return { ok: false as const, error: 'Running a built-in action requires permission to execute on devices', status: 403 as const };
+        }
+        const builtinDeviceId = singleTargetDeviceId(existing);
+        if (!builtinDeviceId || !existing.builtinAction) {
+          return { ok: false as const, error: 'A built-in action needs exactly one target device', status: 400 as const };
+        }
+        const builtinApprovalError = await validateRemediationExecutionApproval(existing, builtinDeviceId);
+        if (builtinApprovalError) {
+          return { ok: false as const, error: builtinApprovalError, status: 403 as const };
+        }
+        const [device] = await db
+          .select({
+            id: devices.id, orgId: devices.orgId, siteId: devices.siteId,
+            osType: devices.osType, agentVersion: devices.agentVersion, status: devices.status,
+          })
+          .from(devices)
+          .where(and(eq(devices.id, builtinDeviceId), eq(devices.orgId, existing.orgId)))
+          .limit(1);
+        if (!device || (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId))) {
+          return { ok: false as const, error: 'Device not found or access denied', status: 404 as const };
+        }
+        return {
+          ok: true as const, kind: 'builtin' as const, existing, deviceId: builtinDeviceId,
+          builtinAction: existing.builtinAction, device,
+        };
+      }
       if (existing.targetType !== 'script' || !existing.scriptId) {
-        return { ok: false as const, error: 'Only script remediation suggestions can be executed', status: 400 as const };
+        return { ok: false as const, error: 'Only script or built-in action suggestions can be executed', status: 400 as const };
       }
 
       const deviceId = singleTargetDeviceId(existing);
@@ -1047,10 +1181,13 @@ remediationSuggestionRoutes.post(
       if (approvalError) {
         return { ok: false as const, error: approvalError, status: 403 as const };
       }
-      return { ok: true as const, existing, scriptId: existing.scriptId, deviceId };
+      return { ok: true as const, kind: 'script' as const, existing, scriptId: existing.scriptId, deviceId };
     });
     if (!gate.ok) {
       return c.json({ error: gate.error }, gate.status);
+    }
+    if (gate.kind === 'builtin') {
+      return runBuiltinExecution(c, auth, gate);
     }
     const { existing, scriptId, deviceId } = gate;
 

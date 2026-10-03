@@ -13,6 +13,8 @@ const dbMocks = vi.hoisted(() => ({
   lookupMock: vi.fn(),
   emitFeedbackMock: vi.fn(),
   executeScriptOnDevicesMock: vi.fn(),
+  dispatchBuiltinMock: vi.fn(),
+  recordBuiltinMock: vi.fn(),
   recordOutcomeMock: vi.fn(async () => ({ state: 'pending', stateReason: null, humanVote: null })),
   recordVoteMock: vi.fn(),
   createDoneMock: vi.fn(),
@@ -129,7 +131,12 @@ vi.mock('../services/scriptExecution', () => ({
   executeScriptOnDevices: dbMocks.executeScriptOnDevicesMock,
 }));
 
+vi.mock('../services/fixMemory/builtinActions', () => ({
+  dispatchBuiltinAction: dbMocks.dispatchBuiltinMock,
+  clampBuiltinRisk: (_a: string, r: string) => r,
+}));
 vi.mock('../services/fixMemory/outcomeRecorder', () => ({
+  recordBuiltinOutcome: dbMocks.recordBuiltinMock,
   recordExecutionOutcome: dbMocks.recordOutcomeMock,
   recordOutcomeVote: dbMocks.recordVoteMock,
   createManualStepsOutcome: dbMocks.createDoneMock,
@@ -616,6 +623,114 @@ describe('remediation suggestion routes', () => {
     expect(body.error).toBe('Execution statuses must be set through the dedicated remediation execution rail');
     expect(dbMocks.updateMock).not.toHaveBeenCalled();
     expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  describe('built-in execute (W2 Task 15)', () => {
+    const builtinRow = {
+      ...baseSuggestion, targetType: 'builtin_action', builtinAction: 'restart_service', scriptId: null,
+      status: 'accepted', riskTier: 'medium', parameters: { serviceName: 'Spooler' },
+    };
+    const run = () => app.request(`/remediation-suggestions/${builtinRow.id}/execute`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+    const withDevicesExecute = () => { currentPermissions = { permissions: [{ resource: 'devices', action: 'execute' }] }; };
+    const deviceRow = { id: builtinRow.deviceId, orgId: builtinRow.orgId, siteId: '99999999-9999-4999-8999-999999999999', osType: 'windows', agentVersion: '1.0.0', status: 'online' };
+    const phase3Row = { ...builtinRow, status: 'executed', executedBy: 'user-1', executedAt: new Date('2026-06-18T12:10:00.000Z') };
+    const mockPhase3 = (depths?: Record<string, number>) => {
+      dbMocks.updateMock.mockImplementationOnce(() => {
+        if (depths) depths.update = dbMocks.dbContextState.depth;
+        return { set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([phase3Row]) }) }) };
+      });
+    };
+
+    it('needs devices:execute on top of scripts:execute', async () => {
+      mockSuggestionLoad(builtinRow);
+      currentPermissions = { permissions: [{ resource: 'scripts', action: 'execute' }] };
+      const res = await run();
+      expect(res.status).toBe(403);
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('dispatches outside any db context, then marks executed and records the attempt inside one', async () => {
+      withDevicesExecute();
+      const depths: Record<string, number> = {};
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      dbMocks.dispatchBuiltinMock.mockImplementationOnce(async () => {
+        depths.dispatch = dbMocks.dbContextState.depth;
+        return { ok: true, commandId: 'cmd-1', cleanupRunId: null };
+      });
+      mockPhase3(depths);
+      dbMocks.recordBuiltinMock.mockImplementationOnce(async () => {
+        depths.record = dbMocks.dbContextState.depth;
+        return { state: 'pending', stateReason: null, humanVote: null };
+      });
+      const res = await run();
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.data).toMatchObject({ status: 'executed', builtinAction: 'restart_service', outcome: { state: 'pending' } });
+      expect(body.execution).toEqual({ commandId: 'cmd-1', cleanupRunId: null });
+      expect(dbMocks.dispatchBuiltinMock).toHaveBeenCalledWith({
+        action: 'restart_service', parameters: { serviceName: 'Spooler' }, device: expect.objectContaining({ id: builtinRow.deviceId, osType: 'windows' }), userId: 'user-1',
+      });
+      expect(dbMocks.recordBuiltinMock).toHaveBeenCalledWith({
+        suggestion: expect.objectContaining({ id: builtinRow.id }), deviceId: builtinRow.deviceId, commandId: 'cmd-1', cleanupRunId: null,
+      });
+      expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: 'executed:command:cmd-1' }));
+      // The three-phase contract: nothing held across dispatch; link + record share phase 3's context.
+      expect(depths.dispatch).toBe(0);
+      expect(depths.update).toBeGreaterThan(0);
+      expect(depths.record).toBeGreaterThan(0);
+    });
+
+    it('surfaces a dispatch refusal with its status and code, and records nothing', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      dbMocks.dispatchBuiltinMock.mockResolvedValueOnce({ ok: false, status: 409, error: 'process_ambiguous' });
+      const res = await run();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'process_ambiguous' });
+      expect(dbMocks.updateMock).not.toHaveBeenCalled();
+      expect(dbMocks.recordBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('a high-risk built-in (reboot) still requires an approved elevation', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad({ ...builtinRow, builtinAction: 'reboot', parameters: {}, riskTier: 'high', elevationRequestId: null });
+      const res = await run();
+      expect(res.status).toBe(403);
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('a device the caller cannot reach is a 404 and nothing is dispatched', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad(builtinRow);
+      mockSelectOnce([]);
+      const res = await run();
+      expect(res.status).toBe(404);
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('an already-executed suggestion is refused before dispatch', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad({ ...builtinRow, status: 'executed' });
+      const res = await run();
+      expect(res.status).toBe(400);
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts a built-in row for an elevation request', async () => {
+      mockSuggestionLoad({ ...builtinRow, builtinAction: 'reboot', riskTier: 'high', elevationRequestId: null, parameters: {} });
+      mockDeviceLoad();
+      const { values: insertValues } = mockInsertReturning({ id: 'el-1', status: 'pending', expiresAt: null });
+      mockInsertValuesOnly();
+      dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...builtinRow, riskTier: 'high', elevationRequestId: 'el-1', updatedAt: new Date(), createdAt: new Date() }]) }) }) });
+      const res = await app.request(`/remediation-suggestions/${builtinRow.id}/elevation-request`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+        reason: expect.stringContaining('requires approval before it runs'),
+        metadata: expect.objectContaining({ builtinAction: 'reboot' }),
+      }));
+    });
   });
 
   it('executes accepted script suggestions through the server-side script rail', async () => {

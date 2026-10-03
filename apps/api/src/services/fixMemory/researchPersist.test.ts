@@ -34,6 +34,13 @@ describe('research persistence', () => {
     expect(suggestionValuesFor(input([]), item as never, 1)).toMatchObject(expected);
   });
 
+  it('clamps a built-in to its risk floor (a model-picked "low" reboot still needs approval)', () => {
+    expect(suggestionValuesFor(input([]), { kind: 'builtin_action', action: 'reboot', params: {}, ...base, riskTier: 'low' } as never, 0))
+      .toMatchObject({ riskTier: 'high' });
+    expect(suggestionValuesFor(input([]), { kind: 'builtin_action', action: 'disk_cleanup', params: { actionIds: ['x'] }, ...base, riskTier: 'low' } as never, 0))
+      .toMatchObject({ riskTier: 'low' });
+  });
+
   it('inserts one row per accepted item, idempotently (conflicts are no-ops)', async () => {
     h.returning.push([{ id: 'r1' }], []);
     const out = await persistResearchSuggestions(input([
