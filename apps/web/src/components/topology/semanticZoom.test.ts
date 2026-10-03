@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, summarySlot } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('switches to summaries below the enter zoom and back to tiles above the exit zoom', () => {
@@ -82,5 +82,13 @@ describe('canvasFillHeight', () => {
   it('never goes below the minimum, so a tall header or a short window still gets a usable map', () => {
     expect(canvasFillHeight({ viewportHeight: 1000, canvasTop: 539, bottomGap: 24 })).toBe(480);
     expect(canvasFillHeight({ viewportHeight: 700, canvasTop: 600, bottomGap: 16, min: 360 })).toBe(360);
+  });
+});
+
+describe('summarySlot', () => {
+  it('is the on-screen part of the card, so a summary pinned to its top stays in view when the card top scrolls off', () => {
+    expect(summarySlot({ x1: 100, y1: 50, x2: 900, y2: 600 }, 1200, 700)).toEqual({ x: 100, y: 50, width: 800, height: 550 });
+    expect(summarySlot({ x1: -200, y1: -300, x2: 900, y2: 600 }, 1200, 700)).toEqual({ x: 0, y: 0, width: 900, height: 600 });
+    expect(summarySlot({ x1: 1300, y1: 50, x2: 1500, y2: 600 }, 1200, 700)).toBeNull();
   });
 });

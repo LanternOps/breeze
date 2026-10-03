@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { canvasFillHeight, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, type Bounds, type ZoomTier } from './semanticZoom';
+import { canvasFillHeight, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 import NodeChipOverlay, { type NodeChip } from './NodeChipOverlay';
 
@@ -257,17 +257,17 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         overlay.current?.querySelectorAll<HTMLElement>('[data-card-id]').forEach((box) => {
           const card = renderer.getElementById(box.dataset.cardId!);
           if (!card.length) { box.style.display = 'none'; return; }
-          // Centred in the part of the card that is on screen, so panning a big card never loses its summary.
-          const bb = card.renderedBoundingBox({ includeLabels: false });
-          const x1 = Math.max(bb.x1, 0), y1 = Math.max(bb.y1, 0), x2 = Math.min(bb.x2, width), y2 = Math.min(bb.y2, height);
-          if (x2 <= x1 || y2 <= y1) { box.style.display = 'none'; return; }
+          // Pinned to the top of the on-screen part of the card (summarySlot), so it sits where the title was
+          // and panning a big card never loses it.
+          const slot = summarySlot(card.renderedBoundingBox({ includeLabels: false }), width, height);
+          if (!slot) { box.style.display = 'none'; return; }
           box.style.display = '';
-          box.style.transform = `translate(${x1}px, ${y1}px)`;
-          box.style.width = `${x2 - x1}px`; box.style.height = `${y2 - y1}px`;
-          box.dataset.density = summaryDensity(x2 - x1, y2 - y1);
+          box.style.transform = `translate(${slot.x}px, ${slot.y}px)`;
+          box.style.width = `${slot.width}px`; box.style.height = `${slot.height}px`;
+          box.dataset.density = summaryDensity(slot.width, slot.height);
           // A small card's summary shrinks to fit (to a legible floor), then overhangs its receded box.
           const panel = box.querySelector<HTMLElement>('button');
-          if (panel) panel.style.transform = `scale(${summaryScale(panel.offsetWidth, panel.offsetHeight, x2 - x1, y2 - y1)})`;
+          if (panel) panel.style.transform = `scale(${summaryScale(panel.offsetWidth, panel.offsetHeight, slot.width, slot.height)})`;
         });
         // Each chip sits centred on its node and at least as large as it, so the node's edges meet the chip.
         chipLayer.current?.querySelectorAll<HTMLElement>('[data-node-id]').forEach((box) => {

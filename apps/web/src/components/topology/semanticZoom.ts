@@ -85,3 +85,13 @@ export function summaryScale(panelW: number, panelH: number, boxW: number, boxH:
 export function canvasFillHeight({ viewportHeight, canvasTop, bottomGap, min = 480 }: { viewportHeight: number; canvasTop: number; bottomGap: number; min?: number }): number {
   return Math.max(min, Math.floor(viewportHeight - canvasTop - bottomGap));
 }
+
+/**
+ * Where a card's summary may sit: the part of the card's drawn box that is on screen (null when none
+ * is). The overlay pins the summary to the top of this slot, horizontally centred, so it sits where
+ * the card title was and stays in view when the card's top is scrolled off.
+ */
+export function summarySlot(box: { x1: number; y1: number; x2: number; y2: number }, width: number, height: number) {
+  const x1 = Math.max(box.x1, 0), y1 = Math.max(box.y1, 0), x2 = Math.min(box.x2, width), y2 = Math.min(box.y2, height);
+  return x2 > x1 && y2 > y1 ? { x: x1, y: y1, width: x2 - x1, height: y2 - y1 } : null;
+}
