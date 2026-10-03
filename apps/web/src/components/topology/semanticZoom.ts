@@ -98,14 +98,14 @@ export function summarySlot(box: { x1: number; y1: number; x2: number; y2: numbe
 
 /**
  * How much each zoomed-out node chip shows (NodeChipOverlay). `full`: glyph, label and detail;
- * `compact` (icon plus address) once the node itself draws narrower than 120px; `icon` only as a
+ * `compact` (icon plus address) once the node itself draws narrower than 64px; `icon` only as a
  * last resort. Chips that would overlap (with an 8px margin) both step down until they clear, so on a
  * narrow screen two gateways never print over each other. A chip is never smaller than its node.
  */
 export type ChipMode = 'full' | 'compact' | 'icon';
 export function chipModes(chips: readonly { id: string; x: number; y: number; nodeW: number; nodeH: number; fullW: number; compactW: number }[]): Map<string, ChipMode> {
   const order: ChipMode[] = ['full', 'compact', 'icon'];
-  const mode = new Map(chips.map((chip) => [chip.id, (chip.nodeW < 120 ? 'compact' : 'full') as ChipMode]));
+  const mode = new Map(chips.map((chip) => [chip.id, (chip.nodeW < 64 ? 'compact' : 'full') as ChipMode]));
   const size = (chip: typeof chips[number]) => {
     const m = mode.get(chip.id)!;
     return { w: Math.max(chip.nodeW, m === 'full' ? chip.fullW : m === 'compact' ? chip.compactW : 34), h: Math.max(chip.nodeH, m === 'full' ? 44 : 32) };

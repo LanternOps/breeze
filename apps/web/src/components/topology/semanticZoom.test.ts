@@ -101,6 +101,8 @@ describe('chipModes', () => {
   });
   it('uses the compact chip (icon and address) when the node draws very small', () => {
     expect(chipModes([chip('a', 100, 36), chip('b', 600, 36)]).get('a')).toBe('compact');
+    // A gateway at desktop Fit (~96px) still reads in full: "Gateway for 20 devices".
+    expect(chipModes([chip('a', 100, 96), chip('b', 600, 96)]).get('a')).toBe('full');
   });
   it('steps colliding chips down until they no longer overlap: compact, then icon only', () => {
     expect(chipModes([chip('a', 100, 36), chip('b', 230, 36)])).toEqual(new Map([['a', 'compact'], ['b', 'compact']]));
