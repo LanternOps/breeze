@@ -53,3 +53,16 @@ export function fitFocus(boxes: readonly FitBox[]): { bounds: Bounds | null; out
   const inside = boxes.filter(near);
   return { bounds: union(inside), outside: boxes.filter((box) => !near(box)).map((box) => box.id) };
 }
+
+/**
+ * Zoomed out, a card's box recedes and its summary panel is the visible object. Each card gets an
+ * invisible anchor node sized and placed to match its panel, and an edge's card end moves to that
+ * anchor, so lines meet the panel rather than stopping at a faint box border.
+ */
+export const summaryAnchorId = (cardId: string) => `anchor:${cardId}`;
+export const edgeEnd = (end: string, cards: ReadonlySet<string>, tier: ZoomTier) => tier === 'summary' && cards.has(end) ? summaryAnchorId(end) : end;
+
+/** A screen-space rectangle (relative to the canvas) as a model-space centre and size. */
+export function screenRectToModel(rect: { left: number; top: number; width: number; height: number }, pan: { x: number; y: number }, zoom: number) {
+  return { x: (rect.left + rect.width / 2 - pan.x) / zoom, y: (rect.top + rect.height / 2 - pan.y) / zoom, width: rect.width / zoom, height: rect.height / zoom };
+}

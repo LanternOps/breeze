@@ -7,7 +7,7 @@ import type { RenderNode, TopologyRender } from './renderProjection';
 import { glyphTileUri } from './topologyGlyphs';
 import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
-import { fitFocus, nextZoomTier, summaryDensity, type Bounds, type ZoomTier } from './semanticZoom';
+import { edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
 
 /** Reads a design-system HSL token (`--primary: 225 62% 48%`) as a colour Cytoscape understands. */
@@ -129,11 +129,16 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
     // ── Zoomed out (semantic zoom): cards hand over to their HTML summaries; nothing moves. ──
     // `visibility` (not `display`) keeps every member in the card's bounds, so the card keeps its size.
     { selector: 'node.overview[?member], node.overview[kind="section"], node.overview[kind="badge"]', style: { visibility: 'hidden' } },
-    { selector: ':parent.overview', style: { 'text-opacity': 0, 'background-opacity': 0.06, 'border-opacity': 0.5 } },
+    // The box recedes to a hairline: it keeps the card's place for zoom-in continuity, the summary panel is the object.
+    { selector: ':parent.overview', style: { 'text-opacity': 0, 'background-opacity': 0.012, 'border-width': 1, 'border-opacity': 0.16, 'border-style': 'solid' } },
+    // Invisible stand-in for a summary panel (semanticZoom.summaryAnchorId): edges end at the panel's border.
+    { selector: 'node[kind="anchor"]', style: { shape: 'round-rectangle', opacity: 0, 'background-image': 'none', label: '', events: 'no' } },
     // Loose tiles (gateways, ungrouped devices) keep one short line, sized to read at overview zoom.
-    { selector: 'node.overview[!member][kind!="section"][kind!="outside"]:childless', style: { label: 'data(short)', 'font-size': 26, 'font-weight': 600, 'text-wrap': 'ellipsis',
+    { selector: 'node.overview[!member][kind!="section"][kind!="outside"][kind!="anchor"][kind!="badge"]:childless', style: { label: 'data(short)', 'font-size': 26, 'font-weight': 600, 'text-wrap': 'ellipsis',
       'background-width': 36, 'background-height': 36 } },
     { selector: 'edge.overview[label]', style: { 'font-size': 22 } },
+    // Zoomed out, the edges and summaries carry the picture: lines a touch stronger than at tile zoom.
+    { selector: 'edge.overview', style: { 'line-opacity': 0.9 } },
     { selector: 'edge.overview[sourceEnd], edge.overview[targetEnd]', style: { 'source-label': '', 'target-label': '' } },
   ];
 }
@@ -179,14 +184,44 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
       moved.forEach((node: cytoscape.NodeSingular) => { if (!node.data('presentation')) positions.push({ nodeId: node.id(), ...node.position(), pinned: true }); });
       if (positions.length) callbacks.current.onMove(positions);
     });
-    /** Once per animation frame at most: zoom tier, summary boxes, the off-screen badge. */
+    /** Edge ends on a card follow the zoom tier: the card box in detail, its summary panel when zoomed out. */
+    const retarget = () => {
+      const cards = new Set(renderer.nodes(':parent').map((card) => card.id()));
+      renderer.edges().forEach((edge) => {
+        const source = edgeEnd(edge.data('cardSource') ?? edge.source().id(), cards, tierRef.current);
+        const target = edgeEnd(edge.data('cardTarget') ?? edge.target().id(), cards, tierRef.current);
+        if (source === edge.source().id() && target === edge.target().id()) return;
+        if (!renderer.getElementById(source).length || !renderer.getElementById(target).length) return;
+        const selected = edge.selected();
+        const moved = edge.move({ source, target });
+        if (selected) moved.select();
+      });
+    };
+    /** Sizes and places each card's anchor over its summary panel (model space), so edges meet the panel. */
+    const placeAnchors = () => {
+      const host = container.current?.getBoundingClientRect();
+      if (!host) return;
+      const pan = renderer.pan(), zoom = renderer.zoom();
+      overlay.current?.querySelectorAll<HTMLElement>('[data-card-id]').forEach((box) => {
+        const anchor = renderer.getElementById(summaryAnchorId(box.dataset.cardId!));
+        const panel = box.querySelector('button')?.getBoundingClientRect();
+        if (!anchor.length || !panel || !panel.width || box.style.display === 'none') return;
+        const model = screenRectToModel({ left: panel.left - host.left, top: panel.top - host.top, width: panel.width, height: panel.height }, pan, zoom);
+        const current = anchor.position();
+        if (Math.abs(current.x - model.x) > 0.5 || Math.abs(current.y - model.y) > 0.5) anchor.position({ x: model.x, y: model.y });
+        if (Math.abs(anchor.data('width') - model.width) > 0.5 || Math.abs(anchor.data('height') - model.height) > 0.5) anchor.data({ width: model.width, height: model.height });
+      });
+    };
+    /** Once per animation frame at most: zoom tier, summary boxes and anchors, the off-screen badge. */
     const sync = () => {
       frame.current = 0;
       const next = nextZoomTier(tierRef.current, renderer.zoom());
       if (next !== tierRef.current) {
         tierRef.current = next;
-        renderer.batch(() => { if (next === 'summary') renderer.elements().addClass('overview'); else renderer.elements().removeClass('overview'); });
+        renderer.batch(() => { if (next === 'summary') renderer.elements().addClass('overview'); else renderer.elements().removeClass('overview'); retarget(); });
         setTier(next);
+        // The overlay is shown on the next React commit; place the anchors once its panels have a size.
+        requestAnimationFrame(() => schedule.current());
       }
       const width = renderer.width(), height = renderer.height();
       if (next === 'summary') {
@@ -202,6 +237,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           box.style.width = `${x2 - x1}px`; box.style.height = `${y2 - y1}px`;
           box.dataset.density = summaryDensity(x2 - x1, y2 - y1);
         });
+        placeAnchors();
       }
       const off = outsideRef.current.filter((id) => {
         const element = renderer.getElementById(id);
@@ -213,7 +249,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     };
     schedule.current = () => { if (!frame.current) frame.current = requestAnimationFrame(sync); };
     renderer.on('viewport resize', () => schedule.current());
-    renderer.on('position', 'node', () => schedule.current());
+    renderer.on('position', 'node[kind!="anchor"]', () => schedule.current());
     const viewportTo = (bounds: Bounds, maxZoom: number) => {
       const width = renderer.width(), height = renderer.height();
       const zoom = Math.max(renderer.minZoom(), Math.min(maxZoom, (width - 2 * FIT_PADDING) / Math.max(1, bounds.x2 - bounds.x1), (height - 2 * FIT_PADDING) / Math.max(1, bounds.y2 - bounds.y1)));
@@ -221,7 +257,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     };
     // Fit map frames the main structure (semanticZoom.fitFocus); far-away items get the badge instead.
     fitRef.current = () => {
-      const top = renderer.nodes().orphans();
+      const top = renderer.nodes().orphans().difference('[kind="anchor"]').nodes();
       if (!top.length) return;
       const focus = fitFocus(top.map((node) => {
         const bb = node.boundingBox({});
@@ -271,7 +307,10 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         position: { x: header.x, y: header.y + header.height / 2 } }));
       const drawn = routeEdgesToCards(render.edges, { parentOf: (id) => parentOf.get(id), labelOf: (id) => clip(labelOf.get(id) ?? id, 22), bundleLabel: (count) => t('grouped.bundle', { count }) });
       const cards = new Set(render.nodes.filter((node) => node.kind === 'group' || node.kind === 'unidentified').map((node) => node.id));
-      const edges: cytoscape.ElementDefinition[] = drawn.map((edge) => ({ group: 'edges', data: { id: edge.id, source: edge.source, target: edge.target, style: edge.style,
+      // Card ends follow the zoom tier (box in detail, summary anchor when zoomed out); cardSource/cardTarget remember the card.
+      const edges: cytoscape.ElementDefinition[] = drawn.map((edge) => ({ group: 'edges', data: { id: edge.id, source: edgeEnd(edge.source, cards, tierRef.current),
+        target: edgeEnd(edge.target, cards, tierRef.current), style: edge.style,
+        ...(cards.has(edge.source) ? { cardSource: edge.source } : {}), ...(cards.has(edge.target) ? { cardTarget: edge.target } : {}),
         relationshipIds: edge.relationshipIds, toCard: edge.style !== 'route' && (cards.has(edge.source) || cards.has(edge.target)),
         ...(edge.label ? { label: edge.label } : {}), ...(edge.sourceEnd ? { sourceEnd: edge.sourceEnd } : {}), ...(edge.targetEnd ? { targetEnd: edge.targetEnd } : {}) } }));
       // Shared-IP markers close the address line; the full sentence is the tile's tooltip and in the inspector.
@@ -285,16 +324,28 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
           // Address line centre: two 12px lines at 1.35 line height, centred in the tile.
           position: { x: point.x - width / 2 + TEXT_INSET + textEnd + 6 + badgeW / 2, y: point.y + 8 } };
       });
-      const elements = [...nodes, ...headers, ...badges, ...edges];
+      // One invisible anchor per card, placed over its summary panel by the sync loop (never persisted or laid out).
+      const anchors: cytoscape.ElementDefinition[] = [...cards].map((card) => {
+        const members = render.nodes.filter((node) => node.parent === card && points.has(node.id)).map((node) => points.get(node.id)!);
+        const centre = members.length ? { x: members.reduce((sum, p) => sum + p.x, 0) / members.length, y: members.reduce((sum, p) => sum + p.y, 0) / members.length } : { x: 0, y: 0 };
+        return { group: 'nodes', selectable: false, data: { id: summaryAnchorId(card), kind: 'anchor', presentation: true, member: false, width: 1, height: 1, icon: 'none', display: '', textShift: 0, textWidth: '1px' },
+          position: centre };
+      });
+      const elements = [...nodes, ...headers, ...badges, ...anchors, ...edges];
       const ids = new Set(elements.map((element) => element.data.id));
       renderer.elements().filter((element) => !ids.has(element.id())).remove();
       for (const element of elements) {
         const existing = renderer.getElementById(element.data.id!);
         if (!existing.length) { renderer.add(element); continue; }
-        const { parent, ...data } = element.data;
+        // An anchor's size and place belong to the sync loop once it exists.
+        if (existing.data('kind') === 'anchor') continue;
+        const { parent, source, target, ...data } = element.data;
         if (existing.isNode() && (existing.data('parent') ?? undefined) !== parent) existing.move({ parent: parent ?? null });
-        // Cytoscape merges data: clear optional edge fields a re-routed edge no longer has.
-        if (existing.isEdge()) for (const key of ['label', 'sourceEnd', 'targetEnd']) if (!(key in data)) existing.removeData(key);
+        if (existing.isEdge()) {
+          // Cytoscape merges data: clear optional edge fields a re-routed edge no longer has.
+          for (const key of ['label', 'sourceEnd', 'targetEnd', 'cardSource', 'cardTarget']) if (!(key in data)) existing.removeData(key);
+          if (existing.source().id() !== source || existing.target().id() !== target) { existing.move({ source, target }).data(data); continue; }
+        }
         existing.data(data);
         if (element.position) existing.position(element.position);
       }

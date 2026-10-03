@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, fitFocus, nextZoomTier, summaryDensity } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity } from './semanticZoom';
 
 describe('nextZoomTier', () => {
   it('switches to summaries below the enter zoom and back to tiles above the exit zoom', () => {
@@ -47,5 +47,19 @@ describe('fitFocus', () => {
 
   it('ignores an empty input', () => {
     expect(fitFocus([])).toEqual({ bounds: null, outside: [] });
+  });
+});
+
+describe('summary anchors', () => {
+  it('points a card end of an edge at the card summary only while zoomed out', () => {
+    const cards = new Set(['card']);
+    expect(edgeEnd('card', cards, 'summary')).toBe(summaryAnchorId('card'));
+    expect(edgeEnd('card', cards, 'detail')).toBe('card');
+    expect(edgeEnd('gw', cards, 'summary')).toBe('gw');
+  });
+
+  it('maps the summary panel on screen back into model space, so edges end at its border', () => {
+    // Panel at screen (300, 200)–(500, 280); viewport pan (100, 40), zoom 0.5.
+    expect(screenRectToModel({ left: 300, top: 200, width: 200, height: 80 }, { x: 100, y: 40 }, 0.5)).toEqual({ x: 600, y: 400, width: 400, height: 160 });
   });
 });
