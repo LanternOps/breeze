@@ -13,6 +13,7 @@ import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { inSystemDbContext } from '../outcomeProbes';
 import { resolveOrgPartnerId } from './catalog';
 import { lookupFixes, type FixTrackRecord } from './lookup';
+import { requestResearch } from './research';
 import { signatureForSource, sourceRefFor } from './signatureLoader';
 
 const ATTACH_LIMIT = 3;
@@ -76,13 +77,29 @@ export async function attachProvenFixes(input: {
   return attached;
 }
 
-/** Durable subscriber 'fix-memory-attach' on alert.triggered. */
+/** Durable subscriber 'fix-memory-attach' on alert.triggered (W1) + auto research (W2). */
 export async function handleAlertTriggeredForFixMemory(event: BreezeEvent): Promise<void> {
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const alertId = typeof payload.alertId === 'string' ? payload.alertId : null;
   if (!alertId || !event.orgId) return;
-  await inSystemDbContext(
+  const attached = await inSystemDbContext(
     () => attachProvenFixes({ sourceType: 'alert', sourceId: alertId, orgId: event.orgId }),
     'fixMemory.attach',
   );
+  // Spec P3: LLM research runs automatically only for high/critical severity when memory has no hit.
+  // Dedupe, the per-org hourly cap and credits are requestResearch's job. A refusal is an answer, and a
+  // research failure must never fail this durable subscriber (it would retry the already-done attach).
+  const severity = typeof payload.severity === 'string' ? payload.severity : null;
+  if (attached > 0 || (severity !== 'high' && severity !== 'critical')) return;
+  try {
+    const result = await inSystemDbContext(
+      () => requestResearch({ orgId: event.orgId, sourceType: 'alert', sourceId: alertId, depth: 'quick', trigger: 'auto', actorUserId: null }),
+      'fixMemory.autoResearch',
+    );
+    if (result.status === 'denied') {
+      console.info('[fixMemory] auto research not started', { orgId: event.orgId, alertId, code: result.code });
+    }
+  } catch (err) {
+    console.error('[fixMemory] auto research failed', { orgId: event.orgId, alertId, err });
+  }
 }

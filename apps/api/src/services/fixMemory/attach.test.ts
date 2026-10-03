@@ -16,6 +16,8 @@ vi.mock('./signatureLoader', () => ({
 vi.mock('./catalog', () => ({ resolveOrgPartnerId: h.partner }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
 vi.mock('../outcomeProbes', () => ({ inSystemDbContext: h.systemCtx }));
+const research = vi.hoisted(() => vi.fn(async (_input: unknown) => ({ status: 'started', runId: 'r', depth: 'quick' }) as unknown));
+vi.mock('./research', () => ({ requestResearch: research }));
 
 import { attachProvenFixes, handleAlertTriggeredForFixMemory, memoryRationale } from './attach';
 
@@ -77,5 +79,44 @@ describe('attachProvenFixes', () => {
     expect(h.sig).not.toHaveBeenCalled();
     expect(h.partner).not.toHaveBeenCalled();
     expect(h.lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe('auto research (W2 Task 14)', () => {
+  const evt = (severity: string) => ({ id: 'e', type: 'alert.triggered', orgId: 'org-1', source: 's', priority: 'normal', payload: { alertId: 'a-1', severity }, metadata: { timestamp: '' } } as never);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.flag.mockResolvedValue(true);
+    h.partner.mockResolvedValue('p-1');
+    h.sig.mockResolvedValue({ signature, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+    h.lookup.mockResolvedValue({ proven: [proven], similar: [] });
+    research.mockResolvedValue({ status: 'started', runId: 'r', depth: 'quick' });
+  });
+
+  it('high/critical with no proven hit -> quick auto research', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+    await handleAlertTriggeredForFixMemory(evt('critical'));
+    expect(research).toHaveBeenCalledWith({ orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', depth: 'quick', trigger: 'auto', actorUserId: null });
+  });
+
+  it('a proven hit, or a low/medium alert, never auto-researches', async () => {
+    await handleAlertTriggeredForFixMemory(evt('critical'));
+    h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+    await handleAlertTriggeredForFixMemory(evt('medium'));
+    expect(research).not.toHaveBeenCalled();
+  });
+
+  it('a denied research request is not an error (no retry storm)', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+    research.mockResolvedValueOnce({ status: 'denied', code: 'auto_cap', message: 'cap' });
+    await expect(handleAlertTriggeredForFixMemory(evt('high'))).resolves.toBeUndefined();
+  });
+
+  it('a thrown research failure never fails the subscriber (memory path is independent)', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+    research.mockRejectedValueOnce(new Error('boom'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(handleAlertTriggeredForFixMemory(evt('high'))).resolves.toBeUndefined();
+    err.mockRestore();
   });
 });

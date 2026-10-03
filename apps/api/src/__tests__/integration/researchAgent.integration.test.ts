@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents, alerts, devices, scripts } from '../../db/schema';
+import { handleAlertTriggeredForFixMemory } from '../../services/fixMemory/attach';
 import { requestResearch } from '../../services/fixMemory/research';
 import { registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { loadResearchContext } from '../../services/aiAgents/researchContext';
@@ -161,6 +162,15 @@ describe('requestResearch (real Postgres)', () => {
     const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, w.orgId)));
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ profile: 'remediation_research', triggerKind: 'alert', status: 'queued' });
+  });
+
+  it('the alert.triggered subscriber provisions and admits research for a partner with no baseline', async () => {
+    const w = await orgWithDevice();
+    const alertId = await w.mkAlert();
+    await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: w.orgId, source: 's', priority: 'normal', payload: { alertId, severity: 'high' }, metadata: { timestamp: '' } } as never);
+    const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, w.orgId)));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ profile: 'remediation_research', triggerKind: 'alert' });
   });
 
   it('an org-level research override row is not a baseline: provisioning still happens for the partner', async () => {
