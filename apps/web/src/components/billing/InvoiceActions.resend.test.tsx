@@ -35,6 +35,7 @@ const line: InvoiceDetail['lines'][number] = {
 /** An issued, already-emailed invoice — the state Re-send exists for. */
 function detail(extra: Partial<InvoiceDetail['invoice']> = {}, top: Partial<InvoiceDetail> = {}): InvoiceDetail {
   return {
+    autopay: null,
     invoice: {
       id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
       currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30',

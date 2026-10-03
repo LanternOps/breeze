@@ -429,6 +429,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'integrations.ts': { exempt: 'vendor_console_admin' },
   'internal/synthetic.ts': { exempt: 'internal_plumbing', note: 'Internal synthetic monitoring and canary cleanup endpoints.' },
   'invoices/assembly.ts': { tools: ['manage_invoices'] },
+  'invoices/autopay.ts': { exempt: 'human_only_autopay', note: 'Invoice collection controls are human-only under autopay v1 (§3).' },
   'invoices/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/issue/void; the single-item equivalents already have tools.' },
   'invoices/evidence.ts': { gap: '#6784' },
   'invoices/invoices.ts': { tools: ['list_invoices', 'get_invoice', 'manage_invoices'] },

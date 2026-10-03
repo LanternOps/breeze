@@ -1,3 +1,5 @@
+const controls = vi.hoisted(() => ({ renotice: vi.fn(), view: vi.fn().mockResolvedValue(null) }));
+vi.mock('./autopay/invoiceControls', () => ({ renoticeSchedule: controls.renotice, getInvoiceAutopayView: controls.view }));
 const { plan } = vi.hoisted(() => ({ plan: vi.fn().mockResolvedValue(null) }));
 vi.mock('./autopay/scheduler', () => ({ planAutopayForInvoice: plan }));
 
@@ -1136,6 +1138,7 @@ describe('updateIssuedDueDate', () => {
     const result = await svc.updateIssuedDueDate('i1', '2026-09-01', actor);
     expect(result.audit).toEqual({ orgId: 'org1', invoiceId: 'i1', oldDueDate: '2026-06-01', newDueDate: '2026-09-01' });
     expect(result.invoice.dueDate).toBe('2026-09-01');
+    expect(controls.renotice).toHaveBeenCalledWith(expect.anything(), 'i1');
   });
 
   it('re-derives status: an overdue invoice moved to a future due date flips back to partially_paid', async () => {

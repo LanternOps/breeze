@@ -352,3 +352,19 @@ describe('InvoiceWorkspace', () => {
     expect(window.location.hash).toBe('#editor&devices=line-1');
   });
 });
+
+it('renders the real invoice autopay panel only for an enabled projection',async()=>{
+ window.location.hash='';
+ const detail={...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:{state:'scheduled',reason:null,collectOn:'2026-10-15',noticeSentAt:null,excluded:false,canExclude:true,canChargeNow:false,processing:false,unapplied:false}};
+ fetchMock.mockImplementation(async(input:string)=>json({data:input==='/invoices/inv-1'?detail:[]}));
+ render(<InvoiceWorkspace id="inv-1"/>);expect(await screen.findByTestId('autopay-invoice-panel')).toBeInTheDocument();expect(screen.getByTestId('autopay-invoice-excluded')).toBeInTheDocument();
+});
+
+it('hides autopay controls on the real workspace when rollout is disabled and no money needs attention',async()=>{
+ window.location.hash='';
+ fetchMock.mockImplementation(async(input:string)=>json({data:input==='/invoices/inv-1'?{...invoice({status:'sent',invoiceNumber:'INV-1'}),autopay:null}:[]}));
+ render(<InvoiceWorkspace id="inv-1"/>);
+ await screen.findByTestId('invoice-detail');
+ expect(screen.queryByTestId('autopay-invoice-panel')).toBeNull();
+ expect(screen.queryByTestId('autopay-invoice-excluded')).toBeNull();
+});

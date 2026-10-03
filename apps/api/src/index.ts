@@ -1,3 +1,4 @@
+import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { config as loadDotenv } from 'dotenv';
 loadDotenv({ quiet: true });
 // Canonicalize NODE_ENV before any module reads it (some routes/services gate
@@ -753,6 +754,7 @@ api.route('/catalog', catalogRoutes);
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
 // isn't swallowed by invoiceRoutes' auth middleware (mirrors /quotes/public).
 api.route('/invoices/public', invoicesPublicRoutes);
+mountAutopayChargingRoutes(api);
 api.route('/invoices', invoiceRoutes);
 // Public, token-gated quote acceptance (no auth) — MUST precede the auth-gated
 // /quotes router so the unauthenticated /quotes/public/* sub-path isn't swallowed

@@ -1,3 +1,4 @@
+import { collectionFenced } from './collectionControl';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { billingNoticeOutbox, invoiceAutopaySchedules, invoices,
@@ -80,7 +81,8 @@ export const invoiceAutopayNoticeSent: NoticeSentHandler = async (tx, row) => {
   const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.noticeOutboxId, row.id),
   )).limit(1).for('update');
-  if (!schedule?.enrollmentId || schedule.state !== 'awaiting_notice') return;
+  if (!schedule?.enrollmentId || schedule.state !== 'awaiting_notice'
+    || collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: 'active' })) return;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
   if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
@@ -110,6 +112,7 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
     .where(and(eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.noticeOutboxId, row.id)))
     .limit(1).for('update');
   if (!schedule?.enrollmentId || !schedule.eligible || schedule.state !== 'awaiting_notice'
+    || collectionFenced({ ...schedule, autopayExcluded: invoice.autopayExcluded, enrollmentStatus: 'active' })
     || schedule.orgId !== row.orgId || schedule.noticeOutboxId !== row.id || schedule.enrollmentId !== row.enrollmentId) return obsolete;
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);

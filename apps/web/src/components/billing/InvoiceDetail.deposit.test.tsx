@@ -29,6 +29,7 @@ const line: InvoiceDetailData['lines'][number] = {
 
 function detail(inv: Partial<InvoiceDetailData['invoice']> = {}): InvoiceDetailData {
   return {
+    autopay: null,
     invoice: {
       id: 'inv-1', invoiceNumber: 'INV-0007', orgId: 'org-1', siteId: null, status: 'sent',
       currencyCode: 'USD', issueDate: '2026-06-01', dueDate: '2026-06-30', sentAt: null, subtotal: '1000.00',

@@ -158,3 +158,9 @@ it('delivers a current notice and runs its registered acknowledgement handler', 
   expect(h.writes).toContainEqual({ table: invoiceAutopaySchedules, values: { state: 'scheduled', noticeSentAt: row.sentAt, collectOn: '2026-10-15' } });
   expect(h.responses).toEqual([]);
 });
+
+it.each(['clientSkippedAt', 'mspExcludedAt'])('does not restore notice authority behind the %s fence', async field => {
+  h.responses.push([invoice], [{...schedule, [field]:new Date()}]);
+  await invoiceAutopayNoticeSent(db, row);
+  expect(h.writes).toHaveLength(0);
+});

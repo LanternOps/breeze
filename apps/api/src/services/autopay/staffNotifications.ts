@@ -6,7 +6,7 @@ import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string;
-  event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention';
+  event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped';
   dedupeKey: string; message: string;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
@@ -24,6 +24,7 @@ export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopaySta
     userId, orgId: input.orgId, type: 'billing' as const,
     priority: input.event === 'autopay.needs_attention' ? 'high' as const : 'normal' as const,
     title: input.event === 'autopay.enrolled' ? 'Automatic payments enabled'
+      : input.event === 'autopay.skipped' ? 'Automatic payment skipped'
       : input.event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Automatic payments need attention',
     message: input.message, link: '/billing/autopay', metadata: { event: input.event },
     dedupeKey: `${input.dedupeKey}:${userId}`, read: false,

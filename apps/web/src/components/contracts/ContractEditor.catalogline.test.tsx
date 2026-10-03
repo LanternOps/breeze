@@ -68,7 +68,9 @@ const catItem = (over: Partial<CatalogItem> = {}): CatalogItem => ({
 });
 
 const eurDraft: ContractDetail = {
+  autopayEnabled: false,
   contract: {
+    autopayExcluded: false,
     id: 'ct-1', partnerId: 'p1', orgId: 'org-1', name: 'Acme MSA', status: 'draft',
     billingTiming: 'advance', intervalMonths: 1, startDate: '2026-06-01', endDate: null,
     nextBillingAt: null, autoIssue: false, autoRenew: false, renewalTermMonths: null, renewalNoticeDays: null,

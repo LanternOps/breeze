@@ -1,3 +1,8 @@
+import { HTTPException } from 'hono/http-exception';
+import { portalBase } from '../../services/portalUrl';
+import { InvoiceServiceError } from '../../services/invoiceTypes';
+import { getSkipInvoiceView, skipInvoice } from '../../services/autopay/invoiceControls';
+import { sendAutopayStaffEmail } from '../../services/autopay/staffNotifications';
 import { Hono,type MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { db,withSystemDbAccessContext } from '../../db';
@@ -10,10 +15,19 @@ import { createAutopaySetupSession,stopAutopayByClient } from '../../services/au
 import { withAutopayStopToken } from '../../services/autopay/enrollmentLifecycle';
 import { autopayErrorHandler } from './errors';
 export const publicAutopayRoutes=new Hono();
-publicAutopayRoutes.onError(autopayErrorHandler);
+publicAutopayRoutes.onError((error, c) => {
+  if (c.req.path.endsWith('/skip') && error instanceof HTTPException && error.status < 500) {
+    return c.json({ error: 'Invalid request' }, error.status);
+  }
+  if (c.req.path.endsWith('/skip') && !(error instanceof InvoiceServiceError)) {
+    console.error('[autopay] Skip request failed');
+    return c.json({ error: 'The request could not be completed.' }, 500);
+  }
+  return autopayErrorHandler(error, c);
+});
 const setup=z.object({methodType:z.enum(['card','us_bank_account']),consentAccepted:z.literal(true),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 const returning=z.object({token:z.string().min(1).max(512),checkoutSessionId:z.string().regex(/^cs_[A-Za-z0-9_]+$/).max(255)}).strict();
-const boundary=(purpose:'enroll'|'stop_autopay',fromBody=false):MiddlewareHandler=>async(c,next)=>{
+const boundary=(purpose:'enroll'|'stop_autopay'|'skip_invoice'|'confirm_payment',fromBody=false):MiddlewareHandler=>async(c,next)=>{
   // Extract credentials before validating mutation payloads. Return authority
   // includes the owned session, allowing an already-consumed enrollment token.
   const body:unknown=fromBody?await c.req.json().catch(()=>null):null;
@@ -50,3 +64,25 @@ publicAutopayRoutes.post('/:token/stop',boundary('stop_autopay'),zValidator('jso
   await withAutopayStopToken(c.req.param('token'),()=>withSystemDbAccessContext(
     ()=>stopAutopayByClient(db,{orgId:c.get('autopayIdentity').orgId,source:'link'})));return c.json({success:true});
 });
+
+/** JSON admission for token mutations. Tokens still supply authority without Origin. */
+export const publicJsonPost: MiddlewareHandler = async (c, next) => {
+  if (!(c.req.header('content-type') ?? '').toLowerCase().includes('application/json')) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+  const origin = c.req.header('origin');
+  if (origin && origin !== new URL(portalBase()).origin) return c.json({ error: 'Invalid request' }, 403);
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  return next();
+};
+publicAutopayRoutes.get('/:token/skip', boundary('skip_invoice'), gate, async c => {
+  return c.json(await withSystemDbAccessContext(() => getSkipInvoiceView(db, c.req.param('token'))));
+});
+publicAutopayRoutes.post('/:token/skip', boundary('skip_invoice'), gate, publicJsonPost,
+  zValidator('json', z.object({}).strict()), async c => {
+    const result = await withSystemDbAccessContext(() => db.transaction(tx => skipInvoice(tx, c.req.param('token'))));
+    if (result.status === 'pending') return c.json(result, 202);
+    if (result.staffNotice) await sendAutopayStaffEmail(result.staffNotice);
+    return c.json({ status: result.status });
+  });
