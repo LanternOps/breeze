@@ -40,7 +40,7 @@ vi.mock('./accounting/accountingConnectionService', async (importOriginal) => ({
 vi.mock('./catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
 
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
-import { partners, organizations, users, timeEntries, invoices, invoiceLines, orgAutopayEnrollments, stripeConnectAccounts, invoiceAutopaySchedules, orgPaymentMethods, billingNoticeOutbox } from '../db/schema';
+import { partners, organizations, users, timeEntries, invoices, invoiceLines, orgAutopayEnrollments, stripeConnectAccounts, invoiceAutopaySchedules, orgPaymentMethods, billingNoticeOutbox, orgAutopayConsents } from '../db/schema';
 import { createCatalogItem, setBundleComponents } from './catalogService';
 import { eq, sql } from 'drizzle-orm';
 import { getTestDb } from '../__tests__/integration/setup';
@@ -394,9 +394,14 @@ async function seedActiveEnrollment(f: Fixture) {
     const [enrollment] = await db.update(orgAutopayEnrollments).set({status: 'active',
       effectiveFrom: new Date('2020-01-01T00:00:00Z'), stripeCustomerId: 'cus_issue_test'})
       .where(eq(orgAutopayEnrollments.orgId, f.orgId)).returning();
-    await db.insert(orgPaymentMethods).values({orgId: f.orgId, enrollmentId: enrollment!.id,
+    const [method] = await db.insert(orgPaymentMethods).values({orgId: f.orgId, enrollmentId: enrollment!.id,
       stripePaymentMethodId: 'pm_issue_test', type: 'card', cardBrand: 'visa', cardFunding: 'credit',
-      cardLast4: '4242', status: 'active', isAutopayMethod: true});
+      cardLast4: '4242', status: 'active', isAutopayMethod: true}).returning();
+    // Setup completion always records the accepted terms; collection refuses without them.
+    await db.insert(orgAutopayConsents).values({orgId: f.orgId, enrollmentId: enrollment!.id, generation: enrollment!.generation,
+      paymentMethodId: method!.id, consentTextVersion: '2026-10-01.v1', consentTextHash: 'a'.repeat(64), source: 'setup_page',
+      contactEmail: 'billing@example.test', scheduleTerms: {offsetDays: 0, rule: 'later', cap: {enabled: false}},
+      feeTerms: {methodType: 'card', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: false, currency: 'USD'}});
   });
 }
 
