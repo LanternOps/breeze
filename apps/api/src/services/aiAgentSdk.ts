@@ -750,7 +750,8 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
   const proposalId = (input as { proposalId?: unknown } | null)?.proposalId;
   if (toolName === 'run_script' && code === 'proposal_not_runnable' && typeof proposalId === 'string') {
     return `proposal_not_runnable: proposal ${proposalId} cannot start another run. A proposal runs once, `
-      + 'and this one has already been claimed by an earlier run_script, has expired, or is no longer reviewed. '
+      + 'and this one is already claimed by an earlier run_script (one that ran, or one still awaiting approval), '
+      + 'has expired, or is no longer reviewed. '
       + 'Call get_script_proposal: its executions list each run\'s executionId, and get_script_execution reads '
       + 'that run\'s output. To run the script again, submit it as a new proposal with propose_script.';
   }

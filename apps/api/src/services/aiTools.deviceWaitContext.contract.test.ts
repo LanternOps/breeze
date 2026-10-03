@@ -133,6 +133,20 @@ function stripComments(source: string): string {
     .replace(/^\s*\/\/.*$/gm, '');
 }
 
+/**
+ * The source of ONE tool's registration: from its `name: '…'` to the next
+ * registered tool's (or the end of the file), comments stripped.
+ */
+function toolSlice(source: string, tool: string, registered: ReadonlySet<string>): string {
+  const code = stripComments(source);
+  const markers = [...code.matchAll(/\bname:\s*['"]([a-z0-9_]+)['"]/g)]
+    .filter((m) => registered.has(m[1]!))
+    .map((m) => ({ at: m.index!, tool: m[1]! }));
+  const i = markers.findIndex((m) => m.tool === tool);
+  if (i < 0) return '';
+  return code.slice(markers[i]!.at, markers[i + 1]?.at ?? code.length);
+}
+
 /** tool name → wait-call count, plus module-scope waits, for one file. */
 function attributeWaits(source: string, registered: ReadonlySet<string>): {
   byTool: Map<string, number>;
@@ -173,8 +187,19 @@ describe('contract: AI tools that wait on a device never hold the per-call trans
 
   it.each(Object.entries(DEVICE_WAIT_TOOLS).filter(([, e]) => e.disposition === 'bounded'))(
     '%s is bounded well under the production idle-in-transaction timeout',
-    (_name, entry) => {
+    (name, entry) => {
       expect(entry.maxWaitMs).toBeLessThanOrEqual(BOUNDED_CEILING_MS);
+      // The classification must match the code, not just itself: every
+      // `timeoutMs` the tool's registration passes is a literal no larger than
+      // the classified wait. A computed timeout cannot be checked here, so a
+      // tool with one has to be self-managed.
+      const slice = toolSlice(readFileSync(join(SERVICES_DIR, entry.file), 'utf8'), name, new Set(aiTools.keys()));
+      const timeouts = [...slice.matchAll(/\btimeoutMs:\s*([^,}\n]+)/g)].map((m) => m[1]!.trim());
+      expect(timeouts.length, `${name}: no timeoutMs found in its registration`).toBeGreaterThan(0);
+      for (const raw of timeouts) {
+        expect(raw, `${name}: timeoutMs must be a numeric literal`).toMatch(/^[\d_]+$/);
+        expect(Number(raw.replace(/_/g, '')), `${name}: timeoutMs ${raw}`).toBeLessThanOrEqual(entry.maxWaitMs);
+      }
     },
   );
 

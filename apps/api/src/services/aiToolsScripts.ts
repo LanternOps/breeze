@@ -300,9 +300,12 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     // Same cap and same wait as the library path below — a proposal is not a
     // reason to relax either.
     for (const deviceId of proposalDeviceIds.slice(0, 10)) {
-      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
-      if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
       try {
+        // Inside the per-device try (like the library path): each check now
+        // takes its own short connection, and a throw for one device must not
+        // lose the results of devices this call already dispatched.
+        const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
+        if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
         const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
           aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,

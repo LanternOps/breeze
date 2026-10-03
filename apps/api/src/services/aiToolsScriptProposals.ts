@@ -21,7 +21,7 @@ import {
 } from '../db';
 import { captureException } from './sentry';
 import {
-  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, loadProposalExecutions,
+  createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, selectProposalExecutions,
   waitForReviewCompletion,
 } from './scriptProposals';
 
@@ -242,11 +242,11 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
       // device. Its execution id is the only way the model can read that
       // output (get_script_execution), so every run is echoed — narrowed to
       // the devices this caller may see, like `targetDeviceIds` below and the
-      // web detail read (scriptProposals/detail.ts). The executions read is
-      // system-scoped; the proposal row above was already org- and
-      // device-authorized for this caller.
+      // web detail read (scriptProposals/detail.ts). Read in the caller's own
+      // per-call context (RLS-scoped), never an escape to system scope, which
+      // would hold a second pooled connection under the first.
       const visible = proposal.scopedDeviceIds === null ? null : new Set(proposal.scopedDeviceIds);
-      const executions = (await loadProposalExecutions(proposal.id))
+      const executions = (await selectProposalExecutions(proposal.id))
         .filter((e) => visible === null || visible.has(e.deviceId))
         .map((e) => ({
           executionId: e.id,

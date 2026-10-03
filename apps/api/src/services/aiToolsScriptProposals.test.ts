@@ -63,7 +63,7 @@ vi.mock('./aiTools', () => ({ verifyDeviceAccess: verifyDeviceAccessMock }));
 vi.mock('./scriptProposals', () => ({
   createScriptProposal: createMock, enqueueScriptReview: enqueueMock,
   waitForReviewCompletion: waitMock, getScriptProposalForPrincipal: getMock,
-  loadProposalExecutions: executionsMock,
+  selectProposalExecutions: executionsMock,
 }));
 
 import { registerScriptProposalTools } from './aiToolsScriptProposals';

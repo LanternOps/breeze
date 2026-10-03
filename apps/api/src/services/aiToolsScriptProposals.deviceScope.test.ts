@@ -16,7 +16,7 @@ vi.mock('../db', () => ({
 // not what this suite is about, so it returns none.
 vi.mock('./scriptProposals/queries', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  loadProposalExecutions: vi.fn(async () => []),
+  selectProposalExecutions: vi.fn(async () => []),
 }));
 vi.mock('../config/env', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
