@@ -1147,6 +1147,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               Math.min(readBack.timeoutMs, TERMINAL_READBACK_BUDGET_MS),
               readBack.signal,
             ),
+            { toolName, input },
           );
         } catch (err) {
           // An unreadable outcome is NOT evidence the action failed — say
