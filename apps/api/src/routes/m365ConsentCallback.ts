@@ -146,10 +146,12 @@ function parseProviderError(
   const description = params.get('error_description');
   const codes = aadstsCodesFrom(description, params.get('error_codes'));
   const subcode = params.get('error_subcode')?.toLowerCase() ?? null;
-  const reason: M365ProviderErrorReason = error === 'access_denied' || subcode === 'cancel'
-    ? 'cancelled'
-    : codes.some((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code))
-      ? 'conditional_access'
+  // Conditional Access first: Entra reports a CA block on the authorize
+  // endpoint as `access_denied` + AADSTS53003, which is not a user cancel.
+  const reason: M365ProviderErrorReason = codes.some((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code))
+    ? 'conditional_access'
+    : error === 'access_denied' || subcode === 'cancel'
+      ? 'cancelled'
       : 'other';
   // Prefer the AADSTS number that drove the classification, if any.
   const aadstsCode = codes.find((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code)) ?? codes[0] ?? null;

@@ -168,6 +168,8 @@ describe('M365 consent callback route', () => {
     ['subcode cancel', 'state=s&error=access_denied&error_subcode=cancel', 'cancelled'],
     ['subcode cancel on another error', 'state=s&error=invalid_request&error_subcode=cancel', 'cancelled'],
     ['CA code list', 'state=s&error=invalid_grant&error_codes=%5B53003%5D', 'conditional_access'],
+    // Entra reports a CA block on the authorize endpoint as access_denied + AADSTS53003.
+    ['CA block reported as access_denied', 'state=s&error=access_denied&error_description=AADSTS53003%3A+Access+has+been+blocked+by+Conditional+Access+policies', 'conditional_access'],
     ['CA 53000', 'state=s&error=interaction_required&error_description=AADSTS53000%3A+Device+not+compliant', 'conditional_access'],
     ['CA 50158', 'state=s&error=interaction_required&error_description=AADSTS50158%3A+External+security+challenge', 'conditional_access'],
     ['unrelated code', 'state=s&error=invalid_client&error_description=AADSTS700016%3A+app+not+found', 'other'],
