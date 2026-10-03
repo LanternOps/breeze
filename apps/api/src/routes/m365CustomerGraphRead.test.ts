@@ -181,8 +181,11 @@ beforeEach(() => {
   mocks.list.mockResolvedValue([]);
   mocks.initiate.mockResolvedValue({
     connection: connection({ status: 'pending-consent', tenantId: null }),
-    rawState: 'one-time-state',
-    consentUrl: 'https://login.microsoftonline.com/common/adminconsent?server-built=true',
+    binding: {
+      phase: 'identity_verification', rawState: 'one-time-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: null,
+    },
+    authorizationUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?server-built=true',
   });
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
@@ -321,13 +324,16 @@ describe('POST /m365/connections/customer-graph-read/consent', () => {
     const response = await app().request(`/m365/connections/customer-graph-read/consent?orgId=${ORG_ID}`, { method: 'POST' });
     expect(response.status).toBe(200);
     expect(mocks.initiate).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
+    // Identity-first (#7910): the cookie is the service's identity-phase
+    // binding verbatim, and the response key stays adminConsentUrl so W2
+    // ships no web change.
     expect(mocks.buildBindingCookie).toHaveBeenCalledWith({
-      phase: 'admin_consent', rawState: 'one-time-state', connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID, tenantHint: null,
+      phase: 'identity_verification', rawState: 'one-time-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: null,
     });
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
     await expect(response.json()).resolves.toEqual({
-      adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?server-built=true',
+      adminConsentUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?server-built=true',
     });
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG_ID,
@@ -504,8 +510,11 @@ describe('POST /m365/connections/:id/upgrade-consent', () => {
   beforeEach(() => {
     mocks.upgrade.mockResolvedValue({
       connection: connection(),
-      rawState: 'raw-state',
-      consentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+      binding: {
+        phase: 'identity_verification', rawState: 'raw-state', connectionId: CONNECTION_ID,
+        consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID,
+      },
+      authorizationUrl: `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?state=raw-state`,
     });
   });
 
@@ -533,7 +542,7 @@ describe('POST /m365/connections/:id/upgrade-consent', () => {
     expect(mocks.upgrade).not.toHaveBeenCalled();
   });
 
-  it('returns the Microsoft admin-consent URL and sets the browser binding', async () => {
+  it('returns the tenant-pinned identity URL and sets the identity-phase binding', async () => {
     const response = await app().request(
       `/m365/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`,
       { method: 'POST' },
@@ -542,9 +551,13 @@ describe('POST /m365/connections/:id/upgrade-consent', () => {
 
     expect(response.status).toBe(200);
     expect(body).toEqual({
-      adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?state=raw-state',
+      adminConsentUrl: `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?state=raw-state`,
     });
     expect(response.headers.get('set-cookie')).toContain('binding-cookie=');
+    expect(mocks.buildBindingCookie).toHaveBeenCalledWith({
+      phase: 'identity_verification', rawState: 'raw-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID,
+    });
     expect(mocks.upgrade).toHaveBeenCalledWith(expect.objectContaining({
       connectionId: CONNECTION_ID,
       orgId: ORG_ID,

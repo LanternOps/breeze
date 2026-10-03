@@ -211,8 +211,11 @@ beforeEach(() => {
   mocks.list.mockResolvedValue([]);
   mocks.initiate.mockResolvedValue({
     connection: connection({ status: 'pending-consent', tenantId: null }),
-    rawState: 'one-time-state',
-    consentUrl: 'https://login.microsoftonline.com/common/adminconsent?server-built=true',
+    binding: {
+      phase: 'identity_verification', rawState: 'one-time-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: null,
+    },
+    authorizationUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?server-built=true',
   });
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
@@ -233,8 +236,11 @@ beforeEach(() => {
   mocks.readList.mockResolvedValue([]);
   mocks.readInitiate.mockResolvedValue({
     connection: readConnection({ status: 'pending-consent', tenantId: null }),
-    rawState: 'read-one-time-state',
-    consentUrl: 'https://login.microsoftonline.com/common/adminconsent?read-built=true',
+    binding: {
+      phase: 'identity_verification', rawState: 'read-one-time-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: null,
+    },
+    authorizationUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?read-built=true',
   });
   mocks.readRetest.mockResolvedValue(readConnection());
   mocks.readDisconnect.mockResolvedValue(readConnection({ status: 'revoked' }));
@@ -363,15 +369,15 @@ describe('POST /m365/customer-graph-actions/connections/consent', () => {
     // Must set the cookie via the ACTIONS-profile binding, never the read one —
     // the two carry distinct cookie names/paths/HMAC contexts (browserBinding.ts).
     expect(mocks.buildActionsBindingCookie).toHaveBeenCalledWith({
-      phase: 'admin_consent', rawState: 'one-time-state', connectionId: CONNECTION_ID,
-      consentAttemptId: ATTEMPT_ID, tenantHint: null,
+      phase: 'identity_verification', rawState: 'one-time-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: null,
     });
     expect(mocks.buildBindingCookie).not.toHaveBeenCalled();
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
     expect(response.headers.get('set-cookie')).toContain('breeze_m365_graph_actions_consent=');
     expect(response.headers.get('set-cookie')).toContain('Path=/api/v1/m365/actions-consent/callback');
     await expect(response.json()).resolves.toEqual({
-      adminConsentUrl: 'https://login.microsoftonline.com/common/adminconsent?server-built=true',
+      adminConsentUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?server-built=true',
     });
     expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       orgId: ORG_ID,

@@ -307,7 +307,7 @@ describe('identity-first session shapes (flow_version 2)', () => {
   runDb('rejects flow_version 3 (23514)', async () => {
     const fx = await seedFixture();
     await expect(insertSession(fx, {
-      flowVersion: 3, phase: 'identity_verification', nonce: 'n', codeVerifier: 'v'.repeat(43),
+      flowVersion: 3 as never, phase: 'identity_verification', nonce: 'n', codeVerifier: 'v'.repeat(43),
     })).rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
