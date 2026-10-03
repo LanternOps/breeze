@@ -440,9 +440,10 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     const locked = await lockInvoiceForCollection(db, data.invoice.id);
     const { attempt } = await loadAttemptRecord(attemptId);
     if (!['created', 'confirming'].includes(attempt.state)) return { action: 'done' as const };
-    const method = await getAutopayMethod(db, locked.invoice.orgId);
     const [enrollment] = await db.select().from(orgAutopayEnrollments)
       .where(eq(orgAutopayEnrollments.orgId, locked.invoice.orgId)).limit(1).for('update');
+    // Replacement holds this lock and can preserve generation; read its committed method afterward.
+    const method = await getAutopayMethod(db, locked.invoice.orgId);
     // Invoice-wide fence includes unscheduled client attempts.
     const [schedule] = await db.select().from(invoiceAutopaySchedules)
       .where(eq(invoiceAutopaySchedules.invoiceId, locked.invoice.id)).limit(1).for('update');

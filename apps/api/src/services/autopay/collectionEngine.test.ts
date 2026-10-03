@@ -6,6 +6,7 @@ import type { SQL } from 'drizzle-orm';
 const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   depth: 0, rows: new Map<unknown, any[]>(), writes: [] as { table: unknown; values: any }[],
   reads: [] as { table: unknown; where?: SQL; lock?: string }[],
+  beforeRead: vi.fn(),
   balance: '100.00', reserved: '0.00', ordinal: 0,
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
@@ -34,7 +35,7 @@ vi.mock('../../db', () => {
     chain.where = (where: SQL) => { read.where = where; return chain; };
     chain.for = (lock: string) => { read.lock = lock; return chain; };
     for (const op of ['limit', 'innerJoin', 'returning', 'orderBy', 'onConflictDoNothing']) chain[op] = () => chain;
-    chain.then = (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => {
+    chain.then = async (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => {
       expect(h.depth).toBe(1);
       if (write) {
         if (h.mappingError && write.table === invoiceStripePayments) {
@@ -46,6 +47,7 @@ vi.mock('../../db', () => {
         return Promise.resolve([row]).then(resolve, reject);
       }
       h.reads.push(read);
+      await h.beforeRead(read);
       if (projection && 'unreservedBalance' in projection) return Promise.resolve([{
         balance: h.balance, unreservedBalance: h.balance, reservedAmount: h.reserved,
       }]).then(resolve);
@@ -110,6 +112,7 @@ const attempts = () => h.writes.filter(w => w.table === invoiceCollectionAttempt
 beforeEach(() => {
   vi.clearAllMocks(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-20T00:00Z'));
   h.depth = 0; h.persist = false; h.mappingError = false; h.rows.clear(); h.writes.length = 0; h.reads.length = 0;
+  h.beforeRead.mockReset();
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
   for (const [table, rows] of [[invoices, [invoice]], [orgAutopayEnrollments, [enrollment]],
     [invoiceStripePayments, []], [invoiceCollectionAttempts, []], [partners, [{ id: invoice.partnerId }]], [invoiceAutopaySchedules, [schedule]], [invoiceLines, []],
@@ -789,3 +792,47 @@ it('cancels if a replacement setup changes the captured method between reservati
  h.method.mockResolvedValue({...method,type:'us_bank_account',accountHolderType:'individual',cardFunding:null,stripeSetupIntentId:'seti_replacement'});
  await resumeCollectionAttempt(attempt.id);expect(h.confirm).not.toHaveBeenCalled();expect(h.cancel).toHaveBeenCalledOnce();expect(currentAttempt().state).toBe('canceled');
 });
+
+it.each(['new method', 'new setup for the same method'])(
+  'cancels when %s commits while confirmation waits for the enrollment lock', async replacement => {
+    recovery(true);
+    bankAuthority(true);
+    h.rows.set(invoiceAutopaySchedules, []);
+    update(invoiceCollectionAttempts, { scheduleId: null, initiatedBy: 'client_on_session' });
+    update(invoiceStripePayments, { paymentMethodType: 'us_bank_account' });
+    h.method.mockImplementation(async () => structuredClone(h.rows.get(orgPaymentMethods)![0]));
+    h.piRetrieve.mockResolvedValue({ ...pi, metadata: { ...pi.metadata,
+      authority_generation: '1', authority_customer: 'cus_test', authority_method: 'pm_test',
+      authority_holder: 'individual', authority_funding: '', authority_card_fee_bps: '0', authority_ach_fee: '3.00',
+    } });
+
+    let signalLockWait!: () => void;
+    let releaseEnrollmentLock!: () => void;
+    const waitingForLock = new Promise<void>(resolve => { signalLockWait = resolve; });
+    const replacementCommitted = new Promise<void>(resolve => { releaseEnrollmentLock = resolve; });
+    h.beforeRead.mockImplementation(async (read: { table: unknown; lock?: string }) => {
+      if (read.table === orgAutopayEnrollments && read.lock === 'update') {
+        signalLockWait();
+        await replacementCommitted;
+      }
+    });
+
+    const confirmation = resumeCollectionAttempt(attempt.id);
+    await waitingForLock;
+    // Model the replacement transaction committing before SELECT FOR UPDATE resumes.
+    // Replacement deliberately preserves enrollment generation.
+    update(orgPaymentMethods, { stripeSetupIntentId: 'seti_replacement',
+      ...(replacement === 'new method' ? {
+        id: '50000000-0000-4000-8000-000000000002', stripePaymentMethodId: 'pm_replacement',
+      } : {}),
+    });
+    releaseEnrollmentLock();
+    await confirmation;
+
+    expect(h.rows.get(orgAutopayEnrollments)![0].generation).toBe(enrollment.generation);
+    expect(h.confirm).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.cancel).toHaveBeenCalledOnce();
+    expect(currentAttempt().state).toBe('canceled');
+  },
+);

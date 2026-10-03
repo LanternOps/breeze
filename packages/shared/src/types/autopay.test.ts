@@ -42,11 +42,44 @@ describe('autopay cross-wave vocabulary', () => {
   });
 });
 
-it('validates bank consent amounts and exact persisted collection authority',()=>{
- const bank={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
- const schema=vocabulary.autopayConsentSnapshotSchema.shape.bankPayment;
- expect(schema.safeParse(bank).success).toBe(true);
- expect(schema.safeParse(undefined).success).toBe(true);
- expect(schema.safeParse(null).success).toBe(true);
- for(const patch of [{principal:100},{fee:'-1.00'},{currency:'EUR'},{invoiceId:'bad'},{disclosureHash:''}])expect(schema.safeParse({...bank,...patch}).success).toBe(false);
+const bank = { invoiceId: '10000000-0000-4000-8000-000000000001', orgId: '20000000-0000-4000-8000-000000000001',
+  principal: '100.00', fee: '0.00', currency: 'USD', disclosureHash: 'a'.repeat(64) };
+const collection = { attemptId: '30000000-0000-4000-8000-000000000001',
+  methodId: '40000000-0000-4000-8000-000000000001', stripePaymentMethodId: 'pm_bank',
+  setupIntentId: 'seti_bank', accountHolderType: 'individual' };
+const bankSchema = vocabulary.autopayConsentSnapshotSchema.shape.bankPayment;
+
+it('validates bank consent amounts without a collection binding before reservation', () => {
+  expect(bankSchema.safeParse(bank).success).toBe(true);
+  expect(bankSchema.safeParse(undefined).success).toBe(true);
+  expect(bankSchema.safeParse(null).success).toBe(true);
+  for (const patch of [{ principal: 100 }, { fee: '-1.00' }, { currency: 'EUR' }, { invoiceId: 'bad' }, { disclosureHash: '' }]) {
+    expect(bankSchema.safeParse({ ...bank, ...patch }).success).toBe(false);
+  }
+});
+
+it.each(['individual', 'company'])('preserves the exact persisted collection authority for %s accounts', accountHolderType => {
+  const accepted = { ...bank, collection: { ...collection, accountHolderType } };
+  expect(bankSchema.parse(accepted)).toEqual(accepted);
+});
+
+it.each(['attemptId', 'methodId', 'stripePaymentMethodId', 'setupIntentId', 'accountHolderType'] as const)(
+  'rejects collection authority missing %s', field => {
+    const incomplete: Partial<typeof collection> = { ...collection };
+    delete incomplete[field];
+    expect(bankSchema.safeParse({ ...bank, collection: incomplete }).success).toBe(false);
+  },
+);
+
+it.each([
+  { attemptId: 'invalid' }, { methodId: 'invalid' },
+  { stripePaymentMethodId: '' }, { setupIntentId: '' },
+  { accountHolderType: 'unknown' }, { accountHolderType: null },
+  { extraIdentity: 'unrecognized' },
+])('rejects malformed collection authority %j', patch => {
+  expect(bankSchema.safeParse({ ...bank, collection: { ...collection, ...patch } }).success).toBe(false);
+});
+
+it.each([null, {}, 'invalid'])('rejects an invalid collection binding %j', value => {
+  expect(bankSchema.safeParse({ ...bank, collection: value }).success).toBe(false);
 });
