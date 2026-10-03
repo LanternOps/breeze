@@ -1,6 +1,6 @@
 -- @no-transaction
 -- audit_logs: partial index for the partner-scope read branch + VALIDATE of the
--- partner/org CHECK (#7696). Companion to 2026-12-03-110600-audit-logs-partner-scope.sql.
+-- partner/org CHECK (#7696). Companion to 2026-12-05-110000-audit-logs-partner-scope.sql.
 --
 -- The Audit Trail's partner-scope branch is
 --   org_id IS NULL AND partner_id = <caller partner>  ORDER BY timestamp DESC
