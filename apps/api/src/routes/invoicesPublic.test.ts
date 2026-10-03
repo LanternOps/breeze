@@ -43,6 +43,9 @@ vi.mock('../services/invoiceService', async (importActual) => {
   };
 });
 
+const { inFlightMock } = vi.hoisted(() => ({ inFlightMock: vi.fn() }));
+vi.mock('../services/autopay/reservation', () => ({ readInFlightCollection: inFlightMock }));
+
 const { payLinkMock } = vi.hoisted(() => ({ payLinkMock: vi.fn() }));
 vi.mock('../services/invoiceCheckout', () => ({ createInvoicePayLink: payLinkMock }));
 
@@ -117,6 +120,7 @@ beforeEach(() => {
   dbResults.length = 0;
   resolveMock.mockResolvedValue(null);
   onlinePayMock.mockResolvedValue(true);
+  inFlightMock.mockResolvedValue({ inProgress: false, amount: '0.00' });
   settleMock.mockResolvedValue({ settled: true, invoiceId: INV_ID });
   mintMock.mockResolvedValue({ token: TOKEN, expiresAt: new Date(), origin: 'reproduced' });
 });
@@ -148,6 +152,30 @@ describe('GET /invoices/public/:token', () => {
     expect(data.invoice.invoiceNumber).toBe('INV-2026-0007');
     expect(data.branding.partnerName).toBe('Lantern MSP');
     expect(markViewedMock).toHaveBeenCalledWith(INV_ID, ORG_ID);
+  });
+
+  it('reports an in-flight autopay collection from the server-side reservation (#7824)', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    inFlightMock.mockResolvedValue({ inProgress: true, amount: '100.00' });
+    dbResults.push(PARTNER_ROW, BRAND_ROW, [{ name: 'RMM seat', quantity: '5' }]);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.collectionInProgress).toEqual({ amount: '100.00' });
+    expect(inFlightMock).toHaveBeenCalledWith(expect.anything(), INV_ID);
+  });
+
+  it('reports collectionInProgress=null when nothing is in flight (#7824)', async () => {
+    resolveMock.mockResolvedValue(invoice());
+    dbResults.push(PARTNER_ROW, BRAND_ROW, []);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.collectionInProgress).toBeNull();
+  });
+
+  it('a void invoice carries no collection state (#7824)', async () => {
+    resolveMock.mockResolvedValue(invoice({ status: 'void' }));
+    dbResults.push(PARTNER_ROW, BRAND_ROW);
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.collectionInProgress ?? null).toBeNull();
+    expect(inFlightMock).not.toHaveBeenCalled();
   });
 
   // #6227: an issued invoice renders the presentation frozen at issue, not the

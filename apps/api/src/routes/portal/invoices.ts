@@ -1,4 +1,4 @@
-import { assertNoActiveCollection } from '../../services/autopay/reservation';
+import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
@@ -162,10 +162,23 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     console.error('[portal/invoices] online-payment availability lookup failed', { invoiceId: id, partnerId: result.partnerId, err });
   }
 
+  // #7824: surface an in-flight autopay collection so the Pay button can be
+  // replaced by a "payment processing" state. Same reserving-state set the pay
+  // route's 409 uses; advisory only (the pay route still refuses). A failed read
+  // degrades to "nothing in flight" — the server refusal is the backstop.
+  let collectionInProgress: { amount: string } | null = null;
+  try {
+    const inFlight = await readInFlightCollection(db, id);
+    if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount };
+  } catch (err) {
+    console.error('[portal/invoices] in-flight collection lookup failed', { invoiceId: id, err });
+  }
+
   return c.json({
     invoice: result.invoice,
     lines: result.lines.map(toCustomerInvoiceLine),
     onlinePaymentAvailable,
+    collectionInProgress,
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,

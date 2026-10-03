@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { Tx } from './types';
-import { assertNoActiveCollection, lockInvoiceForCollection, assertCollectionAmountAvailable } from './reservation';
+import { assertNoActiveCollection, lockInvoiceForCollection, assertCollectionAmountAvailable, readInFlightCollection } from './reservation';
 
 function executor(rows: unknown[][]) {
   const calls: Array<{ op: string; value?: unknown }> = [];
@@ -49,5 +49,18 @@ describe('invoice collection reservation', () => {
   it('allows decreasing an existing import even if the invoice is fully reserved', async () => {
     const { tx } = executor([[invoice], [{ reservedAmount: '50.00', balance: '50.00', unreservedBalance: '0.00' }], [{ amount: '50.00' }]]);
     await expect(assertCollectionAmountAvailable(tx, invoice.id, '40.00', '22222222-2222-4222-8222-222222222222')).resolves.toBeUndefined();
+  });
+  describe('readInFlightCollection (lock-free read for customer views, #7824)', () => {
+    it('reports in-flight with the reserved principal, counting only reserving states', async () => {
+      const { tx, calls } = executor([[{ reservedAmount: '50.00' }]]);
+      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: true, amount: '50.00' });
+      expect(calls.some(c => c.op === 'for')).toBe(false); // never locks
+      const q = new PgDialect().sqlToQuery(calls.find(c => c.op === 'where')!.value as SQL);
+      expect(q.params).toEqual(expect.arrayContaining([invoice.id, 'reserved', 'created', 'confirming', 'processing', 'requires_action']));
+    });
+    it.each([[[{ reservedAmount: '0.00' }]], [[]]])('reports not in-flight for %j', async (rows) => {
+      const { tx } = executor([rows as unknown[]]);
+      await expect(readInFlightCollection(tx, invoice.id)).resolves.toEqual({ inProgress: false, amount: '0.00' });
+    });
   });
 });
