@@ -234,6 +234,32 @@ runDb('a library run_script still refuses a device outside the caller org when i
   expect(queued).toHaveLength(0);
 }, 30_000);
 
+// The production failure itself: the device takes longer than run_script's
+// 60 s wait (the RAM diagnostic took 99 s), so the wait runs out. With the
+// test Postgres at the production `idle_in_transaction_session_timeout` (60 s,
+// docker-compose.test.yml), a connection held across that wait is killed and
+// the call fails with CONNECTION_CLOSED. Without one held, the call returns
+// the run's ids and a timeout status, and the model reads the finished run
+// later with get_script_execution.
+runDb('a run_script whose device outlasts the wait returns the run ids instead of CONNECTION_CLOSED (#7918)', async () => {
+  const [timeout] = (await getTestDb().execute(sql`SHOW idle_in_transaction_session_timeout`)) as unknown as
+    Array<{ idle_in_transaction_session_timeout: string }>;
+  // The scenario only exists with the production setting in force.
+  expect(timeout?.idle_in_transaction_session_timeout).toBe('1min');
+
+  const { orgId, partnerId, userId, deviceId, sessionId } = await seed();
+  const auth = callerAuth(orgId, partnerId, userId, 'partner', sessionId);
+  const proposalId = await seedReviewedProposal(auth, orgId, deviceId);
+
+  // No agent answers: the 60 s wait runs out.
+  const out = parseToolText(await sdkToolsTest.makeHandler('run_script', () => auth)({ proposalId, deviceIds: [deviceId] }));
+
+  expect(JSON.stringify(out)).not.toMatch(/CONNECTION_CLOSED|could not complete/i);
+  expect(out.results[deviceId]).toMatchObject({
+    status: 'timeout', commandId: expect.any(String), executionId: expect.any(String),
+  });
+}, 120_000);
+
 // The other self-managed device tools reach the device through
 // `aiExecuteCommand`, whose precheck now opens a short context of the
 // CALLER's own scope when none is held (`executeCommandWithCallerPrecheck`).

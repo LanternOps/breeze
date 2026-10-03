@@ -396,3 +396,42 @@ describe('tool_result reuses its tool_use sibling\'s input (sweep E6)', () => {
     expect(toolCallCards.props.at(-1)?.input).toBeUndefined();
   });
 });
+
+// #7918: once a run_script call has finished (or failed) the approval card is
+// gone, and the proposal page that shows its runs and offers "Save to
+// library" had no link from anywhere a user could find.
+describe('script proposal link after a run (#7918)', () => {
+  const PROPOSAL = '6f1c2a4e-8d3b-4c5a-9e7f-0a1b2c3d4e5f';
+
+  it('links a run_script { proposalId } result to the proposal page', () => {
+    const { getByTestId } = renderWithMessages([
+      { id: 'u1', role: 'tool_use', content: '', toolName: 'run_script', toolUseId: 't1', toolInput: { proposalId: PROPOSAL, deviceIds: ['d1'] } },
+      { id: 'r1', role: 'tool_result', content: '{"error":"The tool could not complete this request"}', toolName: 'run_script', toolUseId: 't1', isError: true },
+    ] as never);
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('links a propose_script result by the proposalId in its output', () => {
+    const { getByTestId } = renderWithMessages([
+      { id: 'u1', role: 'tool_use', content: '', toolName: 'propose_script', toolUseId: 't1', toolInput: {} },
+      { id: 'r1', role: 'tool_result', content: '', toolName: 'propose_script', toolUseId: 't1', toolOutput: { proposalId: PROPOSAL, status: 'reviewed' } },
+    ] as never);
+    expect(getByTestId('ai-script-proposal-link').getAttribute('href')).toBe(`/approvals#proposal-${PROPOSAL}`);
+  });
+
+  it('renders no link for a library run_script { scriptId }', () => {
+    const { queryByTestId } = renderWithMessages([
+      { id: 'u1', role: 'tool_use', content: '', toolName: 'run_script', toolUseId: 't1', toolInput: { scriptId: PROPOSAL, deviceIds: ['d1'] } },
+      { id: 'r1', role: 'tool_result', content: '{}', toolName: 'run_script', toolUseId: 't1' },
+    ] as never);
+    expect(queryByTestId('ai-script-proposal-link')).toBeNull();
+  });
+
+  it('never builds a link from a proposalId that is not a UUID', () => {
+    const { queryByTestId } = renderWithMessages([
+      { id: 'u1', role: 'tool_use', content: '', toolName: 'run_script', toolUseId: 't1', toolInput: { proposalId: 'not-a-uuid/../x' } },
+      { id: 'r1', role: 'tool_result', content: '{}', toolName: 'run_script', toolUseId: 't1' },
+    ] as never);
+    expect(queryByTestId('ai-script-proposal-link')).toBeNull();
+  });
+});
