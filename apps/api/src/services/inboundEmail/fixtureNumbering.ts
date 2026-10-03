@@ -20,3 +20,22 @@ export function fourDigitSuffix(input: string, offset = 0): string {
   const n = (((base + offset) % 10000) + 10000) % 10000;
   return n.toString().padStart(4, '0');
 }
+
+// Per-process counter + random per-process base: collision-free inside a run,
+// and a 1e9 space across runs sharing one integration DB (#7868).
+let internalNumberCounter = 0;
+const internalNumberBase = Math.floor(Math.random() * 1_000_000_000);
+
+/**
+ * Fixture `tickets.internal_number` that cannot collide with another fixture
+ * ticket under the same partner (`tickets_partner_internal_number_uq`) or with
+ * the app's allocator (`partner_ticket_sequences`, 4-digit zero-padded counter
+ * starting at 1). `fourDigitSuffix` has only 10,000 values and is derived from
+ * a per-call suffix, so independently-derived numbers collide at random (#7868).
+ * Nine digits keep it within varchar(20) and the `T-YYYY-\d{4,}` subject token.
+ */
+export function uniqueInternalNumber(): string {
+  internalNumberCounter += 1;
+  const n = (internalNumberBase + internalNumberCounter) % 1_000_000_000;
+  return `T-2026-${n.toString().padStart(9, '0')}`;
+}
