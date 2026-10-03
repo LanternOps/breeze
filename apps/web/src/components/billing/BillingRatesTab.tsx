@@ -191,7 +191,8 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
     </div>}
     <WorkTypesCard ref={workTypeManager} onLoad={acceptWorkTypes} readOnly={!canWrite} />
     <Drawer open={draft !== null} onClose={() => setDraft(null)} title={cloneId ? t('rates.clone') : draft?.id ? t('rates.edit') : t('rates.create')} closeDisabled={busy} dataTestId="billing-profile-drawer" width="max-w-xl">
-      {draft && <form className="space-y-4" onSubmit={event => { event.preventDefault(); void save(); }}>
+      {draft && <form className="flex min-h-0 flex-1 flex-col" onSubmit={event => { event.preventDefault(); void save(); }}>
+        <div className="flex-1 overflow-y-auto px-5 py-4" data-testid="billing-profile-drawer-body">
         <fieldset disabled={busy || !canWrite} className="space-y-4">
           <label className="block text-sm">{t('rates.name')}<input required maxLength={120} data-testid="billing-profile-name" className={inputClass} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} /></label>
           {!cloneId && <><div className="grid grid-cols-2 gap-3">
@@ -203,7 +204,8 @@ export default function BillingRatesTab({ currencyCode = 'USD' }: { currencyCode
           <AiUsagePricingFields value={draft} currencyCode={draft.currencyCode} choices={choices} choicesUnavailable={choicesFailed} disabled={busy || !canWrite}
             onChange={ai => setDraft({ ...draft, ...ai })} /></>}
         </fieldset>
-        <div className="flex justify-end gap-2 border-t pt-4"><button type="button" className={buttonClass} data-testid="billing-profile-cancel" disabled={busy} onClick={() => setDraft(null)}>{t('common:actions.cancel')}</button>{canWrite && <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="billing-profile-save" disabled={busy || !draft.name.trim() || !aiValid}>{busy ? t('common:states.saving') : t('common:actions.save')}</button>}</div>
+        </div>
+        <div className="flex justify-end gap-2 border-t px-5 py-4" data-testid="billing-profile-drawer-footer"><button type="button" className={buttonClass} data-testid="billing-profile-cancel" disabled={busy} onClick={() => setDraft(null)}>{t('common:actions.cancel')}</button>{canWrite && <button type="submit" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" data-testid="billing-profile-save" disabled={busy || !draft.name.trim() || !aiValid}>{busy ? t('common:states.saving') : t('common:actions.save')}</button>}</div>
       </form>}
     </Drawer>
   </section>;
