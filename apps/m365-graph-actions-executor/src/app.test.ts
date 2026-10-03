@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createExecutorApp } from './app';
-import { startExecutorServer } from './index';
+import { EventEmitter } from 'node:events';
+import { reportStartupFailure, startExecutorServer } from './index';
 
 const CORRELATION_ID = '11111111-1111-4111-8111-111111111111';
 const TENANT_ID = '22222222-2222-4222-8222-222222222222';
@@ -358,5 +359,52 @@ describe('executor HTTP app — complete-consent / retest', () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'invalid_request' });
     expect(retest).not.toHaveBeenCalled();
+  });
+});
+
+describe('executor process lifecycle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('logs the listen error code and exits non-zero when the server fails to bind', () => {
+    const server = Object.assign(new EventEmitter(), { close: vi.fn() });
+    const serve = vi.fn().mockReturnValue(server);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const app = createExecutorApp({
+      authenticator: { verify: vi.fn() },
+      completeConsent: vi.fn(),
+      retest: vi.fn(),
+      executeAction: vi.fn(),
+    });
+
+    startExecutorServer(app, { bindHost: '127.0.0.1', port: 8788 }, serve);
+    server.emit('error', Object.assign(new Error('listen EADDRNOTAVAIL 127.0.0.1:1'), { code: 'EADDRNOTAVAIL' }));
+
+    expect(errorLog).toHaveBeenCalledWith('[m365-graph-actions-executor] server error: EADDRNOTAVAIL');
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('logs only the startup error message, never the stack, and sets a failing exit code', () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const error = new Error('M365_GRAPH_ACTIONS_EXECUTOR_BIND_HOST must be a private IP interface');
+
+    reportStartupFailure(error);
+
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog).toHaveBeenCalledWith(`[m365-graph-actions-executor] startup failed: ${error.message}`);
+    expect(String(errorLog.mock.calls[0]?.[0])).not.toContain('    at ');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does not log non-Error startup rejections verbatim', () => {
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    reportStartupFailure({ secret: 'do-not-log' });
+
+    expect(errorLog).toHaveBeenCalledWith('[m365-graph-actions-executor] startup failed: unknown error');
+    expect(process.exitCode).toBe(1);
   });
 });
