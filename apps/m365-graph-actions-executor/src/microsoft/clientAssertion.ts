@@ -13,7 +13,7 @@ export class ClientAssertionError extends Error {
   }
 }
 
-const ORGANIZATIONS_AUTHORITY = 'organizations';
+export const ORGANIZATIONS_AUTHORITY = 'organizations';
 
 /**
  * A Microsoft identity-platform authority segment: a canonical lower-case

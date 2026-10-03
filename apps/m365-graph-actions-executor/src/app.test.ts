@@ -26,7 +26,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -48,7 +48,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -72,7 +72,7 @@ describe('executor HTTP app — execute-action', () => {
     const verify = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
       maxBodyBytes: 8,
@@ -92,7 +92,7 @@ describe('executor HTTP app — execute-action', () => {
   it('sanitizes operation exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }) },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
     });
@@ -110,7 +110,7 @@ describe('executor HTTP app — execute-action', () => {
     const serve = vi.fn().mockReturnValue({ close });
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -126,7 +126,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn().mockResolvedValue(stubbedResult);
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -148,7 +148,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -168,7 +168,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -196,7 +196,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const retest = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
@@ -219,7 +219,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
   it('sanitizes retest exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }) },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
       executeAction: vi.fn(),
     });
@@ -238,7 +238,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const completeConsent = vi.fn().mockResolvedValue(stubbedResult);
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent,
+      completeConsent, verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -268,7 +268,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const completeConsent = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent,
+      completeConsent, verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -296,7 +296,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const completeConsent = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent,
+      completeConsent, verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -325,7 +325,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const retest = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
@@ -345,7 +345,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const retest = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(),
+      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
