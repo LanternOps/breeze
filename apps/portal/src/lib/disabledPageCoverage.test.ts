@@ -180,6 +180,9 @@ const UNAUTHENTICATED_PAGES = new Set([
   'quote/[token].astro',
   'invoice/[token].astro',
   'invoice/return.astro',
+  'autopay/[token].astro',
+  'autopay/[token]/stop.astro',
+  'autopay/return.astro',
 ]);
 
 /** src/pages-relative file → the route the middleware sees (base stripped). */

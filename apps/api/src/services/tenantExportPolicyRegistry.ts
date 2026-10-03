@@ -39,6 +39,14 @@ export function tablePolicy(
 }
 
 export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
+"autopay_setup_attempts": tablePolicy("org_id", {
+ included:["id","ordinal","org_id","partner_id","enrollment_id","generation","source","method_type",
+   "stripe_connection_id","stripe_account_id","stripe_customer_id","checkout_session_id",
+   "setup_intent_id","payment_intent_id","created_at","completed_at","outcome",
+   "capture_next_attempt_at","discovery_next_attempt_at","capture_attempt_count"],
+ reviewedIncluded:["token_id"],excludedSensitive:[],excludedOpen:["consent_snapshot"]
+}),
+
   // Autopay W1 partner-axis additions are outside the per-org export registry:
   // partners.autopay_enabled: platform-managed partner rollout configuration.
   // stripe_connect_accounts.autopay_capabilities_checked_at: partner connection diagnostic timestamp.
@@ -50,8 +58,8 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   'invoice_autopay_schedules': tablePolicy('org_id', {"included":["id","org_id","invoice_id","enrollment_id","enrollment_generation","eligible","ineligible_reason","collect_on","notice_outbox_id","notice_sent_at","state","state_reason","next_attempt_at","attempt_count","client_skipped_at","msp_excluded_by","msp_excluded_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["terms_snapshot"]}),
   'invoice_collection_attempts': tablePolicy('org_id', {"included":["id","org_id","invoice_id","schedule_id","attempt_no","payment_method_id","stripe_payment_intent_id","idempotency_key","principal_amount","fee_amount","currency","state","failure_code","decline_code","failure_class","invoice_stripe_payment_id","initiated_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   'org_autopay_consents': tablePolicy('org_id', {"included":["id","org_id","enrollment_id","generation","payment_method_id","consent_text_version","contact_email","ip","user_agent","source","created_at"],"reviewedIncluded":["consent_text_hash"],"excludedSensitive":[],"excludedOpen":["fee_terms","schedule_terms"]}),
-  'org_autopay_enrollments': tablePolicy('org_id', {"included":["id","org_id","partner_id","status","generation","stripe_connection_id","stripe_account_id","effective_from","requested_by","requested_at","request_recipient_email","paused_by","paused_at","cancelled_at","cancel_source","cancel_reason","needs_attention_reason"],"reviewedIncluded":["stripe_customer_id"],"excludedSensitive":[],"excludedOpen":[]}),
-  'org_payment_methods': tablePolicy('org_id', {"included":["id","org_id","enrollment_id","stripe_payment_method_id","type","card_brand","card_last4","card_exp_month","card_exp_year","card_funding","card_country","bank_name","bank_last4","account_holder_type","stripe_mandate_id","stripe_setup_intent_id","status","unusable_reason","is_autopay_method","created_at","removed_at","detach_attempts","detach_next_attempt_at","detach_failed_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  'org_autopay_enrollments': tablePolicy('org_id', {"included":["id","org_id","partner_id","status","generation","stripe_connection_id","stripe_account_id","effective_from","requested_by","requested_at","request_recipient_email","staff_email_dedupe_keys","paused_by","paused_at","cancelled_at","cancel_source","cancel_reason","needs_attention_reason"],"reviewedIncluded":["stripe_customer_id"],"excludedSensitive":[],"excludedOpen":[]}),
+  'org_payment_methods': tablePolicy('org_id', {"included":["id","org_id","enrollment_id","stripe_payment_method_id","type","card_brand","card_last4","card_exp_month","card_exp_year","card_funding","card_country","bank_name","bank_last4","account_holder_type","stripe_mandate_id","stripe_setup_intent_id","status","unusable_reason","is_autopay_method","created_at","removed_at","detach_attempts","detach_next_attempt_at","detach_failed_at","detach_stripe_account_id","detach_stripe_customer_id"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
 
   "access_reviews": tablePolicy("org_id", {"included":["id","partner_id","org_id","name","description","status","reviewer_id","due_date","created_at","updated_at","completed_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "account_deletion_requests": tablePolicy("org_id", {"included":["id","user_id","org_id","reason","status","requested_at","process_by","processed_at","processed_by","admin_note","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

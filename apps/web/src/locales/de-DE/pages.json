@@ -172,7 +172,8 @@
     "settingsTicketing": "Ticketing-Einstellungen",
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
-    "adminAiModels": "KI-Modelle"
+    "adminAiModels": "KI-Modelle",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

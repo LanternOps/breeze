@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import { AUTOPAY_STRIPE_EVENT_TYPES, isAutopayStripeEvent, ingestAutopayStripeEvent, replayAutopayStripeEvents } from './autopay/setupReconciliation';
 import type Stripe from 'stripe';
 import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -7,6 +9,7 @@ import { ingestStripeFinancialEvent, processPendingStripeFinancialEvents, type N
 import { captureException } from './sentry';
 
 export const STRIPE_FINANCIAL_EVENT_TYPES = [
+  ...AUTOPAY_STRIPE_EVENT_TYPES,
   'charge.refunded',
   'charge.dispute.created',
   'charge.dispute.updated',
@@ -136,8 +139,27 @@ export async function pollPartnerStripeFinancialEvents(partnerId: string, now = 
   // work; persisted provider timestamps/high-water marks remain authoritative
   // across page boundaries and webhook redelivery.
   for (const event of [...page.data].reverse()) {
-    if (Boolean(event.livemode) !== connection.livemode) {
+    if (!isAutopayStripeEvent(event.type)&&Boolean(event.livemode) !== connection.livemode) {
       throw new Error(`Stripe event ${event.id} livemode does not match its credential-bound account`);
+    }
+    if (isAutopayStripeEvent(event.type)) {
+      try{
+        await ingestAutopayStripeEvent(partnerId, stripeAccountId, event);
+        ingested++;
+      }catch(error){
+        const reason=error instanceof Error?error.message:String(error);
+        // Invalid provider identity is terminal. Database failures still abort the
+        // cursor advance, preserving the page for retry after later events run.
+        if(!['Autopay event account mismatch','Autopay event identity conflict'].includes(reason))throw error;
+        await withSystemDbAccessContext(()=>db.execute(sql`
+          INSERT INTO stripe_financial_events(partner_id,stripe_connection_id,stripe_account_id,stripe_event_id,event_type,livemode,provider_created,currency,payload_digest,status,last_error,processed_at)
+          SELECT ${partnerId}::uuid,id,${stripeAccountId},${event.id},${event.type},${connection.livemode},${event.created},'XXX',
+            ${createHash('sha256').update(JSON.stringify(event)).digest('hex')},'blocked',${reason},now()
+          FROM stripe_connect_accounts WHERE partner_id=${partnerId}::uuid AND stripe_account_id=${stripeAccountId}
+          ON CONFLICT DO NOTHING`));
+        captureException(error instanceof Error?error:new Error(reason));
+      }
+      continue;
     }
     const normalized = await normalizeStripeFinancialEvent({
       event, partnerId, stripeAccountId, stripe,
@@ -218,5 +240,6 @@ export async function pollStripeFinancialEvents(): Promise<{ accounts: number; e
     }
   }
   const applied = await processPendingStripeFinancialEvents(PAGE_SIZE);
+  await replayAutopayStripeEvents();
   return { accounts: accounts.length, events, applied };
 }

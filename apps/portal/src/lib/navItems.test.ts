@@ -170,3 +170,9 @@ describe('buildPortalNavItems — W04 service and documents', () => {
     expect(buildPortalNavItems({ enableDocuments: true }).map((i) => i.href)).toContain('/documents');
   });
 });
+
+// navItems.test.ts — uses existing imported buildPortalNavItems.
+it('payment methods is fail-closed and can be visible without a branding row', () => {
+  expect(buildPortalNavItems({}).some(item => item.href === '/payment-methods')).toBe(false);
+  expect(buildPortalNavItems({}, true).some(item => item.href === '/payment-methods')).toBe(true);
+});

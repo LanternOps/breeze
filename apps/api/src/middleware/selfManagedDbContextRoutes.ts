@@ -28,6 +28,15 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Autopay routes own short authorized contexts; no outer request transaction.
+  { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/orgs\/[^/]+\/autopay\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/portal\/payment-methods\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/billing\/autopay\/requests\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/orgs\/[^/]+\/autopay\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/payment-methods\/setup-session\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/payment-methods\/setup-return\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/autopay\/stop\/?$/ },
   // Disk Cleanup v2 W04 (spec §13 #5). `startSystemCleanupRun` claims the run
   // in a SHORT COMMITTED transaction, dispatches the command outside any
   // transaction, and finalises in a second one. Under the auth middleware's

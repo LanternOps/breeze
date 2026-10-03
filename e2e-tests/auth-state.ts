@@ -66,7 +66,24 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     // app's own 428 re-POST would be just as easy to miss between iterations.
     type LoginResponse = { status: number; text: string };
     const loginResponses: Promise<LoginResponse>[] = [];
+    const inflightRefreshes = new Set<unknown>();
+    const isRefresh = (r: { method(): string; url(): string }) =>
+      r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
+    let refreshStarts = 0;
+    page.on('request', (r) => { if (isRefresh(r)) { refreshStarts++; inflightRefreshes.add(r); } });
+    const refreshFailures: string[] = [];
+    page.on('requestfinished', (r) => { if (isRefresh(r)) inflightRefreshes.delete(r); });
+    page.on('requestfailed', (r) => {
+      if (!isRefresh(r)) return;
+      inflightRefreshes.delete(r);
+      refreshFailures.push(`request failed: ${r.failure()?.errorText ?? 'unknown'}`);
+    });
     page.on('response', (res) => {
+      if (isRefresh(res.request())) {
+        const status = res.status();
+        if (status < 200 || status >= 300) refreshFailures.push(`HTTP ${status}`);
+        return;
+      }
       if (res.request().method() !== 'POST') return;
       if (!new URL(res.url()).pathname.endsWith('/auth/login')) return;
       loginResponses.push(
@@ -149,7 +166,56 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     }
 
     await page.waitForURL('/', { timeout: 30_000 });
-    await ctx.storageState({ path: statePath });
+    // The '/' page bootstraps with its own POST /auth/refresh (MPA), which
+    // rotates the login's refresh token. Snapshotting or closing the context
+    // while that call is in flight leaves the saved cookie already-rotated
+    // with the new one lost (aborted response): every later replay gets
+    // 401 refresh_raced and, past the 15 s grace, trips family revocation.
+    // Wait until no refresh is in flight (seen on two consecutive polls, since
+    // the bootstrap request can start just after the URL settles), then
+    // snapshot. Throws instead of saving a possibly stale cookie.
+    const refreshDeadline = Date.now() + 15_000;
+    let idlePolls = 0;
+    while (idlePolls < 2) {
+      if (Date.now() > refreshDeadline) {
+        throw new Error(
+          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) 15s after login; ` +
+            'refusing to save a storage state whose refresh cookie may already be rotated (stale-cookie race).'
+        );
+      }
+      idlePolls = inflightRefreshes.size === 0 ? idlePolls + 1 : 0;
+      await page.waitForTimeout(150);
+    }
+    // Snapshot in a loop: accept only if no refresh started or was in flight
+    // while storageState() ran (a refresh can start AND finish inside it, which
+    // an in-flight check alone would miss), and none failed. Else drain, retry.
+    let state: Awaited<ReturnType<typeof ctx.storageState>> | undefined;
+    for (let attempt = 1; attempt <= 3 && !state; attempt++) {
+      const drainDeadline = Date.now() + 15_000;
+      while (inflightRefreshes.size > 0 && Date.now() < drainDeadline) await page.waitForTimeout(100);
+      if (inflightRefreshes.size > 0) {
+        throw new Error(
+          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) after 15s draining on snapshot attempt ${attempt}; ` +
+            'refusing to save a storage state whose refresh cookie may be stale.'
+        );
+      }
+      const before = refreshStarts;
+      const snap = await ctx.storageState();
+      if (refreshFailures.length > 0) {
+        throw new Error(
+          `[auth-state] login's POST /auth/refresh failed (${refreshFailures.join(', ')}); ` +
+            'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
+        );
+      }
+      if (refreshStarts === before && inflightRefreshes.size === 0) state = snap;
+    }
+    if (!state) {
+      throw new Error(
+        '[auth-state] a POST /auth/refresh kept starting during 3 storageState snapshots; ' +
+          'refusing to save a storage state whose refresh cookie may be stale.'
+      );
+    }
+    writeFileSync(statePath, JSON.stringify(state, null, 2));
   } finally {
     await ctx.close();
   }

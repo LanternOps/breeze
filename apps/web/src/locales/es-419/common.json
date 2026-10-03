@@ -107,7 +107,9 @@
     "system": "Sistema",
     "monitorConversion": "Conversión de monitores",
     "timeSync": "Sincronización de hora",
-    "aiModels": "Modelos de IA"
+    "aiModels": "Modelos de IA",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Panel",

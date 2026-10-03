@@ -3,6 +3,8 @@ import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 export type OverflowTab = {
+  /** Override the interactive test id without changing tab or panel IDs. */
+  testId?: string;
   id: string;
   label: string;
   icon: React.ReactNode;
@@ -359,7 +361,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                   aria-controls={isActive ? overflowPanelId(tab.id, testIdPrefix) : undefined}
                   tabIndex={tab.id === rovingTabId ? 0 : -1}
                   title={tab.title}
-                  data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
+                  data-testid={tab.testId ?? (testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined)}
                   ref={(el) => { tabButtonRefs.current[tab.id] = el; }}
                   onClick={() => onTabChange(tab.id)}
                   onKeyDown={(e) => handleTabKeyDown(e, index)}
@@ -426,7 +428,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
                     role="menuitem"
                     tabIndex={-1}
                     title={tab.title}
-                    data-testid={testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined}
+                    data-testid={tab.testId ?? (testIdPrefix ? `${testIdPrefix}${tab.id}` : undefined)}
                     onClick={() => { onTabChange(tab.id); closeMenu(true); }}
                     className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
                       activeTab === tab.id

@@ -1,3 +1,4 @@
+import type {AutopayFeeTerms,AutopayScheduleTerms} from '@breeze/shared';
 import type { AutopayCancelSource, AutopayNeedsAttentionReason, AutopayPaymentMethodType, CardFundingType, AccountHolderType, ConsentSource, AutopayIneligibleReason, CollectionFailureClass, CollectionAttemptInitiator } from '@breeze/shared';
 import { pgTable, uuid, text, boolean, integer, numeric, jsonb, date, timestamp, char, pgEnum, check, unique, uniqueIndex, index, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
@@ -58,6 +59,7 @@ export const orgAutopayEnrollments = pgTable('org_autopay_enrollments', {
   stripeAccountId: text('stripe_account_id').notNull(),
   stripeCustomerId: text('stripe_customer_id'),
   effectiveFrom: timestamp('effective_from', { withTimezone: true }),
+  staffEmailDedupeKeys: text('staff_email_dedupe_keys').array().notNull().default(sql`'{}'::text[]`),
   requestedBy: uuid('requested_by'),
   requestedAt: timestamp('requested_at', { withTimezone: true }),
   requestRecipientEmail: text('request_recipient_email'),
@@ -84,6 +86,8 @@ export const orgPaymentMethods = pgTable('org_payment_methods', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   enrollmentId: uuid('enrollment_id').notNull(),
   stripePaymentMethodId: text('stripe_payment_method_id').notNull(),
+  detachStripeAccountId: text('detach_stripe_account_id'),
+  detachStripeCustomerId: text('detach_stripe_customer_id'),
   type: text('type').notNull().$type<AutopayPaymentMethodType>(),
   cardBrand: text('card_brand'),
   cardLast4: text('card_last4'),
@@ -124,8 +128,8 @@ export const orgAutopayConsents = pgTable('org_autopay_consents', {
   paymentMethodId: uuid('payment_method_id').notNull(),
   consentTextVersion: text('consent_text_version').notNull(),
   consentTextHash: text('consent_text_hash').notNull(),
-  feeTerms: jsonb('fee_terms').notNull(),
-  scheduleTerms: jsonb('schedule_terms').notNull(),
+  feeTerms: jsonb('fee_terms').$type<AutopayFeeTerms>().notNull(),
+  scheduleTerms: jsonb('schedule_terms').$type<AutopayScheduleTerms>().notNull(),
   contactEmail: text('contact_email').notNull(),
   ip: text('ip'),
   userAgent: text('user_agent'),

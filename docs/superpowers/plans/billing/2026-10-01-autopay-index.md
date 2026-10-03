@@ -65,7 +65,7 @@ waves add UI and logic without schema churn.
 **Slot update (2026-10-02):** `origin/main` moved past these slots (twice) before W01 shipped, so W01's six
 migrations ship as `2026-12-03-110000-…` … `2026-12-03-110500-…` (same order and slugs). Every later
 wave renames its reserved files to sort after the newest committed migration at implementation
-time. Keep the relative order (W2 < W3 < W4 < W5), and never sort before W01's `2026-12-03-1105NN`.
+time. Keep the relative order (W2 < W3 < W4 < W5), and never sort before W01's `2026-12-03-1105NN`. W02 ships `2026-12-04-120000-autopay-setup-attempts`, `…120100-autopay-billing-notification-type` and `…120200-autopay-capture-recovery`; W03–W05 must sort after those.
 
 ### C2. Drizzle schema — `apps/api/src/db/schema/autopay.ts` (W1), exported from `schema/index.ts`
 
@@ -112,7 +112,7 @@ export const COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', '
 export const ACTIVE_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing'] as const;
 export const COLLECTION_FAILURE_CLASSES = ['soft', 'hard', 'auth_required', 'nsf', 'revoked'] as const;
 export const COLLECTION_ATTEMPT_INITIATORS = ['scheduler', 'msp_charge_now', 'client_on_session'] as const;
-export const BILLING_NOTICE_KINDS = ['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring'] as const;
+export const BILLING_NOTICE_KINDS = ['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring', 'autopay_paused', 'autopay_resumed'] as const; // autopay_paused/autopay_resumed (W02, additive)
 export const BILLING_NOTICE_STATUSES = ['pending', 'sending', 'sent', 'failed', 'cancelled'] as const;
 export const BILLING_LINK_PURPOSES = ['enroll', 'skip_invoice', 'stop_autopay', 'confirm_payment'] as const;
 export const CONSENT_SOURCES = ['setup_page', 'pay_and_save', 'portal'] as const;
@@ -199,7 +199,7 @@ export async function resumeAutopay(db: Tx, actor: InvoiceActor, orgId: string):
 export async function turnOffAutopay(db: Tx, actor: InvoiceActor, orgId: string): Promise<void>;
 export async function stopAutopayByClient(db: Tx, input: { orgId: string; source: 'link' | 'portal'; portalUserId?: string }): Promise<void>;
 export async function createAutopaySetupSession(input: { orgId: string; methodType: AutopayPaymentMethodType; consentAccepted: true; returnTo: 'public' | 'portal'; tokenId?: string; contactEmail: string; ip: string | null; userAgent: string | null }): Promise<{ url: string }>;
-export async function completeAutopaySetup(partnerId: string, ref: { checkoutSessionId?: string; setupIntentId?: string }): Promise<{ outcome: 'activated' | 'pending_verification' | 'stale_generation' | 'failed'; orgId: string }>;
+export async function completeAutopaySetup(partnerId: string, ref: { checkoutSessionId?: string; setupIntentId?: string }): Promise<{ outcome: 'activated' | 'pending_verification' | 'stale_generation' | 'failed' | 'in_progress' | 'abandoned'; orgId: string }>; // (W02 final review: additive)
 
 // paymentMethods.ts [W2]
 export async function getAutopayMethod(db: Tx, orgId: string): Promise<typeof orgPaymentMethods.$inferSelect | null>; // is_autopay_method & status in (active, pending_verification)

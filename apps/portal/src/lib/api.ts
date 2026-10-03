@@ -511,7 +511,18 @@ export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: nu
   return `${worked} h worked · ${billed} h billed`;
 }
 
+import type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
+export type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
+export interface SaveForAutopayInput { saveForAutopay: boolean; consentAccepted?: true; disclosureHash?: string }
+
+export function invoiceAutopayInput(saveForAutopay: boolean, disclosure?: InvoiceAutopayDisclosure | null): SaveForAutopayInput {
+  return saveForAutopay && disclosure?.eligible
+    ? { saveForAutopay: true, consentAccepted: true, disclosureHash: disclosure.disclosureHash }
+    : { saveForAutopay: false };
+}
+
 export interface InvoiceDetail {
+  autopay?: InvoiceAutopayDisclosure | null;
   // The detail header is a separate serialization boundary on the API and
   // does not carry the list's derived `title`.
   invoice: Omit<InvoiceSummary, 'title'> & {
@@ -714,6 +725,7 @@ export interface PublicQuoteDetail {
  *  invoice deliberately carries only identity fields (no amounts), so most
  *  money fields are optional here. */
 export interface PublicInvoiceDetail {
+  autopay?: InvoiceAutopayDisclosure | null;
   invoice: {
     id: string;
     invoiceNumber: string | null;
@@ -974,12 +986,8 @@ export const portalApi = {
     return apiGet<InvoiceDetail>(`/portal/invoices/${id}`, config);
   },
 
-  payInvoice: async (
-    id: string,
-    config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<{ url: string }>> => {
-    return apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, undefined, config);
-  },
+  payInvoice: async (id: string, config: ApiRequestConfig = {}, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ url: string }>> =>
+    apiPost<{ url: string }>(`/portal/invoices/${id}/pay`, autopay, config),
 
   // Verify-on-return: settle the Checkout session server-side after the customer
   // lands back on the invoice (success_url carries the session id). Idempotent — the
@@ -1185,15 +1193,8 @@ export const portalApi = {
     );
   },
 
-  payPublicInvoice: async (
-    token: string
-  ): Promise<ApiResponse<{ data: { url: string } }>> => {
-    return apiPost<{ data: { url: string } }>(
-      `/invoices/public/${encodeURIComponent(token)}/pay`,
-      {},
-      { redirectOnUnauthorized: false }
-    );
-  },
+  payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput): Promise<ApiResponse<{ data: { url: string } }>> =>
+    apiPost<{ data: { url: string } }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
 
   // Checkout verify-on-return WITHOUT the invoice token: exchanges the Stripe
   // session id for settlement + the canonical public page url (the return urls

@@ -1,9 +1,10 @@
 import type { BillingNoticeKind } from '@breeze/shared';
 import { escapeHtml } from '../emailLayout';
 import { renderPartnerEmail, type RenderPartnerEmailArgs } from '../emailTemplates/renderPartnerEmail';
-import type { RenderedNotice } from './types';
+import type { Tx, RenderedNotice } from './types';
+import { renderAutopayNotice, type AutopayNoticeContext } from './enrollmentNotices';
 
-export interface BillingNoticeContext {
+interface RegisteredBillingNoticeContext {
   partnerId: string;
   orgId: string;
   data: Record<string, unknown>;
@@ -11,7 +12,9 @@ export interface BillingNoticeContext {
   mandatory: { skipUrl?: string; stopUrl?: string; feeDisclosure?: string; achAuthorizationReference?: string };
 }
 
-export type BillingNoticeRenderer = (ctx: BillingNoticeContext) => Promise<{
+export type BillingNoticeContext = RegisteredBillingNoticeContext | { autopay: AutopayNoticeContext };
+
+export type BillingNoticeRenderer = (ctx: RegisteredBillingNoticeContext) => Promise<{
   email: Omit<RenderPartnerEmailArgs, 'bodyBeforeCta' | 'bodyAfterCta'>;
   text: string;
 }>;
@@ -23,6 +26,15 @@ export function registerBillingNoticeRenderer(kind: BillingNoticeKind, renderer:
   renderers.set(kind, renderer);
 }
 
+const enrollmentRenderers: Partial<Record<BillingNoticeKind, (ctx: AutopayNoticeContext, executor?: Tx) => Promise<RenderedNotice>>> = {
+  autopay_request: (ctx, executor) => renderAutopayNotice('autopay_request', ctx, executor),
+  autopay_enrolled: (ctx, executor) => renderAutopayNotice('autopay_enrolled', ctx, executor),
+  autopay_stopped: (ctx, executor) => renderAutopayNotice('autopay_stopped', ctx, executor),
+  autopay_paused: (ctx, executor) => renderAutopayNotice('autopay_paused', ctx, executor),
+  autopay_resumed: (ctx, executor) => renderAutopayNotice('autopay_resumed', ctx, executor),
+  card_expiring: (ctx, executor) => renderAutopayNotice('card_expiring', ctx, executor),
+};
+
 function checkedUrl(value: string): string {
   const parsed = new URL(value);
   if (!['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) {
@@ -31,7 +43,12 @@ function checkedUrl(value: string): string {
   return value;
 }
 
-export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext): Promise<RenderedNotice> {
+export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingNoticeContext, executor?: Tx): Promise<RenderedNotice> {
+  if ('autopay' in ctx) {
+    const render = enrollmentRenderers[kind];
+    if (!render) throw new Error(`Wrong enrollment notice context for ${kind}`);
+    return render(ctx.autopay, executor);
+  }
   const renderer = renderers.get(kind);
   if (!renderer) throw new Error(`No billing renderer: ${kind}`);
 

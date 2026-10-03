@@ -1,3 +1,4 @@
+import {z} from 'zod';
 export const AUTOPAY_ENROLLMENT_STATUSES = ['requested', 'active', 'paused', 'cancelled'] as const;
 export const AUTOPAY_CANCEL_SOURCES = ['client', 'msp', 'system'] as const;
 export const AUTOPAY_NEEDS_ATTENTION_REASONS = ['method_unusable', 'stripe_account_changed', 'key_missing_permissions', 'verification_failed'] as const;
@@ -14,7 +15,7 @@ export const ACTIVE_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirm
 export const RESERVING_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'requires_action'] as const;
 export const COLLECTION_FAILURE_CLASSES = ['soft', 'hard', 'auth_required', 'nsf', 'revoked'] as const;
 export const COLLECTION_ATTEMPT_INITIATORS = ['scheduler', 'msp_charge_now', 'client_on_session'] as const;
-export const BILLING_NOTICE_KINDS = ['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring'] as const;
+export const BILLING_NOTICE_KINDS = ['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring', 'autopay_paused', 'autopay_resumed'] as const;
 export const BILLING_NOTICE_STATUSES = ['pending', 'sending', 'sent', 'failed', 'cancelled', 'handler_failed'] as const;
 export const BILLING_LINK_PURPOSES = ['enroll', 'skip_invoice', 'stop_autopay', 'confirm_payment'] as const;
 export const CONSENT_SOURCES = ['setup_page', 'pay_and_save', 'portal'] as const;
@@ -38,3 +39,61 @@ export type BillingNoticeKind = (typeof BILLING_NOTICE_KINDS)[number];
 export type BillingNoticeStatus = (typeof BILLING_NOTICE_STATUSES)[number];
 export type BillingLinkPurpose = (typeof BILLING_LINK_PURPOSES)[number];
 export type ConsentSource = (typeof CONSENT_SOURCES)[number];
+
+export const AUTOPAY_SETUP_SOURCES = CONSENT_SOURCES;
+export const AUTOPAY_SETUP_OUTCOMES = ['activated','pending_verification','stale_generation','failed','in_progress','abandoned'] as const;
+export type AutopaySetupSource = (typeof AUTOPAY_SETUP_SOURCES)[number];
+export type AutopaySetupOutcome = (typeof AUTOPAY_SETUP_OUTCOMES)[number];
+export interface AutopaySetupCompletion { outcome: AutopaySetupOutcome; orgId: string }
+export interface AutopaySetupResult extends AutopaySetupCompletion { methodLabel: string | null; feeText: string }
+export interface InvoiceAutopayOffer { eligible: boolean; consentText: string; consentVersion: string; disclosureHash: string }
+export type AutopayScheduleTerms=z.infer<typeof autopayScheduleTermsSchema>;
+export type AutopayFeeTerms=z.infer<typeof autopayFeeTermsSchema>;
+export interface AutopayDisclosure {
+ version:string;text:string;hash:string;textHash:string;partnerName:string;scheduleText:string;feeText:string;
+ achMode:AchMode|'card_only';scheduleTerms:AutopayScheduleTerms;feeTerms:AutopayFeeTerms;
+}
+export interface AutopayMethodView {
+ type:AutopayPaymentMethodType;cardBrand:string|null;cardFunding:CardFundingType|null;cardLast4:string|null;
+ cardExpMonth:number|null;cardExpYear:number|null;bankName:string|null;bankLast4:string|null;status:OrgPaymentMethodStatus;
+}
+export interface AutopayEnrollmentView { status:AutopayEnrollmentStatus;generation:number;effectiveFrom:string|null;needsAttentionReason:AutopayNeedsAttentionReason|null }
+export interface AutopayListRow {
+ orgId:string;orgName:string;billingContact:{email?:string|null}|null;
+ stripeReadiness:{ready:boolean;missing:string[]};status:AutopayEnrollmentStatus|'not_requested'|'needs_attention';
+ enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;lastChargeResult:null;requestNoticeStatus:BillingNoticeStatus|null;
+}
+export interface AutopayCustomerPage {
+ stopOnly?:false;
+ orgId:string;orgName:string;partnerName:string;logoUrl:string|null;primaryColor:string|null;contactEmail:string;
+ scheduleText:string;achMode:AchMode|'card_only';consentVersion:string;consentText:Record<AutopayPaymentMethodType,string>;
+ disclosures:Record<AutopayPaymentMethodType,AutopayDisclosure>;
+ fees:Record<AutopayPaymentMethodType|'debit',{text:string;feeAmount:string;kind:'none'|'card_percent'|'ach_flat';appliedBps:number|null;reason:string}>;
+ enrollment:AutopayEnrollmentView|null;method:AutopayMethodView|null;processingWarning:string;
+}
+/** Minimal portal read model when enrollment setup is disabled. */
+export type AutopayStopOnlyPage = Pick<AutopayCustomerPage,
+ 'orgId'|'orgName'|'partnerName'|'enrollment'|'method'|'processingWarning'> & {stopOnly:true};
+export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
+export interface PaymentValues {
+ autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
+ autopayCapAmount:string|null;autopayCapCurrency:string|null;achMode:AchMode|null;
+}
+export type EffectivePaymentSetting<T>={value:T;source:'org'|'partner'|'default'};
+export interface ResolvedPaymentSettings {
+ autopayOffsetDays:EffectivePaymentSetting<number>;autopayOffsetRule:EffectivePaymentSetting<AutopayOffsetRule>;
+ autopayCap:EffectivePaymentSetting<AutopayScheduleTerms['cap']>;achMode:EffectivePaymentSetting<AchMode>;
+}
+export interface PaymentSettingsView { autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+
+export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
+ cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
+export const autopayFeeTermsSchema=z.object({methodType:z.enum(AUTOPAY_PAYMENT_METHOD_TYPES),cardFeeBps:z.number().int().min(0).max(300),achFeeAmount:z.string(),feeAttested:z.boolean(),currency:z.string()});
+export const autopayConsentSnapshotSchema=z.object({
+ version:z.string(),text:z.string(),hash:z.string(),textHash:z.string(),partnerName:z.string(),scheduleText:z.string(),feeText:z.string(),
+ achMode:z.enum(['ach_preferred','ach_only','card_only']),scheduleTerms:autopayScheduleTermsSchema,feeTerms:autopayFeeTermsSchema,
+ source:z.enum(AUTOPAY_SETUP_SOURCES),contactEmail:z.string(),ip:z.string().nullable(),userAgent:z.string().nullable(),
+ invoiceId:z.string().nullable(),checkoutKey:z.string().nullable(),
+});
+export type AutopayConsentSnapshot=z.infer<typeof autopayConsentSnapshotSchema>;
+export const AUTOPAY_SNAPSHOT_KEYS={hash:'hash',checkoutKey:'checkoutKey'} as const satisfies Record<string,keyof AutopayConsentSnapshot>;

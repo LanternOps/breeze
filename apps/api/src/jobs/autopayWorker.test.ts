@@ -3,17 +3,19 @@ import { readFileSync } from 'node:fs';
 const mocks = vi.hoisted(() => ({
   add: vi.fn().mockResolvedValue({}), close: vi.fn().mockResolvedValue(undefined),
   work: vi.fn(), dispatch: vi.fn().mockResolvedValue({ sent: 1, failed: 0 }),
+  expiry: vi.fn(),
   drain: vi.fn().mockResolvedValue(undefined), observe: vi.fn(),
 }));
 vi.mock('bullmq', () => ({
   Queue: class { add = mocks.add; close = mocks.close; },
   Worker: class { constructor(name: string, processor: unknown) { mocks.work(name, processor); } on() { return this; } close = mocks.close; },
 }));
+vi.mock('../services/autopay/cardExpiryCheck', () => ({ checkExpiringAutopayCards: mocks.expiry }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/autopay/noticeOutbox', () => ({ dispatchPendingBillingNotices: mocks.dispatch }));
 vi.mock('../services/autopay/merge', () => ({ drainAutopayMethodDetaches: mocks.drain }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: mocks.observe }));
-import { initializeAutopayWorkers, shutdownAutopayWorkers, processNoticeDispatch } from './autopayWorker';
+import { initializeAutopayWorkers, shutdownAutopayWorkers, processNoticeDispatch, processAutopayJob } from './autopayWorker';
 import { jobSchedule } from './scheduleRegistry';
 import { WORKER_REGISTRY, selectWorkers } from '../services/workerRegistry';
 import { WORKER_READINESS_MANIFEST } from './workerReadinessManifest';
@@ -27,6 +29,11 @@ describe('autopay worker registration', () => {
     expect(mocks.observe).toHaveBeenCalledWith(expect.anything(), 'autopayWorker');
     expect(mocks.add).toHaveBeenCalledWith('notice-dispatch', { type: 'notice-dispatch' }, expect.objectContaining({
       jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
+    }));
+    expect(jobSchedule('autopay-card-expiry-check')).toBe('28 6 * * *');
+    expect(mocks.add).toHaveBeenCalledTimes(2);
+    expect(mocks.add).toHaveBeenCalledWith('card-expiry-check', { type: 'card-expiry-check' }, expect.objectContaining({
+      jobId: 'autopay-card-expiry-check', repeat: { pattern: '28 6 * * *', tz: 'UTC' },
     }));
     const processor = mocks.work.mock.calls.at(-1)?.[1] as (job: { data: { type: string }; name: string }) => Promise<unknown>;
     expect(await processor({ data: { type: 'notice-dispatch' }, name: 'notice-dispatch' })).toEqual({ sent: 1, failed: 0 });
@@ -43,7 +50,7 @@ describe('autopay worker registration', () => {
     expect(mocks.close).toHaveBeenCalledTimes(2);
 
     await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-    expect(mocks.add).toHaveBeenCalledTimes(2);
+    expect(mocks.add).toHaveBeenCalledTimes(3);
     await shutdownAutopayWorkers();
   });
   it('is selected by the real worker registry and actual entrypoint uses that registry', () => {
@@ -79,4 +86,21 @@ it('still drains when dispatch fails and surfaces failed counts', async () => {
   expect(await processNoticeDispatch()).toEqual({ sent: 0, failed: 2 });
   expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ failed: 2 }));
   log.mockRestore();
+});
+
+it('dispatches expiry without consuming notice dispatch', async () => {
+  mocks.expiry.mockResolvedValue({ enqueued: 2 });
+  mocks.dispatch.mockResolvedValueOnce({ sent: 3, failed: 0 });
+  expect(await processAutopayJob({ type: 'card-expiry-check' })).toEqual({ enqueued: 2 });
+  expect(await processAutopayJob({ type: 'notice-dispatch' })).toEqual({ sent: 3, failed: 0 });
+  expect(mocks.expiry).toHaveBeenCalledOnce();
+  expect(mocks.dispatch).toHaveBeenCalledOnce();
+});
+it('cleans up and retries when the expiry schedule fails', async () => {
+  mocks.add.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('expiry registration failed'));
+  await expect(initializeAutopayWorkers()).rejects.toThrow('expiry registration failed');
+  expect(mocks.close).toHaveBeenCalledTimes(2);
+  await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
+  expect(mocks.add).toHaveBeenCalledTimes(4);
+  await shutdownAutopayWorkers();
 });

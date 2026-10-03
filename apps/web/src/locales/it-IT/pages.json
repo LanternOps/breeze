@@ -172,7 +172,8 @@
     "settingsTicketing": "Impostazioni ticket",
     "securityScans": "Scansioni IOC",
     "devicesTime": "Sincronizzazione dell’ora",
-    "adminAiModels": "Modelli di IA"
+    "adminAiModels": "Modelli di IA",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",

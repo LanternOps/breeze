@@ -2314,7 +2314,8 @@
     "defaults": "Standardwerte",
     "documents": "Dokumente",
     "connections": "Verbindungen",
-    "rates": "Tarife"
+    "rates": "Tarife",
+    "payments": "Payments"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2420,5 +2421,73 @@
       "summaryIncluded": "Inklusive",
       "summaryNotBilled": "Nicht abgerechnet"
     }
+  },
+  "autopay": {
+    "requestDeliveryFailed": "Die Anfrage-E-Mail konnte nicht zugestellt werden. Senden Sie sie erneut.",
+    "skipNoContact": "Keine E-Mail-Adresse für die Abrechnung vorhanden. Fügen Sie eine hinzu oder geben Sie einen Empfänger an.",
+    "skipStripeNotReady": "Stripe ist nicht für automatische Zahlungen bereit. Prüfen Sie Verbindung und Berechtigungen.",
+    "skipAlreadyActive": "Automatische Zahlungen sind bereits aktiv oder pausiert.",
+    "title": "Automatische Zahlungen",
+    "loading": "Automatische Zahlungen werden geladen…",
+    "error": "Diese Aktion konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
+    "saved": "Zahlungseinstellungen gespeichert.",
+    "save": "Speichern",
+    "invalid": "Geben Sie 0–60 ganze Tage und einen positiven Höchstbetrag mit einem dreistelligen Währungscode ein.",
+    "offset-days": "Tage nach Ausstellung",
+    "offset-rule": "Vergleich mit dem Fälligkeitsdatum",
+    "cap-enabled": "Limit für automatische Zahlungen",
+    "cap-amount": "Höchstbetrag",
+    "cap-currency": "Währung",
+    "ach-mode": "Zahlungsmethoden",
+    "inherit": "{{value}} — übernommen von {{source}}",
+    "source": {
+      "org": "Organisation",
+      "partner": "Partnerstandard",
+      "default": "Breeze-Standard"
+    },
+    "option": {
+      "earlier": "Das frühere Datum",
+      "later": "Das spätere Datum",
+      "false": "Unbegrenzt",
+      "true": "Limit aktiviert",
+      "ach_preferred": "Bankkonto bevorzugt; Karten akzeptiert",
+      "ach_only": "Nur Bankkonto"
+    },
+    "achRisk": "Bankzahlungen sind für berechtigte US-Konten in USD verfügbar. Ihr Unternehmen trägt die Verantwortung für ACH-Rückbuchungen und Stripe-Rückbuchungsgebühren; Rückbuchungen einzelner Konten können bis zu 60 Tage später eintreffen.",
+    "stripeNotReady": "Automatische Zahlungen sind nicht verfügbar. Prüfen Sie die Stripe-Berechtigungen: {{permissions}}.",
+    "stripeDisconnected": "Verbinden Sie zuerst Stripe",
+    "card": "Karte",
+    "bank": "Bankkonto",
+    "done": "Anfrage abgeschlossen.",
+    "status": {
+      "not_requested": "Nicht angefragt",
+      "requested": "Angefragt",
+      "active": "Aktiv",
+      "paused": "Pausiert",
+      "cancelled": "Aus",
+      "needs_attention": "Handlungsbedarf"
+    },
+    "pending": "Die Bankverifizierung steht aus. Automatische Zahlungen sind noch nicht möglich.",
+    "effective": "Gilt für Rechnungen, die nach {{date}} ausgestellt werden",
+    "recipient": "Abweichender Anfrageempfänger (optional)",
+    "request": "Anfrage senden",
+    "resend": "Anfrage erneut senden",
+    "pause": "Pausieren",
+    "resume": "Fortsetzen",
+    "turnOff": "Ausschalten",
+    "cancel": "Abbrechen",
+    "processingWarning": "Künftige automatische Zahlungen werden gestoppt. Eine bereits verarbeitete Bankzahlung kann nicht zurückgerufen werden.",
+    "unasked_one": "{{count}} Kunde noch nicht angefragt",
+    "unasked_other": "{{count}} Kunden noch nicht angefragt",
+    "sendNow": "Jetzt senden",
+    "dismiss": "Ausblenden",
+    "select": "Auswählen",
+    "client": "Kunde",
+    "statusLabel": "Zustand",
+    "method": "Zahlungsmethode",
+    "selectClient": "{{name}} auswählen",
+    "empty": "Keine Kunden gefunden.",
+    "requestedCount_one": "Anfrage an {{count}} Kunden gesendet.",
+    "requestedCount_other": "Anfragen an {{count}} Kunden gesendet."
   }
 }

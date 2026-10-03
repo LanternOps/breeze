@@ -1,3 +1,5 @@
+import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { payAndSaveSchema, getInvoiceAutopayOffer, prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from '../../services/autopay/payAndSave';
 import { assertNoActiveCollection, readInFlightCollection } from '../../services/autopay/reservation';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -179,6 +181,7 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
     lines: result.lines.map(toCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
+    autopay: await getInvoiceAutopayOffer(auth.user.orgId),
     branding: {
       partnerName: partner?.name ?? null,
       logoUrl: brand?.logoUrl ?? null,
@@ -235,6 +238,8 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
 // so it isn't a contextless 0-row no-op (#1375).
 invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), async (c) => {
   const auth = c.get('portalAuth');
+  const parsed = payAndSaveSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'Invalid automatic-payment authorization' }, 400);
   const { id } = c.req.valid('param');
 
   const [inv] = await withSystemDbAccessContext(() =>
@@ -269,6 +274,23 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
   // multiplied by 100, or the customer is over-charged 100x (see stripeMoney.ts).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) return c.json({ error: 'Nothing to pay' }, 409);
+  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
+  let capture: Awaited<ReturnType<typeof prepareCardPayAndSave>>;
+  try {
+    capture = await prepareCardPayAndSave(inv.id, auth.user.orgId, {
+      ...parsed.data, contactEmail: auth.user.email, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
+    }, `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`);
+  } catch (err) {
+    if (err instanceof InvoiceServiceError) {
+      // Local compatibility translation until the shared autopay error mapper lands.
+      if (parsed.data.saveForAutopay && err.status === 404 && err.code === 'INVALID_STATE'
+        && err.message === 'Automatic payments unavailable') {
+        return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
+      }
+      return c.json({ error: err.message, code: err.code }, err.status);
+    }
+    throw err;
+  }
 
   // stripe_connect_accounts is a partner-axis table (reused by the #1610 API-key
   // model). This handler runs with NO ambient DB context (#1448 opt-out), and even
@@ -304,7 +326,6 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
-  const { expiresAt: providerExpiresAtEpoch, quantum: expiryQuantum } = checkoutSessionExpiry();
 
   assertNoHeldDbContextForStripe('portal.invoicePay');
   let session;
@@ -322,6 +343,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // to `revoked` on the strength of this pin. Adding a delayed method here
     // requires changing that mapping first. Mirror: services/invoiceCheckout.ts.
     payment_method_types: ['card'],
+    ...cardSaveStripeFields(capture),
     line_items: [{
       price_data: {
         currency: inv.currencyCode.toLowerCase(),
@@ -340,6 +362,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     success_url: `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
+      ...(capture ? { autopay_setup_attempt_id: capture.id } : {}),
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
@@ -357,7 +380,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     // `_e<quantum>` (SEC-150): `expires_at` is part of the request and Stripe
     // refuses an idempotent replay whose parameters moved, so the hour quantum
     // is folded into the key — see checkoutSessionExpiry().
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}_e${expiryQuantum}`,
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${capture ? `_save_${capture.id}` : ''}_e${expiryQuantum}`,
   }));
   } catch (err) {
     // Customer-facing path (spec §10): a currency the partner's account cannot
@@ -400,7 +423,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
     raced = racedRevocation !== undefined || racedCollection || racedBalance;
-    await db.insert(invoiceStripePayments).values({
+    const [insertedMapping]=await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -413,7 +436,12 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       providerExpiresAt: session.expires_at
         ? new Date(session.expires_at * 1000)
         : new Date(providerExpiresAtEpoch * 1000),
-    });
+    }).onConflictDoNothing({target:invoiceStripePayments.stripeObjectId}).returning({invoiceId:invoiceStripePayments.invoiceId});
+    if(!insertedMapping){
+      const [existingMapping]=await db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripeObjectId,session.id)).limit(1);
+      if(!existingMapping||existingMapping.invoiceId!==inv.id||existingMapping.stripeAccountId!==stripeAccountId)
+        throw new InvoiceServiceError('Checkout session belongs to a different invoice',409,'INVALID_STATE');
+    }
     if (raced) {
       // Intent on THIS transaction handle — escaping to re-take the invoice row
       // FOR UPDATE would self-deadlock against the FOR KEY SHARE the INSERT above
@@ -436,6 +464,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
     }, 409);
   }
 
+  await bindCardPayAndSave(capture, session);
   return c.json({ url: session.url });
 });
 

@@ -172,7 +172,8 @@
     "settingsTicketing": "Paramètres de tickets",
     "securityScans": "Analyses IOC",
     "devicesTime": "Synchronisation de l’heure",
-    "adminAiModels": "Modèles d'IA"
+    "adminAiModels": "Modèles d'IA",
+    "billingAutopay": "Automatic payments"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

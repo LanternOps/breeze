@@ -247,6 +247,21 @@ describe('GET /invoices/public/:token', () => {
 });
 
 describe('POST /invoices/public/:token/pay', () => {
+  it.each([
+    ['stale disclosure', 409, 'The terms changed. Review them and try again.', 'INVALID_STATE'],
+    ['unavailable enrollment', 409, 'Request automatic payments first', 'INVALID_STATE'],
+    ['disabled rollout', 404, 'Automatic payments unavailable', 'autopay_not_enabled'],
+  ] as const)('pay preserves the customer response for %s', async (_case, status, message, code) => {
+    resolveMock.mockResolvedValue(invoice());
+    payLinkMock.mockRejectedValueOnce(new InvoiceServiceError(message, status, 'INVALID_STATE'));
+    const res = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }) });
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error: code === 'autopay_not_enabled' ? 'Automatic payments are not enabled' : message, code });
+    expect(payLinkMock).toHaveBeenCalledTimes(1);
+  });
+
   const post = (token = TOKEN) => app().request(`/invoices/public/${token}/pay`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
   });
@@ -465,4 +480,25 @@ it('public pay returns the reservation conflict without exposing a payment URL',
   const response = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   expect(response.status).toBe(409);
   expect(await response.json()).toEqual({ error: 'A payment is already processing', code: 'COLLECTION_IN_PROGRESS' });
+});
+
+vi.mock('../services/autopay/payAndSave', async importOriginal => {
+  const actual = await importOriginal<typeof import('../services/autopay/payAndSave')>();
+  return { ...actual, getInvoiceAutopayOffer: vi.fn(async () => null) };
+});
+it('public invoice pay forwards only explicit card authorization', async () => {
+  resolveMock.mockResolvedValue(invoice()); payLinkMock.mockResolvedValue({ url: 'https://checkout.stripe.com/c/cs_saved' });
+  const res = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }) });
+  expect(res.status).toBe(200);
+  expect(payLinkMock).toHaveBeenCalledWith(INV_ID, expect.anything(), expect.objectContaining({
+    saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64),
+  }));
+});
+it('public invoice pay refuses an unaccepted save request before Checkout', async () => {
+  resolveMock.mockResolvedValue(invoice());
+  const res = await app().request(`/invoices/public/${TOKEN}/pay`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ saveForAutopay: true }) });
+  expect(res.status).toBe(400); expect(payLinkMock).not.toHaveBeenCalled();
 });

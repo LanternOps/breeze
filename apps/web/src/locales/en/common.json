@@ -107,7 +107,9 @@
     "system": "System",
     "monitorConversion": "Monitor Conversion",
     "timeSync": "Time Sync",
-    "aiModels": "AI Models"
+    "aiModels": "AI Models",
+    "autopay": "Autopay",
+    "payments": "Payments"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

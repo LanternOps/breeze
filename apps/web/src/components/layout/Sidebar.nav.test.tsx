@@ -94,6 +94,7 @@ describe('navSections structure (#1321, #1324)', () => {
     // time is service-desk work, not billing document work).
     expect(hrefsOf('billing')).toEqual([
       '/billing/quotes',
+      '/billing/autopay',
       '/billing/invoices',
       '/contracts',
       // W03 — the agreement library left /contracts for its own area.

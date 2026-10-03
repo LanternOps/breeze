@@ -6,3 +6,5 @@ export interface RenderedNotice {
   text: string;
   frozen: Record<string, string | number | null>;
 }
+
+export {autopayScheduleTermsSchema,autopayFeeTermsSchema,autopayConsentSnapshotSchema,AUTOPAY_SNAPSHOT_KEYS,type AutopayConsentSnapshot} from '@breeze/shared';

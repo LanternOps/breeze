@@ -2314,7 +2314,8 @@
     "defaults": "Valores predeterminados",
     "documents": "Documentos",
     "connections": "Conexiones",
-    "rates": "Tarifas"
+    "rates": "Tarifas",
+    "payments": "Payments"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2420,5 +2421,73 @@
       "summaryIncluded": "Incluido",
       "summaryNotBilled": "No facturado"
     }
+  },
+  "autopay": {
+    "requestDeliveryFailed": "No se pudo entregar el correo de solicitud. Vuelve a enviarlo.",
+    "skipNoContact": "No hay un correo de facturación disponible. Agrega uno o indica un destinatario.",
+    "skipStripeNotReady": "Stripe no está listo para pagos automáticos. Revisa la conexión y los permisos.",
+    "skipAlreadyActive": "Los pagos automáticos ya están activos o pausados.",
+    "title": "Pagos automáticos",
+    "loading": "Cargando pagos automáticos…",
+    "error": "No se pudo completar esta acción. Inténtalo de nuevo.",
+    "saved": "Se guardó la configuración de pagos.",
+    "save": "Guardar",
+    "invalid": "Ingresa entre 0 y 60 días enteros y un importe máximo positivo con un código de moneda de tres letras.",
+    "offset-days": "Días después de la emisión",
+    "offset-rule": "Comparación con la fecha de vencimiento",
+    "cap-enabled": "Límite de pago automático",
+    "cap-amount": "Importe máximo",
+    "cap-currency": "Moneda",
+    "ach-mode": "Métodos de pago",
+    "inherit": "{{value}} — heredado de {{source}}",
+    "source": {
+      "org": "Organización",
+      "partner": "Valor predeterminado del socio",
+      "default": "Valor predeterminado de Breeze"
+    },
+    "option": {
+      "earlier": "La fecha más temprana",
+      "later": "La fecha más tardía",
+      "false": "Sin límite",
+      "true": "Límite activado",
+      "ach_preferred": "Se prefiere cuenta bancaria; se aceptan tarjetas",
+      "ach_only": "Solo cuenta bancaria"
+    },
+    "achRisk": "Los pagos bancarios están disponibles para cuentas elegibles de EE. UU. en USD. Tu empresa es responsable de las devoluciones ACH y de las comisiones de devolución de Stripe; las devoluciones de cuentas individuales pueden llegar hasta 60 días después.",
+    "stripeNotReady": "Los pagos automáticos no están disponibles. Revisa los permisos de Stripe: {{permissions}}.",
+    "stripeDisconnected": "Conecta Stripe primero",
+    "card": "Tarjeta",
+    "bank": "Cuenta bancaria",
+    "done": "Solicitud completada.",
+    "status": {
+      "not_requested": "No solicitado",
+      "requested": "Solicitado",
+      "active": "Activo",
+      "paused": "En pausa",
+      "cancelled": "Desactivado",
+      "needs_attention": "Requiere atención"
+    },
+    "pending": "La verificación bancaria está pendiente. Todavía no se pueden realizar pagos automáticos.",
+    "effective": "Se aplica a las facturas emitidas después de {{date}}",
+    "recipient": "Destinatario alternativo de la solicitud (opcional)",
+    "request": "Enviar solicitud",
+    "resend": "Reenviar solicitud",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "turnOff": "Desactivar",
+    "cancel": "Cancelar",
+    "processingWarning": "Se detendrán los pagos automáticos futuros. Un pago bancario que ya se está procesando no se puede cancelar.",
+    "unasked_one": "{{count}} cliente aún sin solicitud",
+    "unasked_other": "{{count}} clientes aún sin solicitud",
+    "sendNow": "Enviar ahora",
+    "dismiss": "Descartar",
+    "select": "Seleccionar",
+    "client": "Cliente",
+    "statusLabel": "Estado",
+    "method": "Método de pago",
+    "selectClient": "Seleccionar a {{name}}",
+    "empty": "No se encontraron clientes.",
+    "requestedCount_one": "Solicitud enviada a {{count}} cliente.",
+    "requestedCount_other": "Solicitudes enviadas a {{count}} clientes."
   }
 }

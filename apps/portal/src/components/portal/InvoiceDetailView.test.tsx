@@ -9,7 +9,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import InvoiceDetailView from './InvoiceDetailView';
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); window.history.replaceState({}, "", "/"); });
 
 // #3319: the customer-facing surface where the dropped line name actually
 // showed up. The title/blurb derivation here must stay identical to
@@ -183,4 +183,56 @@ describe('InvoiceDetailView — autopay collection in flight (#7824)', () => {
     expect((screen.getByTestId('invoice-pay-button') as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByTestId('invoice-collection-processing')).toBeNull();
   });
+});
+
+it('future-card authorization starts unticked and is sent only with explicit consent', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Test payment was not started.', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'I authorize Example MSP for future invoices.',
+    consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  render(<InvoiceDetailView detail={input} />);
+  const box = screen.getByTestId('autopay-save-card');
+  expect((box as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(box);
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, {
+    saveForAutopay: true, consentAccepted: true, disclosureHash: 'a'.repeat(64) }));
+  expect(screen.getByTestId('autopay-save-card-text')).toHaveTextContent(input.autopay.consentText);
+  pay.mockRestore();
+});
+
+it('requires fresh consent when the invoice disclosure changes', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Payment unavailable', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'Original terms', consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  const view = render(<InvoiceDetailView detail={input} />);
+  fireEvent.click(screen.getByTestId('autopay-save-card'));
+  view.rerender(<InvoiceDetailView detail={{ ...input, autopay: { ...input.autopay, consentText: 'Changed terms', disclosureHash: 'b'.repeat(64) } }} />);
+  expect(screen.getByTestId('autopay-save-card')).not.toBeChecked();
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, { saveForAutopay: false }));
+});
+
+it('does not send consent after eligibility is withdrawn', async () => {
+  const { portalApi } = await import('@/lib/api');
+  const pay = vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ error: 'Payment unavailable', statusCode: 409 });
+  const input = detail([]);
+  input.autopay = { eligible: true, consentText: 'Terms', consentVersion: '2026-10-01', disclosureHash: 'a'.repeat(64) };
+  const view = render(<InvoiceDetailView detail={input} />);
+  fireEvent.click(screen.getByTestId('autopay-save-card'));
+  view.rerender(<InvoiceDetailView detail={{ ...input, autopay: { ...input.autopay, eligible: false } }} />);
+  expect(screen.queryByTestId('autopay-save-card')).toBeNull();
+  fireEvent.click(screen.getByTestId('invoice-pay-button'));
+  await vi.waitFor(() => expect(pay).toHaveBeenCalledWith(input.invoice.id, {}, { saveForAutopay: false }));
+});
+
+it('surfaces settlement request failures on checkout return', async () => {
+  const { portalApi } = await import('@/lib/api');
+  vi.spyOn(portalApi, 'settleInvoice').mockRejectedValue(new Error('offline'));
+  window.history.replaceState({}, '', '/?paid=1&session_id=cs_test');
+  render(<InvoiceDetailView detail={detail([])} />);
+  expect(await screen.findByTestId('invoice-pay-error')).toHaveTextContent('Could not confirm payment. Please try again.');
+  expect(screen.getByTestId('invoice-settle-failed')).toBeInTheDocument();
 });

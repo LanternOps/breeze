@@ -9,7 +9,7 @@ import {
 } from './emailTemplates';
 
 describe('email template catalog', () => {
-  it('EMAIL_TEMPLATE_IDS is the PR1 set plus quote, invoice, and portal invite', () => {
+  it('EMAIL_TEMPLATE_IDS includes support, billing, portal, and enrollment templates', () => {
     expect([...EMAIL_TEMPLATE_IDS]).toEqual([
       'ticket_comment_notification',
       'ticket_autoresponse',
@@ -17,6 +17,12 @@ describe('email template catalog', () => {
       'quote_send',
       'invoice_send',
       'portal_invite',
+      'autopay_request',
+      'autopay_enrolled',
+      'autopay_stopped',
+      'autopay_paused',
+      'autopay_resumed',
+      'card_expiring',
     ]);
   });
 

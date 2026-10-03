@@ -1,3 +1,4 @@
+import { reconcileAutopaySetups } from '../services/autopay/setupReconciliation';
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
@@ -99,16 +100,18 @@ function createWorker(): Worker<SweepJobData> {
   return new Worker<SweepJobData>(
     QUEUE_NAME,
     async (_job: Job<SweepJobData>) => {
-      try {
-        // No wrapping context: the pass owns its own short transactions (#7065).
-        const settled = await reconcilePendingStripePayments();
-        const financialEvents = await pollStripeFinancialEvents();
-        return { settled, financialEvents };
-      } catch (err) {
-        console.error('[StripeReconcileSweep] run failed:', err);
-        captureException(err instanceof Error ? err : new Error(String(err)));
-        throw err;
+      const failures:unknown[]=[];
+      async function concern<T>(name:string,run:()=>Promise<T>):Promise<T|undefined>{
+        try{return await run();}catch(error){
+          console.error(`[StripeReconcileSweep] ${name} failed:`,error);
+          captureException(error instanceof Error?error:new Error(String(error)));failures.push(error);
+        }
       }
+      const settled=await concern('payments',reconcilePendingStripePayments);
+      const setups=await concern('autopay setups',reconcileAutopaySetups);
+      const financialEvents=await concern('financial events',pollStripeFinancialEvents);
+      if(failures.length)throw new AggregateError(failures,'Stripe reconciliation concerns failed');
+      return {settled,setups,financialEvents};
     },
     { connection: getBullMQConnection(), concurrency: 1 },
   );

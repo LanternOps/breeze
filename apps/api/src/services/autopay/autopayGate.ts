@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import type { MiddlewareHandler } from 'hono';
-import { db as ambientDb, getCurrentDbAccessContext } from '../../db';
+import { db as ambientDb, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { partners } from '../../db/schema';
 import type { Tx } from './types';
@@ -19,8 +19,15 @@ export async function isAutopayEnabledForPartner(db: Tx, partnerId: string): Pro
 
 export function requireAutopayEnabled(): MiddlewareHandler {
   return async (c, next) => {
-    const partnerId = c.get('auth')?.partnerId;
-    if (!partnerId || !await isAutopayEnabledForPartner(ambientDb, partnerId)) {
+    const partnerId = c.get('autopayPartnerId') ?? c.get('auth')?.partnerId;
+    // Self-managed routes have no ambient transaction. Close this short read
+    // before entering the handler, which owns its own authorized context.
+    const enabled = partnerId && await (getCurrentDbAccessContext()
+      ? isAutopayEnabledForPartner(ambientDb, partnerId)
+      : runOutsideDbContext(() => withSystemDbAccessContext(
+        () => isAutopayEnabledForPartner(ambientDb, partnerId),
+      )));
+    if (!enabled) {
       return c.json({ error: 'Automatic payments are not enabled', code: 'autopay_not_enabled' }, 404);
     }
     await next();

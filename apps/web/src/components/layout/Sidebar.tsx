@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -72,6 +73,7 @@ import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { useToolSourcesGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
 import { WEB_VERSION } from '../../lib/version';
@@ -152,6 +154,7 @@ function useSidebarScrollPersist(): React.RefObject<HTMLElement | null> {
 // Nav item type
 // ---------------------------------------------------------------------------
 type NavItem = {
+  requiresAutopay?: boolean;
   name: string;
   labelKey?: string;
   href: string;
@@ -354,6 +357,8 @@ export const navSections: NavSection[] = [
     requiresModule: 'service_management',
     items: [
       { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
+      { name: 'Autopay', labelKey: 'nav.autopay', href: '/billing/autopay', icon: CreditCard,
+        partnerScopeOnly: true, requiresAutopay: true, requiredPermission: { resource: 'billing', action: 'manage' } },
       { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
       // ScrollText, not FileText: Quotes three rows up already uses FileText, and
@@ -640,6 +645,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
+  const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
@@ -850,6 +856,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       isPlatformAdmin,
       permissions,
       getScope: () => jwtScope,
+      autopayEnabled,
       toolSourcesEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
@@ -873,6 +880,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
     const anchor = (
       <a
+        data-testid={item.href === '/billing/autopay' ? 'autopay-nav' : undefined}
         key={withRecents ? undefined : item.name}
         href={item.href}
         title={narrow && !hovered ? label : undefined}

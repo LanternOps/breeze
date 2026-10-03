@@ -47,3 +47,10 @@ describe('requiresAccountStatusGuard', () => {
     }
   });
 });
+
+// protectedPaths.test.ts — import the existing exported functions.
+it('payment methods requires login and active account, public tokens do not', () => {
+  expect(isProtectedPath('/payment-methods')).toBe(true);
+  expect(requiresAccountStatusGuard('/payment-methods')).toBe(true);
+  expect(isProtectedPath('/autopay/opaque-token/stop')).toBe(false);
+});

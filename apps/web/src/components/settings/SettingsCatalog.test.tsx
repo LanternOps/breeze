@@ -10,7 +10,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock('../../stores/auth', () => ({
   registerOrgIdProvider: vi.fn(),
-  fetchWithAuth: vi.fn(),
+  fetchWithAuth: vi.fn(async()=>Response.json({autopayEnabled:false})),
   useAuthStore: Object.assign(
     (sel: (s: unknown) => unknown) => sel({ user: { isPlatformAdmin: false, permissions: state.perms } }),
     { getState: () => ({ tokens: null }) },

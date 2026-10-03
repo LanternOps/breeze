@@ -6,6 +6,7 @@ import { useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useToolSourcesGate } from '../../stores/featuresStore';
 import { getJwtClaims } from '../../lib/authScope';
+import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { SETTINGS_CATALOG, SETTINGS_GROUPS } from '../../lib/settingsCatalog';
 
@@ -18,6 +19,7 @@ export default function SettingsCatalog() {
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const permissions = useAuthStore((s) => s.user?.permissions);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
+  const autopayEnabled = useAutopayEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const [query, setQuery] = useState('');
 
@@ -26,6 +28,7 @@ export default function SettingsCatalog() {
       isPlatformAdmin,
       permissions,
       getScope: () => getJwtClaims().scope,
+      autopayEnabled,
       toolSourcesEnabled,
       aiForOfficeEnabled: false,
       serviceManagementMode,
@@ -38,7 +41,7 @@ export default function SettingsCatalog() {
         description: e.descriptionKey ? t(/* i18n-dynamic */ e.descriptionKey, { defaultValue: '' }) : '',
       }))
       .filter((e) => !q || `${e.title} ${e.description}`.toLowerCase().includes(q));
-  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, query, t]);
+  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, autopayEnabled, query, t]);
 
   return (
     <div className="space-y-6" data-testid="settings-catalog">
@@ -76,7 +79,7 @@ export default function SettingsCatalog() {
                   <a
                     key={e.id}
                     href={e.href}
-                    data-testid={`settings-card-${e.id}`}
+                    data-testid={e.id === 'billing-payments' ? 'autopay-settings-card-payments' : `settings-card-${e.id}`}
                     className="flex items-start gap-3 rounded-lg border bg-card p-4 shadow-xs transition hover:border-primary hover:shadow-md"
                   >
                     <Icon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />

@@ -1,16 +1,26 @@
 import { defineConfig } from 'vitest/config';
 import { config } from 'dotenv';
+import path from 'node:path';
 
 // Load test environment variables
 config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@breeze/shared': path.resolve(import.meta.dirname, '../../packages/shared/src'),
+    },
+  },
   test: {
     // explicit: vitest 5 flips the default to true; flip per package in a follow-up
     clearMocks: false,
     globals: true,
     environment: 'node',
     include: [
+      'src/index.autopay.integration.test.ts',
+      'src/db/schema/autopaySetupAttempts.integration.test.ts',
+      'src/services/autopay/enrollmentService.integration.test.ts',
+      'src/services/autopay/cardExpiryCheck.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
       'src/__tests__/integration/**/*.test.ts',

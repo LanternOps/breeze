@@ -76,6 +76,9 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'partner-service-principals', name: 'Service principals', labelKey: card('partnerServicePrincipals', 'title'), href: '/settings/partner-service-principals', icon: KeyRound, group: 'account', partnerScopeOnly: true },
 
   // Billing & Service Desk
+  { id: 'billing-payments', name: 'Payments', labelKey: 'nav.payments', href: '/settings/billing#payments',
+    icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiresAutopay: true,
+    requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'billing', name: 'Billing', labelKey: 'nav.billing', descriptionKey: card('billing', 'description'), href: '/settings/billing', icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
   { id: 'ticketing', name: 'Ticketing', labelKey: 'nav.ticketing', descriptionKey: card('ticketing', 'description'), href: '/settings/ticketing', icon: Ticket, group: 'billing', partnerScopeOnly: true },
   { id: 'ticket-checklist-templates', name: 'Ticket checklist templates', labelKey: card('ticketChecklistTemplates', 'title'), descriptionKey: card('ticketChecklistTemplates', 'description'), href: '/settings/ticketing#templates', icon: ClipboardList, group: 'billing', partnerScopeOnly: true },

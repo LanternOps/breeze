@@ -306,10 +306,10 @@
     }
   }
 
-  # --- MSP Invoice Engine + Quotes pages live in the web app at
-  #     /billing/invoices* and /billing/quotes*, and MUST be matched before
+  # --- MSP Invoice Engine + Quotes + Autopay pages live in the web app at
+  #     /billing/invoices*, /billing/quotes*, and /billing/autopay*, and MUST be matched before
   #     the /billing/* sidecar route below, otherwise the hosted billing
-  #     sidecar shadows the MSP Invoices/Quotes UI (see #1417). ---
+  #     sidecar shadows the MSP Invoices/Quotes/Autopay UI (see #1417). ---
   @webBillingInvoices path /billing/invoices /billing/invoices/*
   handle @webBillingInvoices {
     encode zstd gzip
@@ -318,6 +318,12 @@
 
   @webBillingQuotes path /billing/quotes /billing/quotes/*
   handle @webBillingQuotes {
+    encode zstd gzip
+    reverse_proxy web:4321
+  }
+
+  @webBillingAutopay path /billing/autopay /billing/autopay/*
+  handle @webBillingAutopay {
     encode zstd gzip
     reverse_proxy web:4321
   }

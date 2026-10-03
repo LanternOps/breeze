@@ -1,3 +1,4 @@
+import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from './autopay/payAndSave';
 import { assertNoActiveCollection, lockInvoiceForCollection } from './autopay/reservation';
 import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
@@ -87,6 +88,11 @@ export interface InvoiceCheckoutUrls {
    *  replay outright, so each URL shape needs its own key family. Omitted for
    *  the historical portal/MSP path to keep its keys byte-identical. */
   idempotencySuffix?: string;
+  saveForAutopay?: boolean;
+  consentAccepted?: true;
+  disclosureHash?: string;
+  ip?: string | null;
+  userAgent?: string | null;
 }
 
 export async function createInvoicePayLink(
@@ -118,6 +124,9 @@ export async function createInvoicePayLink(
   // Currency-aware minor units (zero-decimal currencies must not be ×100).
   const chargeMinor = toMinorUnits(chargeNow.amount, inv.currencyCode);
   if (chargeMinor <= 0) throw new InvoiceServiceError('Nothing to pay', 409, 'NOTHING_TO_PAY');
+  const { expiresAt, quantum } = checkoutSessionExpiry();
+  const capture = await prepareCardPayAndSave(inv.id, inv.orgId, urls,
+    `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`);
 
   // The partner charges on their OWN Stripe account using their stored key (no
   // platform/Connect). stripe_connect_accounts is a partner-axis table (reused by
@@ -147,7 +156,6 @@ export async function createInvoicePayLink(
   // longer hand-appended below).
   const portalBaseUrl = portalBase();
 
-  const { expiresAt, quantum } = checkoutSessionExpiry();
 
   // Truly outside any DB context/transaction — no pooled connection is held
   // across this ~hundreds-of-ms round trip.
@@ -163,6 +171,7 @@ export async function createInvoicePayLink(
     // asynchronously. Adding a delayed method here (bank debit / transfer)
     // requires changing that mapping first. Mirror: routes/portal/invoices.ts.
     payment_method_types: ['card'],
+    ...cardSaveStripeFields(capture),
     // SEC-150 defence in depth: an explicit provider-side death clock, so an
     // unrevoked session cannot outlive the day even if every local control fails.
     expires_at: expiresAt,
@@ -184,6 +193,7 @@ export async function createInvoicePayLink(
     success_url: urls.successUrl ?? `${portalBaseUrl}/invoices/${inv.id}?paid=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: urls.cancelUrl ?? `${portalBaseUrl}/invoices/${inv.id}`,
     metadata: {
+      ...(capture ? { autopay_setup_attempt_id: capture.id } : {}),
       invoice_id: inv.id,
       org_id: inv.orgId,
       partner_id: inv.partnerId,
@@ -202,7 +212,7 @@ export async function createInvoicePayLink(
     // refuses an idempotent replay whose parameters moved. Folding the hour
     // quantum into the key keeps the replay identical within the hour instead of
     // erroring across one.
-    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}_e${quantum}`,
+    idempotencyKey: `inv_${inv.id}_${chargeMinor}_${chargeNow.isDeposit ? 'dep' : 'bal'}${urls.idempotencySuffix ?? ''}${capture ? `_save_${capture.id}` : ''}_e${quantum}`,
   }));
   } catch (err) {
     // Friendly mapping (spec §10): a currency the account cannot present becomes a
@@ -247,7 +257,7 @@ export async function createInvoicePayLink(
         eq(invoiceStripePayments.revocationState, 'revocation_requested'),
       )).limit(1);
     raced = racedRevocation !== undefined || racedCollection || racedBalance;
-    await db.insert(invoiceStripePayments).values({
+    const [insertedMapping]=await db.insert(invoiceStripePayments).values({
       orgId: inv.orgId,
       invoiceId: inv.id,
       stripeAccountId,
@@ -258,7 +268,12 @@ export async function createInvoicePayLink(
       currency: inv.currencyCode,
       status: 'pending',
       providerExpiresAt: session.expires_at ? new Date(session.expires_at * 1000) : new Date(expiresAt * 1000),
-    });
+    }).onConflictDoNothing({target:invoiceStripePayments.stripeObjectId}).returning({invoiceId:invoiceStripePayments.invoiceId});
+    if(!insertedMapping){
+      const [existingMapping]=await db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripeObjectId,session.id)).limit(1);
+      if(!existingMapping||existingMapping.invoiceId!==inv.id||existingMapping.stripeAccountId!==stripeAccountId)
+        throw new InvoiceServiceError('Checkout session belongs to a different invoice',409,'INVALID_STATE');
+    }
     if (raced) {
       // Stamp intent on THIS transaction handle. Escaping to a second transaction
       // to re-take the invoice lock would deadlock against our publication lock.
@@ -276,6 +291,8 @@ export async function createInvoicePayLink(
       409, 'STRIPE_REVOCATION_PENDING',
     );
   }
+
+  await bindCardPayAndSave(capture, session);
 
   // Warn-don't-block (spec §10): the session is ALWAYS minted in the document
   // currency; a differing account default is surfaced so the partner knows they

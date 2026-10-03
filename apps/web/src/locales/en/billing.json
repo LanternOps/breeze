@@ -2314,7 +2314,8 @@
     "defaults": "Defaults",
     "documents": "Documents",
     "connections": "Connections",
-    "rates": "Rates"
+    "rates": "Rates",
+    "payments": "Payments"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2420,5 +2421,73 @@
       "summaryIncluded": "Included",
       "summaryNotBilled": "Not billed"
     }
+  },
+  "autopay": {
+    "requestDeliveryFailed": "Request email could not be delivered. Resend the request.",
+    "skipNoContact": "No billing contact email is available. Add an email or enter a recipient.",
+    "skipStripeNotReady": "Stripe is not ready for automatic payments. Check the connection and permissions.",
+    "skipAlreadyActive": "Automatic payments are already active or paused.",
+    "title": "Automatic payments",
+    "loading": "Loading automatic payments…",
+    "error": "Could not complete this action. Please try again.",
+    "saved": "Payment settings saved.",
+    "save": "Save",
+    "invalid": "Enter 0–60 whole days and a positive cap amount with a three-letter currency.",
+    "offset-days": "Days after issue",
+    "offset-rule": "Compared with the due date",
+    "cap-enabled": "Automatic payment limit",
+    "cap-amount": "Maximum amount",
+    "cap-currency": "Currency",
+    "ach-mode": "Payment methods",
+    "inherit": "{{value}} — inherited from {{source}}",
+    "source": {
+      "org": "Organization",
+      "partner": "Partner default",
+      "default": "Breeze default"
+    },
+    "option": {
+      "earlier": "Whichever is earlier",
+      "later": "Whichever is later",
+      "false": "Unlimited",
+      "true": "Limit enabled",
+      "ach_preferred": "Bank account preferred; cards accepted",
+      "ach_only": "Bank account only"
+    },
+    "achRisk": "Bank payments are available for eligible US accounts in USD. Your business is responsible for ACH returns and Stripe return fees; individual account returns can arrive up to 60 days later.",
+    "stripeNotReady": "Automatic payments are unavailable. Check Stripe permissions: {{permissions}}.",
+    "stripeDisconnected": "Connect Stripe first",
+    "card": "Card",
+    "bank": "Bank account",
+    "done": "Request completed.",
+    "status": {
+      "not_requested": "Not requested",
+      "requested": "Requested",
+      "active": "Active",
+      "paused": "Paused",
+      "cancelled": "Off",
+      "needs_attention": "Needs attention"
+    },
+    "pending": "Bank verification is pending. No automatic payments can be made yet.",
+    "effective": "Applies to invoices issued after {{date}}",
+    "recipient": "Request recipient override (optional)",
+    "request": "Send request",
+    "resend": "Resend request",
+    "pause": "Pause",
+    "resume": "Resume",
+    "turnOff": "Turn off",
+    "cancel": "Cancel",
+    "processingWarning": "Future automatic payments will stop. A bank payment already processing cannot be recalled.",
+    "unasked_one": "{{count}} client not yet asked",
+    "unasked_other": "{{count}} clients not yet asked",
+    "sendNow": "Send now",
+    "dismiss": "Dismiss",
+    "select": "Select",
+    "client": "Client",
+    "statusLabel": "Status",
+    "method": "Payment method",
+    "selectClient": "Select {{name}}",
+    "empty": "No clients found.",
+    "requestedCount_one": "Request sent to {{count}} client.",
+    "requestedCount_other": "Requests sent to {{count}} clients."
   }
 }
