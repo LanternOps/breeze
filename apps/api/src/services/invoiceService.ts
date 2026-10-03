@@ -1,3 +1,4 @@
+import { planAutopayForInvoice } from './autopay/scheduler';
 import { assertCollectionAmountAvailable, assertNoActiveCollection } from './autopay/reservation';
 import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql, count, getTableColumns, isNull } from 'drizzle-orm';
@@ -1616,6 +1617,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
         throw new InvoiceServiceError('AI usage charges changed under the issuance lock', 500, 'CONCURRENT_MODIFICATION');
       }
     }
+    await planAutopayForInvoice(db, invoiceId);
     return inv;
   }));
 

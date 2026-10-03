@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
+import { invoiceAutopaySchedules, billingNoticeOutbox, invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
 import { isPartnerOnlinePaymentAvailable } from './partnerStripe';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
@@ -897,7 +897,7 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
  *  (the caller is mid-issue and must learn the send failed), while a re-send
  *  changes no invoice state and so has nothing to roll back — reporting the
  *  failure honestly beats a 500 on an invoice that is already issued. */
-export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed' | 'pdf_render_failed';
+export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed' | 'pdf_render_failed' | 'notice_queued';
 
 /** Result of a send attempt: the (issued) invoice plus an honest signal of
  *  whether an email was actually dispatched. `emailed:false` means the invoice
@@ -1149,13 +1149,25 @@ export async function sendInvoiceEmail(
     if (!invoice) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   }
 
+  const [autopay] = await db.select().from(invoiceAutopaySchedules)
+    .where(eq(invoiceAutopaySchedules.invoiceId, invoiceId)).limit(1);
+  if (autopay?.eligible && ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled'].includes(autopay.state)) {
+    const [notice] = autopay.noticeOutboxId ? await db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.id, autopay.noticeOutboxId)).limit(1) : [];
+    if (notice?.status === 'sent') {
+      return { invoice, emailed: true, recipients: [notice.toEmail] };
+    }
+    return { invoice, emailed: false, recipients: [],
+      reason: notice?.status === 'failed' ? 'send_failed' : 'notice_queued' };
+  }
+
   // 2-4. Ensure the PDF, resolve recipients, send (graceful no-op if email is
   //      not configured or no recipient is known).
   const { emailed, reason, recipients } = await deliverInvoiceEmail(invoice, opts, { swallowThrow: false });
 
-  // 5. Stamp sent_at. This is the SOLE place sent_at is set — issueInvoice
-  //    leaves it null on purpose so a plain Issue reads "Issued", and only an
-  //    explicit send (this path) marks it. sent_at means "send attempted",
+  // 5. Stamp sent_at for ordinary delivery. Autopay returns above and its
+  //    notice-sent handler stamps delivery. issueInvoice leaves it null so a
+  //    plain Issue reads "Issued". sent_at means "send attempted",
   //    so it's stamped even when no email service / billing contact exists
   //    (see the emailed:false case + invoicePdf.integration.test). A RE-SEND
   //    deliberately does NOT re-stamp it — see resendInvoiceEmail.

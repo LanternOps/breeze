@@ -1,3 +1,6 @@
+const { plan } = vi.hoisted(() => ({ plan: vi.fn().mockResolvedValue(null) }));
+vi.mock('./autopay/scheduler', () => ({ planAutopayForInvoice: plan }));
+
 vi.mock('./autopay/reservation', () => ({
   assertCollectionAmountAvailable: vi.fn().mockResolvedValue(undefined),
   assertNoActiveCollection: vi.fn().mockResolvedValue(undefined),
@@ -1020,6 +1023,8 @@ describe('issueInvoice document_locale stamp', () => {
     queueIssuePath(draft(), { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: { language: 'fr-CA' } });
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().documentLocale).toBe('fr-CA');
+    expect(plan).toHaveBeenCalledWith(db, 'inv1');
+    expect(plan).toHaveBeenCalledTimes(1);
   });
 
   it('never overwrites a documentLocale the draft already carries', async () => {

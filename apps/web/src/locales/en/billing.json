@@ -2423,6 +2423,7 @@
     }
   },
   "autopay": {
+    "noticeQueued": "Automatic payment notice queued",
     "requestDeliveryFailed": "Request email could not be delivered. Resend the request.",
     "skipNoContact": "No billing contact email is available. Add an email or enter a recipient.",
     "skipStripeNotReady": "Stripe is not ready for automatic payments. Check the connection and permissions.",

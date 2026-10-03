@@ -30,3 +30,21 @@ describe('collection date', () => {
     expect(noticeLeadDays({ type, accountHolderType })).toBe(expected);
   });
 });
+
+import { eligibilityReason, type Eligibility } from './scheduler';
+const good: Eligibility = {
+  active: true, effective: true, methodUsable: true, charging: true,
+  stripeReady: true, sameAccount: true, achCurrency: true,
+  capCurrency: true, underCap: true, excludedContract: false, excludedInvoice: false,
+};
+it.each([
+  ['active', false, 'not_enrolled'], ['effective', false, 'enrolled_after_issue'],
+  ['methodUsable', false, 'method_not_usable'], ['charging', false, 'charging_disabled'],
+  ['stripeReady', false, 'stripe_unavailable'], ['sameAccount', false, 'stripe_unavailable'],
+  ['achCurrency', false, 'ach_currency_unsupported'], ['capCurrency', false, 'cap_currency_mismatch'],
+  ['underCap', false, 'over_cap'], ['excludedContract', true, 'excluded_contract'],
+  ['excludedInvoice', true, 'excluded_invoice'],
+] as const)('%s yields %s', (key, value, reason) => {
+  expect(eligibilityReason({ ...good, [key]: value })).toBe(reason);
+});
+it('keeps a fully eligible invoice eligible', () => expect(eligibilityReason(good)).toBeNull());

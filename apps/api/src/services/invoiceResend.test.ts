@@ -51,7 +51,11 @@ vi.mock('./invoiceLinkToken', () => ({
   buildPublicInvoiceUrl: (t: string) => `https://portal.example.test/portal/invoice/${t}`,
 }));
 
-import { resendInvoiceEmail } from './invoicePdf';
+const { issueInvoiceMock } = vi.hoisted(() => ({ issueInvoiceMock: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./invoiceService', () => ({ issueInvoice: issueInvoiceMock }));
+
+import { emitInvoiceEvent } from './invoiceEvents';
+import { sendInvoiceEmail, resendInvoiceEmail } from './invoicePdf';
 import { InvoiceServiceError } from './invoiceTypes';
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
@@ -95,6 +99,38 @@ describe('resendInvoiceEmail', () => {
     updateSetMock.mockReset();
     sendEmailMock.mockReset().mockResolvedValue(undefined);
     getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+  });
+
+
+  it.each(['sent', 'draft'] as const)('queues the %s autopay notice without sending or claiming delivery', async (status) => {
+    dbResults.push([invoice({ status, sentAt: null })]);
+    if (status === 'draft') dbResults.push([invoice({ sentAt: null })]);
+    dbResults.push([{ eligible: true, state: 'awaiting_notice',
+      noticeOutboxId: '33333333-3333-4333-8333-333333333333' }]);
+    dbResults.push([{ status: 'pending', toEmail: 'billing@example.test' }]);
+    const result = await sendInvoiceEmail(INV_ID, actor, { to: ['override@example.test'], subject: 'Override' });
+    expect(result).toMatchObject({ emailed: false, reason: 'notice_queued', recipients: [] });
+    expect(issueInvoiceMock).toHaveBeenCalledTimes(status === 'draft' ? 1 : 0);
+    if (status === 'draft') expect(issueInvoiceMock).toHaveBeenCalledWith(INV_ID, actor);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(emitInvoiceEvent).not.toHaveBeenCalled();
+    expect(updateSetMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['failed', false, 'send_failed', []],
+    ['sent', true, undefined, ['billing@example.test']],
+    [null, false, 'notice_queued', []],
+  ] as const)('reports notice status %s without a second delivery', async (status, emailed, reason, recipients) => {
+    dbResults.push([invoice({ sentAt: null })]);
+    dbResults.push([{ eligible: true, state: 'awaiting_notice', noticeOutboxId: status ? 'notice-id' : null }]);
+    if (status) dbResults.push([{ status, toEmail: 'billing@example.test' }]);
+    const result = await sendInvoiceEmail(INV_ID, actor);
+    expect(result).toMatchObject({ emailed, recipients });
+    expect(result.reason).toBe(reason);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(emitInvoiceEvent).not.toHaveBeenCalled();
+    expect(updateSetMock).not.toHaveBeenCalled();
   });
 
   it('emails the org billing contact and reports the recipients', async () => {
