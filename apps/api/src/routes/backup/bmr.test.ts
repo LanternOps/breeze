@@ -1427,6 +1427,187 @@ describe('bmr routes', () => {
     expect(withoutCode.targetConfig.result.code).toBeNull();
   });
 
+  // #5408: a recovery token is consumed by the first SUCCESSFUL completion,
+  // not by a failed attempt. The recovery binary reports every run to
+  // /complete — including one that died mid-download on a network drop — and
+  // that report used to mark the token used, so the retry answered
+  // "Token is used" and the operator had to go back to the console.
+  describe('failed recovery attempts do not consume the token (#5408)', () => {
+    const FAILED_JOB_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const authenticatedTokenRow = () => ({
+      id: TOKEN_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      snapshotId: SNAPSHOT_ID,
+      restoreType: 'bare_metal',
+      targetConfig: { diskLayout: 'auto' },
+      status: 'authenticated',
+      createdAt: new Date('2026-03-29T00:00:00.000Z'),
+      expiresAt: new Date('2026-04-01T00:00:00.000Z'),
+      authenticatedAt: new Date('2026-03-29T12:00:00.000Z'),
+      completedAt: null,
+      usedAt: null,
+    });
+
+    // Records every UPDATE issued after the request starts, keyed by the
+    // mocked table's id column so the route's own writes can be told apart
+    // from the expiry sweep (expireUnusedRecoveryTokens) that runs first.
+    function captureUpdateSets(returning: unknown[] = []) {
+      const sets: Array<{ table: string; set: Record<string, unknown> }> = [];
+      updateMock.mockImplementation(((table: { id?: string }) => {
+        const chain = chainMock(returning);
+        chain.set = vi.fn((value: Record<string, unknown>) => {
+          sets.push({ table: String(table?.id ?? ''), set: value });
+          return chain;
+        });
+        return chain;
+      }) as never);
+      return sets;
+    }
+    const setsOn = (sets: Array<{ table: string; set: Record<string, unknown> }>, prefix: string) =>
+      sets.filter((entry) => entry.table.startsWith(prefix)).map((entry) => entry.set);
+
+    function postComplete(result: Record<string, unknown>) {
+      return app.request('/backup/bmr/recover/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: VALID_RECOVERY_TOKEN, result }),
+      });
+    }
+
+    it('records a failed attempt without marking the token used or retiring its media', async () => {
+      selectMock.mockReturnValueOnce(chainMock([authenticatedTokenRow()]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'failed' }]));
+      const sets = captureUpdateSets();
+
+      const res = await postComplete({ status: 'failed', error: 'download failed: connection reset by peer' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: FAILED_JOB_ID, status: 'failed', tokenConsumed: false });
+      // The only recovery_tokens write is the expiry sweep; nothing consumes the token.
+      expect(setsOn(sets, 'recovery_tokens.')).toEqual([{ status: 'expired' }]);
+      expect(setsOn(sets, 'recovery_media_artifacts.')).toEqual([]);
+      expect(setsOn(sets, 'restore_jobs.')).toEqual([]);
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'bmr.recovery.complete',
+          resourceId: TOKEN_ID,
+          result: 'failure',
+          details: expect.objectContaining({ status: 'failed', tokenConsumed: false }),
+        }),
+      );
+    });
+
+    it('consumes the token when a retry after a failed attempt succeeds, reusing the restore job', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([authenticatedTokenRow()]))
+        // the per-token restore job left by the earlier failed attempt
+        .mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'failed' }]));
+      // unique(recovery_token_id) conflict: the failed attempt's row exists
+      insertMock.mockReturnValueOnce(chainMock([]));
+      const sets = captureUpdateSets([{ id: FAILED_JOB_ID, status: 'completed' }]);
+
+      const res = await postComplete({ status: 'completed', filesRestored: 500, bytesRestored: 1048576 });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: FAILED_JOB_ID, status: 'completed', tokenConsumed: true });
+      // The failed attempt's restore job now carries this attempt's outcome...
+      expect(setsOn(sets, 'restore_jobs.')).toEqual([expect.objectContaining({
+        status: 'completed',
+        restoredFiles: 500,
+        restoredSize: 1048576,
+        targetConfig: expect.objectContaining({
+          result: expect.objectContaining({ status: 'completed', error: null }),
+        }),
+      })]);
+      // ...and the token is now spent, with its recovery media retired.
+      expect(setsOn(sets, 'recovery_tokens.')).toContainEqual(
+        expect.objectContaining({ status: 'used', completedAt: expect.any(Date) }),
+      );
+      expect(setsOn(sets, 'recovery_media_artifacts.')).toEqual([{ status: 'expired' }]);
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'bmr.recovery.complete',
+          result: 'success',
+          details: expect.objectContaining({ status: 'completed', tokenConsumed: true }),
+        }),
+      );
+    });
+
+    it('a partial completion still consumes the token', async () => {
+      selectMock.mockReturnValueOnce(chainMock([authenticatedTokenRow()]));
+      insertMock.mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'partial' }]));
+      const sets = captureUpdateSets();
+
+      const res = await postComplete({ status: 'partial', filesRestored: 9_800, failedFiles: 47 });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: FAILED_JOB_ID, status: 'partial', tokenConsumed: true });
+      expect(setsOn(sets, 'recovery_tokens.')).toContainEqual(
+        expect.objectContaining({ status: 'used', completedAt: expect.any(Date) }),
+      );
+      expect(setsOn(sets, 'recovery_media_artifacts.')).toEqual([{ status: 'expired' }]);
+    });
+
+    it('reports the winning row when a concurrent completion moved the failed job first', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([authenticatedTokenRow()]))
+        .mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'failed' }]))
+        // guarded overwrite matched 0 rows -> re-read the row that won
+        .mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'completed' }]));
+      insertMock.mockReturnValueOnce(chainMock([]));
+      captureUpdateSets([]);
+
+      const res = await postComplete({ status: 'completed', filesRestored: 10 });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: FAILED_JOB_ID, status: 'completed', tokenConsumed: true });
+    });
+
+    it('a failed report racing a successful completion reports the token as consumed', async () => {
+      selectMock
+        .mockReturnValueOnce(chainMock([authenticatedTokenRow()]))
+        .mockReturnValueOnce(chainMock([{ id: FAILED_JOB_ID, status: 'completed' }]))
+        // the concurrent completion already spent the token
+        .mockReturnValueOnce(chainMock([{ status: 'used', completedAt: new Date('2026-03-29T13:00:00.000Z') }]));
+      insertMock.mockReturnValueOnce(chainMock([]));
+      const sets = captureUpdateSets();
+
+      const res = await postComplete({ status: 'failed', error: 'late failure report' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: FAILED_JOB_ID, status: 'completed', tokenConsumed: true });
+      expect(setsOn(sets, 'restore_jobs.')).toEqual([]);
+      expect(writeAuditEventMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'bmr.recovery.complete',
+          result: 'failure',
+          details: expect.objectContaining({ tokenConsumed: true }),
+          errorMessage: expect.stringContaining('already consumed'),
+        }),
+      );
+    });
+
+    it('does not overwrite a pre-existing non-failed restore job for the token', async () => {
+      const pendingJobId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+      selectMock
+        .mockReturnValueOnce(chainMock([authenticatedTokenRow()]))
+        .mockReturnValueOnce(chainMock([{ id: pendingJobId, status: 'pending' }]));
+      insertMock.mockReturnValueOnce(chainMock([]));
+      const sets = captureUpdateSets();
+
+      const res = await postComplete({ status: 'failed' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ restoreJobId: pendingJobId, status: 'pending', tokenConsumed: false });
+      expect(setsOn(sets, 'restore_jobs.')).toEqual([]);
+      expect(setsOn(sets, 'recovery_tokens.')).toEqual([{ status: 'expired' }]);
+    });
+  });
+
   it('returns the existing restore job for repeated completion calls', async () => {
     selectMock
       .mockReturnValueOnce(chainMock([{
@@ -1461,6 +1642,7 @@ describe('bmr routes', () => {
     expect(await res.json()).toEqual({
       restoreJobId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       status: 'completed',
+      tokenConsumed: true,
     });
   });
 
