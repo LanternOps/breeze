@@ -18,11 +18,12 @@ describe('nextZoomTier', () => {
 });
 
 describe('summaryDensity', () => {
-  it('scales the summary to the card: large type in a big card, full, compact when small, the title alone when tiny', () => {
+  it('scales the summary to the card: large type in a big card, full, then compact (no role chips) however small', () => {
     expect(summaryDensity(714, 474)).toBe('large');
     expect(summaryDensity(420, 240)).toBe('full');
     expect(summaryDensity(190, 84)).toBe('compact');
-    expect(summaryDensity(90, 30)).toBe('minimal');
+    // A tiny card keeps title, subtitle and presence (round 4 regression): it shrinks or overhangs instead.
+    expect(summaryDensity(90, 30)).toBe('compact');
   });
 });
 

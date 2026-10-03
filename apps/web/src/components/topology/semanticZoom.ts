@@ -19,12 +19,12 @@ export function nextZoomTier(current: ZoomTier, zoom: number): ZoomTier {
  * How much of a summary fits a card drawn `width` × `height` screen pixels. Summaries are HTML
  * at a fixed type size, so a small card shows less rather than shrinking the text.
  */
-export type SummaryDensity = 'large' | 'full' | 'compact' | 'minimal';
+export type SummaryDensity = 'large' | 'full' | 'compact';
+/** Title, subtitle and agent presence always show; only the role chips give way (`compact`), and a summary too big for its card shrinks or overhangs (summaryScale). */
 export function summaryDensity(width: number, height: number): SummaryDensity {
   if (width >= 560 && height >= 320) return 'large';
   if (width >= 280 && height >= 132) return 'full';
-  if (width >= 150 && height >= 60) return 'compact';
-  return 'minimal';
+  return 'compact';
 }
 
 export type FitBox = { id: string; x1: number; y1: number; x2: number; y2: number; /** A card: the cards define the main structure. */ anchor: boolean };

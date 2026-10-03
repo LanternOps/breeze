@@ -28,3 +28,15 @@ it('is out of the accessibility tree while the map shows tiles', () => {
   render(<CardSummaryOverlay cards={cards} visible={false} onZoom={() => {}} />);
   expect(screen.queryByRole('button')).toBeNull();
 });
+
+it('keeps title, subtitle and presence in a compact summary; only the role chips give way', () => {
+  render(<CardSummaryOverlay cards={cards} visible onZoom={() => {}} />);
+  const box = screen.getAllByTestId('topology-card-summary')[0]!.parentElement!;
+  box.dataset.density = 'compact';
+  const hiddenWhenCompact = (text: string) => screen.getAllByText(text)[0]!.closest('[class*="group-data-[density=compact]:hidden"]') !== null;
+  expect(hiddenWhenCompact('10.1.2.0/24')).toBe(false);
+  expect(hiddenWhenCompact('85 devices · via 10.1.2.100')).toBe(false);
+  expect(hiddenWhenCompact('12 agents online · 20 offline')).toBe(false);
+  expect(hiddenWhenCompact('Computers')).toBe(true);
+  expect(document.querySelector('[class*="density=minimal"]')).toBeNull();
+});
