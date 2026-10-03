@@ -2811,4 +2811,21 @@ describe('createAndEnqueueAgentRun research-profile admission (AI Suggested Fixe
     const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r5' }));
     expect(result).toEqual({ created: false, skipped: 'max_concurrent_research_runs' });
   });
+
+  it('auto research at the hourly auto cap skips research_auto_cap; below it admits; manual is never counted', async () => {
+    const auto = (dedupeKey: string) => researchInput({ triggerKind: 'alert', dedupeKey });
+    const queue = (autoCount: number) => {
+      seedResearchAdmissionReads();
+      dbMockState.rowQueues.ai_agent_runs = [[], [{ value: 0 }], [{ value: 0 }], [{ value: autoCount }], [{ totalCostCents: 0 }]];
+    };
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-1'))).toEqual({ created: false, skipped: 'research_auto_cap' });
+
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour - 1);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-2'))).toMatchObject({ created: true });
+
+    // manual: the 4-entry queue has no auto count; an extra read would throw "No queued rows"
+    seedResearchAdmissionReads();
+    expect(await createAndEnqueueAgentRun(researchInput({ triggerKind: 'manual', dedupeKey: 'research:manual-1' }))).toMatchObject({ created: true });
+  });
 });

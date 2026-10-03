@@ -369,7 +369,7 @@ export type AgentRunSkipReason =
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
   | 'device_not_in_org'
   // AI Suggested Fixes W2 — research-profile volume guards.
-  | 'max_concurrent_research_runs' | 'research_rate'
+  | 'max_concurrent_research_runs' | 'research_rate' | 'research_auto_cap'
   // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
   // max_concurrent_runs/max_runs_per_hour, counted against
   // maxConcurrentVerdictRuns/maxVerdictRunsPerHour instead (admission rule
@@ -1536,6 +1536,22 @@ export async function createAndEnqueueAgentRun(
       .where(and(agentOrgScope, profileScope, gte(aiAgentRuns.queuedAt, new Date(now - caps.windowMs))));
     if ((inWindow?.value ?? 0) >= caps.maxPerWindow) {
       return skip(caps.rateSkip);
+    }
+
+    // 6c. AI Suggested Fixes W2 — AUTO research has its own, tighter hourly
+    //     cap (spec "rate-capped per org per hour"). Counted here, under the
+    //     (agent, org) advisory lock taken at 4b, so two concurrent automatic
+    //     requests for different alerts cannot both read cap-1 and both admit.
+    //     Every research admission for this org resolves the same effective
+    //     agent, so agentOrgScope is the per-org scope. Manual runs are never
+    //     counted. A cap of 0 disables auto research.
+    if (profile === 'remediation_research' && triggerKind === 'alert') {
+      const autoCap = effective.limits.maxAutoResearchRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour;
+      const [autoRecent] = await db
+        .select({ value: count() })
+        .from(aiAgentRuns)
+        .where(and(agentOrgScope, profileScope, eq(aiAgentRuns.triggerKind, 'alert'), gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
+      if ((autoRecent?.value ?? 0) >= autoCap) return skip('research_auto_cap');
     }
 
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap

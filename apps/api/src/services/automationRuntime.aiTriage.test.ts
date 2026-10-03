@@ -74,6 +74,7 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   patch_rate: 'succeeded',
   max_concurrent_research_runs: 'succeeded',
   research_rate: 'succeeded',
+  research_auto_cap: 'succeeded',
   analysis_not_available: 'succeeded',
   external_processing_disabled: 'succeeded',
   workspace_capability_missing: 'succeeded',
