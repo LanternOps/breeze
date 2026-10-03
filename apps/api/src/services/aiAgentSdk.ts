@@ -35,6 +35,7 @@ import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { isAllowedForSession, stripMcpPrefix } from './mcpToolNames';
+import { claimToolUseId } from './aiToolUseCorrelation';
 import {
   resolveScriptRunContextForApproval,
   describeScriptRunContext,
@@ -2395,10 +2396,11 @@ function approvedTopologyRun(toolName: string, output: string, isError: boolean)
   return { runId, state };
 }
 
-async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number): Promise<void> {
+async function topologyPostToolUse(session: ActiveSession, toolName: string, input: Record<string, unknown>, output: string, isError: boolean, durationMs: number, sdkToolUseId: string | undefined): Promise<void> {
   session.pendingTurnToolExecutionCount += 1;
-  const toolUseId = session.toolUseIdQueue.shift();
-  if (toolUseId) session.toolUseNames?.delete(toolUseId);
+  // No tool row is written here, but the call must stop being pending or the
+  // dropped-call fallback would misreport it (#7931).
+  claimToolUseId(session, toolName, sdkToolUseId);
   session.eventBus.publish({ type: 'topology_progress', phase: 'analyzing' });
   const run = approvedTopologyRun(toolName, output, isError);
   if (run) session.eventBus.publish({ type: 'topology_diagnostic_run', ...run });
@@ -2421,13 +2423,18 @@ async function topologyPostToolUse(session: ActiveSession, toolName: string, inp
 }
 
 export function createSessionPostToolUse(session: ActiveSession): PostToolUseCallback {
-  return async (toolName, input, output, isError, durationMs, sealed, handoff) => {
+  return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
     // A timed-out topology turn (C1): its gate is gone, so a tool that was
     // still in flight must not fall through to the generic path and persist
-    // its raw output.
-    if (session.topologyTurnSealed) return;
+    // its raw output. It did run, though, so it must stop being pending —
+    // otherwise a late SDK echo of its result would reach the dropped-call
+    // fallback, which persists that text (#7931).
+    if (session.topologyTurnSealed) {
+      claimToolUseId(session, toolName, sdkToolUseId);
+      return;
+    }
     if (session.topologyInvestigation) {
-      await topologyPostToolUse(session, toolName, input, output, isError, durationMs);
+      await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId);
       return;
     }
     // Count this tool call toward the turn's tool_execution_count rollup
@@ -2435,14 +2442,13 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
     // whether the DB writes below succeed — postToolUse only fires for a tool
     // that actually ran, which is the event the counter tracks.
     session.pendingTurnToolExecutionCount += 1;
-    const toolUseId = session.toolUseIdQueue.shift();
+    // Pair this result with its own tool_use by the id the SDK sent with the
+    // call, never by queue position (#7931). Claiming also tells the
+    // dropped-call fallback (#3094) this call ran, whichever of this and its
+    // content_block_start the processor sees first.
+    const toolUseId = claimToolUseId(session, toolName, sdkToolUseId);
     if (!toolUseId) {
-      console.warn(`[AI-SDK] postToolUse: toolUseIdQueue empty for ${toolName} — tool_result will have no toolUseId`);
-    } else {
-      // Drop the paired name entry recorded at content_block_start — it exists
-      // for the dropped-call fallback (#3094), which must not fire for a call
-      // this postToolUse is handling.
-      session.toolUseNames?.delete(toolUseId);
+      console.warn(`[AI-SDK] postToolUse: no tool_use id for ${toolName} (none from the SDK, no pending call of that name) — tool_result will have no toolUseId`);
     }
     const safeOutput = compactToolResultForChat(toolName, output);
     const parsedOutput = safeParseJson(safeOutput);

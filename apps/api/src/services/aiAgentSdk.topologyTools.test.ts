@@ -253,6 +253,7 @@ vi.mock('./scriptRunContextApproval', async (importOriginal) => {
 
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+  captureMessage: vi.fn(),
 }));
 
 // ============================================
@@ -365,7 +366,7 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
   it('publishes only a fixed progress phase for a tool result, and persists no tool output', async () => {
     const values = mockInsertValues();
     const session = makeActiveSession({ topologyInvestigation: topologyRuntime(), pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
-    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ nodes: [{ alias: 'host-1', secret: 'FOREIGN-SITE-SECRET' }] }), false, 5);
+    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ nodes: [{ alias: 'host-1', secret: 'FOREIGN-SITE-SECRET' }] }), false, 5, undefined, undefined, 'tool-use-1');
     expect(session.eventBus.publish).toHaveBeenCalledTimes(1);
     expect(session.eventBus.publish).toHaveBeenCalledWith({ type: 'topology_progress', phase: 'analyzing' });
     expect(JSON.stringify(values.mock.calls)).not.toContain('FOREIGN-SITE-SECRET');
@@ -406,8 +407,27 @@ describe('topology investigation tool gate (M4 Task 3)', () => {
     const session = makeActiveSession({ topologyInvestigation: undefined, topologyTurnSealed: true, pendingTurnToolExecutionCount: 0, toolUseNames: new Map() });
     expect(await createSessionPreToolUse(session)('get_topology', { site_id: 's' })).toEqual({ allowed: false, error: 'This topology investigation has ended.' });
     expect(checkGuardrails).not.toHaveBeenCalled();
-    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5);
+    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, JSON.stringify({ secret: 'LATE-RAW-OUTPUT' }), false, 5, undefined, undefined, 'tool-use-1');
     expect(values).not.toHaveBeenCalled();
     expect(session.eventBus.publish).not.toHaveBeenCalled();
+    // The late call ran, so it is no longer pending: a late SDK echo of its
+    // result must not reach the dropped-call fallback, which would persist it (#7931).
+    expect(session.toolUseIdQueue).toEqual([]);
+  });
+
+  it('claims the call by its SDK id when the result beats its stream event (#7931)', async () => {
+    mockInsertValues();
+    const session = makeActiveSession({
+      topologyInvestigation: topologyRuntime(),
+      pendingTurnToolExecutionCount: 0,
+      toolUseIdQueue: ['tool-use-other'],
+      toolUseNames: new Map([['tool-use-other', 'get_topology']]),
+      resultedToolUseIds: new Set(),
+    });
+    await createSessionPostToolUse(session)('get_topology', { site_id: 's' }, '{}', false, 5, undefined, undefined, 'tool-use-early');
+    // The other pending call is untouched; the early call is marked so its
+    // stream event never makes it pending.
+    expect(session.toolUseIdQueue).toEqual(['tool-use-other']);
+    expect(session.resultedToolUseIds?.has('tool-use-early')).toBe(true);
   });
 });

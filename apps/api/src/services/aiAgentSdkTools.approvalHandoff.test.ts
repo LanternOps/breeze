@@ -96,6 +96,7 @@ describe('pre-tool-use approval handoff (#5107)', () => {
       // The TRUSTED channel: postToolUse stamps the audit row and the SSE
       // event from this argument, never by re-reading the output payload.
       'approved_executing',
+      undefined, // no SDK tool_use id in `extra` (#7931)
     );
   });
 
@@ -123,6 +124,7 @@ describe('pre-tool-use approval handoff (#5107)', () => {
       0,
       undefined,
       undefined,
+      undefined, // no SDK tool_use id in `extra` (#7931)
     );
   });
 
@@ -204,6 +206,7 @@ describe('post-approval terminal outcomes (#6022)', () => {
       0,
       undefined,
       APPROVED_FAILED_STATUS,
+      undefined, // no SDK tool_use id in `extra` (#7931)
     );
   });
 

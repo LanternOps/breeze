@@ -41,6 +41,7 @@ import { deliveryToolShape, executeCommandShape, setDeviceContextShape, toolInpu
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
+import { postToolUseForCall } from './aiToolUseCorrelation';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
@@ -158,6 +159,12 @@ export type PostToolUseCallback = (
    * failure as an approved, in-flight action.
    */
   handoff?: ToolHandoffStatus,
+  /**
+   * The model's tool_use id for this call, as the SDK sent it to our MCP
+   * handler (`extra._meta['claudecode/toolUseId']`). The result is paired with
+   * its tool_use by this id (#7931); absent only when the SDK sent none.
+   */
+  toolUseId?: string,
 ) => Promise<void>;
 
 // ============================================
@@ -646,7 +653,8 @@ function makeToolHandler(
 ) {
   const toolTimeout = getToolTimeout(toolName);
 
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    const postToolUse = postToolUseForCall(onPostToolUse, extra);
     // CRITICAL: Escape any inherited AsyncLocalStorage DB context from the SDK's
     // MCP callback chain. Without this, dbContextStorage.getStore() may return a
     // stale/committed transaction from a prior withDbAccessContext call,
@@ -697,7 +705,7 @@ function makeToolHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
+        await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -790,7 +798,7 @@ function makeToolHandler(
           } else if (parsed.imageBase64) {
             const imageBase64 = parsed.imageBase64;
             const durationMs = Date.now() - startTime;
-            await safePostToolUse(onPostToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
+            await safePostToolUse(postToolUse, toolName, args, JSON.stringify({ actionExecuted: parsed.actionExecuted, width: parsed.width, height: parsed.height, format: parsed.format, sizeBytes: parsed.sizeBytes, capturedAt: parsed.capturedAt }), false, durationMs);
             // MCP ImageContent format: { type: 'image', data: base64, mimeType: string }
             const contentBlocks: SdkToolResult['content'] = [
               {
@@ -842,7 +850,7 @@ function makeToolHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -852,7 +860,7 @@ function makeToolHandler(
       // string for the stream (#2603).
       const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
         isError: true,
@@ -892,7 +900,8 @@ function makeSessionAwareHandler(
 ) {
   const toolTimeout = getToolTimeout(toolName);
 
-  return async (args: Record<string, unknown>) => {
+  return async (args: Record<string, unknown>, extra?: unknown) => {
+    const postToolUse = postToolUseForCall(onPostToolUse, extra);
     // See makeHandler: escape any inherited AsyncLocalStorage DB context so all
     // DB ops (preToolUse approval writes, the tool call, postToolUse persistence)
     // start with a clean transaction context.
@@ -926,7 +935,7 @@ function makeSessionAwareHandler(
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
-        await safePostToolUse(onPostToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
+        await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0, undefined, check.handoff);
         return {
           content: [{ type: 'text' as const, text: denial.text }],
           isError: denial.isError,
@@ -951,7 +960,7 @@ function makeSessionAwareHandler(
         toolName,
         JSON.stringify({ error: 'no_action_intent', message: SECRET_ACTION_REFUSED_TEXT }),
       );
-      await safePostToolUse(onPostToolUse, toolName, args, refusalText, true, 0);
+      await safePostToolUse(postToolUse, toolName, args, refusalText, true, 0);
       return {
         content: [{ type: 'text' as const, text: refusalText }],
         isError: true,
@@ -1017,7 +1026,7 @@ function makeSessionAwareHandler(
       } catch { /* not JSON, treat as success */ }
 
       const durationMs = Date.now() - startTime;
-      await safePostToolUse(onPostToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
+      await safePostToolUse(postToolUse, toolName, args, compactResult, isToolError, durationMs, sealed);
       return { content: [{ type: 'text' as const, text: compactResult }], ...(isToolError ? { isError: true } : {}) };
     } catch (err) {
       const durationMs = Date.now() - startTime;
@@ -1027,7 +1036,7 @@ function makeSessionAwareHandler(
       // string for the stream (#2603).
       const message = sanitizeThrownToolError(toolName, err, { durationMs });
       const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
-      await safePostToolUse(onPostToolUse, toolName, args, safeError, true, durationMs);
+      await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
         isError: true,
@@ -1403,6 +1412,7 @@ export function wrapExtraToolWithHooks(
   return {
     ...extraTool,
     handler: async (args: Record<string, unknown>, extra: unknown): Promise<SdkToolResult> => {
+      const postToolUse = postToolUseForCall(onPostToolUse, extra);
       // See makeHandler: escape any inherited AsyncLocalStorage DB context so
       // preToolUse/handler/postToolUse all start with a clean context rather
       // than a stale/committed one from the SDK's MCP callback chain.
@@ -1420,20 +1430,20 @@ export function wrapExtraToolWithHooks(
         }
         if (!check.allowed) {
           const denial = preToolUseDenialResult(name, check);
-          await safePostToolUse(onPostToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
+          await safePostToolUse(postToolUse, name, args, denial.text, denial.isError, 0, undefined, check.handoff);
           return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
         }
       }
       try {
         const result = await withToolTimeout(handler(args, extra), toolTimeout, name);
         const durationMs = Date.now() - startTime;
-        await safePostToolUse(onPostToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
+        await safePostToolUse(postToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
         return result;
       } catch (err) {
         const durationMs = Date.now() - startTime;
         const message = sanitizeThrownToolError(name, err, { durationMs });
         const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
-        await safePostToolUse(onPostToolUse, name, args, safeError, true, durationMs);
+        await safePostToolUse(postToolUse, name, args, safeError, true, durationMs);
         return { content: [{ type: 'text' as const, text: safeError }], isError: true };
       }
       }); // end runOutsideDbContext

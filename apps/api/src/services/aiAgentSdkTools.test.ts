@@ -247,7 +247,8 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
         const postToolUse = vi.fn(async () => {});
         const wrapped = wrapExtraToolWithHooks(hungTool, undefined, postToolUse);
 
-        const resultPromise = wrapped.handler(validVerdict, {});
+        // The SDK's tool_use id rides `extra._meta` (#7931).
+        const resultPromise = wrapped.handler(validVerdict, { _meta: { 'claudecode/toolUseId': 'toolu_hung' } });
         await vi.advanceTimersByTimeAsync(60_000);
         const result = await resultPromise as { isError?: boolean };
 
@@ -262,6 +263,8 @@ describe('createBreezeMcpServer wraps extraTools with the run hooks (P2-1 fix ro
           // `sealed`, then `handoff` (#5107) — a timeout is neither.
           undefined,
           undefined,
+          // The call's own tool_use id, so the result pairs with it (#7931).
+          'toolu_hung',
         );
       } finally {
         vi.useRealTimers();

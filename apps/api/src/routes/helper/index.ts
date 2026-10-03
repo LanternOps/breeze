@@ -19,7 +19,7 @@ import {
   clientToolsSchema,
   createClientDeclaredMcpServer,
   clientDeclaredToolMcpNames,
-  requestClientDeclaredTool,
+  dispatchClientDeclaredTool,
   resolveClientDeclaredTool,
   peekClientDeclaredToolName,
   failPendingClientDeclaredForSession,
@@ -392,11 +392,8 @@ helperRoutes.post(
           _onPostToolUse: unknown,
           getSession: () => ActiveSession,
         ) => ({
-          server: createClientDeclaredMcpServer(clientTools, (toolName, input) => {
-            const session = getSession();
-            const toolUseId = session.toolUseIdQueue.shift() ?? crypto.randomUUID();
-            return requestClientDeclaredTool(session, toolUseId, toolName, input);
-          }),
+          server: createClientDeclaredMcpServer(clientTools, (toolName, input, sdkToolUseId) =>
+            dispatchClientDeclaredTool(getSession(), toolName, input, sdkToolUseId)),
           name: CLIENT_DECLARED_MCP_SERVER_NAME,
         })
       : helperMcpServerFactory(permissionLevel);
