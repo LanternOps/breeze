@@ -15,6 +15,7 @@ import * as dbModule from '../db';
 import { webhooks as webhooksTable } from '../db/schema';
 import { toWebhookConfig } from '../services/webhookConfig';
 import { workerReadinessRegistry } from '../services/workerReadinessRegistry';
+import { scrubUrlsInText } from '../utils/endpointDisplay';
 
 const { db } = dbModule;
 
@@ -365,6 +366,9 @@ async function deliverWebhook(job: WebhookDeliveryJob): Promise<WebhookDeliveryR
     } else {
       errorMessage = 'Unknown error';
     }
+    // Transport errors can quote the request URL, and a webhook URL can carry
+    // credentials in its userinfo, query or path. Keep only scheme + host.
+    errorMessage = scrubUrlsInText(errorMessage);
   }
 
   return {

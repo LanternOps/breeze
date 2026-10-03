@@ -26,6 +26,7 @@ import {
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
+import { scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
 import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 import { resolveNetworkCheckAlertDevice } from '../services/monitors/networkCheckAlertDevice';
@@ -469,9 +470,13 @@ export async function recordMonitorCheckResult(
   // alert details and surfaced in the web UI — redact secrets once at entry
   // so every write below (results insert, monitor state, alert evaluation)
   // is covered.
+  //
+  // URLs in the error text are reduced to scheme + host: Go's HTTP client
+  // renders failures as `Get "<full url>": <cause>`, and a monitor URL can
+  // carry credentials in its userinfo, query or path.
   result = {
     ...result,
-    error: redactOptionalSecretText(result.error),
+    error: scrubUrlsInText(redactOptionalSecretText(result.error)),
     details: result.details != null
       ? redactSecretsDeep(result.details) as Record<string, unknown>
       : result.details,
@@ -511,7 +516,9 @@ export async function recordMonitorCheckResult(
       responseMs: result.responseMs ?? null,
       statusCode: result.statusCode ?? null,
       error: result.error ?? null,
-      details: result.details ?? null,
+      // Stored copy only: the in-memory `result.details` keeps the full
+      // `sslRequestedUrl` for the TLS provenance guard below.
+      details: result.details != null ? scrubUrlsInValue(result.details) as Record<string, unknown> : null,
       timestamp: now
     });
 

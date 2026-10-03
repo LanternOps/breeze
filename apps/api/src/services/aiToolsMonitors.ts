@@ -59,6 +59,24 @@ import {
   type MonitorKind,
 } from '@breeze/shared';
 import { z } from 'zod';
+import { presentEndpointTarget } from '../utils/endpointDisplay';
+
+/**
+ * A network_check target may be a URL carrying credentials (userinfo, a
+ * `?token=` query, an authorizing path). Tool results show it as scheme + host
+ * plus a fingerprint, the same presentation webhook endpoints use.
+ */
+function presentNetworkCheckTarget(kind: unknown, value: unknown): unknown {
+  if (kind !== 'network_check' || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (typeof record.target !== 'string') return value;
+  const view = presentEndpointTarget(record.target);
+  return { ...record, target: view.target, targetFingerprint: view.fingerprint };
+}
+
+function presentMonitorDefinition<T extends { kind?: unknown; condition?: unknown }>(monitor: T): T {
+  return { ...monitor, condition: presentNetworkCheckTarget(monitor.kind, monitor.condition) };
+}
 
 function isMonitorKind(value: unknown): value is MonitorKind {
   return typeof value === 'string' && (MONITOR_KINDS as readonly string[]).includes(value);
@@ -271,8 +289,8 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
       const attachments = await attachmentsFor(monitor.id);
 
       return JSON.stringify({
-        monitor: { ...monitor, ownerScope: ownerScopeOf(monitor) },
-        attachments,
+        monitor: { ...presentMonitorDefinition(monitor), ownerScope: ownerScopeOf(monitor) },
+        attachments: attachments.map((a) => ({ ...a, overrides: presentNetworkCheckTarget(monitor.kind, a.overrides) })),
         compiled: {
           alertTemplateId: monitor.compiledAlertTemplateId,
           alertRuleId: monitor.compiledAlertRuleId,
@@ -450,7 +468,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...created, ownerScope: ownerScopeOf(created) } });
+        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) } });
       }
 
       if (action === 'update' || action === 'enable' || action === 'disable') {
@@ -468,7 +486,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...updated, ownerScope: ownerScopeOf(updated) } });
+        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) } });
       }
 
       if (action === 'delete') {

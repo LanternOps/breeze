@@ -594,6 +594,51 @@ describe('recordMonitorCheckResult', () => {
     expect(stateSet.lastError).not.toContain('BEGIN RSA PRIVATE KEY');
   });
 
+  it('stores agent error text with URLs reduced to scheme + host', async () => {
+    const secretUrl = 'https://ops:hunter2@status.example.com/hooks/T1/B1/abc123?token=xyz789';
+    const goError = `Get "${secretUrl}": dial tcp 1.2.3.4:443: i/o timeout`;
+
+    const txInsertValues = vi.fn().mockResolvedValue(undefined);
+    const txUpdateSet = vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values: txInsertValues }),
+      update: vi.fn().mockReturnValue({ set: txUpdateSet }),
+    }));
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1',
+        orgId: 'org-1',
+        assetId: null,
+        name: 'Status page',
+        target: secretUrl,
+        monitorType: 'http_check',
+        consecutiveFailures: 1
+      }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1',
+      status: 'offline',
+      responseMs: 0,
+      error: goError,
+      details: { monitorId: 'monitor-1', status: 'offline', error: goError },
+    }, { orgId: 'org-1', deviceId: 'device-1' });
+
+    const inserted = txInsertValues.mock.calls[0]![0] as { error: string; details: { error: string } };
+    const expected = 'Get "https://status.example.com": dial tcp 1.2.3.4:443: i/o timeout';
+    expect(inserted.error).toBe(expected);
+    expect(inserted.details.error).toBe(expected);
+    const stateSet = txUpdateSet.mock.calls[0]![0] as { lastError: string };
+    expect(stateSet.lastError).toBe(expected);
+    for (const fragment of ['hunter2', '/hooks/', 'abc123', 'xyz789']) {
+      expect(JSON.stringify(inserted)).not.toContain(fragment);
+      expect(stateSet.lastError).not.toContain(fragment);
+    }
+  });
+
   // #5751 W03 (#5754): the TLS observation joins the SAME updateSet as
   // lastStatus/lastResponseMs, inside the transaction that inserts the result
   // row — never a second statement that could land without it.
