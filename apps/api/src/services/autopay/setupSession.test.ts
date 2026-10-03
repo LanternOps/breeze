@@ -21,7 +21,8 @@ const org={id:'org',partnerId:'p',status:'active',deletedAt:null};
 const enrollment={id:'enroll',orgId:'org',status:'requested',generation:7,stripeAccountId:'acct_one',stripeConnectionId:'conn',stripeCustomerId:'cus_one'};
 const connection={id:'conn',stripeAccountId:'acct_one'};
 const token={id:'token',orgId:'org',enrollmentId:'enroll',purpose:'enroll',generation:7,expiresAt:new Date('2099-01-01'),revokedAt:null,consumedAt:null};
-const attempt={id:'attempt',partnerId:'p',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',stripeCustomerId:'cus_one',stripeAccountId:'acct_one',methodType:'card'};
+const consentSnapshot={version:'v1',text:'Consent',textHash:'hash',partnerName:'MSP',scheduleText:'Schedule',feeText:'No fee',achMode:'ach_preferred',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},source:'setup_page',contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:null,checkoutKey:null,hash:'hash'};
+const attempt={consentSnapshot,id:'attempt',partnerId:'p',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',stripeCustomerId:'cus_one',stripeAccountId:'acct_one',methodType:'card'};
 const input={orgId:'org',methodType:'card' as const,consentAccepted:true as const,returnTo:'public' as const,tokenId:'token',contactEmail:'payer@example.com',ip:null,userAgent:null};
 function capture(overrides:Partial<typeof input>={}){
  return withAcceptedAutopayDisclosure('hash',()=>prepareAutopayCapture({...input,...overrides},'setup_page'));
@@ -37,7 +38,7 @@ describe('Stripe setup boundary',()=>{
  it('pins one method, automatic bank verification and authority metadata',async()=>{
   mock.create.mockResolvedValue({id:'cs_setup',url:'https://checkout.stripe.com/test'});
   mock.client.mockResolvedValue({stripeAccountId:'acct_one',stripe:{checkout:{sessions:{create:mock.create}}}});
-  await createHostedAutopaySession({partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
+  await createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
    id:'attempt',orgId:'org',enrollmentId:'enroll',generation:7,tokenId:'token',methodType:'us_bank_account'},'public');
   expect(mock.create).toHaveBeenCalledWith(expect.objectContaining({mode:'setup',customer:'cus_one',
    payment_method_types:['us_bank_account'],payment_method_options:{us_bank_account:{verification_method:'automatic'}},
@@ -46,7 +47,7 @@ describe('Stripe setup boundary',()=>{
  });
  it('refuses the wrong account before a provider mutation',async()=>{
   mock.create.mockClear();mock.client.mockResolvedValue({stripeAccountId:'acct_other',stripe:{checkout:{sessions:{create:mock.create}}}});
-  await expect(createHostedAutopaySession({partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
+  await expect(createHostedAutopaySession({consentSnapshot,partnerId:'p',stripeAccountId:'acct_one',stripeCustomerId:'cus_one',
    id:'a',orgId:'o',enrollmentId:'e',generation:1,tokenId:null,methodType:'card'},'portal')).rejects.toThrow(/account/);
   expect(mock.create).not.toHaveBeenCalled();
  });
@@ -126,4 +127,13 @@ it.each(['matching','changed hash','stale generation','failed'] as const)('check
  mock.rows=[[org],[enrollment],[connection],[token],[prior],[{...attempt,id:'new'}]];
  const result=await withAcceptedAutopayDisclosure('hash',()=>prepareAutopayCapture(input,'setup_page','invoice','key'));
  expect(result.id).toBe(state==='matching'?'attempt':'new');
+});
+
+it('derives invoice bank metadata on both provider objects exclusively from durable consent',async()=>{
+ const bankPayment={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',principal:'100.00',fee:'2.50',currency:'USD',disclosureHash:'a'.repeat(64)};
+ await createHostedAutopaySession({...attempt,methodType:'us_bank_account',consentSnapshot:{...consentSnapshot,bankPayment}},'public');
+ const sent=mock.create.mock.calls[0]![0];
+ const metadata={invoice_id:bankPayment.invoiceId,principal_minor:'10000',fee_minor:'250',currency:'USD'};
+ expect(sent.metadata).toMatchObject(metadata);expect(sent.setup_intent_data.metadata).toMatchObject(metadata);
+ expect(sent.success_url).toContain('&target=public&bank=1');
 });

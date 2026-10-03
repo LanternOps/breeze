@@ -30,3 +30,12 @@ it('reports pending cancellation without claiming a completed skip',async()=>{
  expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
 });
 it('does not offer a mutation for unavailable links',async()=>{vi.mocked(apiGet).mockResolvedValue({error:'Unavailable',statusCode:404});render(<AutopayActionPage token="token" action="skip"/>);await screen.findByTestId('autopay-action-result');expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();expect(apiPost).not.toHaveBeenCalled();});
+
+it('Confirm requires a click and reports processing without another payment',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'requires_action',amount:'100.00',currency:'USD'}});
+ vi.mocked(apiPost).mockResolvedValue({data:{processing:true}});
+ render(<AutopayActionPage token="token" action="confirm"/>);
+ const button=await screen.findByTestId('autopay-confirm-submit');expect(apiPost).not.toHaveBeenCalled();fireEvent.click(button);
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toContain('Payment is processing'));
+ expect(screen.queryByTestId('autopay-confirm-submit')).toBeNull();
+});

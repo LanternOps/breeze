@@ -1,3 +1,5 @@
+import {withClientPaymentAuthority} from './clientPaymentAuthority';
+import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -76,7 +78,7 @@ import { reconcilePendingControls, requestInvoiceControl } from './collectionCon
 import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
 import { billingNoticeOutbox, invoices, invoiceStripePayments, orgAutopayEnrollments,
-  invoiceAutopaySchedules, invoiceLines, organizations, invoiceCollectionAttempts, orgPaymentMethods, partners } from '../../db/schema';
+  invoiceAutopaySchedules, invoiceLines, organizations, invoiceCollectionAttempts, orgPaymentMethods, partners, billingLinkTokens } from '../../db/schema';
 import type { AutopayTerms } from './chargingNotice';
 
 const invoice = { id: '10000000-0000-4000-8000-000000000001', orgId: '20000000-0000-4000-8000-000000000001',
@@ -111,7 +113,7 @@ beforeEach(() => {
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
   for (const [table, rows] of [[invoices, [invoice]], [orgAutopayEnrollments, [enrollment]],
     [invoiceStripePayments, []], [invoiceCollectionAttempts, []], [partners, [{ id: invoice.partnerId }]], [invoiceAutopaySchedules, [schedule]], [invoiceLines, []],
-    [billingNoticeOutbox, [outbox]], [organizations, [{ id: invoice.orgId, partnerId: invoice.partnerId,
+    [billingNoticeOutbox, [outbox]], [organizations, [{ id: invoice.orgId, partnerId: invoice.partnerId, status:'active',deletedAt:null,
       billingAddressCountry: 'US', billingAddressRegion: 'NY' }]]] as const) h.rows.set(table, structuredClone([...rows]));
   h.method.mockImplementation(async () => ({ ...method }));
   h.provenance.mockResolvedValue([invoice.orgId]);
@@ -242,8 +244,8 @@ it.each([
   await expect(reserveCollection(input)).resolves.toMatchObject({ attempt: { principalAmount: principal, feeAmount: fee } });
 });
 it('allocates client ordinals across all invoice attempts', async () => {
-  h.ordinal = 7;
-  await expect(reserveCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' })).resolves.toMatchObject({
+  h.ordinal = 7; bankAuthority();
+  await expect(withClientPaymentAuthority(clientAuthority,()=>reserveCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }))).resolves.toMatchObject({
     attempt: { scheduleId: null, attemptNo: 8, idempotencyKey: `autopay_client_${invoice.id}_8` },
   });
 });
@@ -473,7 +475,7 @@ it('leaves processing money reserved while a control is pending', async () => {
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'collecting', stateReason: 'control_pending:exclude' });
 });
 it('recovers a missing ID under its original key then cancels a fenced unscheduled attempt', async () => {
-  recovery(); update(invoices, { autopayExcluded: true });
+  recovery(); bankAuthority(true); update(invoices, { autopayExcluded: true });
   h.rows.set(invoiceAutopaySchedules, []);
   update(invoiceCollectionAttempts, { scheduleId: null, initiatedBy: 'client_on_session' });
   await reconcilePendingControls();
@@ -743,4 +745,47 @@ it('continues beyond 200 failed collections and counts failure, deferral, and cr
   expect(queries[1]!.params[4]).toBe(rows[199]!.id);
   expect(queries[2]!.params[4]).toBe(rows[201]!.id);
   expect(h.create).toHaveBeenCalledOnce(); expect(h.confirm).toHaveBeenCalledOnce();
+});
+
+const clientAuthority = {tokenId:'a0000000-0000-4000-8000-000000000001',invoiceId:invoice.id,generation:1,methodId:method.id,
+ principal:'100.00',fee:'3.00',currency:'USD',capture:{setupAttemptId:'b0000000-0000-4000-8000-000000000001',
+ stripePaymentMethodId:'pm_test',setupIntentId:'seti_bank',stripeAccountId:'acct_test',stripeCustomerId:'cus_test'}};
+function bankAuthority(reserved=false){
+ const bankMethod={...method,type:'us_bank_account',stripeSetupIntentId:'seti_bank',accountHolderType:'individual',cardFunding:null};
+ h.method.mockResolvedValue(bankMethod);h.rows.set(orgPaymentMethods,[bankMethod]);
+ h.retrieve.mockResolvedValue({id:'pm_test',type:'us_bank_account',customer:'cus_test',us_bank_account:{account_holder_type:'individual'}});
+ h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true});
+ const bankPayment={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'3.00',currency:'USD',disclosureHash:'a'.repeat(64),
+  ...(reserved?{collection:{attemptId:attempt.id,methodId:method.id,stripePaymentMethodId:'pm_test',setupIntentId:'seti_bank',accountHolderType:'individual'}}:{})};
+ h.rows.set(autopaySetupAttempts,[{id:clientAuthority.capture.setupAttemptId,orgId:invoice.orgId,enrollmentId:enrollment.id,generation:1,
+ tokenId:clientAuthority.tokenId,outcome:'activated',stripeAccountId:'acct_test',stripeCustomerId:'cus_test',setupIntentId:'seti_bank',
+ consentSnapshot:{version:'v1',text:'Consent',textHash:'hash',hash:'hash',partnerName:'MSP',scheduleText:'Schedule',feeText:'Fee',achMode:'ach_preferred',
+ scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'us_bank_account',cardFeeBps:0,achFeeAmount:'3.00',feeAttested:true,currency:'USD'},
+ source:'setup_page',contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:null,checkoutKey:null,bankPayment}}]);
+}
+it.each(['missing','invoice','generation','method','principal','fee','account','setupIntent'])(
+ 'requires exact client authority at reservation: %s',async mismatch=>{
+ bankAuthority();let authority=structuredClone(clientAuthority);
+ if(mismatch==='invoice')authority.invoiceId='other';
+ if(mismatch==='generation')authority.generation=2;
+ if(mismatch==='method')authority.methodId='other';
+ if(mismatch==='principal')authority.principal='99.99';
+ if(mismatch==='fee')authority.fee='0.00';
+ if(mismatch==='account')authority.capture.stripeAccountId='other';
+ if(mismatch==='setupIntent')authority.capture.setupIntentId='seti_old';
+ const run=()=>reserveCollection({invoiceId:invoice.id,initiatedBy:'client_on_session'});
+ const result=mismatch==='missing'?await run():await withClientPaymentAuthority(authority,run);
+ expect(result).toMatchObject({outcome:'refused',reason:'client_authorization_required'});
+ expect(attempts()).toEqual([]);expect(h.writes.filter(w=>w.table===billingLinkTokens)).toEqual([]);
+});
+it('persists client capture in the same reservation context as conditional token consumption',async()=>{
+ bankAuthority();await withClientPaymentAuthority(clientAuthority,()=>reserveCollection({invoiceId:invoice.id,initiatedBy:'client_on_session'}));
+ expect(h.writes.filter(w=>w.table===billingLinkTokens)).toHaveLength(1);
+ expect(h.writes.find(w=>w.table===autopaySetupAttempts)?.values.consentSnapshot.bankPayment.collection).toMatchObject({methodId:method.id,setupIntentId:'seti_bank',stripePaymentMethodId:'pm_test'});
+});
+it('cancels if a replacement setup changes the captured method between reservation and confirmation',async()=>{
+ recovery(true);bankAuthority(true);h.rows.set(invoiceAutopaySchedules,[]);
+ update(invoiceCollectionAttempts,{scheduleId:null,initiatedBy:'client_on_session'});update(invoiceStripePayments,{paymentMethodType:'us_bank_account'});
+ h.method.mockResolvedValue({...method,type:'us_bank_account',accountHolderType:'individual',cardFunding:null,stripeSetupIntentId:'seti_replacement'});
+ await resumeCollectionAttempt(attempt.id);expect(h.confirm).not.toHaveBeenCalled();expect(h.cancel).toHaveBeenCalledOnce();expect(currentAttempt().state).toBe('canceled');
 });

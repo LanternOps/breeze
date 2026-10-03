@@ -1,3 +1,4 @@
+import {getConfirmPaymentView,confirmInvoicePayment} from '../../services/autopay/confirmPayment';
 import { HTTPException } from 'hono/http-exception';
 import { portalBase } from '../../services/portalUrl';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -16,10 +17,10 @@ import { withAutopayStopToken } from '../../services/autopay/enrollmentLifecycle
 import { autopayErrorHandler } from './errors';
 export const publicAutopayRoutes=new Hono();
 publicAutopayRoutes.onError((error, c) => {
-  if (c.req.path.endsWith('/skip') && error instanceof HTTPException && error.status < 500) {
+  if ((c.req.path.endsWith('/skip')||c.req.path.endsWith('/confirm')) && error instanceof HTTPException && error.status < 500) {
     return c.json({ error: 'Invalid request' }, error.status);
   }
-  if (c.req.path.endsWith('/skip') && !(error instanceof InvoiceServiceError)) {
+  if ((c.req.path.endsWith('/skip')||c.req.path.endsWith('/confirm')) && !(error instanceof InvoiceServiceError)) {
     console.error('[autopay] Skip request failed');
     return c.json({ error: 'The request could not be completed.' }, 500);
   }
@@ -34,7 +35,7 @@ const boundary=(purpose:'enroll'|'stop_autopay'|'skip_invoice'|'confirm_payment'
   const credentials=body&&typeof body==='object'&&!Array.isArray(body)
     ?body as Record<string,unknown>:null;
   const token=fromBody?credentials?.token:c.req.param('token');
-  const deniedStatus=c.req.method==='GET'?404:401;
+  const deniedStatus=c.req.method==='GET'||purpose==='confirm_payment'?404:401;
   if(typeof token!=='string'||!token||token.length>512)
     return c.json({error:'Automatic payments not found'},deniedStatus);
   const sessionId=typeof credentials?.checkoutSessionId==='string'?credentials.checkoutSessionId:'';
@@ -85,4 +86,15 @@ publicAutopayRoutes.post('/:token/skip', boundary('skip_invoice'), gate, publicJ
     if (result.status === 'pending') return c.json(result, 202);
     if (result.staffNotice) await sendAutopayStaffEmail(result.staffNotice);
     return c.json({ status: result.status });
+  });
+
+publicAutopayRoutes.get('/:token/confirm',boundary('confirm_payment'),async c=>
+  c.json(await getConfirmPaymentView(c.req.param('token'))));
+publicAutopayRoutes.post('/:token/confirm',boundary('confirm_payment'),publicJsonPost,
+  zValidator('json',z.object({}).strict()),async c=>{
+    try{return c.json(await confirmInvoicePayment(c.req.param('token')));}
+    catch(error){
+      if(error instanceof InvoiceServiceError&&error.status===404)return c.json({error:'Link unavailable'},404);
+      return c.json({error:'Payment could not be confirmed. Refresh the invoice to check its status.'},409);
+    }
   });

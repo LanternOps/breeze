@@ -1,3 +1,6 @@
+import {getClientPaymentAuthority} from './clientPaymentAuthority';
+import {autopayConsentSnapshotSchema} from './types';
+import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
 import { captureException } from '../sentry';
 import { classifyCollectionFailure } from './failureClassifier';
 import { retryAt } from './retryDates';
@@ -8,7 +11,7 @@ import { collectionFenced, finalizeInvoiceControl, pendingInvoiceControl } from 
 import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, invoiceLines, contracts, organizations, orgAutopayEnrollments, orgPaymentMethods,
-  invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, billingNoticeOutbox } from '../../db/schema';
+  invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, billingNoticeOutbox, billingLinkTokens } from '../../db/schema';
 import { RESERVING_COLLECTION_ATTEMPT_STATES, type CollectionAttemptInitiator } from '@breeze/shared';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { assertNoHeldDbContextForStripe, settlePaymentIntent } from '../stripeSettle';
@@ -162,7 +165,7 @@ export async function reserveCollection(input: CollectionInput)
     const settings = await resolveBillingPaymentSettings(db, { partnerId: invoice.partnerId, orgId: invoice.orgId });
     const [org] = await db.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
     const terms = schedule?.termsSnapshot as AutopayTerms | undefined;
-    if (!org || org.partnerId !== invoice.partnerId) return refuse('enrollment_inactive');
+    if (!org || org.partnerId !== invoice.partnerId || org.deletedAt || !['active','trial'].includes(org.status)) return refuse('enrollment_inactive');
     if (schedule && (!terms || terms.currency !== invoice.currencyCode)) return refuse('schedule_inactive');
     const principalMinor = terms ? Math.min(toMinorUnits(locked.unreservedBalance, invoice.currencyCode),
       toMinorUnits(terms.principal, invoice.currencyCode)) : toMinorUnits(locked.unreservedBalance, invoice.currencyCode);
@@ -210,6 +213,35 @@ export async function reserveCollection(input: CollectionInput)
     if (schedule?.state === 'retry_scheduled' && schedule.nextAttemptAt && schedule.nextAttemptAt > new Date()) return defer('retry_not_due');
     const feeMinor = Math.min(toMinorUnits(quote.feeAmount, invoice.currencyCode),
       terms ? toMinorUnits(terms.feeAmount, invoice.currencyCode) : Number.MAX_SAFE_INTEGER);
+    const authority = input.initiatedBy === 'client_on_session' ? getClientPaymentAuthority() : undefined;
+    let clientSetup: typeof autopaySetupAttempts.$inferSelect | undefined;
+    if (input.initiatedBy === 'client_on_session') {
+      if (!authority?.capture || authority.invoiceId !== invoice.id || authority.generation !== enrollment.generation
+        || authority.methodId !== method.id || authority.currency !== invoice.currencyCode
+        || method.type !== 'us_bank_account' || method.stripePaymentMethodId !== authority.capture.stripePaymentMethodId
+        || method.stripeSetupIntentId !== authority.capture.setupIntentId
+        || enrollment.stripeAccountId !== authority.capture.stripeAccountId
+        || enrollment.stripeCustomerId !== authority.capture.stripeCustomerId
+        || principalMinor > toMinorUnits(authority.principal, invoice.currencyCode)
+        || feeMinor > toMinorUnits(authority.fee, invoice.currencyCode)) return refuse('client_authorization_required');
+      [clientSetup] = await db.select().from(autopaySetupAttempts)
+        .where(eq(autopaySetupAttempts.id, authority.capture.setupAttemptId)).limit(1).for('update');
+      const accepted = autopayConsentSnapshotSchema.safeParse(clientSetup?.consentSnapshot);
+      const bank = accepted.success ? accepted.data.bankPayment : null;
+      if (!clientSetup || !bank || bank.collection || bank.invoiceId !== invoice.id || bank.orgId !== invoice.orgId
+        || clientSetup.tokenId !== authority.tokenId || clientSetup.enrollmentId !== enrollment.id
+        || clientSetup.generation !== enrollment.generation || clientSetup.outcome !== 'activated'
+        || clientSetup.stripeAccountId !== enrollment.stripeAccountId || clientSetup.stripeCustomerId !== enrollment.stripeCustomerId
+        || clientSetup.setupIntentId !== method.stripeSetupIntentId || bank.principal !== authority.principal
+        || bank.fee !== authority.fee || bank.currency !== authority.currency) return refuse('client_authorization_required');
+      const consumed = await db.update(billingLinkTokens).set({ consumedAt: new Date() }).where(and(
+        eq(billingLinkTokens.id, authority.tokenId), eq(billingLinkTokens.orgId, invoice.orgId),
+        eq(billingLinkTokens.invoiceId, invoice.id), eq(billingLinkTokens.enrollmentId, enrollment.id),
+        eq(billingLinkTokens.generation, enrollment.generation), eq(billingLinkTokens.purpose, 'enroll'),
+        isNull(billingLinkTokens.consumedAt), isNull(billingLinkTokens.revokedAt), sql`${billingLinkTokens.expiresAt} > NOW()`,
+      )).returning({ id: billingLinkTokens.id });
+      if (!consumed.length) return refuse('client_authorization_used');
+    }
     const [ordinal] = await db.select({ n: sql<number>`coalesce(max(${invoiceCollectionAttempts.attemptNo}),0)::int` })
       .from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.invoiceId, invoice.id));
     const attemptNo = schedule ? schedule.attemptCount + 1 : (ordinal?.n ?? 0) + 1;
@@ -218,6 +250,14 @@ export async function reserveCollection(input: CollectionInput)
       idempotencyKey: schedule ? `autopay_${schedule.id}_${attemptNo}` : `autopay_client_${invoice.id}_${attemptNo}`,
       principalAmount: principal, feeAmount: fromMinorUnits(feeMinor, invoice.currencyCode),
       currency: invoice.currencyCode, state: 'reserved', initiatedBy: input.initiatedBy }).returning();
+    if (clientSetup && authority?.capture) {
+      const snapshot = autopayConsentSnapshotSchema.parse(clientSetup.consentSnapshot);
+      await db.update(autopaySetupAttempts).set({ consentSnapshot: { ...snapshot, bankPayment: {
+        ...snapshot.bankPayment!, collection: { attemptId: attempt!.id, methodId: method.id,
+          stripePaymentMethodId: authority.capture.stripePaymentMethodId, setupIntentId: authority.capture.setupIntentId,
+          accountHolderType: method.accountHolderType! },
+      } } }).where(eq(autopaySetupAttempts.id, clientSetup.id));
+    }
     if (schedule) await db.update(invoiceAutopaySchedules).set({ state: 'collecting', attemptCount: attemptNo })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     return { attempt: attempt! };
@@ -378,6 +418,22 @@ async function finalizeCanceledSchedule(invoice: typeof invoices.$inferSelect,
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
 }
 
+async function loadClientCapture(attempt: typeof invoiceCollectionAttempts.$inferSelect) {
+  const [setup] = await db.select().from(autopaySetupAttempts).where(and(
+    eq(autopaySetupAttempts.orgId, attempt.orgId),
+    sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->'collection'->>'attemptId' = ${attempt.id}`,
+  )).limit(1);
+  const parsed = autopayConsentSnapshotSchema.safeParse(setup?.consentSnapshot);
+  const bank = parsed.success ? parsed.data.bankPayment : null;
+  if (!setup || !bank?.collection || bank.collection.attemptId !== attempt.id || bank.invoiceId !== attempt.invoiceId
+    || bank.orgId !== attempt.orgId || bank.collection.methodId !== attempt.paymentMethodId
+    || bank.collection.setupIntentId !== setup.setupIntentId || bank.currency !== attempt.currency
+    || toMinorUnits(attempt.principalAmount, attempt.currency) > toMinorUnits(bank.principal, bank.currency)
+    || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(bank.fee, bank.currency)
+    || !setup.stripeCustomerId || setup.outcome !== 'activated') return null;
+  return { setup, bank, collection: bank.collection, snapshot: parsed.data! };
+}
+
 async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent) {
   return withSystemDbAccessContext(async () => {
     const data = await loadAttemptRecord(attemptId);
@@ -418,13 +474,20 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       || (typeof pi.payment_method === 'string' ? pi.payment_method : pi.payment_method?.id) !== method.stripePaymentMethodId) {
       return cancel('renotice_required');
     }
+    if (attempt.initiatedBy === 'client_on_session') {
+      const capture = await loadClientCapture(attempt);
+      if (!capture || capture.setup.enrollmentId !== enrollment.id || capture.setup.generation !== enrollment.generation
+        || capture.setup.stripeAccountId !== enrollment.stripeAccountId || capture.setup.stripeCustomerId !== enrollment.stripeCustomerId
+        || capture.collection.methodId !== method.id || capture.collection.stripePaymentMethodId !== method.stripePaymentMethodId
+        || capture.collection.setupIntentId !== method.stripeSetupIntentId) return cancel('authority_changed');
+    }
     const [excluded] = await db.select({ id: contracts.id }).from(invoiceLines).innerJoin(contracts,
       and(eq(invoiceLines.sourceContractId, contracts.id), eq(invoiceLines.orgId, contracts.orgId)))
       .where(and(eq(invoiceLines.invoiceId, locked.invoice.id), eq(contracts.autopayExcluded, true))).limit(1);
     if (excluded) return cancel('excluded_contract');
     const settings = await resolveBillingPaymentSettings(db, { partnerId: locked.invoice.partnerId, orgId: locked.invoice.orgId });
     const [org] = await db.select().from(organizations).where(eq(organizations.id, locked.invoice.orgId)).limit(1);
-    if (!org || org.partnerId !== locked.invoice.partnerId) return cancel('authority_changed');
+    if (!org || org.partnerId !== locked.invoice.partnerId || org.deletedAt || !['active','trial'].includes(org.status)) return cancel('authority_changed');
     const terms = attempt.scheduleId ? schedule?.termsSnapshot as AutopayTerms : undefined;
     const quote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
       principal: attempt.principalAmount, currency: attempt.currency, stripeAccountCountry: readiness.accountCountry,
@@ -463,19 +526,27 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
       await quarantineUnknownCreate(attemptId); return;
     }
     const data = await loadAttempt(attemptId);
+    const capture = data.attempt.initiatedBy === 'client_on_session'
+      ? await withSystemDbAccessContext(() => loadClientCapture(data.attempt)) : null;
+    if (data.attempt.initiatedBy === 'client_on_session' && !capture) throw new Error('Client payment authority missing');
+    const accountId = capture?.setup.stripeAccountId ?? data.enrollment.stripeAccountId;
+    const customerId = capture?.setup.stripeCustomerId ?? data.enrollment.stripeCustomerId;
+    const paymentMethodId = capture?.collection.stripePaymentMethodId ?? data.method.stripePaymentMethodId;
+    const methodType = capture ? 'us_bank_account' as const : data.method.type;
     const { stripe } = await withSystemDbAccessContext(() => getPartnerStripeClient(data.invoice.partnerId, {
-      reconciliationAccountId: data.enrollment.stripeAccountId, reason: 'autopay_recovery',
+      reconciliationAccountId: accountId, reason: 'autopay_recovery',
     }));
     const settings = await withSystemDbAccessContext(() => resolveBillingPaymentSettings(db,
       { partnerId: data.invoice.partnerId, orgId: data.invoice.orgId }));
-    const params = paymentIntentCreateParams(data.attempt, data.enrollment.stripeCustomerId,
-      data.method.stripePaymentMethodId, data.invoice.partnerId, data.method.type);
+    const params = paymentIntentCreateParams(data.attempt, customerId,
+      paymentMethodId, data.invoice.partnerId, methodType);
     // Unscheduled attempts have no notice snapshot. Bind their create-time authority to the PI.
     if (!data.attempt.scheduleId) Object.assign(params.metadata!, {
-      authority_generation: String(data.enrollment.generation), authority_customer: data.enrollment.stripeCustomerId,
-      authority_method: data.method.stripePaymentMethodId, authority_holder: data.method.accountHolderType ?? '',
-      authority_funding: data.method.cardFunding ?? '', authority_card_fee_bps: String(settings.cardFeeBps.value),
-      authority_ach_fee: settings.achFeeAmount.value,
+      authority_generation: String(capture?.setup.generation ?? data.enrollment.generation), authority_customer: customerId,
+      authority_method: paymentMethodId, authority_holder: capture?.collection.accountHolderType ?? data.method.accountHolderType ?? '',
+      authority_funding: capture ? '' : data.method.cardFunding ?? '',
+      authority_card_fee_bps: String(capture?.snapshot.feeTerms.cardFeeBps ?? settings.cardFeeBps.value),
+      authority_ach_fee: capture?.snapshot.feeTerms.achFeeAmount ?? settings.achFeeAmount.value,
     });
     const pi = await runOutsideDbContext(() => stripe.paymentIntents.create(params, { idempotencyKey: data.attempt.idempotencyKey }));
     await withSystemDbAccessContext(async () => {
@@ -487,10 +558,10 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
       }
       if (!['reserved', 'created'].includes(current.attempt.state)) throw new Error('Attempt changed before mapping');
       const values = { orgId: data.attempt.orgId, invoiceId: data.attempt.invoiceId,
-        stripeAccountId: data.enrollment.stripeAccountId, stripeObjectType: 'payment_intent' as const,
+        stripeAccountId: accountId, stripeObjectType: 'payment_intent' as const,
         stripeObjectId: pi.id, stripePaymentIntentId: pi.id, amount: data.attempt.principalAmount,
         feeAmount: data.attempt.feeAmount, currency: data.attempt.currency, source: 'autopay' as const,
-        paymentMethodType: data.method.type, status: 'pending' as const };
+        paymentMethodType: methodType, status: 'pending' as const };
       const [inserted] = await db.insert(invoiceStripePayments).values(values)
         .onConflictDoNothing({ target: invoiceStripePayments.stripeObjectId }).returning();
       const [mapping] = inserted ? [inserted] : await db.select().from(invoiceStripePayments)

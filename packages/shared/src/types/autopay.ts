@@ -93,11 +93,20 @@ export interface PaymentSettingsView { autopayEnabled:boolean;values:PaymentValu
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});
 export const autopayFeeTermsSchema=z.object({methodType:z.enum(AUTOPAY_PAYMENT_METHOD_TYPES),cardFeeBps:z.number().int().min(0).max(300),achFeeAmount:z.string(),feeAttested:z.boolean(),currency:z.string()});
+export const bankPaymentConsentSchema=z.object({
+ invoiceId:z.string().uuid(),orgId:z.string().uuid(),principal:z.string().regex(/^\d+\.\d{2}$/),
+ fee:z.string().regex(/^\d+\.\d{2}$/),currency:z.literal('USD'),disclosureHash:z.string().regex(/^[a-f0-9]{64}$/),
+ // Written atomically with reservation; survives request loss and provider-create replay.
+ collection:z.object({attemptId:z.string().uuid(),methodId:z.string().uuid(),
+  stripePaymentMethodId:z.string().min(1),setupIntentId:z.string().min(1),accountHolderType:z.enum(['individual','company'])}).strict().optional(),
+}).strict();
+export type BankPaymentConsent=z.infer<typeof bankPaymentConsentSchema>;
 export const autopayConsentSnapshotSchema=z.object({
  version:z.string(),text:z.string(),hash:z.string(),textHash:z.string(),partnerName:z.string(),scheduleText:z.string(),feeText:z.string(),
  achMode:z.enum(['ach_preferred','ach_only','card_only']),scheduleTerms:autopayScheduleTermsSchema,feeTerms:autopayFeeTermsSchema,
  source:z.enum(AUTOPAY_SETUP_SOURCES),contactEmail:z.string(),ip:z.string().nullable(),userAgent:z.string().nullable(),
  invoiceId:z.string().nullable(),checkoutKey:z.string().nullable(),
+ bankPayment:bankPaymentConsentSchema.nullish(),
 });
 export type AutopayConsentSnapshot=z.infer<typeof autopayConsentSnapshotSchema>;
 export const AUTOPAY_SNAPSHOT_KEYS={hash:'hash',checkoutKey:'checkoutKey'} as const satisfies Record<string,keyof AutopayConsentSnapshot>;

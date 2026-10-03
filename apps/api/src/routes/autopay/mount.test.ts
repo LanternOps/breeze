@@ -7,7 +7,9 @@ const h = vi.hoisted(() => ({
   view: vi.fn(),
   identity: vi.fn(),
   email: vi.fn(),
+  confirmView: vi.fn(), confirm: vi.fn(),
 }));
+vi.mock('../../services/autopay/confirmPayment',()=>({getConfirmPaymentView:h.confirmView,confirmInvoicePayment:h.confirm}));
 vi.mock('../../db', () => ({
   db: { transaction: (fn: any) => fn({}) },
   withSystemDbAccessContext: (fn: any) => fn(),
@@ -223,4 +225,24 @@ it('normalizes the environment before loading the charging router dependency gra
 
   expect(normalization).toBeGreaterThanOrEqual(0);
   expect(chargingImport).toBeGreaterThan(normalization);
+});
+
+it('confirmation recovery is scanner safe and available with rollout disabled',async()=>{
+ h.confirmView.mockResolvedValue({state:'requires_action',amount:'100.00',currency:'USD'});
+ h.confirm.mockResolvedValue({processing:true});
+ const url='/api/v1/autopay/public/token/confirm';
+ const get=await app.request(url,{headers:{'x-disabled':'1'}});expect(get.status).toBe(200);expect(h.confirm).not.toHaveBeenCalled();
+ const post=await app.request(url,{method:'POST',headers:{...headers,'x-disabled':'1'},body:'{}'});
+ expect(post.status).toBe(200);expect(await post.json()).toEqual({processing:true});
+ expect(h.identity).toHaveBeenCalledWith('token','confirm_payment');
+});
+it('confirm rejects missing authority, stale binding, cross-origin and invalid JSON',async()=>{
+ const url='/api/v1/autopay/public/token/confirm';
+ h.identity.mockResolvedValueOnce(null);expect((await app.request(url)).status).toBe(404);
+ h.identity.mockResolvedValueOnce(null);expect((await app.request(url,{method:'POST',headers,body:'{}'})).status).toBe(404);
+ h.confirmView.mockRejectedValueOnce(new InvoiceServiceError('Link unavailable',404,'INVALID_STATE'));
+ expect((await app.request(url)).status).toBe(404);
+ expect((await app.request(url,{method:'POST',headers:{...headers,origin:'https://other.example.test'},body:'{}'})).status).toBe(403);
+ expect((await app.request(url,{method:'POST',headers,body:'{"extra":true}'})).status).toBe(400);
+ expect(h.confirm).not.toHaveBeenCalled();
 });

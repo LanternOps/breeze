@@ -41,3 +41,12 @@ describe('autopay cross-wave vocabulary', () => {
     expect(BILLING_NOTICE_KINDS).toEqual(['autopay_request', 'autopay_enrolled', 'invoice_autopay', 'payment_receipt', 'payment_failed', 'payment_reminder', 'payment_overdue', 'autopay_stopped', 'card_expiring', 'autopay_paused', 'autopay_resumed']);
   });
 });
+
+it('validates bank consent amounts and exact persisted collection authority',()=>{
+ const bank={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:'20000000-0000-4000-8000-000000000001',principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)};
+ const schema=vocabulary.autopayConsentSnapshotSchema.shape.bankPayment;
+ expect(schema.safeParse(bank).success).toBe(true);
+ expect(schema.safeParse(undefined).success).toBe(true);
+ expect(schema.safeParse(null).success).toBe(true);
+ for(const patch of [{principal:100},{fee:'-1.00'},{currency:'EUR'},{invoiceId:'bad'},{disclosureHash:''}])expect(schema.safeParse({...bank,...patch}).success).toBe(false);
+});
