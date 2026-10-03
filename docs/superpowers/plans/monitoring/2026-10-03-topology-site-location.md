@@ -2,7 +2,7 @@
 title: Topology "belongs to" vs "is at" — site assignment vs observed network location
 tracking_issue: LanternOps/breeze#7884
 spec: docs/superpowers/specs/monitoring/2026-10-03-topology-site-location-design.md
-status: proposed — advisor quorum complete (Fable + Codex gpt-6-astra xhigh); anchor resolved by tie-break
+status: approved 2026-10-03 — advisor quorum complete (Fable + Codex gpt-6-astra xhigh); anchor resolved by tie-break
 waves: W1 (assignment vs observation + move hardening), W2 (anchors, fingerprints, presence, visitors), W3 (daily summaries, suggestions, dismissal)
 ---
 
@@ -1351,4 +1351,4 @@ it('409 device_site_changed shows the reload message', async () => { /* … */ }
 ## Self-review notes
 
 - Spec coverage: S§4 → W1 T3, W2 T3/T7. S§5/S§6 → W1 T1, W2 T3/T4. S§7 → W2 T1/T5. S§8 → W2 T6. S§9 → W2 T2/T6/T7. S§10 → W3 T2/T3/T5. S§11 → W3 T1/T4. S§12 → W1 T4/T5, W3 T4. S§13 → W1 T2 Step 9. S§14 → W2 T6. S§15 → W2 T1, W3 T1.
-- Open questions Q1 (declared gateway) and Q2 (dismissal expiry) are owner decisions and are deliberately not tasks.
+- Owner decisions (S§17, 2026-10-03): Q1 no admin-declared gateway in v1; Q2 dismissals do not expire. Neither is a task.

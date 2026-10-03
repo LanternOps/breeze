@@ -492,10 +492,10 @@ reads still serialize neither `declaration` nor any presence field.
 - A VPN whose full tunnel lands on the home site's network is excluded (tunnel interfaces never form
   attachments). Split-tunnel devices are classified by their physical LAN.
 
-## 17. Open questions (owner)
+## 17. Owner decisions (resolved 2026-10-03)
 
-- **Q1.** Close the bootstrap gap with an optional admin-declared gateway per declared prefix (new
-  column on `network_baselines`, or a small site-networks table)? Recommendation: defer until
-  `declared_unconfirmed` is seen in production. Adding it later is additive.
-- **Q2.** Should a dismissal expire (for example after 180 days) so a device that really moves later can
-  be suggested again? Recommendation: no expiry in v1. The "Suggestions off" marker keeps it visible.
+- **Q1 — admin-declared gateway: not in v1.** No new column on `network_baselines` and no
+  site-networks table. Revisit only if `declared_unconfirmed` shows up in production; adding it later is
+  additive.
+- **Q2 — dismissal expiry: none in v1.** A confirmation (`devices.site_assignment_confirmed_at`) stays
+  until the device is moved or an admin clears it. The "Suggestions off" marker keeps it visible.
