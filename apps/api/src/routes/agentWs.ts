@@ -94,7 +94,7 @@ import {
   type DesktopStreamStartActivation,
 } from '../services/desktopStreamStartActivation';
 import { getActiveTrustKeyset } from '../services/manifestSigning';
-import { nextAgentUpdateAttempt } from '@breeze/shared';
+import { ERROR_CODES, nextAgentUpdateAttempt } from '@breeze/shared';
 import { resolvePendingAgentCommand } from '../services/agentCommandAwait';
 import {
   reconcileSoftwareInstallResult,
@@ -4690,7 +4690,7 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
       const result = await validateAgentToken(agentId, token, certAssertion);
       if (!result.ok) {
         if (result.reason === 're_enrollment_required') {
-          return c.json({ error: 'Re-enrollment required', code: 're_enrollment_required' }, 401);
+          return c.json({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }, 401);
         }
         return c.json({ error: 'Unauthorized' }, 401);
       }
