@@ -161,9 +161,9 @@ export async function evaluatePatchInstallEligibility(args: {
       supersededBy: patches.supersededBy,
       // Pins use THIS device's observed version, so another tenant's agent cannot move the global version out from under a pin.
       version: sql<string | null>`COALESCE(${devicePatches.availableVersion}, ${patches.version})`,
-      // First-seen timestamp for this device+patch. Third-party entries have no
-      // vendor releaseDate, so deferral windows anchor on when we first saw the
-      // patch instead of failing closed (#2218).
+      // First-seen timestamp for this device+patch. Third-party (#2218) and
+      // Linux (#7800) entries have no vendor releaseDate, so deferral windows
+      // anchor on when we first saw the patch instead of failing closed.
       firstSeenAt: devicePatches.createdAt,
     })
     .from(devicePatches)
