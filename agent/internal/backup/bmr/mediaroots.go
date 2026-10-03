@@ -19,18 +19,22 @@ const fallbackRootsGODEBUG = "x509usefallbackroots=1"
 // builder's roots and Go validates against those instead.
 //
 // An empty pemPath or a file that does not exist returns (0, nil) and
-// touches nothing: the platform verifier and system roots stay in effect
-// (Linux media, non-media hosts, and media built without roots). Any other
-// read failure, a PEM block of type CERTIFICATE that does not parse, or a
-// file with zero certificates is an error: the caller fails closed. There
-// is no fallback to unverified TLS anywhere.
+// touches nothing: the platform verifier and system roots stay in effect.
+// The recovery console passes "" on Linux (media or not) and on a live
+// Windows host — its Windows host sets the path, X:\breeze\roots.pem beside
+// the executable, only when the process is running inside WinPE — so a
+// stray roots.pem next to an installed breeze-backup.exe is never read. A
+// WinPE media built without roots has no file and also returns (0, nil).
+// Any other read failure, a PEM block of type CERTIFICATE that does not
+// parse, or a file with zero certificates is an error: the caller fails
+// closed. There is no fallback to unverified TLS anywhere.
 //
 // When certificates are loaded this first ensures x509usefallbackroots=1 is
 // in effect (appended to any existing GODEBUG value, so the media launcher
 // need not set it), then calls x509.SetFallbackRoots exactly once. With that
 // setting Go uses the pool INSTEAD of the platform verifier for the whole
-// process. That is intended on WinPE media only; the caller passes a
-// non-empty path solely on Windows recovery media. x509.SetFallbackRoots
+// process. That is intended on WinPE media only, which is why the caller
+// gates the path on InWinPE rather than on the platform. x509.SetFallbackRoots
 // panics if called twice, so call this at most once per process.
 func LoadMediaRoots(pemPath string) (loaded int, err error) {
 	if pemPath == "" {

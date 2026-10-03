@@ -21,11 +21,13 @@ type consoleHost struct {
 	// --kernel-cmdline flag overrides it on both OSes.
 	Cmdline func() (string, error)
 	// BakedServer and BakedTrustPin are the paths of the optional trusted
-	// values written into the media at build time.
+	// values written into the media at build time. "" means none (Windows
+	// outside WinPE).
 	BakedServer   string
 	BakedTrustPin string
 	// BakedRoots is the PEM root bundle exported from the builder
-	// (Windows: <exeDir>\roots.pem). "" on Linux: the system store.
+	// (WinPE: <exeDir>\roots.pem). "" on Linux and on Windows outside
+	// WinPE: the system store.
 	BakedRoots   string
 	Collect      func(ctx context.Context) (*layout.Manifest, error)
 	MediaSources func() ([]string, error)
