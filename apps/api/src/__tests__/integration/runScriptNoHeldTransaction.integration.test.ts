@@ -232,6 +232,29 @@ runDb('a library run_script still refuses a device outside the caller org when i
   expect(queued).toHaveLength(0);
 }, 30_000);
 
+// The other self-managed device tools reach the device through
+// `aiExecuteCommand`, whose precheck now opens a short context of the
+// CALLER's own scope when none is held (`executeCommandWithCallerPrecheck`).
+// One tool per shape: a single online-device wait, and the watchdog loop over
+// a device list whose access checks run in one `inToolDbPhase` block.
+runDb.each([
+  ['network_discovery', (deviceId: string) => ({ deviceId, subnet: '192.0.2.0/24' })],
+  ['trigger_agent_restart', (deviceId: string) => ({ deviceIds: [deviceId] })],
+] as const)('%s through the SDK wrapper holds no transaction across the device wait (#7918)', async (tool, args) => {
+  const { orgId, partnerId, userId, deviceId, sessionId } = await seed();
+  const auth = callerAuth(orgId, partnerId, userId, 'organization', sessionId);
+  const agent = fakeAgent(deviceId);
+
+  const out = parseToolText(await sdkToolsTest.makeHandler(tool, () => auth)(args(deviceId)));
+
+  expect(await agent.idleDuringWait).toBe(0);
+  // The device resolved under RLS (a contextless read would have answered
+  // "Device not found") and the agent's result came back.
+  expect(JSON.stringify(out)).not.toMatch(/not found|access denied/i);
+  if (tool === 'network_discovery') expect(out).toMatchObject({ status: 'completed' });
+  else expect(out).toMatchObject({ queued: 1 });
+}, 60_000);
+
 // Control: a caller that DOES hold a transaction around the tool (the shape
 // every tool call had before #7918) is visible to the probe. Without this, a
 // probe that could never see the code under test would pass the cases above.

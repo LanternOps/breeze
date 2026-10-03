@@ -24,6 +24,9 @@ const TX = { tx: true };
 // #7103 — open system contexts; a send must observe 0.
 const txState = vi.hoisted(() => ({ open: 0 }));
 vi.mock('../db', () => ({
+  // These handlers run as under the per-call transaction: `inToolDbPhase`
+  // (#7918) joins it rather than opening a context of its own.
+  hasDbAccessContext: vi.fn(() => true),
   db: {
     select: () => ({ from: () => ({ where: () => ({ limit: accessMock }) }) }),
     transaction: (fn: (tx: unknown) => unknown) => fn(TX),

@@ -61,6 +61,7 @@ import {
 } from './networkBaselineAuthority';
 import { aiExecuteCommand } from './aiDispatch';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { inToolDbPhase } from './aiToolDbContext';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -921,6 +922,9 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     domain: 'network',
     searchHint: 'network discovery scan from a managed device to find nearby assets',
+    // The scan waits up to 120 s for the device, so it must not hold the
+    // per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
+    selfManagedDbContext: true,
     definition: {
       name: 'network_discovery',
       description: 'Initiate a network discovery scan from a device to find other devices on the network.',
@@ -937,7 +941,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const deviceId = input.deviceId as string;
 
-      const access = await verifyDeviceAccess(deviceId, auth, true);
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
       const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
