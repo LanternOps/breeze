@@ -151,6 +151,23 @@ describe('grouped two-stage layout', () => {
       const result = await computeTopologyLayout(request, new ELK());
       expect(findOverlaps(result, request)).toEqual([]);
       expect(bounds(result, request, ['gw']).y2).toBeLessThanOrEqual(bounds(result, request, members(request, 'lan')).y1);
+      // The rest of the auto-layout moves with the anchored card: the second LAN still hangs below its gateway.
+      expect(bounds(result, request, ['gw']).y2).toBeLessThanOrEqual(bounds(result, request, members(request, 'lan2')).y1);
+    }
+  });
+
+  it('moves the rest of the auto-layout with a pin-anchored card, so a sibling card it lands on keeps its gateway above it', async () => {
+    const free = await computeTopologyLayout(groupedRequest(), new ELK());
+    const home = bounds(free, groupedRequest(), members(groupedRequest(), 'lan2'));
+    // Legacy pins drag the big LAN card onto the spot ELK gave the small second LAN.
+    const pins = Array.from({ length: 4 }, (_, i) => ({ nodeId: `pc-${String(i * 7).padStart(2, '0')}`, x: (home.x1 + home.x2) / 2 + (i % 2) * 220, y: (home.y1 + home.y2) / 2 + Math.floor(i / 2) * 80, pinned: true }));
+    for (const mode of ['reflow', 'incremental'] as const) {
+      const request = groupedRequest(mode, pins);
+      const result = await computeTopologyLayout(request, new ELK());
+      expect(findOverlaps(result, request)).toEqual([]);
+      const gw = bounds(result, request, ['gw']), lan = bounds(result, request, members(request, 'lan')), lan2 = bounds(result, request, members(request, 'lan2'));
+      expect(gw.y2).toBeLessThanOrEqual(lan.y1);
+      expect(gw.y2).toBeLessThanOrEqual(lan2.y1);
     }
   });
 

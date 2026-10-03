@@ -83,12 +83,7 @@ export function packTopologyLayout(request: LayoutRequest, proposed = new Map<st
   if (isGroupedRequest(request)) return packGroupedLayout(request, proposed, fallback);
   return packFlatLayout(request, proposed, fallback);
 }
-/**
- * `clearUpward` (grouped overview): a node proposed above the centre of a fixed box it collides with
- * (a gateway ELK ranked above a card that legacy pins anchored onto its row) clears that box upward,
- * so the gateway row stays above its LAN instead of being pushed under the card.
- */
-function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false, clearUpward = false): LayoutResult {
+function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const boxes = new Map(request.nodes.map((node) => [node.id, node]));
   const positions = new Map(request.positions.filter((p) => boxes.has(p.nodeId) && (request.mode === 'incremental' || p.pinned)).map((p) => [p.nodeId, { ...p }]));
   const fixed = [...positions.values()];
@@ -103,13 +98,8 @@ function packFlatLayout(request: LayoutRequest, proposed = new Map<string, { x: 
     const anchorEdge = request.edges.find((edge) => edge.source === node.id && positions.has(edge.target) || edge.target === node.id && positions.has(edge.source));
     const anchor = anchorEdge ? positions.get(anchorEdge.source === node.id ? anchorEdge.target : anchorEdge.source) : undefined;
     let point: LayoutPosition = { nodeId: node.id, ...(proposed.get(node.id) ?? { x: anchor ? anchor.x + maxWidth : 0, y: anchor?.y ?? 0 }), pinned: false };
-    const hitOf = () => [...positions.values()].find((other) => intersects(point, node, other, boxes.get(other.nodeId)!));
-    let hit = hitOf();
-    const upward = clearUpward && hit !== undefined && point.y < hit.y;
-    while (hit && attempts < 5000) {
-      point = upward ? { ...point, y: hit.y - boxes.get(hit.nodeId)!.height / 2 - GAP - node.height / 2 } : { ...point, y: point.y + maxHeight };
-      attempts++; hit = hitOf();
-    }
+    const collides = () => [...positions.values()].some((other) => intersects(point, node, other, boxes.get(other.nodeId)!));
+    while (collides() && attempts < 5000) { point = { ...point, y: point.y + maxHeight }; attempts++; }
     if (attempts >= 5000 || fallback) {
       warning = 'layout_fallback';
       // Place beyond every occupied bound, not merely beyond pins.
@@ -239,8 +229,17 @@ function groupedStages(request: LayoutRequest) {
 
 function packGroupedLayout(request: LayoutRequest, proposed = new Map<string, { x: number; y: number }>(), fallback = false): LayoutResult {
   const { top, cards, homeOf, fixed, pinnedOnly } = groupedStages(request);
-  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages).
-  const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback, true);
+  // Cards anchored by pinned members are fixed obstacles (positioned in groupedStages). The auto-layout
+  // moves with the largest anchored card (2026-10-03): ELK's whole proposal is translated so that card
+  // lands on its anchor, so its gateway row stays above it and sibling cards keep their places around
+  // it, instead of each colliding tile being pushed below the card one by one.
+  const anchor = [...cards.values()].filter((card) => card.fixed && proposed.has(card.id))
+    .sort((a, b) => b.local.size - a.local.size || a.id.localeCompare(b.id, 'en'))[0];
+  if (anchor) {
+    const at = proposed.get(anchor.id)!, dx = anchor.fixed!.x - at.x, dy = anchor.fixed!.y - at.y;
+    proposed = new Map([...proposed].map(([id, point]) => [id, { x: point.x + dx, y: point.y + dy }]));
+  }
+  const placed = packFlatLayout({ ...top, mode: 'incremental', positions: top.positions.filter((p) => p.pinned || request.mode === 'incremental') }, proposed, fallback);
   const centre = new Map(placed.positions.map((p) => [p.nodeId, p]));
   const positions: LayoutPosition[] = [];
   for (const point of placed.positions) if (!cards.has(point.nodeId)) positions.push({ ...point, pinned: fixed.get(point.nodeId)?.pinned ?? false });
