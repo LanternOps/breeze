@@ -221,6 +221,25 @@ it('saving keeps card members in the grid; the saved legacy pins are sent unchan
   expect(drawn()).toEqual(grid);
 });
 
+it('frames the overview as networks within one site and says when a second network has no observed link', async () => {
+  const graph = topologyGraphFixture();
+  const lan = (card: string, prefix: string, members: [string, string][]) => {
+    for (const [id, ip] of members) graph.nodes.push({ ...graph.nodes[0]!, id, kind: 'endpoint', role: null, label: `PC-${ip}`, bindings: [], availableActions: [],
+      inventory: { source: 'device', name: `PC-${ip}`, addresses: [ip], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+    graph.presentation.nodes.push({ id: card, view: 'overview', role: 'network_group', label: prefix, memberCount: members.length, frontierToken: 't', authority: false,
+      group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix, address: null, gatewayAddresses: [], conflict: false, observerCount: members.length,
+        members: members.map(([nodeId]) => ({ nodeId, placement: 'observed' as const, primary: true, stale: false })), canonicalNodeIds: [] } });
+  };
+  lan('presentation:overview:scope:net-a', '10.1.2.0/24', [['10000000-0000-4000-8000-000000000061', '10.1.2.61'], ['10000000-0000-4000-8000-000000000062', '10.1.2.62']]);
+  lan('presentation:overview:scope:net-b', '10.1.5.0/24', [['10000000-0000-4000-8000-000000000071', '10.1.5.71']]);
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(graph)));
+  render(<TopologyExplorer siteId={SITE} siteName="Harbor Dental — Main Office" settings={topologySettingsFixture()} />);
+  const header = await screen.findByTestId('topology-site-header');
+  expect(header).toHaveTextContent('Harbor Dental — Main Office');
+  expect(header).toHaveTextContent('2 networks · 3 devices');
+  expect(screen.getByTestId('topology-unlinked-note')).toHaveTextContent('No observed link between 10.1.5.0/24 and 10.1.2.0/24');
+});
+
 it('collapses an expansion back to the base read (#7818)', async () => {
   const initial = topologyGraphFixture();
   const added = { ...initial.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Expanded peer' };

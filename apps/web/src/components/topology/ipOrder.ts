@@ -54,3 +54,13 @@ export function compareIpAddresses(a: string | null | undefined, b: string | nul
   if (kb === null) return -1;
   return ka < kb ? -1 : 1;
 }
+
+/** Whether IPv4 `address` lies inside IPv4 CIDR `prefix` ("10.1.5.0/24"). False for anything that is not IPv4. */
+export function inIpv4Prefix(address: string, prefix: string): boolean {
+  const [base, bitsText] = prefix.split('/');
+  const ip = ipv4Octets(address.trim()), net = base ? ipv4Octets(base) : null, bits = Number(bitsText);
+  if (!ip || !net || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const value = (octets: number[]) => octets.reduce((sum, octet) => sum * 256 + octet, 0);
+  const size = 2 ** (32 - bits);
+  return Math.floor(value(ip) / size) === Math.floor(value(net) / size);
+}

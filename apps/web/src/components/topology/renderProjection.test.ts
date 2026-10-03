@@ -175,6 +175,56 @@ describe('compileTopologyRender', () => {
     expect(render.nodes.find((n) => n.id === ids.a)?.parent).toBe(P('net-lan'));
   });
 
+  describe('site framing and links between networks', () => {
+    /** Main LAN (two PCs + FW-01) and a small second LAN via 10.1.5.1, as in prod Whalers. */
+    function twoLans({ fwAddresses = ['10.1.2.1'], extraRelationships = [] as GraphRelationship[] } = {}) {
+      const [a, b, fw, c, gw] = [61, 62, 63, 64, 65].map(id);
+      const inv = (name: string, addresses: string[]) => ({ inventory: { source: 'device' as const, name, addresses, mac: null, vendor: null, model: null, os: null, type: 'workstation',
+        presence: { state: 'online' as const, source: 'agent' as const, agentStatus: 'online', lastSeenAt: null } } });
+      const nodes = [node(a!, 'endpoint', 'PC-A', inv('PC-A', ['10.1.2.57'])), node(b!, 'endpoint', 'PC-B', inv('PC-B', ['10.1.2.58'])),
+        node(fw!, 'endpoint', 'FW-01', inv('FW-01', fwAddresses)), node(c!, 'endpoint', 'SURGERY-01', inv('SURGERY-01', ['10.1.5.21'])), node(gw!, 'gateway', '10.1.5.1')];
+      const groups = [group(P('lan-a'), '10.1.2.0/24', net('10.1.2.0/24', 'lan', [{ nodeId: a! }, { nodeId: b! }, { nodeId: fw! }], [])),
+        group(P('lan-b'), '10.1.5.0/24', net('10.1.5.0/24', 'lan', [{ nodeId: c! }], [], { gatewayAddresses: ['10.1.5.1'] }))];
+      return { ids: { a: a!, c: c!, fw: fw!, gw: gw! }, graph: graph(nodes, extraRelationships, groups) };
+    }
+    const links = (g: GraphResponse) => compileTopologyRender(g, { showAllNetworks: false }).edges.filter((e) => e.id.startsWith('link:'));
+
+    it('frames the site: network count, device count, and the largest network as primary', () => {
+      const { site } = compileTopologyRender(twoLans().graph, { showAllNetworks: false });
+      expect(site).toMatchObject({ primary: P('lan-a'), networks: 2, devices: 4 });
+    });
+
+    it('draws no link and reports the secondary network as unlinked when nothing in the graph connects them', () => {
+      const g = twoLans().graph;
+      expect(links(g)).toEqual([]);
+      expect(compileTopologyRender(g, { showAllNetworks: false }).site.unlinked).toEqual([P('lan-b')]);
+    });
+
+    it('links the cards when one network\'s gateway address belongs to a member of the other', () => {
+      const g = twoLans({ fwAddresses: ['10.1.2.1', '10.1.5.1'] }).graph;
+      expect(links(g)).toMatchObject([{ source: P('lan-a'), target: P('lan-b'), style: 'inferred', label: 'via FW-01' }]);
+      expect(compileTopologyRender(g, { showAllNetworks: false }).site.unlinked).toEqual([]);
+    });
+
+    it('links the cards when a member reports an address inside the other network', () => {
+      expect(links(twoLans({ fwAddresses: ['10.1.2.1', '10.1.5.2'] }).graph)).toMatchObject([{ source: P('lan-a'), target: P('lan-b'), label: 'via FW-01' }]);
+    });
+
+    it('links the cards when a member routes via a gateway inside the other network', () => {
+      const { ids, graph: g } = twoLans();
+      g.relationships.push(rel(id(160), 'default_route', ids.a, ids.gw));
+      expect(links(g)).toMatchObject([{ source: P('lan-a'), target: P('lan-b'), label: 'via 10.1.5.1' }]);
+    });
+
+    it('never doubles a link the server already draws as shared devices', () => {
+      const g = twoLans({ fwAddresses: ['10.1.2.1', '10.1.5.1'] }).graph;
+      g.presentation.edges.push({ id: P('sd'), sourceNodeId: P('lan-a'), targetNodeId: P('lan-b'), relationshipKind: null, presentationOnly: true, authority: false,
+        meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [], memberCount: 1, frontierToken: 't' });
+      expect(links(g)).toEqual([]);
+      expect(compileTopologyRender(g, { showAllNetworks: false }).site.unlinked).toEqual([]);
+    });
+  });
+
   it('takes every drawn string from the supplied text, so a localized UI never shows English', () => {
     const { graph: g, ids } = lan();
     g.presentation.nodes[0]!.group!.conflict = true;
@@ -182,7 +232,7 @@ describe('compileTopologyRender', () => {
     g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
       meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
     const text: RenderText = { devices: (n) => `${n} Geräte`, gatewayFor: (n) => `Gateway für ${n} Geräte`, via: (gw) => `über ${gw}`, gatewaysDiffer: 'Gateways unterschiedlich',
-      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam` };
+      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}` };
     const render = compileTopologyRender(g, { showAllNetworks: false, text });
     const byId = new Map(render.nodes.map((n) => [n.id, n]));
     expect(byId.get(P('net-lan'))!.detail).toBe('3 Geräte · über 10.1.2.100 · Gateways unterschiedlich');

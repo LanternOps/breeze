@@ -91,6 +91,6 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {selectedSite && !settings && !error && <p role="status">{t('loading')}</p>}
     {settings && !settings.capabilities.ui.available && (legacy ?? <TopologyEmptyState reason={settings.capabilities.ui.reason} />)}
-    {settings?.capabilities.ui.available && bindingResolved && selectedSite && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} focusNodeId={focus} settings={settings} /></Suspense>}
+    {settings?.capabilities.ui.available && bindingResolved && selectedSite && <Suspense fallback={<p role="status">{t('loading')}</p>}><TopologyExplorer key={`${selectedSite}/${focus ?? ''}`} siteId={selectedSite} siteName={sites.find((site) => site.id === selectedSite)?.name} focusNodeId={focus} settings={settings} /></Suspense>}
   </div>;
 }

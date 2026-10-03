@@ -722,6 +722,10 @@
     "gatewaysDiffer": "ağ geçitleri farklı",
     "sharedEdge_one": "{{count}} ortak",
     "sharedEdge_other": "{{count}} ortak",
-    "sharedIpBadge": "Paylaşılan IP"
+    "sharedIpBadge": "Paylaşılan IP",
+    "linkVia": "{{name}} üzerinden",
+    "siteNetworks_one": "{{count}} ağ",
+    "siteNetworks_other": "{{count}} ağ",
+    "noObservedLink": "{{network}} ile {{primary}} arasında gözlemlenen bağlantı yok"
   }
 }

@@ -34,7 +34,7 @@ const cardMemberIds = (boxes: LayoutBox[]) => {
   return new Set(boxes.filter((box) => box.groupId && cards.has(box.groupId)).map((box) => box.id));
 };
 
-export default function TopologyExplorer({ siteId, focusNodeId, settings }: { siteId: string; focusNodeId?: string; settings: TopologySettings }) {
+export default function TopologyExplorer({ siteId, siteName, focusNodeId, settings }: { siteId: string; siteName?: string; focusNodeId?: string; settings: TopologySettings }) {
   const { t } = useTranslation('topology');
   const [navigation, setNavigation] = useHashState<TopologyNavigation>({ siteId, view: 'overview', search: '' }, (hash) => {
     const value = parseTopologyHash(hash); return value && (!value.siteId || value.siteId === siteId) ? value : undefined;
@@ -74,7 +74,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   // site's structural revision. Health-only updates keep this key unchanged.
   const renderText = useMemo<RenderText>(() => ({ devices: (count) => t('grouped.devices', { count }), gatewayFor: (count) => t('grouped.gatewayFor', { count }),
     via: (gateways) => t('grouped.cardVia', { gateways }), gatewaysDiffer: t('grouped.gatewaysDiffer'), agentOffline: t('grouped.presence.agent.offline'),
-    sharedEdge: (count) => t('grouped.sharedEdge', { count }) }), [t]);
+    sharedEdge: (count) => t('grouped.sharedEdge', { count }), linkVia: (name) => t('grouped.linkVia', { name }) }), [t]);
   const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks, text: renderText, sharedAddress: (count) => t('grouped.sharedAddress', { count }) }) : undefined, [graph, showAllNetworks, t, renderText]);
   const measurementKey = JSON.stringify(render ? render.nodes.map((node) => [node.id, node.label, node.detail, node.note, node.address, node.kind, node.parent]) : []);
   const nodes = useMemo(() => render?.nodes ?? [], [measurementKey, graph?.view]);
@@ -220,6 +220,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       </div>
       {conflict && <div data-testid="topology-layout-conflict" role="alert" className="rounded border p-3"><p>{t('layoutConflict')}</p><button className="mt-2 underline" onClick={() => { draft.dirty = false; setConflict(false); refreshGraph(); }}>{t('reloadLayout')}</button></div>}
       {warning && <p data-testid="topology-layout-warning" role="status">{t(/* i18n-dynamic */ warning)}</p>}
+      {render?.grouped && view === 'overview' && <SiteHeader render={render} siteName={siteName} />}
       {!nodes.length ? (view === 'physical'
         ? <div data-testid="topology-physical-empty" className="py-12 text-center text-muted-foreground"><p>{t('physicalView.empty')}</p>
           <button data-testid="topology-view-overview" className="mt-3 rounded border px-3 py-2" onClick={() => navigate({ ...navigation, view: 'overview', selection: undefined })}>{t('physicalView.viewOverview')}</button></div>
@@ -236,4 +237,21 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     <div aria-live="polite" className="sr-only">{announcement}</div>
     <div ref={measured} aria-hidden="true" className="pointer-events-none fixed -left-[10000px] top-0 w-52 opacity-0">{nodes.filter((node) => !isCard(node)).map((node) => <div data-node-id={node.id} key={node.id} className="w-52 rounded border py-3 pl-[54px] pr-[14px] text-xs leading-[1.35]"><div className="truncate">{node.label}</div>{node.detail && <div className="truncate">{node.detail}</div>}</div>)}</div>
   </section>;
+}
+
+/**
+ * The site at a glance above the overview (2026-10-03): the cards below are networks within one
+ * site. Names the site, counts networks and devices, and says plainly when a secondary network has
+ * no observed link to the primary one, rather than drawing a connection nobody saw (spec C:14).
+ */
+function SiteHeader({ render, siteName }: { render: NonNullable<ReturnType<typeof compileTopologyRender>>; siteName?: string }) {
+  const { t } = useTranslation('topology');
+  const label = (id: string | null) => render.nodes.find((node) => node.id === id)?.label ?? '';
+  const primary = label(render.site.primary);
+  return <div data-testid="topology-site-header" className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+    {siteName && <h3 className="text-base font-semibold tracking-[-0.01em]">{siteName}</h3>}
+    <span className="text-sm text-muted-foreground">{[t('grouped.siteNetworks', { count: render.site.networks }), t('grouped.devices', { count: render.site.devices })].join(' · ')}</span>
+    {render.site.unlinked.map((id) => <span key={id} data-testid="topology-unlinked-note" className="text-sm text-muted-foreground">
+      · {t('grouped.noObservedLink', { network: label(id), primary })}</span>)}
+  </div>;
 }

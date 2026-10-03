@@ -1,5 +1,5 @@
 import type { GraphNode, GraphResponse, HealthStatus, PresentationNode, TopologyNetworkClass } from '@breeze/shared';
-import { ipSortKey } from './ipOrder';
+import { inIpv4Prefix, ipSortKey } from './ipOrder';
 import { topologyGlyph, type TopologyGlyph } from './topologyGlyphs';
 
 /**
@@ -27,7 +27,13 @@ export type RenderNode = {
 export type RenderEdgeStyle = 'physical' | 'logical' | 'inferred' | 'route' | 'shared';
 export type RenderEdge = { id: string; source: string; target: string; style: RenderEdgeStyle; label: string | null; layoutSource: string; layoutTarget: string };
 /** `hiddenDeviceCount`: decommissioned devices the overview leaves out (#7879), site-wide. */
-export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number; hiddenDeviceCount: number };
+/**
+ * The site at a glance (2026-10-03): how many networks are drawn as cards, how many device tiles,
+ * which card is the primary (largest) network, and which other network cards have no observed
+ * link to any other card (shown as a note, never as an invented edge; spec C:14).
+ */
+export type SiteSummary = { networks: number; devices: number; primary: string | null; unlinked: string[] };
+export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped: boolean; hiddenNetworkCount: number; hiddenDeviceCount: number; site: SiteSummary };
 
 /**
  * Tile title + second line. A nameless device whose server label is only its address reads as
@@ -74,11 +80,13 @@ function summaryNode(group: PresentationNode, text: RenderText): RenderNode {
 export type RenderText = {
   devices: (count: number) => string; gatewayFor: (count: number) => string; via: (gateways: string) => string;
   gatewaysDiffer: string; agentOffline: string; sharedEdge: (count: number) => string;
+  /** Label of a link between two network cards, naming the device or gateway that ties them. */
+  linkVia: (name: string) => string;
 };
 const plural = (count: number, one: string, other: string) => `${count} ${count === 1 ? one : other}`;
 export const ENGLISH_RENDER_TEXT: RenderText = {
   devices: (count) => plural(count, 'device', 'devices'), gatewayFor: (count) => `Gateway for ${plural(count, 'device', 'devices')}`,
-  via: (gateways) => `via ${gateways}`, gatewaysDiffer: 'gateways differ', agentOffline: 'Agent offline', sharedEdge: (count) => `${count} shared`,
+  via: (gateways) => `via ${gateways}`, gatewaysDiffer: 'gateways differ', agentOffline: 'Agent offline', sharedEdge: (count) => `${count} shared`, linkVia: (name) => `via ${name}`,
 };
 
 export type RenderOptions = {
@@ -158,5 +166,51 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   }
   const hiddenNetworkCount = groups.filter((group) => group.group!.kind === 'network' && !renderedGroupIds.has(group.id)).length;
   const hiddenDeviceCount = allGroups.filter((group) => group.group!.kind === 'hidden' && group.group!.basis === 'decommissioned').reduce((sum, group) => sum + group.memberCount, 0);
-  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount };
+  const site = linkNetworks(graph, [...drawnCards].map((cardId) => groups.find((group) => group.id === cardId)!), nodes, edges, text);
+  return { nodes, edges, grouped: renderedGroups.length > 0, hiddenNetworkCount, hiddenDeviceCount, site };
+}
+
+/**
+ * Links between network cards, from evidence already in the graph response only (2026-10-03):
+ * - a member of one card reports the other card's gateway address, or any address inside its prefix
+ *   (a dual-homed router or firewall);
+ * - a member of one card has a default route to a gateway whose address lies inside the other prefix.
+ * Each linked pair gets one dotted (inferred) edge named after what ties them. A pair the server
+ * already joins with a shared-devices edge gets nothing more. Nothing is drawn without evidence: an
+ * unlinked secondary network is reported in `unlinked` for the site header instead (spec C:14).
+ */
+function linkNetworks(graph: GraphResponse, cards: PresentationNode[], nodes: RenderNode[], edges: RenderEdge[], text: RenderText): SiteSummary {
+  const networks = cards.filter((card) => card.group!.kind === 'network' && card.group!.prefix);
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const membersOf = (card: PresentationNode) => new Set(card.group!.members.map((member) => member.nodeId));
+  const pairKey = (a: string, b: string) => [a, b].sort().join('|');
+  const joined = new Set(edges.filter((edge) => edge.style === 'shared').map((edge) => pairKey(edge.source, edge.target)));
+  const evidence = new Map<string, { a: string; b: string; via: string }>();
+  for (const a of networks) for (const b of networks) {
+    if (a === b || joined.has(pairKey(a.id, b.id)) || evidence.has(pairKey(a.id, b.id))) continue;
+    const prefix = b.group!.prefix!, aMembers = membersOf(a), bMembers = membersOf(b);
+    let via: string | undefined;
+    for (const memberId of [...aMembers].sort()) {
+      const member = byId.get(memberId);
+      const addresses = member?.inventory?.addresses ?? [];
+      if (!member || bMembers.has(memberId)) continue;
+      if (addresses.some((address) => b.group!.gatewayAddresses.includes(address) || inIpv4Prefix(address, prefix))) { via = member.label; break; }
+    }
+    if (!via) {
+      const route = graph.relationships.find((edge) => edge.kind === 'default_route' && aMembers.has(edge.sourceNodeId)
+        && inIpv4Prefix(byId.get(edge.targetNodeId)?.label ?? '', prefix));
+      if (route) via = byId.get(route.targetNodeId)!.label;
+    }
+    if (via) evidence.set(pairKey(a.id, b.id), { a: a.id, b: b.id, via });
+  }
+  const primary = [...networks].sort((x, y) => y.memberCount - x.memberCount || x.id.localeCompare(y.id, 'en'))[0]?.id ?? null;
+  const linked = new Set<string>();
+  for (const key of [...joined, ...evidence.keys()]) for (const id of key.split('|')) linked.add(id);
+  for (const link of evidence.values()) {
+    // Drawn from the primary network outward when it is one of the pair.
+    const [source, target] = link.b === primary ? [link.b, link.a] : [link.a, link.b];
+    edges.push({ id: `link:${source}:${target}`, source, target, style: 'inferred', label: text.linkVia(link.via), layoutSource: source, layoutTarget: target });
+  }
+  return { networks: networks.length, devices: nodes.filter((node) => node.kind === 'device').length, primary,
+    unlinked: networks.length > 1 ? networks.filter((card) => card.id !== primary && !linked.has(card.id)).map((card) => card.id) : [] };
 }

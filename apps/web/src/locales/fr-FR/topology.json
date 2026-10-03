@@ -722,6 +722,10 @@
     "gatewaysDiffer": "passerelles différentes",
     "sharedEdge_one": "{{count}} partagé",
     "sharedEdge_other": "{{count}} partagés",
-    "sharedIpBadge": "IP partagée"
+    "sharedIpBadge": "IP partagée",
+    "linkVia": "par {{name}}",
+    "siteNetworks_one": "{{count}} réseau",
+    "siteNetworks_other": "{{count}} réseaux",
+    "noObservedLink": "Aucun lien observé entre {{network}} et {{primary}}"
   }
 }

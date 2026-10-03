@@ -172,7 +172,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     const themeObserver = new MutationObserver(() => renderer.style(stylesheet(palette())));
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
     renderer.on('tap', 'node, edge', (event) => {
-      if (event.target.data('kind') === 'section') return;
+      // Sections and derived network links (renderProjection.linkNetworks) stand for no single graph entity.
+      if (event.target.data('kind') === 'section' || event.target.id().startsWith('link:')) return;
       const ids: string[] | undefined = event.target.data('relationshipIds');
       callbacks.current.onSelect({ kind: event.target.isNode() ? 'node' : 'edge', id: ids?.[0] ?? event.target.id() });
     });
