@@ -255,7 +255,7 @@ export default function AccessReviewPage() {
           const extra = (context.reviewerIds?.length ?? 0) > 1;
           showToast({
             type: extra ? 'warning' : 'success',
-            message: t(extra ? 'accessReviewPage.assignedReviewerEmailedOnly' : 'accessReviewPage.reviewersEmailed')
+            message: t(/* i18n-dynamic */ extra ? 'accessReviewPage.assignedReviewerEmailedOnly' : 'accessReviewPage.reviewersEmailed')
           });
           return true;
         }
@@ -277,7 +277,7 @@ export default function AccessReviewPage() {
 
         if (reviewerEmails.length === 0) {
           throw new Error(
-            `${t(fallbackReasonKeys[outcome.reason])} ${t('accessReviewPage.noReviewerEmailsAvailableForNotifications')}`
+            `${t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason])} ${t('accessReviewPage.noReviewerEmailsAvailableForNotifications')}`
           );
         }
 
@@ -291,7 +291,7 @@ export default function AccessReviewPage() {
           );
           showToast({
             type: 'warning',
-            message: t('accessReviewPage.fallbackToMailClient', { reason: t(fallbackReasonKeys[outcome.reason]) })
+            message: t('accessReviewPage.fallbackToMailClient', { reason: t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason]) })
           });
           window.location.href = `mailto:${reviewerEmails.join(',')}?subject=${subject}&body=${body}`;
           return true;
