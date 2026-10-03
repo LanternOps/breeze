@@ -686,6 +686,35 @@
     "neighborCoverageLimited": "Die Nachbar-Cache-Daten für dieses Netzwerk sind unvollständig: Fehlt ein Gerät in einem Cache, heißt das nicht, dass es nicht vorhanden ist.",
     "conflictGatewayMac": "Geräte in diesem Bereich melden dieselbe Gateway-Adresse, ihre Nachbar-Caches zeigen aber unterschiedliche Gateway-MAC-Adressen, daher ist er in einzelne Karten aufgeteilt.",
     "gatewayMac_one": "Gateway-MAC {{mac}}: im Nachbar-Cache von {{count}} Gerät; zuletzt bestätigt {{when}}",
-    "gatewayMac_other": "Gateway-MAC {{mac}}: in den Nachbar-Caches von {{count}} Geräten; zuletzt bestätigt {{when}}"
+    "gatewayMac_other": "Gateway-MAC {{mac}}: in den Nachbar-Caches von {{count}} Geräten; zuletzt bestätigt {{when}}",
+    "section": {
+      "network": "Netzwerkgeräte",
+      "servers": "Server",
+      "computers": "Computer",
+      "phones": "Telefone",
+      "printers": "Drucker",
+      "other": "Sonstige Geräte"
+    },
+    "sectionShort": {
+      "network": "Netzwerk",
+      "servers": "Server",
+      "computers": "Computer",
+      "phones": "Telefone",
+      "printers": "Drucker",
+      "other": "Sonstige"
+    },
+    "summary": {
+      "agentsOnline_one": "{{count}} Agent online",
+      "agentsOnline_other": "{{count}} Agents online",
+      "agentsOffline_one": "{{count}} ist offline",
+      "agentsOffline_other": "{{count}} sind offline",
+      "noAgents": "Keine Breeze-Agents",
+      "zoomIn": "Vergrößern, um die Geräte zu sehen"
+    },
+    "bundle_one": "{{count}} Verbindung",
+    "bundle_other": "{{count}} Verbindungen",
+    "outside_one": "{{count}} Element außerhalb der Ansicht",
+    "outside_other": "{{count}} Elemente außerhalb der Ansicht",
+    "showAll": "Alles anzeigen"
   }
 }

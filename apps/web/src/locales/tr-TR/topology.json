@@ -686,6 +686,35 @@
     "neighborCoverageLimited": "Bu ağ için komşu önbelleği verileri eksik: bir cihazın önbellekte olmaması, ağda olmadığını göstermez.",
     "conflictGatewayMac": "Bu aralıktaki cihazlar aynı ağ geçidi adresini bildiriyor, ancak komşu önbellekleri farklı ağ geçidi MAC adresleri gösterdiği için ayrı kartlara bölündü.",
     "gatewayMac_one": "Ağ geçidi MAC {{mac}}: {{count}} cihazın komşu önbelleğinde; son onay: {{when}}",
-    "gatewayMac_other": "Ağ geçidi MAC {{mac}}: {{count}} cihazın komşu önbelleklerinde; son onay: {{when}}"
+    "gatewayMac_other": "Ağ geçidi MAC {{mac}}: {{count}} cihazın komşu önbelleklerinde; son onay: {{when}}",
+    "section": {
+      "network": "Ağ ekipmanı",
+      "servers": "Sunucular",
+      "computers": "Bilgisayarlar",
+      "phones": "Telefonlar",
+      "printers": "Yazıcılar",
+      "other": "Diğer cihazlar"
+    },
+    "sectionShort": {
+      "network": "Ağ",
+      "servers": "Sunucular",
+      "computers": "Bilgisayarlar",
+      "phones": "Telefonlar",
+      "printers": "Yazıcılar",
+      "other": "Diğer"
+    },
+    "summary": {
+      "agentsOnline_one": "{{count}} aracı çevrimiçi",
+      "agentsOnline_other": "{{count}} aracı çevrimiçi",
+      "agentsOffline_one": "{{count}} çevrimdışı",
+      "agentsOffline_other": "{{count}} çevrimdışı",
+      "noAgents": "Breeze aracısı yok",
+      "zoomIn": "Cihazları görmek için yakınlaştırın"
+    },
+    "bundle_one": "{{count}} bağlantı",
+    "bundle_other": "{{count}} bağlantı",
+    "outside_one": "Görünümün dışında {{count}} öğe",
+    "outside_other": "Görünümün dışında {{count}} öğe",
+    "showAll": "Tümünü göster"
   }
 }

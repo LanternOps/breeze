@@ -686,6 +686,35 @@
     "neighborCoverageLimited": "Neighbor-cache evidence is incomplete for this network: a device missing from a cache is not evidence that it is absent.",
     "conflictGatewayMac": "Devices on this range report the same gateway address, but their neighbor caches show different gateway MAC addresses, so it is split into separate cards.",
     "gatewayMac_one": "Gateway MAC {{mac}}: in {{count}} device's neighbor cache; last confirmed {{when}}",
-    "gatewayMac_other": "Gateway MAC {{mac}}: in {{count}} devices' neighbor caches; last confirmed {{when}}"
+    "gatewayMac_other": "Gateway MAC {{mac}}: in {{count}} devices' neighbor caches; last confirmed {{when}}",
+    "section": {
+      "network": "Network equipment",
+      "servers": "Servers",
+      "computers": "Computers",
+      "phones": "Phones",
+      "printers": "Printers",
+      "other": "Other devices"
+    },
+    "sectionShort": {
+      "network": "Network",
+      "servers": "Servers",
+      "computers": "Computers",
+      "phones": "Phones",
+      "printers": "Printers",
+      "other": "Other"
+    },
+    "summary": {
+      "agentsOnline_one": "{{count}} agent online",
+      "agentsOnline_other": "{{count}} agents online",
+      "agentsOffline_one": "{{count}} offline",
+      "agentsOffline_other": "{{count}} offline",
+      "noAgents": "No Breeze agents",
+      "zoomIn": "Zoom in to see the devices"
+    },
+    "bundle_one": "{{count}} connection",
+    "bundle_other": "{{count}} connections",
+    "outside_one": "{{count}} item outside the view",
+    "outside_other": "{{count}} items outside the view",
+    "showAll": "Show all"
   }
 }
