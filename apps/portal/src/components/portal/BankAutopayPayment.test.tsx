@@ -54,3 +54,34 @@ it('retains verification status without a charge button when collection is unava
  render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-pending');
  expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();expect(apiPost).not.toHaveBeenCalled();
 });
+
+it.each(['portal','public'].flatMap(route=>['pending_verification','in_progress','abandoned'].map(reason=>({route,reason}))))(
+ 'keeps failure feedback and exposes $reason recovery for a $route conflict',async({route,reason})=>{
+ const target={invoiceId:'invoice-1',setupSessionId:'cs_bank_one',...(route==='public'?{publicToken:'token-1'}:{})};
+ sessionStorage.setItem('autopay-bank-return',JSON.stringify(target));
+ const data={invoice:{id:'invoice-1'},bankAutopay:{...offer,methodStatus:'active'}};
+ vi.mocked(apiGet).mockResolvedValue({data:route==='public'?{data}:data});
+ vi.mocked(apiPost).mockResolvedValue({statusCode:409,error:'Payment has not started. Review the invoice payment status.',errorData:{outcome:'deferred',reason}});
+ render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-confirm-pay');
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
+ const control=await screen.findByTestId(reason==='abandoned'?'autopay-bank-restart':'autopay-bank-refresh');
+ expect(screen.getByTestId('autopay-bank-result')).toHaveAttribute('role','alert');
+ expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();
+ expect(navigateTo).not.toHaveBeenCalled();
+ if(reason==='abandoned'){
+   fireEvent.click(control);expect(screen.getByTestId('autopay-bank-pay')).toBeDisabled();
+ }else{
+   fireEvent.click(control);await waitFor(()=>expect(apiGet).toHaveBeenCalledTimes(2));
+ }
+ expect(apiPost).toHaveBeenCalledTimes(1);
+});
+it('keeps an unrecognized conflict as a failure without setup recovery',async()=>{
+ vi.mocked(apiPost).mockResolvedValue({statusCode:409,error:'Invoice is not payable',errorData:{outcome:'refused',reason:'invoice_not_payable'}});
+ render(<BankAutopayPayment target={{invoiceId:'invoice-1'}} offer={offer}/>);
+ fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-pay'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-bank-result')).toHaveTextContent('Invoice is not payable'));
+ expect(screen.getByTestId('autopay-bank-result')).toHaveAttribute('role','alert');
+ expect(screen.queryByTestId('autopay-bank-restart')).toBeNull();
+ expect(screen.queryByTestId('autopay-bank-refresh')).toBeNull();
+ expect(navigateTo).not.toHaveBeenCalled();
+});

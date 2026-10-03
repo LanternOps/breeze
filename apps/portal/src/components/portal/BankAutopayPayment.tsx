@@ -48,21 +48,33 @@ export default function BankAutopayPayment({target,offer,returning=false}:{targe
     const collecting=!!view.setupSessionId;
     if(!collecting){try{sessionStorage.setItem(key,JSON.stringify(view.target));}
       catch{outcome('Enable session storage to return securely.',true);setBusy(false);return;}}
-    const result=await runAction<Result>({request:async()=>unwrap(await apiPost<Result|{data:Result}>(`${path(view.target)}/pay`,{
+    let conflictReason: 'pending_verification'|'in_progress'|'abandoned'|undefined;
+    const result=await runAction<Result>({request:async()=>{
+      const response=await apiPost<Result|{data:Result}>(`${path(view.target)}/pay`,{
       methodType:'us_bank_account',phase:collecting?'collect':'setup',consentAccepted:true,disclosureHash:view.offer.disclosureHash,
       principal:view.offer.principal,fee:view.offer.fee,currency:view.offer.currency,...(collecting?{setupSessionId:view.setupSessionId}:{}),
-    },{redirectOnUnauthorized:!view.target.publicToken}),!!view.target.publicToken),onOutcome:outcome,
+    },{redirectOnUnauthorized:!view.target.publicToken});
+      // Conflicts remain failures in runAction; consume only recognized setup recovery details.
+      const detail=response.errorData;
+      if(collecting&&response.statusCode===409&&detail&&typeof detail==='object'&&
+        'outcome' in detail&&(detail.outcome==='deferred'||detail.outcome==='refused')&&'reason' in detail&&
+        (detail.reason==='pending_verification'||detail.reason==='in_progress'||detail.reason==='abandoned')){
+        conflictReason=detail.reason;
+      }
+      return unwrap(response,!!view.target.publicToken);
+    },onOutcome:outcome,
       successMessage:collecting?'Payment request checked.':'Opening secure bank setup…',errorFallback:'Could not start bank payment.',
       validate:value=>collecting?['created','deferred','refused','failed','canceled','requires_action','unapplied'].includes(value.outcome??''):
         typeof value.url==='string'&&value.url.startsWith('https://checkout.stripe.com/')});
-    setBusy(false);if(!result)return;
-    if(!collecting&&result.url){void navigateTo(result.url);return;}
-    if(result.outcome==='created'){try{sessionStorage.removeItem(key);}catch{}setFinished(true);
+    setBusy(false);if(!result&&!conflictReason)return;
+    const reason=conflictReason??result?.reason;
+    if(!collecting&&result?.url){void navigateTo(result.url);return;}
+    if(result?.outcome==='created'){try{sessionStorage.removeItem(key);}catch{}setFinished(true);
       outcome('Bank payment started. Processing may take several days.',false);return;}
-    if(result.reason==='pending_verification'){setView({...view,offer:{...view.offer,methodStatus:'pending_verification'}});
-      setAccepted(false);outcome('Bank verification is pending. No payment has started.',false);return;}
-    if(result.reason==='in_progress'||result.reason==='abandoned'){setRecovery(result.reason);setAccepted(false);
-      outcome(result.reason==='in_progress'?'Your bank setup is still being confirmed. Refresh verification before trying again.':'Bank setup was not completed. Restart bank setup to continue.',false);return;}
+    if(reason==='pending_verification'){setView({...view,offer:{...view.offer,methodStatus:'pending_verification'}});
+      setAccepted(false);outcome('Bank verification is pending. No payment has started.',!!conflictReason);return;}
+    if(reason==='in_progress'||reason==='abandoned'){setRecovery(reason);setAccepted(false);
+      outcome(reason==='in_progress'?'Your bank setup is still being confirmed. Refresh verification before trying again.':'Bank setup was not completed. Restart bank setup to continue.',!!conflictReason);return;}
     outcome('Payment has not started. Refresh the invoice to check its status.',true);
   }
   if(!view)return returning?<p role="status" data-testid="autopay-bank-return-status">{message||'Loading invoice…'}</p>:null;
