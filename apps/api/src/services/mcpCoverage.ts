@@ -442,6 +442,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'lifecycle.ts': { exempt: 'identity' },
   'logs.ts': { tools: ['search_logs', 'get_log_trends', 'detect_log_correlations'] },
   'm365.ts': { exempt: 'vendor_console_admin' },
+  'm365ConsentCallback.ts': { exempt: 'identity', note: 'Browser OAuth consent callback from Microsoft; not a tool surface.' },
   'm365CustomerGraphActions.ts': { exempt: 'vendor_console_admin' },
   'm365CustomerGraphRead.ts': { tools: ['m365_query_users', 'm365_query_signins', 'm365_query_intune_devices', 'm365_query_groups', 'm365_query_org', 'm365_query_sites'] },
   'maintenance.ts': { tools: ['manage_maintenance_windows'] },

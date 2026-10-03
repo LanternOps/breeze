@@ -243,7 +243,7 @@ The narrow Breeze route templates are:
 
 The API mounts the callback at `/api/v1/m365/consent/callback`. Authenticated reads require organization read permission. Mutations require organization write permission, current MFA, concrete organization scope, and the partner-wide management guard when applicable. Normal list/consent/retest/disconnect success is HTTP 200; malformed organization queries are 400, denied partner-wide management is 403, and disabled onboarding, scope misses, ownership conflicts, revoked/non-executable rows, and stale attempts are deliberately non-oracular 404 responses where applicable.
 
-Connection statuses are exactly `pending-consent`, `verifying`, `active`, `degraded`, `suspended`, and `revoked`. Stable failure/outcome codes exposed by this slice are `consent_expired`, `consent_state_mismatch`, `consent_cancelled`, `admin_role_required`, `tenant_mismatch`, `tenant_already_bound`, `credential_unavailable`, `identity_token_invalid`, `application_token_invalid`, `grant_reconciliation_unavailable`, `grant_missing`, `grant_unexpected`, `manifest_stale`, `organization_probe_failed`, and `executor_unavailable`.
+Connection statuses are exactly `pending-consent`, `verifying`, `active`, `degraded`, `suspended`, and `revoked`. Stable failure/outcome codes exposed by this slice are `consent_expired`, `consent_state_mismatch`, `consent_cancelled`, `conditional_access_blocked`, `consent_provider_error`, `admin_role_required`, `tenant_mismatch`, `tenant_already_bound`, `credential_unavailable`, `identity_token_invalid`, `application_token_invalid`, `grant_reconciliation_unavailable`, `grant_missing`, `grant_unexpected`, `manifest_stale`, `organization_probe_failed`, and `executor_unavailable`.
 
 ## Exact-digest deployment
 
