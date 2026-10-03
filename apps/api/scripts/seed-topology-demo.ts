@@ -1,5 +1,5 @@
 /**
- * Topology demo seed: a synthetic, Whalers-shaped dental site for refining the
+ * Topology demo seed: a synthetic, large single-office site for refining the
  * topology explorer on a LOCAL stack. QA fixture only; refuses any non-local DB.
  *
  *   npx tsx scripts/seed-topology-demo.ts                 # (re)seed, then exit

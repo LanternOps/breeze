@@ -663,7 +663,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
     queueResult([]); // listQuoteOrders — order lines
-    queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Berthoud', billingAddressRegion: 'CO', billingAddressPostalCode: '80513', billingAddressCountry: 'US' }]); // org billing
+    queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Springfield', billingAddressRegion: 'CO', billingAddressPostalCode: '80000', billingAddressCountry: 'US' }]); // org billing
 
     const { billTo } = await svc.getQuote('q1', actor);
     expect(billTo.name).toBe('Org Inc');

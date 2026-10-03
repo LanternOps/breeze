@@ -2,7 +2,7 @@
  * Pure (no I/O) helpers for scripts/seed-topology-demo.ts, split out so the
  * unit test can import them without opening the database pool.
  *
- * Everything here is SYNTHETIC. The shape mirrors a measured US-prod dental
+ * Everything here is SYNTHETIC. The shape mirrors a measured real-world
  * site (88 endpoints, one big /24, three IP collisions, sticky scan status,
  * legacy pins), but no hostname, MAC, IP or vendor relationship is real:
  * addresses are RFC1918 / RFC3927 / CGNAT / ULA, and every MAC is locally
