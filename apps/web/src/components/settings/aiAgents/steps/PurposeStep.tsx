@@ -1,9 +1,9 @@
 import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AI_AGENT_KINDS, type AiAgentDto, type AiAgentKind } from '@breeze/shared';
+import type { AiAgentDto, AiAgentKind } from '@breeze/shared';
 import ModeChoice from '../ModeChoice';
 import AgentModelSelect from '../AgentModelSelect';
-import { freeKinds, firstFreeKind, type Draft } from '../agentDraft';
+import { creatableKinds, freeKinds, firstFreeKind, type Draft } from '../agentDraft';
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
 const INSTRUCTIONS_MAX = 2000;
@@ -81,7 +81,7 @@ export default function PurposeStep({
           {t('aiAgentsPage.fields.kind')}
         </legend>
         <div role="radiogroup" aria-label={t('aiAgentsPage.fields.kind')} className="grid gap-2 sm:grid-cols-3">
-          {AI_AGENT_KINDS.map((kind) => {
+          {creatableKinds(agents, draft.ownerScope).map((kind) => {
             const selected = draft.kind === kind;
             const taken = !availableKinds.includes(kind);
             return (
@@ -98,7 +98,8 @@ export default function PurposeStep({
                 // rather than on off, which sent every first-time operator
                 // back to the Fleet Design page to find the agent "turned
                 // off". Off stays the fallback when act is not offered.
-                onClick={() => patch(kind === 'designer' ? { kind, mode: actSupported ? 'act' : 'off' } : { kind })}
+                // Research (W2) likewise has no shadow mode (RESEARCH_ALLOWED_MODES).
+                onClick={() => patch(kind === 'designer' || kind === 'research' ? { kind, mode: actSupported ? 'act' : 'off' } : { kind })}
                 className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   selected ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'bg-background hover:border-primary/50 hover:bg-muted/40'
                 }`}

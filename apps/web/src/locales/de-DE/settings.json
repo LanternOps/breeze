@@ -2329,7 +2329,8 @@
       "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
       "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
-      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker."
+      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
+      "research": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus."
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -2475,7 +2476,8 @@
       "triage": "Alarm-Triage",
       "patch": "Patch-Verwaltung",
       "helpdesk": "Helpdesk",
-      "designer": "Flottendesigner"
+      "designer": "Flottendesigner",
+      "research": "Fehlerbehebungs-Recherche"
     },
     "modes": {
       "off": "Aus",
@@ -3779,6 +3781,11 @@
           "blurb": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
           "runsWhen": "Sie ein Flottendesign für eine Organisation starten oder nach einem vierteljährlichen Zeitplan",
           "recommended": "eine Neueinrichtung von Grund auf oder ein vierteljährliches Konfigurationsaudit"
+        },
+        "research": {
+          "blurb": "Integriert. Recherchiert auf Anfrage ein Problem auf einem Gerät und schlägt sichere Lösungen vor. Führt nie etwas aus.",
+          "runsWhen": "ein Techniker Lösungsvorschläge für ein Geräteproblem anfordert",
+          "recommended": "automatische, schreibgeschützte Recherche zu jeweils einem Problem"
         }
       },
       "kindCard": {

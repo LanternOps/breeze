@@ -1,6 +1,13 @@
 export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer', 'research'] as const;
 export type AiAgentKind = (typeof AI_AGENT_KINDS)[number];
 
+/**
+ * Kinds that can hold tool actions (and so earn supervised keys / graduation).
+ * `research` is read-only with zero actions (AI Suggested Fixes W2), so
+ * action-keyed surfaces enumerate this instead of AI_AGENT_KINDS.
+ */
+export const AI_AGENT_ACTING_KINDS = ['triage', 'patch', 'helpdesk', 'designer'] as const satisfies readonly AiAgentKind[];
+
 export const AI_AGENT_MODES = ['off', 'shadow', 'act'] as const;
 export type AiAgentMode = (typeof AI_AGENT_MODES)[number];
 

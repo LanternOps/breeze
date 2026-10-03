@@ -241,6 +241,9 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       design: designToolAllowlist(['manage_services', 'run_script']),
       // AI patch agent (W01) — read-only drill-down tier plus the outcome tool.
       patch: patchToolAllowlist(['manage_services', 'run_script', 'manage_patches:install']),
+      // AI Suggested Fixes W2 — placeholder until Task 10 adds researchProfile.ts's
+      // allowlist; Task 10 must replace this literal with the real floor.
+      remediation_research: ['submit_suggestions'],
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -668,3 +671,10 @@ function undescribedLeaves(shape: Record<string, unknown>): string[] {
 function describedLeafPaths(shape: Record<string, unknown>): string[] {
   return allLeaves(shape).filter((leaf) => leaf.described).map((leaf) => leaf.path);
 }
+
+describe('remediation_research profile (AI Suggested Fixes W2)', () => {
+  it('owns exactly submit_suggestions', () => {
+    expect(outcomeToolsForProfile('remediation_research')).toEqual(['submit_suggestions']);
+    expect(OUTCOME_MCP_TOOL_NAMES.submit_suggestions).toBe('mcp__breeze__submit_suggestions');
+  });
+});

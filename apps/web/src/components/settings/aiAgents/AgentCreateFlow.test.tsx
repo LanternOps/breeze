@@ -50,7 +50,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'run_script', action: null, tier: 3, readOnly: false, policyDecidable: false, actEligible: true, actRequiresAuthorizedScripts: true }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [], research: [] },
   unreachableTools: [],
 };
 
@@ -264,6 +264,16 @@ describe('AgentCreateFlow — default owner scope (#5048 QA)', () => {
     renderFlow({ defaultOwnerScope: 'organization', partnerBaselineKinds: new Set(['triage']) });
 
     expect(screen.getByTestId('ai-agent-owner-org')).toBeChecked();
+  });
+});
+
+describe('AgentCreateFlow — provisioned research kind (W2)', () => {
+  it('with all four ordinary kinds taken partner-wide, the flow does not auto-select research and shows the exhausted state', async () => {
+    mockEndpoints();
+    const taken = ['triage', 'patch', 'helpdesk', 'designer'].map((kind) => ({ ...makeAgents()[0]!, id: `p-${kind}`, kind, ownerScope: 'partner', orgId: null }) as unknown as AiAgentDto);
+    renderFlow({ agents: taken, defaultOwnerScope: 'partner' });
+    expect(screen.queryByTestId('ai-agent-kind-card-research')).toBeNull();
+    expect(await screen.findByTestId('ai-agent-kinds-exhausted')).toBeTruthy();
   });
 });
 

@@ -368,6 +368,8 @@ export type AgentRunSkipReason =
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
   | 'device_not_in_org'
+  // AI Suggested Fixes W2 — research-profile volume guards.
+  | 'max_concurrent_research_runs' | 'research_rate'
   // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
   // max_concurrent_runs/max_runs_per_hour, counted against
   // maxConcurrentVerdictRuns/maxVerdictRunsPerHour instead (admission rule
@@ -1009,6 +1011,17 @@ function profileCaps(
         windowMs: 3_600_000,
         concurrentSkip: 'max_concurrent_analysis_runs',
         rateSkip: 'analysis_rate',
+      };
+    // AI Suggested Fixes W2 — per-(agent, org) research caps. The partner
+    // baseline research agent is the run's agentId for every org, so this is
+    // per org. Auto research has its own tighter hourly cap in requestResearch.
+    case 'remediation_research':
+      return {
+        maxConcurrent: limits.maxConcurrentResearchRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns,
+        maxPerWindow: limits.maxResearchRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxResearchRunsPerHour,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_research_runs',
+        rateSkip: 'research_rate',
       };
     default: {
       const exhaustive: never = profile;

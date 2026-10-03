@@ -81,6 +81,8 @@ export const OUTCOME_TOOL_NAMES = [
   // `outcomeToolsForProfile('full')` is deliberately `[]`. It is selected by
   // `outcomeToolsForRun` on the run's task linkage instead.
   'submit_task_step',
+  // AI Suggested Fixes W2 — see outcomeToolsForProfile's 'remediation_research' arm.
+  'submit_suggestions',
 ] as const;
 export type OutcomeToolName = (typeof OUTCOME_TOOL_NAMES)[number];
 // `ReturnType<typeof tool>` does not resolve usefully here: `tool` is generic
@@ -100,6 +102,7 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_fleet_design: 'mcp__breeze__submit_fleet_design',
   submit_patch_plan: 'mcp__breeze__submit_patch_plan',
   submit_analysis: 'mcp__breeze__submit_analysis',
+  submit_suggestions: 'mcp__breeze__submit_suggestions',
 };
 
 /**
@@ -192,6 +195,9 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // outcome is still the only thing anything downstream reads.
     case 'analysis':
       return ['submit_analysis'];
+    // AI Suggested Fixes W2 — a research run's ONE output channel.
+    case 'remediation_research':
+      return ['submit_suggestions'];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -280,6 +286,8 @@ export function validateOutcomeToolInput(
   switch (toolName) {
     case 'submit_analysis':
       return analysisOutcomeSchema.parse(input);
+    case 'submit_suggestions':
+      throw new Error('[outcomeTools] submit_suggestions is wired in AI Suggested Fixes W2 Task 8');
     case 'submit_task_step':
       return validateSubmitTaskStep(input);
     case 'submit_alert_verdict':
@@ -869,6 +877,8 @@ export function buildOutcomeSdkTools(
           },
         ) as SdkTool;
       }
+      case 'submit_suggestions':
+        throw new Error('[outcomeTools] submit_suggestions is wired in AI Suggested Fixes W2 Task 8');
       case 'submit_analysis':
         return tool(
           'submit_analysis',

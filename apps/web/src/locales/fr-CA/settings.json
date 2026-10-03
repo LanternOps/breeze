@@ -2329,7 +2329,8 @@
       "triage": "Examine les nouvelles alertes et propose quoi faire.",
       "patch": "Revoit les correctifs manquants et propose quoi installer.",
       "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes.",
-      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver."
+      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver.",
+      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -2475,7 +2476,8 @@
       "triage": "Tri des alertes",
       "patch": "Correctifs",
       "helpdesk": "Service d’assistance",
-      "designer": "Concepteur du parc"
+      "designer": "Concepteur du parc",
+      "research": "Recherche de correctifs"
     },
     "modes": {
       "off": "Désactivé",
@@ -3779,6 +3781,11 @@
           "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
           "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
           "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
+        },
+        "research": {
+          "blurb": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+          "runsWhen": "un technicien demande des suggestions de correctifs pour un problème d’appareil",
+          "recommended": "recherche automatique en lecture seule, un problème à la fois"
         }
       },
       "kindCard": {

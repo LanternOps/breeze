@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentDto } from '@breeze/shared';
 import {
   ALERT_SEVERITY_KINDS,
   allowsRunScript,
   authorizedScriptCountFor,
   buildAgentSaveBody,
+  creatableKinds,
   draftFrom,
   firstFreeKind,
   freeKinds,
@@ -298,5 +299,23 @@ describe('offeringId in the save body (W05)', () => {
   it("draftFrom reads the agent's offering", () => {
     const agent = { offeringId: 'opus' } as unknown as Parameters<typeof draftFrom>[0];
     expect(draftFrom(agent, { ownerScope: 'partner', kind: 'patch' })).toMatchObject({ offeringId: 'opus', offeringIdTouched: false });
+  });
+});
+
+const row = (kind: string, ownerScope: 'partner' | 'organization', orgId: string | null = null) =>
+  ({ id: `${kind}-${ownerScope}`, kind, ownerScope, orgId }) as unknown as AiAgentDto;
+const ORDINARY = ['triage', 'patch', 'helpdesk', 'designer'].map((k) => row(k, 'partner'));
+
+describe('creatableKinds / freeKinds and the provisioned research kind (W2, Codex finding 4)', () => {
+  it('research is never creatable partner-wide, even when every ordinary kind is taken', () => {
+    expect(creatableKinds([], 'partner')).not.toContain('research');
+    expect(freeKinds(ORDINARY, 'partner', null)).toEqual([]);
+    expect(firstFreeKind(ORDINARY, 'partner', null)).toBeUndefined();
+  });
+
+  it('an org may add a research override only on top of a partner research baseline', () => {
+    expect(freeKinds([], 'organization', 'o-1')).not.toContain('research');
+    expect(freeKinds([row('research', 'partner')], 'organization', 'o-1')).toContain('research');
+    expect(freeKinds([row('research', 'partner'), row('research', 'organization', 'o-1')], 'organization', 'o-1')).not.toContain('research');
   });
 });

@@ -84,6 +84,18 @@ export function toggle<T>(list: T[], value: T): T[] {
 }
 
 /**
+ * Kinds a user may create for this owner (AI Suggested Fixes W2). `research`
+ * is provisioned once per partner by the system (researchProvisioning.ts), so
+ * it is never creatable partner-wide. An org may add a research OVERRIDE
+ * (enable/disable + research caps only) on top of a visible partner baseline —
+ * the partner-baseline + override model the spec keeps for this kind.
+ */
+export function creatableKinds(agents: AiAgentDto[], ownerScope: OwnerScope): AiAgentKind[] {
+  const hasResearchBaseline = agents.some((row) => row.kind === 'research' && row.ownerScope === 'partner');
+  return AI_AGENT_KINDS.filter((kind) => kind !== 'research' || (ownerScope === 'organization' && hasResearchBaseline));
+}
+
+/**
  * Kinds still creatable for one ownership axis. The DB enforces
  * `(partner_id, kind) WHERE org_id IS NULL` and `(org_id, kind)` as two
  * independent partial uniques, both `WHERE disabled_at IS NULL`, so a kind is
@@ -103,7 +115,7 @@ export function freeKinds(
       )
       .map((row) => row.kind),
   );
-  return AI_AGENT_KINDS.filter((kind) => !taken.has(kind));
+  return creatableKinds(agents, ownerScope).filter((kind) => !taken.has(kind));
 }
 
 export function firstFreeKind(

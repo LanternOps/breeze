@@ -2329,7 +2329,8 @@
       "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
-      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar."
+      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
+      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada."
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -2475,7 +2476,8 @@
       "triage": "Triagem de alertas",
       "patch": "Aplicação de patches",
       "helpdesk": "Central de ajuda",
-      "designer": "Projetista de frota"
+      "designer": "Projetista de frota",
+      "research": "Pesquisa de correções"
     },
     "modes": {
       "off": "Desligado",
@@ -3779,6 +3781,11 @@
           "blurb": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
           "runsWhen": "você inicia um Projeto de frota para uma organização, ou em um agendamento trimestral",
           "recommended": "uma migração do zero, ou uma auditoria de configuração trimestral"
+        },
+        "research": {
+          "blurb": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+          "runsWhen": "um técnico pede sugestões de correção para um problema de um dispositivo",
+          "recommended": "pesquisa automática somente leitura, um problema por vez"
         }
       },
       "kindCard": {

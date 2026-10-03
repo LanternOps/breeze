@@ -2329,7 +2329,8 @@
       "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
-      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar."
+      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -2475,7 +2476,8 @@
       "triage": "Uyarı önceliklendirme",
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
-      "designer": "Filo tasarımcısı"
+      "designer": "Filo tasarımcısı",
+      "research": "Çözüm araştırması"
     },
     "modes": {
       "off": "Kapalı",
@@ -3779,6 +3781,11 @@
           "blurb": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
           "runsWhen": "bir kuruluş için Filo tasarımı başlattığınızda veya üç aylık bir zamanlamada",
           "recommended": "sıfırdan bir geçiş veya üç aylık bir yapılandırma denetimi"
+        },
+        "research": {
+          "blurb": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+          "runsWhen": "bir teknisyen bir cihaz sorunu için çözüm önerisi istediğinde",
+          "recommended": "her seferinde tek bir sorun için otomatik, salt okunur araştırma"
         }
       },
       "kindCard": {

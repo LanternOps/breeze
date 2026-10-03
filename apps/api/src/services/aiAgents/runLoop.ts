@@ -1274,6 +1274,8 @@ export function createAgentRunPostToolUse(args: {
           case 'submit_analysis':
             outcome.analysis = validateOutcomeToolInput(toolName, input);
             break;
+          case 'submit_suggestions':
+            throw new Error('[aiAgentRunLoop] submit_suggestions capture is wired in W2 Task 10');
           default: {
             const exhaustive: never = toolName;
             throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);

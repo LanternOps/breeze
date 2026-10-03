@@ -2329,7 +2329,8 @@
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
       "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
-      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+      "research": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -2475,7 +2476,8 @@
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
       "helpdesk": "Assistenza",
-      "designer": "Progettista della flotta"
+      "designer": "Progettista della flotta",
+      "research": "Ricerca correzioni"
     },
     "modes": {
       "off": "Disattivato",
@@ -3779,6 +3781,11 @@
           "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
           "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
           "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
+        },
+        "research": {
+          "blurb": "Integrato. Analizza un problema su un dispositivo su richiesta di un tecnico e suggerisce correzioni sicure. Non esegue mai nulla.",
+          "runsWhen": "un tecnico richiede suggerimenti di correzione per un problema di un dispositivo",
+          "recommended": "ricerca automatica in sola lettura, un problema alla volta"
         }
       },
       "kindCard": {

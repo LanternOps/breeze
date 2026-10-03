@@ -359,6 +359,9 @@ const KIND_ROLE: Readonly<Record<AiAgentKind, string>> = Object.freeze({
   // system prompt is Task 7's job); this entry exists only so the
   // `Record<AiAgentKind, string>` stays exhaustive.
   designer: 'fleet designer: you review a bounded evidence bundle and produce a fleet design report',
+  // AI Suggested Fixes W2 — the research agent; its profile's own fixed prompt
+  // section (researchProfile.ts) carries the real instructions.
+  research: 'remediation research agent: you research one problem on one device and submit safe, runnable fix suggestions',
 });
 
 export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {

@@ -33,7 +33,7 @@ import {
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
@@ -3468,7 +3468,7 @@ export function buildBreezeSdkTools(
       registryDescription('manage_ai_agents'),
       {
         action: z.enum(['authorize_supervised_key']),
-        kind: z.enum(AI_AGENT_KINDS),
+        kind: z.enum(AI_AGENT_ACTING_KINDS),
         opKey: z.string().min(3).max(120),
         // Required, and re-checked against the intent's own org at creation and
         // again at execution. It is here so the approval can PIN this org's
