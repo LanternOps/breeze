@@ -245,6 +245,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
+  'services/aiAgents/researchProvisioning.ts': 'system provisioner: inserts the one built-in research baseline per partner (kind research, no caller-chosen fields) the first time research is admitted; every caller-facing edit goes through agentService, which gates partner rows',
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
   // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
   // construction: the clone it may insert pins `partnerId: null` +

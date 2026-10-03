@@ -672,3 +672,23 @@ describe('AgentCreateFlow — review step preview and onCreated', () => {
     await waitFor(() => expect(postBody().enabled).toBe(true));
   });
 });
+
+describe('AgentCreateFlow — research override (W2)', () => {
+  it('collapses to name + caps, then review, and posts only the projected body', async () => {
+    mockEndpoints();
+    orgState.current = { ...orgState.current, currentOrgId: 'org-1', allOrgs: false };
+    const baseline = { ...makeAgents()[0]!, id: 'rb', kind: 'research', ownerScope: 'partner', orgId: null, partnerId: 'p-1' } as unknown as AiAgentDto;
+    renderFlow({ agents: [baseline], defaultOwnerScope: 'organization', showOwnerScope: false, partnerBaselineKinds: new Set(['research']) });
+
+    fireEvent.click(await screen.findByTestId('ai-agent-kind-card-research'));
+    expect(screen.getByTestId('ai-agent-research-caps')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-instructions')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-agent-name'), { target: { value: 'Acme research' } });
+    fireEvent.click(screen.getByTestId('agent-create-flow-next'));
+    fireEvent.click(await screen.findByTestId('agent-create-flow-create'));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === '/ai/agents' && (init as RequestInit | undefined)?.method === 'POST')).toBe(true));
+    expect(Object.keys(postBody()).sort()).toEqual(['enabled', 'kind', 'limits', 'mode', 'name', 'orgId', 'ownerScope']);
+    expect(postBody()).toMatchObject({ kind: 'research', ownerScope: 'organization', mode: 'act' });
+  });
+});

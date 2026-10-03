@@ -6,6 +6,7 @@ import {
   type AiAgentKind,
   type AiAgentMode,
   ALERT_SEVERITIES,
+  RESEARCH_EDITABLE_LIMIT_KEYS,
 } from '@breeze/shared';
 import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { isWithinCeiling } from './capabilityModel';
@@ -248,6 +249,26 @@ export function authorizedScriptCountFor(
 }
 
 /**
+ * AI Suggested Fixes W2 — a research agent accepts only name, enabled and the
+ * research caps (server: assertResearchAgentEdit). Every other field
+ * buildAgentSaveBody sends would be refused with a 400. On create (an org
+ * override) it adds the create-only identity fields and mode 'act'.
+ */
+export function buildResearchSaveBody(
+  draft: Draft,
+  opts: { isCreate: boolean; orgId: string | null },
+): Record<string, unknown> {
+  const limits: Record<string, number> = {};
+  for (const key of RESEARCH_EDITABLE_LIMIT_KEYS) {
+    const value = draft.limits[key];
+    if (typeof value === 'number') limits[key] = value;
+  }
+  const body: Record<string, unknown> = { name: draft.name.trim(), enabled: draft.enabled, limits };
+  if (opts.isCreate) Object.assign(body, { kind: 'research', ownerScope: 'organization', orgId: opts.orgId, mode: 'act' });
+  return body;
+}
+
+/**
  * Builds exactly the JSON body `AiAgentForm.tsx`'s `save()` used to construct
  * inline — the one-level-PATCH-merge reasoning (severities/actAssets
  * omission rules) lives here now, unchanged, so a caller never has to
@@ -258,6 +279,7 @@ export function buildAgentSaveBody(
   draft: Draft,
   opts: { isCreate: boolean; orgId: string | null },
 ): Record<string, unknown> {
+  if (draft.kind === 'research') return buildResearchSaveBody(draft, opts);
   // On PATCH the server merges each nested object one level onto the stored
   // jsonb (updatePolicyColumns), so the narrowing fields this form does not
   // expose — triggers.siteIds / deviceGroupIds / deviceTags,

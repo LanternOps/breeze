@@ -3813,6 +3813,36 @@
       "title": "Dieser Agent liest nur und schreibt Berichte",
       "body": "Ein Fleet Designer führt nie etwas auf einem Gerät aus. „Ein“ bedeutet, dass er laufen und seine Designs an die von Ihnen gewählten Empfänger liefern darf.",
       "ack": "Ich verstehe, dass dieser Agent unbeaufsichtigt läuft und Fleet Designs liefert."
+    },
+    "research": {
+      "capsTitle": "Recherche-Limits",
+      "builtInNote": "Integriert und nur vorschlagend: Der Agent führt nie etwas aus. Sie können ihn ausschalten und seine Ausgabenlimits festlegen.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Gleichzeitige Recherchen",
+          "hint": "Wie viele Recherchen gleichzeitig laufen dürfen."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Recherchen pro Stunde",
+          "hint": "Obergrenze aller pro Stunde gestarteten Recherchen."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Automatische Recherchen pro Stunde",
+          "hint": "Obergrenze für Recherchen, die automatisch bei hohen und kritischen Alarmen starten. 0 schaltet die automatische Recherche aus."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget schnelle Recherche (Cent)",
+          "hint": "Ausgabenlimit für eine schnelle Recherche."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget tiefe Recherche (Cent)",
+          "hint": "Ausgabenlimit für eine tiefe Recherche."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Tagesausgaben Recherche (Cent)",
+          "hint": "Gesamtes Ausgabenlimit pro Tag über alle Läufe dieses Agenten."
+        }
+      }
     }
   },
   "apiKeyForm": {

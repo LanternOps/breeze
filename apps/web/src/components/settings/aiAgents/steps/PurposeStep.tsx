@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { AiAgentDto, AiAgentKind } from '@breeze/shared';
 import ModeChoice from '../ModeChoice';
 import AgentModelSelect from '../AgentModelSelect';
+import ResearchAgentFields from '../ResearchAgentFields';
 import { creatableKinds, freeKinds, firstFreeKind, type Draft } from '../agentDraft';
 
 const inputCls = 'w-full rounded-md border bg-background px-2.5 py-1.5 text-sm';
@@ -56,9 +57,12 @@ export default function PurposeStep({
   // there is no prior mode to compare against (mirrors AiAgentForm's
   // `initialMode` always being 'off' on create).
   const enteringActMode = draft.mode === 'act';
+  // W2: a research draft (an org override) is name + caps only.
+  const isResearch = draft.kind === 'research';
 
   return (
     <div className="grid gap-3 md:grid-cols-2">
+      {!isResearch && (
       <ModeChoice
         mode={draft.mode}
         onChange={(mode) => patch({ mode })}
@@ -69,6 +73,7 @@ export default function PurposeStep({
         onActAckChange={onActAckChange}
         actKeysWillBeOmitted={actKeysWillBeOmitted}
       />
+      )}
 
       {/* Kind, as cards rather than the drawer's `<select>`: each names what
           the kind does, when it runs, and what its recommended preset
@@ -198,6 +203,9 @@ export default function PurposeStep({
         )}
       </div>
 
+      {isResearch ? (
+        <ResearchAgentFields draft={draft} patch={patch} />
+      ) : (<>
       <AgentModelSelect
         orgId={draft.ownerScope === 'partner' ? null : orgId}
         value={draft.offeringId}
@@ -221,6 +229,7 @@ export default function PurposeStep({
           {t('aiAgentsPage.fields.charactersLeft', { count: INSTRUCTIONS_MAX - draft.instructions.length })}
         </p>
       </fieldset>
+      </>)}
 
       <p className="text-xs text-muted-foreground md:col-span-2" data-testid="agent-create-flow-disabled-note">
         {t('aiAgentsPage.flow.createdDisabledNote')}

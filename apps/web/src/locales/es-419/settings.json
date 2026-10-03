@@ -3813,6 +3813,36 @@
       "title": "Este agente solo lee y escribe informes",
       "body": "Un Fleet Designer nunca ejecuta nada en un dispositivo. Activado significa que puede ejecutarse y entregar sus diseños a los destinatarios que elijas.",
       "ack": "Entiendo que este agente se ejecuta sin supervisión y entrega Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Límites de investigación",
+      "builtInNote": "Integrado y solo sugiere: nunca ejecuta nada. Puede apagarlo y definir sus límites de gasto.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Investigaciones simultáneas",
+          "hint": "Cuántas investigaciones pueden estar en curso a la vez."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Investigaciones por hora",
+          "hint": "Máximo de investigaciones iniciadas en una hora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Investigaciones automáticas por hora",
+          "hint": "Máximo de investigaciones iniciadas automáticamente por alertas altas y críticas. 0 apaga la investigación automática."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación rápida (centavos)",
+          "hint": "Límite de gasto de una investigación rápida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación profunda (centavos)",
+          "hint": "Límite de gasto de una investigación profunda."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Gasto diario de investigación (centavos)",
+          "hint": "Límite total de gasto por día entre todas las ejecuciones de este agente."
+        }
+      }
     }
   },
   "apiKeyForm": {

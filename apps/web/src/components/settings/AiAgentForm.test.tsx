@@ -735,3 +735,20 @@ describe('AiAgentForm — model select (W05)', () => {
     expect(writeBody()).toMatchObject({ offeringId: 'opus' });
   });
 });
+
+describe('AiAgentForm — built-in research agent (W2)', () => {
+  it('shows only name, enabled and research caps, and saves the projected body', async () => {
+    fetchMock.mockResolvedValue(json({ data: makeAgent({ kind: 'research' }) }));
+    renderForm({ agent: makeAgent({ kind: 'research', mode: 'act', toolAllowlist: [], orgId: null, partnerId: 'p-1', ownerScope: 'partner' }) });
+    expect(screen.getByTestId('ai-agent-research-caps')).toBeTruthy();
+    expect(screen.queryByTestId('ai-agent-instructions')).toBeNull();
+    fireEvent.change(screen.getByTestId('ai-agent-research-cap-researchDeepBudgetCentsPerRun'), { target: { value: '40' } });
+    fireEvent.click(screen.getByTestId('ai-agent-save'));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) =>
+        (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const sent = writeBody();
+    expect(Object.keys(sent).sort()).toEqual(['enabled', 'limits', 'name']);
+    expect((sent.limits as Record<string, number>).researchDeepBudgetCentsPerRun).toBe(40);
+  });
+});

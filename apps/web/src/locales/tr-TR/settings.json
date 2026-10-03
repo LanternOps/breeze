@@ -3813,6 +3813,36 @@
       "title": "Bu aracı yalnızca okur ve rapor yazar",
       "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
       "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
+    },
+    "research": {
+      "capsTitle": "Araştırma limitleri",
+      "builtInNote": "Yerleşik ve yalnızca öneri sunar: hiçbir şey çalıştırmaz. Kapatabilir ve harcama limitlerini belirleyebilirsiniz.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Eşzamanlı araştırmalar",
+          "hint": "Aynı anda kaç araştırma çalışabilir."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Saatlik araştırma",
+          "hint": "Bir saatte başlatılan araştırmaların üst sınırı."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Saatlik otomatik araştırma",
+          "hint": "Yüksek ve kritik uyarılardan otomatik başlatılan araştırmaların üst sınırı. 0 otomatik araştırmayı kapatır."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Hızlı araştırma bütçesi (sent)",
+          "hint": "Bir hızlı araştırma için harcama limiti."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Derin araştırma bütçesi (sent)",
+          "hint": "Bir derin araştırma için harcama limiti."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Günlük araştırma harcaması (sent)",
+          "hint": "Bu ajanın tüm çalışmaları için günlük toplam harcama limiti."
+        }
+      }
     }
   },
   "apiKeyForm": {

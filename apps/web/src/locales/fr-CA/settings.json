@@ -3813,6 +3813,36 @@
       "title": "Cet agent ne fait que lire et rédiger des rapports",
       "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
       "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Limites de recherche",
+      "builtInNote": "Intégré et limité aux suggestions : il n'exécute jamais rien. Vous pouvez le désactiver et fixer ses plafonds de dépenses.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Recherches simultanées",
+          "hint": "Nombre de recherches pouvant être en cours en même temps."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Recherches par heure",
+          "hint": "Maximum de recherches démarrées en une heure."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Recherches automatiques par heure",
+          "hint": "Maximum de recherches démarrées automatiquement par les alertes élevées et critiques. 0 désactive la recherche automatique."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget de recherche rapide (cents)",
+          "hint": "Plafond de dépenses pour une recherche rapide."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget de recherche approfondie (cents)",
+          "hint": "Plafond de dépenses pour une recherche approfondie."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Dépenses quotidiennes de recherche (cents)",
+          "hint": "Plafond total de dépenses par jour pour toutes les exécutions de cet agent."
+        }
+      }
     }
   },
   "apiKeyForm": {
