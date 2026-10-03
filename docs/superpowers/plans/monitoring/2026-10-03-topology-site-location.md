@@ -74,7 +74,7 @@ waves: W1 (assignment vs observation + move hardening), W2 (anchors, fingerprint
 | `apps/api/migrations/<date>-<time>-topology-presence-days-and-confirmation.sql` | W3 | Days table, suggestion columns, devices column, reset trigger |
 | Registries: `services/tenantCascade.ts`, `services/orgMergeRegistry.ts`, `services/tenantExportPolicyRegistry.ts`, `routes/devices/core.ts` lists | W2/W3 | S§15 |
 | `apps/api/src/__tests__/integration/topology-presence-fixtures.ts` | W2 | Two-site org fixture over the real collection seam |
-| `apps/api/scripts/seed-topology-demo{,.lib}.ts` (branch `feat/topology-demo-seed`) | W1/W3 | Loveland demo |
+| `apps/api/scripts/seed-topology-demo{,.lib}.ts` (branch `feat/topology-demo-seed`) | W1/W3 | Lakeside demo |
 
 ---
 
@@ -371,12 +371,12 @@ Expected: FAIL.
 ```tsx
 it('renders a collapsed roster with a count chip, expands to networks and devices, and selects a device', async () => {
   const onSelect = vi.fn();
-  render(<TopologySiteRoster siteName="Whalers" roster={[{ groupId: 'g1', prefix: '10.1.5.0/24', gatewayAddresses: ['10.1.5.1'], kind: 'undeclared', memberNodeIds: [D1, D2] }]}
+  render(<TopologySiteRoster siteName="Main Office" roster={[{ groupId: 'g1', prefix: '10.1.5.0/24', gatewayAddresses: ['10.1.5.1'], kind: 'undeclared', memberNodeIds: [D1, D2] }]}
     nodesById={nodes} onSelect={onSelect} />);
   expect(screen.getByRole('button', { name: /Other \/ unidentified networks \(2\)/ })).toHaveAttribute('aria-expanded', 'false');
   await userEvent.click(screen.getByRole('button', { name: /Other \/ unidentified networks/ }));
   expect(screen.getByText('10.1.5.0/24 via 10.1.5.1')).toBeInTheDocument();
-  expect(screen.getByText('Not declared for Whalers')).toBeInTheDocument();
+  expect(screen.getByText('Not declared for Main Office')).toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: /DESKTOP-0NPDOPV/ }));
   expect(onSelect).toHaveBeenCalledWith({ kind: 'node', id: D1 });
   expect(screen.queryByText(/away/i)).toBeNull();
@@ -520,7 +520,7 @@ git add apps/web/src/components/devices apps/web/src/locales
 git commit -m "feat(web): send expected site and explain policy impact when moving a device (site location W1)"
 ```
 
-### Task 6: Demo seed, Loveland (branch `feat/topology-demo-seed`)
+### Task 6: Demo seed, Lakeside (branch `feat/topology-demo-seed`)
 
 Do this on top of `feat/topology-demo-seed` (or `main`, once it merges). It is read-only for the docs branch.
 
@@ -530,21 +530,21 @@ Do this on top of `feat/topology-demo-seed` (or `main`, once it merges). It is r
 - Test: `apps/api/scripts/seed-topology-demo.lib.test.ts`
 
 **Interfaces:**
-- Produces: `DEMO_LOVELAND_SITE_ID = '7090106e-de70-4a00-8000-00000000517f'`, `DEMO_LOVELAND_SITE_NAME = 'Harbor Dental — Loveland'`, `HOME_LAN = { prefix: '192.168.1.0/24', base: '192.168.1.', gateway: '192.168.1.1' }`, and `DemoDevice.siteId: 'main' | 'loveland'`, `DemoDevice.lan: 'main' | 'second' | 'home'`.
+- Produces: `DEMO_LAKESIDE_SITE_ID = '7090106e-de70-4a00-8000-00000000517f'`, `DEMO_LAKESIDE_SITE_NAME = 'Harbor Dental — Lakeside'`, `HOME_LAN = { prefix: '192.168.1.0/24', base: '192.168.1.', gateway: '192.168.1.1' }`, and `DemoDevice.siteId: 'main' | 'lakeside'`, `DemoDevice.lan: 'main' | 'second' | 'home'`.
 
 - [ ] **Step 1: Write the failing fixture-count test**
 
 ```ts
-it('seeds a Loveland sister site owning 10.1.5.0/24 with misassigned, travelling and home-network devices', () => {
+it('seeds a Lakeside sister site owning 10.1.5.0/24 with misassigned, travelling and home-network devices', () => {
   const devices = demoDevices();
   const on = (site: string, lan: string) => devices.filter((d) => d.siteId === site && d.lan === lan).map((d) => d.hostname).sort();
   expect(on('main', 'second')).toEqual(['DESKTOP-0NPDOPV', 'WIN-92H1M08M1HB']);           // the 2 misassigned desktops
-  expect(on('loveland', 'second').length).toBeGreaterThanOrEqual(3);                      // Loveland's own observers: gateway + ≥2 for MAC corroboration
-  expect(on('loveland', 'main')).toEqual(['LAPTOP-LOV-01']);                               // travelling laptop (visiting Main Office)
+  expect(on('lakeside', 'second').length).toBeGreaterThanOrEqual(3);                      // Lakeside's own observers: gateway + ≥2 for MAC corroboration
+  expect(on('lakeside', 'main')).toEqual(['LAPTOP-LOV-01']);                               // travelling laptop (visiting Main Office)
   expect(on('main', 'home')).toEqual(['LAPTOP-HOME-01']);                                  // home network laptop on 192.168.1.0/24
   expect(demoDiscoveryProfiles()).toEqual(expect.arrayContaining([
     expect.objectContaining({ siteId: DEMO_SITE_ID, subnets: ['10.1.2.0/24'] }),
-    expect.objectContaining({ siteId: DEMO_LOVELAND_SITE_ID, subnets: ['10.1.5.0/24'] }),
+    expect.objectContaining({ siteId: DEMO_LAKESIDE_SITE_ID, subnets: ['10.1.5.0/24'] }),
   ]));
 });
 ```
@@ -554,17 +554,17 @@ it('seeds a Loveland sister site owning 10.1.5.0/24 with misassigned, travelling
 - [ ] **Step 3: Implement**
 
 - Add a `siteId` field to `device()` (default `'main'`). Rename the existing `SURGERY-01` and add a fresh online second-LAN desktop so that exactly two Main-Office-assigned devices sit on 10.1.5.0/24, named `DESKTOP-0NPDOPV` and `WIN-92H1M08M1HB` and both fresh with `['neighbors']`.
-- Reassign `SURGERY-02` and `CBCT-01` to Loveland, and add `LOVELAND-FD-01` and `LOVELAND-OP-01` (fresh, `['neighbors']`, Loveland, second LAN). Loveland then has ≥ 2 fresh MAC-corroborating observers.
-- Add `LAPTOP-LOV-01` (Loveland, `lan: 'main'`, fresh, `['neighbors']`).
+- Reassign `SURGERY-02` and `CBCT-01` to Lakeside, and add `LAKESIDE-FD-01` and `LAKESIDE-OP-01` (fresh, `['neighbors']`, Lakeside, second LAN). Lakeside then has ≥ 2 fresh MAC-corroborating observers.
+- Add `LAPTOP-LOV-01` (Lakeside, `lan: 'main'`, fresh, `['neighbors']`).
 - Add `LAPTOP-HOME-01` (Main Office, `lan: 'home'`, fresh, `['neighbors']`, home router MAC `demoMac(9, 1)`).
-- Move the discovery profile insert into `demoDiscoveryProfiles()`: Main "Main LAN sweep" `['10.1.2.0/24']`, Loveland "Loveland LAN sweep" `['10.1.5.0/24']`.
-- In `seedInventory`, insert the Loveland `sites` row and use `siteId` per device.
+- Move the discovery profile insert into `demoDiscoveryProfiles()`: Main "Main LAN sweep" `['10.1.2.0/24']`, Lakeside "Lakeside LAN sweep" `['10.1.5.0/24']`.
+- In `seedInventory`, insert the Lakeside `sites` row and use `siteId` per device.
 - In `fullReport`/`neighborRows`, add the `home` branch using `HOME_LAN`.
 - Report each agent through the site it is assigned to. `publishUntilClean`/`reconcileTopologySite` must run for both sites.
 
-- [ ] **Step 4: Run it and confirm it passes.** Then do a manual check on a `wt-stack`: run the seed (header :5-14) and confirm in the browser that Main Office's map shows `10.1.5.0/24` and `192.168.1.0/24` only in the roster, while Loveland's map shows its own card.
+- [ ] **Step 4: Run it and confirm it passes.** Then do a manual check on a `wt-stack`: run the seed (header :5-14) and confirm in the browser that Main Office's map shows `10.1.5.0/24` and `192.168.1.0/24` only in the roster, while Lakeside's map shows its own card.
 
-- [ ] **Step 5: Commit** on the seed branch: `feat(seed): Loveland sister site for site-location demo`.
+- [ ] **Step 5: Commit** on the seed branch: `feat(seed): Lakeside sister site for site-location demo`.
 
 ### W1 gate
 
@@ -920,11 +920,11 @@ export function corroboratedMacs(index: FingerprintIndex, siteId: string, prefix
 ```ts
 it('anchor evidence counts only devices assigned to the declaring site, within the horizon', async () => {
   const f = await twoSiteOrg();
-  await f.report(LOV1, f.siteB, { prefix: '10.1.5.0/24', gateway: '10.1.5.1', mac: GW_MAC });        // Loveland-assigned
-  await f.report(MIS1, f.siteA, { prefix: '10.1.5.0/24', gateway: '10.1.5.1', mac: GW_MAC });        // misassigned to Whalers
+  await f.report(LOV1, f.siteB, { prefix: '10.1.5.0/24', gateway: '10.1.5.1', mac: GW_MAC });        // Lakeside-assigned
+  await f.report(MIS1, f.siteA, { prefix: '10.1.5.0/24', gateway: '10.1.5.1', mac: GW_MAC });        // misassigned to Main Office
   await f.publish(f.siteA); await f.publish(f.siteB);
   const ev = await system(() => readSiteAnchorEvidence(db, { orgId: f.orgId, siteId: f.siteB }, ['10.1.5.0/24'], 7 * 86400));
-  expect(ev.map((e) => e.observerDeviceId)).toEqual([LOV1]);       // MIS1 never anchors Loveland
+  expect(ev.map((e) => e.observerDeviceId)).toEqual([LOV1]);       // MIS1 never anchors Lakeside
 });
 it('device attachments exclude tunnels, non-lan prefixes and expired evidence, and pair gateways by interface', async () => { /* … */ });
 it('readOrgNetworkDeclarations returns every site of the org and none of another org', async () => { /* … */ });
@@ -946,13 +946,13 @@ it('readOrgNetworkDeclarations returns every site of the org and none of another
   - `runTopologyPresenceTick(now?: Date): Promise<{ evaluated: number; busy: number; failed: number }>`
   - `TOPOLOGY_PRESENCE_INTERVAL_MS = 60_000`, `PRESENCE_ORGS_PER_TICK = 20`, `PRESENCE_DIRTY_DEBOUNCE_MS = 30_000`, `PRESENCE_REEVALUATE_MS = 3_600_000`, `PRESENCE_FRESH_CAP_MS = 75 * 60_000`, `FINGERPRINT_CAP = 1024`, `DECLARING_SITE_CAP = 256`, `DEVICE_CAP = 20_000`, `ANCHOR_HORIZON_SECONDS = 7 * 86_400`
 
-- [ ] **Step 1: Write the failing integration test** (the Whalers/Loveland scenario from the spec)
+- [ ] **Step 1: Write the failing integration test** (the Main Office/Lakeside scenario from the spec)
 
 ```ts
-it('Whalers/Loveland: misassigned desktops visit Loveland, Loveland laptop visits Whalers, home laptop unrecognized', async () => {
+it('Main Office/Lakeside: misassigned desktops visit Lakeside, Lakeside laptop visits Main Office, home laptop unrecognized', async () => {
   const f = await twoSiteOrg({ declare: { A: ['10.1.2.0/24'], B: ['10.1.5.0/24'] } });
-  await f.report(W1, f.siteA, lanA); await f.report(W2, f.siteA, lanA);                    // Whalers own
-  await f.report(L1, f.siteB, lanB); await f.report(L2, f.siteB, lanB);                    // Loveland own
+  await f.report(W1, f.siteA, lanA); await f.report(W2, f.siteA, lanA);                    // Main Office own
+  await f.report(L1, f.siteB, lanB); await f.report(L2, f.siteB, lanB);                    // Lakeside own
   await f.report(MIS1, f.siteA, lanB); await f.report(MIS2, f.siteA, lanB);                // misassigned
   await f.report(LAP, f.siteB, lanA);                                                      // travelling
   await f.report(HOME, f.siteA, { prefix: '192.168.1.0/24', gateway: '192.168.1.1', mac: HOME_MAC });
@@ -966,7 +966,7 @@ it('Whalers/Loveland: misassigned desktops visit Loveland, Loveland laptop visit
   expect(rows[W1]).toMatchObject({ state: 'home' });
   expect(new Set(Object.values(rows).map((x) => x.fingerprint_version))).toEqual(new Set([r.version.toString()]));
 });
-it('a Loveland with no own observers yields declared_unconfirmed for the misassigned desktops (bootstrap gap, S§6.4)', async () => { /* … */ });
+it('a Lakeside with no own observers yields declared_unconfirmed for the misassigned desktops (bootstrap gap, S§6.4)', async () => { /* … */ });
 it('two evaluators race: one gets busy (advisory lock), versions never interleave', async () => { /* Promise.all two evaluateOrgPresence */ });
 it('fresh_until never exceeds now + 75 min and never exceeds the supporting evidence', async () => { /* … */ });
 it('clears dirty_at only when dirty_at <= evaluation start (a change during evaluation stays dirty)', async () => { /* … */ });
@@ -1003,7 +1003,7 @@ ORDER BY dirty_at NULLS LAST, next_evaluation_at NULLS FIRST LIMIT 20
 
 ```ts
 describe('presence visibility — cross-site leak tests', () => {
-  it('viewer with A and B: B shows the A-owned visitors; A roster names Loveland', async () => { /* users.both */ });
+  it('viewer with A and B: B shows the A-owned visitors; A roster names Lakeside', async () => { /* users.both */ });
   it('viewer with only A: hidden visiting match is byte-identical to unrecognized', async () => {
     const onlyA = await get(f.users.onlyA, f.siteA);
     const mis = onlyA.assigned.find((x) => x.deviceId === MIS1)!;
@@ -1013,7 +1013,7 @@ describe('presence visibility — cross-site leak tests', () => {
     expect(shape(mis)).toEqual(shape(home));                                         // identical apart from the device's own identity/evidence
     expect(mis).toMatchObject({ state: 'unrecognized', reason: null, matchedSite: null, declaringSites: null, suggestion: null });
     expect(JSON.stringify(onlyA)).not.toContain(f.siteB);
-    expect(JSON.stringify(onlyA)).not.toContain('Loveland');
+    expect(JSON.stringify(onlyA)).not.toContain('Lakeside');
     expect(onlyA.counts.observedElsewhere).toBe(0);
   });
   it('viewer with only B: A-owned visitors are absent, uncounted, untruncated', async () => {
@@ -1085,7 +1085,7 @@ it('places a visitor in the card with the same prefix whose gateway set contains
   expect(placeVisitors(groups, [visitor('v2', '10.1.9.0/24', '10.1.9.1')]).unplaced).toHaveLength(1);
 });
 it('home map: a visiting device leaves its network card and appears under "Observed at other sites"', () => { /* renderProjection + roster */ });
-it('visitor tile: badge "Visiting", subtitle "Assigned to Whalers", not pinnable, no Diagnose action, not counted in card members', () => { /* … */ });
+it('visitor tile: badge "Visiting", subtitle "Assigned to Main Office", not pinnable, no Diagnose action, not counted in card members', () => { /* … */ });
 it('hidden match (state unrecognized, reason null) renders under "Other / unidentified networks" with no hint', () => { /* … */ });
 it('never renders the word "away"', () => { /* scan rendered text of every roster section */ });
 ```
@@ -1097,8 +1097,8 @@ it('never renders the word "away"', () => { /* scan rendered text of every roste
 - [ ] Full API, web and shared suites. Run every contract command from W2 Task 1 Step 5 again on the final branch.
 - [ ] Seed (W1 Task 6) on a `wt-stack`, then with Playwright as a user with both sites:
   - Main Office map: the two desktops are under "Observed at other sites", LAPTOP-HOME-01 is under "Other / unidentified networks", and LAPTOP-LOV-01 renders in the 10.1.2.0/24 card with the "Visiting" badge.
-  - Loveland map: the two desktops render as visitors in the 10.1.5.0/24 card.
-- [ ] Repeat as an org user restricted to Main Office. The desktops show as unidentified, "Loveland" appears nowhere in the page, and the network panel shows nothing about Loveland.
+  - Lakeside map: the two desktops render as visitors in the 10.1.5.0/24 card.
+- [ ] Repeat as an org user restricted to Main Office. The desktops show as unidentified, "Lakeside" appears nowhere in the page, and the network panel shows nothing about Lakeside.
 - [ ] Browser gates `topology-worker`, `topology-baseline` and `topology-performance` stay green.
 - [ ] PR: `Closes #<this wave's sub-issue>`; one independent review round (Sonnet or Opus, because tenancy is touched).
 
@@ -1318,8 +1318,8 @@ Web:
 
 ```tsx
 it('shows the suggestion copy with day count and date range, and never "always"/"away"', () => { /* … */ });
-it('"Move to Loveland" PATCHes siteId + expectedSiteId + siteMoveTrigger via runAction and refetches presence', async () => { /* … */ });
-it('"Move to Loveland" is hidden without devices:write; "Keep at Whalers" PUTs the confirmation', async () => { /* … */ });
+it('"Move to Lakeside" PATCHes siteId + expectedSiteId + siteMoveTrigger via runAction and refetches presence', async () => { /* … */ });
+it('"Move to Lakeside" is hidden without devices:write; "Keep at Main Office" PUTs the confirmation', async () => { /* … */ });
 it('confirmed device shows "Suggestions off" with a "Turn on" action that DELETEs the confirmation', async () => { /* … */ });
 it('409 device_site_changed shows the reload message', async () => { /* … */ });
 ```
@@ -1331,10 +1331,10 @@ it('409 device_site_changed shows the reload message', async () => { /* … */ }
 **Files:**
 - Modify: `apps/api/scripts/seed-topology-demo.ts` and `.lib.ts`
 
-- [ ] **Step 1: Write the failing lib test.** `demoPresenceHistory()` returns 9 days of `visiting`(Loveland) rows plus nightly `stale` rows for DESKTOP-0NPDOPV and WIN-92H1M08M1HB, and 3 mixed days for LAPTOP-LOV-01. Mark them with a code comment as synthetic demo history (W3 is prospective in production).
+- [ ] **Step 1: Write the failing lib test.** `demoPresenceHistory()` returns 9 days of `visiting`(Lakeside) rows plus nightly `stale` rows for DESKTOP-0NPDOPV and WIN-92H1M08M1HB, and 3 mixed days for LAPTOP-LOV-01. Mark them with a code comment as synthetic demo history (W3 is prospective in production).
 - [ ] **Step 2: Run it and confirm it fails. Step 3: Implement.** Insert the rows after the first `evaluateOrgPresence` in the seed run, then evaluate again so suggestions appear. **Step 4: Run it and confirm it passes,** then on a `wt-stack` with Playwright:
   - Main Office's roster shows "Probably assigned to the wrong site" for the two desktops.
-  - "Move to Loveland" moves one, and the audit log shows `device.site_move` with evidence.
+  - "Move to Lakeside" moves one, and the audit log shows `device.site_move` with evidence.
   - "Keep at Main Office" on the other shows "Suggestions off".
   - The travelling laptop shows no suggestion (3 days).
 - [ ] **Step 5: Commit** `feat(seed): synthetic presence history for the site-location demo`.
@@ -1342,7 +1342,7 @@ it('409 device_site_changed shows the reload message', async () => { /* … */ }
 ### W3 gate
 
 - [ ] Full suites and every contract suite, including `tenant-export-policy` (new `devices` column) and the full `orgMerge.test.ts`.
-- [ ] Leak tests all green. Manual browser check as a Main-Office-only user: no suggestions and no "Loveland" anywhere.
+- [ ] Leak tests all green. Manual browser check as a Main-Office-only user: no suggestions and no "Lakeside" anywhere.
 - [ ] Tear down `wt-stack` / `test-stack`.
 - [ ] PR: `Closes #<this wave's sub-issue>`; one independent review round (tenancy touched); `complete_wave`; close the feature when all three waves are merged.
 

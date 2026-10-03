@@ -8,9 +8,9 @@ Companions: [collection](2026-09-15-intelligent-network-topology-collection.md) 
 
 ## 1. Problem
 
-On US production, org Toothzone, site Whalers (10.1.2.0/24 via 10.1.2.100) shows a second network card,
+On a production customer org, site Main Office (10.1.2.0/24 via 10.1.2.100) shows a second network card,
 "10.1.5.0/24 via 10.1.5.1", holding DESKTOP-0NPDOPV and WIN-92H1M08M1HB. Both agents have only ever
-reported 10.1.5.0/24 via 10.1.5.1, which is the Loveland site's network. Breeze has them assigned to the
+reported 10.1.5.0/24 via 10.1.5.1, which is the Lakeside site's network. Breeze has them assigned to the
 wrong site. Separately, laptops legitimately move between sites, homes and hotels.
 
 The grouped overview (GO) draws every device assigned to a site in a card for the network it reports.
@@ -178,7 +178,7 @@ multiply declared → ambiguous." Checked against the repo:
 |---|---|---|
 | The anchor data exists and is per-site and admin-written. | `discovery_profiles` (`org_id`, `site_id` NOT NULL, `subnets text[]`); `network_baselines` (`org_id`, `site_id` NOT NULL, `subnet varchar(50)`, unique `(org_id, site_id, subnet)`), both org RLS (`schema/discovery.ts`). | Adopted as the anchor. |
 | **Neither table declares a gateway.** "Gateway agreement" has nothing to agree with except the declaring site's own observers. | No gateway column on either table. | `G(B,P)` comes from B-assigned observers (6.3). This is corroboration of a declared anchor, not inference of an anchor. |
-| **Bootstrap gap.** If every device on B's network is assigned elsewhere, `G(B,P)` is empty and nothing can ever match. The Toothzone case resolves only if Loveland has at least one correctly assigned agent reporting 10.1.5.1. | Follows from the row above. | State `unrecognized / declared_unconfirmed`, with the hint "Declared for <B>, but no <B> device confirms this gateway yet" for viewers of B. No visitor and no suggestion. An optional admin-declared gateway would close the gap but needs new surface. It is left as **open question Q1**. |
+| **Bootstrap gap.** If every device on B's network is assigned elsewhere, `G(B,P)` is empty and nothing can ever match. The motivating case resolves only if Lakeside has at least one correctly assigned agent reporting 10.1.5.1. | Follows from the row above. | State `unrecognized / declared_unconfirmed`, with the hint "Declared for <B>, but no <B> device confirms this gateway yet" for viewers of B. No visitor and no suggestion. An optional admin-declared gateway would close the gap but needs new surface. It is left as **open question Q1**. |
 | `discovery_profiles.subnets` is untyped and unvalidated (only `min(1)`). It can hold ranges, hosts or supernets. | `routes/discovery.ts` validation. | Strict normalization with exact equality (6.2). Ignored entries are counted. |
 | A scan range is not proof of a broadcast domain (C:210). Admins scan supernets. | C:210. | Exact equality only. A supernet declares nothing smaller. |
 | Nothing prevents two sites from declaring the same prefix. Consumer-router small offices (192.168.1.0/24) make this common. | No cross-site uniqueness; the unique index includes `site_id`. | Ambiguous for **visiting** attribution, as the rule says. **Refinement:** a device assigned to one of the declaring sites may still be **home** when the gateway agrees and there is no MAC conflict (4.1 step 2). Home is the benign default and matches today's grouping. Without this refinement, every device of a small office that shares a consumer prefix with a sister site would become "ambiguous" on its own map. |
