@@ -99,6 +99,9 @@ interface ScriptAiState {
   error: string | null;
   pendingApproval: PendingApproval | null;
   panelOpen: boolean;
+  /** One-shot text to seed the AI input with (e.g. a research draft request). Never auto-sent. */
+  draftInput: string | null;
+  setDraftInput: (v: string | null) => void;
   hasApplied: boolean;
   hasReverted: boolean;
   formSnapshot: ScriptFormSnapshot | null;
@@ -188,6 +191,8 @@ export const useScriptAiStore = create<ScriptAiState>()(
     error: null,
     pendingApproval: null,
     panelOpen: false,
+    draftInput: null,
+    setDraftInput: (v) => set({ draftInput: v }),
     hasApplied: false,
     hasReverted: false,
     formSnapshot: null,

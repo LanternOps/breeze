@@ -9,6 +9,15 @@ export default function ScriptAiInput() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { sendMessage, isStreaming, interruptResponse, sessionId } = useScriptAiStore();
 
+  // Seed from a hand-off (e.g. a research draft request) once; never auto-send.
+  const draftInput = useScriptAiStore((s) => s.draftInput);
+  useEffect(() => {
+    if (draftInput) {
+      setInput(draftInput);
+      useScriptAiStore.getState().setDraftInput(null);
+    }
+  }, [draftInput]);
+
   // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current;
