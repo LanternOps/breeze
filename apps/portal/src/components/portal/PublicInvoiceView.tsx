@@ -150,13 +150,13 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
 
   const pay = async () => {
     if (paying) return; setPaying(true); setPayError(null);
-    const result = await runAction<{ data: { url: string } }>({
+    const result = await runAction({
       request: () => portalApi.payPublicInvoice(token, invoiceAutopayInput(saveForAutopay, detail.autopay)),
       onOutcome: (message, error) => { if (error) setPayError(message); },
       successMessage: 'Opening secure checkout…', errorFallback: 'Could not start payment. Please try again.',
       validate: value => typeof value.data?.url === 'string' && value.data.url.startsWith('https://checkout.stripe.com/'),
     });
-    if (result) window.location.href = result.data.url; else setPaying(false);
+    if (result && typeof result.data.url === 'string') window.location.href = result.data.url; else setPaying(false);
   };
 
   const downloadPdf = async () => {
