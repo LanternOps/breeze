@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Mostrar todos los contactos ({{count}} solo proveedor oculto)",
     "showAllContacts_other": "Mostrar todos los contactos ({{count}} solo proveedores ocultos)",
     "archived": "Archivado"
+  },
+  "accountingFees": {
+    "title": "Ingresos por comisiones de procesamiento",
+    "item": "ID del artículo de comisiones de procesamiento en QuickBooks",
+    "account": "Código de cuenta de ingresos por comisiones de procesamiento en Xero",
+    "help": "Las comisiones se registran como ingresos separados no gravables para el mismo cliente. Deben configurarse el envío automático de pagos y una cuenta de pago o depósito; Xero también requiere un código de exención de impuestos. Si se deja en blanco, la exportación de comisiones queda en espera de una asignación. Los registros existentes conservan su destino y asignación originales.",
+    "save": "Guardar asignación de comisiones",
+    "saved": "Asignación de comisiones de procesamiento guardada",
+    "failed": "No se pudo guardar la asignación de comisiones de procesamiento. Revisa tus permisos e inténtalo de nuevo.",
+    "attention": "La contabilidad de comisiones de procesamiento requiere atención. Revisa la asignación de ingresos y la conexión. Los registros de estado incierto se verifican antes de volver a intentarlo."
   }
 }

@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import {and,eq,inArray,isNull,sql} from 'drizzle-orm';
+import {and,eq,gt,inArray,isNull,sql} from 'drizzle-orm';
 import {db as database,runAfterDbContextExit,withSystemDbAccessContext} from '../../db';
-import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts} from '../../db/schema';
+import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts,billingNoticeOutbox,billingLinkTokens} from '../../db/schema';
 import {InvoiceServiceError,type InvoiceActor} from '../invoiceTypes';
 import {requireOrgAccess} from '../invoiceService';
 import {isHiddenOrgType} from '../unassignedPool/visibility';
@@ -55,7 +56,7 @@ async function openInvoiceLinks(db:Tx,orgId:string):Promise<NonNullable<AutopayN
  }
  return links;
 }
-async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string){
+async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string,dedupeKey?:string){
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
  if(!org||!partner)throw new Error('Autopay notice tenant disappeared');
@@ -72,22 +73,49 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,
   vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices,processingText}},db);
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
-  seq:enrollment.generation,dedupeKey:`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
+  seq:enrollment.generation,dedupeKey:dedupeKey??`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});
 }
-export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:string[];recipientOverride?:string}):Promise<{requested:string[];skipped:{orgId:string;reason:'no_billing_contact'|'already_active'|'stripe_not_ready'}[]}>{
+export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:string[];recipientOverride?:string;mode?:'request'|'reauthorize'}):Promise<{requested:string[];skipped:{orgId:string;reason:'no_billing_contact'|'already_active'|'stripe_not_ready'}[]}>{
  const result:{requested:string[];skipped:{orgId:string;reason:'no_billing_contact'|'already_active'|'stripe_not_ready'}[]}={requested:[],skipped:[]};
  for(const orgId of [...new Set(input.orgIds)].sort()){
   const org=await lockOrg(db,orgId,actor);
   if(!await isAutopayEnabledForPartner(db,org.partnerId))throw new InvoiceServiceError('Automatic payments unavailable',404,'INVALID_STATE');
   const [existing]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,orgId)).limit(1).for('update');
   const generation=nextEnrollmentRequest(existing??null);
-  if(generation===null){result.skipped.push({orgId,reason:'already_active'});continue;}
+  if(generation===null&&input.mode!=='reauthorize'){result.skipped.push({orgId,reason:'already_active'});continue;}
   const recipient=input.recipientOverride??contact(org.billingContact);
   if(!recipient){result.skipped.push({orgId,reason:'no_billing_contact'});continue;}
   const readiness=await getAutopayStripeReadiness(db,org.partnerId);
   const [connection]=await db.select().from(stripeConnectAccounts).where(and(eq(stripeConnectAccounts.partnerId,org.partnerId),eq(stripeConnectAccounts.status,'connected'))).limit(1).for('share');
   if(!readiness.ready||!connection){result.skipped.push({orgId,reason:'stripe_not_ready'});continue;}
+  if(generation===null){
+   if(existing!.stripeConnectionId!==connection.id||existing!.stripeAccountId!==connection.stripeAccountId){
+    result.skipped.push({orgId,reason:'stripe_not_ready'});continue;
+   }
+   const card=await buildAutopayDisclosure(db,orgId,'card');
+   const bank=card.achMode==='card_only'?null:await buildAutopayDisclosure(db,orgId,'us_bank_account');
+   const termsHash=createHash('sha256').update(JSON.stringify([card.feeTerms,bank?.feeTerms])).digest('hex');
+   const dedupeKey=`${existing!.id}:reauthorize:${existing!.generation}:${existing!.pausedAt?.toISOString()??'active'}:${termsHash}`;
+   // Bind each notice to its own token. Historical notices must not prevent
+   // recovery after expiry, consumption, revocation or terminal delivery failure.
+   // The org/enrollment locks serialize this check with concurrent requests.
+   const [queued]=await db.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
+    .innerJoin(billingLinkTokens,eq(billingNoticeOutbox.dedupeKey,sql`${dedupeKey + ':'} || ${billingLinkTokens.id}::text`))
+    .where(and(eq(billingNoticeOutbox.orgId,orgId),eq(billingNoticeOutbox.enrollmentId,existing!.id),
+     eq(billingNoticeOutbox.kind,'autopay_request'),inArray(billingNoticeOutbox.status,['pending','sending','sent']),
+     eq(billingLinkTokens.orgId,orgId),eq(billingLinkTokens.enrollmentId,existing!.id),
+     eq(billingLinkTokens.generation,existing!.generation),eq(billingLinkTokens.purpose,'enroll'),
+     gt(billingLinkTokens.expiresAt,new Date()),isNull(billingLinkTokens.consumedAt),isNull(billingLinkTokens.revokedAt))).limit(1);
+   if(!queued){
+    const token=await mintBillingLinkToken(db,{orgId,purpose:'enroll',enrollmentId:existing!.id,generation:existing!.generation,ttlDays:30});
+    const url=buildBillingLinkUrl('enroll',token.token);
+    await notice(db,existing!,'autopay_request',recipient,{setup_link:url,
+     ach_mode_text:card.achMode==='ach_only'?'Use a US bank account.':'Choose a bank account or card.'},url,undefined,
+     'Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms',`${dedupeKey}:${token.id}`);
+   }
+   result.requested.push(orgId);continue;
+  }
   const values={status:'requested' as const,generation,stripeConnectionId:connection.id,stripeAccountId:connection.stripeAccountId,
    stripeCustomerId:existing?.stripeAccountId===connection.stripeAccountId?existing.stripeCustomerId:null,
    effectiveFrom:null,requestedBy:actor.userId,requestedAt:new Date(),requestRecipientEmail:recipient,

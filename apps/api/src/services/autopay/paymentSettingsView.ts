@@ -1,6 +1,6 @@
-import type {PaymentSettingsView,ResolvedPaymentSettings} from '@breeze/shared';
-import { and, eq, isNull } from 'drizzle-orm';
-import { billingPaymentSettings } from '../../db/schema';
+import {autopayFeeTermsSchema,type FeeAuthorizationGap,type PaymentSettingsView,type ResolvedPaymentSettings} from '@breeze/shared';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { billingPaymentSettings, organizations, orgAutopayEnrollments, orgAutopayConsents, orgPaymentMethods } from '../../db/schema';
 import { BILLING_PAYMENT_SETTINGS_DEFAULTS as defaults, resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import type { db } from '../../db';
@@ -14,12 +14,15 @@ export async function paymentSettingsView(connection: typeof db, partnerId: stri
     ? await resolveBillingPaymentSettings(connection, { partnerId })
     : { autopayOffsetDays: { value: defaults.autopayOffsetDays, source: 'default' }, autopayOffsetRule: { value: defaults.autopayOffsetRule, source: 'default' },
         autopayCap: { value: defaults.autopayCap, source: 'default' }, achMode: { value: defaults.achMode, source: 'default' },
+        cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' },
         remindersEnabled: { value: false, source: 'default' },
         reminderBeforeDueDays: { value: 3, source: 'default' },
         reminderRepeatDays: { value: null, source: 'default' },
         overdueReminderEveryDays: { value: 7, source: 'default' }, };
+  const autopayEnabled = await isAutopayEnabledForPartner(connection, partnerId);
   return {
-    autopayEnabled: await isAutopayEnabledForPartner(connection, partnerId), effective, inherited,
+    autopayEnabled, effective, inherited,
+    ...(autopayEnabled ? { feeAuthorizationGaps: await feeAuthorizationGaps(connection, partnerId, orgId) } : {}),
     values: {
       autopayOffsetDays: row?.autopayOffsetDays ?? null,
       autopayOffsetRule: row?.autopayOffsetRule ?? null,
@@ -27,6 +30,46 @@ export async function paymentSettingsView(connection: typeof db, partnerId: stri
       autopayCapAmount: row?.autopayCapAmount ?? null,
       autopayCapCurrency: row?.autopayCapCurrency ?? null,
       achMode: row?.achMode ?? null,
+      cardFeeBps: row?.cardFeeBps ?? null,
+      achFeeAmount: row?.achFeeAmount ?? null,
     },
   };
+}
+
+/** Compare the latest consent for the current enrollment generation and payment method.
+ * This is a settings comparison, not permission to charge; collection applies eligibility too. */
+export async function feeAuthorizationGaps(connection: typeof db, partnerId: string, orgId?: string): Promise<FeeAuthorizationGap[]> {
+  const settings = await resolveBillingPaymentSettings(connection, { partnerId });
+  const rows = await connection.selectDistinctOn([organizations.id], {
+    orgId: organizations.id, orgName: organizations.name, methodType: orgPaymentMethods.type,
+    feeTerms: orgAutopayConsents.feeTerms, cardFeeBps: billingPaymentSettings.cardFeeBps,
+    achFeeAmount: billingPaymentSettings.achFeeAmount,
+  }).from(organizations)
+    .innerJoin(orgAutopayEnrollments, and(eq(orgAutopayEnrollments.orgId, organizations.id),
+      eq(orgAutopayEnrollments.partnerId, organizations.partnerId)))
+    .innerJoin(orgPaymentMethods, and(eq(orgPaymentMethods.orgId, organizations.id),
+      eq(orgPaymentMethods.enrollmentId, orgAutopayEnrollments.id), eq(orgPaymentMethods.isAutopayMethod, true),
+      inArray(orgPaymentMethods.status, ['active', 'pending_verification'])))
+    .leftJoin(orgAutopayConsents, and(eq(orgAutopayConsents.orgId, organizations.id),
+      eq(orgAutopayConsents.enrollmentId, orgAutopayEnrollments.id),
+      eq(orgAutopayConsents.generation, orgAutopayEnrollments.generation),
+      eq(orgAutopayConsents.paymentMethodId, orgPaymentMethods.id)))
+    .leftJoin(billingPaymentSettings, eq(billingPaymentSettings.orgId, organizations.id))
+    .where(and(eq(organizations.partnerId, partnerId), eq(organizations.type, 'customer'),
+      isNull(organizations.deletedAt), inArray(organizations.status, ['active', 'trial']),
+      inArray(orgAutopayEnrollments.status, ['active', 'paused']), orgId ? eq(organizations.id, orgId) : undefined))
+    .orderBy(organizations.id, desc(orgAutopayConsents.createdAt), desc(orgAutopayConsents.id));
+  return rows.flatMap(row => {
+    const terms = autopayFeeTermsSchema.safeParse(row.feeTerms);
+    const accepted = terms.success && terms.data.methodType === row.methodType ? terms.data : null;
+    const authorizedCardFeeBps = accepted?.cardFeeBps ?? 0;
+    const authorizedAchFeeAmount = accepted && /^(0|[1-9]\d?)\.\d{2}$/.test(accepted.achFeeAmount)
+      ? accepted.achFeeAmount : '0.00';
+    const cardFeeBps = row.cardFeeBps ?? settings.cardFeeBps.value;
+    const achFeeAmount = row.achFeeAmount ?? settings.achFeeAmount.value;
+    const lower = row.methodType === 'card' ? authorizedCardFeeBps < cardFeeBps
+      : BigInt(authorizedAchFeeAmount.replace('.', '')) < BigInt(achFeeAmount.replace('.', ''));
+    return lower ? [{ orgId: row.orgId, orgName: row.orgName, methodType: row.methodType,
+      authorizedCardFeeBps, authorizedAchFeeAmount, cardFeeBps, achFeeAmount }] : [];
+  });
 }

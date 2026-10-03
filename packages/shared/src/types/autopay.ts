@@ -9,7 +9,7 @@ export const CARD_FUNDING_TYPES = ['credit', 'debit', 'prepaid', 'unknown'] as c
 export const ACCOUNT_HOLDER_TYPES = ['individual', 'company'] as const;
 export const ORG_PAYMENT_METHOD_STATUSES = ['pending_verification', 'active', 'unusable', 'removed'] as const;
 export const AUTOPAY_SCHEDULE_STATES = ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled', 'action_required', 'succeeded', 'failed', 'skipped_by_client', 'excluded_by_msp', 'cancelled', 'not_needed'] as const;
-export const AUTOPAY_INELIGIBLE_REASONS = ['not_enrolled', 'enrolled_after_issue', 'method_not_usable', 'over_cap', 'cap_currency_mismatch', 'ach_currency_unsupported', 'excluded_contract', 'excluded_invoice', 'charging_disabled', 'stripe_unavailable'] as const;
+export const AUTOPAY_INELIGIBLE_REASONS = ['not_enrolled', 'enrolled_after_issue', 'consent_required', 'method_not_usable', 'over_cap', 'cap_currency_mismatch', 'ach_currency_unsupported', 'excluded_contract', 'excluded_invoice', 'charging_disabled', 'stripe_unavailable'] as const;
 export const COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'succeeded', 'failed', 'requires_action', 'canceled', 'unapplied'] as const;
 export const ACTIVE_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing'] as const;
 export const RESERVING_COLLECTION_ATTEMPT_STATES = ['reserved', 'created', 'confirming', 'processing', 'requires_action'] as const;
@@ -79,9 +79,11 @@ export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
 export interface PaymentValues {
  autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
  autopayCapAmount:string|null;autopayCapCurrency:string|null;achMode:AchMode|null;
+ cardFeeBps:number|null;achFeeAmount:string|null;
 }
 export type EffectivePaymentSetting<T>={value:T;source:'org'|'partner'|'default'};
 export interface ResolvedPaymentSettings {
+ cardFeeBps:EffectivePaymentSetting<number>;achFeeAmount:EffectivePaymentSetting<string>;feeAttested?:boolean;
  remindersEnabled:EffectivePaymentSetting<boolean>;
  reminderBeforeDueDays:EffectivePaymentSetting<number>;
  reminderRepeatDays:EffectivePaymentSetting<number|null>;
@@ -89,7 +91,11 @@ export interface ResolvedPaymentSettings {
  autopayOffsetDays:EffectivePaymentSetting<number>;autopayOffsetRule:EffectivePaymentSetting<AutopayOffsetRule>;
  autopayCap:EffectivePaymentSetting<AutopayScheduleTerms['cap']>;achMode:EffectivePaymentSetting<AchMode>;
 }
-export interface PaymentSettingsView { autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+export interface FeeAuthorizationGap {
+ orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
+ authorizedCardFeeBps:number;authorizedAchFeeAmount:string;cardFeeBps:number;achFeeAmount:string;
+}
+export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[]; autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
 
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});

@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
   read: vi.fn(), partnerWrite: vi.fn(), orgWrite: vi.fn(),
   adminRows: [] as Array<{ id: string; autopayEnabled: boolean }>, update: vi.fn(),
   orgRows: [] as Array<{ partnerId: string }>,
+  feeGapRows: [] as Array<Record<string, unknown>>,
 }));
 vi.mock('./services/redis', async importOriginal => ({
   ...(await importOriginal<typeof import('./services/redis')>()), getRedis: () => null,
@@ -35,6 +36,7 @@ vi.mock('./db', async importOriginal => {
   return { ...actual, runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
     db: { ...actual.db,
+      selectDistinctOn: () => { const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => m.feeGapRows }; return chain; },
       select: () => ({ from: () => ({ where: () => ({ limit: async () => m.orgRows }) }) }),
       update: (...args: unknown[]) => { m.update(...args); return { set: () => ({ where: () => ({ returning: async () => m.adminRows }) }) }; },
     },
@@ -77,9 +79,29 @@ beforeEach(() => {
   m.read.mockResolvedValue({ remindersEnabled: { value: false, source: 'default' } });
   m.partnerWrite.mockResolvedValue(undefined); m.orgWrite.mockResolvedValue(undefined);
   m.adminRows = [{ id: partnerId, autopayEnabled: true }];
-  m.orgRows = [{ partnerId }];
+  m.orgRows = [{ partnerId }]; m.feeGapRows = [];
 });
 describe('autopay routes through exported API application', () => {
+it('opens fee writes only behind the rollout gate and partner authority', async () => {
+  const feeAttestation = { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true };
+  expect((await request(partnerPath, 'PUT', { cardFeeBps: 300 })).status).toBe(404);
+  expect(m.partnerWrite).not.toHaveBeenCalled();
+  m.enabled = true;
+  expect((await request(partnerPath, 'PUT', { cardFeeBps: 300, feeAttestation })).status).toBe(200);
+  expect(m.partnerWrite).toHaveBeenCalledWith(expect.anything(), partnerId,
+    { cardFeeBps: 300, feeAttestation }, partnerId);
+  expect((await request(orgPath, 'PUT', { cardFeeBps: 0, achFeeAmount: '0.00' })).status).toBe(200);
+  expect((await request(orgPath, 'PUT', { feeAttestation })).status).toBe(400);
+  m.auth.scope = 'organization'; m.auth.orgId = orgId;
+  expect((await request(partnerPath, 'PUT', { feeAttestation })).status).toBe(403);
+  m.auth.scope = 'partner'; m.auth.partnerOrgAccess = 'selected';
+  expect((await request(partnerPath, 'PUT', { feeAttestation })).status).toBe(403);
+  m.auth.partnerOrgAccess = 'all'; m.allowed = false;
+  expect((await request(partnerPath, 'PUT', { feeAttestation })).status).toBe(403);
+  m.auth = null;
+  expect((await request(partnerPath, 'PUT', { feeAttestation })).status).toBe(401);
+});
+
 it('returns reminder inheritance through the app and accepts all reminder fields with rollout off', async () => {
   m.enabled = false;
   const partner = await request(partnerPath);
@@ -124,7 +146,7 @@ it('returns reminder inheritance through the app and accepts all reminder fields
     expect(m.partnerWrite).not.toHaveBeenCalled();
     m.enabled = true; expect((await request(partnerPath, 'PUT', { autopayOffsetDays: 0 })).status).toBe(200);
   });
-  it.each([{ cardFeeBps: 0 }, { achFeeAmount: '0.00' }, { attestation: true }, { bogus: 1 }])('rejects forbidden fields %j', async body => {
+  it.each([{ feeAttestedBy: null }, { feeAttestedAt: null }, { attestation: true }, { bogus: 1 }])('rejects forbidden fields %j', async body => {
     expect((await request(partnerPath, 'PUT', body)).status).toBe(400);
     expect((await request(orgPath, 'PUT', body)).status).toBe(400);
     expect(m.partnerWrite).not.toHaveBeenCalled(); expect(m.orgWrite).not.toHaveBeenCalled();
@@ -186,4 +208,17 @@ it('org settings enforce scope, permission and MFA before writing', async () => 
   expect((await request(orgPath)).status).toBe(403);
   expect((await request(orgPath, 'PUT', { remindersEnabled: true })).status).toBe(403);
   expect(m.orgWrite).not.toHaveBeenCalled();
+});
+
+it('returns lower authorized client fees from both fee Save responses', async () => {
+  m.enabled = true;
+  m.read.mockResolvedValue({ cardFeeBps: { value: 300, source: 'partner' }, achFeeAmount: { value: '2.50', source: 'partner' } });
+  m.feeGapRows = [{ orgId, orgName: 'Example client', methodType: 'card', feeTerms: {
+    methodType: 'card', cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true, currency: 'USD',
+  }, cardFeeBps: null, achFeeAmount: null }];
+  for (const path of [partnerPath, orgPath]) {
+    const response = await request(path, 'PUT', { cardFeeBps: 300 });
+    expect(response.status).toBe(200);
+    expect((await response.json()).feeAuthorizationGaps).toEqual([expect.objectContaining({ orgId, authorizedCardFeeBps: 100, cardFeeBps: 300 })]);
+  }
 });

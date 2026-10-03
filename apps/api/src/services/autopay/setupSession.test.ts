@@ -137,3 +137,18 @@ it('derives invoice bank metadata on both provider objects exclusively from dura
  expect(sent.metadata).toMatchObject(metadata);expect(sent.setup_intent_data.metadata).toMatchObject(metadata);
  expect(sent.success_url).toContain('&target=public&bank=1');
 });
+
+it('prepares new same-generation authorization while paused without resuming',async()=>{
+ mock.rows=[[org],[{...enrollment,status:'paused',pausedAt:new Date('2026-10-01')}],[connection],
+  [token],[attempt]];
+ await expect(capture()).resolves.toEqual(attempt);
+ expect(mock.calls.find(c=>c.op==='values')?.value).toMatchObject({generation:7});
+ expect(mock.calls.some(c=>c.op==='update')).toBe(false);
+});
+
+it('rejects revoked same-generation authority while paused before capturing consent',async()=>{
+ mock.rows=[[org],[{...enrollment,status:'paused',pausedAt:new Date('2026-10-02')}],[connection],
+  [{...token,revokedAt:new Date()}]];
+ await expect(capture()).rejects.toThrow('Setup link expired');
+ expect(mock.calls.some(c=>c.op==='insert')).toBe(false);
+});

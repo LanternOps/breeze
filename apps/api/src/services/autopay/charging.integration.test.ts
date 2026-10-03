@@ -1,4 +1,5 @@
 import '../../__tests__/integration/setup';
+import { toMinorUnits } from '../stripeMoney';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -6,13 +7,13 @@ import { db, withSystemDbAccessContext, withDbAccessContext, hasDbAccessContext 
 import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
 import { partners, invoices, orgAutopayEnrollments, orgPaymentMethods, invoiceAutopaySchedules,
   invoiceCollectionAttempts, invoiceStripePayments, stripeConnectAccounts, invoicePayments,
-  organizations, billingNoticeOutbox, stripeFinancialEvents, orgMergeEvents, userNotifications } from '../../db/schema';
+  organizations, billingPaymentSettings, orgAutopayConsents, billingNoticeOutbox, stripeFinancialEvents, orgMergeEvents, userNotifications } from '../../db/schema';
 import { encryptSecret } from '../secretCrypto';
 import { attemptCollection, resumeCollectionAttempt, applyAttemptOutcome } from './collectionEngine';
 import {recordPayment,getInvoice} from '../invoiceService';
 import {executeOrgMerge} from '../orgMerge';
 import {ingestStripeFinancialEvent,processPendingStripeFinancialEvents,processPendingStripeFinancialEventsForPayment} from '../stripeReversalState';
-import {enqueueAutopayNotice} from './chargingNotice';
+import {enqueueAutopayNotice, type AutopayTerms} from './chargingNotice';
 import { createInvoicePayLink } from '../invoiceCheckout';
 const provider = vi.hoisted(() => ({ search: vi.fn(), create: vi.fn(), retrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(),
   accountRetrieve: vi.fn(), probeUpdate: vi.fn(), setupRetrieve: vi.fn(), mandateRetrieve: vi.fn(), eventList: vi.fn(), sessionCreate: vi.fn(), sessionExpire: vi.fn(), sessionRetrieve: vi.fn(), methodRetrieve:vi.fn(),methodDetach:vi.fn() }));
@@ -55,17 +56,19 @@ beforeEach(() => {
   provider.methodRetrieve.mockImplementation(async id => {
     expect(hasDbAccessContext()).toBe(false);
     return { id, customer: 'cus_autopay_test', type: 'card',
-      card: { brand: 'visa', funding: 'credit', networks: { available: ['visa'], preferred: null } } };
+      card: { brand: 'visa', funding: 'credit', wallet: null, networks: { available: ['visa'], preferred: null } } };
   });
   provider.methodDetach.mockResolvedValue({customer:null});
   currentPi = null;
 });
-async function fixture(accountId = 'acct_autopay_test') {
+type FeeFixture = { fee?: string; cardFeeBps?: number; acceptedBps?: number; funding?: 'credit' | 'debit';
+  region?: string; currency?: string; principal?: string; consent?: 'missing' | 'malformed' };
+async function fixture(accountId = 'acct_autopay_test', fees: FeeFixture = {}) {
   return withSystemDbAccessContext(async () => {
     const partner = await createPartner();
     accountsByPartner.set(partner.id, accountId);
     const org = await createOrganization({ partnerId: partner.id });
-    await db.update(organizations).set({ billingContact: {email: 'billing@example.test'} }).where(eq(organizations.id, org.id));
+    await db.update(organizations).set({ billingContact: {email: 'billing@example.test'}, billingAddressCountry:'US', billingAddressRegion:fees.region ?? 'NY' }).where(eq(organizations.id, org.id));
     await db.update(partners).set({ autopayEnabled: true }).where(eq(partners.id, partner.id));
     const [connection] = await db.insert(stripeConnectAccounts).values({ partnerId: partner.id,
       stripeAccountId: accountId, status: 'connected', accountCountry: 'US', defaultCurrency: 'USD',
@@ -75,28 +78,39 @@ async function fixture(accountId = 'acct_autopay_test') {
       status: 'active', generation: 1, stripeConnectionId: connection!.id, stripeAccountId: connection!.stripeAccountId,
       stripeCustomerId: 'cus_autopay_test', effectiveFrom: new Date('2020-01-01T00:00Z'), requestedAt: new Date() }).returning();
     const [method] = await db.insert(orgPaymentMethods).values({ orgId: org.id, enrollmentId: enrollment!.id,
-      stripePaymentMethodId: 'pm_autopay_test',stripeSetupIntentId:'seti_fixture', type: 'card', cardBrand: 'visa', cardLast4: '4242', cardFunding: 'credit',
+      stripePaymentMethodId: 'pm_autopay_test',stripeSetupIntentId:'seti_fixture', type: 'card', cardBrand: 'visa', cardLast4: '4242', cardFunding: fees.funding ?? 'credit',
       status: 'active', isAutopayMethod: true }).returning();
+    if (fees.consent !== 'missing') await db.insert(orgAutopayConsents).values({orgId:org.id,
+      enrollmentId:enrollment!.id,generation:1,paymentMethodId:method!.id,consentTextVersion:'2026-10-01.v1',
+      consentTextHash:'a'.repeat(64),source:'setup_page',contactEmail:'billing@example.test',
+      scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
+      feeTerms:{methodType:'card',cardFeeBps:fees.acceptedBps ?? fees.cardFeeBps ?? 0,
+        achFeeAmount:fees.consent === 'malformed' ? 'NaN' : '0.00',feeAttested:true,currency:fees.currency ?? 'USD'}});
+    if (fees.cardFeeBps !== undefined) {
+      const actor = await createUser({partnerId:partner.id,withMembership:true});
+      await db.insert(billingPaymentSettings).values({partnerId:partner.id,orgId:null,
+        cardFeeBps:fees.cardFeeBps,achFeeAmount:'0.00',feeAttestedBy:actor.id,feeAttestedAt:new Date()});
+    }
     await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:partner.id,enrollmentId:enrollment!.id,
       generation:1,source:'setup_page',methodType:'card',stripeConnectionId:connection!.id,stripeAccountId:accountId,
       stripeCustomerId:'cus_autopay_test',setupIntentId:'seti_fixture',consentSnapshot:{},outcome:'activated'});
     const today = new Date().toISOString().slice(0,10);
     const [invoice] = await db.insert(invoices).values({ partnerId: partner.id, orgId: org.id,
-      invoiceNumber: `T-${randomUUID()}`, currencyCode: 'USD', status: 'sent', issueDate: today, dueDate: today,
-      total: '100.00', balance: '100.00', amountPaid: '0.00' }).returning();
+      invoiceNumber: `T-${randomUUID()}`, currencyCode: fees.currency ?? 'USD', status: 'sent', issueDate: today, dueDate: today,
+      total: fees.principal ?? '100.00', balance: fees.principal ?? '100.00', amountPaid: '0.00' }).returning();
     const [schedule] = await db.insert(invoiceAutopaySchedules).values({ orgId: org.id, invoiceId: invoice!.id,
       enrollmentId: enrollment!.id, enrollmentGeneration: 1, eligible: true, collectOn: today,
       state: 'scheduled', noticeSentAt: new Date(Date.now()-20*86_400_000), attemptCount: 0,
       termsSnapshot: { issuedAt: new Date().toISOString(), offsetDays: 0, rule: 'later', cap: {enabled:false},
         methodType:'card', methodId:method!.id, last4:'4242', methodLabel:'Visa ••4242', accountHolderType:null,
-        noticeLeadDays:1, principal:'100.00', currency:'USD', feeAmount:'0.00', feeKind:'none',
-        cardFeeBps:0, achFeeAmount:'0.00', chargeDate:today, noticeSeq:1 } }).returning();
+        noticeLeadDays:1, principal:fees.principal ?? '100.00', currency:fees.currency ?? 'USD', feeAmount:fees.fee ?? '0.00', feeKind:fees.fee && fees.fee !== '0.00' ? 'card_percent' : 'none',
+        cardFeeBps:fees.cardFeeBps ?? 0, achFeeAmount:'0.00', chargeDate:today, noticeSeq:1 } satisfies AutopayTerms }).returning();
     const [notice] = await db.insert(billingNoticeOutbox).values({
       orgId: org.id, invoiceId: invoice!.id, enrollmentId: enrollment!.id,
       kind: 'invoice_autopay', seq: 1, dedupeKey: `${invoice!.id}:invoice_autopay:1`,
       toEmail: 'billing@example.test', status: 'sent', sentAt: schedule!.noticeSentAt,
       rendered: { subject: 'Payment notice', html: '<p>Payment notice</p>', text: 'Payment notice',
-        frozen: { amount: '100.00', fee: '0.00', chargeDate: today, methodType: 'card', enrollmentGeneration: 1 } },
+        frozen: { amount: fees.principal ?? '100.00', fee: fees.fee ?? '0.00', chargeDate: today, methodType: 'card', enrollmentGeneration: 1 } },
     }).returning();
     await db.update(invoiceAutopaySchedules).set({ noticeOutboxId: notice!.id })
       .where(eq(invoiceAutopaySchedules.id, schedule!.id));
@@ -553,7 +567,7 @@ import { collectAfterBankSetup } from './bankPayment';
 import { disconnectPartnerStripe } from '../partnerStripe';
 import { pollStripeFinancialEvents } from '../stripeFinancialEventPoller';
 
-async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`) {
+async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`, fee = '0.00') {
   const seeded = await withSystemDbAccessContext(async () => {
     const token = await mintBillingLinkToken(db, {orgId: f.org.id, invoiceId: f.invoice.id,
       enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 1});
@@ -563,12 +577,12 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
       tokenId: token.id, source: 'setup_page', methodType: 'us_bank_account',
       checkoutSessionId: `cs_bank_${suffix}`, setupIntentId: `seti_bank_${suffix}`,
       consentSnapshot: {version: '2026-10-01.v1', text: 'Authorization', hash: 'a'.repeat(64), textHash: 'b'.repeat(64),
-        partnerName: f.partner.name, scheduleText: 'Due date', feeText: 'No fee', achMode: 'ach_preferred',
+        partnerName: f.partner.name, scheduleText: 'Due date', feeText: fee === '0.00' ? 'No fee' : `Bank fee: USD ${fee}`, achMode: 'ach_preferred',
         scheduleTerms: {offsetDays: 0, rule: 'later', cap: {enabled: false}},
-        feeTerms: {methodType: 'us_bank_account', cardFeeBps: 0, achFeeAmount: '0.00', feeAttested: false, currency: 'USD'},
+        feeTerms: {methodType: 'us_bank_account', cardFeeBps: 0, achFeeAmount: fee, feeAttested: false, currency: 'USD'},
         source: 'setup_page', contactEmail: 'billing@example.test', ip: null, userAgent: null,
         invoiceId: null, checkoutKey: null,
-        bankPayment: {invoiceId: f.invoice.id, orgId: f.org.id, principal: '100.00', fee: '0.00', currency: 'USD', disclosureHash: 'a'.repeat(64)}},
+        bankPayment: {invoiceId: f.invoice.id, orgId: f.org.id, principal: '100.00', fee, currency: 'USD', disclosureHash: 'a'.repeat(64)}},
     }).returning();
     return {token, setup: setup!};
   });
@@ -579,13 +593,13 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
     .where(eq(orgPaymentMethods.stripePaymentMethodId, method.id)));
   const session = {id: seeded.setup.checkoutSessionId, mode: 'setup', status: 'complete', customer: 'cus_autopay_test',
     setup_intent: seeded.setup.setupIntentId, metadata: {invoice_id: f.invoice.id, org_id: f.org.id,
-      token_id: seeded.token.id, generation: '1', principal_minor: '10000', fee_minor: '0', currency: 'USD'}};
+      token_id: seeded.token.id, generation: '1', principal_minor: '10000', fee_minor: String(toMinorUnits(fee, 'USD')), currency: 'USD'}};
   const intent = {id: seeded.setup.setupIntentId, status: 'succeeded', customer: 'cus_autopay_test', payment_method: method.id,
     mandate: `mandate_${suffix}`, metadata: {setup_attempt_id: seeded.setup.id, org_id: f.org.id,
       enrollment_id: f.enrollment.id, generation: '1', token_id: seeded.token.id}};
   return {...seeded, method: saved!, liveMethod: method, session, intent,
     authority: {tokenId: seeded.token.id, invoiceId: f.invoice.id, generation: 1, methodId: saved!.id,
-      principal: '100.00', fee: '0.00', currency: 'USD', capture: {setupAttemptId: seeded.setup.id,
+      principal: '100.00', fee, currency: 'USD', capture: {setupAttemptId: seeded.setup.id,
         stripePaymentMethodId: method.id, setupIntentId: seeded.setup.setupIntentId!,
         stripeAccountId: f.connection.stripeAccountId, stripeCustomerId: 'cus_autopay_test'}}};
 }
@@ -602,7 +616,10 @@ function serveBank(setups: Awaited<ReturnType<typeof bankSetup>>[]) {
     expect(hasDbAccessContext()).toBe(false);
     return setups.find(row => row.liveMethod.id === id)!.liveMethod;
   });
-  provider.mandateRetrieve.mockImplementation(async id => ({id, status: 'active', payment_method: setups.find(row => row.intent.mandate === id)!.method.stripePaymentMethodId}));
+  provider.mandateRetrieve.mockImplementation(async id => {
+    expect(hasDbAccessContext()).toBe(false);
+    return {id, status: 'active', payment_method: setups.find(row => row.intent.mandate === id)!.method.stripePaymentMethodId};
+  });
 }
 
 it('old bank A cannot be collected after replacement B, including replay of completed setup A', async () => {
@@ -985,15 +1002,7 @@ it.each([
   ['USD', '0.01', 1], ['USD', '100.01', 10001], ['USD', '9999999999.99', 999999999999],
   ['JPY', '1.00', 1], ['JPY', '9999999999.00', 9999999999],
 ] as const)('preserves %s %s through numeric(12,2), provider minor units and settlement', async (currency, amount, minor) => {
-  const f = await fixture();
-  await withSystemDbAccessContext(async () => {
-    await db.update(invoices).set({currencyCode: currency, total: amount, balance: amount}).where(eq(invoices.id, f.invoice.id));
-    await db.update(invoiceAutopaySchedules).set({termsSnapshot: {...f.schedule.termsSnapshot as object, currency, principal: amount}})
-      .where(eq(invoiceAutopaySchedules.id, f.schedule.id));
-    const rendered = f.notice.rendered as {frozen: object};
-    await db.update(billingNoticeOutbox).set({rendered: {...rendered, frozen: {...rendered.frozen, amount}}})
-      .where(eq(billingNoticeOutbox.id, f.notice.id));
-  });
+  const f = await fixture(undefined,{currency,principal:amount});
   provider.confirm.mockImplementationOnce(async () => {
     currentPi = {...currentPi, status: 'succeeded', amount_received: minor}; return currentPi;
   });
@@ -1390,3 +1399,239 @@ it('dedupes charging-disabled attention across due invoices and daily reruns',as
  await runAutopayCollection(new Date(now.getTime()+86_400_000));
  expect(await notices()).toHaveLength(2);expect(provider.create).not.toHaveBeenCalled();
 });
+
+
+// Fee cases seed the delivered terms at creation; sent notices are never rewritten.
+it.each([
+  ['credit','NY','3.00',10300],['debit','NY','0.00',10000],
+  ['credit','CA','0.00',10000],['credit','CO','2.00',10200],
+] as const)('reserves current %s/%s fee %s and sends only principal plus fee', async (funding, region, fee, gross) => {
+  const f = await fixture(undefined, {funding, region, fee, cardFeeBps:300});
+  provider.methodRetrieve.mockImplementation(async id => {
+    expect(hasDbAccessContext()).toBe(false);
+    return {id, customer:'cus_autopay_test', type:'card',
+      card:{brand:'visa', funding, wallet:null, networks:{available:['visa'], preferred:null}}};
+  });
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({principalAmount:'100.00', feeAmount:fee});
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:gross}),expect.anything());
+});
+it.each(['unchanged', 'card metadata absent', 'ach lowered'] as const)(
+  'bank capture with inherited card 300 bps and accepted ACH 2.50: %s', async change => {
+    const f = await fixture(undefined, { cardFeeBps: 300 });
+    await withSystemDbAccessContext(() => db.update(billingPaymentSettings).set({ achFeeAmount: '2.50' })
+      .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+    const bank = await bankSetup(f, 'rail-fee', undefined, '2.50'); serveBank([bank]);
+    const create = provider.create.getMockImplementation()!;
+    provider.create.mockImplementationOnce(async (...args) => {
+      const remote = await create(...args);
+      if (change === 'card metadata absent') delete remote.metadata.authority_card_fee_bps;
+      if (change === 'ach lowered') await withSystemDbAccessContext(() => db.update(billingPaymentSettings)
+        .set({ achFeeAmount: '2.00' }).where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+      return remote;
+    });
+    const result = await collectAfterBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id,
+      setupSessionId: bank.session.id! });
+    expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10250,
+      metadata: expect.objectContaining({ authority_ach_fee: '2.50' }) }), expect.anything());
+    const [saved] = await attempts(f.invoice.id);
+    expect(saved).toMatchObject({ scheduleId: null, principalAmount: '100.00', feeAmount: '2.50' });
+    if (change === 'ach lowered') {
+      expect(result.outcome).toBe('canceled');
+      expect(saved!.state).toBe('canceled');
+      expect(provider.confirm).not.toHaveBeenCalled();
+      expect(provider.cancel).toHaveBeenCalledOnce();
+    } else {
+      expect(result.outcome).toBe('created');
+      expect(saved!.state).toBe('processing');
+      expect(provider.confirm).toHaveBeenCalledOnce();
+      expect(provider.cancel).not.toHaveBeenCalled();
+    }
+  });
+it.each(['2.50', '3.00'])('binds a nonzero bank fee to complete client authorization: %s', async fee => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    const actor = await createUser({partnerId:f.partner.id});
+    await db.insert(billingPaymentSettings).values({partnerId:f.partner.id,orgId:null,
+      cardFeeBps:0,achFeeAmount:'3.00',feeAttestedBy:actor.id,feeAttestedAt:new Date()});
+  });
+  const bank = await bankSetup(f, 'fee', undefined, fee); serveBank([bank]);
+  const result = await withClientPaymentAuthority(bank.authority,
+    () => attemptCollection({invoiceId:f.invoice.id,initiatedBy:'client_on_session'}));
+  const [token] = await withSystemDbAccessContext(() => db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id,bank.token.id)));
+  if (fee === '2.50') {
+    expect(result).toMatchObject({outcome:'refused',reason:'client_authorization_required',attemptId:null});
+    expect(await attempts(f.invoice.id)).toHaveLength(0);
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(token!.consumedAt).toBeNull();
+  } else {
+    expect(result.outcome).toBe('created');
+    expect((await attempts(f.invoice.id))[0]).toMatchObject({principalAmount:'100.00',feeAmount:'3.00',state:'processing'});
+    expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:10300}),expect.anything());
+    expect(token!.consumedAt).not.toBeNull();
+  }
+});
+it.each([[0,'0.00',10000],[100,'1.00',10100]] as const)(
+  'collects at accepted %s bps despite a higher current fee without deferring', async (acceptedBps,fee,gross) => {
+    const f = await fixture(undefined,{cardFeeBps:acceptedBps,acceptedBps,fee});
+    await withSystemDbAccessContext(() => db.update(billingPaymentSettings).set({cardFeeBps:300}).where(eq(billingPaymentSettings.partnerId,f.partner.id)));
+    expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+    expect((await attempts(f.invoice.id))[0]).toMatchObject({feeAmount:fee});
+    expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:gross}),expect.anything());
+  });
+it('refuses scheduled collection without current consent', async () => {
+  const f = await fixture(undefined,{consent:'missing'});
+  await createUser({partnerId:f.partner.id,withMembership:true});
+  for(let n=0;n<2;n++)expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'refused',reason:'consent_required'});
+  const scheduled=await withSystemDbAccessContext(()=>planAutopayForInvoice(db,f.invoice.id,true));
+  expect(scheduled).toMatchObject({eligible:false,ineligibleReason:'consent_required'});
+  const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(notices.filter(n=>n.message?.includes('authorization is missing'))).toHaveLength(1);
+  expect(await attempts(f.invoice.id)).toHaveLength(0);
+  expect(provider.create).not.toHaveBeenCalled();
+});
+it('charges zero for malformed accepted fees and deduplicates MSP attention', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,consent:'malformed'});
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  await resumeCollectionAttempt((await attempts(f.invoice.id))[0]!.id);
+  expect((await attempts(f.invoice.id))[0]!.feeAmount).toBe('0.00');
+  const notices = await withSystemDbAccessContext(() => db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(notices.filter(n => n.message?.includes('fee terms'))).toHaveLength(1);
+});
+it('requires a corrected notice and fresh lead time after a lawful fee decrease', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,fee:'3.00'});
+  await withSystemDbAccessContext(() => db.update(organizations).set({billingAddressRegion:'CO'}).where(eq(organizations.id,f.org.id)));
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'deferred',reason:'renotice_required'});
+  expect(await attempts(f.invoice.id)).toHaveLength(0);
+  expect(provider.create).not.toHaveBeenCalled();
+  const schedule = await scheduleFor(f);
+  expect(schedule).toMatchObject({state:'awaiting_notice',noticeSentAt:null,termsSnapshot:{feeAmount:'2.00',noticeSeq:2}});
+  const [original] = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id,f.notice.id)));
+  expect(original!.rendered).toEqual(f.notice.rendered);
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'refused',reason:'schedule_inactive'});
+  await deliverPendingFeeNotice();
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'deferred',reason:'notice_lead'});
+  const aged = new Date(Date.now()-2*86_400_000);
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoiceAutopaySchedules).set({noticeSentAt:aged}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+    await db.update(billingNoticeOutbox).set({sentAt:aged}).where(eq(billingNoticeOutbox.id,schedule.noticeOutboxId!));
+  });
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]!.feeAmount).toBe('2.00');
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:10200}),expect.anything());
+});
+
+async function appendFeeConsent(f: Awaited<ReturnType<typeof fixture>>, cardFeeBps: number, overrides: Record<string, unknown> = {}) {
+  await withSystemDbAccessContext(async () => {
+    const [consent] = await db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.paymentMethodId,f.method.id));
+    await db.insert(orgAutopayConsents).values({...consent!,id:randomUUID(),createdAt:new Date(Date.now()+1000),
+      feeTerms:{...consent!.feeTerms,cardFeeBps},...overrides});
+  });
+}
+it('uses renewed consent for the same method and generation without altering old consent', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,acceptedBps:0,fee:'3.00'});
+  await appendFeeConsent(f,300);
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]!.feeAmount).toBe('3.00');
+  const accepted = await withSystemDbAccessContext(() => db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.orgId,f.org.id)));
+  expect(accepted.map(c => c.feeTerms.cardFeeBps).sort()).toEqual([0,300]);
+});
+it('ignores fee consent from a different enrollment generation', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,acceptedBps:0});
+  await appendFeeConsent(f,300,{generation:2});
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]!.feeAmount).toBe('0.00');
+});
+it('rechecks accepted fees after provider create and before confirmation', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,fee:'3.00'});
+  const normal = provider.create.getMockImplementation()!;
+  provider.create.mockImplementationOnce(async (...args) => {
+    const pi = await normal(...args);
+    await appendFeeConsent(f,100);
+    return pi;
+  });
+  await attemptCollection(inputFor(f));
+  expect(provider.confirm).not.toHaveBeenCalled();
+  expect(provider.cancel).toHaveBeenCalledOnce();
+  expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
+});
+it.each([[0,'0.00'],[100,'1.00']] as const)('schedules only the accepted %s bps fee', async (acceptedBps,fee) => {
+  const f = await fixture(undefined,{cardFeeBps:300,acceptedBps});
+  const {planAutopayForInvoice} = await import('./scheduler');
+  const scheduled = await withSystemDbAccessContext(() => planAutopayForInvoice(db,f.invoice.id,true));
+  expect(scheduled).toMatchObject({eligible:true,termsSnapshot:{feeAmount:fee}});
+});
+it('evaluates the accepted formula on the actual remaining principal', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,acceptedBps:100,fee:'0.50'});
+  await withSystemDbAccessContext(async () => {
+    await db.insert(invoicePayments).values({invoiceId:f.invoice.id,orgId:f.org.id,amount:'50.00',method:'cash',receivedAt:f.invoice.issueDate!});
+    await db.update(invoices).set({balance:'50.00',amountPaid:'50.00',status:'partially_paid'}).where(eq(invoices.id,f.invoice.id));
+  });
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({principalAmount:'50.00',feeAmount:'0.50'});
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:5050}),expect.anything());
+});
+
+import * as emailModule from '../email';
+import {dispatchPendingBillingNotices} from './noticeOutbox';
+import {registerAutopayNoticeHandlers} from './chargingNotice';
+it('delivers a notice at the lower accepted fee and honors its lead time', async () => {
+  const f = await fixture(undefined,{cardFeeBps:300,acceptedBps:100});
+  const {planAutopayForInvoice} = await import('./scheduler');
+  await withSystemDbAccessContext(() => planAutopayForInvoice(db,f.invoice.id,true));
+  await deliverPendingFeeNotice();
+  expect(await scheduleFor(f)).toMatchObject({state:'scheduled',termsSnapshot:{feeAmount:'1.00'}});
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'deferred',reason:'notice_lead'});
+});
+async function deliverPendingFeeNotice() {
+  registerAutopayNoticeHandlers();
+  const sendEmail = vi.fn(async () => {expect(hasDbAccessContext()).toBe(false);});
+  const mail = vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+  try {
+    expect(await dispatchPendingBillingNotices()).toMatchObject({sent:1,failed:0});
+    expect(sendEmail).toHaveBeenCalledOnce();
+  } finally { mail.mockRestore(); }
+}
+
+async function scheduledBankFee(accepted:string,current:string,noticed=accepted){
+  const f=await fixture(undefined,{cardFeeBps:0});
+  const bank=await bankSetup(f,'scheduled-fee',undefined,accepted);serveBank([bank]);
+  const terms=f.schedule.termsSnapshot as AutopayTerms;
+  const rendered=f.notice.rendered as {subject:string;html:string;text:string;frozen:Record<string,unknown>};
+  await withSystemDbAccessContext(async()=>{
+    await db.update(billingPaymentSettings).set({achFeeAmount:current}).where(eq(billingPaymentSettings.partnerId,f.partner.id));
+    await db.update(invoiceAutopaySchedules).set({state:'scheduled',termsSnapshot:{...terms,
+      methodType:'us_bank_account',methodId:bank.method.id,accountHolderType:'company',last4:'6789',methodLabel:'Test bank ••6789',
+      feeAmount:noticed,feeKind:noticed==='0.00'?'none':'ach_flat',achFeeAmount:accepted},noticeSentAt:f.schedule.noticeSentAt})
+      .where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+    await db.update(billingNoticeOutbox).set({rendered:{...rendered,
+      frozen:{...rendered.frozen,methodType:'us_bank_account',fee:noticed}}}).where(eq(billingNoticeOutbox.id,f.notice.id));
+  });
+  return {f,bank};
+}
+it('scheduled ACH charges the lower accepted 2.00 after settings rise to 5.00',async()=>{
+  const {f}=await scheduledBankFee('2.00','5.00');
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({feeAmount:'2.00'});
+  expect(provider.create).toHaveBeenCalledWith(expect.objectContaining({amount:10200}),expect.anything());
+});
+it('scheduled ACH requires a new 2.00 notice after a decrease from 5.00',async()=>{
+  const {f}=await scheduledBankFee('5.00','2.00');
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('deferred');
+  expect(await scheduleFor(f)).toMatchObject({state:'awaiting_notice',termsSnapshot:{feeAmount:'2.00'}});
+  expect(provider.create).not.toHaveBeenCalled();
+});
+it.each(['26.00','2.001','02.00','NaN'])('scheduled ACH rejects invalid accepted fee %s with one attention',async bad=>{
+  const {f,bank}=await scheduledBankFee('2.00','5.00','0.00');
+  await withSystemDbAccessContext(async()=>{
+    const [consent]=await db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.paymentMethodId,bank.method.id));
+    await db.insert(orgAutopayConsents).values({...consent!,id:randomUUID(),createdAt:new Date(Date.now()+1000),feeTerms:{...consent!.feeTerms,achFeeAmount:bad}});
+  });
+  expect((await attemptCollection(inputFor(f))).outcome).toBe('created');
+  await resumeCollectionAttempt((await attempts(f.invoice.id))[0]!.id);
+  expect((await attempts(f.invoice.id))[0]).toMatchObject({feeAmount:'0.00'});
+  const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(notices.filter(n=>n.message?.includes('fee terms'))).toHaveLength(1);
+});
+
+import {planAutopayForInvoice} from './scheduler';

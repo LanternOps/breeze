@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Afficher tous les contacts ({{count}} fournisseur uniquement masqué)",
     "showAllContacts_other": "Afficher tous les contacts ({{count}} fournisseurs uniquement masqués)",
     "archived": "Archivé"
+  },
+  "accountingFees": {
+    "title": "Produits des frais de traitement",
+    "item": "Identifiant de l’article QuickBooks pour les frais de traitement",
+    "account": "Code du compte de produits Xero pour les frais de traitement",
+    "help": "Les frais constituent des écritures de produits distinctes non imposables pour le même client. La transmission automatique des paiements et un compte de paiement ou de dépôt doivent être configurés ; Xero nécessite également un code d’exonération fiscale. Si le champ est vide, l’exportation des frais reste en attente d’une correspondance. Les écritures existantes conservent leur destination et leur correspondance d’origine.",
+    "save": "Enregistrer la correspondance des frais",
+    "saved": "Correspondance des frais de traitement enregistrée",
+    "failed": "Impossible d’enregistrer la correspondance des frais de traitement. Vérifiez vos autorisations et réessayez.",
+    "attention": "La comptabilisation des frais de traitement nécessite votre attention. Vérifiez la correspondance des produits et la connexion. Les écritures au statut incertain sont vérifiées avant toute nouvelle tentative."
   }
 }

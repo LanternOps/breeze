@@ -15,6 +15,8 @@ import { renderBillingNotice } from './renderBillingNotice';
 import { addUtcDays, noticeLeadDays } from './scheduler';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
+import { acceptedCollectionFee, collectionFeePolicyChanged } from './collectionFee';
+import { paymentFeeLine } from './feeDisclosure';
 import { toMinorUnits } from '../stripeMoney';
 import { AR_OPEN_STATUSES } from '../../db/schema/invoices';
 import { isPublicLinkOrgStatusLive, isPublicLinkPartnerStatusLive } from '../publicLinkOrgGate';
@@ -56,7 +58,7 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     custom: partnerEmailCustomFromSettings(partner!.settings, 'invoice_autopay'),
     skipUrl: buildBillingLinkUrl('skip_invoice', skip.token),
     stopUrl: buildBillingLinkUrl('stop_autopay', stop.token),
-    feeText: `Processing fee: ${terms.currency} ${terms.feeAmount}`,
+    feeText: paymentFeeLine(terms.principal, terms.feeAmount, terms.currency, terms.methodType),
     authorizationText: terms.methodType === 'us_bank_account'
       ? 'Bank debit authorized during setup. The date is the initiation date; your bank controls settlement.'
       : 'Payment authorized during automatic payment setup.',
@@ -130,16 +132,19 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
     || (method.type === 'us_bank_account' && method.accountHolderType === null)
     || method.accountHolderType !== terms.accountHolderType || noticeLeadDays(method) !== terms.noticeLeadDays) return obsolete;
   const settings = await resolveBillingPaymentSettings(tx, { partnerId: invoice.partnerId, orgId: row.orgId });
-  if (settings.cardFeeBps.value !== terms.cardFeeBps || settings.achFeeAmount.value !== terms.achFeeAmount) return obsolete;
   const [connection] = await tx.select().from(stripeConnectAccounts).where(and(
     eq(stripeConnectAccounts.id, enrollment.stripeConnectionId), eq(stripeConnectAccounts.partnerId, invoice.partnerId),
   )).limit(1);
   if (!connection) return obsolete;
-  const fee = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
+  const lawfulFee = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
     principal: terms.principal, currency: terms.currency, stripeAccountCountry: connection.accountCountry,
     orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
     cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value, feeAttested: settings.feeAttested });
-  if (fee.kind !== terms.feeKind || toMinorUnits(fee.feeAmount, terms.currency) !== toMinorUnits(terms.feeAmount, terms.currency)) return obsolete;
+  const fee = await acceptedCollectionFee(tx, {orgId:invoice.orgId,partnerId:invoice.partnerId,
+    enrollmentId:enrollment.id,generation:enrollment.generation,methodId:method.id,methodType:method.type,
+    principal:terms.principal,currency:terms.currency,quote:lawfulFee});
+  if (!fee || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, fee)
+    || fee.kind !== terms.feeKind || toMinorUnits(fee.feeAmount, terms.currency) !== toMinorUnits(terms.feeAmount, terms.currency)) return obsolete;
   return null;
 };
 

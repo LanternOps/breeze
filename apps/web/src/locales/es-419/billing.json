@@ -2536,7 +2536,8 @@
       "stop": "Pagos automáticos detenidos",
       "client_request": "Solicitado por el cliente",
       "no_billing_contact": "No hay contacto de facturación",
-      "delivery_failed": "No se pudo entregar el aviso"
+      "delivery_failed": "No se pudo entregar el aviso",
+      "consent_required": "Falta la autorización de pago. Solicita una nueva autorización."
     },
     "noticeTemplate": "Factura con aviso de pago automático",
     "chargeFailed": "No se pudo iniciar el pago. Inténtalo de nuevo.",
@@ -2557,6 +2558,22 @@
       "requires_action": "Se requiere confirmación",
       "canceled": "Cancelado",
       "unapplied": "El pago requiere conciliación"
+    },
+    "fees": {
+      "title": "Comisiones de procesamiento",
+      "cardBps": "Comisión por tarjeta de crédito (puntos básicos, 0–300)",
+      "ach": "Comisión por pago bancario (USD, 0.00–25.00)",
+      "inactive": "Las comisiones por tarjeta no se activan hasta que el administrador del socio confirme ambas declaraciones siguientes.",
+      "notified": "Notifiqué a mi adquirente (Stripe) y a las redes de tarjetas hace al menos 30 días",
+      "cost": "Esta comisión no supera mi costo de aceptación de tarjetas",
+      "rules": "Solo tarjetas de crédito. No se cobra comisión por tarjeta en CA, CT, ME ni MA; en Colorado el límite es del 2 %. Las comisiones solo se aplican a pagos automáticos elegibles de EE. UU. en USD. Dejar en blanco hereda el valor; cero exime a este cliente. Los enlaces de pago único no tienen comisión.",
+      "legal": "Breeze no brinda asesoramiento legal. Usted es responsable de la elegibilidad de los recargos, los avisos y el tratamiento fiscal.",
+      "lowerAuthorization": "Clientes con comisiones autorizadas más bajas: {{count}}. Su autorización actual sigue vigente hasta que acepten los nuevos términos.",
+      "authorizedCard": "Autorizado: {{accepted}} puntos básicos; configurado: {{configured}}",
+      "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
+      "requestAuthorization": "Solicitar autorización actualizada",
+      "requestFailed": "No se pudo solicitar la autorización actualizada. Verifique el contacto de facturación y la disponibilidad de Stripe.",
+      "requested": "Se solicitó la autorización actualizada. La autorización actual sigue vigente."
     }
   },
   "reminders": {

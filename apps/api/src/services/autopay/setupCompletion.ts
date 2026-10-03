@@ -8,6 +8,7 @@ import {getPartnerStripeClient} from '../partnerStripe';
 import {assertNoHeldDbContextForStripe} from '../stripeSettle';
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
+import {verifiedFeeText,hasSupportedCardEvidence} from './feeDisclosure';
 import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
 import {notifyAutopayStaff} from './staffNotifications';
@@ -52,8 +53,11 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    return {outcome,orgId:attempt.orgId};
   }
   const wasPending=attempt.outcome==='pending_verification';
+  // A newly accepted update may finish while paused; a capture started before the pause cannot.
+  const pausedUpdate=enrollment?.status==='paused'&&!!enrollment.pausedAt&&!!attempt.tokenId&&
+   attempt.source==='setup_page'&&attempt.createdAt>enrollment.pausedAt;
   if(!org||org.deletedAt||!['active','trial'].includes(org.status)||!connection||connection.stripeAccountId!==attempt.stripeAccountId||!enrollment||
-   ['stripe_account_changed','key_missing_permissions'].includes(enrollment.needsAttentionReason??'')||attempt.outcome==='stale_generation'||setupAuthorityOutcome(wasPending&&enrollment.status==='paused'?{...enrollment,status:'active'}:enrollment,attempt.generation,wasPending||latest?.id===attempt.id)||
+   ['stripe_account_changed','key_missing_permissions'].includes(enrollment.needsAttentionReason??'')||attempt.outcome==='stale_generation'||setupAuthorityOutcome((wasPending||pausedUpdate)&&enrollment.status==='paused'?{...enrollment,status:'active'}:enrollment,attempt.generation,wasPending||latest?.id===attempt.id)||
    enrollment.stripeAccountId!==attempt.stripeAccountId||enrollment.stripeCustomerId!==attempt.stripeCustomerId||method?.customer!=null&&attempt.stripeCustomerId!==id(method.customer)){
    await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
    await enqueueRejectedAutopayMethod(db,attempt,method);
@@ -93,18 +97,20 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const holderType=method.us_bank_account?.account_holder_type;
   const values:typeof orgPaymentMethods.$inferInsert={orgId:attempt.orgId,enrollmentId:enrollment.id,stripePaymentMethodId:method.id,type:attempt.methodType,
    cardBrand:method.card?.brand??null,cardLast4:method.card?.last4??null,cardExpMonth:method.card?.exp_month??null,cardExpYear:method.card?.exp_year??null,
-   cardFunding:method.card?cardFunding(method.card.funding):null,cardCountry:method.card?.country??null,bankName:method.us_bank_account?.bank_name??null,
+   cardFunding:method.card?(method.card.funding==='credit'&&!hasSupportedCardEvidence(method.card)?'unknown':cardFunding(method.card.funding)):null,cardCountry:method.card?.country??null,bankName:method.us_bank_account?.bank_name??null,
    bankLast4:method.us_bank_account?.last4??null,accountHolderType:holderType==='individual'?'individual':holderType==='company'?'company':null,
    stripeMandateId:mandateId,stripeSetupIntentId:setupIntentId,status:outcome==='activated'?'active' as const:'pending_verification' as const,
    isAutopayMethod:true,removedAt:null,unusableReason:null};
   const [saved]=existing?await db.update(orgPaymentMethods).set(values).where(eq(orgPaymentMethods.id,existing.id)).returning():
    await db.insert(orgPaymentMethods).values(values).returning();
-  const [consent]=await db.select({id:orgAutopayConsents.id}).from(orgAutopayConsents).where(and(eq(orgAutopayConsents.enrollmentId,enrollment.id),
-   eq(orgAutopayConsents.generation,attempt.generation),eq(orgAutopayConsents.paymentMethodId,saved!.id),eq(orgAutopayConsents.consentTextHash,snapshot.textHash))).limit(1);
-  if(!consent)await db.insert(orgAutopayConsents).values({orgId:attempt.orgId,enrollmentId:enrollment.id,generation:attempt.generation,paymentMethodId:saved!.id,
+  // The locked setup attempt is the idempotency key, not the accepted text.
+  // A distinct attempt always appends consent, including A → B → A acceptance.
+  // Pending bank verification already recorded this attempt's consent;
+  // its later activation must not append another authorization.
+  if(!wasPending)await db.insert(orgAutopayConsents).values({orgId:attempt.orgId,enrollmentId:enrollment.id,generation:attempt.generation,paymentMethodId:saved!.id,
    consentTextVersion:snapshot.version,consentTextHash:snapshot.textHash,feeTerms:snapshot.feeTerms,scheduleTerms:snapshot.scheduleTerms,
    contactEmail:snapshot.contactEmail,ip:snapshot.ip,userAgent:snapshot.userAgent,source:snapshot.source});
-  await db.update(orgAutopayEnrollments).set({status:wasPending&&enrollment.status==='paused'?'paused':'active',effectiveFrom:enrollment.effectiveFrom??new Date(),
+  await db.update(orgAutopayEnrollments).set({status:enrollment.status==='paused'?'paused':'active',effectiveFrom:enrollment.effectiveFrom??new Date(),
    needsAttentionReason:null}).where(eq(orgAutopayEnrollments.id,enrollment.id));
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));
@@ -112,11 +118,12 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
   const methodDescription=method.card?`${method.card.brand} ${method.card.funding} ••${method.card.last4}`:`${method.us_bank_account?.bank_name??'Bank'} ••${method.us_bank_account?.last4??''}`;
   const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
+  const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
   await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
    dedupeKey:`${attempt.id}:autopay_enrolled:${outcome}`,toEmail:snapshot.contactEmail,
    rendered:await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:snapshot.feeText},
-    scheduleText:snapshot.scheduleText,feeText:snapshot.feeText,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
+    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:displayFee},
+    scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
   }
   for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
   if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
@@ -127,7 +134,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   return {outcome,orgId:attempt.orgId};
  });
 }
-export async function completeAutopaySetup(partnerId:string,ref:{checkoutSessionId?:string;setupIntentId?:string}):Promise<{outcome:Outcome;orgId:string}>{
+export async function completeAutopaySetup(partnerId:string,ref:{checkoutSessionId?:string;setupIntentId?:string},onVerifiedMethod?:(method:Stripe.PaymentMethod)=>void):Promise<{outcome:Outcome;orgId:string}>{
  assertNoHeldDbContextForStripe('completeAutopaySetup');
  if(Boolean(ref.checkoutSessionId)===Boolean(ref.setupIntentId))throw new Error('Supply exactly one setup reference');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(partnerId));
@@ -164,5 +171,9 @@ export async function completeAutopaySetup(partnerId:string,ref:{checkoutSession
   const mandate=await runOutsideDbContext(()=>stripe.mandates.retrieve(mandateId));
   if(mandate.status!=='active'||id(mandate.payment_method)!==method.id)throw new Error('Bank mandate is not active');
  }
- return persistCapturedAutopayMethod(attempt.id,method,setupIntentOutcome(intent),intent.id,mandateId);
+ const result=await persistCapturedAutopayMethod(attempt.id,method,setupIntentOutcome(intent),intent.id,mandateId);
+ // Reuse provider evidence for the return page without storing wallet/network data
+ // or making another Stripe call. Never expose an unaccepted capture.
+ if(result.outcome==='activated'||result.outcome==='pending_verification')onVerifiedMethod?.(method);
+ return result;
 }

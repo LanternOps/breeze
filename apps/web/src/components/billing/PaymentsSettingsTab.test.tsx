@@ -8,18 +8,16 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const inherited = {
-  remindersEnabled: { value: false, source: 'default' },
-  reminderBeforeDueDays: { value: 3, source: 'default' },
-  reminderRepeatDays: { value: null, source: 'default' },
-  overdueReminderEveryDays: { value: 7, source: 'default' },
-
-  autopayOffsetDays: { value: 7, source: 'partner' },
-  autopayOffsetRule: { value: 'later', source: 'partner' },
-  autopayCap: { value: { enabled: true, amount: '500.00', currency: 'USD' }, source: 'partner' },
-  achMode: { value: 'ach_preferred', source: 'default' },
+  autopayOffsetDays:{value:7,source:'partner'},autopayOffsetRule:{value:'later',source:'partner'},
+  autopayCap:{value:{enabled:true,amount:'500.00',currency:'USD'},source:'partner'},
+  achMode:{value:'ach_preferred',source:'default'},cardFeeBps:{value:0,source:'default'},
+  achFeeAmount:{value:'0.00',source:'default'},feeAttested:false,
+  remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
+  reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'},
 };
-const values = { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
-  autopayCapAmount: null, autopayCapCurrency: null, achMode: null };
+const values={autopayOffsetDays:null,autopayOffsetRule:null,autopayCapEnabled:null,
+  autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null};
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(
@@ -212,4 +210,74 @@ it('isolates a deferred save across A to B to A, including draft and saving stat
   expect(result.current.saving).toBe(true);
   await act(async () => { currentSave.resolve(Response.json({ success: true })); await pendingCurrent; });
   expect(result.current.saving).toBe(false);
+});
+
+it('preserves zero overrides and displays the inherited fee', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async (_url, init) => Response.json(init?.method === 'PUT'
+    ? { success: true } : { autopayEnabled: true, values: { ...values, cardFeeBps: null, achFeeAmount: null },
+      inherited: { ...inherited, cardFeeBps: { value: 300, source: 'partner' }, achFeeAmount: { value: '2.50', source: 'partner' } },
+      effective: { ...inherited, feeAttested: true } }));
+  mount();
+  const card = await screen.findByTestId('autopay-card-fee-bps');
+  expect(card).toHaveAttribute('placeholder', '300');
+  expect(screen.queryByTestId('autopay-attest-notified')).toBeNull();
+  fireEvent.change(card, { target: { value: '0' } });
+  fireEvent.change(screen.getByTestId('autopay-ach-fee'), { target: { value: '0.00' } });
+  fireEvent.click(screen.getByTestId('autopay-settings-save'));
+  await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, i]) => i?.method === 'PUT')).toBe(true));
+  const call = vi.mocked(fetchWithAuth).mock.calls.find(([, i]) => i?.method === 'PUT')!;
+  expect(JSON.parse(call[1]!.body as string)).toMatchObject({ cardFeeBps: 0, achFeeAmount: '0.00' });
+});
+it('requires both attestation statements when either is checked', async () => {
+  vi.mocked(fetchWithAuth).mockResolvedValue(Response.json({ autopayEnabled: true,
+    values: { ...values, cardFeeBps: 300, achFeeAmount: '0.00' },
+    inherited: { ...inherited, cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' } },
+    effective: { ...inherited, feeAttested: false } }));
+  render(<I18nextProvider i18n={i18n}><PaymentsSettingsTab /></I18nextProvider>);
+  fireEvent.click(await screen.findByTestId('autopay-attest-notified'));
+  expect(screen.getByTestId('autopay-settings-save')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('autopay-attest-cost'));
+  expect(screen.getByTestId('autopay-settings-save')).not.toBeDisabled();
+  expect(screen.getByTestId('autopay-fee-percent')).toHaveTextContent('3.00%');
+});
+
+it('shows clients with lower authorization after Save and requests updated authorization per client',async()=>{
+ const orgId='11111111-1111-4111-8111-111111111111';let saved=false;
+ const gap={orgId,orgName:'Example client',methodType:'card',authorizedCardFeeBps:0,authorizedAchFeeAmount:'0.00',cardFeeBps:300,achFeeAmount:'0.00'};
+ vi.mocked(fetchWithAuth).mockImplementation(async (_url,init)=>{
+  if(init?.method==='POST')return Response.json({requested:[orgId],skipped:[]});
+  if(init?.method==='PUT')saved=true;
+  return Response.json({autopayEnabled:true,values,inherited,effective:inherited,feeAuthorizationGaps:saved?[gap]:[]});
+ });
+ mount();fireEvent.click(await screen.findByTestId('autopay-settings-save'));
+ expect(await screen.findByTestId('autopay-fee-authorization-gaps')).toHaveTextContent('Example client');
+ fireEvent.click(screen.getByTestId(`autopay-reauthorize-${orgId}`));
+ await waitFor(()=>expect(vi.mocked(fetchWithAuth).mock.calls.some(([,init])=>init?.method==='POST')).toBe(true));
+ const call=vi.mocked(fetchWithAuth).mock.calls.find(([,init])=>init?.method==='POST')!;
+ expect(call[0]).toBe('/billing/autopay/requests');
+ expect(JSON.parse(call[1]!.body as string)).toEqual({orgIds:[orgId],mode:'reauthorize'});
+});
+it('submits affirmative attestation only at the partner scope and clears it after saving',async()=>{
+ render(<I18nextProvider i18n={i18n}><PaymentsSettingsTab /></I18nextProvider>);
+ fireEvent.click(await screen.findByTestId('autopay-attest-notified'));
+ fireEvent.click(screen.getByTestId('autopay-attest-cost'));
+ fireEvent.click(screen.getByTestId('autopay-settings-save'));
+ await waitFor(()=>expect(vi.mocked(fetchWithAuth).mock.calls.some(([,init])=>init?.method==='PUT')).toBe(true));
+ const call=vi.mocked(fetchWithAuth).mock.calls.find(([,init])=>init?.method==='PUT')!;
+ expect(JSON.parse(call[1]!.body as string).feeAttestation).toEqual({acquirerAndNetworksNotified30DaysAgo:true,doesNotExceedAcceptanceCost:true});
+ expect(await screen.findByTestId('autopay-attest-notified')).not.toBeChecked();
+});
+
+it('does not carry partner affirmations across organization scope changes',async()=>{
+ const {result,rerender}=renderHook(({id}:{id:string|undefined})=>usePaymentSettings(id),{initialProps:{id:undefined as string|undefined}});
+ await waitFor(()=>expect(result.current.view).not.toBeNull());
+ act(()=>result.current.setAffirmations({notified:true,cost:true}));
+ rerender({id:orgB});await waitFor(()=>expect(result.current.view).not.toBeNull());
+ expect(result.current.affirmations).toEqual({notified:false,cost:false});
+ rerender({id:undefined});await waitFor(()=>expect(result.current.view).not.toBeNull());
+ expect(result.current.affirmations).toEqual({notified:false,cost:false});
+});
+it.each(['25.01','-0.01','1e1','1.001','01.00'])('disables Save for invalid ACH fee %s',async value=>{
+ mount();fireEvent.change(await screen.findByTestId('autopay-ach-fee'),{target:{value}});
+ expect(screen.getByTestId('autopay-settings-save')).toBeDisabled();
 });

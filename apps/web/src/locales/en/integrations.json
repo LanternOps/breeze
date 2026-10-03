@@ -1253,5 +1253,15 @@
     "showAllContacts_one": "Show all contacts ({{count}} supplier-only hidden)",
     "showAllContacts_other": "Show all contacts ({{count}} supplier-only hidden)",
     "archived": "Archived"
+  },
+  "accountingFees": {
+    "title": "Processing fee income",
+    "item": "QuickBooks processing-fee item ID",
+    "account": "Xero processing-fee income account code",
+    "help": "Fees are separate non-taxable income entries for the same customer. Automatic payment push and a payment/deposit account must be configured; Xero also needs an exempt tax code. Blank leaves fee export waiting for a mapping. Existing entries keep their original destination and mapping.",
+    "save": "Save fee mapping",
+    "saved": "Processing fee mapping saved",
+    "failed": "Could not save the processing fee mapping. Check your permissions and try again.",
+    "attention": "Processing fee accounting needs attention. Check the income mapping and connection. Uncertain entries are checked before any retry."
   }
 }

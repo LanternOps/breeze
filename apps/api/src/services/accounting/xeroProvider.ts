@@ -15,6 +15,7 @@ import {
   decodeXeroAuthEventId, deleteXeroConnection, listXeroConnections, requestXeroTokens, requireXeroBody, xeroApiGet,
   xeroArray, XERO_AUTHORIZE_URL, XERO_SCOPES, type XeroCallContext,
 } from './xeroHttp';
+import { postXeroFeeEntry } from './xeroFeeEntries';
 import { getXeroContact, listXeroContacts, upsertXeroContact } from './xeroContacts';
 import { getXeroItem, listXeroItems, upsertXeroItem } from './xeroItems';
 import { findPushedXeroInvoice, pushXeroInvoice, voidXeroInvoice, xeroInvoicePreflight } from './xeroInvoices';
@@ -24,7 +25,7 @@ import {
 } from './xeroPayments';
 import type { AccountingConnection, AccountingEnvironment } from './accountingConnectionService';
 import type {
-  AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
+  AccountingFeeEntryPayload, AccountingCustomerPayload, AccountingDeletePaymentPayload, AccountingEntityMapping, AccountingInvoiceLineMapping,
   AccountingInvoicePayload, AccountingInvoicePreflightRefusal, AccountingItemPayload, AccountingPaymentPayload, AccountingProvider,
   AccountingVoidInvoicePayload, ChangeSet, ConnectionTokens, InvoicePushResult, InvoiceVoidResult,
   PaymentDeleteResult, ProviderSettingsOption, ProviderSettingsOptions, ProviderTenantSelection, RateLimitSpec,
@@ -277,6 +278,10 @@ export class XeroProvider implements AccountingProvider {
   // Assumes conn.accessToken is valid (the coordinator resolves it first); issues no DB queries.
   async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
     return createXeroPayment(callContext(conn), conn, payment, this.paymentMarker.embed(payment.reference, payment.marker));
+  }
+
+  async postFeeEntry(conn:AccountingConnection,entry:AccountingFeeEntryPayload,hooks:import('./types').AccountingFeeEntryHooks={}):Promise<RemoteRef>{
+    return postXeroFeeEntry(callContext(conn),entry,hooks);
   }
 
   async deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult> {

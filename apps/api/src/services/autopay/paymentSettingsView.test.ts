@@ -17,7 +17,8 @@ function connection(row: Record<string, unknown> | null) {
   const limit = vi.fn().mockResolvedValue(row ? [row] : []);
   const where = vi.fn(() => ({ limit }));
   const from = vi.fn(() => ({ where }));
-  return { value: { select: vi.fn(() => ({ from })) } as unknown as typeof db, where, limit };
+  const gapChain: any = { from: () => gapChain, innerJoin: () => gapChain, leftJoin: () => gapChain, where: () => gapChain, orderBy: async () => [] };
+  return { value: { selectDistinctOn: () => gapChain, select: vi.fn(() => ({ from })) } as unknown as typeof db, where, limit };
 }
 beforeEach(() => { vi.clearAllMocks(); mocks.enabled.mockResolvedValue(true); mocks.resolve.mockResolvedValue(inherited); });
 it('retains nullable raw overrides while exposing the inherited value and source', async () => {
@@ -48,11 +49,45 @@ it('exposes reminder defaults even with autopay rollout disabled', async () => {
     autopayOffsetRule: { value: 'later', source: 'default' },
     autopayCap: { value: { enabled: false }, source: 'default' },
     achMode: { value: 'ach_preferred', source: 'default' },
+    cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' },
     remindersEnabled: { value: false, source: 'default' },
     reminderBeforeDueDays: { value: 3, source: 'default' },
     reminderRepeatDays: { value: null, source: 'default' },
     overdueReminderEveryDays: { value: 7, source: 'default' },
   });
   expect(view.values).toEqual({ autopayOffsetDays: null, autopayOffsetRule: null,
-    autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null });
+    autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null });
+});
+
+it('returns raw zero fee overrides and partner values without flattening them', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300, source: 'partner' },
+    achFeeAmount: { value: '2.50', source: 'partner' }, feeAttested: true });
+  const view = await paymentSettingsView(connection({ cardFeeBps: 0, achFeeAmount: '0.00' }).value, partnerId, orgId);
+  expect(view.values).toMatchObject({ cardFeeBps: 0, achFeeAmount: '0.00' });
+  expect(view.inherited.cardFeeBps.value).toBe(300);
+  expect(view.effective.feeAttested).toBe(true);
+});
+
+import { feeAuthorizationGaps } from './paymentSettingsView';
+import { PgDialect } from 'drizzle-orm/pg-core';
+it('reports only lower current-method authorization with zero overrides and tenant predicates', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300 }, achFeeAmount: { value: '2.50' } });
+  const terms = { methodType: 'card', cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' };
+  const rows = [
+    { orgId, orgName: 'Card client', methodType: 'card', feeTerms: terms, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'zero', orgName: 'Exempt', methodType: 'card', feeTerms: terms, cardFeeBps: 0, achFeeAmount: null },
+    { orgId: 'bank', orgName: 'Bank client', methodType: 'us_bank_account', feeTerms: { ...terms, methodType: 'us_bank_account', achFeeAmount: '1.00' }, cardFeeBps: null, achFeeAmount: null },
+    { orgId: 'equal', orgName: 'Equal', methodType: 'card', feeTerms: { ...terms, cardFeeBps: 300 }, cardFeeBps: null, achFeeAmount: null },
+  ];
+  const where = vi.fn();
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain,
+    where: (predicate: unknown) => { where(predicate); return chain; }, orderBy: async () => rows };
+  const cx = { selectDistinctOn: () => chain } as unknown as typeof db;
+  expect(await feeAuthorizationGaps(cx, partnerId, orgId)).toEqual([
+    { orgId, orgName: 'Card client', methodType: 'card', authorizedCardFeeBps: 100, authorizedAchFeeAmount: '0.00', cardFeeBps: 300, achFeeAmount: '2.50' },
+    { orgId: 'bank', orgName: 'Bank client', methodType: 'us_bank_account', authorizedCardFeeBps: 100, authorizedAchFeeAmount: '1.00', cardFeeBps: 300, achFeeAmount: '2.50' },
+  ]);
+  const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+  expect(query.params).toContain(partnerId); expect(query.params).toContain(orgId);
+  expect(query.params).toContain('active'); expect(query.params).toContain('paused');
 });

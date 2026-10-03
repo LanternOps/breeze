@@ -46,8 +46,8 @@ describe('rendered consent and legal-term hash',()=>{
   mocks.settings.mockResolvedValue({...settings(),autopayOffsetDays:{value:5},autopayOffsetRule:{value:'earlier'},autopayCap:{value:{enabled:true,amount:'500.00',currency:'USD'}}});
   const card=await buildAutopayDisclosure(executor(),'org','card');
   expect(card.text).toContain('5 days');expect(card.text).toContain('earlier');expect(card.text).toContain('USD 500.00');
-  expect(card.feeText).toContain('2.5%');expect(card.feeText).toContain('Debit and prepaid cards have no fee');
-  expect((await buildAutopayDisclosure(executor(),'org','us_bank_account')).feeText).toContain('USD 1.00');
+  expect(card.feeText).toContain('2.50%');expect(card.feeText).toContain('Debit, prepaid and unknown-funding cards have no fee');
+  expect((await buildAutopayDisclosure(executor(),'org','us_bank_account')).feeText).toContain('$1.00');
   mocks.settings.mockResolvedValue({...settings(),feeAttested:false});
   expect((await buildAutopayDisclosure(executor(),'org','card')).feeText).toBe('No processing fee applies.');
  });

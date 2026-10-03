@@ -8,15 +8,77 @@ import RemindersSettingsSection, { reminderDraft, reminderPatch, reminderDraftIn
 import InheritedField from '../shared/InheritedField';
 import type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
 export type {PaymentValues,PaymentSettingsView} from '@breeze/shared';
+export type FeeAffirmations = { notified: boolean; cost: boolean };
+export function feeValuesInvalid(v: Pick<PaymentValues, 'cardFeeBps' | 'achFeeAmount'>): boolean {
+  return (v.cardFeeBps !== null && (!Number.isInteger(v.cardFeeBps) || v.cardFeeBps < 0 || v.cardFeeBps > 300))
+    || (v.achFeeAmount !== null && (!/^(0|[1-9]\d?)\.\d{2}$/.test(v.achFeeAmount)
+      || BigInt(v.achFeeAmount.replace('.', '')) > 2500n));
+}
+export function FeeFields({ view, setValues, disabled, affirmations, setAffirmations }: {
+  view: PaymentSettingsView; setValues: (patch: Partial<PaymentValues>) => void; disabled: boolean;
+  affirmations?: FeeAffirmations; setAffirmations?: (value: FeeAffirmations) => void;
+}) {
+  const { t } = useTranslation('billing');
+  const [requesting, setRequesting] = useState(false);
+  const requestAuthorization = async (orgId: string) => {
+    setRequesting(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth('/billing/autopay/requests', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orgIds: [orgId], mode: 'reauthorize' }) }),
+        parseSuccess: data => {
+          if (!(data as { requested?: string[] })?.requested?.includes(orgId)) throw new Error(t('autopay.fees.requestFailed'));
+          return data;
+        },
+        errorFallback: t('autopay.fees.requestFailed'), successMessage: t('autopay.fees.requested'),
+      });
+    } catch (error) { handleActionError(error, t('autopay.fees.requestFailed')); }
+    finally { setRequesting(false); }
+  };
+  if (!view.autopayEnabled) return null;
+  const bps = view.values.cardFeeBps ?? view.inherited.cardFeeBps.value;
+  const percent = Number.isInteger(bps) ? `${Math.trunc(bps / 100)}.${String(bps % 100).padStart(2, '0')}%` : '—';
+  return <fieldset disabled={disabled} data-testid="autopay-fees" className="space-y-4 border-t pt-4">
+    <legend className="font-semibold">{t('autopay.fees.title')}</legend>
+    <InheritedField id="autopay-card-fee-bps" data-testid="autopay-card-fee-bps"
+      label={t('autopay.fees.cardBps')} value={view.values.cardFeeBps === null ? '' : String(view.values.cardFeeBps)}
+      onChange={value => setValues({ cardFeeBps: value === '' ? null : Number(value) })}
+      inheritedValue={String(view.inherited.cardFeeBps.value)}
+      inheritedSource={t(/* i18n-dynamic */ `autopay.source.${view.inherited.cardFeeBps.source}`)} type="number" min={0} max={300} step="1" />
+    <p data-testid="autopay-fee-percent">{percent}</p>
+    <InheritedField id="autopay-ach-fee" data-testid="autopay-ach-fee" label={t('autopay.fees.ach')}
+      value={view.values.achFeeAmount ?? ''} onChange={value => setValues({ achFeeAmount: value === '' ? null : value })}
+      inheritedValue={view.inherited.achFeeAmount.value} inheritedSource={t(/* i18n-dynamic */ `autopay.source.${view.inherited.achFeeAmount.source}`)} />
+    {!view.effective.feeAttested && <p data-testid="autopay-fee-inactive">{t('autopay.fees.inactive')}</p>}
+    {affirmations && setAffirmations && <>
+      <label className="flex gap-2"><input type="checkbox" data-testid="autopay-attest-notified" checked={affirmations.notified}
+        onChange={event => setAffirmations({ ...affirmations, notified: event.target.checked })} />{t('autopay.fees.notified')}</label>
+      <label className="flex gap-2"><input type="checkbox" data-testid="autopay-attest-cost" checked={affirmations.cost}
+        onChange={event => setAffirmations({ ...affirmations, cost: event.target.checked })} />{t('autopay.fees.cost')}</label>
+    </>}
+    {view.feeAuthorizationGaps !== undefined && <div data-testid="autopay-fee-authorization-gaps" className="space-y-3">
+      <p>{t('autopay.fees.lowerAuthorization', { count: view.feeAuthorizationGaps.length })}</p>
+      <ul className="space-y-3">{view.feeAuthorizationGaps.map(client => <li key={client.orgId} className="flex flex-wrap items-center justify-between gap-2">
+        <span>{client.orgName} — {client.methodType === 'card'
+          ? t('autopay.fees.authorizedCard', { accepted: client.authorizedCardFeeBps, configured: client.cardFeeBps })
+          : t('autopay.fees.authorizedAch', { accepted: client.authorizedAchFeeAmount, configured: client.achFeeAmount })}</span>
+        <button type="button" data-testid={`autopay-reauthorize-${client.orgId}`} disabled={disabled || requesting}
+          onClick={() => void requestAuthorization(client.orgId)}>{t('autopay.fees.requestAuthorization')}</button>
+      </li>)}</ul>
+    </div>}
+    <p>{t('autopay.fees.rules')}</p><p>{t('autopay.fees.legal')}</p><p>{t('autopay.achRisk')}</p>
+  </fieldset>;
+}
+
 export function usePaymentSettings(orgId?: string) {
   const { t } = useTranslation('billing');
   const path = orgId ? `/orgs/${orgId}/billing/payment-settings` : '/partner/billing/payment-settings';
   // Each identity owns its requests, including save-triggered reloads.
   const scope = useMemo(() => ({ path, active: false, request: 0 }), [path]);
   const [state, setState] = useState({ scope, view: null as PaymentSettingsView | null, reminders: null as ReminderDraft | null,
-    error: false, loading: true, saving: false });
-  const { view, reminders, error, loading, saving } = state.scope === scope
-    ? state : { view: null, reminders: null, error: false, loading: true, saving: false };
+    affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false });
+  const { view, reminders, affirmations, error, loading, saving } = state.scope === scope
+    ? state : { view: null, reminders: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false };
   const load = useCallback(async () => {
     if (!scope.active) return;
     const request = ++scope.request;
@@ -37,7 +99,7 @@ export function usePaymentSettings(orgId?: string) {
   }, [scope, orgId]);
   useEffect(() => {
     scope.active = true;
-    setState({ scope, view: null, reminders: null, error: false, loading: true, saving: false });
+    setState({ scope, view: null, reminders: null, affirmations: { notified: false, cost: false }, error: false, loading: true, saving: false });
     void load();
     return () => { scope.active = false; ++scope.request; };
   }, [scope, load]);
@@ -46,7 +108,9 @@ export function usePaymentSettings(orgId?: string) {
     (!Number.isInteger(values.autopayOffsetDays) || values.autopayOffsetDays < 0 || values.autopayOffsetDays > 60)) ||
     (values.autopayCapEnabled === true && (!/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(values.autopayCapAmount ?? '') ||
       !/[1-9]/.test(values.autopayCapAmount ?? '') || !/^[A-Z]{3}$/.test(values.autopayCapCurrency ?? ''))));
-  const invalid = !view || !reminders || reminderDraftInvalid(reminders) || autopayInvalid;
+  const feesInvalid = !!view?.autopayEnabled && !!values && feeValuesInvalid(values);
+  const attestationIncomplete = !!view?.autopayEnabled && !orgId && affirmations.notified !== affirmations.cost;
+  const invalid = !view || !reminders || reminderDraftInvalid(reminders) || autopayInvalid || feesInvalid || attestationIncomplete;
   const save = async () => {
     if (!scope.active || !view || !reminders || invalid || loading || saving) return;
     const payload = { ...view.values };
@@ -54,17 +118,24 @@ export function usePaymentSettings(orgId?: string) {
       const [whole, fraction = ''] = payload.autopayCapAmount.split('.');
       payload.autopayCapAmount = `${whole}.${fraction.padEnd(2, '0')}`;
     }
-    const body = { ...(view.autopayEnabled ? payload : {}), ...reminderPatch(reminders) };
+    const body = { ...(view.autopayEnabled ? payload : {}), ...reminderPatch(reminders),
+      ...(view.autopayEnabled && !orgId && affirmations.notified && affirmations.cost ? {
+        feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true },
+      } : {}) };
     setState(current => ({ ...current, saving: true }));
     try {
       await runAction({ request: () => fetchWithAuth(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
         errorFallback: t('reminders.saveFailed'), successMessage: t('reminders.saved') });
+      if (scope.active) setState(current => current.scope === scope
+        ? { ...current, affirmations: { notified: false, cost: false } } : current);
       await load();
     } finally {
       if (scope.active) setState(current => ({ ...current, saving: false }));
     }
   };
-  return { view, reminders, loading, saving, invalid, error, load, save,
+  return { view, reminders, affirmations, loading, saving, invalid, error, load, save,
+    setAffirmations: (value: FeeAffirmations) => setState(current =>
+      scope.active && current.scope === scope ? { ...current, affirmations: value } : current),
     setReminders: (value: ReminderDraft) => setState(current =>
       scope.active && current.scope === scope ? { ...current, reminders: value } : current),
     setValues: (patch: Partial<PaymentValues>) => setState(current =>
@@ -121,6 +192,8 @@ export default function PaymentsSettingsTab({ orgId }: { orgId?: string }) {
     {model.view.autopayEnabled && <section data-testid="autopay-settings-section" className="space-y-4">
       <h2>{t('autopay.title')}</h2>
       <PaymentFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving} />
+      <FeeFields view={model.view} setValues={model.setValues} disabled={!canManage || model.saving}
+        affirmations={orgId ? undefined : model.affirmations} setAffirmations={orgId ? undefined : model.setAffirmations} />
     </section>}
     {model.invalid && <p role="alert">{t('autopay.invalid')}</p>}
     {canManage && <button data-testid="autopay-settings-save" disabled={model.invalid || model.saving}

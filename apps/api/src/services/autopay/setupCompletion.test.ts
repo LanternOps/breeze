@@ -13,8 +13,9 @@ vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
 vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn()}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
+vi.mock('./enrollmentService',()=>import('./setupCompletion'));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
-import {completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
+import {persistCapturedAutopayMethod,completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
 const snapshot={partnerName:'Example MSP',version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),
  achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
  contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page',scheduleText:'On the due date.',feeText:'No fee.'};
@@ -50,7 +51,7 @@ describe('completion fences',()=>{
   expect(setupIntentOutcome({status:'requires_action',next_action:{type:'use_stripe_sdk'}})).toBe('in_progress');
  });
  it('retrieves provider truth and records the exact accepted authorization once',async()=>{
-  queueAuthority();m.rows.push([],[],[{id:'method_one'}],[],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>{{org_name}}: {{payment_method}}</p>'}}}}]);
+  queueAuthority();m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>{{org_name}}: {{payment_method}}</p>'}}}}]);
   expect(await completeAutopaySetup(attempt().partnerId,{checkoutSessionId:'cs_one'})).toEqual({outcome:'activated',orgId:attempt().orgId});
   expect(m.session).toHaveBeenCalledWith('cs_one');expect(m.intent).toHaveBeenCalledWith('seti_one');
   expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'debit',cardLast4:'1234',status:'active'}));
@@ -60,7 +61,7 @@ describe('completion fences',()=>{
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
    expect(body).toContain('Example client');expect(body).toContain('visa debit');
-   expect(body).toContain(snapshot.scheduleText);expect(body).toContain(snapshot.feeText);
+   expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
   }
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));
   await completeAutopaySetup(attempt().partnerId,{checkoutSessionId:'cs_one'});
@@ -74,7 +75,7 @@ describe('completion fences',()=>{
  it('preserves the first effective date when updating an active enrollment',async()=>{
   const value=attempt();const effectiveFrom=new Date('2026-10-01T00:00:00Z');
   m.rows.push([value],[value],[{id:value.orgId,name:'Example client',status:'active'}],[{id:value.enrollmentId,status:'active',generation:3,
-   stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom}],[value],[{id:value.id}],[{stripeAccountId:'acct_one',status:'connected'}],[],[],[{id:'new_method'}],[],[],[],[],[{settings:{}}]);
+   stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom}],[value],[{id:value.id}],[{stripeAccountId:'acct_one',status:'connected'}],[],[],[{id:'new_method'}],[],[],[],[{settings:{}}]);
   await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'});
   expect(m.writes).toContainEqual(expect.objectContaining({status:'active',effectiveFrom}));
   expect(m.writes.some(row=>'generation'in row&&row.generation!==3)).toBe(false);
@@ -83,7 +84,7 @@ describe('completion fences',()=>{
   const value=attempt({methodType:'us_bank_account'});
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
-  queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],[{settings:{}}]);
+  queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
   expect(m.writes).toContainEqual(expect.objectContaining({status:'active',effectiveFrom:expect.any(Date)}));
   expect(m.writes).toContainEqual(expect.objectContaining({status:'pending_verification',isAutopayMethod:true}));
@@ -144,7 +145,7 @@ describe('completion fences',()=>{
   expect(m.writes).toEqual([]);expect(m.method).not.toHaveBeenCalled();
  });
  it('normalizes unknown bank account-holder values without persisting unsupported enums',async()=>{
-  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],[{settings:{}}]);
+  queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
   m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
   m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{account_holder_type:'new_provider_value'}});
   await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'});
@@ -159,7 +160,7 @@ it.each(['processing','requires_confirmation','requires_payment_method'])('keeps
  expect(m.writes).toEqual([]);expect(m.mint).not.toHaveBeenCalled();
 });
 it('allows an unverified bank without a PaymentMethod customer',async()=>{
- queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],[{settings:{}}]);
+ queueAuthority(attempt({methodType:'us_bank_account'}));m.rows.push([],[],[{id:'bank_method'}],[],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),status:'requires_action',next_action:{type:'verify_with_microdeposits'}});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:null});
  expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('pending_verification');
@@ -212,7 +213,98 @@ it.each([false,true])('saving a bank method consumes only ordinary enroll tokens
  m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate',metadata:{...((await m.intent()).metadata),token_id:'token'}});
  m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{account_holder_type:'individual'}});
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
- queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],[],...(!bound?[[]]:[]),[{settings:{}}]);
+ queueAuthority(value);m.rows.push([],[],[{id:'bank_method'}],[],[],[],...(!bound?[[]]:[]),[{settings:{}}]);
  expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
  expect(m.writes.some(row=>'consumedAt' in row)).toBe(!bound);
 });
+
+it.each(['active','paused'])('records new fee consent on the same method and preserves %s state',async status=>{
+ const feeTerms={...snapshot.feeTerms,cardFeeBps:300,feeAttested:true};
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02'),consentSnapshot:{...snapshot,feeTerms,textHash:'c'.repeat(64)}});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ const effectiveFrom=new Date('2026-09-01');
+ Object.assign(m.rows[3]![0]!,{status,effectiveFrom,pausedAt:status==='paused'?new Date('2026-10-01'):null});
+ m.rows.push([{id:'method_one',status:'active',isAutopayMethod:true}],[],[{id:'method_one'}],[],[],[],[],[{settings:{}}]);
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({generation:3,paymentMethodId:'method_one',feeTerms})]);
+ expect(m.writes).toContainEqual(expect.objectContaining({status,effectiveFrom}));
+ expect(m.writes.some(row=>'generation'in row&&row.generation!==3)).toBe(false);
+});
+
+it('fences a setup started before the current pause even with same-generation token authority',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-01')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);Object.assign(m.rows[3]![0]!,{status:'paused',pausedAt:new Date('2026-10-02')});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('stale_generation');
+ expect(m.writes.some(row=>'consentTextVersion'in row)).toBe(false);
+});
+
+
+it('does not append consent again when the same bank setup finishes verification',async()=>{
+ const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
+ queueAuthority(value);
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[]);
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([]);
+ expect(m.writes).toContainEqual(expect.objectContaining({outcome:'activated',completedAt:expect.any(Date)}));
+ expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
+});
+
+it('uses the verified debit fee in enrollment mail without rewriting accepted consent',async()=>{
+  const accepted={...snapshot,feeText:'Credit card: up to 3.00% per automatic payment.',
+    feeTerms:{...snapshot.feeTerms,cardFeeBps:300,feeAttested:true}};
+  const before=JSON.stringify(accepted),value=attempt({consentSnapshot:accepted});
+  m.rows.push([value],[{id:value.orgId,status:'active',deletedAt:null}],
+    [{id:value.enrollmentId,status:'requested',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:null}],
+    [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
+    [],[],[{id:'method_one'}],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>Edited enrollment</p>'}}}}]);
+  const method={id:'pm_one',type:'card',customer:'cus_one',card:{brand:'visa',funding:'debit',last4:'1234',
+    exp_month:12,exp_year:2030,country:'US'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+  expect(await persistCapturedAutopayMethod(value.id,method,'activated','seti_one',null))
+    .toEqual({outcome:'activated',orgId:value.orgId});
+  for (const body of [m.enqueue.mock.calls[0]![1].rendered.html, m.enqueue.mock.calls[0]![1].rendered.text]) {
+    expect(body).toContain('No processing fee applies to this card.');
+    expect(body).toContain('Edited enrollment');
+    expect(body).not.toContain(accepted.feeText);
+  }
+  expect(m.writes.filter(row=>'consentTextVersion' in row)).toEqual([
+    expect.objectContaining({consentTextHash:accepted.textHash,consentTextVersion:accepted.version,
+      feeTerms:accepted.feeTerms,scheduleTerms:accepted.scheduleTerms}),
+  ]);
+  expect(JSON.stringify(accepted)).toBe(before);expect(m.enqueue).toHaveBeenCalledOnce();
+  expect(m.client).not.toHaveBeenCalled();expect(m.rows).toHaveLength(0);
+});
+
+it.each(['credit','link','missing-networks','missing-wallet','unknown-network'])('uses live %s evidence for enrollment and owned return under nonzero fees',async kind=>{
+ const accepted={...snapshot,feeText:'Credit card: up to 3.00% per automatic payment.',
+  feeTerms:{...snapshot.feeTerms,cardFeeBps:300,feeAttested:true}};
+ const value=attempt({consentSnapshot:accepted});
+ const card={brand:'visa',funding:'credit',last4:'1234',exp_month:12,exp_year:2030,country:'US',
+  wallet:kind==='link'?{type:'link'}:kind==='missing-wallet'?undefined:null,
+  networks:kind==='missing-networks'?undefined:{available:[kind==='unknown-network'?'unknown':'visa'],preferred:null}};
+ m.method.mockResolvedValue({id:'pm_one',type:'card',customer:'cus_one',card});
+ // The owned-return lookup precedes the normal completion authority lookups.
+ m.rows.push([value]);queueAuthority(value);
+ m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
+ const {completeOwnedAutopaySetup}=await import('./customerViews');
+ const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
+ const expected=kind==='credit'?accepted.feeText:'No processing fee applies to this card.';
+ expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:expected});
+ for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(expected);
+ expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:kind==='credit'?'credit':'unknown'}));
+ const stored=m.writes.find(row=>'cardFunding' in row)!;
+ const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit'|'unknown',principal:'100.00',
+  currency:'USD',stripeAccountCountry:'US',orgBillingCountry:'US',orgBillingRegion:'NY',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true});
+ expect(quote.feeAmount).toBe(kind==='credit'?'3.00':'0.00');
+ expect(paymentFeeLine('100.00',quote.feeAmount,'USD','card')).toBe(kind==='credit'?'$100.00 + $3.00 card processing fee':'$100.00; no processing fee');
+ expect(m.method).toHaveBeenCalledExactlyOnceWith('pm_one');
+ expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({feeTerms:accepted.feeTerms,consentTextHash:accepted.textHash})]);
+ expect(m.rows).toHaveLength(0);
+});
+
+import {quoteProcessingFee} from './processingFee';
+import {paymentFeeLine} from './feeDisclosure';

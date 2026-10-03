@@ -105,3 +105,31 @@ it('uses the failure action URL and label', async () => {
     vars: { action_link: 'https://example.test/confirm', action_label: 'Confirm payment' }, custom: null, frozen: {} } });
   expect(renderedArgs).toHaveBeenLastCalledWith(expect.objectContaining({ ctaUrl: 'https://example.test/confirm', ctaLabel: 'Confirm payment' }));
 });
+
+it('keeps receipt itemization when the partner removes every editable amount', async () => {
+  const out = await renderBillingNotice('payment_receipt', { payment: {
+    id: 'payment_receipt', custom: { subject:'Thank you', heading:'Paid', html:'<p>Thank you</p>', buttonLabel:'' },
+    vars: { partner_name:'Example MSP', org_name:'Example customer', invoice_number:'INV-1', amount_paid:'USD 100.00',
+      fee_amount:'USD 3.00', total_charged:'USD 103.00', payment_method:'Visa ••4242', paid_on:'2026-10-01', balance_remaining:'USD 0.00' },
+    frozen: { amount:'100.00', fee:'3.00', total:'103.00' },
+  } });
+  for (const value of ['Principal: USD 100.00','Processing fee: USD 3.00','Total charged: USD 103.00']) {
+    expect(out.html).toContain(value); expect(out.text).toContain(value);
+  }
+  expect(out.frozen).toEqual({ amount:'100.00', fee:'3.00', total:'103.00' });
+});
+
+it('keeps principal plus card fee outside edited invoice notice text',async()=>{
+  const feeText='$100.00 + $3.00 card processing fee';
+  const out=await renderBillingNotice('invoice_autopay',{charging:{
+    vars:{org_name:'Customer',partner_name:'Provider',invoice_number:'INV-1',amount_due:'USD 100.00',
+      due_date:'2026-10-01',charge_date:'2026-10-11',payment_method:'Visa ••4242',fee_amount:'USD 3.00',
+      invoice_link:'https://portal.example.test/invoice/token'},
+    custom:{subject:'Invoice',heading:'Invoice',html:'<p>Edited without amounts</p>',buttonLabel:null},
+    skipUrl:'https://portal.example.test/autopay/skip/skip',stopUrl:'https://portal.example.test/autopay/stop/stop',
+    feeText,authorizationText:'Payment authorized during automatic payment setup.',
+    frozen:{amount:'100.00',fee:'3.00',chargeDate:'2026-10-11'},
+  }});
+  expect(out.html).toContain(feeText);expect(out.text).toContain(feeText);
+  expect(out.frozen).toEqual({amount:'100.00',fee:'3.00',chargeDate:'2026-10-11'});
+});

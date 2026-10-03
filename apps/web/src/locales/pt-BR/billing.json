@@ -2536,7 +2536,8 @@
       "stop": "Pagamentos automáticos interrompidos",
       "client_request": "Solicitado pelo cliente",
       "no_billing_contact": "Nenhum contato de faturamento",
-      "delivery_failed": "Falha na entrega do aviso"
+      "delivery_failed": "Falha na entrega do aviso",
+      "consent_required": "A autorização de pagamento está ausente. Solicite uma nova autorização."
     },
     "noticeTemplate": "Fatura com aviso de pagamento automático",
     "chargeFailed": "Não foi possível iniciar o pagamento. Tente novamente.",
@@ -2557,6 +2558,22 @@
       "requires_action": "Confirmação necessária",
       "canceled": "Cancelado",
       "unapplied": "O pagamento precisa de conciliação"
+    },
+    "fees": {
+      "title": "Taxas de processamento",
+      "cardBps": "Taxa de cartão de crédito (pontos-base, 0–300)",
+      "ach": "Taxa de pagamento bancário (USD, 0.00–25.00)",
+      "inactive": "As taxas de cartão ficam inativas até que o administrador do parceiro confirme as duas declarações abaixo.",
+      "notified": "Notifiquei meu adquirente (Stripe) e as bandeiras de cartão há pelo menos 30 dias",
+      "cost": "Esta taxa não excede meu custo de aceitação de cartões",
+      "rules": "Somente cartões de crédito. Sem taxa de cartão em CA, CT, ME ou MA; no Colorado, o limite é de 2%. As taxas se aplicam apenas a pagamentos automáticos elegíveis dos EUA em USD. Em branco herda o valor; zero isenta este cliente. Links de pagamento avulso não têm taxa.",
+      "legal": "O Breeze não oferece aconselhamento jurídico. Você é responsável pela elegibilidade das sobretaxas, pelos avisos e pelo tratamento tributário.",
+      "lowerAuthorization": "Clientes com taxas autorizadas menores: {{count}}. A autorização atual permanece válida até que aceitem os novos termos.",
+      "authorizedCard": "Autorizado: {{accepted}} pontos-base; configurado: {{configured}}",
+      "authorizedAch": "Autorizado: USD {{accepted}}; configurado: USD {{configured}}",
+      "requestAuthorization": "Solicitar autorização atualizada",
+      "requestFailed": "Não foi possível solicitar a autorização atualizada. Verifique o contato de cobrança e a disponibilidade do Stripe.",
+      "requested": "Autorização atualizada solicitada. A autorização atual permanece válida."
     }
   },
   "reminders": {

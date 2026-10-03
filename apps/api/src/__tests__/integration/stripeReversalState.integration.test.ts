@@ -623,3 +623,82 @@ runDb('concurrent confirm notice replay mints one generation-bound token for the
   expect(notices).toHaveLength(1);
   expect(notices[0]!.rendered).toMatchObject({ frozen: { attemptId: f.attemptId, tokenId: tokens[0]!.id, variant: 'confirm' } });
 });
+
+runDb('partial refunds allocate once, ignore old totals and return the full fee at the end',async()=>{
+  const f=await seed(false);
+  await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeAmount:'3.00',paymentMethodType:'card',
+    source:'autopay',stripeObjectType:'payment_intent',stripeObjectId:f.paymentIntentId})
+    .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  await recordStripePayment({stripeObjectId:f.paymentIntentId,stripePaymentIntentId:f.paymentIntentId,
+    stripeAccountId:f.accountId,amount:'103.00',currency:'USD'});
+  const event=financialEvent(f,{stripeEventId:`evt_half_${f.invoiceId}`,chargeAmountMinor:10300,refundedAmountMinor:5150,providerCreated:200});
+  await Promise.all([ingestStripeFinancialEvent(event),ingestStripeFinancialEvent(event)]);
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:1030,providerCreated:100}));
+  let [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const [payment]=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.id,mapping!.invoicePaymentId!)));
+  expect(payment!.amount).toBe('50.00');expect(mapping!.feeReversedAmount).toBe('1.50');
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:10300,providerCreated:201}));
+  [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  expect(mapping).toMatchObject({status:'refunded',invoicePaymentId:null,feeReversedAmount:'3.00'});
+});
+runDb('won ACH dispute restores only unrefunded principal and the correct rail',async()=>{
+  const f=await seedAutopayBank();
+  returnProvider.amount = 10300;
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceStripePayments).set({feeAmount:'3.00'}).where(eq(invoiceStripePayments.id,f.mappingId));
+    await db.update(invoiceCollectionAttempts).set({feeAmount:'3.00'}).where(eq(invoiceCollectionAttempts.id,f.attemptId));
+  });
+  await ingestStripeFinancialEvent(financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:5150,providerCreated:200}));
+  const withdrawal=financialEvent(f,{stripeEventId:`evt_fee_withdrawal_${f.invoiceId}`,
+    eventType:'charge.dispute.funds_withdrawn',chargeAmountMinor:10300,disputeId:`dp_${f.invoiceId}`,
+    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:true,providerCreated:300});
+  expect(await ingestStripeFinancialEvent(withdrawal)).toMatchObject({state:'applied'});
+  const [withdrawn]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.id,f.mappingId)));
+  expect(withdrawn).toMatchObject({status:'disputed',invoicePaymentId:null,feeReversedAmount:'3.00'});
+  const [appliedWithdrawal]=await withSystemDbAccessContext(()=>db.select().from(stripeFinancialEvents)
+    .where(eq(stripeFinancialEvents.stripeEventId,withdrawal.stripeEventId)));
+  expect(appliedWithdrawal!.status).toBe('applied');
+  await ingestStripeFinancialEvent(financialEvent(f,{eventType:'charge.dispute.funds_reinstated',chargeAmountMinor:10300,disputeId:`dp_${f.invoiceId}`,
+    refundedAmountMinor:null,disputeAmountMinor:10300,disputeFundsWithdrawn:false,providerCreated:301}));
+  const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const [payment]=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.id,mapping!.invoicePaymentId!)));
+  expect(payment).toMatchObject({amount:'50.00',method:'ach_debit'});
+  expect(mapping).toMatchObject({status:'partially_refunded',feeReversedAmount:'1.50'});
+});
+
+runDb('fully refunds an unapplied capture including its fee without creating a payment',async()=>{
+  const f=await seedAutopayBank(false);
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceStripePayments).set({feeAmount:'3.00'}).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId));
+    await db.update(invoiceCollectionAttempts).set({feeAmount:'3.00'}).where(eq(invoiceCollectionAttempts.id,f.attemptId));
+  });
+  const event=financialEvent(f,{chargeAmountMinor:10300,refundedAmountMinor:10300});
+  await ingestStripeFinancialEvent(event);await ingestStripeFinancialEvent(event);
+  const [attempt]=await withSystemDbAccessContext(()=>db.select().from(invoiceCollectionAttempts).where(eq(invoiceCollectionAttempts.id,f.attemptId)));
+  const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId)));
+  const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
+  expect(attempt).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+  expect(mapping).toMatchObject({feeReversedAmount:'3.00',invoicePaymentId:null});
+  expect(payments).toHaveLength(0);
+});
+
+runDb.each([
+  { state: 'pending', reversed: '0.00', canDelete: false },
+  { state: 'posted', reversed: '1.50', canDelete: false },
+  { state: 'posted', reversed: '0.00', canDelete: true },
+])('protects fee bookkeeping before erasure: %j', async ({ state, reversed, canDelete }) => {
+  const f = await seed(false);
+  const connection=await withSystemDbAccessContext(()=>upsertConnection(db,f.partnerId,'quickbooks',{
+    realmId:'fee-test-realm',accessToken:'test',refreshToken:'test',accessTokenExpiresAt:new Date('2099-01-01'),environment:'sandbox',homeCurrency:'USD'}));
+  await withSystemDbAccessContext(() => db.update(invoiceStripePayments).set({
+    feeAmount: '3.00', feeReversedAmount: reversed,
+    feeAccountingJournal: [{ state, connectionId:connection.id, payload: { direction: 'receipt', amount: '3.00' } }],
+  }).where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+  const deletion = withSystemDbAccessContext(() => db.delete(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.invoiceId, f.invoiceId)));
+  if (canDelete) await expect(deletion).resolves.toBeDefined();
+  else await expect(deletion).rejects.toMatchObject({ cause: { code: '23514', message: 'PROCESSING_FEE_ACCOUNTING_PENDING' } });
+});
+
+import {upsertConnection} from '../../services/accounting/accountingConnectionService';

@@ -8,6 +8,7 @@ import { InvoiceServiceError } from '../invoiceTypes';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { quoteProcessingFee } from './processingFee';
+import { prospectiveFeeText } from './feeDisclosure';
 export const CURRENT_AUTOPAY_CONSENT_VERSION='2026-10-01.v1';
 export const AUTOPAY_CONSENT_TEXT:Record<string,{card:string;us_bank_account:string}>={
  '2026-10-01.v1':{
@@ -41,8 +42,7 @@ export async function buildAutopayDisclosure(db:Tx,orgId:string,methodType:Autop
   orgBillingRegion:row.org.billingAddressRegion,cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value,
   feeAttested:settings.feeAttested});
  const bps=quote.appliedBps??0;
- const feeText=quote.kind==='card_percent'?`A credit-card processing fee of up to ${bps/100}% applies. Debit and prepaid cards have no fee.`:
-  quote.kind==='ach_flat'?`Each bank payment includes a ${row.org.currencyCode} ${quote.feeAmount} processing fee.`:'No processing fee applies.';
+ const feeText=prospectiveFeeText(quote,row.org.currencyCode);
  const feeTerms={methodType,cardFeeBps:methodType==='card'?bps:0,achFeeAmount:methodType==='us_bank_account'?quote.feeAmount:'0.00',
   feeAttested:settings.feeAttested,currency:row.org.currencyCode};
  const version=CURRENT_AUTOPAY_CONSENT_VERSION;

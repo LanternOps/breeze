@@ -26,7 +26,7 @@ export async function prepareAutopayCapture(input:SetupInput,source:AutopaySetup
   if(!org||org.deletedAt||!['active','trial'].includes(org.status))throw new InvoiceServiceError('Organization unavailable',404,'ORG_NOT_FOUND');
   if(!await isAutopayEnabledForPartner(db,org.partnerId))throw new InvoiceServiceError('Automatic payments unavailable',404,'INVALID_STATE');
   const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,org.id)).limit(1).for('update');
-  if(!enrollment||!['requested','active'].includes(enrollment.status))throw new InvoiceServiceError('Request automatic payments first',409,'INVALID_STATE');
+  if(!enrollment||(!['requested','active'].includes(enrollment.status)&&!(enrollment.status==='paused'&&enrollment.pausedAt&&input.tokenId&&source==='setup_page')))throw new InvoiceServiceError('Request automatic payments first',409,'INVALID_STATE');
   const ready=await getAutopayStripeReadiness(db,org.partnerId);
   // W01 readiness owns the supported-country allowlist and capability checks.
   if(!ready.ready||ready.stripeAccountId!==enrollment.stripeAccountId)throw new InvoiceServiceError('Stripe account is not ready',409,'INVALID_STATE');
@@ -120,7 +120,7 @@ export async function createAutopaySetupSession(input:SetupInput):Promise<{url:s
  if(!session.url)throw new InvoiceServiceError('Stripe returned no setup URL',500,'STRIPE_NO_URL');
  const valid=await withSystemDbAccessContext(async()=>{
   const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id,attempt.enrollmentId)).limit(1);
-  return enrollment&&enrollment.generation===attempt.generation&&['requested','active'].includes(enrollment.status)&&
+  return enrollment&&enrollment.generation===attempt.generation&&(['requested','active'].includes(enrollment.status)||(enrollment.status==='paused'&&!!enrollment.pausedAt&&attempt.createdAt>enrollment.pausedAt))&&
    await isAutopayEnabledForPartner(db,attempt.partnerId);
  });
  if(!valid)throw new InvoiceServiceError('Automatic payment setup was cancelled',409,'INVALID_STATE');

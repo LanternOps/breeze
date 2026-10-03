@@ -50,6 +50,22 @@ async function gotoDocumentsTab() {
 }
 
 describe('PartnerBillingSettingsPage', () => {
+it('mounts fee settings in the real Payments tab',async()=>{
+  fetchMock.mockImplementation(async path=>json(String(path).endsWith('/payment-settings')?feeView():
+    {currencyCode:'USD',invoiceNumberPrefix:'INV',invoiceTermsDays:30}));
+  renderPage();await selectTab('payments');
+  expect(await screen.findByTestId('autopay-fee-settings-page')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-fees')).toBeInTheDocument();
+  expect(screen.getByTestId('autopay-attest-notified')).toBeInTheDocument();
+});
+it('keeps the Payments tab but hides fees when rollout is off',async()=>{
+  fetchMock.mockImplementation(async path=>json(String(path).endsWith('/payment-settings')?feeView(false):
+    {currencyCode:'USD',invoiceNumberPrefix:'INV',invoiceTermsDays:30}));
+  renderPage();await selectTab('payments');
+  await screen.findByTestId('autopay-settings-save');
+  expect(screen.queryByTestId('autopay-fees')).toBeNull();
+});
+
 it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEnabled => {
   const fields = {
     autopayOffsetDays: { value: 0, source: 'default' }, autopayOffsetRule: { value: 'later', source: 'default' },
@@ -493,3 +509,13 @@ it.each([false, true])('mounts Payments when autopayEnabled=%s', async autopayEn
     });
   });
 });
+
+function feeView(enabled=true){
+  const effective={autopayOffsetDays:{value:0,source:'default'},autopayOffsetRule:{value:'later',source:'default'},
+    autopayCap:{value:{enabled:false},source:'default'},achMode:{value:'ach_preferred',source:'default'},
+    cardFeeBps:{value:300,source:'partner'},achFeeAmount:{value:'2.50',source:'partner'},feeAttested:true,
+    remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
+    reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'}};
+  return {autopayEnabled:enabled,effective,inherited:effective,values:{autopayOffsetDays:null,autopayOffsetRule:null,
+    autopayCapEnabled:null,autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null}};
+}

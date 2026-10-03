@@ -1,3 +1,5 @@
+vi.mock('./accountingFeeAbandonment',()=>({abandonAccountingFees:vi.fn().mockResolvedValue(undefined)}));
+import {abandonAccountingFees} from './accountingFeeAbandonment';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -872,6 +874,8 @@ describe('accountingConnectionService', () => {
         defaultTaxCodeRef: null,
         defaultExemptTaxCodeRef: null,
         defaultPaymentAccountRef: null,
+        feeIncomeItemRef: null,
+        feeIncomeAccountRef: null,
         updatedAt: expect.any(Date),
       });
     });
@@ -1038,6 +1042,7 @@ describe('owed QuickBooks payment deletes on disconnect / realm change (review w
 
       const result = await deleteConnection(db, 'p1', 'quickbooks');
 
+      expect(abandonAccountingFees).toHaveBeenCalledWith(db,'p1','c1');
       expect(result.removed).toBe(true); // the disconnect is NEVER blocked
       expect(result.owedPaymentDeletes).toEqual({ count: 2, remoteEntityIds: ['181/145', '182/146'] });
       expect(warn).toHaveBeenCalledWith(
@@ -1410,4 +1415,19 @@ describe('pending_tenant (Xero W02)', () => {
     expect(err).not.toBeInstanceOf(AccountingTenantHeldError);
     expect(err).toBe(violation);
   });
+});
+
+it('round-trips income refs and preserves them on a token-only reconnect',async()=>{
+  const captured:{row?:any;insertValues?:any;updateSet?:any}={};
+  const dbc=makeMockDb(captured);
+  const {upsertConnection,mapConnection}=await import('./accountingConnectionService');
+  const result=await upsertConnection(dbc,'11111111-1111-4111-8111-111111111111','quickbooks',{
+    feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null});
+  expect(result).toMatchObject({feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null});
+  expect(captured.insertValues).toMatchObject({feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null});
+  expect(captured.updateSet).toMatchObject({feeIncomeItemRef:'fee-item',feeIncomeAccountRef:null});
+  await upsertConnection(dbc,'11111111-1111-4111-8111-111111111111','quickbooks',{});
+  expect(captured.updateSet).not.toHaveProperty('feeIncomeItemRef');
+  expect(captured.updateSet).not.toHaveProperty('feeIncomeAccountRef');
+  expect(mapConnection(ambientConnectionRow() as never)).toMatchObject({feeIncomeItemRef:null,feeIncomeAccountRef:null});
 });

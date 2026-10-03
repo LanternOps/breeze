@@ -24,7 +24,7 @@ describe('enrollment lifecycle',()=>{
 const h = vi.hoisted(() => ({ lockInvoices: vi.fn(), stopSchedules: vi.fn(), rows: [] as unknown[][], calls: [] as {op:string;value:unknown}[], enqueue: vi.fn(), mint: vi.fn(), revoke: vi.fn(), gate: vi.fn(), readiness: vi.fn(), method: vi.fn(), after: vi.fn(), resolve: vi.fn(), staff: vi.fn(), staffEmail: vi.fn(), achMode: 'ach_preferred' as 'ach_preferred'|'ach_only'|'card_only' }));
 vi.mock('../../db', () => {
  const chain: Record<string, unknown> = {};
- for (const op of ['select','from','where','limit','for','update','set','returning','insert','values']) {
+ for (const op of ['select','from','innerJoin','where','limit','for','update','set','returning','insert','values']) {
   chain[op] = (value:unknown) => { h.calls.push({op,value}); return chain; };
  }
  chain.then = (resolve:(rows:unknown[])=>unknown) => Promise.resolve(h.rows.shift() ?? []).then(resolve);
@@ -59,7 +59,7 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue([]);h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue([]);h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
   h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}]);
@@ -205,4 +205,26 @@ it('protects the pending Stop disclosure outside a custom notice body',async()=>
   expect(body).toContain('Replacement body only');expect(body).toContain('invoice INV-1 is being cancelled');
   expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
  }
+});
+
+it.each(['active','paused'])('reauthorizes %s once without changing enrollment or schedules',async status=>{
+ const current={...enrollment,status,stripeAccountId:'acct_test',stripeConnectionId:'connection'};
+ h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[]);
+ noticeRows('autopay_request');
+ expect(await requestAutopay(db,actor,{orgIds:[orgId,orgId],mode:'reauthorize'})).toEqual({requested:[orgId],skipped:[]});
+ expect(h.calls.some(c=>c.op==='update'||c.op==='insert')).toBe(false);
+ expect(h.revoke).not.toHaveBeenCalled();
+ expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
+ expect(h.mint).toHaveBeenCalledWith(db,expect.objectContaining({purpose:'enroll',generation:9}));
+ const queued=h.enqueue.mock.calls[0]![1];
+ expect(queued.kind).toBe('autopay_request');expect(queued.dedupeKey).toContain('reauthorize');
+ for(const body of [queued.rendered.html,queued.rendered.text]){
+  expect(body).toContain('Replacement body only');
+  expect(body).toContain('Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms');
+  expect(body).toContain('credit-card processing fee');expect(body).toContain('server-token/enroll');
+ }
+ h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);
+ await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
+ expect(h.enqueue).toHaveBeenCalledTimes(1);
+ expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
 });

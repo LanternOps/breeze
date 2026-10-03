@@ -1740,6 +1740,7 @@ export async function cascadeDeleteOrg(
         : table === 'backup_snapshots'
         ? await deleteBackupSnapshotsCascadeStep(orgId)
         : await dbModule.withSystemDbAccessContext(async () => {
+            if(table==='invoice_stripe_payments')await dbModule.db.execute(sql`SET LOCAL breeze.tenant_erasure = '1'`);
             const isAuditAdmin = AUDIT_ADMIN_REQUIRED_TABLES.has(table);
             if (isAuditAdmin) {
               // Two-layer bypass for audit_logs DELETE — same pattern as

@@ -561,7 +561,7 @@ it('mounts org reminders independently of enrollment rollout', async () => {
   fetchMock.mockImplementation(async url => {
     if (String(url).endsWith('/billing/payment-settings')) return json({
       effective: fields, inherited: fields, autopayEnabled: false,
-      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null },
+      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
     });
     if (url === '/billing-profiles') return json({ profiles: [] });
     return json({ id: '11111111-1111-4111-8111-111111111111', currencyCode: 'USD', billingContact: null });
@@ -580,6 +580,7 @@ describe('OrgBillingSettings reminder Save integration', () => {
       autopayOffsetRule: { value: 'later', source: 'default' },
       autopayCap: { value: { enabled: false }, source: 'default' },
       achMode: { value: 'ach_preferred', source: 'default' },
+      cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
       remindersEnabled: { value: false, source: 'default' },
       reminderBeforeDueDays: { value: 5, source: 'partner' },
       reminderRepeatDays: { value: null, source: 'default' },
@@ -589,7 +590,7 @@ describe('OrgBillingSettings reminder Save integration', () => {
       if (String(url).endsWith('/billing/payment-settings')) return json({
         autopayEnabled: false, effective: fields, inherited: fields,
         values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
-          autopayCapAmount: null, autopayCapCurrency: null, achMode: null },
+          autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
       });
       if (url === '/billing-profiles') return json({ profiles: [] });
       if (url === '/billing-profiles/work-types') return json({ workTypes: [] });
@@ -624,4 +625,23 @@ describe('OrgBillingSettings reminder Save integration', () => {
     fireEvent.click(screen.getByTestId('org-billing-save'));
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method)).toHaveLength(0);
   });
+});
+
+function feeView(enabled=true){
+  const effective={autopayOffsetDays:{value:0,source:'default'},autopayOffsetRule:{value:'later',source:'default'},
+    autopayCap:{value:{enabled:false},source:'default'},achMode:{value:'ach_preferred',source:'default'},
+    cardFeeBps:{value:300,source:'partner'},achFeeAmount:{value:'2.50',source:'partner'},feeAttested:true,
+    remindersEnabled:{value:false,source:'default'},reminderBeforeDueDays:{value:3,source:'default'},
+    reminderRepeatDays:{value:null,source:'default'},overdueReminderEveryDays:{value:7,source:'default'}};
+  return {autopayEnabled:enabled,effective,inherited:effective,values:{autopayOffsetDays:null,autopayOffsetRule:null,
+    autopayCapEnabled:null,autopayCapAmount:null,autopayCapCurrency:null,achMode:null,cardFeeBps:null,achFeeAmount:null}};
+}
+
+it('mounts inherited fees without partner attestation in the org page',async()=>{
+  fetchMock.mockImplementation(async path=>String(path).endsWith('/payment-settings')?json(feeView()):
+    String(path).endsWith('/autopay')?json({status:'not_requested',method:null}):orgPayload());
+  render(<OrgBillingSettings orgId="11111111-1111-4111-8111-111111111111"/>);
+  expect(await screen.findByTestId('autopay-org-fee-settings-page')).toBeInTheDocument();
+  expect(await screen.findByTestId('autopay-card-fee-bps')).toHaveAttribute('placeholder','300');
+  expect(screen.queryByTestId('autopay-attest-notified')).toBeNull();
 });

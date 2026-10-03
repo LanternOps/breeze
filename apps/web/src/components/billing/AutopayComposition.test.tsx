@@ -9,6 +9,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./BillingRatesTab', () => ({ default: () => null }));
 vi.mock('./BillingConnectionsTab', () => ({ default: () => null }));
 const resolved = {
+  cardFeeBps:{value:0,source:'default'},achFeeAmount:{value:'0.00',source:'default'},feeAttested:false,
   remindersEnabled: { value: false, source: 'default' },
   reminderBeforeDueDays: { value: 3, source: 'default' },
   reminderRepeatDays: { value: null, source: 'default' },

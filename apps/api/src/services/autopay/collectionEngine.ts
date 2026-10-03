@@ -1,3 +1,4 @@
+import { hasSupportedCardEvidence } from './feeDisclosure';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { parseAutopayTerms } from '@breeze/shared';
 import { resolveAttemptProvenance } from './attemptProvenance';
@@ -28,6 +29,7 @@ import { isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
+import { acceptedCollectionFee, clampNoticedFee, collectionFeePolicyChanged } from './collectionFee';
 import { noticeLeadDays, computeCollectOn, closeSettledAutopaySchedules } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 export type CollectionInput = { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string };
@@ -39,7 +41,6 @@ export function collectionNoticeAllows(sentAt: Date | null, lead: number, now: D
 
 const defer = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'deferred', reason });
 const refuse = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'refused', reason });
-const CARD_NETWORKS = new Set(['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'cartes_bancaires']);
 type Method = typeof orgPaymentMethods.$inferSelect;
 type Enrollment = typeof orgAutopayEnrollments.$inferSelect;
 
@@ -52,10 +53,7 @@ function admittedMethod(live: Stripe.PaymentMethod, method: Method, enrollment: 
     return !!live.us_bank_account && live.us_bank_account.account_holder_type === method.accountHolderType;
   }
   const card = live.card;
-  return !!card && card.wallet?.type !== 'link' && CARD_NETWORKS.has(card.brand)
-    && !!card.networks?.available.length && card.networks.available.every(network => CARD_NETWORKS.has(network))
-    && (!card.networks.preferred || CARD_NETWORKS.has(card.networks.preferred))
-    && card.funding === method.cardFunding;
+  return !!card && hasSupportedCardEvidence(card) && card.funding === method.cardFunding;
 }
 
 async function prepareMethodAdmission(invoiceId: string) {
@@ -186,14 +184,19 @@ export async function reserveCollection(input: CollectionInput)
       toMinorUnits(terms.principal, invoice.currencyCode)) : toMinorUnits(locked.unreservedBalance, invoice.currencyCode);
     const principal = fromMinorUnits(principalMinor, invoice.currencyCode);
     if (principalMinor <= 0) return refuse('nothing_to_pay');
-    const quote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
+    const lawfulQuote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
       principal, currency: invoice.currencyCode, stripeAccountCountry: readiness.accountCountry,
       orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
       cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value, feeAttested: settings.feeAttested });
+    const quote = input.initiatedBy === 'client_on_session' ? lawfulQuote : await acceptedCollectionFee(db, {
+      orgId:invoice.orgId,partnerId:invoice.partnerId,enrollmentId:enrollment.id,generation:enrollment.generation,
+      methodId:method.id,methodType:method.type,principal,currency:invoice.currencyCode,quote:lawfulQuote,
+    });
+    if (!quote) return refuse('consent_required');
     if (terms && (terms.methodType !== method.type || terms.noticeLeadDays !== noticeLeadDays(method)
       || terms.methodId !== method.id || terms.accountHolderType !== method.accountHolderType
-      || terms.cardFeeBps !== settings.cardFeeBps.value || terms.achFeeAmount !== settings.achFeeAmount.value
-      || toMinorUnits(quote.feeAmount, invoice.currencyCode) > toMinorUnits(terms.feeAmount, invoice.currencyCode))) {
+      || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, quote)
+      || toMinorUnits(quote.feeAmount, invoice.currencyCode) !== toMinorUnits(terms.feeAmount, invoice.currencyCode))) {
       const collectOn = computeCollectOn({ issueDate: invoice.issueDate!, dueDate: invoice.dueDate!,
         offsetDays: terms.offsetDays, rule: terms.rule, noticeDate: new Date().toISOString().slice(0,10),
         leadDays: noticeLeadDays(method) });
@@ -226,8 +229,8 @@ export async function reserveCollection(input: CollectionInput)
         || frozen.enrollmentGeneration !== enrollment.generation) return defer('notice_lead');
     }
     if (schedule?.state === 'retry_scheduled' && schedule.nextAttemptAt && schedule.nextAttemptAt > new Date()) return defer('retry_not_due');
-    const feeMinor = Math.min(toMinorUnits(quote.feeAmount, invoice.currencyCode),
-      terms ? toMinorUnits(terms.feeAmount, invoice.currencyCode) : Number.MAX_SAFE_INTEGER);
+    const feeAmount = clampNoticedFee(quote, invoice.currencyCode, terms?.feeAmount);
+    const feeMinor = toMinorUnits(feeAmount, invoice.currencyCode);
     const authority = input.initiatedBy === 'client_on_session' ? getClientPaymentAuthority() : undefined;
     let clientSetup: typeof autopaySetupAttempts.$inferSelect | undefined;
     if (input.initiatedBy === 'client_on_session') {
@@ -266,7 +269,7 @@ export async function reserveCollection(input: CollectionInput)
     const [attempt] = await db.insert(invoiceCollectionAttempts).values({ orgId: invoice.orgId,
       invoiceId: invoice.id, scheduleId: schedule?.id ?? null, attemptNo, paymentMethodId: method.id,
       idempotencyKey: clientSetup ? `autopay-bankpay:${clientSetup.id}` : schedule ? `autopay_${schedule.id}_${attemptNo}` : `autopay_client_${invoice.id}_${attemptNo}`,
-      principalAmount: principal, feeAmount: fromMinorUnits(feeMinor, invoice.currencyCode),
+      principalAmount: principal, feeAmount,
       currency: invoice.currencyCode, state: 'reserved', initiatedBy: input.initiatedBy }).returning();
     if (schedule) await db.update(invoiceAutopaySchedules).set({ state: 'collecting', attemptCount: attemptNo })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
@@ -567,25 +570,34 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
     const [org] = await db.select().from(organizations).where(eq(organizations.id, locked.invoice.orgId)).limit(1);
     if (!org || org.partnerId !== locked.invoice.partnerId || org.deletedAt || !['active','trial'].includes(org.status)) return cancel('authority_changed');
     const terms = attempt.scheduleId && schedule ? parseAutopayTerms(schedule.termsSnapshot) : undefined;
-    const quote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
+    const lawfulQuote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
       principal: attempt.principalAmount, currency: attempt.currency, stripeAccountCountry: readiness.accountCountry,
       orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
       cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value, feeAttested: settings.feeAttested });
+    const quote = attempt.initiatedBy === 'client_on_session' ? lawfulQuote : await acceptedCollectionFee(db, {
+      orgId:locked.invoice.orgId,partnerId:locked.invoice.partnerId,enrollmentId:enrollment.id,generation:enrollment.generation,
+      methodId:method.id,methodType:method.type,principal:attempt.principalAmount,currency:attempt.currency,quote:lawfulQuote,
+    });
+    if (!quote) return cancel('authority_changed');
     const changed = !terms ? (pi.metadata.authority_generation !== String(enrollment.generation)
       || pi.metadata.authority_customer !== enrollment.stripeCustomerId
       || pi.metadata.authority_method !== method.stripePaymentMethodId
       || pi.metadata.authority_holder !== (method.accountHolderType ?? '')
       || pi.metadata.authority_funding !== (method.cardFunding ?? '')
-      || pi.metadata.authority_card_fee_bps !== String(settings.cardFeeBps.value)
-      || pi.metadata.authority_ach_fee !== settings.achFeeAmount.value)
+      // Other-rail fee metadata may be absent on older intents and cannot invalidate this charge.
+      || (method.type === 'card' && pi.metadata.authority_card_fee_bps !== String(settings.cardFeeBps.value))
+      || (method.type === 'us_bank_account' && pi.metadata.authority_ach_fee !== settings.achFeeAmount.value))
       : terms.methodId !== method.id || terms.methodType !== method.type
         || terms.accountHolderType !== method.accountHolderType || terms.noticeLeadDays !== noticeLeadDays(method)
-        || terms.cardFeeBps !== settings.cardFeeBps.value || terms.achFeeAmount !== settings.achFeeAmount.value
+        || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, quote)
         || terms.currency !== attempt.currency
         || toMinorUnits(attempt.principalAmount, attempt.currency) > toMinorUnits(terms.principal, attempt.currency)
         || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(terms.feeAmount, attempt.currency)
         || !collectionNoticeAllows(schedule!.noticeSentAt, terms.noticeLeadDays, new Date());
-    if (changed || toMinorUnits(attempt.feeAmount, attempt.currency) > toMinorUnits(quote.feeAmount, attempt.currency)) {
+    const currentFee = toMinorUnits(quote.feeAmount, attempt.currency);
+    const reservedFee = toMinorUnits(attempt.feeAmount, attempt.currency);
+    if (changed || reservedFee > currentFee
+      || (terms && reservedFee !== toMinorUnits(clampNoticedFee(quote, attempt.currency, terms.feeAmount), attempt.currency))) {
       return cancel('renotice_required');
     }
     await db.update(invoiceCollectionAttempts).set({ state: 'confirming', updatedAt: new Date() })
@@ -955,10 +967,18 @@ async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
   if (!org || !terms || !invoice.issueDate || !invoice.dueDate) throw new Error('Re-notice authority missing');
   const principal = fromMinorUnits(Math.min(toMinorUnits(invoice.balance, invoice.currencyCode),
     toMinorUnits(terms.principal, invoice.currencyCode)), invoice.currencyCode);
-  const quote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
+  const lawfulQuote = quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
     principal, currency: invoice.currencyCode, stripeAccountCountry: readiness.accountCountry,
     orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
     cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value, feeAttested: settings.feeAttested });
+  const quote = await acceptedCollectionFee(db, {orgId:invoice.orgId,partnerId:invoice.partnerId,
+    enrollmentId:schedule.enrollmentId!,generation:schedule.enrollmentGeneration,methodId:method.id,methodType:method.type,
+    principal,currency:invoice.currencyCode,quote:lawfulQuote});
+  if (!quote) {
+    await db.update(invoiceAutopaySchedules).set({state:'cancelled',stateReason:'authority_changed',nextAttemptAt:null})
+      .where(eq(invoiceAutopaySchedules.id,schedule.id));
+    return;
+  }
   const collectOn = computeCollectOn({ issueDate: invoice.issueDate, dueDate: invoice.dueDate,
     offsetDays: terms.offsetDays, rule: terms.rule, noticeDate: new Date().toISOString().slice(0, 10), leadDays: noticeLeadDays(method) });
   await db.update(invoiceAutopaySchedules).set({ state: 'awaiting_notice', stateReason: 'renotice_required',

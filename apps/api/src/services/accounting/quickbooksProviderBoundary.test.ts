@@ -179,6 +179,11 @@ describe('QuickbooksProvider boundary covers every public async method', () => {
       marker: 'Breeze payment 11111111-1111-1111-1111-111111111111', pushGeneration: 0,
     }),
     deletePayment: (p) => p.deletePayment(conn(), { remotePaymentId: '900', remoteVersion: '0' }),
+    postFeeEntry: (p) => p.postFeeEntry(conn(), {
+      operationId: '75c63cda-0d5c-41dc-978b-97efdd340abf', remoteCustomerId: 'customer-1', amount: '1.50',
+      currencyCode: 'USD', txnDate: '2026-10-01', direction: 'receipt', incomeRef: 'fee-item',
+      bankAccountRef: 'bank-1', exemptTaxCodeRef: null, firstSubmittedAt: new Date().toISOString(),
+    }),
     reconcileChanges: (p) => p.reconcileChanges(conn(), null),
   };
 
@@ -195,7 +200,7 @@ describe('QuickbooksProvider boundary covers every public async method', () => {
       return typeof fn === 'function' && fn.constructor.name === 'AsyncFunction';
     });
     expect(reflected.sort()).toEqual(Object.keys(CALLS).sort());
-    expect(Object.keys(CALLS)).toHaveLength(13);
+    expect(Object.keys(CALLS)).toHaveLength(14);
   });
 
   it.each(Object.keys(CALLS))('%s(): a 400 QBO fault rejects as an AccountingProviderError', async (method) => {

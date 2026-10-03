@@ -11,6 +11,8 @@ import { getAutopayMethod } from './paymentMethods';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { quoteProcessingFee } from './processingFee';
 import { completeAutopaySetup } from './enrollmentService';
+import { verifiedFeeText } from './feeDisclosure';
+import { autopayConsentSnapshotSchema } from './types';
 export interface AutopayIdentity {orgId:string;partnerId:string;tokenId?:string;enrollmentId?:string;generation?:number}
 declare module 'hono' { interface ContextVariableMap {autopayIdentity:AutopayIdentity;autopayPartnerId:string} }
 const scoped=<T>(fn:()=>Promise<T>)=>runOutsideDbContext(()=>withSystemDbAccessContext(fn));
@@ -109,13 +111,17 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
 export async function completeOwnedAutopaySetup(identity:AutopayIdentity,checkoutSessionId:string):Promise<AutopaySetupResult>{
   const owned=await scoped(()=>findOwnedSetup(identity,checkoutSessionId));
   if(!owned)throw new HTTPException(404,{message:'Setup session not found'});
-  const result=await completeAutopaySetup(identity.partnerId,{checkoutSessionId});
+  let methodLabel:string|null=null;
+  let feeText='No usable payment method confirmed.';
+  const result=await completeAutopaySetup(identity.partnerId,{checkoutSessionId},method=>{
+    methodLabel=method.type==='card'
+      ?`${method.card?.brand??'Card'} ${method.card?.funding??'unknown'} ••${method.card?.last4??'----'}`
+      :`${method.us_bank_account?.bank_name??'Bank account'} ••${method.us_bank_account?.last4??'----'}`;
+    // Confirmation describes this setup's accepted terms, never newer settings.
+    const snapshot=autopayConsentSnapshotSchema.safeParse(owned.consentSnapshot);
+    feeText=verifiedFeeText(method.type,method.card?.funding??null,
+      snapshot.success?snapshot.data.feeText:'No processing fee applies.',method.card);
+  });
   if(result.orgId!==identity.orgId)throw new Error('Setup ownership invariant violated');
-  const page=await getAutopayCustomerPage(identity.orgId),method=page.method;
-  const methodLabel=!method?null:method.type==='card'
-    ?`${method.cardBrand??'Card'} ${method.cardFunding??'unknown'} ••${method.cardLast4??'----'}`
-    :`${method.bankName??'Bank account'} ••${method.bankLast4??'----'}`;
-  const feeText=method?.type==='card'&&method.cardFunding!=='credit'?'No fee applies.':
-    method?.type==='us_bank_account'?page.fees.us_bank_account.text:page.fees.card.text;
   return {...result,methodLabel,feeText};
 }

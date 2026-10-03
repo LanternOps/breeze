@@ -82,7 +82,7 @@ import { reconcilePendingControls, requestInvoiceControl } from './collectionCon
 import { db, withSystemDbAccessContext } from '../../db';
 import { computeCollectOn } from './scheduler';
 import { billingNoticeOutbox, invoices, invoiceStripePayments, orgAutopayEnrollments,
-  invoiceAutopaySchedules, invoiceLines, organizations, invoiceCollectionAttempts, orgPaymentMethods, partners, billingLinkTokens } from '../../db/schema';
+  invoiceAutopaySchedules, invoiceLines, organizations, invoiceCollectionAttempts, orgPaymentMethods, partners, billingLinkTokens, orgAutopayConsents } from '../../db/schema';
 import type { AutopayTerms } from './chargingNotice';
 
 const invoice = { id: '10000000-0000-4000-8000-000000000001', orgId: '20000000-0000-4000-8000-000000000001',
@@ -117,6 +117,7 @@ beforeEach(() => {
   h.beforeRead.mockReset();
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
   for (const [table, rows] of [[invoices, [invoice]], [orgAutopayEnrollments, [enrollment]],
+    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:true,cardFeeBps:300,achFeeAmount:'0.00'}}]],
     [invoiceStripePayments, []], [invoiceCollectionAttempts, []], [partners, [{ id: invoice.partnerId }]], [invoiceAutopaySchedules, [schedule]], [invoiceLines, []],
     [billingNoticeOutbox, [outbox]], [organizations, [{ id: invoice.orgId, partnerId: invoice.partnerId, status:'active',deletedAt:null,
       billingAddressCountry: 'US', billingAddressRegion: 'NY' }]]] as const) h.rows.set(table, structuredClone([...rows]));
@@ -190,10 +191,12 @@ it('defers when another attempt already reserves money', async () => {
   h.reserved = '1.00';
   await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'collection_in_progress' }); expect(attempts()).toEqual([]);
 });
-it.each(['wallet', 'network', 'unknown-brand', 'missing-networks', 'wrong-customer', 'wrong-pm'])(
+it.each(['wallet', 'missing-wallet', 'unknown-wallet', 'network', 'unknown-brand', 'missing-networks', 'wrong-customer', 'wrong-pm'])(
   'fails closed on live %s evidence despite a stored Visa brand', async change => {
     const live: any = structuredClone(card);
     if (change === 'wallet') live.card.wallet = { type: 'link' };
+    if (change === 'missing-wallet') live.card.wallet = undefined;
+    if (change === 'unknown-wallet') live.card.wallet = { type: 'unknown' };
     if (change === 'network') live.card.networks.available = ['unknown'];
     if (change === 'unknown-brand') live.card.brand = 'unknown';
     if (change === 'missing-networks') live.card.networks = null;
@@ -229,7 +232,7 @@ it.each(['method', 'customer', 'generation', 'account', 'funding'])('rechecks %s
 });
 it.each(['method', 'holder', 'fee'])('re-notices changed %s terms', async change => {
   const changed = { ...terms, ...(change === 'method' ? { methodId: 'old-method' }
-    : change === 'holder' ? { accountHolderType: 'company' } : { cardFeeBps: 200 }) };
+    : change === 'holder' ? { accountHolderType: 'company' } : { cardFeeBps: 200,feeAmount:'2.00' }) };
   update(invoiceAutopaySchedules, { termsSnapshot: changed });
   await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'renotice_required' });
   expect(attempts()).toEqual([]); expect(h.notice).toHaveBeenCalledOnce();
@@ -246,7 +249,9 @@ it.each([
   ['USD', '150.00', '100.00', '3.00'], ['JPY', '100.00', '100.00', '0.00'],
 ])('reserves exact %s minor units from %s', async (currency, balance, principal, fee) => {
   h.balance = balance; update(invoices, { currencyCode: currency });
-  update(invoiceAutopaySchedules, { termsSnapshot: { ...terms, currency } });
+  update(orgAutopayConsents,{feeTerms:{methodType:'card',currency,cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true}});
+  update(invoiceAutopaySchedules, { termsSnapshot: { ...terms, currency,feeAmount:fee,feeKind:fee==='0.00'?'none':'card_percent' } });
+  update(billingNoticeOutbox,{rendered:{frozen:{...outbox.rendered.frozen,fee}}});
   await expect(reserveCollection(input)).resolves.toMatchObject({ attempt: { principalAmount: principal, feeAmount: fee } });
 });
 it('allocates client ordinals across all invoice attempts', async () => {
@@ -269,6 +274,7 @@ it.each(['EUR', 'USD'])('refuses unsupported ACH currency or unknown holder (%s)
 it('uses elapsed individual ACH lead on the scheduled day and preserves selection until the later eligible tick', async () => {
   const bank = { ...method, type: 'us_bank_account', accountHolderType: 'individual', cardFunding: null };
   h.method.mockResolvedValue(bank);
+  update(orgAutopayConsents,{feeTerms:{methodType:'us_bank_account',currency:'USD',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true}});
   h.retrieve.mockResolvedValue({ id: 'pm_test', customer: 'cus_test', type: 'us_bank_account',
     us_bank_account: { account_holder_type: 'individual' } });
   const collectOn = computeCollectOn({ issueDate: invoice.issueDate, dueDate: invoice.dueDate,
@@ -323,6 +329,43 @@ function recovery(mapped = false) {
   });
 }
 const currentAttempt = () => h.rows.get(invoiceCollectionAttempts)![0];
+it.each(['ach changed', 'ach absent', 'card changed'] as const)(
+  'scopes unscheduled card recovery authority to the card fee: %s', async change => {
+    recovery();
+    h.rows.set(invoiceAutopaySchedules, []);
+    update(invoiceCollectionAttempts, { scheduleId: null, feeAmount: '1.00' });
+    update(orgAutopayConsents, { feeTerms: { methodType: 'card', currency: 'USD',
+      cardFeeBps: 100, achFeeAmount: '0.00', feeAttested: true } });
+    h.create.mockImplementationOnce(async params => {
+      expect(h.depth).toBe(0);
+      const remote = { ...pi, amount: params.amount, metadata: { ...params.metadata } };
+      if (change === 'ach absent') delete remote.metadata.authority_ach_fee;
+      h.settings.mockResolvedValue({ cardFeeBps: { value: change === 'card changed' ? 200 : 300 },
+        achFeeAmount: { value: '2.50' }, feeAttested: true });
+      h.piRetrieve.mockResolvedValue(remote);
+      h.confirm.mockImplementation(async () => {
+        expect(h.depth).toBe(0);
+        const confirmed = { ...remote, status: 'processing' };
+        h.piRetrieve.mockResolvedValue(confirmed);
+        return confirmed;
+      });
+      h.cancel.mockResolvedValue({ ...remote, status: 'canceled' });
+      return remote;
+    });
+    await resumeCollectionAttempt(attempt.id);
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ amount: 10100,
+      metadata: expect.objectContaining({ authority_card_fee_bps: '300' }) }), expect.anything());
+    if (change === 'card changed') {
+      // Accepted 100 bps keeps the fee at 1.00: only the authority check can cancel this.
+      expect(h.confirm).not.toHaveBeenCalled();
+      expect(h.cancel).toHaveBeenCalledOnce();
+      expect(currentAttempt().state).toBe('canceled');
+    } else {
+      expect(h.confirm).toHaveBeenCalledOnce();
+      expect(h.cancel).not.toHaveBeenCalled();
+      expect(currentAttempt().state).toBe('processing');
+    }
+  });
 it('creates unconfirmed with principal and fee metadata, never confirms before mapping', () => {
   const params = paymentIntentCreateParams({ id: '10000000-0000-4000-8000-000000000001',
     invoiceId: '20000000-0000-4000-8000-000000000001', orgId: '30000000-0000-4000-8000-000000000001',
@@ -404,7 +447,7 @@ it('refuses the wrong partner before provider retrieval', async () => {
 });
 it.each(['fee', 'holder', 'contract', 'fence', 'stop'])('cancels when %s changes during create', async change => {
   recovery(); h.create.mockImplementationOnce(async () => {
-    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 400 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
+    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 200 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
     if (change === 'holder') { h.method.mockResolvedValue({ ...method, accountHolderType: 'individual' }); update(orgPaymentMethods, { accountHolderType: 'individual' }); }
     if (change === 'contract') h.rows.set(invoiceLines, [{ id: 'excluded' }]);
     if (change === 'fence') update(invoices, { autopayExcluded: true });
@@ -563,7 +606,8 @@ it('retains pending control visibility while quarantining an unknown create', as
 
 it('cancels and re-notices a replacement rail before confirmation', async () => {
   recovery(); const replacement = { ...method, id: 'replacement-method', type: 'us_bank_account', accountHolderType: 'company' };
-  h.create.mockImplementation(async () => { h.method.mockResolvedValue(replacement); return pi; });
+  h.create.mockImplementation(async () => { h.method.mockResolvedValue(replacement);
+    update(orgAutopayConsents,{feeTerms:{methodType:replacement.type,currency:'USD',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true}}); return pi; });
   await resumeCollectionAttempt(attempt.id);
   expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'awaiting_notice',
@@ -575,6 +619,7 @@ it.each(['recovery', 'outcome'])('replays durable re-notice intent after interru
   recovery(true);
   const replacement = { ...method, id: 'replacement-method', type: 'us_bank_account', accountHolderType: 'company' };
   h.method.mockResolvedValue(replacement);
+  update(orgAutopayConsents,{feeTerms:{methodType:replacement.type,currency:'USD',cardFeeBps:300,achFeeAmount:'0.00',feeAttested:true}});
   h.cancel.mockImplementationOnce(async () => {
     expect(h.depth).toBe(0);
     h.piRetrieve.mockResolvedValue({ ...pi, status: 'canceled' });

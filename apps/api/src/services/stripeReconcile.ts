@@ -116,7 +116,7 @@ export async function recordStripePayment(
     const [mapping] = await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.id, pre.id)).limit(1).for('update');
     if (!mapping) throw new Error(`Mapping for stripe object ${input.stripeObjectId} disappeared`);
-    if (mapping.invoicePaymentId) return { kind: 'noop', invoiceId: mapping.invoiceId };
+    if (mapping.invoicePaymentId || mapping.paymentCapturedAt) return { kind: 'noop', invoiceId: mapping.invoiceId };
     if ((mapping.status === 'failed' && mapping.stripeObjectType !== 'payment_intent')
         || mapping.status === 'refunded' || mapping.status === 'disputed') {
       return { kind: 'noop', invoiceId: mapping.invoiceId };
@@ -179,7 +179,7 @@ export async function recordStripePayment(
     // Stripe retries; the tx rolls the orphan payment insert back too).
     const linked = await db.update(invoiceStripePayments)
       .set({ invoicePaymentId: payment!.id, status: 'succeeded', stripePaymentIntentId: input.stripePaymentIntentId,
-             paymentReceivedAt: receivedAt,
+             paymentReceivedAt: receivedAt, paymentCapturedAt: new Date(),
              lastEventAt: new Date(), updatedAt: new Date() })
       .where(and(eq(invoiceStripePayments.id, mapping.id), isNull(invoiceStripePayments.invoicePaymentId)))
       .returning({ id: invoiceStripePayments.id });

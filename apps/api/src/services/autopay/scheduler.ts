@@ -11,6 +11,7 @@ import { isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { getAutopayMethod } from './paymentMethods';
 import { quoteProcessingFee } from './processingFee';
+import { acceptedCollectionFee } from './collectionFee';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 type Tx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -105,7 +106,7 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
   )).where(and(eq(invoiceLines.invoiceId, invoiceId), eq(contracts.autopayExcluded, true))).limit(1);
   const cap = settings.autopayCap.value;
   const capCurrency = !cap.enabled || cap.currency.toUpperCase() === invoice.currencyCode;
-  const reason = eligibilityReason({ active: enrollment.status === 'active' && !org.deletedAt && ['active','trial'].includes(org.status),
+  let reason = eligibilityReason({ active: enrollment.status === 'active' && !org.deletedAt && ['active','trial'].includes(org.status),
     effective: !!enrollment.effectiveFrom && enrollment.effectiveFrom <= (previous ? new Date(previous.issuedAt) : invoice.updatedAt),
     methodUsable: !!method && ['active', 'pending_verification'].includes(method.status)
       && (method.type !== 'us_bank_account' || method.accountHolderType !== null),
@@ -120,11 +121,16 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
   const collectOn = computeCollectOn({ issueDate: invoice.issueDate, dueDate: invoice.dueDate,
     offsetDays: settings.autopayOffsetDays.value, rule: settings.autopayOffsetRule.value,
     noticeDate: new Date().toISOString().slice(0, 10), leadDays });
-  const fee = method ? quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
+  const lawfulFee = method ? quoteProcessingFee({ methodType: method.type, cardFunding: method.cardFunding,
     principal: invoice.balance, currency: invoice.currencyCode, stripeAccountCountry: readiness.accountCountry,
     orgBillingCountry: org.billingAddressCountry, orgBillingRegion: org.billingAddressRegion,
     cardFeeBps: settings.cardFeeBps.value, achFeeAmount: settings.achFeeAmount.value,
-    feeAttested: settings.feeAttested }) : { feeAmount: '0.00', kind: 'none' as const };
+    feeAttested: settings.feeAttested }) : null;
+  const fee = method && lawfulFee ? await acceptedCollectionFee(tx, {
+    orgId:invoice.orgId,partnerId:invoice.partnerId,enrollmentId:enrollment.id,generation:enrollment.generation,
+    methodId:method.id,methodType:method.type,principal:invoice.balance,currency:invoice.currencyCode,quote:lawfulFee,
+  }) : null;
+  if (!reason && !fee) reason = 'consent_required';
   const snapshot = method ? {
     issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), offsetDays: settings.autopayOffsetDays.value,
     rule: settings.autopayOffsetRule.value, cap, methodType: method.type, methodId: method.id,
@@ -133,8 +139,8 @@ export async function planAutopayForInvoice(tx: Tx, invoiceId: string, refresh =
       ? `${method.cardBrand ?? 'Card'} ••${method.cardLast4 ?? ''}`
       : `${method.bankName ?? 'Bank'} ••${method.bankLast4 ?? ''}`,
     accountHolderType: method.accountHolderType, noticeLeadDays: leadDays,
-    principal: invoice.balance, currency: invoice.currencyCode, feeAmount: fee.feeAmount,
-    feeKind: fee.kind, cardFeeBps: settings.cardFeeBps.value,
+    principal: invoice.balance, currency: invoice.currencyCode, feeAmount: fee?.feeAmount ?? '0.00',
+    feeKind: fee?.kind ?? 'none', cardFeeBps: settings.cardFeeBps.value,
     achFeeAmount: settings.achFeeAmount.value, chargeDate: collectOn, noticeSeq: (previous?.noticeSeq ?? 0) + 1,
   } satisfies AutopayTerms : { issuedAt: previous?.issuedAt ?? invoice.updatedAt.toISOString(), noticeSeq: 0 };
   const values = { orgId: invoice.orgId, invoiceId, enrollmentId: enrollment.id, enrollmentGeneration: enrollment.generation,
