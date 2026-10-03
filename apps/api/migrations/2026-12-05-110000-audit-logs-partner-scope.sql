@@ -51,7 +51,7 @@
 -- rows carry no reliable partner key in `details` anyway.
 --
 -- The partial index for the read branch and the VALIDATE of the CHECK live in
--- the companion `-- @no-transaction` file 2026-12-03-110700-..., because
+-- the companion `-- @no-transaction` file 2026-12-05-110100-..., because
 -- audit_logs takes an insert on every agent request and a transactional
 -- CREATE INDEX / VALIDATE would block those writes for the whole scan.
 --
