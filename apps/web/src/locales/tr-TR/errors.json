@@ -20,6 +20,11 @@
   "RACE_LOST": "Someone else already handled this request",
   "RE_ENROLLMENT_REQUIRED": "This device needs to be re-enrolled",
   "SOFTWARE_INVENTORY_LOCK_TIMEOUT": "Software inventory update is busy right now — try again shortly",
+  "TICKET_TRIAGE_DISABLED": "AI triage suggestions are turned off for this organization",
+  "TICKET_TRIAGE_UNAVAILABLE": "No AI triage suggestion is available for this ticket right now",
+  "TICKET_TRIAGE_PRIORITY_MISMATCH": "The suggested priority has changed — review it again before applying",
+  "TICKET_TRIAGE_CATEGORY_MISMATCH": "The suggested category has changed — review it again before applying",
+  "MAILBOX_RECONSENT_REQUIRED": "This mailbox needs to be reconnected to keep syncing tickets",
   "tool_source_unavailable": "Bu aracın kaynağı şu anda kullanılamıyor",
   "ai_not_configured": "Yapay zekâ bu sunucuda yapılandırılmamış. Bir yöneticinin bir model sağlayıcı anahtarı eklemesi gerekiyor."
 }

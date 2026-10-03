@@ -6,7 +6,7 @@ import { db } from '../../db';
 import { ticketParts, timeEntries } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
-import { ticketPartSchema, updateTicketPartSchema, listTimeEntriesQuerySchema } from '@breeze/shared';
+import { ticketPartSchema, updateTicketPartSchema, listTimeEntriesQuerySchema, ERROR_CODES } from '@breeze/shared';
 
 const idParam = z.object({ id: z.string().guid() });
 const partIdParam = z.object({ id: z.string().guid() });
@@ -37,7 +37,7 @@ ticketPartsRoutes.patch('/parts/:id', scopes, writePerm, zValidator('param', par
   const rows = await db.select().from(ticketParts).where(eq(ticketParts.id, c.req.valid('param').id)).limit(1);
   const part = rows[0];
   if (!part || !(await getScopedTicketOr404(auth, part.ticketId))) {
-    return c.json({ error: 'Part not found' }, 404);
+    return c.json({ error: 'Part not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   try {
     const updated = await updateTicketPart(part.id, c.req.valid('json'), timeActorFrom(c));
@@ -52,7 +52,7 @@ ticketPartsRoutes.delete('/parts/:id', scopes, writePerm, zValidator('param', pa
   const rows = await db.select().from(ticketParts).where(eq(ticketParts.id, c.req.valid('param').id)).limit(1);
   const part = rows[0];
   if (!part || !(await getScopedTicketOr404(auth, part.ticketId))) {
-    return c.json({ error: 'Part not found' }, 404);
+    return c.json({ error: 'Part not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   try {
     await deleteTicketPart(part.id, timeActorFrom(c));
@@ -65,7 +65,7 @@ ticketPartsRoutes.delete('/parts/:id', scopes, writePerm, zValidator('param', pa
 ticketPartsRoutes.get('/:id/parts', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+  if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const parts = await db.select().from(ticketParts).where(eq(ticketParts.ticketId, ticket.id));
   return c.json({ data: parts });
 });
@@ -73,7 +73,7 @@ ticketPartsRoutes.get('/:id/parts', scopes, readPerm, zValidator('param', idPara
 ticketPartsRoutes.post('/:id/parts', scopes, writePerm, zValidator('param', idParam), zValidator('json', ticketPartSchema), async (c) => {
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+  if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
   try {
     const part = await addTicketPart(ticket.id, c.req.valid('json'), timeActorFrom(c));
     return c.json({ data: part }, 201);
@@ -85,7 +85,7 @@ ticketPartsRoutes.post('/:id/parts', scopes, writePerm, zValidator('param', idPa
 ticketPartsRoutes.get('/:id/time-entries', scopes, readPerm, zValidator('param', idParam), zValidator('query', listTimeEntriesQuerySchema), async (c) => {
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+  if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const q = c.req.valid('query');
   const { entries, total } = await listTimeEntries({ ...q, ticketId: ticket.id });
   return c.json({ data: entries, total });
@@ -94,7 +94,7 @@ ticketPartsRoutes.get('/:id/time-entries', scopes, readPerm, zValidator('param',
 ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
-  if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+  if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
   const summary = await getTicketBillingSummary(ticket.id);
   // #6466: getTicketBillingSummary's billableMinutes counts every billable row
   // (COALESCE(billable_minutes, duration_minutes) FILTER (WHERE is_billable)),
