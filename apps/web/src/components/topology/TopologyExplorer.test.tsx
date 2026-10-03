@@ -141,3 +141,19 @@ it('takes diagnose and monitoring authority from the site settings, not the grap
   fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
   expect(await screen.findByTestId('topology-diagnose')).toBeDisabled();
 });
+
+it('collapses an expansion back to the base read (#7818)', async () => {
+  const initial = topologyGraphFixture();
+  const added = { ...initial.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Expanded peer' };
+  initial.frontier = [{ token: 'next', label: 'More nodes', memberCount: 1 }];
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('/expansions/')
+    ? { ...initial, nodes: [...initial.nodes, added], frontier: [] } : initial)));
+  const { container } = render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await screen.findByTestId('topology-frontier');
+  expect(screen.queryByTestId('topology-collapse')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByTestId('topology-frontier'));
+  fireEvent.click(await screen.findByTestId('topology-collapse'));
+  await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toBeNull());
+  expect(screen.queryByTestId('topology-collapse')).not.toBeInTheDocument();
+  expect(screen.getByTestId('topology-frontier')).toBeVisible();
+});

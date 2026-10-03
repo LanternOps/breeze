@@ -58,8 +58,8 @@ export type PresentationGroupOptions = {
   scopeHash: string;
   /** Canonical ids present in this response; group lists only ever name these. */
   visibleNodeIds: ReadonlySet<string>;
-  /** Frontier token focused on one canonical node (server-issued, DC:172). */
-  tokenFor: (focusNodeId: string) => string;
+  /** Server-issued expansion token for one whole group card (DC:172, #7818); never a single canonical node. */
+  tokenFor: (group: PresentationGroupRef) => string;
   maxNodes?: number;
   maxEdges?: number;
   /** Clock for neighbour-evidence expiry (tests). */
@@ -114,23 +114,71 @@ function gatewayMac(evidence: NeighborEvidenceIndex | null, route: Route): Neigh
 }
 
 /**
- * Pure grouping over complete-site inputs. Deterministic for a given input regardless
- * of row order: every list is sorted and every choice (primary parent, route owner)
- * is decided by candidate key, never by size. Decommissioned devices are removed before
- * grouping, then orphan and decommissioned nodes are placed (#7879).
+ * Retired agents (#7879): their stale memberships and routes never shape a card; a hidden
+ * (`decommissioned`) one places nothing at all. A retired agent shown as its online asset keeps
+ * its `unplaced` entry, which carries only the asset's addresses.
  */
-export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
+function withoutRetiredAgents(input: PresentationGroupInput): PresentationGroupInput {
   const decommissioned = new Set(input.decommissioned ?? []);
   const retired = new Set([...(input.retired ?? []), ...decommissioned]);
+  if (!retired.size) return input;
   const live = (row: { endpointId: string }) => !decommissioned.has(row.endpointId);
   const agentLive = (row: { endpointId: string }) => !retired.has(row.endpointId);
-  const grouped = buildCardGroups(retired.size ? { ...input, memberships: input.memberships.filter(agentLive), routes: input.routes.filter(agentLive),
-    unplaced: input.unplaced.filter(live), ...(input.inventoryPairs ? { inventoryPairs: input.inventoryPairs.filter(live) } : {}) } : input, options);
-  return placeOverviewOutliers(grouped, input, options);
+  return { ...input, memberships: input.memberships.filter(agentLive), routes: input.routes.filter(agentLive), unplaced: input.unplaced.filter(live),
+    ...(input.inventoryPairs ? { inventoryPairs: input.inventoryPairs.filter(live) } : {}) };
 }
 
-function buildCardGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
-  const { view, scopeHash, visibleNodeIds, tokenFor } = options;
+type OrphanPlacement = {
+  /** Candidate or gateway-group key → orphan ids folded into that card. */
+  folds: Map<string, string[]>;
+  /** `orphan|<class>|<prefix>` → evidenced non-LAN orphans that form a memberless card of their class. */
+  byClass: Map<string, { networkClass: TopologyNetworkClass; prefix: string; ids: string[] }>;
+  unevidenced: string[];
+};
+/**
+ * Orphan placement (#7879). An orphan network folds into the card with its prefix (card
+ * order: LAN keys first, then the rest, so the smallest LAN key); an orphan gateway into the
+ * gateway group with its next hop — never a link-local one, which is per observer (D:82).
+ * Unfolded: no current evidence → hidden; evidenced non-LAN → a card of its class; evidenced
+ * LAN network or gateway → stays a canonical node.
+ */
+function placeOrphans(input: PresentationGroupInput, candidates: Map<string, Candidate>, gatewayGroups: Map<string, GatewayGroup>): OrphanPlacement {
+  const cardByPrefix = new Map<string, string>();
+  const keys = sorted(candidates.keys());
+  for (const key of [...keys.filter((k) => candidates.get(k)!.networkClass === 'lan'), ...keys.filter((k) => candidates.get(k)!.networkClass !== 'lan')]) {
+    const prefix = candidates.get(key)!.prefix;
+    if (!cardByPrefix.has(prefix)) cardByPrefix.set(prefix, key);
+  }
+  const gatewayByAddress = new Map<string, string>();
+  for (const key of sorted(gatewayGroups.keys())) {
+    const address = gatewayGroups.get(key)!.address.toLowerCase();
+    if (!linkLocalAddress(address) && !gatewayByAddress.has(address)) gatewayByAddress.set(address, key);
+  }
+  const placement: OrphanPlacement = { folds: new Map(), byClass: new Map(), unevidenced: [] };
+  for (const orphan of [...(input.orphans ?? [])].sort((a, b) => bySmallest(a.id, b.id))) {
+    const rawPrefix = orphan.prefix?.trim().toLowerCase();
+    const prefix = rawPrefix && rawPrefix.length <= TEXT_CAP && parsePrefix(rawPrefix) ? rawPrefix : null;
+    const address = orphan.address?.trim().toLowerCase();
+    const gateway = address && address.length <= TEXT_CAP && parseIpAddress(address) && !linkLocalAddress(address) ? address : null;
+    const target = orphan.kind === 'network' && prefix ? cardByPrefix.get(prefix) : orphan.kind === 'gateway' && gateway ? gatewayByAddress.get(gateway) : undefined;
+    if (target) { placement.folds.set(target, [...(placement.folds.get(target) ?? []), orphan.id]); continue; }
+    if (!orphan.evidenced) { placement.unevidenced.push(orphan.id); continue; }
+    const networkClass = orphan.kind === 'network' && prefix ? topologyNetworkClass(prefix) : null;
+    if (!prefix || !networkClass || networkClass === 'lan') continue;
+    const key = `orphan|${networkClass}|${prefix}`;
+    const entry = placement.byClass.get(key) ?? { networkClass, prefix, ids: [] };
+    entry.ids.push(orphan.id);
+    placement.byClass.set(key, entry);
+  }
+  return placement;
+}
+
+/**
+ * The grouping decisions themselves (candidates, gateway groups, placement, primary
+ * parent, orphan placement), shared by the card builder and by group expansion so both see one answer.
+ */
+function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
+  const input = withoutRetiredAgents(raw);
   const prefixes = new Map<string, string>();
   for (const network of input.networks) {
     const prefix = network.prefix?.trim().toLowerCase();
@@ -151,7 +199,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     list.push({ ...row, address, family: parsed.family });
     routesByObserver.set(row.endpointId, list);
   }
-  const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, options.now ?? new Date()) : null;
+  const evidence = input.neighbors ? buildNeighborEvidenceIndex(input.neighbors, now ?? new Date()) : null;
   const neighborCoverage = evidence ? (evidence.coverage === 'limited' || input.inventoryPairsTruncated ? 'limited' as const : 'complete' as const) : undefined;
   // Only complete evidence may DECIDE anything (an upgrade or a split): a truncated read can be
   // missing exactly the conflicting row or the other candidate's observer. Site-wide, because a
@@ -363,7 +411,63 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
   };
   const primary = new Map<string, string>();
   for (const [endpointId, keys] of endpointCandidates) primary.set(endpointId, [...keys].sort((a, b) => bySmallest(rank(a), rank(b)))[0]!);
+  const orphans = placeOrphans(raw, candidates, gatewayGroups);
+  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage, orphans };
+}
+type SiteGrouping = ReturnType<typeof analysePresentationGroups>;
 
+/** The group a frontier token names (#7818): its kind and the SHA-256 of its internal key. */
+export type PresentationGroupRef = { kind: 'network' | 'gateway' | 'unidentified' | 'hidden'; key: string };
+const UNIDENTIFIED_KEY = 'unidentified';
+const HIDDEN_KEY = { decommissioned: 'hidden|decommissioned', no_current_evidence: 'hidden|no_current_evidence' } as const;
+const groupRef = (kind: PresentationGroupRef['kind'], key: string): PresentationGroupRef =>
+  ({ kind, key: createHash('sha256').update(key).digest('hex') });
+
+/**
+ * Every canonical node a group card stands for — its `members` and `canonicalNodeIds`
+ * without the page filter or list cap — or null when `ref` names no group in this
+ * input (the grouping moved, e.g. a route went stale). Group expansion (#7818) pages
+ * over exactly this set; folded gateways stay on their own gateway card.
+ */
+export function presentationGroupMembers(input: PresentationGroupInput, ref: PresentationGroupRef, now?: Date): string[] | null {
+  const site = analysePresentationGroups(input, now);
+  const named = (key: string) => groupRef(ref.kind, key).key === ref.key;
+  let members: string[] = [];
+  if (ref.kind === 'unidentified') {
+    if (named(UNIDENTIFIED_KEY)) members = site.unidentified;
+  } else if (ref.kind === 'hidden') {
+    if (named(HIDDEN_KEY.decommissioned)) members = input.decommissioned ?? [];
+    else if (named(HIDDEN_KEY.no_current_evidence)) members = site.orphans.unevidenced;
+  } else if (ref.kind === 'gateway') {
+    const group = [...site.gatewayGroups.values()].find((entry) => named(entry.key));
+    if (group) members = [...group.routes.map((route) => route.gatewayId), ...(site.orphans.folds.get(group.key) ?? [])];
+  } else {
+    const candidate = [...site.candidates.values()].find((entry) => named(entry.key));
+    if (candidate) {
+      members = [...candidate.memberships.flatMap((m) => [m.networkId, m.endpointId]), ...candidate.addressMatches, ...candidate.neighborSeen.keys(),
+        ...(site.orphans.folds.get(candidate.key) ?? [])];
+    } else {
+      const orphanCard = [...site.orphans.byClass.keys()].find(named);
+      if (orphanCard) members = site.orphans.byClass.get(orphanCard)!.ids;
+    }
+  }
+  return members.length ? sorted(new Set(members)) : null;
+}
+
+/**
+ * Pure grouping over complete-site inputs. Deterministic for a given input regardless
+ * of row order: every list is sorted and every choice (primary parent, route owner)
+ * is decided by candidate key, never by size. Retired agents never shape a card, and
+ * orphan and decommissioned nodes are placed after the cards (#7879).
+ */
+export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
+  const site = analysePresentationGroups(input, options.now);
+  return placeOverviewOutliers(buildCardGroups(site, options), input, site, options);
+}
+
+function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions): PresentationGroups {
+  const { view, scopeHash, visibleNodeIds, tokenFor } = options;
+  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = site;
   const visible = (ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
   const canonicalNetworks = (candidate: Candidate) => sorted(new Set(candidate.memberships.map((m) => m.networkId)));
   const nodeIds = new Map<string, string>();
@@ -387,7 +491,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     nodeIds.set(candidate.key, id);
     return { id, view, role: 'network_group', label: candidate.prefix.slice(0, 255),
       memberCount: new Set([...observed.keys(), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]).size,
-      frontierToken: tokenFor(canonical[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('network', candidate.key)), authority: false,
       group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: candidate.networkClass, prefix: candidate.prefix, address: null,
         gatewayAddresses: sorted(listed).slice(0, GATEWAY_ADDRESS_CAP), conflict: candidate.conflict, observerCount: observed.size,
         members, canonicalNodeIds,
@@ -414,7 +518,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     const id = presentationId(view, scopeHash, 'gw', group.key);
     nodeIds.set(group.key, id);
     return { id, view, role: 'gateway_group', label: `Reported gateway ${group.address}`.slice(0, 255), memberCount: canonical.length,
-      frontierToken: tokenFor(canonical[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('gateway', group.key)), authority: false,
       group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: group.address, gatewayAddresses: [],
         conflict: false, observerCount: new Set(group.routes.map((route) => route.endpointId)).size, members: [], canonicalNodeIds,
         ...(gatewayMacs.length ? { gatewayMacs } : {}) } };
@@ -424,7 +528,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     const members = visible(all).slice(0, LIST_CAP).map((nodeId) => ({ nodeId, placement: 'observed' as const, primary: true, stale: false }));
     if (!members.length) return null;
     return { id: presentationId(view, scopeHash, 'unid', 'unidentified'), view, role: 'unidentified_group', label: 'Network not identified',
-      memberCount: all.length, frontierToken: tokenFor(all[0]!), authority: false,
+      memberCount: all.length, frontierToken: tokenFor(groupRef('unidentified', UNIDENTIFIED_KEY)), authority: false,
       group: { kind: 'unidentified', basis: 'unidentified', networkClass: null, prefix: null, address: null, gatewayAddresses: [],
         conflict: false, observerCount: 0, members, canonicalNodeIds: [] } };
   };
@@ -438,7 +542,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
   ].filter((node): node is PresentationNode => !!node).slice(0, options.maxNodes ?? LIST_CAP);
   const emitted = new Set(nodes.map((node) => node.id));
 
-  const aggregate = (short: string, key: string, source: string, target: string, contributing: string[], memberCount: number, focus: string): PresentationEdge => ({
+  const aggregate = (short: string, key: string, source: string, target: string, contributing: string[], memberCount: number, focus: PresentationGroupRef): PresentationEdge => ({
     id: presentationId(view, scopeHash, short, key), sourceNodeId: source, targetNodeId: target, relationshipKind: null, presentationOnly: true,
     authority: false, meaning: 'aggregate', role: short === 'rv' ? 'routes_via' : 'shared_devices',
     contributingRelationshipIds: sorted(contributing).slice(0, CONTRIBUTING_CAP), memberCount, frontierToken: tokenFor(focus),
@@ -449,7 +553,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     const source = nodeIds.get(group.candidateKey); const target = nodeIds.get(key);
     if (!source || !target || !emitted.has(source) || !emitted.has(target)) continue;
     edges.push(aggregate('rv', `rv|${key}`, source, target, group.routes.map((route) => route.id), group.routes.length,
-      canonicalNetworks(candidates.get(group.candidateKey)!)[0]!));
+      groupRef('network', group.candidateKey)));
   }
   // Devices a primary LAN card shares with another card (dual stack, second NIC).
   const shared = new Map<string, { primaryKey: string; secondaryKey: string; endpoints: Set<string>; relationships: string[] }>();
@@ -466,7 +570,7 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
     const entry = shared.get(pair)!;
     const source = nodeIds.get(entry.primaryKey); const target = nodeIds.get(entry.secondaryKey);
     if (!source || !target || !emitted.has(source) || !emitted.has(target)) continue;
-    edges.push(aggregate('sd', pair, source, target, entry.relationships, entry.endpoints.size, canonicalNetworks(candidates.get(entry.secondaryKey)!)[0]!));
+    edges.push(aggregate('sd', pair, source, target, entry.relationships, entry.endpoints.size, groupRef('network', entry.secondaryKey)));
   }
   return { nodes, edges: edges.slice(0, options.maxEdges ?? CONTRIBUTING_CAP) };
 }
@@ -475,70 +579,44 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
  * Orphan and decommissioned placement (#7879), over the finished cards and never
  * changing them except to fold a duplicate canonical node in. Presentation only: no
  * relationship, membership or route is implied, and nothing here is authority.
- *  - An orphan network whose prefix equals an emitted card's prefix folds into that card
- *    (the first in card order, so the smallest LAN key); an orphan gateway whose next hop
- *    equals an emitted gateway group's address folds into it. Link-local next hops are
- *    per observer and never fold across observers (D:82).
- *  - Unfolded orphans with no current evidence are hidden (`no_current_evidence`).
- *  - Unfolded evidenced non-LAN orphans (link-local, host, overlay, …) form a memberless
- *    card of their class, so the hidden-networks toggle governs them like any other.
- *  - An unfolded evidenced LAN network or gateway stays a canonical node: it is real.
+ *  - Orphans (placeOrphans) fold into their card or gateway group; unevidenced ones are hidden
+ *    (`no_current_evidence`); evidenced non-LAN ones form a memberless card of their class, so
+ *    the hidden-networks toggle governs them like any other.
  *  - Retired agents with no online bound asset are hidden (`decommissioned`) and counted site-wide;
  *    one whose asset is online stays, placed by the asset's address like any unplaced endpoint.
  */
-function placeOverviewOutliers(grouped: PresentationGroups, input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
+function placeOverviewOutliers(grouped: PresentationGroups, input: PresentationGroupInput, site: SiteGrouping, options: PresentationGroupOptions): PresentationGroups {
   const { view, scopeHash, visibleNodeIds, tokenFor } = options;
   const nodes = grouped.nodes.map((node) => (node.group ? { ...node, group: { ...node.group, canonicalNodeIds: [...node.group.canonicalNodeIds] } } : node));
-  const cardByPrefix = new Map<string, PresentationNode>();
-  const gatewayByAddress = new Map<string, PresentationNode>();
-  for (const node of nodes) {
-    const group = node.group;
-    if (group?.kind === 'network' && group.prefix && !cardByPrefix.has(group.prefix)) cardByPrefix.set(group.prefix, node);
-    if (group?.kind === 'gateway' && group.address && !linkLocalAddress(group.address) && !gatewayByAddress.has(group.address.toLowerCase())) {
-      gatewayByAddress.set(group.address.toLowerCase(), node);
-    }
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const [key, ids] of site.orphans.folds) {
+    // An orphan folds into the card (`net`) or gateway group (`gw`) its key names, when that card is on this page.
+    const card = byId.get(presentationId(view, scopeHash, site.candidates.has(key) ? 'net' : 'gw', key));
+    if (!card?.group) continue;
+    const listed = card.group.canonicalNodeIds;
+    for (const nodeId of ids) if (visibleNodeIds.has(nodeId) && listed.length < LIST_CAP && !listed.includes(nodeId)) listed.push(nodeId);
+    listed.sort(bySmallest);
   }
-  const fold = (node: PresentationNode, nodeId: string) => {
-    const ids = node.group!.canonicalNodeIds;
-    if (visibleNodeIds.has(nodeId) && ids.length < LIST_CAP && !ids.includes(nodeId)) { ids.push(nodeId); ids.sort(bySmallest); }
-  };
-  const byClass = new Map<string, { networkClass: TopologyNetworkClass; prefix: string; ids: string[] }>();
-  const unevidenced: string[] = [];
-  for (const orphan of [...(input.orphans ?? [])].sort((a, b) => bySmallest(a.id, b.id))) {
-    const rawPrefix = orphan.prefix?.trim().toLowerCase();
-    const prefix = rawPrefix && rawPrefix.length <= TEXT_CAP && parsePrefix(rawPrefix) ? rawPrefix : null;
-    const address = orphan.address?.trim().toLowerCase();
-    const gateway = address && address.length <= TEXT_CAP && parseIpAddress(address) && !linkLocalAddress(address) ? address : null;
-    const card = orphan.kind === 'network' && prefix ? cardByPrefix.get(prefix) : orphan.kind === 'gateway' && gateway ? gatewayByAddress.get(gateway) : undefined;
-    if (card) { fold(card, orphan.id); continue; }
-    if (!orphan.evidenced) { unevidenced.push(orphan.id); continue; }
-    const networkClass = orphan.kind === 'network' && prefix ? topologyNetworkClass(prefix) : null;
-    if (!prefix || !networkClass || networkClass === 'lan') continue;
-    const key = `orphan|${networkClass}|${prefix}`;
-    const entry = byClass.get(key) ?? { networkClass, prefix, ids: [] };
-    entry.ids.push(orphan.id);
-    byClass.set(key, entry);
-  }
-  for (const key of sorted(byClass.keys())) {
-    const { networkClass, prefix, ids } = byClass.get(key)!;
+  for (const key of sorted(site.orphans.byClass.keys())) {
+    const { networkClass, prefix, ids } = site.orphans.byClass.get(key)!;
     const canonicalNodeIds = sorted(ids).filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
     if (!canonicalNodeIds.length) continue;
     nodes.push({ id: presentationId(view, scopeHash, 'net', key), view, role: 'network_group', label: prefix.slice(0, 255), memberCount: 0,
-      frontierToken: tokenFor(canonicalNodeIds[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('network', key)), authority: false,
       group: { kind: 'network', basis: 'inferred_site_prefix', networkClass, prefix, address: null, gatewayAddresses: [], conflict: false,
         observerCount: 0, members: [], canonicalNodeIds } });
   }
-  const hidden = (basis: 'decommissioned' | 'no_current_evidence', label: string, ids: Iterable<string>) => {
+  const hidden = (basis: keyof typeof HIDDEN_KEY, label: string, ids: Iterable<string>) => {
     const all = sorted(new Set(ids));
     const canonicalNodeIds = all.filter((nodeId) => visibleNodeIds.has(nodeId)).slice(0, LIST_CAP);
     if (!canonicalNodeIds.length) return;
     nodes.push({ id: presentationId(view, scopeHash, 'hid', basis), view, role: 'hidden_group', label, memberCount: all.length,
-      frontierToken: tokenFor(canonicalNodeIds[0]!), authority: false,
+      frontierToken: tokenFor(groupRef('hidden', HIDDEN_KEY[basis])), authority: false,
       group: { kind: 'hidden', basis, networkClass: null, prefix: null, address: null, gatewayAddresses: [], conflict: false,
         observerCount: 0, members: [], canonicalNodeIds } });
   };
   hidden('decommissioned', 'Decommissioned devices', input.decommissioned ?? []);
-  hidden('no_current_evidence', 'Network nodes with no current evidence', unevidenced);
+  hidden('no_current_evidence', 'Network nodes with no current evidence', site.orphans.unevidenced);
   return { nodes: nodes.slice(0, options.maxNodes ?? LIST_CAP), edges: grouped.edges };
 }
 

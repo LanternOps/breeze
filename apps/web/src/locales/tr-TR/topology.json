@@ -23,6 +23,7 @@
   "openInventory": "Envanter ayrıntılarını aç",
   "members": "{{count}} üye",
   "expand": "Grubu genişlet",
+  "collapse": "Grubu daralt",
   "diagnose": "Tanı koy",
   "diagnosticsUnavailable": "Tanılama, bu site veya mevcut izinleriniz için kullanılamaz.",
   "pin": "Sabitle",

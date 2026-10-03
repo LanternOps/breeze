@@ -186,8 +186,14 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
   `relationshipDetail.ts` need no join changes. Folded gateways keep their operational value: the group
   inspector lists each reporter's canonical gateway, selectable for Diagnose. Search matches IP/MAC
   independently of the display label.
-- **Deferred (follow-up issues):** group-scoped expansion cursor claims (groups expose a focus token on
-  their first canonical network node meanwhile), neighbour-cache gateway MAC corroboration, interface-kind
+- **Group expansion (#7818, done):** a card's `frontierToken` carries a signed `group` claim
+  (`{kind, key: sha256(grouping key)}`) in place of the old first-canonical-node focus. The expansion
+  re-resolves the card's complete `members ∪ canonicalNodeIds` from the complete site under the pinned
+  graph revision, pages over exactly that set with the usual limit/after/edge/boundary continuations
+  (each carrying the same claim), and answers `409 presentation_group_changed` when the grouping no
+  longer yields that key. Aggregate edges expand the card they used to stand in for (`routes_via` → its
+  network card, `shared_devices` → the secondary card). Folded gateways stay on their gateway card.
+- **Deferred (follow-up issues):** neighbour-cache gateway MAC corroboration (done in #7817), interface-kind
   tunnel classification (CIDR heuristics for Tailscale/CGNAT meanwhile; done in #7819), VPN half-default handling in the
   projector ("Selected path unknown").
 

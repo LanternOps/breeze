@@ -23,6 +23,7 @@
   "openInventory": "Apri dettagli inventario",
   "members": "{{count}} membri",
   "expand": "Espandi gruppo",
+  "collapse": "Comprimi gruppo",
   "diagnose": "Diagnostica",
   "diagnosticsUnavailable": "La diagnostica non è disponibile per questo sito o per le tue autorizzazioni attuali.",
   "pin": "Blocca",

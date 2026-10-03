@@ -39,7 +39,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   const [showAllNetworks, setShowAllNetworks] = useState(false);
   const [fullSite, setFullSite] = useState(false), [list, setList] = useState(false), [diagnostic, setDiagnostic] = useState<TopologySelection>(), [configuration, setConfiguration] = useState(false);
   const view = navigation.view === 'physical' && !settings.capabilities.physical.available ? 'overview' : navigation.view;
-  const { graph, loading, error, refreshGraph, expand } = useTopologyGraph({ siteId }, { view, focusNodeId: searchFocus ?? (fullSite ? undefined : focusNodeId) }, settings.capabilities.ui.available);
+  const { graph, loading, error, refreshGraph, expand, collapse, expanded } = useTopologyGraph({ siteId }, { view, focusNodeId: searchFocus ?? (fullSite ? undefined : focusNodeId) }, settings.capabilities.ui.available);
   const controller = useMemo(() => new TopologyLayoutController(), [siteId, view]);
   const draft = useMemo(() => new TopologyLayoutDraft(), [siteId, view]);
   const [positions, setPositions] = useState<LayoutPosition[]>([]), [boxes, setBoxes] = useState<LayoutBox[]>([]);
@@ -190,6 +190,7 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
       <div className="flex flex-wrap items-center gap-3 text-sm"><PhysicalCoveragePanel coverage={graph.coverage} /><span data-testid="topology-counts">{t('counts', { nodes: t('nodeCount', { count: graph.counts.visibleNodes }), edges: t('connectionCount', { count: graph.counts.visibleRelationships }) })}</span><span>{t('omitted', { nodes: t('nodeCount', { count: graph.counts.omittedNodes }), edges: t('connectionCount', { count: graph.counts.omittedRelationships }) })}</span></div>
       <p data-testid="topology-health-internet" className="text-sm">{graph.nodes.some((node) => node.kind === 'internet' && node.health.status !== 'unknown') ? graph.nodes.filter((node) => node.kind === 'internet').map((node) => `${node.label}: ${t(/* i18n-dynamic */ `healthStatus.${node.health.status}`)}`).join(' · ') : t('notMeasured')}</p>
       <div className="flex flex-wrap items-center gap-2">
+        {expanded && <button data-testid="topology-collapse" className="rounded border px-3 py-2 text-sm" onClick={collapse}>{t('collapse')}</button>}
         <button data-testid="topology-fit" className="rounded border px-3 py-2 text-sm" onClick={() => fitRef.current?.()}>{t('fit')}</button>
         <button data-testid="topology-arrange" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('incremental')}>{t('arrange')}</button>
         <button data-testid="topology-reflow" className="rounded border px-3 py-2 text-sm" onClick={() => void arrange('reflow')}>{t('reflow')}</button>
