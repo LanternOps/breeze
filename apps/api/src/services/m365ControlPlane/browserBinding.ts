@@ -14,7 +14,13 @@ export interface M365ConsentBrowserBinding {
   rawState: string;
   connectionId: string;
   consentAttemptId: string;
-  tenantHint: string | null;
+  /**
+   * identity_verification: the tenant the identity authority was pinned to, or
+   * null for `/organizations` (initial connect / reconnect of an unbound row).
+   * admin_consent: the tenant the identity phase cryptographically verified
+   * (required).
+   */
+  tenantId: string | null;
 }
 
 interface SignedBinding extends M365ConsentBrowserBinding {
@@ -24,6 +30,12 @@ interface SignedBinding extends M365ConsentBrowserBinding {
 export type M365ConsentBindingInspection =
   | { status: 'valid'; binding: M365ConsentBrowserBinding }
   | { status: 'expired' }
+  /**
+   * A correctly-signed cookie from the pre-identity-first (v1) flow. Its
+   * payload is never decoded or trusted; the only remedy is a restart.
+   * Removed in W04 (#7910).
+   */
+  | { status: 'legacy' }
   | { status: 'invalid' };
 
 function signingKey(source: Environment): string | null {
@@ -53,14 +65,17 @@ function validBinding(value: unknown): value is SignedBinding {
     'expiresAt',
     'phase',
     'rawState',
-    'tenantHint',
+    'tenantId',
   ].sort().join(',')) return false;
   if (record.phase !== 'admin_consent' && record.phase !== 'identity_verification') return false;
   if (typeof record.rawState !== 'string' || record.rawState.length < 1 || record.rawState.length > 256) return false;
   if (!UUID.test(String(record.connectionId)) || !UUID.test(String(record.consentAttemptId))) return false;
   if (!Number.isSafeInteger(record.expiresAt)) return false;
-  if (record.phase === 'admin_consent') return record.tenantHint === null;
-  return typeof record.tenantHint === 'string' && GUID.test(record.tenantHint);
+  if (record.phase === 'admin_consent') {
+    return typeof record.tenantId === 'string' && GUID.test(record.tenantId);
+  }
+  return record.tenantId === null
+    || (typeof record.tenantId === 'string' && GUID.test(record.tenantId));
 }
 
 /**
@@ -80,6 +95,12 @@ export interface M365ConsentBindingConfig {
   cookieName: string;
   cookiePath: string;
   hmacContext: string;
+  /**
+   * HMAC context of the previous cookie format. Used ONLY to recognise a
+   * correctly-signed old cookie so the callback can answer `consent_expired`
+   * instead of a generic mismatch; such a cookie is never decoded or accepted.
+   */
+  legacyHmacContext?: string;
 }
 
 export interface M365ConsentBindingInstance {
@@ -92,8 +113,8 @@ export interface M365ConsentBindingInstance {
 }
 
 export function createM365ConsentBinding(config: M365ConsentBindingConfig): M365ConsentBindingInstance {
-  function mac(payload: string, key: string): Buffer {
-    return createHmac('sha256', key).update(`${config.hmacContext}.${payload}`).digest();
+  function mac(payload: string, key: string, context: string = config.hmacContext): Buffer {
+    return createHmac('sha256', key).update(`${context}.${payload}`).digest();
   }
 
   function extractCookie(header: string | undefined): string | null {
@@ -159,6 +180,12 @@ export function createM365ConsentBinding(config: M365ConsentBindingConfig): M365
     if (provided.toString('base64url') !== signature) return { status: 'invalid' };
     const expected = mac(payload, key);
     if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+      if (config.legacyHmacContext) {
+        const legacy = mac(payload, key, config.legacyHmacContext);
+        if (provided.length === legacy.length && timingSafeEqual(provided, legacy)) {
+          return { status: 'legacy' };
+        }
+      }
       return { status: 'invalid' };
     }
     let decoded: unknown;
@@ -194,12 +221,13 @@ export function createM365ConsentBinding(config: M365ConsentBindingConfig): M365
   };
 }
 
-// --- customer-graph-read instance (public names + values preserved byte-for-byte) ---
+// --- customer-graph-read instance (cookie name/path preserved; HMAC context v2 since #7910 W02) ---
 
 const READ_BINDING_CONFIG: M365ConsentBindingConfig = {
   cookieName: 'breeze_m365_graph_read_consent',
   cookiePath: '/api/v1/m365/consent/callback',
-  hmacContext: 'breeze:m365-customer-graph-read:browser-binding:v1',
+  hmacContext: 'breeze:m365-customer-graph-read:browser-binding:v2',
+  legacyHmacContext: 'breeze:m365-customer-graph-read:browser-binding:v1',
 };
 
 const readBinding = createM365ConsentBinding(READ_BINDING_CONFIG);
@@ -242,7 +270,8 @@ export function verifyM365ConsentBindingCookie(
 const ACTIONS_BINDING_CONFIG: M365ConsentBindingConfig = {
   cookieName: 'breeze_m365_graph_actions_consent',
   cookiePath: '/api/v1/m365/actions-consent/callback',
-  hmacContext: 'breeze:m365-customer-graph-actions:browser-binding:v1',
+  hmacContext: 'breeze:m365-customer-graph-actions:browser-binding:v2',
+  legacyHmacContext: 'breeze:m365-customer-graph-actions:browser-binding:v1',
 };
 
 const actionsBinding = createM365ConsentBinding(ACTIONS_BINDING_CONFIG);
