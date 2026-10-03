@@ -13,8 +13,9 @@ vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
 vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn()}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
+vi.mock('./enrollmentService',()=>import('./setupCompletion'));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
-import {completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
+import {persistCapturedAutopayMethod,completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
 const snapshot={partnerName:'Example MSP',version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),
  achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
  contactEmail:'billing@example.test',ip:null,userAgent:null,source:'setup_page',scheduleText:'On the due date.',feeText:'No fee.'};
@@ -60,7 +61,7 @@ describe('completion fences',()=>{
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
    expect(body).toContain('Example client');expect(body).toContain('visa debit');
-   expect(body).toContain(snapshot.scheduleText);expect(body).toContain(snapshot.feeText);
+   expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
   }
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));
   await completeAutopaySetup(attempt().partnerId,{checkoutSessionId:'cs_one'});
@@ -251,4 +252,50 @@ it('does not append consent again when the same bank setup finishes verification
  expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([]);
  expect(m.writes).toContainEqual(expect.objectContaining({outcome:'activated',completedAt:expect.any(Date)}));
  expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
+});
+
+it('uses the verified debit fee in enrollment mail without rewriting accepted consent',async()=>{
+  const accepted={...snapshot,feeText:'Credit card: up to 3.00% per automatic payment.',
+    feeTerms:{...snapshot.feeTerms,cardFeeBps:300,feeAttested:true}};
+  const before=JSON.stringify(accepted),value=attempt({consentSnapshot:accepted});
+  m.rows.push([value],[{id:value.orgId,status:'active',deletedAt:null}],
+    [{id:value.enrollmentId,status:'requested',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:null}],
+    [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
+    [],[],[{id:'method_one'}],[],[],[],[{settings:{emailTemplates:{autopay_enrolled:{html:'<p>Edited enrollment</p>'}}}}]);
+  const method={id:'pm_one',type:'card',customer:'cus_one',card:{brand:'visa',funding:'debit',last4:'1234',
+    exp_month:12,exp_year:2030,country:'US'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+  expect(await persistCapturedAutopayMethod(value.id,method,'activated','seti_one',null))
+    .toEqual({outcome:'activated',orgId:value.orgId});
+  for (const body of [m.enqueue.mock.calls[0]![1].rendered.html, m.enqueue.mock.calls[0]![1].rendered.text]) {
+    expect(body).toContain('No processing fee applies to this card.');
+    expect(body).toContain('Edited enrollment');
+    expect(body).not.toContain(accepted.feeText);
+  }
+  expect(m.writes.filter(row=>'consentTextVersion' in row)).toEqual([
+    expect.objectContaining({consentTextHash:accepted.textHash,consentTextVersion:accepted.version,
+      feeTerms:accepted.feeTerms,scheduleTerms:accepted.scheduleTerms}),
+  ]);
+  expect(JSON.stringify(accepted)).toBe(before);expect(m.enqueue).toHaveBeenCalledOnce();
+  expect(m.client).not.toHaveBeenCalled();expect(m.rows).toHaveLength(0);
+});
+
+it.each(['credit','link','missing-networks','missing-wallet','unknown-network'])('uses live %s evidence for enrollment and owned return under nonzero fees',async kind=>{
+ const accepted={...snapshot,feeText:'Credit card: up to 3.00% per automatic payment.',
+  feeTerms:{...snapshot.feeTerms,cardFeeBps:300,feeAttested:true}};
+ const value=attempt({consentSnapshot:accepted});
+ const card={brand:'visa',funding:'credit',last4:'1234',exp_month:12,exp_year:2030,country:'US',
+  wallet:kind==='link'?{type:'link'}:kind==='missing-wallet'?undefined:null,
+  networks:kind==='missing-networks'?undefined:{available:[kind==='unknown-network'?'unknown':'visa'],preferred:null}};
+ m.method.mockResolvedValue({id:'pm_one',type:'card',customer:'cus_one',card});
+ // The owned-return lookup precedes the normal completion authority lookups.
+ m.rows.push([value]);queueAuthority(value);
+ m.rows.push([],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
+ const {completeOwnedAutopaySetup}=await import('./customerViews');
+ const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
+ const expected=kind==='credit'?accepted.feeText:'No processing fee applies to this card.';
+ expect(result).toMatchObject({outcome:'activated',methodLabel:'visa credit ••1234',feeText:expected});
+ for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(expected);
+ expect(m.method).toHaveBeenCalledExactlyOnceWith('pm_one');
+ expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({feeTerms:accepted.feeTerms,consentTextHash:accepted.textHash})]);
+ expect(m.rows).toHaveLength(0);
 });

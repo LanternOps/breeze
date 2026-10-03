@@ -15,6 +15,7 @@ import { renderBillingNotice } from './renderBillingNotice';
 import { addUtcDays, noticeLeadDays } from './scheduler';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
+import { paymentFeeLine } from './feeDisclosure';
 import { toMinorUnits } from '../stripeMoney';
 import { AR_OPEN_STATUSES } from '../../db/schema/invoices';
 import { isPublicLinkOrgStatusLive, isPublicLinkPartnerStatusLive } from '../publicLinkOrgGate';
@@ -56,7 +57,7 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     custom: partnerEmailCustomFromSettings(partner!.settings, 'invoice_autopay'),
     skipUrl: buildBillingLinkUrl('skip_invoice', skip.token),
     stopUrl: buildBillingLinkUrl('stop_autopay', stop.token),
-    feeText: `Processing fee: ${terms.currency} ${terms.feeAmount}`,
+    feeText: paymentFeeLine(terms.principal, terms.feeAmount, terms.currency, terms.methodType),
     authorizationText: terms.methodType === 'us_bank_account'
       ? 'Bank debit authorized during setup. The date is the initiation date; your bank controls settlement.'
       : 'Payment authorized during automatic payment setup.',

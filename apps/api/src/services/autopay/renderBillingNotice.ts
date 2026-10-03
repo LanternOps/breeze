@@ -76,9 +76,12 @@ export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingN
   if ('payment' in ctx) {
     if ((kind !== 'payment_receipt' && kind !== 'payment_failed') || ctx.payment.id !== kind) throw new Error('Missing payment notice context');
     const p = ctx.payment;
+    const lines = kind === 'payment_receipt' ? [
+      `Principal: ${p.vars.amount_paid}`, `Processing fee: ${p.vars.fee_amount}`, `Total charged: ${p.vars.total_charged}`,
+    ] : [];
     const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars,
       ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label,
-      bodyAfterCta: kind === 'payment_receipt' ? `<p>Processing fee: ${escapeHtml(p.vars.fee_amount!)}</p>` : undefined });
+      bodyAfterCta: lines.length ? lines.map(line => `<p>${escapeHtml(line)}</p>`).join('') : undefined });
     return { ...rendered, frozen: p.frozen,
       text: [htmlToText(rendered.html), p.vars.action_link].filter(Boolean).join('\n\n') };
   }

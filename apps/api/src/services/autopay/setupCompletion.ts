@@ -8,6 +8,7 @@ import {getPartnerStripeClient} from '../partnerStripe';
 import {assertNoHeldDbContextForStripe} from '../stripeSettle';
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
+import {verifiedFeeText} from './feeDisclosure';
 import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
 import {notifyAutopayStaff} from './staffNotifications';
@@ -117,11 +118,12 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
   const methodDescription=method.card?`${method.card.brand} ${method.card.funding} ••${method.card.last4}`:`${method.us_bank_account?.bank_name??'Bank'} ••${method.us_bank_account?.last4??''}`;
   const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
+  const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
   await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
    dedupeKey:`${attempt.id}:autopay_enrolled:${outcome}`,toEmail:snapshot.contactEmail,
    rendered:await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:snapshot.feeText},
-    scheduleText:snapshot.scheduleText,feeText:snapshot.feeText,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
+    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:displayFee},
+    scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
   }
   for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
   if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
@@ -132,7 +134,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   return {outcome,orgId:attempt.orgId};
  });
 }
-export async function completeAutopaySetup(partnerId:string,ref:{checkoutSessionId?:string;setupIntentId?:string}):Promise<{outcome:Outcome;orgId:string}>{
+export async function completeAutopaySetup(partnerId:string,ref:{checkoutSessionId?:string;setupIntentId?:string},onVerifiedMethod?:(method:Stripe.PaymentMethod)=>void):Promise<{outcome:Outcome;orgId:string}>{
  assertNoHeldDbContextForStripe('completeAutopaySetup');
  if(Boolean(ref.checkoutSessionId)===Boolean(ref.setupIntentId))throw new Error('Supply exactly one setup reference');
  const {stripe,stripeAccountId}=await withSystemDbAccessContext(()=>getPartnerStripeClient(partnerId));
@@ -169,5 +171,9 @@ export async function completeAutopaySetup(partnerId:string,ref:{checkoutSession
   const mandate=await runOutsideDbContext(()=>stripe.mandates.retrieve(mandateId));
   if(mandate.status!=='active'||id(mandate.payment_method)!==method.id)throw new Error('Bank mandate is not active');
  }
- return persistCapturedAutopayMethod(attempt.id,method,setupIntentOutcome(intent),intent.id,mandateId);
+ const result=await persistCapturedAutopayMethod(attempt.id,method,setupIntentOutcome(intent),intent.id,mandateId);
+ // Reuse provider evidence for the return page without storing wallet/network data
+ // or making another Stripe call. Never expose an unaccepted capture.
+ if(result.outcome==='activated'||result.outcome==='pending_verification')onVerifiedMethod?.(method);
+ return result;
 }

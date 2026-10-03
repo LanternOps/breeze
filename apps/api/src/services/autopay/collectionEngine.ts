@@ -1,3 +1,4 @@
+import { hasSupportedCardEvidence } from './feeDisclosure';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { parseAutopayTerms } from '@breeze/shared';
 import { resolveAttemptProvenance } from './attemptProvenance';
@@ -39,7 +40,6 @@ export function collectionNoticeAllows(sentAt: Date | null, lead: number, now: D
 
 const defer = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'deferred', reason });
 const refuse = (reason: string): CollectionResult => ({ attemptId: null, outcome: 'refused', reason });
-const CARD_NETWORKS = new Set(['visa', 'mastercard', 'amex', 'discover', 'diners', 'jcb', 'unionpay', 'cartes_bancaires']);
 type Method = typeof orgPaymentMethods.$inferSelect;
 type Enrollment = typeof orgAutopayEnrollments.$inferSelect;
 
@@ -52,10 +52,7 @@ function admittedMethod(live: Stripe.PaymentMethod, method: Method, enrollment: 
     return !!live.us_bank_account && live.us_bank_account.account_holder_type === method.accountHolderType;
   }
   const card = live.card;
-  return !!card && card.wallet?.type !== 'link' && CARD_NETWORKS.has(card.brand)
-    && !!card.networks?.available.length && card.networks.available.every(network => CARD_NETWORKS.has(network))
-    && (!card.networks.preferred || CARD_NETWORKS.has(card.networks.preferred))
-    && card.funding === method.cardFunding;
+  return !!card && hasSupportedCardEvidence(card) && card.funding === method.cardFunding;
 }
 
 async function prepareMethodAdmission(invoiceId: string) {

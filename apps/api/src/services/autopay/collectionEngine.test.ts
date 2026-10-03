@@ -190,10 +190,12 @@ it('defers when another attempt already reserves money', async () => {
   h.reserved = '1.00';
   await expect(reserveCollection(input)).resolves.toMatchObject({ reason: 'collection_in_progress' }); expect(attempts()).toEqual([]);
 });
-it.each(['wallet', 'network', 'unknown-brand', 'missing-networks', 'wrong-customer', 'wrong-pm'])(
+it.each(['wallet', 'missing-wallet', 'unknown-wallet', 'network', 'unknown-brand', 'missing-networks', 'wrong-customer', 'wrong-pm'])(
   'fails closed on live %s evidence despite a stored Visa brand', async change => {
     const live: any = structuredClone(card);
     if (change === 'wallet') live.card.wallet = { type: 'link' };
+    if (change === 'missing-wallet') live.card.wallet = undefined;
+    if (change === 'unknown-wallet') live.card.wallet = { type: 'unknown' };
     if (change === 'network') live.card.networks.available = ['unknown'];
     if (change === 'unknown-brand') live.card.brand = 'unknown';
     if (change === 'missing-networks') live.card.networks = null;
