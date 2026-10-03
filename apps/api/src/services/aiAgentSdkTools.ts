@@ -8,6 +8,7 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
  */
 
 import { z } from 'zod';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
@@ -3222,6 +3223,8 @@ export function buildBreezeSdkTools(
       {
         alertId: z.string().guid().optional(),
         anomalyEpisodeId: z.string().guid().optional(),
+        deviceId: z.string().guid().optional(),
+        problem: fixProblemSchema.optional(),
         limit: z.number().int().min(1).max(20).optional(),
       },
       makeHandler('find_proven_fixes', getAuth, onPreToolUse, onPostToolUse)

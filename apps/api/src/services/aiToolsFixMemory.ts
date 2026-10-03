@@ -10,18 +10,21 @@ import { z } from 'zod';
 import { db } from '../db';
 import { metricAnomalyEpisodes } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
-import type { AiTool } from './aiTools';
+import { verifyDeviceAccess, type AiTool } from './aiTools';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { findAlertWithAccess } from './aiToolsAlerts';
 import { deviceIdSiteDenied } from './aiToolsSiteScope';
-import { resolveOrgPartnerId } from './fixMemory/catalog';
+import { resolveDeviceOs, resolveOrgPartnerId } from './fixMemory/catalog';
 import { lookupFixes } from './fixMemory/lookup';
+import { FIX_PROBLEM_LEAF_TYPES, fixProblemSchema, signatureForProblem } from './fixMemory/problemSignature';
 import { signatureForSource, type FixSourceRef } from './fixMemory/signatureLoader';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
 
 export const findProvenFixesInputSchema = z.object({
   alertId: z.string().guid().optional(),
   anomalyEpisodeId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
+  problem: fixProblemSchema.optional(),
   limit: z.number().int().min(1).max(20).optional(),
 });
 
@@ -42,15 +45,23 @@ export function registerFixMemoryTools(tools: Map<string, AiTool>): void {
   tools.set('find_proven_fixes', {
     tier: 1,
     domain: 'monitoring',
+    deviceArgs: ['deviceId'],
     searchHint: 'fixes proven on this same alert or anomaly across your clients, with track records',
     definition: {
       name: 'find_proven_fixes',
-      description: 'Find fixes proven by observed outcomes on this same problem (an alert or anomaly episode) across your clients, with their track records. Returns proven fixes and similar ones; never another client\'s private details.',
+      description: 'Find fixes proven by observed outcomes on this same problem (an alert, an anomaly episode, or a device plus a structured condition) across your clients, with their track records. Returns proven fixes and similar ones; never another client\'s private details.',
       input_schema: {
         type: 'object',
         properties: {
-          alertId: { type: 'string', description: 'Alert UUID (give this or anomalyEpisodeId)' },
-          anomalyEpisodeId: { type: 'string', description: 'Metric anomaly episode UUID (give this or alertId)' },
+          alertId: { type: 'string', description: 'Alert UUID (give this, anomalyEpisodeId, or deviceId+problem)' },
+          anomalyEpisodeId: { type: 'string', description: 'Metric anomaly episode UUID (give this, alertId, or deviceId+problem)' },
+          deviceId: { type: 'string', description: 'Device UUID; give together with problem' },
+          problem: {
+            type: 'object',
+            description: 'One structured alert condition, e.g. {"type":"service_stopped","serviceName":"Spooler"}. No free text.',
+            properties: { type: { type: 'string', enum: [...FIX_PROBLEM_LEAF_TYPES] } },
+            required: ['type'],
+          },
           limit: { type: 'number', description: 'Maximum fixes per group (default 5, max 20)' },
         },
         required: [],
@@ -59,11 +70,28 @@ export function registerFixMemoryTools(tools: Map<string, AiTool>): void {
     handler: async (input, auth) => {
       const parsed = findProvenFixesInputSchema.safeParse(input);
       if (!parsed.success) return JSON.stringify({ error: parsed.error.issues[0]?.message ?? 'Invalid input' });
-      const { alertId, anomalyEpisodeId, limit = 5 } = parsed.data;
-      if (Boolean(alertId) === Boolean(anomalyEpisodeId)) {
-        return JSON.stringify({ error: 'Provide exactly one of alertId or anomalyEpisodeId' });
+      const { alertId, anomalyEpisodeId, deviceId, problem, limit = 5 } = parsed.data;
+      const sources = [Boolean(alertId), Boolean(anomalyEpisodeId), Boolean(deviceId || problem)].filter(Boolean).length;
+      if (sources !== 1 || Boolean(deviceId) !== Boolean(problem)) {
+        return JSON.stringify({ error: 'Provide exactly one of alertId, anomalyEpisodeId, or deviceId together with problem' });
       }
       try {
+        if (deviceId) {
+          const access = await verifyDeviceAccess(deviceId, auth);
+          if ('error' in access) return JSON.stringify({ error: access.error });
+          const orgId = access.device.orgId;
+          if (!(await shouldProduceMlOutput(orgId, 'ml.remediation_suggestions.enabled'))) {
+            return JSON.stringify({ disabled: true, proven: [], similar: [] });
+          }
+          const osFamily = await resolveDeviceOs(deviceId);
+          const signature = osFamily ? signatureForProblem({ osFamily, problem: problem! }) : null;
+          if (!signature) {
+            return JSON.stringify({ signature: null, proven: [], similar: [], note: 'This problem has no structured signature; memory lookup skipped.' });
+          }
+          const partnerId = await resolveOrgPartnerId(orgId);
+          if (!partnerId) return JSON.stringify({ error: 'Organization not found' });
+          return JSON.stringify(await lookupFixes({ orgId, partnerId, signature, limit }));
+        }
         let orgId: string;
         let ref: FixSourceRef;
         if (alertId) {

@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   findAlert: vi.fn(), flag: vi.fn(async () => true), sig: vi.fn(), partner: vi.fn(async () => 'p-1'), lookup: vi.fn(),
   episodeRows: [] as unknown[],
 }));
+const dev = vi.hoisted(() => ({ verify: vi.fn(), os: vi.fn(async () => 'windows') }));
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where']) chain[m] = vi.fn(() => chain);
@@ -14,7 +15,8 @@ vi.mock('./aiToolsAlerts', () => ({ findAlertWithAccess: h.findAlert }));
 vi.mock('./aiToolsSiteScope', () => ({ deviceIdSiteDenied: vi.fn(async () => false) }));
 vi.mock('./mlFeatureFlags', () => ({ shouldProduceMlOutput: h.flag }));
 vi.mock('./fixMemory/signatureLoader', () => ({ signatureForSource: h.sig }));
-vi.mock('./fixMemory/catalog', () => ({ resolveOrgPartnerId: h.partner }));
+vi.mock('./aiTools', () => ({ verifyDeviceAccess: dev.verify }));
+vi.mock('./fixMemory/catalog', () => ({ resolveOrgPartnerId: h.partner, resolveDeviceOs: dev.os }));
 vi.mock('./fixMemory/lookup', () => ({ lookupFixes: h.lookup }));
 
 import type { AuthContext } from '../middleware/auth';
@@ -69,5 +71,47 @@ describe('find_proven_fixes', () => {
     h.episodeRows = [{ id: EPISODE, orgId: 'org-1', deviceId: 'd-1' }];
     await run({ anomalyEpisodeId: EPISODE });
     expect(h.sig).toHaveBeenCalledWith({ kind: 'anomaly', anomalyEpisodeId: EPISODE });
+  });
+});
+
+describe('find_proven_fixes deviceId + problem (W2 Task 17)', () => {
+  const DEVICE = '33333333-3333-4333-8333-333333333333';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.flag.mockResolvedValue(true);
+    h.partner.mockResolvedValue('p-1');
+    dev.os.mockResolvedValue('windows');
+    dev.verify.mockResolvedValue({ device: { id: DEVICE, orgId: 'org-1' } });
+    h.lookup.mockResolvedValue({ signature: { version: 1 }, proven: [{ memoryId: 'm', scope: 'all_clients' }], similar: [] });
+  });
+
+  it('computes the signature from the structured problem and the device OS', async () => {
+    const out = await run({ deviceId: DEVICE, problem: { type: 'service_stopped', serviceName: 'Spooler' } });
+    expect(h.sig).not.toHaveBeenCalled();
+    expect(h.lookup).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', partnerId: 'p-1', signature: expect.objectContaining({ broad: false }) }));
+    expect(out.proven).toHaveLength(1);
+  });
+
+  it('deviceId and problem come together, and never alongside alertId', async () => {
+    expect((await run({ deviceId: DEVICE })).error).toMatch(/exactly one/);
+    expect((await run({ alertId: ALERT, deviceId: DEVICE, problem: { type: 'reboot_pending' } })).error).toMatch(/exactly one|Invalid/);
+    expect((await run({ alertId: ALERT, deviceId: DEVICE, problem: { type: 'offline' } })).error).toMatch(/exactly one/);
+  });
+
+  it('denies a device the caller cannot see', async () => {
+    dev.verify.mockResolvedValueOnce({ error: 'Device not found or access denied' });
+    expect((await run({ deviceId: DEVICE, problem: { type: 'service_stopped', serviceName: 'x' } })).error).toBe('Device not found or access denied');
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('free text is refused', async () => {
+    expect((await run({ deviceId: DEVICE, problem: 'spooler keeps dying' })).error).toBeTruthy();
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('an incomplete problem skips the lookup instead of guessing', async () => {
+    const out = await run({ deviceId: DEVICE, problem: { type: 'metric' } });
+    expect(out.signature).toBeNull();
+    expect(h.lookup).not.toHaveBeenCalled();
   });
 });

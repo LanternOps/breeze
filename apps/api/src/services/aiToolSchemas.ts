@@ -35,6 +35,7 @@ import {
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 
 // Reusable validators
 const uuid = z.string().guid();
@@ -482,6 +483,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   find_proven_fixes: z.object({
     alertId: z.string().guid().optional(),
     anomalyEpisodeId: z.string().guid().optional(),
+    deviceId: z.string().guid().optional(),
+    problem: fixProblemSchema.optional(),
     limit: z.number().int().min(1).max(20).optional(),
   }),
 
