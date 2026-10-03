@@ -13,10 +13,13 @@
  *     [--cases w-svc-1,l-disk-1] [--concurrency 2] [--out research-eval-report.json]
  *     [--summary-md research-eval-summary.md]
  *
- * It WRITES fixture tenants (partner, org, device, alert, scripts) per case, so
- * it refuses without RESEARCH_EVAL_ALLOW_WRITES=1 and in production. The
+ * It WRITES fixture tenants (partner, org, device, alert, scripts) per case and
+ * never cleans them up (disposable stack only), so it refuses without
+ * RESEARCH_EVAL_ALLOW_WRITES=1, in production, and when DATABASE_URL is not a
+ * loopback host (override: RESEARCH_EVAL_ALLOW_REMOTE_DB=1). The
  * numbers inform a human decision; scores never gate (exit 0). Invalid usage,
- * a missing key, or a refused environment exits 2.
+ * a missing key, or a refused environment exits 2;
+ * an unexpected failure exits 1.
  */
 import { writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +30,17 @@ import { runResearchEvalCase } from '../researchEval/runCase';
 import { renderEvalMarkdown, scoreRun, summarizeDepth, type CaseRun, type CaseScore } from '../researchEval/score';
 
 class UsageError extends Error {}
+
+/** True when the URL's host is loopback. Unparseable or absent URLs are not loopback. */
+export function isLoopbackDatabaseUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
 
 type Depth = 'quick' | 'deep';
 
@@ -73,6 +87,10 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       throw new UsageError('refusing to write eval fixtures: set RESEARCH_EVAL_ALLOW_WRITES=1 and point DATABASE_URL at a disposable stack (pnpm test-stack up)');
     }
 
+    if (process.env.RESEARCH_EVAL_ALLOW_REMOTE_DB !== '1' && !isLoopbackDatabaseUrl(process.env.DATABASE_URL)) {
+      throw new UsageError('refusing to write eval fixtures: DATABASE_URL is not a loopback host; point it at the disposable test stack (or set RESEARCH_EVAL_ALLOW_REMOTE_DB=1 to override)');
+    }
+
     const jobs = args.depths.flatMap((depth) => args.cases.map((c) => ({ c, depth })));
     const runs: Array<CaseRun & { model?: string | null }> = new Array(jobs.length);
     let next = 0;
@@ -106,7 +124,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    return error instanceof UsageError ? 2 : 0;
+    return error instanceof UsageError ? 2 : 1;
   } finally {
     await closeDb();
   }
@@ -115,6 +133,6 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runCli().then((code) => process.exit(code)).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(0);
+    process.exit(1);
   });
 }

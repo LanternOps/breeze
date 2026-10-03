@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { closeDb } from '../../../db';
 import { runResearchEvalCase } from '../researchEval/runCase';
-import { runCli } from './research-eval';
+import { isLoopbackDatabaseUrl, runCli } from './research-eval';
 
 vi.mock('node:fs/promises', () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../../../db', () => ({ closeDb: vi.fn().mockResolvedValue(undefined) }));
@@ -18,6 +18,8 @@ beforeEach(() => {
   vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
   vi.stubEnv('RESEARCH_EVAL_ALLOW_WRITES', '1');
   vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/breeze_test');
+  vi.stubEnv('RESEARCH_EVAL_ALLOW_REMOTE_DB', '');
   vi.mocked(runResearchEvalCase).mockImplementation((async (_c: unknown, depth: 'quick' | 'deep') => completed(depth)) as never);
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -72,4 +74,24 @@ it('records a thrown case as a harness error and still exits 0', async () => {
   const report = JSON.parse(String(vi.mocked(writeFile).mock.calls[0]![1]));
   expect(report.scores[0]).toMatchObject({ failed: true });
   expect(report.cases[0]).toMatchObject({ status: 'harness_error', denial: 'boom' });
+});
+
+it('refuses a non-loopback DATABASE_URL unless explicitly overridden', async () => {
+  vi.stubEnv('DATABASE_URL', 'postgresql://u:p@db.internal-host:5432/breeze');
+  expect(await runCli(['--cases', 'w-svc-1'])).toBe(2);
+  expect(console.error).toHaveBeenCalledWith(expect.stringContaining('not a loopback host'));
+  expect(runResearchEvalCase).not.toHaveBeenCalled();
+  vi.stubEnv('RESEARCH_EVAL_ALLOW_REMOTE_DB', '1');
+  expect(await runCli(['--cases', 'w-svc-1', '--depth', 'quick'])).toBe(0);
+  expect(runResearchEvalCase).toHaveBeenCalledTimes(1);
+});
+
+it('classifies loopback hosts', () => {
+  for (const u of ['postgresql://a@localhost:1/x', 'postgresql://a@127.0.0.1:1/x', 'postgresql://a@[::1]:1/x']) expect(isLoopbackDatabaseUrl(u), u).toBe(true);
+  for (const u of ['postgresql://a@10.0.0.5:1/x', 'postgresql://a@localhost.evil-host:1/x', 'nonsense', undefined]) expect(isLoopbackDatabaseUrl(u), String(u)).toBe(false);
+});
+
+it('an unexpected non-usage exception exits 1', async () => {
+  vi.mocked(writeFile).mockRejectedValueOnce(new Error('disk full'));
+  expect(await runCli(['--cases', 'w-svc-1', '--depth', 'quick'])).toBe(1);
 });

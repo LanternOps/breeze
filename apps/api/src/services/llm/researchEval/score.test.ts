@@ -35,3 +35,24 @@ describe('research eval scoring', () => {
     expect(md).toContain('w-svc-1');
   });
 });
+
+describe('denied and errored runs', () => {
+  it('are excluded from cost percentiles and the cap recommendation, and flagged loudly', () => {
+    const ok = [4, 6].map((cost) => scoreRun(c as never, run({ costCents: cost })));
+    const denied = scoreRun(c as never, run({ status: 'denied', outcome: null, costCents: 0, turns: 0 }));
+    const errored = scoreRun(c as never, run({ status: 'harness_error', outcome: null, costCents: 0, turns: 0 }));
+    const summary = summarizeDepth([...ok, denied, errored], 'quick');
+    expect(summary).toMatchObject({ runs: 4, notExecuted: 2, failed: 2, costP50: 4, costP90: 6, recommendedCapCents: 8 });
+    expect(renderEvalMarkdown([summary], [...ok, denied, errored], { quick: 5, deep: 25 })).toContain('WARNING');
+  });
+  it('a depth where nothing executed has no cap recommendation', () => {
+    const denied = scoreRun(c as never, run({ status: 'denied', outcome: null, costCents: 0 }));
+    const summary = summarizeDepth([denied], 'quick');
+    expect(summary.recommendedCapCents).toBeNull();
+    expect(renderEvalMarkdown([summary], [denied], { quick: 5, deep: 25 })).toContain('insufficient data');
+  });
+  it('a failed-but-executed run still counts toward cost', () => {
+    const failedRun = scoreRun(c as never, run({ status: 'failed', outcome: null, costCents: 9 }));
+    expect(summarizeDepth([failedRun], 'quick')).toMatchObject({ notExecuted: 0, failed: 1, costP90: 9 });
+  });
+});

@@ -2,8 +2,11 @@ import type { ResearchOutcome } from '@breeze/shared';
 import type { ResearchEvalCase } from './cases';
 
 export interface CaseRun { caseId: string; depth: 'quick' | 'deep'; status: string; errorCode: string | null; costCents: number; turns: number; outcome: ResearchOutcome | null; denial?: string }
-export interface CaseScore { caseId: string; depth: 'quick' | 'deep'; costCents: number; turns: number; accepted: number; rejected: number; validity: number | null; expectationHit: boolean; forbiddenHit: boolean; failed: boolean }
-export interface DepthSummary { depth: 'quick' | 'deep'; runs: number; failed: number; costP50: number; costP90: number; costMax: number; turnsP90: number; validity: number; expectationHitRate: number; forbiddenHits: number; recommendedCapCents: number }
+export interface CaseScore { caseId: string; depth: 'quick' | 'deep'; costCents: number; turns: number; accepted: number; rejected: number; validity: number | null; expectationHit: boolean; forbiddenHit: boolean; failed: boolean; executed: boolean }
+export interface DepthSummary { depth: 'quick' | 'deep'; runs: number; notExecuted: number; failed: number; costP50: number; costP90: number; costMax: number; turnsP90: number; validity: number; expectationHitRate: number; forbiddenHits: number; recommendedCapCents: number | null }
+
+/** Statuses where the run never executed (nothing was measured). */
+const NOT_EXECUTED = new Set(['denied', 'harness_error', 'missing']);
 
 type Item = ResearchOutcome['items'][number];
 const kindOf = (item: Item) => item.kind;
@@ -22,7 +25,7 @@ export function scoreRun(c: ResearchEvalCase, run: CaseRun): CaseScore {
   return {
     caseId: run.caseId, depth: run.depth, costCents: run.costCents, turns: run.turns,
     accepted: items.length, rejected, validity: failed ? null : submitted === 0 ? 1 : items.length / submitted,
-    expectationHit, forbiddenHit, failed,
+    expectationHit, forbiddenHit, failed, executed: !NOT_EXECUTED.has(run.status),
   };
 }
 
@@ -36,19 +39,21 @@ export function recommendCapCents(p90: number): number {
   return Math.max(1, Math.ceil(p90 * 1.25));
 }
 
+/** Cost/turn percentiles and the cap recommendation use EXECUTED runs only: a denied run costs 0 and would drag the cap down. */
 export function summarizeDepth(scores: readonly CaseScore[], depth: 'quick' | 'deep'): DepthSummary {
   const s = scores.filter((x) => x.depth === depth);
-  const costs = s.map((x) => x.costCents).sort((a, b) => a - b);
-  const turns = s.map((x) => x.turns).sort((a, b) => a - b);
+  const executed = s.filter((x) => x.executed);
+  const costs = executed.map((x) => x.costCents).sort((a, b) => a - b);
+  const turns = executed.map((x) => x.turns).sort((a, b) => a - b);
   const ok = s.filter((x) => !x.failed);
   const p90 = pct(costs, 0.9);
   return {
-    depth, runs: s.length, failed: s.length - ok.length,
+    depth, runs: s.length, notExecuted: s.length - executed.length, failed: s.length - ok.length,
     costP50: pct(costs, 0.5), costP90: p90, costMax: costs.at(-1) ?? 0, turnsP90: pct(turns, 0.9),
     validity: ok.length ? ok.reduce((a, x) => a + (x.validity ?? 0), 0) / ok.length : 0,
     expectationHitRate: s.length ? s.filter((x) => x.expectationHit).length / s.length : 0,
     forbiddenHits: s.filter((x) => x.forbiddenHit).length,
-    recommendedCapCents: recommendCapCents(p90),
+    recommendedCapCents: executed.length ? recommendCapCents(p90) : null,
   };
 }
 
@@ -58,12 +63,16 @@ export function renderEvalMarkdown(
   summaries: readonly DepthSummary[], scores: readonly CaseScore[], defaults: { quick: number; deep: number },
 ): string {
   const out: string[] = ['# Research eval', ''];
+  const bad = summaries.filter((s) => s.failed > 0 || s.notExecuted > 0);
+  if (bad.length) {
+    out.push(`> **WARNING: ${bad.map((s) => `${s.depth}: ${s.failed} of ${s.runs} runs failed or were denied (${s.notExecuted} never executed)`).join('; ')}. Treat these numbers as unreliable.**`, '');
+  }
   for (const s of summaries) {
     out.push(
       `## ${s.depth}`, '',
       '| runs | failed | cost p50 | cost p90 | cost max | turns p90 | validity | hit rate | forbidden | recommended cap | current default |',
       '|---|---|---|---|---|---|---|---|---|---|---|',
-      `| ${s.runs} | ${s.failed} | ${f(s.costP50)}c | ${f(s.costP90)}c | ${f(s.costMax)}c | ${f(s.turnsP90)} | ${f(s.validity)} | ${f(s.expectationHitRate)} | ${s.forbiddenHits} | ${s.recommendedCapCents}c | ${defaults[s.depth]}c |`,
+      `| ${s.runs} | ${s.failed} | ${f(s.costP50)}c | ${f(s.costP90)}c | ${f(s.costMax)}c | ${f(s.turnsP90)} | ${f(s.validity)} | ${f(s.expectationHitRate)} | ${s.forbiddenHits} | ${s.recommendedCapCents === null ? 'insufficient data' : `${s.recommendedCapCents}c`} | ${defaults[s.depth]}c |`,
       '',
     );
   }

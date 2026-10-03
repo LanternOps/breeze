@@ -1,8 +1,10 @@
 /**
  * Seed ONE eval case into a DISPOSABLE stack and run real research on it:
  * requestResearch -> executeAgentRun inline (in-process enqueuer) -> read the
- * run row. Budget ceilings are lifted to 100 cents so the measured cost is
+ * run row. Budget ceilings are lifted (quick 50c, the validator max; deep 100c) so the measured cost is
  * never truncated by the cap being measured; turn caps stay as shipped.
+ *
+ * Fixture tenants are never cleaned up: run only against a disposable stack.
  *
  * The model is whatever the production path resolves for the fixture org
  * (resolveLlmConfigForOrg -> the platform LLM from ANTHROPIC_API_KEY); the row's
@@ -22,12 +24,16 @@ import type { ResearchEvalCase } from './cases';
 
 const sys = <T>(fn: () => Promise<T>) => withSystemDbAccessContext(fn);
 
-/** Budget ceilings lifted so the cap under measurement never truncates a run. */
-const LIFTED_LIMITS = { researchQuickBudgetCentsPerRun: 100, researchDeepBudgetCentsPerRun: 100, maxBudgetCentsPerDay: 5000 };
+/**
+ * Budget ceilings lifted so the cap under measurement never truncates a run.
+ * Quick is capped at 50 (the limits validator's max); deep at 100.
+ */
+export const LIFTED_LIMITS = { researchQuickBudgetCentsPerRun: 50, researchDeepBudgetCentsPerRun: 100, maxBudgetCentsPerDay: 5000 };
 
-export async function runResearchEvalCase(c: ResearchEvalCase, depth: 'quick' | 'deep'): Promise<CaseRun & { model: string | null }> {
+/** Seed one case's tenant, device, catalog and alert, and lift the research agent's budgets. Fixture rows are never cleaned up (disposable stack). */
+export async function seedResearchEvalCase(c: ResearchEvalCase): Promise<{ orgId: string; alertId: string; partnerId: string; deviceId: string }> {
   const tag = `eval-${c.id}-${randomUUID().slice(0, 6)}`;
-  const { orgId, alertId, partnerId } = await sys(async () => {
+  const seeded = await sys(async () => {
     const [p] = await db.insert(partners).values({ name: tag, slug: tag, type: 'msp', status: 'active' }).returning({ id: partners.id });
     const [o] = await db.insert(organizations).values({
       partnerId: p!.id, name: tag, slug: tag, status: 'active', currencyCode: 'USD',
@@ -57,14 +63,19 @@ export async function runResearchEvalCase(c: ResearchEvalCase, depth: 'quick' | 
       orgId: o!.id, deviceId: d!.id, ruleId, severity: c.alert.severity, title: c.alert.title, message: c.alert.message,
       context: c.alert.context ?? {},
     }).returning({ id: alerts.id });
-    return { orgId: o!.id, alertId: a!.id, partnerId: p!.id };
+    return { orgId: o!.id, alertId: a!.id, partnerId: p!.id, deviceId: d!.id };
   });
   await sys(async () => {
-    await ensureResearchAgent(partnerId);
+    await ensureResearchAgent(seeded.partnerId);
     await db.update(aiAgents).set({
       limits: sql`coalesce(${aiAgents.limits}, '{}'::jsonb) || ${JSON.stringify(LIFTED_LIMITS)}::jsonb`,
-    }).where(eq(aiAgents.partnerId, partnerId));
+    }).where(eq(aiAgents.partnerId, seeded.partnerId));
   });
+  return seeded;
+}
+
+export async function runResearchEvalCase(c: ResearchEvalCase, depth: 'quick' | 'deep'): Promise<CaseRun & { model: string | null }> {
+  const { orgId, alertId } = await seedResearchEvalCase(c);
   // In-process enqueuer: admission never touches BullMQ; the run is executed inline below.
   registerAgentRunEnqueuer(async () => ({ enqueued: true }));
   const requested = await sys(() => requestResearch({ orgId, sourceType: 'alert', sourceId: alertId, depth, trigger: 'manual', actorUserId: null }));
