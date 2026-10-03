@@ -45,13 +45,19 @@ CREATE INDEX IF NOT EXISTS remediation_suggestions_agent_run_idx
 
 -- Memory-attached (non-research) built-in and reviewed-steps rows: one per
 -- source + action / + reviewed instructions, the same "one attempt per source +
--- fix" rule W1 adopted for scripts (spec amendment).
-CREATE UNIQUE INDEX IF NOT EXISTS remediation_suggestions_source_builtin_uq
+-- fix" rule W1 adopted for scripts (spec amendment). Keyed on origin, NOT
+-- agent_run_id: agent_run_id is ON DELETE SET NULL, so a predicate on it would
+-- pull research rows into the index when their run is deleted (23505 on
+-- erasure). origin never changes. DROP first so a DB that applied an earlier
+-- draft of these predicates converges (identical result on re-apply).
+DROP INDEX IF EXISTS remediation_suggestions_source_builtin_uq;
+CREATE UNIQUE INDEX remediation_suggestions_source_builtin_uq
   ON remediation_suggestions (org_id, source_type, source_id, builtin_action)
-  WHERE target_type = 'builtin_action' AND agent_run_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS remediation_suggestions_source_instructions_uq
+  WHERE target_type = 'builtin_action' AND origin <> 'ai_research';
+DROP INDEX IF EXISTS remediation_suggestions_source_instructions_uq;
+CREATE UNIQUE INDEX remediation_suggestions_source_instructions_uq
   ON remediation_suggestions (org_id, source_type, source_id, instructions_id)
-  WHERE target_type = 'manual_steps' AND instructions_id IS NOT NULL AND agent_run_id IS NULL;
+  WHERE target_type = 'manual_steps' AND instructions_id IS NOT NULL AND origin <> 'ai_research';
 
 -- Built-in actions (W2 Task 15): a synchronous command's id, or the async
 -- OS-native cleanup run the watcher polls. device_commands is system-scoped
