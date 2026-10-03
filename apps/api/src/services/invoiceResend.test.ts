@@ -120,7 +120,10 @@ describe('resendInvoiceEmail', () => {
   it.each([
     ['failed', false, 'send_failed', []],
     ['sent', true, undefined, ['billing@example.test']],
-    [null, false, 'notice_queued', []],
+    ['pending', false, 'notice_queued', []],
+    ['sending', false, 'notice_queued', []],
+    // No outbox ID means no notice was queued; Send must surface the failure.
+    [null, false, 'send_failed', []],
   ] as const)('reports notice status %s without a second delivery', async (status, emailed, reason, recipients) => {
     dbResults.push([invoice({ sentAt: null })]);
     dbResults.push([{ eligible: true, state: 'awaiting_notice', noticeOutboxId: status ? 'notice-id' : null }]);

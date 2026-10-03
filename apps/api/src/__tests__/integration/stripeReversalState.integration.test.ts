@@ -10,7 +10,7 @@ import {
   orgAutopayEnrollments, orgPaymentMethods, invoiceCollectionAttempts, billingNoticeOutbox,
   accountingConnections, accountingEntityMappings,
   invoicePayments, invoices, invoiceStripePayments, organizations, partners,
-  stripeConnectAccounts, stripeFinancialEvents, users,
+  stripeConnectAccounts, stripeFinancialEvents, users, organizationUsers, roles, userNotifications,
 } from '../../db/schema';
 
 const { emitInvoiceEvent, writeAuditEventAsync } = vi.hoisted(() => ({
@@ -438,13 +438,21 @@ describe('C3 cumulative gross refunds allocate principal without drift', () => {
 });
 
 const returnedStaff=vi.hoisted(()=>vi.fn(async()=>undefined));
-vi.mock('../../services/autopay/staffNotifications',()=>({notifyAutopayStaff:returnedStaff}));
+// Keep transactional in-app notifications real; only post-commit email is a transport fake.
+vi.mock('../../services/autopay/staffNotifications', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../services/autopay/staffNotifications')>();
+  return { ...actual, sendAutopayStaffEmail: returnedStaff };
+});
 import {enqueueAttemptNotice} from '../../services/autopay/paymentNotices';
 async function seedAutopayBank(linkPayment=true) {
   const f=await seed(linkPayment);
   returnProvider.accountId=f.accountId; returnProvider.code='R01'; returnProvider.fail=false; returnProvider.amount=10000;
   return withSystemDbAccessContext(async()=>{
     await db.update(organizations).set({billingContact:{email:'billing@example.test'}}).where(eq(organizations.id,f.orgId));
+    const [role] = await db.insert(roles).values({
+      orgId: f.orgId, partnerId: f.partnerId, scope: 'organization', name: 'Return notice recipient',
+    }).returning();
+    await db.insert(organizationUsers).values({ orgId: f.orgId, userId: f.userId, roleId: role!.id });
     const [mapping]=await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.stripePaymentIntentId,f.paymentIntentId));
     const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:f.orgId,partnerId:f.partnerId,
@@ -464,6 +472,16 @@ async function seedAutopayBank(linkPayment=true) {
       invoiceStripePaymentId:mapping!.id,idempotencyKey:`autopay_return_${f.invoiceId}`,principalAmount:'100.00',
       feeAmount:'0.00',currency:'USD',state:linkPayment?'succeeded':'unapplied',initiatedBy:'client_on_session'}).returning();
     return {...f,attemptId:attempt!.id,mappingId:mapping!.id};
+  });
+}
+async function expectDurableReturnNotice(f: Awaited<ReturnType<typeof seedAutopayBank>>) {
+  const notices = await withSystemDbAccessContext(() => db.select().from(userNotifications)
+    .where(eq(userNotifications.orgId, f.orgId)));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({
+    userId: f.userId, orgId: f.orgId, type: 'billing', priority: 'high',
+    link: `/billing/invoices/${f.invoiceId}`, metadata: { event: 'payment.ach_returned' },
+    dedupeKey: `autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}:${f.userId}`,
   });
 }
 runDb('returns and restores bank principal once, preserving ach_debit',async()=>{
@@ -486,12 +504,14 @@ runDb('returns and restores bank principal once, preserving ach_debit',async()=>
   expect(returnedStaff).toHaveBeenCalledTimes(1);
   expect(returnedStaff).toHaveBeenCalledWith(expect.objectContaining({event:'payment.ach_returned',invoiceId:f.invoiceId,
     dedupeKey:`autopay:${f.attemptId}:payment.ach_returned:${f.mappingId}:dp_${f.invoiceId}`}));
+  await expectDurableReturnNotice(f);
   const restore=financialEvent(f,{stripeEventId:`evt_back_${f.invoiceId}`,eventType:'charge.dispute.funds_reinstated',
     providerCreated:301,refundedAmountMinor:null,disputeId:`dp_${f.invoiceId}`,disputeAmountMinor:10000,disputeFundsWithdrawn:false});
   await ingestStripeFinancialEvent(restore);await ingestStripeFinancialEvent(restore);
   const payments=await withSystemDbAccessContext(()=>db.select().from(invoicePayments).where(eq(invoicePayments.invoiceId,f.invoiceId)));
   expect(payments).toHaveLength(1);expect(payments[0]).toMatchObject({amount:'100.00',method:'ach_debit'});
   expect(returnedStaff).toHaveBeenCalledTimes(1);
+  await expectDurableReturnNotice(f);
 });
 runDb('closes a full refund of unapplied capture without inventing a ledger payment',async()=>{
   const f=await seedAutopayBank(false);
@@ -565,14 +585,25 @@ runDb('provider lookup failure leaves the return recoverable without holding a t
   returnProvider.fail = false;
   const [invoice] = await withSystemDbAccessContext(() => db.select().from(invoices).where(eq(invoices.id, f.invoiceId)));
   expect(invoice!.balance).toBe('0.00');
+  const [pending] = await withSystemDbAccessContext(() => db.select().from(stripeFinancialEvents)
+    .where(eq(stripeFinancialEvents.stripeEventId, event.stripeEventId)));
+  expect(pending).toMatchObject({ status: 'pending', processedAt: null });
+  expect(await withSystemDbAccessContext(() => db.select().from(userNotifications)
+    .where(eq(userNotifications.orgId, f.orgId)))).toHaveLength(0);
   await expect(ingestStripeFinancialEvent(event)).resolves.toMatchObject({ state: 'applied' });
+  await expectDurableReturnNotice(f);
 });
 runDb('staff delivery failure cannot prevent accounting audit or invoice hooks after a return', async () => {
   const f = await seedAutopayBank();
+  returnedStaff.mockClear();
+  vi.mocked(writeAuditEventAsync).mockClear();
+  vi.mocked(emitInvoiceEvent).mockClear();
   returnedStaff.mockRejectedValueOnce(new Error('staff unavailable'));
   await expect(ingestStripeFinancialEvent(financialEvent(f, { eventType: 'charge.dispute.funds_withdrawn',
     refundedAmountMinor: null, disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true })))
     .resolves.toMatchObject({ state: 'applied', change: 'reduced' });
+  expect(returnedStaff).toHaveBeenCalledTimes(1);
+  await expectDurableReturnNotice(f);
   expect(writeAuditEventAsync).toHaveBeenCalled();
   expect(emitInvoiceEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided', invoiceId: f.invoiceId }));
 });
