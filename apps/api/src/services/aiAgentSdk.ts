@@ -2401,8 +2401,13 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
   return async (toolName, input, output, isError, durationMs, sealed, handoff, sdkToolUseId) => {
     // A timed-out topology turn (C1): its gate is gone, so a tool that was
     // still in flight must not fall through to the generic path and persist
-    // its raw output.
-    if (session.topologyTurnSealed) return;
+    // its raw output. It did run, though, so it must stop being pending —
+    // otherwise a late SDK echo of its result would reach the dropped-call
+    // fallback, which persists that text (#7931).
+    if (session.topologyTurnSealed) {
+      claimToolUseId(session, toolName, sdkToolUseId);
+      return;
+    }
     if (session.topologyInvestigation) {
       await topologyPostToolUse(session, toolName, input, output, isError, durationMs, sdkToolUseId);
       return;

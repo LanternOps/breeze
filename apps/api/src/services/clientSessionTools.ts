@@ -22,7 +22,7 @@
 import { z } from 'zod';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { ActiveSession } from './streamingSessionManager';
-import { sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
+import { claimToolUseId, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 
 // ============================================
 // Declaration validation (zod)
@@ -301,6 +301,21 @@ export function makeClientDeclaredToolHandler(toolName: string, dispatch: Client
     const text = typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? null);
     return textResult(text);
   };
+}
+
+/**
+ * The `ClientToolDispatch` the helper chat route binds to its live session:
+ * pairs the call with the model's tool_use by the SDK's own id (never by
+ * queue position, #7931), then parks it for the client's result.
+ */
+export function dispatchClientDeclaredTool(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  sdkToolUseId?: string,
+): Promise<ClientToolDispatchResult> {
+  const toolUseId = claimToolUseId(session, toolName, sdkToolUseId) ?? crypto.randomUUID();
+  return requestClientDeclaredTool(session, toolUseId, toolName, input);
 }
 
 /** Prefixed MCP tool names (the SDK allowlist) for a set of declarations. */

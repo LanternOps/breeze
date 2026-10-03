@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   clientToolsSchema,
   requestClientDeclaredTool,
+  dispatchClientDeclaredTool,
   resolveClientDeclaredTool,
   failPendingClientDeclaredForSession,
   makeClientDeclaredToolHandler,
@@ -92,6 +93,39 @@ function fakeSession(id: string) {
     publish,
   };
 }
+
+describe('dispatchClientDeclaredTool (#7931)', () => {
+  afterEach(() => {
+    failPendingClientDeclaredForSession('sess-d');
+  });
+
+  function sessionWithPending() {
+    const publish = vi.fn();
+    const session = {
+      breezeSessionId: 'sess-d',
+      eventBus: { publish },
+      toolUseIdQueue: ['tu-other'],
+      toolUseNames: new Map([['tu-other', 'find_files']]),
+      resultedToolUseIds: new Set<string>(),
+      resultedWithoutIdByName: new Map<string, number>(),
+    } as unknown as ActiveSession;
+    return { session, publish };
+  }
+
+  it('requests the client tool under the SDK id, not the queue head', () => {
+    const { session, publish } = sessionWithPending();
+    void dispatchClientDeclaredTool(session, 'find_files', { q: 'x' }, 'tu-own');
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'client_tool_request', toolUseId: 'tu-own' }));
+    expect(session.toolUseIdQueue).toEqual(['tu-other']);
+  });
+
+  it('without an SDK id, claims the pending call of the same name', () => {
+    const { session, publish } = sessionWithPending();
+    void dispatchClientDeclaredTool(session, 'find_files', { q: 'x' });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ toolUseId: 'tu-other' }));
+    expect(session.toolUseIdQueue).toEqual([]);
+  });
+});
 
 describe('client-declared tool bridge', () => {
   beforeEach(() => {

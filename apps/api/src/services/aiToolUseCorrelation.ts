@@ -28,6 +28,7 @@
  */
 import type { ActiveSession } from './streamingSessionManager';
 import type { PostToolUseCallback } from './aiAgentSdkTools';
+import { captureMessage } from './sentry';
 
 /** The `_meta` key the Claude Code CLI puts the model's tool_use id under on `tools/call`. */
 export const SDK_TOOL_USE_ID_META_KEY = 'claudecode/toolUseId';
@@ -116,6 +117,10 @@ export function claimToolUseId(
   const names = session.toolUseNames;
   if (!names) return session.toolUseIdQueue.shift();
 
+  // Every chat tool call is expected to carry the SDK id; without it, two
+  // parallel calls of the same tool can be mis-paired. Make that loud.
+  reportMissingSdkToolUseId(session, toolName);
+
   const idx = session.toolUseIdQueue.findIndex((id) => names.get(id) === toolName);
   if (idx !== -1) {
     const [id] = session.toolUseIdQueue.splice(idx, 1);
@@ -125,6 +130,17 @@ export function claimToolUseId(
   const byName = (session.resultedWithoutIdByName ??= new Map());
   byName.set(toolName, (byName.get(toolName) ?? 0) + 1);
   return undefined;
+}
+
+const sessionsWarnedMissingId = new WeakSet<object>();
+
+function reportMissingSdkToolUseId(session: object, toolName: string): void {
+  if (sessionsWarnedMissingId.has(session)) return;
+  sessionsWarnedMissingId.add(session);
+  console.warn(
+    `[AI-SDK] tool call ${toolName} arrived without the SDK tool_use id (_meta['${SDK_TOOL_USE_ID_META_KEY}']) — pairing results by tool name for this session (#7931)`,
+  );
+  captureMessage('AI tool call without SDK tool_use id', { eventCode: 'ai_tool_use_id_missing', level: 'warning' });
 }
 
 /**

@@ -79,7 +79,7 @@ vi.mock('./aiAgent', () => ({
   buildSystemPrompt: vi.fn(),
   waitForApproval: vi.fn(),
 }));
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk' })),
   BREEZE_MCP_TOOL_NAMES: ['mcp__breeze__list_configuration_policies', 'mcp__breeze__get_effective_configuration'],
@@ -313,6 +313,19 @@ describe('tool_result pairing by the SDK tool_use_id (#7931)', () => {
     expect(rows.find((r) => r.toolName === EFFECTIVE_TOOL)?.toolUseId).toBe(EFFECTIVE_ID);
     expect(flagUpdates()).toHaveLength(0);
     expect(session.toolUseIdQueue).toHaveLength(0);
+  });
+
+  it('clears result-first markers at turn end so they cannot reach the next turn', async () => {
+    const session = await runTurn('sess-markers', [
+      // Results whose stream events never arrive in this turn (e.g. a call
+      // the CLI gave up on): both leave a marker behind.
+      { post: (post) => post(LIST_TOOL, {}, LIST_OUTPUT, false, 12, undefined, undefined, 'toolu_never_streamed') },
+      { post: (post) => post(EFFECTIVE_TOOL, {}, EFFECTIVE_OUTPUT, false, 9) },
+      { msg: RESULT_MSG },
+    ]);
+
+    expect(session.resultedToolUseIds?.size).toBe(0);
+    expect(session.resultedWithoutIdByName?.size).toBe(0);
   });
 
   it('without an SDK id, a call that finished before its stream event is never recorded as dropped', async () => {

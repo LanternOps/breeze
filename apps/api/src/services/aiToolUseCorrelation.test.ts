@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+
+const { captureMessageMock } = vi.hoisted(() => ({ captureMessageMock: vi.fn() }));
+vi.mock('./sentry', () => ({ captureMessage: captureMessageMock }));
+
 import {
   SDK_TOOL_USE_ID_META_KEY,
   claimToolUseId,
@@ -84,6 +88,30 @@ describe('pairing without an SDK id (fallback)', () => {
     expect(s.resultedWithoutIdByName.size).toBe(0);
     // A second same-name call is a fresh pending call again.
     expect(noteStreamedToolUse(s, 'a2', 'tool_a')).toBe(true);
+  });
+
+  it('reports a missing SDK id once per session (warn + Sentry), never when the id is present', () => {
+    captureMessageMock.mockClear();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const s1 = state();
+      claimToolUseId(s1, 'tool_a', 'with_id');
+      expect(captureMessageMock).not.toHaveBeenCalled();
+
+      claimToolUseId(s1, 'tool_a');
+      claimToolUseId(s1, 'tool_b');
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+      expect(captureMessageMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ eventCode: 'ai_tool_use_id_missing' }),
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      claimToolUseId(state(), 'tool_a');
+      expect(captureMessageMock).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('keeps head-of-queue pairing for sessions that track no names', () => {

@@ -271,6 +271,14 @@ export const SENTRY_EVENT_CODES = [
    * failing, so this is the only signal an operator gets.
    */
   'ai_agent_onlytools_unknown_name',
+  /**
+   * An AI chat tool call reached our handler without the SDK's tool_use id
+   * (`_meta['claudecode/toolUseId']`), so its result was paired by tool name
+   * instead (#7931). Reported once per session. Expected never to fire; if it
+   * does, the SDK/CLI stopped sending the id and same-name parallel calls can
+   * be mis-paired again.
+   */
+  'ai_tool_use_id_missing',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
