@@ -499,3 +499,97 @@ describe('cidrContains', () => {
     expect(cidrContains(prefix, address)).toBe(expected);
   });
 });
+
+describe('orphan network/gateway nodes and decommissioned devices (#7879)', () => {
+  const O = (n: number) => id('a2', n); // orphan canonical nodes
+  const hidden = (nodes: PresentationNode[]) => nodes.filter((node) => node.group?.kind === 'hidden');
+  const site = () => lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+  const orphanVisible = (input: PresentationGroupInput) => [
+    ...input.networks.map((n) => n.id), ...input.memberships.map((m) => m.endpointId), ...input.routes.map((r) => r.gatewayId),
+    ...(input.orphans ?? []).map((o) => o.id), ...(input.decommissioned ?? []),
+  ];
+
+  it('folds an orphan network into the card with the same prefix and an orphan gateway into the gateway group with the same address', () => {
+    const input: PresentationGroupInput = { ...site(), orphans: [
+      { id: O(1), kind: 'network', prefix: '10.1.2.0/24', address: null, evidenced: false },
+      { id: O(2), kind: 'gateway', prefix: null, address: '10.1.2.100', evidenced: false },
+      { id: O(3), kind: 'gateway', prefix: null, address: '10.1.2.100', evidenced: true },
+    ] };
+    const { nodes, edges } = build(input, { visible: orphanVisible(input) });
+    expect(networks(nodes)).toHaveLength(1);
+    expect(networks(nodes)[0]!.group!.canonicalNodeIds).toEqual([N(1), N(2), O(1)].sort());
+    // The card still counts and lists only its observed devices; its expansion focus stays a real member network.
+    expect(networks(nodes)[0]).toMatchObject({ memberCount: 2, frontierToken: `token:${N(1)}` });
+    expect(gateways(nodes)).toHaveLength(1);
+    expect(gateways(nodes)[0]!.group!.canonicalNodeIds).toEqual([G(1), G(2), O(2), O(3)].sort());
+    expect(hidden(nodes)).toEqual([]);
+    // Presentation only: no edge is invented for an orphan.
+    expect(edges.flatMap((edge) => edge.meaning === 'aggregate' ? edge.contributingRelationshipIds : []).sort()).toEqual([R(1), R(2)].sort());
+    for (const node of nodes) expect(presentationNodeSchema.safeParse(node).success, JSON.stringify(node)).toBe(true);
+    expect(nodes.every((node) => node.authority === false)).toBe(true);
+  });
+
+  it('puts evidenced link-local, host and overlay orphans under their non-LAN class so the hidden-networks toggle governs them', () => {
+    const input: PresentationGroupInput = { ...site(), orphans: [
+      { id: O(1), kind: 'network', prefix: 'fe80::/64', address: null, evidenced: true },
+      { id: O(2), kind: 'network', prefix: '169.254.0.0/16', address: null, evidenced: true },
+      { id: O(3), kind: 'network', prefix: '10.9.9.9/32', address: null, evidenced: true },
+      { id: O(4), kind: 'network', prefix: '100.64.0.0/10', address: null, evidenced: true },
+      { id: O(5), kind: 'network', prefix: 'fe80::/64', address: null, evidenced: true },
+    ] };
+    const { nodes } = build(input, { visible: orphanVisible(input) });
+    const byPrefix = Object.fromEntries(networks(nodes).map((node) => [node.group!.prefix, node]));
+    expect(byPrefix['fe80::/64']!.group).toMatchObject({ networkClass: 'link_local', members: [], observerCount: 0, canonicalNodeIds: [O(1), O(5)].sort() });
+    expect(byPrefix['169.254.0.0/16']!.group).toMatchObject({ networkClass: 'link_local', canonicalNodeIds: [O(2)] });
+    expect(byPrefix['10.9.9.9/32']!.group).toMatchObject({ networkClass: 'host', canonicalNodeIds: [O(3)] });
+    expect(byPrefix['100.64.0.0/10']!.group).toMatchObject({ networkClass: 'overlay', canonicalNodeIds: [O(4)] });
+    expect(byPrefix['fe80::/64']!.memberCount).toBe(0);
+    for (const node of nodes) expect(presentationNodeSchema.safeParse(node).success, JSON.stringify(node)).toBe(true);
+  });
+
+  it('excludes unmatched orphans with no current evidence, and leaves an evidenced unmatched LAN orphan as a canonical node', () => {
+    const input: PresentationGroupInput = { ...site(), orphans: [
+      { id: O(1), kind: 'network', prefix: 'fe80::/64', address: null, evidenced: false },
+      { id: O(2), kind: 'network', prefix: '10.7.0.0/24', address: null, evidenced: false },
+      { id: O(3), kind: 'gateway', prefix: null, address: '10.7.0.1', evidenced: false },
+      { id: O(4), kind: 'network', prefix: '10.8.0.0/24', address: null, evidenced: true },
+    ] };
+    const { nodes } = build(input, { visible: orphanVisible(input) });
+    expect(hidden(nodes)).toHaveLength(1);
+    expect(hidden(nodes)[0]).toMatchObject({ role: 'hidden_group', memberCount: 3, authority: false });
+    expect(hidden(nodes)[0]!.group).toMatchObject({ kind: 'hidden', basis: 'no_current_evidence', members: [], canonicalNodeIds: [O(1), O(2), O(3)].sort() });
+    const listed = nodes.flatMap((node) => node.group!.canonicalNodeIds);
+    expect(listed).not.toContain(O(4));
+    expect(networks(nodes).map((node) => node.group!.prefix)).toEqual(['10.1.2.0/24']);
+  });
+
+  it('hides decommissioned devices from every card and counts them, without reshaping the cards they used to observe', () => {
+    const base = lan([
+      { n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' },
+      // E(3) is decommissioned: its stale routes must not split the LAN into a conflict.
+      { n: 3, prefix: '10.1.2.0/24', gateway: '10.1.2.254' },
+    ], { unplaced: [{ endpointId: E(40), addresses: ['10.1.2.40'] }] });
+    const input: PresentationGroupInput = { ...base, decommissioned: [E(3), E(40)] };
+    const { nodes, edges } = build(input, { visible: [...orphanVisible(input), E(40)] });
+    expect(networks(nodes)).toHaveLength(1);
+    expect(networks(nodes)[0]!.group).toMatchObject({ conflict: false, gatewayAddresses: ['10.1.2.1'], observerCount: 2 });
+    expect(networks(nodes)[0]!.group!.members.map((m) => m.nodeId)).toEqual([E(1), E(2)].sort());
+    expect(gateways(nodes).map((node) => node.group!.address)).toEqual(['10.1.2.1']);
+    expect(edges.flatMap((edge) => edge.meaning === 'aggregate' ? edge.contributingRelationshipIds : [])).not.toContain(R(3));
+    expect(unidentified(nodes)).toEqual([]);
+    const decommissioned = hidden(nodes).find((node) => node.group!.basis === 'decommissioned')!;
+    expect(decommissioned).toMatchObject({ role: 'hidden_group', memberCount: 2 });
+    expect(decommissioned.group!.canonicalNodeIds).toEqual([E(3), E(40)].sort());
+    expect(presentationNodeSchema.safeParse(decommissioned).success).toBe(true);
+  });
+
+  it('counts hidden nodes site-wide but lists only this page', () => {
+    const input: PresentationGroupInput = { ...site(), decommissioned: [E(30), E(31)], orphans: [{ id: O(1), kind: 'network', prefix: '10.7.0.0/24', address: null, evidenced: false }] };
+    const { nodes } = build(input, { visible: [N(1), N(2), E(1), E(2), G(1), G(2), E(30)] });
+    const decommissioned = hidden(nodes).find((node) => node.group!.basis === 'decommissioned')!;
+    expect(decommissioned).toMatchObject({ memberCount: 2 });
+    expect(decommissioned.group!.canonicalNodeIds).toEqual([E(30)]);
+    // Nothing of the stale orphan is on this page, so it emits no hidden group at all.
+    expect(hidden(nodes).map((node) => node.group!.basis)).toEqual(['decommissioned']);
+  });
+});

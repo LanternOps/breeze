@@ -100,6 +100,22 @@ describe('presentNode identity, freshness and evidence', () => {
     expect(graphNodeSchema.safeParse(node).success).toBe(true);
   });
 
+  it('rolls the latest relationship observation into the node evidence (#7879)', () => {
+    const kinds = [['default_route', 'os_network_context', false, 'observed']] as NonNullable<NodeRow['support']>['kinds'];
+    const observed = '2026-10-02T19:55:00.000Z';
+    // An agent node has no node-level observation of its own: its routes are its evidence.
+    const node = presentNode({ ...row, support: { count: '1', freshUntil: future, observedAt: observed, kinds } }, false);
+    expect(node.evidence.lastObservedAt).toBe(observed);
+    expect(node.freshness).toBe('fresh');
+    expect(graphNodeSchema.safeParse(node).success).toBe(true);
+    // The later of the node's own observation and its relationships' wins.
+    expect(presentNode({ ...row, lastObservedAt: '2026-10-02T20:00:00.000Z', support: { count: '1', freshUntil: future, observedAt: observed, kinds } }, false)
+      .evidence.lastObservedAt).toBe('2026-10-02T20:00:00.000Z');
+    expect(presentNode({ ...row, lastObservedAt: '2026-10-01T00:00:00.000Z', support: { count: '1', freshUntil: future, observedAt: observed, kinds } }, false)
+      .evidence.lastObservedAt).toBe(observed);
+    expect(presentNode({ ...row, support: { count: '0', freshUntil: null, observedAt: null, kinds: [] } }, false).evidence.lastObservedAt).toBeNull();
+  });
+
   it('keeps legacy and manual provenance in the evidence summary', () => {
     const legacy = presentNode({ ...row, legacy: true, support: { count: '1', freshUntil: null, kinds: [['network_member', null, true, 'observed']] } }, false);
     expect(legacy.evidence.methods).toEqual(['legacy']);
@@ -125,6 +141,20 @@ describe('node label and search SQL', () => {
     expect(query.sql).toMatch(/host\(\w+\.ip_address\) ILIKE/);
     expect(query.sql).toMatch(/\w+\.ip_address ILIKE/);
     expect(query.sql.match(/mac_address ILIKE/g)?.length).toBe(2);
+  });
+
+  it('derives scan presence from the latest completed discovery scan, never the sticky is_online column (#7879)', () => {
+    const compiled = text(nodeColumns(scope, { physical: true })).sql;
+    expect(compiled).toContain('discovery_jobs');
+    expect(compiled).toMatch(/last_job_id/);
+    expect(compiled).toMatch(/status = 'completed'/);
+    expect(compiled).not.toMatch(/is_online/);
+  });
+
+  it('rolls confirmed relationship observations into the node support summary (#7879)', () => {
+    const compiled = text(nodeColumns(scope, { physical: true })).sql;
+    expect(compiled).toContain("'observedAt'");
+    expect(compiled).toContain('confirmed_through_at');
   });
 
   it('reads inventory and incident support under the relationship exposure gate', () => {

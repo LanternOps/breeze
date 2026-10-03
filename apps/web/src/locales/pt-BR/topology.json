@@ -622,6 +622,8 @@
     "useLayout": "Usar layout agrupado",
     "showAllNetworks_one": "Mostrar {{count}} rede de link local, VPN ou de host único",
     "showAllNetworks_other": "Mostrar {{count}} redes de link local, VPN ou de host único",
+    "hiddenDevices_one": "{{count}} dispositivo removido oculto",
+    "hiddenDevices_other": "{{count}} dispositivos removidos ocultos",
     "evidenceSection": "Evidências e atualidade",
     "type": "Tipo",
     "addresses": "Endereços",

@@ -17,7 +17,8 @@ export default function TopologyList({ graph, onSelect, search = '', hidden }: {
   for (const pass of [true, false]) for (const group of graph.presentation.nodes) for (const member of group.group?.kind === 'network' ? group.group.members : []) {
     if (member.primary === pass && !networkOf.has(member.nodeId)) networkOf.set(member.nodeId, group.label);
   }
-  const nodes = [...graph.nodes, ...graph.presentation.nodes].filter((node) => node.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+  // Hidden groups (#7879) are a fold instruction for the map, not a row.
+  const nodes = [...graph.nodes, ...graph.presentation.nodes.filter((node) => node.group?.kind !== 'hidden')].filter((node) => node.label.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
     .sort((a, b) => (networkOf.get(a.id) ?? '\uffff').localeCompare(networkOf.get(b.id) ?? '\uffff', 'en', { numeric: true }) || a.label.localeCompare(b.label, 'en', { numeric: true }));
   const labels = new Map([...graph.nodes, ...graph.presentation.nodes].map((node) => [node.id, node.label]));
   // Name a hidden connection by its two endpoints; fall back to the id prefix only when an endpoint is not in this graph.

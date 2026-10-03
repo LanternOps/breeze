@@ -622,6 +622,8 @@
     "useLayout": "Gruplanmış düzeni kullan",
     "showAllNetworks_one": "link-local, VPN veya tek ana bilgisayarlı {{count}} ağı göster",
     "showAllNetworks_other": "link-local, VPN veya tek ana bilgisayarlı {{count}} ağı göster",
+    "hiddenDevices_one": "{{count}} çıkarılmış cihaz gizlendi",
+    "hiddenDevices_other": "{{count}} çıkarılmış cihaz gizlendi",
     "evidenceSection": "Kanıt ve güncellik",
     "type": "Tür",
     "addresses": "Adresler",
