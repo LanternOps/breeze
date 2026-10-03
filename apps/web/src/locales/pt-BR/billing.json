@@ -2423,6 +2423,7 @@
     }
   },
   "autopay": {
+    "noticeQueued": "Aviso de pagamento automático na fila",
     "requestDeliveryFailed": "Não foi possível entregar o e-mail da solicitação. Envie novamente.",
     "skipNoContact": "Não há e-mail de cobrança disponível. Adicione um ou informe um destinatário.",
     "skipStripeNotReady": "O Stripe não está pronto para pagamentos automáticos. Verifique a conexão e as permissões.",

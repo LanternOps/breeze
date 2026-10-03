@@ -2423,6 +2423,7 @@
     }
   },
   "autopay": {
+    "noticeQueued": "Hinweis zur automatischen Zahlung in die Warteschlange gestellt",
     "requestDeliveryFailed": "Die Anfrage-E-Mail konnte nicht zugestellt werden. Senden Sie sie erneut.",
     "skipNoContact": "Keine E-Mail-Adresse für die Abrechnung vorhanden. Fügen Sie eine hinzu oder geben Sie einen Empfänger an.",
     "skipStripeNotReady": "Stripe ist nicht für automatische Zahlungen bereit. Prüfen Sie Verbindung und Berechtigungen.",

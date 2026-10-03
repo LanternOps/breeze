@@ -893,16 +893,15 @@ export async function getInvoicePdf(invoiceId: string): Promise<Buffer | null> {
 // ---------------------------------------------------------------------------
 
 /** Why the best-effort email step did not deliver. `send_failed` is reachable
- *  only on the re-send path: a first send lets a transport throw propagate
- *  (the caller is mid-issue and must learn the send failed), while a re-send
- *  changes no invoice state and so has nothing to roll back — reporting the
- *  failure honestly beats a 500 on an invoice that is already issued. */
+ *  on both first-send and re-send paths. A failed autopay notice remains a
+ *  visible send failure; a pending notice returns `notice_queued` without
+ *  claiming that an invoice email was delivered. */
 export type SendInvoiceEmailReason = 'no_email_service' | 'no_billing_contact' | 'send_failed' | 'pdf_render_failed' | 'notice_queued';
 
 /** Result of a send attempt: the (issued) invoice plus an honest signal of
- *  whether an email was actually dispatched. `emailed:false` means the invoice
- *  IS issued (sent_at stamped, invoice.sent emitted) but no email left the box,
- *  with `reason` distinguishing "email not configured" from "no billing contact". */
+ *  whether an email was actually dispatched. `emailed:false` means no email
+ *  was dispatched; it does not imply `sentAt` was stamped or `invoice.sent`
+ *  emitted. `reason` distinguishes the specific outcome. */
 export interface SendInvoiceResult {
   invoice: InvoiceRow;
   emailed: boolean;

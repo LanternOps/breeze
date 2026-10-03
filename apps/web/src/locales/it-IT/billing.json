@@ -2423,6 +2423,7 @@
     }
   },
   "autopay": {
+    "noticeQueued": "Avviso di pagamento automatico accodato",
     "requestDeliveryFailed": "Impossibile recapitare l’e-mail di richiesta. Inviala di nuovo.",
     "skipNoContact": "Nessun indirizzo e-mail di fatturazione disponibile. Aggiungine uno o indica un destinatario.",
     "skipStripeNotReady": "Stripe non è pronto per i pagamenti automatici. Controlla la connessione e le autorizzazioni.",
