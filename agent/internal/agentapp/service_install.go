@@ -100,6 +100,14 @@ func applyLaunchdJob(run commandRunner, label, plistPath string, loaded bool, pl
 		}
 		return true, nil
 	}
+	// self_uninstall leaves the label disabled in launchd's override database
+	// (#2796), and a disabled label refuses bootstrap with "Bootstrap failed:
+	// 5: Input/output error" (#7831). Installing is an explicit request to run
+	// it, so clear the disable first. Best-effort: on failure the bootstrap
+	// below still runs and reports launchd's own error.
+	if out, enErr := run("launchctl", "enable", "system/"+label); enErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not enable %s: %s\n", label, strings.TrimSpace(string(out)))
+	}
 	out, bootErr := run("launchctl", "bootstrap", "system", plistPath)
 	if bootErr == nil {
 		return true, nil

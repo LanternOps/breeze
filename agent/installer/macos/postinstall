@@ -30,6 +30,9 @@ DESKTOP_LOGINWINDOW_PLIST="/Library/LaunchAgents/com.breeze.desktop-helper-login
 BIN_DIR="$(choose_bin_dir)"
 echo "Installing Breeze daemon binaries to $BIN_DIR"
 if [ "$BIN_DIR" = "$TRUSTED_BIN_DIR" ]; then
+    if ! legacy_dir_is_safe "$LEGACY_BIN_DIR"; then
+        explain_unsafe_legacy_dir "$LEGACY_BIN_DIR"
+    fi
     ensure_trusted_bin_dir
 fi
 BINARY="$BIN_DIR/breeze-agent"
@@ -69,13 +72,6 @@ chmod 0755 "$DESKTOP_HELPER_BINARY"
 chmod 0644 "$DAEMON_PLIST"
 chmod 0644 "$DESKTOP_USER_PLIST"
 chmod 0644 "$DESKTOP_LOGINWINDOW_PLIST"
-
-# Bootstrap watchdog daemon
-if [ -f "$WATCHDOG_PLIST" ]; then
-    launchctl bootout system/com.breeze.watchdog 2>/dev/null || true
-    launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || \
-        launchctl load "$WATCHDOG_PLIST" 2>/dev/null || true
-fi
 
 # breeze_group_has_member reports whether $1 is in the breeze group.
 breeze_group_has_member() {
@@ -140,11 +136,22 @@ add_console_users_to_breeze_group
 chgrp breeze "$CONFIG_DIR" 2>/dev/null || \
     echo "Warning: could not group-own $CONFIG_DIR as breeze" >&2
 
-# Stop existing service if running
-launchctl bootout system/com.breeze.agent 2>/dev/null || true
-
-# Load the daemon (starts automatically via RunAtLoad)
-launchctl bootstrap system "$DAEMON_PLIST"
+# Load the agent daemon (starts via RunAtLoad), THEN the watchdog. A watchdog
+# loaded first finds no agent and, on its first process tick, bootstraps the
+# agent itself, racing this script's own bootout/bootstrap (#7831).
+# `breeze-agent service install` uses the same agent-first order. Failing to
+# load the agent fails the install; bootstrap_system_daemon prints why and how
+# to recover.
+if ! bootstrap_system_daemon com.breeze.agent "$DAEMON_PLIST"; then
+    exit 1
+fi
+# The watchdog only supervises; the agent runs without it, so a failure here
+# warns rather than failing an install whose agent is already up.
+if [ -f "$WATCHDOG_PLIST" ]; then
+    if ! bootstrap_system_daemon com.breeze.watchdog "$WATCHDOG_PLIST"; then
+        echo "Warning: the watchdog did not load; the agent was loaded but has no supervisor" >&2
+    fi
+fi
 
 # Load the user helper LaunchAgent for all currently logged-in GUI users.
 # The plist lives in /Library/LaunchAgents/ so launchd will auto-load it
