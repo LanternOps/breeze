@@ -83,7 +83,9 @@ export async function setInvoiceAutopayExcluded(tx: Tx, invoiceId: string, exclu
     throw new InvoiceServiceError('A payment control is pending', 409, 'COLLECTION_IN_PROGRESS');
   }
   await tx.update(invoices).set({ autopayExcluded: false, updatedAt: new Date() }).where(eq(invoices.id, invoiceId));
-  if (!schedule?.enrollmentId || schedule.state !== 'excluded_by_msp' || schedule.clientSkippedAt) return { status: 'included' };
+  const issuanceExcluded = schedule?.state === 'not_needed' && schedule.ineligibleReason === 'excluded_invoice';
+  if (!schedule?.enrollmentId || (schedule.state !== 'excluded_by_msp' && !issuanceExcluded)
+    || schedule.clientSkippedAt) return { status: 'included' };
   if (!schedule.eligible && schedule.ineligibleReason !== 'excluded_invoice') return { status: 'included' };
   const [enrollment] = await tx.select().from(orgAutopayEnrollments)
     .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
@@ -118,9 +120,10 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
   if (!enabled && !processing && !unapplied && !actionRequired) return null;
   const [schedule] = await tx.select().from(invoiceAutopaySchedules)
     .where(eq(invoiceAutopaySchedules.invoiceId, invoice.id)).limit(1);
-  const pending = pendingInvoiceControl(schedule?.stateReason ?? null);
+  const pending = pendingInvoiceControl(schedule?.stateReason ?? null)
+    ?? (invoice.autopayExcluded && (processing || actionRequired) ? 'exclude' : null);
   return { state: unapplied ? 'unapplied' : processing ? 'processing' : actionRequired ? 'action_required' : schedule?.state ?? 'not_needed',
-    reason: schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
+    reason: pending ? `control_pending:${pending}` : schedule?.stateReason ?? schedule?.ineligibleReason ?? null, collectOn: schedule?.collectOn ?? null,
     noticeSentAt: schedule?.noticeSentAt?.toISOString() ?? null, excluded: invoice.autopayExcluded,
     canExclude: enabled && ['draft', 'sent', 'partially_paid', 'overdue'].includes(invoice.status)
       && !processing && !actionRequired && !unapplied && !pending,

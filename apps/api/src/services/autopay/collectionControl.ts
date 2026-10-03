@@ -49,15 +49,26 @@ export async function requestInvoiceControl(tx: Tx, input: {
   if (pending === input.kind) return { status: 'pending', control: input.kind };
   if (pending) throw new InvoiceServiceError('Another payment control is pending', 409, 'COLLECTION_IN_PROGRESS');
   if (input.kind === 'skip' && schedule?.state === 'skipped_by_client') return { status: 'skipped' };
-  if (input.kind === 'exclude' && invoice.autopayExcluded && (!schedule || schedule.state === 'excluded_by_msp')) return { status: 'excluded' };
-  if (['void', 'paid'].includes(invoice.status)) throw new InvoiceServiceError('Invoice is closed', 409, 'INVALID_STATE');
+  const alreadyExcluded = input.kind === 'exclude' && invoice.autopayExcluded
+    && (!schedule || schedule.state === 'excluded_by_msp');
+  if (!alreadyExcluded && ['void', 'paid'].includes(invoice.status)) throw new InvoiceServiceError('Invoice is closed', 409, 'INVALID_STATE');
   if (input.kind === 'skip' && (!schedule?.enrollmentId || !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required'].includes(schedule.state))) {
     throw new InvoiceServiceError('Invoice cannot be skipped', 409, 'INVALID_STATE');
   }
   const now = new Date();
-  if (input.kind === 'exclude') await tx.update(invoices).set({ autopayExcluded: true, updatedAt: now }).where(eq(invoices.id, invoice.id));
-  // A historical/terminal schedule never acquires new charging authority.
-  if (!schedule || (input.kind === 'exclude' && !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required', 'not_needed'].includes(schedule.state))) {
+  if (input.kind === 'exclude' && !invoice.autopayExcluded) {
+    await tx.update(invoices).set({ autopayExcluded: true, updatedAt: now }).where(eq(invoices.id, invoice.id));
+  }
+  // Reservations are invoice-wide: client-on-session attempts need no schedule.
+  // The invoice fence plus attempt.invoiceId lets the reconciler discover these
+  // pending controls without creating a schedule or enrollment authority.
+  const [reserving] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
+    .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
+      inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
+  if (!schedule) return reserving ? { status: 'pending', control: input.kind } : { status: 'excluded' };
+  // Preserve terminal history, but only report completion after inspecting money.
+  if (!reserving && input.kind === 'exclude'
+    && !['awaiting_notice', 'scheduled', 'retry_scheduled', 'collecting', 'action_required', 'not_needed'].includes(schedule.state)) {
     return { status: 'excluded' };
   }
   await tx.update(invoiceAutopaySchedules).set(input.kind === 'skip'
@@ -67,9 +78,6 @@ export async function requestInvoiceControl(tx: Tx, input: {
     eq(billingNoticeOutbox.invoiceId, invoice.id), eq(billingNoticeOutbox.kind, 'invoice_autopay'),
     inArray(billingNoticeOutbox.status, ['pending', 'failed']),
   ));
-  const [reserving] = await tx.select({ id: invoiceCollectionAttempts.id }).from(invoiceCollectionAttempts)
-    .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id),
-      inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES]))).limit(1);
   if (reserving) {
     await tx.update(invoiceAutopaySchedules).set({ stateReason: `control_pending:${input.kind}` })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));

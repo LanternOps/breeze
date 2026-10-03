@@ -1,12 +1,13 @@
 import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnrollments,
   orgPaymentMethods, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox } from '../../db/schema';
 import { mintBillingLinkToken } from './linkTokens';
 import { skipInvoice, setInvoiceAutopayExcluded } from './invoiceControls';
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { requestInvoiceControl } from './collectionControl';
 
 async function fixture() {
@@ -59,3 +60,41 @@ it('denies foreign org before touching the invoice or schedule',async()=>{
   await expect(withSystemDbAccessContext(()=>db.transaction(tx=>setInvoiceAutopayExcluded(tx,f.invoice.id,true,{...f.actor,accessibleOrgIds:[randomUUID()]})))).rejects.toMatchObject({status:403});
   const [invoice]=await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id)));expect(invoice!.autopayExcluded).toBe(false);
 });
+
+
+it.each(['reserved', 'created', 'confirming', 'processing', 'requires_action'] as const)(
+  'persists a discoverable invoice fence for a schedule-less %s attempt',
+  async state => {
+    const f = await fixture();
+    const [originalAttempt] = await withSystemDbAccessContext(async () => {
+      await db.delete(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+      return db.insert(invoiceCollectionAttempts).values({
+        ...f.attempt, scheduleId: null, initiatedBy: 'client_on_session', state,
+      }).returning();
+    });
+
+    const result = await withSystemDbAccessContext(() => db.transaction(tx =>
+      setInvoiceAutopayExcluded(tx, f.invoice.id, true, f.actor)));
+
+    expect(result).toEqual({ status: 'pending', control: 'exclude' });
+    expect(await withSystemDbAccessContext(() => db.transaction(tx =>
+      setInvoiceAutopayExcluded(tx, f.invoice.id, true, f.actor)))).toEqual(result);
+    await withSystemDbAccessContext(async () => {
+      // The reconciler can discover this control through invoice_id without a schedule.
+      const pending = await db.select({ attempt: invoiceCollectionAttempts, invoice: invoices })
+        .from(invoiceCollectionAttempts)
+        .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
+        .where(and(eq(invoices.id, f.invoice.id), eq(invoices.autopayExcluded, true),
+          inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
+      expect(pending).toHaveLength(1);
+      expect(pending[0]!.attempt).toEqual(originalAttempt);
+      expect(await db.select().from(invoiceAutopaySchedules)
+        .where(eq(invoiceAutopaySchedules.invoiceId, f.invoice.id))).toEqual([]);
+      expect(await db.select().from(billingNoticeOutbox)
+        .where(eq(billingNoticeOutbox.invoiceId, f.invoice.id))).toEqual([]);
+    });
+    await expect(withSystemDbAccessContext(() => db.transaction(tx =>
+      setInvoiceAutopayExcluded(tx, f.invoice.id, false, f.actor))))
+      .rejects.toMatchObject({ status: 409, code: 'COLLECTION_IN_PROGRESS' });
+  },
+);

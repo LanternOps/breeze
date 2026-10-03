@@ -1,4 +1,3 @@
-import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { config as loadDotenv } from 'dotenv';
 loadDotenv({ quiet: true });
 // Canonicalize NODE_ENV before any module reads it (some routes/services gate
@@ -52,6 +51,7 @@ import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { autopayRoutes } from './routes/autopay';
+import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
 import { portalPaymentMethodRoutes } from './routes/portal/paymentMethods';
 import { contractRoutes } from './routes/contracts';
