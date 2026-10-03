@@ -49,6 +49,7 @@ import { shrinkToJsonBudget } from './aiToolOutput';
 import { sha256Content } from './scriptVersions';
 import { isDeniedRegistryTarget } from '../routes/systemTools/sensitiveTargets';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { inToolDbPhase } from './aiToolDbContext';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -251,9 +252,13 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     if (!aiScriptAuthoringEnabled()) {
       return JSON.stringify({ error: 'feature_disabled: AI script authoring is not enabled on this deployment' });
     }
+    const proposalId = input.proposalId;
     const proposalDeviceIds = input.deviceIds as string[];
-    const runnable = await assertProposalRunnable(auth, {
-      proposalId: input.proposalId,
+    // #7918 — run_script is self-managed (no per-call transaction), so every
+    // read below opens its own short caller-scoped context and the device wait
+    // holds none. See `inToolDbPhase`.
+    const runnable = await inToolDbPhase(auth, () => assertProposalRunnable(auth, {
+      proposalId,
       deviceIds: proposalDeviceIds,
       runAs: input.runAs as string | undefined,
       timeoutSeconds: input.timeoutSeconds as number | undefined,
@@ -262,7 +267,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       // at creation; without it every approved proposal would read as
       // `consumed` by itself.
       releasingIntentId: context?.actionIntentId,
-    });
+    }));
     // Never a silent fallback to scriptId (spec §4.2): running something
     // other than the reviewed artifact is the failure this design exists to
     // prevent, so a refusal is always surfaced as a tool error.
@@ -295,9 +300,12 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     // Same cap and same wait as the library path below — a proposal is not a
     // reason to relax either.
     for (const deviceId of proposalDeviceIds.slice(0, 10)) {
-      const access = await verifyDeviceAccess(deviceId, auth, true);
-      if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
       try {
+        // Inside the per-device try (like the library path): each check now
+        // takes its own short connection, and a throw for one device must not
+        // lose the results of devices this call already dispatched.
+        const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
+        if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
         const created = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
           aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,
@@ -407,7 +415,9 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
   }
 
   // Resolve script content upfront so the agent receives the full payload
-  const script = verified ? verified.scriptRow : await queryRunScriptRow(input.scriptId as string, auth);
+  const script = verified
+    ? verified.scriptRow
+    : await inToolDbPhase(auth, () => queryRunScriptRow(input.scriptId as string, auth));
 
   if (!script || !script.content) {
     return JSON.stringify({ error: 'Script not found or has no content' });
@@ -438,7 +448,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
   for (const deviceId of deviceIds.slice(0, 10)) { // Limit to 10 devices
     try {
       // Verify access
-      const access = await verifyDeviceAccess(deviceId, auth);
+      const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth));
       if ('error' in access) {
         results[deviceId] = { error: access.error };
         continue;
@@ -477,30 +487,32 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       }
 
       if (scriptPartnerId !== null) {
-        const [deviceOrg] = await db
+        const [deviceOrg] = await inToolDbPhase(auth, () => db
           .select({ partnerId: organizations.partnerId })
           .from(organizations)
           .where(eq(organizations.id, access.device.orgId))
-          .limit(1);
+          .limit(1));
         if (!deviceOrg || deviceOrg.partnerId !== scriptPartnerId) {
           results[deviceId] = { error: 'Device not found or access denied' };
           continue;
         }
       }
 
-      // Escape the ambient held transaction before dispatch + poll (#3409 C1).
+      // Escape any ambient held transaction before dispatch + poll (#3409 C1).
       //
-      // Every AI tool handler (this one included) runs inside ONE held
-      // Postgres transaction for the whole turn — aiAgentSdkTools.ts:400
-      // and jobs/intentReleaseWorker.ts:459 both wrap tool dispatch in
-      // withDbAccessContext (see db/index.ts:436-484 for what "held"
-      // means: a real `baseDb.transaction()` that doesn't commit until
-      // the callback returns). Everything above this point (the script
-      // select, verifyDeviceAccess, the partner-org lookup) is RLS-scoped
-      // read work that belongs in that ambient transaction. Dispatch does
-      // not: if the device_commands INSERT stayed inside it, the row
-      // would be invisible to the agent-WS handler that processes the
-      // result on a *different* connection — its `UPDATE device_commands
+      // run_script is self-managed (#7918): the SDK wrapper, the MCP route
+      // and the intent-release worker open NO per-call transaction for it,
+      // and everything above this point (the script select,
+      // verifyDeviceAccess, the partner-org lookup) ran in its own short
+      // caller-scoped context via `inToolDbPhase`. A caller that still
+      // wraps the call in `withDbAccessContext` (see db/index.ts for what
+      // "held" means: a real `baseDb.transaction()` that doesn't commit
+      // until the callback returns) is joined instead, and then it — not
+      // this handler — owns the connection it pins for the wait below.
+      // Dispatch must never run inside such a transaction: if the
+      // device_commands INSERT stayed inside it, the row would be
+      // invisible to the agent-WS handler that processes the result on a
+      // *different* connection — its `UPDATE device_commands
       // ... WHERE id = commandId` would match 0 rows, and
       // waitForCommandResult would burn the full 60s timeout per device
       // while holding a pooled connection the entire time.
@@ -729,6 +741,12 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     domain: 'scripts',
     searchHint: 'script execution on devices from saved library scripts or reviewed proposals',
     deviceArgs: ['deviceIds'],
+    // Waits up to 60 s PER DEVICE for the agent's result. Under the default
+    // per-call transaction that pinned a pooled connection idle-in-transaction
+    // for the whole run, and production Postgres killed it after one minute
+    // while the script went on to complete (#7918). The handler opens its own
+    // short contexts instead; see `AiTool.selfManagedDbContext`.
+    selfManagedDbContext: true,
     definition: {
       name: 'run_script',
       description: "Run a saved scriptId or reviewed proposalId from propose_script on devices; never both. A pending proposalId is refused with proposal_review_pending — poll get_script_proposal until it finishes, then retry. Maintenance-window suppression is deferred, not failure. Approval is required.",

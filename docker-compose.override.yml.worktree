@@ -18,6 +18,10 @@ services:
       - fsync=off
       - -c
       - synchronous_commit=off
+      # Replaces the dev override's command, so it repeats its prod-parity
+      # idle-in-transaction timeout (#7918).
+      - -c
+      - idle_in_transaction_session_timeout=60s
 
   redis:
     container_name: !reset null

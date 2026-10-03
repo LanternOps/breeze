@@ -24,7 +24,12 @@ services:
     # commits per run — fsync/synchronous_commit off keeps unattended local
     # runs from crawling (and does nothing worse than lose data we delete
     # on `down -v` anyway).
-    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+    #
+    # Production managed Postgres kills a session idle in transaction for 1 min.
+    # Matching it locally is what lets a test catch a connection held across a
+    # slow wait before production does (#7918: run_script lost every script
+    # that ran longer than a minute).
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c idle_in_transaction_session_timeout=60s
     environment:
       POSTGRES_USER: breeze_test
       POSTGRES_PASSWORD: breeze_test

@@ -5,6 +5,7 @@ import {
   runOutsideDbContext,
   withDbAccessContext,
   withSystemDbAccessContext,
+  type DbAccessContext,
 } from '../db';
 import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
@@ -1748,6 +1749,43 @@ export async function executeCommandWithSystemPrecheck(
         'commandQueue.executeCommandWithSystemPrecheck',
       ));
 
+  if (!precheck.ok) return precheck.result;
+  return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
+}
+
+/**
+ * `executeCommand` for a caller that holds NO DB access context but must have
+ * the precheck gated by a specific TENANT's RLS — a self-managed AI tool
+ * handler (#7918; `AiTool.selfManagedDbContext`), which the chat wrapper,
+ * the MCP route and the intent-release worker deliberately run without a
+ * per-call transaction so the device wait below pins no connection.
+ *
+ * Same two phases as `executeCommandWithSystemPrecheck`, with the caller's own
+ * context in place of system scope: the precheck's `devices` read (and the
+ * trust/parked/edition checks on it) runs in a SHORT `withDbAccessContext`
+ * built from that context, which commits before anything waits; the dispatch
+ * and the `waitForCommandResult` poll then run at depth 0. A device outside
+ * the caller's tenant reads as "Device not found" exactly as it would under
+ * `executeCommand` inside the caller's request transaction.
+ *
+ * An ambient context is JOINED rather than nested, for the reasons spelled
+ * out in `executeCommandWithSystemPrecheck`. That is plain `executeCommand`
+ * behaviour, and the caller then owns the connection it pins for the wait.
+ */
+export async function executeCommandWithCallerPrecheck(
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload,
+  precheckContext: DbAccessContext,
+  options: ExecuteCommandOptions = {},
+): Promise<CommandResult> {
+  assertBackupWriteDispatchedAfterCommit(type);
+  const precheck = getCurrentDbAccessContext()
+    ? await precheckCommandExecution(deviceId, type, payload, options)
+    : await withDbAccessContext(
+      precheckContext,
+      () => precheckCommandExecution(deviceId, type, payload, options),
+    );
   if (!precheck.ok) return precheck.result;
   return dispatchPreparedCommand(precheck.device, deviceId, type, payload, options);
 }

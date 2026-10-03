@@ -60,6 +60,7 @@
     "unknownTool": "Unknown tool",
     "toolResult": "Tool result",
     "unattendedRelease": "Reviewed by the AI script reviewer and released without an approval card.",
+    "openScriptProposal": "Open the proposal to see its runs or save it to the library",
     "pauseAi": "Pause AI",
     "quickActions": {
       "serverHealth": {
