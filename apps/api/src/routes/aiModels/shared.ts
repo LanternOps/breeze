@@ -14,13 +14,13 @@ import { RegistryWriteError } from '../../services/aiModels/registryWriteErrors'
 import { getConnection, type PartnerAiConnection } from '../../services/aiModels/connections';
 import { ByoEndpointRejected } from '../../services/aiModels/gateway/byoEndpointPolicy';
 import { enqueueConnectionSync, enqueueOfferingVerification } from '../../jobs/aiModelDiscoveryWorker';
-import { PartnerLlmError } from '../../services/partnerLlmConfig';
+import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
 import { captureException } from '../../services/sentry';
 
 // Fixed-length tuples, not MiddlewareHandler[]: Hono's typed route overloads
 // only accept a spread whose length is known.
 
-/** Partner registry reads: the /ai/provider gate (MFA is not required to read). */
+/** Partner registry reads: the gate the retired /ai/provider API used (MFA is not required to read). */
 export const partnerRead: readonly [MiddlewareHandler] = [
   requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action),
 ];
@@ -31,7 +31,7 @@ export const partnerWrite: readonly [MiddlewareHandler, MiddlewareHandler] = [
   requireMfa(),
 ];
 
-/** Same gate as routes/aiProvider.ts: a partner token with orgAccess 'all' (or system with a partner context). */
+/** The gate the retired /ai/provider API used: a partner token with orgAccess 'all' (or system with a partner context). */
 export function requirePartnerWide(c: Context): { partnerId: string; userId: string } {
   const auth = c.get('auth');
   if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
@@ -77,7 +77,10 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
       if (error.status >= 500 && error.code !== 'registry_busy') captureException(error, undefined, { service: 'aiModels' });
       return c.json({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) }, error.status);
     }
-    if (error instanceof PartnerLlmError) {
+    // An Anthropic connection write's verdict (probe rejection, stale write):
+    // its message and status are the response, exactly as the retired
+    // /ai/provider facade reported them.
+    if (error instanceof ConnectionCheckError) {
       if (error.status >= 500) captureException(error, undefined, { service: 'aiModels' });
       return c.json({ error: error.message }, error.status);
     }
@@ -94,9 +97,9 @@ export async function registryWrite(c: Context, partnerId: string, fn: () => Pro
 export type OwnedConnection = PartnerAiConnection & { status: Exclude<PartnerAiConnection['status'], 'disconnected'> };
 
 /**
- * Any-kind ownership (W06). Call it INSIDE the registryWrite callback (same
- * reason as the compat-only ownConnectionId: a not-yet-cut-over partner gets
- * the recoverable 503 first). A disconnected connection is provenance only, so
+ * Any-kind ownership (W06; id-keyed for every kind since W08). Call it INSIDE
+ * the registryWrite callback, so a partner without its registry rows gets the
+ * recoverable 503 first. A disconnected connection is provenance only, so
  * it 404s exactly like another partner's id.
  */
 export async function ownConnection(partnerId: string, id: string): Promise<OwnedConnection> {

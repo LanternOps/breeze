@@ -163,7 +163,6 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
-import { aiProviderRoutes } from './routes/aiProvider';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -183,7 +182,7 @@ import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
 import { runLegacyAlertingRetirement, LEGACY_ALERTING_RETRY_DELAYS_MS } from './services/monitors/conversion/retirementSweep';
 import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { sealUnsealedSettingsSecrets } from './services/settingsSecretBackfill';
-import { reportableCutoverError, runRegistryCutoverSweepWithRetry } from './services/aiModels/registryCutover';
+import { reportableCutoverError } from './services/aiModels/registryCutover';
 import { runEnvOpenAiBootstrapAtBoot } from './services/aiModels/envOpenAiBootstrap';
 import { registerGatewayConnectionCheck } from './services/aiModels/gatewayConnectionState';
 import { sealUnsealedBackupProviderConfigs } from './services/backupProviderConfigBackfill';
@@ -965,7 +964,6 @@ api.route('/metrics', metricsRoutes);
 api.route('/agent-ws', createAgentWsRoutes(upgradeWebSocket));
 api.route('/agent-versions', agentVersionRoutes);
 api.route('/viewers', viewerRoutes);
-api.route('/ai/provider', aiProviderRoutes);
 // AI model registry (W04 #7602) — before the broad '/ai' mounts (Hono matches in order).
 api.route('/ai/models', aiModelsRoutes);
 // BEFORE /ai/agents: aiAgentsRoutes owns /:id, which would otherwise capture
@@ -1919,29 +1917,11 @@ async function bootstrap(): Promise<void> {
       captureException(err, undefined, { area: 'backup_provider_config_backfill' });
     });
 
-  // AI model registry W03 (#7601 Task 6A): cut every partner over to the
-  // registry in the background — each partner is projected from legacy config
-  // exactly once, durably (replaces W02's per-boot re-projection). Detached:
-  // /health is never blocked. A singleton lease makes concurrent replicas (and
-  // the split worker, which runs the same sweep) no-ops, and resolveModel cuts
-  // a partner over on demand if its first AI request beats the sweep.
-  void runRegistryCutoverSweepWithRetry()
-    .then((result) => {
-      console.log(
-        `[startup] AI model registry cutover sweep: ${result.outcome}, ${result.processed} partner(s) cut over, ${result.failed.length} failed`,
-      );
-    })
-    .catch((err) => {
-      // Scrubbed: a query error's message carries the statement's bound values.
-      console.error('[startup] AI model registry cutover sweep failed:', safeErrorMessage(err));
-      captureException(reportableCutoverError(err), undefined, { area: 'ai_model_registry_cutover' });
-    });
-
   // W06 (#7604, D6): MCP_LLM_PROVIDER=openai-compatible → one env-managed
   // OpenAI-compatible connection + priced offering per partner (and the chat
-  // default re-pointed once); unset → those connections are released. Started
-  // after the cutover sweep: each partner is cut over FIRST inside the
-  // bootstrap, so the cutover can never undo it. Detached and retried on a
+  // default re-pointed once); unset → those connections are released. Each
+  // partner's registry gate (ensurePartnerCutover, W08 bootstrap) runs FIRST
+  // inside the bootstrap, so the gate can never undo it. Detached and retried on a
   // bounded schedule; idempotent across restarts and replicas (per-partner
   // registry lock). One Sentry event if it still ends incomplete; then, every
   // 10 minutes, partners created since boot get their connection. Never logs
@@ -1955,7 +1935,7 @@ async function bootstrap(): Promise<void> {
   // Storage keys that S3 backup destinations used before backups were written
   // only through storage sessions are recorded once, so each stays listed
   // until there is evidence it was disabled. Detached after serve() like the
-  // sweep above; idempotent (a destination whose current key is recorded is
+  // backfills above; idempotent (a destination whose current key is recorded is
   // skipped) and never logs a key.
   void runStartupTaskWithRetry('backup storage key history', () => baselineCredentialHistory(), {
     hasFailures: (r) => r.failed > 0,

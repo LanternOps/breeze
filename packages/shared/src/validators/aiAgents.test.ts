@@ -8,8 +8,10 @@ import {
   alertVerdictOutcomeSchema,
   analysisOutcomeSchema,
   createAiAgentSchema,
+  previewAiAgentSchema,
   updateAiAgentSchema,
 } from './aiAgents';
+import { retiredAiModelFieldMessage } from './retiredAiModelFields';
 import {
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
@@ -184,8 +186,8 @@ describe('aiAgents validators', () => {
     expect(updateAiAgentSchema.safeParse({ offeringId: 'opus' }).success).toBe(false);
     expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T', offeringId: id }).offeringId).toBe(id);
     expect(createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', offeringId: 'opus' }).success).toBe(false);
-    // Absent stays absent on create: no default — an omitted offeringId must
-    // fall through to the legacy model path, never read as "clear".
+    // Absent stays absent on create: no default — an omitted offeringId means
+    // the write does not choose by offering.
     expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T' })).not.toHaveProperty('offeringId');
     expect(updateAiAgentSchema.parse({})).not.toHaveProperty('offeringId');
   });
@@ -651,5 +653,25 @@ describe('analysisOutcomeSchema (execution plane W04)', () => {
     expect(analysisOutcomeSchema.safeParse({
       summary: 'ok', findings: [], artifactHandles: ['../../etc/passwd'], proposedActions: [],
     }).success).toBe(false);
+  });
+});
+
+describe('agent policy model string is retired (W08, #7606)', () => {
+  it.each([
+    ['create', () => createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', model: 'claude-x' })],
+    ['create (null)', () => createAiAgentSchema.safeParse({ kind: 'triage', name: 'T', model: null })],
+    ['update', () => updateAiAgentSchema.safeParse({ model: 'claude-x' })],
+    ['update (null)', () => updateAiAgentSchema.safeParse({ model: null })],
+    ['preview', () => previewAiAgentSchema.safeParse({ kind: 'triage', model: 'claude-x' })],
+  ])('%s with model → rejected naming offeringId', (_n, parse) => {
+    const r = parse();
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.message)).toContain(retiredAiModelFieldMessage('model'));
+    expect(JSON.stringify(r.error!.issues)).toContain('offeringId');
+  });
+
+  it('create / update without model still parse and have no model key', () => {
+    expect(createAiAgentSchema.parse({ kind: 'triage', name: 'T' })).not.toHaveProperty('model');
+    expect(updateAiAgentSchema.parse({ name: 'x' })).not.toHaveProperty('model');
   });
 });

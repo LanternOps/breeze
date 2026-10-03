@@ -423,11 +423,15 @@ describe('authorizeSupervisedKey — clone from the EFFECTIVE policy', () => {
       // an EMPTY allowlist — i.e. it would silently disable the org's agent.
       enabled: true,
       mode: 'act',
-      model: 'claude-sonnet-4-5-20250929',
       toolAllowlist: ['manage_services', 'manage_alerts'],
       cooldownSeconds: 1200,
       createdBy: ACTOR_ID,
     });
+    // W08 (#7606): no model string is copied (the partner fixture still carries
+    // one, as a pre-drop row would), and the clone leaves the offering unbound
+    // so the org keeps following the partner baseline's binding.
+    expect(clone.values).not.toHaveProperty('model');
+    expect((clone.values as Record<string, unknown>).offeringId ?? null).toBeNull();
     expect((clone.values as Record<string, unknown>).limits).toMatchObject({
       maxDevicesPerRun: 7,
       promoteThreshold: 25,

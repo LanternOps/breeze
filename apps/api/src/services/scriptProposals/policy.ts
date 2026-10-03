@@ -41,7 +41,6 @@ export interface EffectiveScriptPolicy {
   unattendedAllowedClasses: TouchClass[];
   maxUnattendedPerHour: number;
   protectedResources: AiAgentProtectedResources;
-  reviewerModel: string | null;
   source: { partnerRowId: string | null; orgRowId: string | null };
 }
 
@@ -59,7 +58,6 @@ export type ScriptPolicyMergeInput = Pick<
   | 'unattendedAllowedClasses'
   | 'maxUnattendedPerHour'
   | 'protectedResources'
-  | 'reviewerModel'
 >;
 
 /**
@@ -97,9 +95,6 @@ export function mergeScriptPolicies(
       registryKeys: union(pr.registryKeys ?? [], orr.registryKeys ?? []),
       deviceTags: union(pr.deviceTags ?? [], orr.deviceTags ?? []),
     },
-    // Read API only (the editor stays until W04): the runtime ignores it. The
-    // reviewer's model is the `script_reviewer` assignment (W03, #7601).
-    reviewerModel: org?.reviewerModel ?? partner?.reviewerModel ?? null,
     source: { partnerRowId: partner?.id ?? null, orgRowId: org?.id ?? null },
   };
 }

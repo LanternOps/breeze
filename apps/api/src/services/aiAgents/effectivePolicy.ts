@@ -28,7 +28,6 @@ import {
 // on the intent-release path (wave 3b), and pulling the barrel would force
 // every partial-mock unit test of that path to stub the entire schema surface.
 import { aiAgents, type AiAgentRow } from '../../db/schema/aiAgents';
-import { aiBudgets } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import type { AuthContext } from '../../middleware/auth';
 import { intersectToolRefs } from './toolAllowlist';
@@ -37,7 +36,6 @@ type PolicyRowFields = Pick<
   AiAgentRow,
   | 'enabled'
   | 'mode'
-  | 'model'
   | 'toolAllowlist'
   | 'protectedResources'
   | 'limits'
@@ -52,9 +50,9 @@ export function normalizeAgentPolicy(row: PolicyRowFields): AiAgentPolicy {
   return {
     enabled: row.enabled,
     mode: row.mode,
-    model: row.model ?? null,
-    // AI model registry W03: the offering `model` was bound to at write time
-    // (agentModelBinding.ts). Absent on a sparse row → unbound.
+    // AI model registry W03/W05: the offering the policy is bound to, written
+    // at policy-write time (agentOfferingBinding.ts). Absent on a sparse row →
+    // unbound. The policy model string was retired in W08 (#7606).
     offeringId: row.offeringId ?? null,
     toolAllowlist: Array.isArray(row.toolAllowlist) ? [...row.toolAllowlist] : [],
     protectedResources: aiAgentProtectedResourcesSchema.parse(row.protectedResources ?? {}),
@@ -129,7 +127,6 @@ function partnerProvenance(): AiAgentPolicyProvenance {
   return {
     enabled: 'partner',
     mode: 'partner',
-    model: 'partner',
     offeringId: 'partner',
     toolAllowlist: 'partner',
     protectedResources: 'partner',
@@ -149,7 +146,6 @@ function partnerProvenance(): AiAgentPolicyProvenance {
 export function mergeAgentPolicies(
   partner: AiAgentPolicy,
   org: AiAgentPolicy | null,
-  opts: { allowedModels: string[] | null },
 ): { effective: AiAgentPolicy; provenance: AiAgentPolicyProvenance } {
   const provenance = partnerProvenance();
   if (!org) {
@@ -214,15 +210,6 @@ export function mergeAgentPolicies(
   };
 
   const mode = minAgentMode(partner.mode, org.mode);
-  // Fail CLOSED when the partner-governed list is absent. spec §5.1 admits the
-  // org's model only when it is IN ai_budgets.allowedModels; a missing budget
-  // row means there is no such list, so it cannot contain anything. Treating
-  // null as "anything goes" inverted the tighten-only rule in exactly the
-  // DEFAULT state — no ai_budgets row — letting an org override a model the
-  // partner had deliberately pinned.
-  const orgModelAllowed = org.model !== null
-    && opts.allowedModels !== null
-    && opts.allowedModels.includes(org.model);
   const instructionSource = partner.instructions && org.instructions
     ? 'merged'
     : org.instructions
@@ -236,11 +223,10 @@ export function mergeAgentPolicies(
       !partner.enabled ? 'partner' : !org.enabled ? 'org' : 'partner',
     ),
     mode: pick('mode', mode, mode === partner.mode ? 'partner' : 'org'),
-    model: pick('model', orgModelAllowed ? org.model : partner.model, orgModelAllowed ? 'org' : 'partner'),
-    // AI model registry W03 (W02 handoff #5): the registry binding is NOT
-    // gated on the legacy ai_budgets.allowed_models list above — the registry
-    // projected that list into the ai_agents permitted set, which the run's
-    // resolveModel re-checks at admission and dispatch (it can only narrow).
+    // AI model registry W03 (W02 handoff #5): the registry binding is gated by
+    // the ai_agents permitted set (the projection of the old
+    // ai_budgets.allowed_models list), which the run's resolveModel re-checks
+    // at admission and dispatch (it can only narrow).
     // Same precedence as the W02 projection: the org row's binding, else the
     // partner baseline's, else the assignment default (null).
     offeringId: pick('offeringId', org.offeringId ?? partner.offeringId ?? null, org.offeringId ? 'org' : 'partner'),
@@ -526,19 +512,9 @@ async function resolveEffectiveAgentInner(
   // No partner baseline means the org override cannot self-enable the agent.
   if (!partnerRow) return null;
 
-  const [budget] = await db
-    .select({ allowedModels: aiBudgets.allowedModels })
-    .from(aiBudgets)
-    .where(eq(aiBudgets.orgId, orgId))
-    .limit(1);
-  const allowedModels = Array.isArray(budget?.allowedModels)
-    ? budget.allowedModels as string[]
-    : null;
-
   const merged = mergeAgentPolicies(
     normalizeAgentPolicy(partnerRow),
     orgRow ? normalizeAgentPolicy(orgRow) : null,
-    { allowedModels },
   );
   // Call-time read: same reason as the guardrail gate — one normalization,
   // and a kill switch a test can actually flip.

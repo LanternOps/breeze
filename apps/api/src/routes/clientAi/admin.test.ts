@@ -240,7 +240,6 @@ describe('client-ai admin — policy', () => {
       userAccess: 'all',
       selectedUserIds: [],
       allowedProviders: ['anthropic'],
-      allowedModels: [],
       writeMode: 'readwrite',
       dlpConfig: {},
       dailyBudgetCents: null,
@@ -287,26 +286,20 @@ describe('client-ai admin — policy', () => {
     );
   });
 
-  it('PUT ignores allowedModels (single home: the office_chat assignment)', async () => {
-    getOrgPolicyMock.mockResolvedValue({ orgId: ORG_ID, enabled: true });
-    const setSpy = vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([MAPPING_ROW])) }));
-    const valuesMock = vi.fn(() => ({ onConflictDoUpdate: setSpy }));
-    dbInsertMock.mockImplementation(() => ({ values: valuesMock }));
-
-    const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
-      method: 'PUT',
-      headers: AUTHED,
-      body: JSON.stringify({ enabled: true, allowedModels: ['x'] }),
-    });
-    expect(res.status).toBe(200);
-    const [values] = valuesMock.mock.calls[0] as unknown as [Record<string, unknown>];
-    expect(values).not.toHaveProperty('allowedModels');
-    const [conflict] = setSpy.mock.calls[0] as unknown as [{ set: Record<string, unknown> }];
-    expect(conflict.set).not.toHaveProperty('allowedModels');
-    expect(writeRouteAuditMock).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ details: { changedKeys: ['enabled'] } }),
-    );
+  it('PUT /client-ai/admin/orgs/:orgId/policy with allowedModels → 400 naming office_chat; nothing is written', async () => {
+    for (const allowedModels of [['x'], [], null]) {
+      const res = await buildApp().request(`/client-ai/admin/orgs/${ORG_ID}/policy`, {
+        method: 'PUT',
+        headers: AUTHED,
+        body: JSON.stringify({ enabled: true, allowedModels }),
+      });
+      expect(res.status).toBe(400);
+      const text = JSON.stringify(await res.json());
+      expect(text).toContain('allowedModels');
+      expect(text).toContain('office_chat');
+    }
+    expect(dbInsertMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('PUT persists writeApproval and audits it as a changed key', async () => {

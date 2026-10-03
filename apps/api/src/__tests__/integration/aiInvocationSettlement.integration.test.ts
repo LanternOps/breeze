@@ -40,7 +40,7 @@ import { getPlatformModelById } from '../../services/aiModels/platformModels';
 import { priceInvocation } from '../../services/aiModels/pricing';
 import { resolveModel } from '../../services/aiModels/resolveModel';
 import { settleInvocation, type SettleInvocationInput } from '../../services/aiModels/settleInvocation';
-import { deletePartnerLlmConfig } from '../../services/partnerLlmConfig';
+import { deleteAnthropicConnection } from '../../services/aiModels/anthropicConnectionWrites';
 import { turnBindingFrom, type TurnBinding } from '../../services/aiModels/turnBinding';
 import { closeRegistryFixtures, fixtureSql } from './aiModelRegistryFixtures';
 import { seedPricedPlatformModel, seedRegistryPartner, type SeededRegistryPartner } from './helpers/aiModelRegistrySeed';
@@ -522,7 +522,7 @@ describe.skipIf(!RUN)('disconnect while a BYOK turn is in flight (#7700 review f
     expect(binding.funding).toBe('partner_key');
     const id = await reserve(s, binding);   // reserved + dispatched
 
-    expect(await deletePartnerLlmConfig(s.partnerId)).toBe(true);
+    expect(await deleteAnthropicConnection({ partnerId: s.partnerId, connectionId: s.connectionId! })).toBe(true);
 
     const out = await settleInvocation(settleInput(s, binding, id));
     expect(out.deferred).toBe(false);

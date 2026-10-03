@@ -446,7 +446,6 @@ function policy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'shadow',
-    model: 'claude-test-model',
     toolAllowlist: [],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
@@ -2147,7 +2146,7 @@ describe('executeAgentRun', () => {
 
   it('passes the per-run turn ceiling and the RESOLVED wire model to the SDK', async () => {
     seedRows({
-      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 7 } as AiAgentLimits }),
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 7 } as AiAgentLimits }),
     });
 
     await executeAgentRun(RUN_ID);
@@ -2781,7 +2780,7 @@ describe('executeAgentRun', () => {
 
   it('creates exactly one execution-ledger session per run, with the snapshot model + turn ceiling', async () => {
     seedRows({
-      effective: policy({ model: 'claude-agent-model', limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
+      effective: policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxTurnsPerRun: 9 } as AiAgentLimits }),
     });
 
     await executeAgentRun(RUN_ID);
@@ -2807,7 +2806,7 @@ describe('executeAgentRun', () => {
   });
 
   it('a policy with no bound offering follows the ai_agents assignment default', async () => {
-    seedRows({ effective: policy({ model: null }) });
+    seedRows({ effective: policy() });
     resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents', logicalModel: 'claude-default-x' }));
 
     await executeAgentRun(RUN_ID);

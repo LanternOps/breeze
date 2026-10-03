@@ -14,7 +14,7 @@ vi.mock('../../aiModel', async (importOriginal) => ({
 vi.mock('../../streamingSessionManager', () => ({
   buildClaudeSdkChildEnv: () => ({ ANTHROPIC_API_KEY: 'test-key', ENABLE_TOOL_SEARCH: 'inherited' }),
 }));
-vi.mock('../llmConfigResolver', () => ({ resolveLlmConfig: async () => ({ source: 'env' }) }));
+vi.mock('../llmConfigResolver', () => ({ platformLlmConfig: () => ({ source: 'platform', apiKey: 'test-key', model: 'default-model' }) }));
 // 1 cent per 1k context-equivalent tokens: input×1, cache write×1.25, cache read×0.1, output×5.
 // Priced from the registry row (W03 Task 17), rates in cents per MTok.
 vi.mock('../../aiModels/platformModels', () => ({

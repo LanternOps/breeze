@@ -71,8 +71,7 @@ describe('connections key material (#7600 W02)', () => {
   });
 
   it('decrypts a ciphertext sealed by the legacy partnerLlmConfig writer for the same id (quorum #13)', () => {
-    const legacySpec = encryptedColumnRegistry.find((s) => s.table === 'partner_llm_configs' && s.column === 'api_key_encrypted')!;
-    const legacyCiphertext = encryptSecret('sk-ant-api03-legacy-unit', { aad: columnAad(legacySpec, ID) })!;
+    const legacyCiphertext = encryptSecret('sk-ant-api03-legacy-unit', { aad: `partner_llm_configs.api_key_encrypted:${ID}` })!;
     expect(decryptConnectionKey({ id: ID, apiKeyEncrypted: legacyCiphertext })).toBe('sk-ant-api03-legacy-unit');
   });
 

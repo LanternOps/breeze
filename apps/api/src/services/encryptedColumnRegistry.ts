@@ -79,14 +79,12 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'psa_connections', column: 'credentials', kind: 'json', description: 'PSA connection credentials' },
   { table: 'stripe_connect_accounts', column: 'credentials', kind: 'json', description: 'Stripe Connect OAuth token (deauthorize use)' },
   { table: 'stripe_connect_accounts', column: 'api_key', kind: 'text', description: 'Per-partner Stripe secret/restricted key (API-key billing model)' },
-  { table: 'partner_llm_configs', column: 'api_key_encrypted', kind: 'text', aadBinding: 'row', description: 'Per-partner Anthropic API key (#3228) — AAD bound to the row id' },
-  // AI model registry W02 (#7600, quorum #13): partner_llm_configs rows were
-  // copied to partner_ai_connections with the SAME id, so the AAD tag stays the
-  // legacy column's logical identity and every stored ciphertext decrypts
+  // AI model registry W02 (#7600, quorum #13): the retired legacy table's rows
+  // were copied to partner_ai_connections with the SAME id, so the AAD tag stays
+  // the legacy column's logical identity and every stored ciphertext decrypts
   // unchanged (the #6379 moved-column precedent). Row-bound: a blob pasted into
-  // another partner's connection does not decrypt. Both entries stay until W08
-  // drops the legacy table, so the rotation walker re-seals both copies.
-  { table: 'partner_ai_connections', column: 'api_key_encrypted', kind: 'text', aadBinding: 'row', aadTag: 'partner_llm_configs.api_key_encrypted', description: 'Per-partner AI connection key (#7600) — legacy partner_llm_configs AAD tag (id-preserving copy), bound to the row id' },
+  // another partner's connection does not decrypt. Never rename the tag.
+  { table: 'partner_ai_connections', column: 'api_key_encrypted', kind: 'text', aadBinding: 'row', aadTag: 'partner_llm_configs.api_key_encrypted', description: 'Per-partner AI connection key (#7600) — legacy AAD tag (id-preserving copy), bound to the row id' },
   { table: 'huntress_integrations', column: 'api_key_encrypted', kind: 'text', description: 'Huntress API key' },
   { table: 'huntress_integrations', column: 'webhook_secret_encrypted', kind: 'text', description: 'Huntress webhook secret' },
   { table: 'pax8_integrations', column: 'client_id_encrypted', kind: 'text', description: 'Pax8 OAuth client id' },

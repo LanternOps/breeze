@@ -138,7 +138,6 @@ export * from './workTypes';
 export * from './billingProfiles';
 export * from './invoices';
 export * from './stripePayments';
-export * from './partnerLlmConfigs';
 export * from './llmProviderCatalog';
 export * from './aiPlatformModels';
 export * from './llmEgressEvents';

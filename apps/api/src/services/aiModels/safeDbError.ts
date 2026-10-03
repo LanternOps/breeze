@@ -1,6 +1,7 @@
 /**
  * The ONE scrubber for database errors on the AI model registry paths (#7600
- * W02): the /ai/provider facade (partnerLlmConfig.ts), the reconcile boot
+ * W02): the Anthropic connection writes (anthropicConnectionWrites.ts, the
+ * id-keyed successor of the /ai/provider facade), the reconcile boot
  * sweep (legacyReconcile.ts) and the other registry writers that log a
  * database failure.
  *

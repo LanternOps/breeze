@@ -57,7 +57,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
   const nameDirty = connection !== null && name !== connection.name;
   const geoDirty = connection !== null && geo !== connection.inferenceGeo;
   // A new key is probed against the STORED endpoint and a new endpoint against the
-  // STORED key (partnerLlmConfig), so changing both in one Save would send the new
+  // STORED key (anthropicConnectionWrites), so changing both in one Save would send the new
   // credential to the old destination. One credential change per Save.
   const bothCredentialsDirty = connection !== null && keyDirty && endpointDirty;
   const selectedEntry = endpoint === null ? null : catalog.find((e) => e.entryId === endpoint) ?? null;

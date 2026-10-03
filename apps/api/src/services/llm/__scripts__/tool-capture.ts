@@ -21,7 +21,7 @@ import { appendFile } from 'node:fs/promises';
 import { closeDb } from '../../../db';
 import { resolveDefaultModel } from '../../aiModel';
 import { buildClaudeSdkChildEnv } from '../../streamingSessionManager';
-import { resolveLlmConfig } from '../llmConfigResolver';
+import { platformLlmConfig } from '../llmConfigResolver';
 import { startCaptureProxy, type CaptureProxy } from '../toolCapture/captureProxy';
 import { getCaptureSystemPrompt, runSurfaceCapture } from '../toolCapture/runSurface';
 import { CAPTURE_SURFACES, type CaptureSurfaceId } from '../toolCapture/surfaces';
@@ -82,8 +82,7 @@ async function main(): Promise<void> {
   let proxy: CaptureProxy | undefined;
   try {
     const args = parseArgs(process.argv.slice(2));
-    const resolved = await resolveLlmConfig(null);
-    if (resolved.source === 'unavailable') throw new UsageError(`LLM configuration unavailable: ${resolved.reason}`);
+    const resolved = platformLlmConfig();
     const env = buildClaudeSdkChildEnv(resolved);
     if (args.baseUrl) env.ANTHROPIC_BASE_URL = args.baseUrl;
     const authToken = args.values.get('--auth-token');

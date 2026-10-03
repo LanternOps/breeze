@@ -1,7 +1,10 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import semver from 'semver';
 import {
   orgTicketSettingsSchema,
+  retiredAiModelFieldMessage,
   retiredLabourPricingMessage,
   RETIRED_LABOUR_PRICING_FIELDS,
   ticketCategoryInputSchema,
@@ -17,7 +20,13 @@ import { BREAKING_CHANGES_MANIFEST, parseBreakingChangesManifest } from './break
 // retirement a deployment on ANY older version could cross by jumping straight
 // to it, so an entry is never deleted. Add each new id here in the same PR that
 // adds the entry. Never remove one.
-const RECORDED_ENTRY_IDS = ['ticket-labour-pricing-fields'] as const;
+const RECORDED_ENTRY_IDS = [
+  'ticket-labour-pricing-fields',
+  'ai-provider-endpoints',
+  'ai-script-policy-reviewer-model',
+  'client-ai-policy-allowed-models',
+  'ai-agent-policy-model',
+] as const;
 
 describe('breaking-changes.json', () => {
   it('parses against the manifest schema', () => {
@@ -85,5 +94,42 @@ describe('breaking-changes.json', () => {
         }
       }
     });
+  });
+});
+
+describe('ai-provider-endpoints (#7606)', () => {
+  const entry = () => BREAKING_CHANGES_MANIFEST.entries.find((e) => e.id === 'ai-provider-endpoints')!;
+
+  it('the route file and its mount are gone', () => {
+    expect(existsSync(join(__dirname, '..', 'routes', 'aiProvider.ts'))).toBe(false);
+    expect(readFileSync(join(__dirname, '..', 'index.ts'), 'utf8')).not.toMatch(/['"]\/ai\/provider['"]/);
+  });
+
+  it('retires every /ai/provider endpoint and names its /ai/models replacement', () => {
+    expect(entry().kind).toBe('api-endpoint');
+    expect(entry().surfaces.map((s) => s.endpoint).sort()).toEqual([
+      'DELETE /api/v1/ai/provider',
+      'GET /api/v1/ai/provider',
+      'PATCH /api/v1/ai/provider',
+      'POST /api/v1/ai/provider/endpoint',
+      'POST /api/v1/ai/provider/key',
+    ]);
+    expect(entry().replacement).toContain('/api/v1/ai/models/connections');
+    expect(entry().replacement).toContain('PUT /api/v1/ai/models/assignments');
+  });
+});
+
+describe('retired AI model fields match their message (#7606)', () => {
+  it.each([
+    ['ai-script-policy-reviewer-model', 'reviewerModel'],
+    ['client-ai-policy-allowed-models', 'allowedModels'],
+    ['ai-agent-policy-model', 'model'],
+  ] as const)('%s', (id, field) => {
+    const entry = BREAKING_CHANGES_MANIFEST.entries.find((e) => e.id === id)!;
+    expect(entry, id).toBeDefined();
+    const removed = semver.parse(entry.removedIn!)!;
+    expect(retiredAiModelFieldMessage(field)).toContain(`retired in v${removed.major}.${removed.minor}`);
+    expect(entry.surfaces.length).toBeGreaterThan(0);
+    for (const surface of entry.surfaces) expect(surface.fields).toEqual([field]);
   });
 });

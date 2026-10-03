@@ -80,7 +80,6 @@ function makeAgent(overrides: Partial<AiAgentDto> = {}): AiAgentDto {
     name: 'Triage',
     enabled: true,
     mode: 'shadow',
-    model: null,
     offeringId: null,
     orgId: 'org-1',
     partnerId: null,
@@ -724,6 +723,8 @@ describe('AiAgentForm — model select (W05)', () => {
     fireEvent.click(await screen.findByTestId('ai-agent-save'));
     await waitFor(() => expect(patched()).toBe(true));
     expect(writeBody()).not.toHaveProperty('offeringId');
+    // W08 (#7606): the retired policy model string is never sent (the API 400s it).
+    expect(writeBody()).not.toHaveProperty('model');
   });
   it('renders the model select; a change is sent as offeringId', async () => {
     mockEndpoints();

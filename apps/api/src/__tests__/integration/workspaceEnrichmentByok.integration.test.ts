@@ -95,7 +95,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
  * sufficient; a per-file throwaway database (the approach
  * `extensions/builtinTableProbe.integration.test.ts` takes) is not, because
  * unlike that probe this suite needs the FULL core schema — organizations,
- * partners, devices, ai_sessions, partner_llm_configs, ai_cost_usage, the
+ * partners, devices, ai_sessions, partner_ai_connections, ai_cost_usage, the
  * `breeze_app` role and the `breeze_has_org_access` helpers — i.e. a complete
  * 400+ file `autoMigrate()` replay per run, plus a `DATABASE_URL` swap before
  * the module-level `../../db` handle is constructed.

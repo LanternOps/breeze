@@ -136,7 +136,6 @@ function snapshot(allowlist: string[]): AiAgentPolicySnapshot {
   const effective: AiAgentPolicy = {
     enabled: true,
     mode: 'shadow',
-    model: null,
     toolAllowlist: allowlist,
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },

@@ -241,7 +241,6 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'aiModels/shared.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
   'aiModels/usage.ts': { exempt: 'human_only_ai_governance', note: 'AI spend and refusal reporting by model / feature / tech -- admin showback, not an agent workflow.' },
   'aiOperatorTasks.ts': { gap: '#6780' },
-  'aiProvider.ts': { exempt: 'human_only_ai_governance', note: 'BYO LLM key and endpoint -- a credential, and the AI must not manage its own model provider.' },
   'alertTemplates/correlations.ts': { gap: '#6777' },
   'alertTemplates/rules.ts': { tools: ['manage_alert_rules'] },
   'alertTemplates/templates.ts': { tools: ['manage_alert_rules'] },

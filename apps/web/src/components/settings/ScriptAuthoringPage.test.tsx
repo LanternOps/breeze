@@ -197,7 +197,6 @@ describe('ScriptAuthoringPage', () => {
         unattendedAllowedClasses: ['temp_files'],
         maxUnattendedPerHour: 5,
         protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-        reviewerModel: null,
         unattendedEnabledAt: '2026-09-01T00:00:00.000Z',
       } }),
     });
@@ -251,7 +250,6 @@ describe('ScriptAuthoringPage', () => {
           unattendedAllowedClasses: ['temp_files'],
           maxUnattendedPerHour: 5,
           protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-          reviewerModel: null,
           unattendedEnabledAt: '2026-09-01T00:00:00.000Z',
         },
       }),

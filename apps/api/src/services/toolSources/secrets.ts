@@ -25,7 +25,7 @@ export type ToolSourceAuthConfig =
     };
 
 // `tool_sources.auth_config_encrypted` is registered with `aadBinding: 'row'`
-// (see `encryptedColumnRegistry.ts`), the same as `partner_llm_configs`. A
+// (see `encryptedColumnRegistry.ts`), the same as `partner_ai_connections.api_key_encrypted`. A
 // tool source's credential is a live capability an MSP tech supplied for one
 // specific remote endpoint — swapping the ciphertext blob into a different
 // row would hand that credential to a different tenant's tool source and have

@@ -3,14 +3,14 @@
  * reached. Reads never select key material; only `getConnectionKeyMaterial`
  * (W03's connection factory) and `decryptConnectionKey` touch it.
  *
- * Writers: the one-time per-partner cutover (legacyReconcile.ts byte-copy of
- * partner_llm_configs), since W03 Task 6B the /ai/provider facade's
- * registry-native writes (compatRemap.ts, which uses `createConnection`), and
+ * Writers: the id-keyed Anthropic connection writes
+ * (anthropicConnectionWrites.ts → connectionRemap.ts, which uses
+ * `createConnection`; W03 Task 6B, id-keyed since W08), and
  * since W06 the gateway-kind write service (gatewayConnections.ts, which uses
  * `createGatewayConnectionRow` and `gatewayKeyColumns`).
  */
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, ne } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 import type { GatewayConnectionKind } from '@breeze/shared';
 import { db } from '../../db';
 import { partnerAiConnections, type PartnerAiConnectionRow } from '../../db/schema';
@@ -57,13 +57,12 @@ export const CONNECTION_PUBLIC_COLUMNS = {
   connectedBy: partnerAiConnections.connectedBy,
   lastDiscoveredAt: partnerAiConnections.lastDiscoveredAt,
   discoveryError: partnerAiConnections.discoveryError,
-  legacyDefaultModel: partnerAiConnections.legacyDefaultModel,
   createdAt: partnerAiConnections.createdAt,
   updatedAt: partnerAiConnections.updatedAt,
 } as const;
 const PUBLIC_COLUMNS = CONNECTION_PUBLIC_COLUMNS;
 
-/** A disconnected connection is provenance only (#7700 finding 1): never listed, never the compat one. */
+/** A disconnected connection is provenance only (#7700 finding 1): never listed. */
 const LIVE = ne(partnerAiConnections.status, 'disconnected');
 
 export async function listConnections(partnerId: string): Promise<PartnerAiConnection[]> {
@@ -76,20 +75,6 @@ export async function listConnections(partnerId: string): Promise<PartnerAiConne
 
 export async function getConnection(id: string): Promise<PartnerAiConnection | null> {
   const [row] = await db.select(PUBLIC_COLUMNS).from(partnerAiConnections).where(eq(partnerAiConnections.id, id)).limit(1);
-  return row ?? null;
-}
-
-export async function getCompatConnection(partnerId: string): Promise<PartnerAiConnection | null> {
-  // partner_ai_connections_compat_uq guarantees at most one such row (W02–W03).
-  const [row] = await db
-    .select(PUBLIC_COLUMNS)
-    .from(partnerAiConnections)
-    .where(and(
-      eq(partnerAiConnections.partnerId, partnerId),
-      inArray(partnerAiConnections.kind, ['anthropic_byok', 'catalog']),
-      LIVE,
-    ))
-    .limit(1);
   return row ?? null;
 }
 

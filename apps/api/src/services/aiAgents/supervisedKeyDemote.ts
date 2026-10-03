@@ -431,7 +431,6 @@ export async function notifyDemotion(input: NotifyDemotionInput): Promise<void> 
       recipients = mergeAgentPolicies(
         normalizeAgentPolicy(agentRow),
         orgAgentRow ? normalizeAgentPolicy(orgAgentRow) : null,
-        { allowedModels: null },
       ).effective.recipients;
       // Not a failure — the notice still goes out — but the recipient list
       // just came from the live policy rather than the run's immutable

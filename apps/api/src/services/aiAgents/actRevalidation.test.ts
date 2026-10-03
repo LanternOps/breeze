@@ -144,7 +144,6 @@ function basePolicy(overrides: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'act',
-    model: 'claude-test-model',
     toolAllowlist: ['manage_services', 'disk_cleanup', 'manage_processes', 'run_script', 'execute_playbook'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 3 },

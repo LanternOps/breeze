@@ -229,7 +229,7 @@ export const preAssignmentEnableStepUpResource = z.object({
 // AI script authoring W04 (#5612): the unattended-lane grant / reset binding.
 // One org, one value — mirrors scriptLanePolicyResourceDigest exactly.
 // `widening` is present only for a WIDENING save (tier/classes/rate/emptied
-// protectedResources/reviewerModel/proposingEnabled) on an already-enabled
+// protectedResources/proposingEnabled) on an already-enabled
 // lane, so the grant is bound to the exact wider values shown to the
 // operator, not just the boolean flip.
 const scriptLaneWideningResource = z.object({
@@ -237,7 +237,9 @@ const scriptLaneWideningResource = z.object({
   unattendedAllowedClasses: z.array(z.string()),
   maxUnattendedPerHour: z.number().int().min(0).max(100),
   protectedResourcesEmptied: z.boolean(),
-  reviewerModel: z.string().nullable(),
+  // reviewerModel retired (W08, #7606). Non-strict object: a cached client that
+  // still sends it has the key stripped, and the digest is computed server-side
+  // from explicitly picked fields on both the mint and the redeem side.
   proposingEnabled: z.boolean(),
 });
 export const scriptLaneStepUpResource = z.object({

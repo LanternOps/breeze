@@ -244,7 +244,6 @@ function policy(over: Partial<AiAgentPolicy> = {}): AiAgentPolicy {
   return {
     enabled: true,
     mode: 'shadow',
-    model: null,
     toolAllowlist: ['get_device_details'],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
     limits: { ...AI_AGENT_LIMIT_DEFAULTS },
