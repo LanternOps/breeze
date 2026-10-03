@@ -19,7 +19,9 @@ wave_issue: LanternOps/breeze#5500
 
 ---
 
-## Open questions for Todd (each has a conservative default, so the plan does not block on it)
+## Decisions (resolved by Todd 2026-10-03: all six defaults accepted)
+
+Each item below is **decided as its default**: (1) refuse without ADK, (2) ISO stays on the builder device, metadata only in Breeze, (3) no operator drivers in W07, (4) no console DC override, (5) build-only hosted CI + manual KIT boot proof, (6) automatic BitLocker re-encryption after check-in + escrow. The original framing is kept below for context.
 
 1. **ADK install.** Should the builder (a) **refuse** when the Windows ADK + WinPE add-on are not already installed and print where to get them *(default)*, or (b) download and silently install them on the operator's device (≈3–4 GB, `/quiet` install, implies accepting Microsoft's ADK licence on the customer's behalf, Authenticode-verified Microsoft signer)? Option (b) adds one task to Part B.
 2. **Where the ISO lives.** Should the built ISO (a) **stay on the builder device** under `%ProgramData%\Breeze\recovery-media\`, with Breeze storing only metadata (hash, size, versions, path) *(default)*, or (b) be uploaded to org backup storage so other techs can download it through Breeze? (b) is a licensing call: Breeze would be moving WinPE bits between machines.
