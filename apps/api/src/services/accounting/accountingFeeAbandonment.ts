@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, sql } from 'drizzle-orm';
 import { invoiceStripePayments, invoices } from '../../db/schema';
 import type { db } from '../../db';
 import { enqueueAutopayStaffNotifications } from '../autopay/staffNotifications';
@@ -13,7 +13,10 @@ export async function abandonAccountingFees(executor: Pick<typeof db, 'select'|'
     .where(and(eq(invoices.partnerId,partnerId),sql`${invoiceStripePayments.feeAccountingJournal} @> ${JSON.stringify([{connectionId}])}::jsonb`));
   for(const ref of rows){
     await executor.select({id:invoices.id}).from(invoices).where(eq(invoices.id,ref.invoiceId)).for('update');
-    const [row]=await executor.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id,ref.id)).for('update');
+    const [row]=await executor.select({
+      ...getTableColumns(invoiceStripePayments),
+      outstanding:sql<boolean>`breeze_fee_accounting_outstanding(${invoiceStripePayments.feeAmount},${invoiceStripePayments.feeReversedAmount},${invoiceStripePayments.feeAccountingJournal})`,
+    }).from(invoiceStripePayments).where(eq(invoiceStripePayments.id,ref.id)).for('update');
     if(!row)continue;
     const journal=structuredClone(row.feeAccountingJournal) as AccountingFeeJournalEntry[];
     if(journal.some(e=>e.state==='abandoned'))continue;
@@ -27,8 +30,10 @@ export async function abandonAccountingFees(executor: Pick<typeof db, 'select'|'
     }
     if(!unfinished)journal.push({...first,payload:{...first.payload,amount:'0.00'},state:'abandoned',
       remoteId:null,leaseToken:null,leaseUntil:null,error:message});
-    await executor.update(invoiceStripePayments).set({feeAccountingJournal:journal,feeAccountingError:message}).where(eq(invoiceStripePayments.id,row.id));
-    await enqueueAutopayStaffNotifications(executor as typeof db,{orgId:ref.orgId,partnerId,partnerOnly:true,
+    await executor.update(invoiceStripePayments).set({feeAccountingJournal:journal,feeAccountingError:row.outstanding?message:null}).where(eq(invoiceStripePayments.id,row.id));
+    // Posted history needs a terminal marker, but only unresolved work needs attention.
+    // The predicate includes reversals that have not yet acquired a journal entry.
+    if(row.outstanding)await enqueueAutopayStaffNotifications(executor as typeof db,{orgId:ref.orgId,partnerId,partnerOnly:true,
       event:'autopay.needs_attention',dedupeKey:`accounting_fee:${row.id}:abandoned`,message});
   }
 }

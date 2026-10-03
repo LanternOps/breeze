@@ -4,6 +4,9 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {eq,sql} from 'drizzle-orm';
 import {db,hasDbAccessContext,withSystemDbAccessContext} from '../../db';
 import * as dbAccess from '../../db';
+import { discardPendingTenantSelection } from './accountingTenantSelection';
+import { abandonAccountingFees } from './accountingFeeAbandonment';
+import * as staffNotifications from '../autopay/staffNotifications';
 import * as tokens from './accountingTokens';
 import {accountingConnections,accountingEntityMappings,invoicePayments,invoiceStripePayments,invoices,stripeConnectAccounts,userNotifications} from '../../db/schema';
 import {createPartner,createOrganization,createUser} from '../../__tests__/integration/db-utils';
@@ -387,4 +390,57 @@ it('keeps mapping frozen when a definitive rejection follows an ambiguous create
   const [entry]=(await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[];
   expect(entry).toMatchObject({state:'pending',payload:{incomeRef:'fee-item'}});
   expect(entry!.payload.firstSubmittedAt).not.toBe('');
+});
+
+// A re-parked connection can still carry fee bookkeeping from its previous realm.
+it('pending disconnect rolls back deletion, abandonment and notifications when fanout fails', async () => {
+  const f = await seedFee();
+  await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'fee-posted'});
+  await pushFeeForStripeMapping(f.mapping.id);
+  await withSystemDbAccessContext(async () => {
+    await db.update(accountingConnections).set({status:'pending_tenant'}).where(eq(accountingConnections.id,f.conn.id));
+    await db.update(invoiceStripePayments).set({feeReversedAmount:'1.00'}).where(eq(invoiceStripePayments.id,f.mapping.id));
+  });
+  const before = await read(f.mapping.id);
+  const fanout = staffNotifications.enqueueAutopayStaffNotifications;
+  const injected = vi.spyOn(staffNotifications,'enqueueAutopayStaffNotifications').mockImplementationOnce(async (executor, input) => {
+    await fanout(executor,input);
+    throw new Error('injected notification failure');
+  });
+  const input = {
+    partnerId:f.conn.partnerId,provider:'quickbooks' as const,reason:'cancel' as const,
+    runInDbContext:<T>(fn:()=>Promise<T>)=>withSystemDbAccessContext(fn,'accounting.disconnect'),
+    onDeleted:(connectionId:string)=>abandonAccountingFees(db,f.conn.partnerId,connectionId),
+  };
+  await expect(discardPendingTenantSelection(input)).rejects.toThrow('injected notification failure');
+  expect(await withSystemDbAccessContext(()=>db.select().from(accountingConnections).where(eq(accountingConnections.id,f.conn.id)))).toHaveLength(1);
+  expect(await read(f.mapping.id)).toEqual(before);
+  expect(await withSystemDbAccessContext(()=>db.select().from(userNotifications))).toHaveLength(0);
+  expect(await withSystemDbAccessContext(()=>db.select().from(accountingEntityMappings).where(eq(accountingEntityMappings.integrationId,f.conn.id)))).toHaveLength(2);
+  injected.mockRestore();
+  await expect(discardPendingTenantSelection(input)).resolves.toMatchObject({discarded:true,connectionId:f.conn.id});
+  expect(await withSystemDbAccessContext(()=>db.select().from(accountingConnections).where(eq(accountingConnections.id,f.conn.id)))).toHaveLength(0);
+  expect((await read(f.mapping.id)).feeAccountingJournal).toEqual(expect.arrayContaining([expect.objectContaining({state:'abandoned'})]));
+  expect(await withSystemDbAccessContext(()=>db.select().from(userNotifications))).toHaveLength(1);
+});
+
+it.each([false,true])('disconnect of settled history raises no attention (reversal settled: %s)', async (reversed) => {
+  const f = await seedFee();
+  await createUser({partnerId:f.conn.partnerId,withMembership:true});
+  const post = vi.spyOn(getAccountingProvider('quickbooks'),'postFeeEntry').mockResolvedValue({id:'fee-posted'});
+  await pushFeeForStripeMapping(f.mapping.id);
+  if(reversed){
+    await withSystemDbAccessContext(()=>db.update(invoiceStripePayments).set({feeReversedAmount:'1.00'}).where(eq(invoiceStripePayments.id,f.mapping.id)));
+    await pushFeeForStripeMapping(f.mapping.id);
+  }
+  const posted = (await read(f.mapping.id)).feeAccountingJournal as AccountingFeeJournalEntry[];
+  await withSystemDbAccessContext(()=>deleteConnection(db,f.conn.partnerId,'quickbooks'));
+  expect(await withSystemDbAccessContext(()=>db.select().from(userNotifications))).toHaveLength(0);
+  const abandoned = await read(f.mapping.id);
+  expect(abandoned.feeAccountingJournal).toEqual([...posted,expect.objectContaining({state:'abandoned'})]);
+  expect(abandoned.feeAccountingError).toBeNull();
+  await withSystemDbAccessContext(()=>upsertConnection(db,f.conn.partnerId,'quickbooks',{realmId:'new-company',accessToken:'access',refreshToken:'refresh',accessTokenExpiresAt:new Date('2099-01-01'),environment:'sandbox',homeCurrency:'USD',pushPayments:true,pushMode:'auto'}));
+  expect(await pushFeeForStripeMapping(f.mapping.id)).toBe(false);
+  expect(post).toHaveBeenCalledTimes(reversed?2:1);
 });

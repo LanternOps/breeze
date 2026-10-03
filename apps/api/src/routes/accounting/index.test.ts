@@ -1,4 +1,5 @@
 vi.mock('../../services/accounting/accountingFeeAbandonment',()=>({abandonAccountingFees:vi.fn().mockResolvedValue(undefined)}));
+import { abandonAccountingFees } from '../../services/accounting/accountingFeeAbandonment';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
@@ -1662,6 +1663,29 @@ it('denies selected-org callers before reading the fee-error aggregate',async()=
       expect(auditActions().find((e) => e.action === 'accounting.connection.disconnected')).toMatchObject({
         resourceId: CONNECTION_ID, details: { provider: 'xero', status: 'pending_tenant' },
       });
+    });
+
+    it('pending disconnect abandons inside the deletion transaction, before remote cleanup', async () => {
+      mocks.getPartnerConnectionRef.mockResolvedValue({ id: CONNECTION_ID, provider: 'xero', status: 'pending_tenant' });
+      let inTransaction = false;
+      mocks.systemContext.mockImplementationOnce(async (fn) => {
+        inTransaction = true;
+        try { return await fn(); } finally { inTransaction = false; }
+      });
+      vi.mocked(abandonAccountingFees).mockImplementationOnce(async () => {
+        expect(inTransaction).toBe(true);
+      });
+      mocks.discardPendingTenantSelection.mockImplementationOnce(async (input) => {
+        await input.runInDbContext(async () => {
+          expect(inTransaction).toBe(true);
+          await input.onDeleted(CONNECTION_ID);
+        });
+        expect(inTransaction).toBe(false); // provider cleanup follows this transaction
+        return { discarded: true, connectionId: CONNECTION_ID, owedPaymentDeletes: { count: 0, remoteEntityIds: [] } };
+      });
+      expect((await disconnect()).status).toBe(200);
+      expect(abandonAccountingFees).toHaveBeenCalledWith(expect.anything(), authState.partnerId, CONNECTION_ID);
+      expect(mocks.systemContext).toHaveBeenCalledWith(expect.any(Function), 'accounting.disconnect');
     });
 
     it('#7289: disconnect of a re-parked row that owed payment deletes still disconnects and audits the discarded debt', async () => {

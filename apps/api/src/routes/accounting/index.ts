@@ -527,11 +527,14 @@ accountingRoutes.post('/:provider/disconnect', authMiddleware, partnerScopes, re
   // disconnect's.
   const discardPending = async () => {
     const result = await discardPendingTenantSelection({
-      partnerId: partner.partnerId, provider, reason: 'cancel', runInDbContext: runInDb,
+      partnerId: partner.partnerId, provider, reason: 'cancel',
+      // Authorization and the scoped read above also cover this pending path.
+      // Commit deletion, fee abandonment and user-scoped fanout together.
+      runInDbContext: (fn) => runOutsideDbContext(() =>
+        withSystemDbAccessContext(fn, 'accounting.disconnect')),
+      onDeleted: (connectionId) => abandonAccountingFees(db, partner.partnerId, connectionId),
     });
     if (!result.discarded) return false;
-    await runOutsideDbContext(()=>withSystemDbAccessContext(
-      ()=>abandonAccountingFees(db,partner.partnerId,result.connectionId),'accounting.disconnect'));
     auditOwedDeletesDiscarded(c, { provider, connectionId: result.connectionId, reason: 'disconnect', owed: result.owedPaymentDeletes });
     return true;
   };
