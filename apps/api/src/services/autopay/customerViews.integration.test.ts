@@ -1,5 +1,6 @@
 import '../../__tests__/integration/setup';
 import { randomUUID } from 'node:crypto';
+import type Stripe from 'stripe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withSystemDbAccessContext } from '../../db';
@@ -86,18 +87,23 @@ describe('customer token and return ownership against PostgreSQL', () => {
     expect(enrollment).toMatchObject({ status: 'requested', generation: 2 });
   });
 
-  it('retrieves debit funding from the owned org and closes the DB context before completion', async () => {
+  it('uses live debit evidence for the owned setup and closes the DB context before completion', async () => {
     const f = await fixture();
     await system(() => db.insert(orgPaymentMethods).values({ orgId: f.identity.orgId, enrollmentId: f.identity.enrollmentId,
       stripePaymentMethodId: 'pm_debit', type: 'card', cardBrand: 'Visa', cardFunding: 'debit', cardLast4: '1234',
       status: 'active', isAutopayMethod: true }));
-    vi.mocked(completeAutopaySetup).mockImplementationOnce(async () => {
+    vi.mocked(completeAutopaySetup).mockImplementationOnce(async (_partnerId, _ref, onVerifiedMethod) => {
       expect(getCurrentDbAccessContext()).toBeUndefined();
+      expect(onVerifiedMethod).toEqual(expect.any(Function));
+      onVerifiedMethod!({ id: 'pm_debit', type: 'card',
+        card: { brand: 'visa', funding: 'debit', last4: '1234', wallet: null,
+          networks: { available: ['visa'], preferred: null } },
+      } as Stripe.PaymentMethod);
       return { outcome: 'activated', orgId: f.identity.orgId };
     });
     expect(await completeOwnedAutopaySetup(f.identity, f.attempt.checkoutSessionId!)).toEqual({
-      outcome: 'activated', orgId: f.identity.orgId, methodLabel: 'Visa debit ••1234', feeText: 'No fee applies.',
+      outcome: 'activated', orgId: f.identity.orgId, methodLabel: 'visa debit ••1234', feeText: 'No processing fee applies to this card.',
     });
-    expect(completeAutopaySetup).toHaveBeenCalledWith(f.identity.partnerId, { checkoutSessionId: f.attempt.checkoutSessionId });
+    expect(completeAutopaySetup).toHaveBeenCalledWith(f.identity.partnerId, { checkoutSessionId: f.attempt.checkoutSessionId }, expect.any(Function));
   });
 });
