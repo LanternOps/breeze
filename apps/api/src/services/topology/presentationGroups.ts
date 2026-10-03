@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { topologyIpSchema, topologyNetworkClass, type GraphQuery, type PresentationEdge, type PresentationNode, type TopologyNetworkClass, type TopologyScope } from '@breeze/shared';
 import type { db } from '../../db';
-import { nodeFilter, observedFreshUntilSql, relationshipExposure, relationshipFilter, scoped, type ReadExposure } from './graphRead';
+import { assetScanPresenceSql, nodeFilter, observedFreshUntilSql, relationshipExposure, relationshipFilter, scoped, type ReadExposure } from './graphRead';
 import { cidrContains, parseIpAddress, parsePrefix, type Family } from './ipAddress';
 import { addressKey, buildNeighborEvidenceIndex, canonicalMac, readNeighborEvidence, type NeighborEvidenceIndex, type NeighborEvidenceRead, type NeighborTuple } from './neighborEvidence';
 
@@ -44,7 +44,13 @@ export type PresentationGroupInput = {
    * `evidenced` = the node still carries current evidence (readPresentationGroupInput).
    */
   orphans?: { id: string; kind: 'network' | 'gateway'; prefix: string | null; address: string | null; evidenced: boolean }[];
-  /** Nodes whose every binding is a decommissioned device (#7879): hidden from the overview, and their observations shape no card. */
+  /**
+   * Retired agents (#7879): nodes with at least one device binding, every one of them decommissioned.
+   * Their stale agent memberships and routes never shape a card. Such a node whose bound discovered
+   * asset is online in its latest scan stays visible AS that asset (its `unplaced` addresses are the
+   * asset's); the rest are `decommissioned`: hidden from the overview and counted.
+   */
+  retired?: string[];
   decommissioned?: string[];
 };
 export type PresentationGroupOptions = {
@@ -115,8 +121,10 @@ function gatewayMac(evidence: NeighborEvidenceIndex | null, route: Route): Neigh
  */
 export function buildPresentationGroups(input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
   const decommissioned = new Set(input.decommissioned ?? []);
+  const retired = new Set([...(input.retired ?? []), ...decommissioned]);
   const live = (row: { endpointId: string }) => !decommissioned.has(row.endpointId);
-  const grouped = buildCardGroups(decommissioned.size ? { ...input, memberships: input.memberships.filter(live), routes: input.routes.filter(live),
+  const agentLive = (row: { endpointId: string }) => !retired.has(row.endpointId);
+  const grouped = buildCardGroups(retired.size ? { ...input, memberships: input.memberships.filter(agentLive), routes: input.routes.filter(agentLive),
     unplaced: input.unplaced.filter(live), ...(input.inventoryPairs ? { inventoryPairs: input.inventoryPairs.filter(live) } : {}) } : input, options);
   return placeOverviewOutliers(grouped, input, options);
 }
@@ -475,7 +483,8 @@ function buildCardGroups(input: PresentationGroupInput, options: PresentationGro
  *  - Unfolded evidenced non-LAN orphans (link-local, host, overlay, …) form a memberless
  *    card of their class, so the hidden-networks toggle governs them like any other.
  *  - An unfolded evidenced LAN network or gateway stays a canonical node: it is real.
- *  - Decommissioned devices are hidden (`decommissioned`) and counted site-wide.
+ *  - Retired agents with no online bound asset are hidden (`decommissioned`) and counted site-wide;
+ *    one whose asset is online stays, placed by the asset's address like any unplaced endpoint.
  */
 function placeOverviewOutliers(grouped: PresentationGroups, input: PresentationGroupInput, options: PresentationGroupOptions): PresentationGroups {
   const { view, scopeHash, visibleNodeIds, tokenFor } = options;
@@ -548,11 +557,15 @@ export async function readPresentationGroupInput(
   const siteNodes = nodeFilter(scope, { view, hops: 1, includeHealth: false, limit: 1 }, 'n', exposure);
   const [row] = await tx.execute<PresentationGroupInput>(sql`WITH site_nodes AS MATERIALIZED (
       SELECT n.id, n.kind, n.attributes, n.last_observed_at FROM topology_nodes n WHERE ${siteNodes}
-    ), decommissioned AS MATERIALIZED (
-      -- #7879: every binding of the node is a decommissioned device (an asset or manual binding keeps it live).
-      SELECT s.id FROM site_nodes s WHERE EXISTS (SELECT 1 FROM topology_node_bindings db WHERE ${scoped(scope, 'db')} AND db.node_id = s.id)
+    ), retired AS MATERIALIZED (
+      -- #7879: at least one device binding, and every device binding is a decommissioned device (a missing row is live).
+      SELECT s.id FROM site_nodes s WHERE EXISTS (SELECT 1 FROM topology_node_bindings db WHERE ${scoped(scope, 'db')} AND db.node_id = s.id AND db.device_id IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM topology_node_bindings db LEFT JOIN devices dd ON dd.id = db.device_id AND dd.org_id = db.org_id
-          WHERE ${scoped(scope, 'db')} AND db.node_id = s.id AND (dd.id IS NULL OR dd.status <> 'decommissioned'))
+          WHERE ${scoped(scope, 'db')} AND db.node_id = s.id AND db.device_id IS NOT NULL AND (dd.id IS NULL OR dd.status <> 'decommissioned'))
+    ), decommissioned AS MATERIALIZED (
+      -- Hidden unless a bound discovered asset is online in its latest completed scan: then the hardware is still there.
+      SELECT r.id FROM retired r WHERE NOT EXISTS (SELECT 1 FROM topology_node_bindings ab JOIN discovered_assets a ON a.id = ab.discovered_asset_id AND a.org_id = ab.org_id
+        WHERE ${scoped(scope, 'ab')} AND ab.node_id = r.id AND ${assetScanPresenceSql(scope)} = 'online')
     ), rels AS MATERIALIZED (
       SELECT r.id, r.kind, r.source_node_id, r.target_node_id, r.source_interface_id, r.logical_context->>'contextKey' AS context,
         coalesce(${observedFreshUntilSql('r')} > now(), false) AS fresh
@@ -577,9 +590,10 @@ export async function readPresentationGroupInput(
             SELECT host(a.ip_address) AS ip FROM topology_node_bindings b JOIN discovered_assets a ON a.id = b.discovered_asset_id AND a.org_id = b.org_id
               WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND a.ip_address IS NOT NULL
             UNION SELECT ${deviceAddress} FROM topology_node_bindings b JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
-              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL
+              WHERE ${scoped(scope, 'b')} AND b.node_id = e.id AND ${deviceAddress} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
           ) x), '[]'::jsonb)) ORDER BY e.id), '[]'::jsonb)
-        FROM site_nodes e WHERE e.kind = 'endpoint' AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id)) AS unplaced,
+        FROM site_nodes e WHERE e.kind = 'endpoint' AND (EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
+          OR NOT EXISTS (SELECT 1 FROM memberships m WHERE m.source_node_id = e.id))) AS unplaced,
       -- Each pair comes from ONE inventory row (an asset, or one device_network row): never an address joined to another row's MAC.
       (SELECT coalesce(jsonb_agg(p.pair), '[]'::jsonb) FROM (
           SELECT jsonb_build_object('endpointId', e.id, 'ip', host(a.ip_address), 'mac', btrim(a.mac_address)) AS pair
@@ -590,6 +604,7 @@ export async function readPresentationGroupInput(
             FROM site_nodes e JOIN topology_node_bindings b ON ${scoped(scope, 'b')} AND b.node_id = e.id
             JOIN device_network dn ON dn.device_id = b.device_id AND dn.org_id = b.org_id
             WHERE e.kind = 'endpoint' AND ${deviceAddress} IS NOT NULL AND nullif(btrim(dn.mac_address), '') IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM retired rt WHERE rt.id = e.id)
           LIMIT ${INVENTORY_PAIR_CAP + 1}) p) AS "inventoryPairs",
       -- #7879 orphans: unbound network/gateway nodes with no relationship in this view to a shown, live node.
       -- Current evidence: a still-fresh incident relationship (any view, physical gate kept) to a live node, or a
@@ -599,17 +614,18 @@ export async function readPresentationGroupInput(
           'evidenced', coalesce(s.last_observed_at > now() - interval '900 seconds', false) OR EXISTS (
             SELECT 1 FROM topology_relationships er WHERE ${scoped(scope, 'er')} AND er.deleted_at IS NULL AND er.lifecycle = 'active'
               AND ${relationshipExposure({ physical: exposure.physical }, 'er')} AND (er.source_node_id = s.id OR er.target_node_id = s.id)
-              AND NOT EXISTS (SELECT 1 FROM decommissioned d WHERE d.id = er.source_node_id OR d.id = er.target_node_id)
+              AND NOT EXISTS (SELECT 1 FROM retired d WHERE d.id = er.source_node_id OR d.id = er.target_node_id)
               AND coalesce(${observedFreshUntilSql('er')} > now(), false))) ORDER BY s.id), '[]'::jsonb)
         FROM site_nodes s WHERE s.kind IN ('network', 'gateway')
           AND NOT EXISTS (SELECT 1 FROM topology_node_bindings ob WHERE ${scoped(scope, 'ob')} AND ob.node_id = s.id)
           AND NOT EXISTS (SELECT 1 FROM topology_relationships xr WHERE ${relationshipFilter(scope, view, 'xr', exposure)}
             AND (xr.source_node_id = s.id OR xr.target_node_id = s.id)
             AND EXISTS (SELECT 1 FROM site_nodes o WHERE o.id = CASE WHEN xr.source_node_id = s.id THEN xr.target_node_id ELSE xr.source_node_id END
-              AND NOT EXISTS (SELECT 1 FROM decommissioned d WHERE d.id = o.id)))) AS orphans,
+              AND NOT EXISTS (SELECT 1 FROM retired d WHERE d.id = o.id)))) AS orphans,
+      (SELECT coalesce(jsonb_agg(d.id ORDER BY d.id), '[]'::jsonb) FROM retired d) AS retired,
       (SELECT coalesce(jsonb_agg(d.id ORDER BY d.id), '[]'::jsonb) FROM decommissioned d) AS decommissioned`);
   const input: PresentationGroupInput = { networks: row?.networks ?? [], memberships: row?.memberships ?? [], routes: row?.routes ?? [], unplaced: row?.unplaced ?? [],
-    orphans: row?.orphans ?? [], decommissioned: row?.decommissioned ?? [] };
+    orphans: row?.orphans ?? [], retired: row?.retired ?? [], decommissioned: row?.decommissioned ?? [] };
   const pairs = row?.inventoryPairs ?? [];
   input.inventoryPairsTruncated = pairs.length > INVENTORY_PAIR_CAP;
   input.inventoryPairs = input.inventoryPairsTruncated ? [] : pairs;

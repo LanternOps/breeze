@@ -263,16 +263,37 @@ describe('grouped overview truth (#7879)', () => {
     expect(contributing).toContain(zero.gateway.rel);
     expect(contributing).not.toContain(one.gateway.rel);
 
-    // A node that still has a live binding (here a discovered asset) is not hidden: only EVERY binding decommissioned hides it.
+    // Prod shape: the decommissioned agent's node ALSO carries a discovered-asset binding. While that asset
+    // was not seen by the latest completed scan, the node stays hidden (the hardware is not evidently there).
     const assetId = crypto.randomUUID();
     await system(async () => {
-      await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type)
-        VALUES (${assetId}::uuid,${site.orgId}::uuid,${site.siteId}::uuid,'10.1.2.99','reimaged','workstation')`);
+      await db.execute(sql`INSERT INTO discovered_assets (id,org_id,site_id,ip_address,hostname,asset_type,is_online,last_seen_at)
+        VALUES (${assetId}::uuid,${site.orgId}::uuid,${site.siteId}::uuid,'10.1.2.99','checkout-hw','workstation',true,now() - interval '20 days')`);
       await db.execute(sql`INSERT INTO topology_node_bindings (org_id,site_id,node_id,discovered_asset_id)
         VALUES (${site.orgId}::uuid,${site.siteId}::uuid,${one.endpoint}::uuid,${assetId}::uuid)`);
     });
-    const live = await site.graph();
-    expect(hiddenOf(live, 'decommissioned')).toBeUndefined();
-    expect(cardOf(live, '10.1.2.0/24')!.group!.members.map((member) => member.nodeId)).toContain(one.endpoint);
+    const staleAsset = await site.graph();
+    expect(hiddenOf(staleAsset, 'decommissioned')!.group!.canonicalNodeIds).toEqual([one.endpoint]);
+    expect(cardOf(staleAsset, '10.1.2.0/24')!.group!.members.map((member) => member.nodeId)).not.toContain(one.endpoint);
+
+    // Once the latest completed scan sees that asset, the node renders AS the asset: asset label, presence and
+    // inventory; the agent's hostname and status are dropped; placed by the asset address, never by agent facts.
+    const [profileId, jobId] = [crypto.randomUUID(), crypto.randomUUID()];
+    await system(async () => {
+      await db.execute(sql`INSERT INTO discovery_profiles (id,org_id,site_id,name) VALUES (${profileId}::uuid,${site.orgId}::uuid,${site.siteId}::uuid,'checkout')`);
+      await db.execute(sql`INSERT INTO discovery_jobs (id,profile_id,org_id,site_id,status,started_at,completed_at)
+        VALUES (${jobId}::uuid,${profileId}::uuid,${site.orgId}::uuid,${site.siteId}::uuid,'completed',now() - interval '2 minutes',now() - interval '1 minute')`);
+      await db.execute(sql`UPDATE discovered_assets SET last_job_id = ${jobId}::uuid, last_seen_at = now() WHERE id = ${assetId}::uuid`);
+    });
+    const shown = await site.graph();
+    expect(hiddenOf(shown, 'decommissioned')).toBeUndefined();
+    const node = shown.nodes.find((entry) => entry.id === one.endpoint)!;
+    expect(node.label).toBe('checkout-hw');
+    expect(node.inventory).toMatchObject({ source: 'discovered_asset', name: 'checkout-hw', addresses: ['10.1.2.99'],
+      presence: { state: 'online', source: 'scan', agentStatus: null } });
+    const shownCard = cardOf(shown, '10.1.2.0/24')!;
+    expect(shownCard.group!.members.find((member) => member.nodeId === one.endpoint)).toMatchObject({ placement: 'address_match' });
+    expect(shownCard.group!.observerCount).toBe(1);
+    expect(shown.presentation.edges.flatMap((edge) => edge.meaning === 'aggregate' ? edge.contributingRelationshipIds : [])).not.toContain(one.gateway.rel);
   });
 });

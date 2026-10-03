@@ -605,6 +605,26 @@ describe('orphan network/gateway nodes and decommissioned devices (#7879)', () =
     expect(nodes.flatMap((node) => node.group!.canonicalNodeIds)).not.toContain(O(3));
   });
 
+  it('shows a retired agent whose bound asset is still online as that asset: placed by the asset address, never by the agent facts', () => {
+    const base = lan([
+      { n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.1' },
+      // E(3)'s agent is decommissioned; its stale memberships and routes must not shape anything.
+      { n: 3, prefix: '10.1.2.0/24', gateway: '10.1.2.254' },
+    ], { unplaced: [{ endpointId: E(3), addresses: ['10.1.2.77'] }] });
+    const input: PresentationGroupInput = { ...base, retired: [E(3), E(4)], decommissioned: [E(4)] };
+    const { nodes, edges } = build(input, { visible: [...orphanVisible(input), E(3), E(4)] });
+    const card = networks(nodes)[0]!;
+    expect(networks(nodes)).toHaveLength(1);
+    expect(card.group).toMatchObject({ conflict: false, gatewayAddresses: ['10.1.2.1'], observerCount: 2 });
+    expect(card.group!.members.find((m) => m.nodeId === E(3))).toMatchObject({ placement: 'address_match', primary: true });
+    expect(card.memberCount).toBe(3);
+    expect(edges.flatMap((edge) => edge.meaning === 'aggregate' ? edge.contributingRelationshipIds : [])).not.toContain(R(3));
+    // Shown, not hidden: only E(4) (no online asset) is in the decommissioned group.
+    const decommissioned = hidden(nodes).find((node) => node.group!.basis === 'decommissioned')!;
+    expect(decommissioned.group!.canonicalNodeIds).toEqual([E(4)]);
+    expect(decommissioned.memberCount).toBe(1);
+  });
+
   it('counts hidden nodes site-wide but lists only this page', () => {
     const input: PresentationGroupInput = { ...site(), decommissioned: [E(30), E(31)], orphans: [{ id: O(1), kind: 'network', prefix: '10.7.0.0/24', address: null, evidenced: false }] };
     const { nodes } = build(input, { visible: [N(1), N(2), E(1), E(2), G(1), G(2), E(30)] });

@@ -214,9 +214,13 @@ Found on a production site re-check; each rule is presentation-only and never au
   observation within 900 s, the `max(3 × cadence, 900 s)` floor) → a `hidden` group
   (`no_current_evidence`); an evidenced non-LAN orphan → a memberless card of its class, governed by
   the hidden-networks toggle; an evidenced LAN orphan stays a canonical node.
-- **Decommissioned devices.** A node whose every binding is a decommissioned device is removed before
-  grouping (its stale facts split and shape no card) and listed in a `hidden` group
-  (`decommissioned`); the client never draws a `hidden` group and shows "N removed devices hidden".
+- **Decommissioned devices.** A node with at least one device binding, all of them decommissioned, is a
+  retired agent: its stale memberships and routes never shape a card. If it also has a discovered-asset
+  binding that is online in its latest completed scan, it renders AS that asset (label, inventory and
+  presence from the asset; the agent's hostname and status dropped) and is placed by the asset's
+  address. Otherwise it is listed in a `hidden` group (`decommissioned`); the client never draws a
+  `hidden` group and shows "N removed devices hidden". (Prod shape: decommissioned agents usually also
+  carry an asset binding.)
 
 ## Quorum questions (original)
 
