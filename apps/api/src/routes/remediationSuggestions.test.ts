@@ -718,7 +718,16 @@ describe('remediation suggestion routes', () => {
       expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
     });
 
+    it('refuses a built-in elevation request without devices:execute', async () => {
+      currentPermissions = { permissions: [{ resource: 'scripts', action: 'execute' }] };
+      mockSuggestionLoad({ ...builtinRow, builtinAction: 'reboot', riskTier: 'high', elevationRequestId: null, parameters: {} });
+      const res = await app.request(`/remediation-suggestions/${builtinRow.id}/elevation-request`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(403);
+      expect(dbMocks.insertMock).not.toHaveBeenCalled();
+    });
+
     it('accepts a built-in row for an elevation request', async () => {
+      withDevicesExecute();
       mockSuggestionLoad({ ...builtinRow, builtinAction: 'reboot', riskTier: 'high', elevationRequestId: null, parameters: {} });
       mockDeviceLoad();
       const { values: insertValues } = mockInsertReturning({ id: 'el-1', status: 'pending', expiresAt: null });

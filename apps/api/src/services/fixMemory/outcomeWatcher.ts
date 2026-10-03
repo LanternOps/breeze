@@ -172,24 +172,39 @@ async function readScript(executionId: string | null, deviceId: string): Promise
 }
 
 /**
- * When the fix's script started on the device. script_executions.started_at is
- * `timestamp without time zone`; Drizzle reads it as UTC, the same convention
- * it was written with (scriptDispatch sets it from a JS Date), so it compares
- * directly with the timestamptz recovery times.
+ * device_commands.status → the pending decision's reading (W2 built-ins).
+ * `detail` mirrors the script path's neverDelivered rule: a failed/timed-out
+ * command that the reaper expired on its DELIVERY clock, or that never started
+ * (executed_at null), never reached the device and is no evidence about the fix.
  */
-/** device_commands.status → the pending decision's reading (W2 built-ins). */
-export function readingFromCommand(status: string | null): ScriptReading | null {
+export function readingFromCommand(
+  status: string | null,
+  detail?: { result: unknown; executedAt: Date | null },
+): ScriptReading | null {
   if (!status) return null;
   if (status === 'completed') return { status: 'completed', exitCode: 0 };
-  if (status === 'failed' || status === 'timeout' || status === 'cancelled') return { status, exitCode: null };
+  if (status === 'failed' || status === 'timeout') {
+    const clock = detail?.result && typeof detail.result === 'object'
+      ? (detail.result as Record<string, unknown>).clock : undefined;
+    const neverDelivered = detail !== undefined && (clock === 'delivery' || !detail.executedAt);
+    return neverDelivered ? { status, exitCode: null, neverDelivered: true } : { status, exitCode: null };
+  }
+  if (status === 'cancelled') return { status, exitCode: null };
   return { status: 'running', exitCode: null }; // pending / sent: not finished yet
 }
 
+/** Cleanup-run errors that mean the run never started on the device. */
+const CLEANUP_NEVER_DELIVERED_ERRORS = new Set(['agent_update_required', 'Failed to queue the cleanup run']);
+
 /** OS-native cleanup run status (filesystem_cleanup_run_status enum). */
-export function readingFromCleanupRun(status: string | null, _error: string | null): ScriptReading | null {
+export function readingFromCleanupRun(status: string | null, error: string | null): ScriptReading | null {
   if (!status) return null;
   if (status === 'executed') return { status: 'completed', exitCode: 0 };
-  if (status === 'failed') return { status: 'failed', exitCode: null };
+  if (status === 'failed') {
+    return error && CLEANUP_NEVER_DELIVERED_ERRORS.has(error)
+      ? { status: 'failed', exitCode: null, neverDelivered: true }
+      : { status: 'failed', exitCode: null };
+  }
   return { status: 'running', exitCode: null };
 }
 
@@ -197,14 +212,23 @@ export function readingFromCleanupRun(status: string | null, _error: string | nu
 async function readActionReading(row: FixOutcomeRow): Promise<ScriptReading | null> {
   if (row.actionCleanupRunId) {
     const [run] = await db.select({ status: deviceFilesystemCleanupRuns.status, error: deviceFilesystemCleanupRuns.error })
-      .from(deviceFilesystemCleanupRuns).where(eq(deviceFilesystemCleanupRuns.id, row.actionCleanupRunId)).limit(1);
+      .from(deviceFilesystemCleanupRuns)
+      .where(and(eq(deviceFilesystemCleanupRuns.id, row.actionCleanupRunId), eq(deviceFilesystemCleanupRuns.deviceId, row.deviceId)))
+      .limit(1);
     return readingFromCleanupRun(run?.status ?? null, run?.error ?? null);
   }
-  const [cmd] = await db.select({ status: deviceCommands.status }).from(deviceCommands)
+  const [cmd] = await db.select({ status: deviceCommands.status, result: deviceCommands.result, executedAt: deviceCommands.executedAt })
+    .from(deviceCommands)
     .where(and(eq(deviceCommands.id, row.actionCommandId!), eq(deviceCommands.deviceId, row.deviceId))).limit(1);
-  return readingFromCommand(cmd?.status ?? null);
+  return cmd ? readingFromCommand(cmd.status, { result: cmd.result, executedAt: cmd.executedAt }) : null;
 }
 
+/**
+ * When the fix's script started on the device. script_executions.started_at is
+ * `timestamp without time zone`; Drizzle reads it as UTC, the same convention
+ * it was written with (scriptDispatch sets it from a JS Date), so it compares
+ * directly with the timestamptz recovery times.
+ */
 async function readScriptStartedAt(executionId: string | null): Promise<Date | null> {
   if (!executionId) return null;
   const [s] = await db.select({ startedAt: scriptExecutions.startedAt })
@@ -346,7 +370,8 @@ async function decide(
   }
   if (row.state === 'awaiting_recovery') {
     const reading: RecoveryReading = moved ? { kind: 'device_moved' } : await readRecovery(row, overrides.alert);
-    // The start time only matters when there is a recovery to date.
+    // The start time only matters when there is a recovery to date. A built-in has no
+    // script start, so recovery is dated against createdAt (the row is written right after dispatch).
     const startedAt = reading.kind === 'recovered' ? await readScriptStartedAt(row.scriptExecutionId) : null;
     return decideAwaitingRecovery({ reading, createdAt: row.createdAt, startedAt, deadlineAt: row.deadlineAt, now });
   }

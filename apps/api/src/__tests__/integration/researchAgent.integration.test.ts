@@ -261,13 +261,25 @@ describe('built-in attempts follow their command or cleanup run (real Postgres, 
     const fx = await fixture();
     const mk = async (status: string) => {
       const [cmd] = await withSystemDbAccessContext(() => db.insert(deviceCommands)
-        .values({ deviceId: fx.device.id, type: 'restart_service', payload: { name: 'Spooler' }, status } as never)
+        .values({ deviceId: fx.device.id, type: 'restart_service', payload: { name: 'Spooler' }, status, executedAt: new Date() } as never)
         .returning({ id: deviceCommands.id }));
       return outcome(fx, { fixIdentity: 'builtin:restart_service', builtinAction: 'restart_service', actionCommandId: cmd!.id });
     };
     expect(await advanceOutcome(await mk('completed'))).toBe('awaiting_recovery');
     expect(await advanceOutcome(await mk('failed'))).toBe('failed');
     expect(await advanceOutcome(await mk('sent'))).toBe('pending');
+  });
+
+  it('a command the reaper expired on its delivery clock is inconclusive (never reached the device), a real failure is failed', async () => {
+    const fx = await fixture();
+    const mk = async (result: Record<string, unknown>, executedAt: Date | null) => {
+      const [cmd] = await withSystemDbAccessContext(() => db.insert(deviceCommands)
+        .values({ deviceId: fx.device.id, type: 'reboot', payload: {}, status: 'failed', result, executedAt } as never)
+        .returning({ id: deviceCommands.id }));
+      return outcome(fx, { fixIdentity: 'builtin:reboot', builtinAction: 'reboot', actionCommandId: cmd!.id });
+    };
+    expect(await advanceOutcome(await mk({ clock: 'delivery', error: 'expired' }, null))).toBe('inconclusive');
+    expect(await advanceOutcome(await mk({ error: 'agent said no' }, new Date()))).toBe('failed');
   });
 
   it('a disk_cleanup attempt follows the cleanup run row, not the command', async () => {

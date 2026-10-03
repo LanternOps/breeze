@@ -875,6 +875,9 @@ remediationSuggestionRoutes.post(
     if (!isBuiltin && (existing.targetType !== 'script' || !existing.scriptId)) {
       return c.json({ error: 'Only script or built-in action suggestions can request elevation approval' }, 400);
     }
+    if (isBuiltin && (!perms || !hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action))) {
+      return c.json({ error: 'Requesting approval for a built-in action requires permission to execute on devices' }, 403);
+    }
 
     const deviceId = singleTargetDeviceId(existing);
     if (!deviceId) {

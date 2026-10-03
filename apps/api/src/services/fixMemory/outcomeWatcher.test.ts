@@ -340,6 +340,32 @@ describe('built-in pending readings (W2 Task 15)', () => {
     [null, null, null],
   ])('cleanup run %s', (status, error, reading) => expect(readingFromCleanupRun(status, error)).toEqual(reading));
 
+  it.each([
+    ['failed', { result: { clock: 'delivery' }, executedAt: null }, true],
+    ['timeout', { result: { clock: 'delivery' }, executedAt: new Date() }, true],
+    ['failed', { result: { error: 'x' }, executedAt: null }, true],
+    ['failed', { result: { error: 'x' }, executedAt: new Date() }, false],
+    ['timeout', { result: null, executedAt: new Date() }, false],
+  ] as const)('command %s with %o: neverDelivered=%s', (status, detail, never) => {
+    const r = readingFromCommand(status, detail);
+    expect(r?.neverDelivered === true).toBe(never);
+    expect(r?.status).toBe(status);
+  });
+
+  it.each([
+    ['agent_update_required', true],
+    ['Failed to queue the cleanup run', true],
+    ['boom', false],
+    [null, false],
+  ])('failed cleanup run with error %s: neverDelivered=%s', (error, never) => {
+    expect(readingFromCleanupRun('failed', error)?.neverDelivered === true).toBe(never);
+  });
+
+  it('a never-delivered built-in decides inconclusive, not failed', () => {
+    expect(decidePending({ script: { status: 'failed', exitCode: null, neverDelivered: true }, deadlineAt: at(24), now: at(1) }))
+      .toEqual({ to: 'inconclusive', reason: 'script_never_delivered' });
+  });
+
   it('a pending built-in attempt reads its command, not a script execution', async () => {
     transitionMock.mockReset();
     transitionMock.mockResolvedValue(true);
