@@ -656,7 +656,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'execute_command',
-      description: "Execute a system command on a device. list_processes/file_list/event_logs_list skip approval in auto-execute (audited); per-step needs inline confirm. Others, incl. file_read, need full approval. list_processes cpuPercent is per-core (100%=1 core).",
+      description: "Run a system command on a device. list_processes/file_list/event_logs_list, and in chat event_logs_query on System/Setup without query, run without approval (audited). Others, incl. file_read, need approval. list_processes cpuPercent is per-core (100%=1 core).",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -682,16 +682,26 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         required: ['deviceId', 'commandType']
       }
     },
-    handler: async (input, auth) => {
+    handler: async (input, auth, context) => {
       const deviceId = input.deviceId as string;
       const commandType = input.commandType as string;
+
+      // #7906: a chat call the gate auto-executed as read-only carries the
+      // payload it was classified on. Dispatch exactly that — never the raw
+      // input payload — and refuse a pin that does not match the command.
+      const pinned = context?.pinnedEventLogsQuery;
+      if (pinned && commandType !== 'event_logs_query') {
+        return JSON.stringify({ error: 'A pinned event_logs_query payload cannot dispatch another commandType' });
+      }
 
       // Verify device access
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
       const { device } = access;
 
-      const payload = { ...((input.payload as Record<string, unknown>) ?? {}) };
+      const payload: Record<string, unknown> = pinned
+        ? { ...pinned.payload }
+        : { ...((input.payload as Record<string, unknown>) ?? {}) };
 
       // The tool description tells the model to send { serviceName } for the
       // three service commands — the same key manage_services' own input
