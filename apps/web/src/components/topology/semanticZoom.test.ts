@@ -1,19 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot } from './semanticZoom';
+import { SUMMARY_ENTER_ZOOM, SUMMARY_EXIT_ZOOM, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, canvasFillHeight, chipModes, summarySlot, CHIP_OVERLAP_LIMIT } from './semanticZoom';
 
 describe('nextZoomTier', () => {
+  it('never enters the summary tier for a flat (non-grouped) view, and leaves it if the view goes flat', () => {
+    expect(nextZoomTier('detail', 0.2, false)).toBe('detail');
+    expect(nextZoomTier('summary', 0.2, false)).toBe('detail');
+  });
   it('switches to summaries below the enter zoom and back to tiles above the exit zoom', () => {
     expect(SUMMARY_ENTER_ZOOM).toBeLessThan(SUMMARY_EXIT_ZOOM);
-    expect(nextZoomTier('detail', 0.39)).toBe('summary');
-    expect(nextZoomTier('summary', 1)).toBe('detail');
+    expect(nextZoomTier('detail', 0.39, true)).toBe('summary');
+    expect(nextZoomTier('summary', 1, true)).toBe('detail');
   });
 
   it('holds its tier inside the hysteresis band so a slow wheel never flickers', () => {
     const between = (SUMMARY_ENTER_ZOOM + SUMMARY_EXIT_ZOOM) / 2;
-    expect(nextZoomTier('detail', between)).toBe('detail');
-    expect(nextZoomTier('summary', between)).toBe('summary');
-    expect(nextZoomTier('detail', SUMMARY_ENTER_ZOOM - 0.001)).toBe('summary');
-    expect(nextZoomTier('summary', SUMMARY_EXIT_ZOOM)).toBe('detail');
+    expect(nextZoomTier('detail', between, true)).toBe('detail');
+    expect(nextZoomTier('summary', between, true)).toBe('summary');
+    expect(nextZoomTier('detail', SUMMARY_ENTER_ZOOM - 0.001, true)).toBe('summary');
+    expect(nextZoomTier('summary', SUMMARY_EXIT_ZOOM, true)).toBe('detail');
   });
 });
 
@@ -107,5 +111,37 @@ describe('chipModes', () => {
   it('steps colliding chips down until they no longer overlap: compact, then icon only', () => {
     expect(chipModes([chip('a', 100, 36), chip('b', 230, 36)])).toEqual(new Map([['a', 'compact'], ['b', 'compact']]));
     expect(chipModes([chip('a', 100, 36), chip('b', 160, 36)])).toEqual(new Map([['a', 'icon'], ['b', 'icon']]));
+  });
+});
+
+describe('chipModes at scale (per-frame work stays bounded)', () => {
+  const chip = (id: string, x: number, y: number) => ({ id, x, y, nodeW: 36, nodeH: 9, fullW: 170, compactW: 110 });
+  it('compares only nearby chips: 1,000 spread-out chips are not checked pair by pair', () => {
+    // Count position reads: an all-pairs check reads `x` about a million times for 1,000 chips.
+    let reads = 0;
+    const chips = Array.from({ length: 1000 }, (_, index) => {
+      const base = chip(`c${index}`, (index % 50) * 400, Math.floor(index / 50) * 120);
+      return { ...base, get x() { reads++; return base.x; } };
+    });
+    const start = performance.now();
+    const modes = chipModes(chips);
+    expect(performance.now() - start).toBeLessThan(50);
+    expect(modes.size).toBe(1000);
+    expect(reads).toBeLessThan(100_000);
+  });
+  it('skips overlap resolution above the chip cap, so a dense pile cannot go quadratic every frame', () => {
+    const pile = Array.from({ length: CHIP_OVERLAP_LIMIT + 1 }, (_, index) => chip(`p${index}`, 100, 100 + index));
+    const start = performance.now();
+    const modes = chipModes(pile);
+    expect(performance.now() - start).toBeLessThan(50);
+    // Base modes only: a small node gets the compact chip, nothing stepped to icon by collisions.
+    expect(new Set(modes.values())).toEqual(new Set(['compact']));
+  });
+  it('still resolves a worst-case pile at the cap inside a frame budget', () => {
+    const pile = Array.from({ length: CHIP_OVERLAP_LIMIT }, (_, index) => chip(`p${index}`, 100, 100 + index));
+    const start = performance.now();
+    const modes = chipModes(pile);
+    expect(performance.now() - start).toBeLessThan(100);
+    expect(modes.get('p0')).toBe('icon');
   });
 });

@@ -1,7 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import NodeChipOverlay from './NodeChipOverlay';
+import NodeChipOverlay, { overviewChips } from './NodeChipOverlay';
+import type { RenderNode } from './renderProjection';
 
 afterEach(cleanup);
 
@@ -23,4 +24,15 @@ it('names each zoomed-out gateway chip by its label and detail, and selects its 
 it('is out of the accessibility tree while the map shows tiles', () => {
   render(<NodeChipOverlay chips={chips} visible={false} onSelect={() => {}} />);
   expect(screen.queryByRole('button')).toBeNull();
+});
+
+const node = (id: string, kind: RenderNode['kind'], parent?: string): RenderNode => ({ id, label: id, detail: null, kind, glyph: 'router', ...(parent ? { parent } : {}),
+  presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: 0, address: null, note: null, sharedWith: 0 });
+
+it('gives chips only to a grouped overview: a flat logical or physical view keeps its tiles at every zoom', () => {
+  const nodes = [node('card', 'group'), node('member', 'device', 'card'), node('gw', 'gateway'), node('loose', 'device'), node('far', 'outside')];
+  expect(overviewChips({ grouped: true, nodes }).map((chip) => chip.id)).toEqual(['gw', 'loose']);
+  // ~1,000 loose tiles in a flat view must not become ~1,000 HTML chips re-measured every frame.
+  const flat = Array.from({ length: 1000 }, (_, index) => node(`n${index}`, 'device'));
+  expect(overviewChips({ grouped: false, nodes: flat })).toEqual([]);
 });

@@ -1,7 +1,19 @@
 import { forwardRef } from 'react';
 import { glyphTileUri, type TopologyGlyph } from './topologyGlyphs';
+import type { TopologyRender } from './renderProjection';
 
 export type NodeChip = { id: string; title: string; detail: string | null; glyph: TopologyGlyph };
+
+/**
+ * The nodes that get a zoomed-out chip: tiles outside any card, in a grouped overview only. A flat
+ * (logical, physical) view has no summary tier, so it gets none: a ~1,000-node flat view would
+ * otherwise mount ~1,000 HTML chips and measure and place them every frame.
+ */
+export function overviewChips(render: Pick<TopologyRender, 'grouped' | 'nodes'>): NodeChip[] {
+  if (!render.grouped) return [];
+  return render.nodes.filter((node) => !node.parent && node.kind !== 'group' && node.kind !== 'unidentified' && node.kind !== 'outside')
+    .map((node) => ({ id: node.id, title: node.label, detail: node.detail, glyph: node.glyph }));
+}
 
 /**
  * Zoomed-out labels for the nodes outside cards: gateways, the Internet, loose tiles (semantic zoom,

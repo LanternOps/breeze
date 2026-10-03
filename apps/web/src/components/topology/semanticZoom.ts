@@ -10,7 +10,9 @@ export const SUMMARY_ENTER_ZOOM = 0.55;
 export const SUMMARY_EXIT_ZOOM = 0.62;
 export type ZoomTier = 'summary' | 'detail';
 
-export function nextZoomTier(current: ZoomTier, zoom: number): ZoomTier {
+/** Only a grouped overview has cards to summarise: a flat (logical, physical) view stays in `detail` at every zoom. */
+export function nextZoomTier(current: ZoomTier, zoom: number, grouped: boolean): ZoomTier {
+  if (!grouped) return 'detail';
   if (current === 'detail') return zoom < SUMMARY_ENTER_ZOOM ? 'summary' : 'detail';
   return zoom >= SUMMARY_EXIT_ZOOM ? 'detail' : 'summary';
 }
@@ -101,19 +103,31 @@ export function summarySlot(box: { x1: number; y1: number; x2: number; y2: numbe
  * `compact` (icon plus address) once the node itself draws narrower than 64px; `icon` only as a
  * last resort. Chips that would overlap (with an 8px margin) both step down until they clear, so on a
  * narrow screen two gateways never print over each other. A chip is never smaller than its node.
+ *
+ * This runs every animation frame, so the work stays bounded: chips are swept in x order and a pair
+ * is only compared while the gap between them is under the widest chip (sizes only shrink as chips
+ * step down, so that bound holds for a whole pass). Above CHIP_OVERLAP_LIMIT chips the overlap pass is
+ * skipped and each chip keeps its size-based mode: a dense pile cannot go quadratic per frame.
  */
 export type ChipMode = 'full' | 'compact' | 'icon';
-export function chipModes(chips: readonly { id: string; x: number; y: number; nodeW: number; nodeH: number; fullW: number; compactW: number }[]): Map<string, ChipMode> {
+export const CHIP_OVERLAP_LIMIT = 300;
+type ChipInput = { id: string; x: number; y: number; nodeW: number; nodeH: number; fullW: number; compactW: number };
+export function chipModes(chips: readonly ChipInput[]): Map<string, ChipMode> {
   const order: ChipMode[] = ['full', 'compact', 'icon'];
   const mode = new Map(chips.map((chip) => [chip.id, (chip.nodeW < 64 ? 'compact' : 'full') as ChipMode]));
-  const size = (chip: typeof chips[number]) => {
+  if (chips.length > CHIP_OVERLAP_LIMIT) return mode;
+  // Read each position once; Array.prototype.sort is stable, so ties keep their input order.
+  const items: ChipInput[] = chips.map((chip) => ({ id: chip.id, x: chip.x, y: chip.y, nodeW: chip.nodeW, nodeH: chip.nodeH, fullW: chip.fullW, compactW: chip.compactW }))
+    .sort((a, b) => a.x - b.x);
+  const size = (chip: ChipInput) => {
     const m = mode.get(chip.id)!;
     return { w: Math.max(chip.nodeW, m === 'full' ? chip.fullW : m === 'compact' ? chip.compactW : 34), h: Math.max(chip.nodeH, m === 'full' ? 44 : 32) };
   };
   for (let pass = 0; pass < order.length; pass++) {
     let changed = false;
-    for (let i = 0; i < chips.length; i++) for (let j = i + 1; j < chips.length; j++) {
-      const a = chips[i]!, b = chips[j]!, sa = size(a), sb = size(b);
+    const reach = items.reduce((widest, chip) => Math.max(widest, size(chip).w), 0) + 8;
+    for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length && items[j]!.x - items[i]!.x < reach; j++) {
+      const a = items[i]!, b = items[j]!, sa = size(a), sb = size(b);
       const overlap = Math.abs(a.x - b.x) < (sa.w + sb.w) / 2 + 8 && Math.abs(a.y - b.y) < (sa.h + sb.h) / 2 + 8;
       if (!overlap) continue;
       for (const chip of [a, b]) {

@@ -9,7 +9,7 @@ import { cardSummaries, sectionHeaders } from './cardSections';
 import { routeEdgesToCards } from './edgeRouting';
 import { canvasFillHeight, chipModes, edgeEnd, fitFocus, nextZoomTier, screenRectToModel, summaryAnchorId, summaryDensity, summaryScale, summarySlot, type Bounds, type ZoomTier } from './semanticZoom';
 import CardSummaryOverlay, { type SummaryCard } from './CardSummaryOverlay';
-import NodeChipOverlay, { type NodeChip } from './NodeChipOverlay';
+import NodeChipOverlay, { overviewChips, type NodeChip } from './NodeChipOverlay';
 
 /** Reads a design-system HSL token (`--primary: 225 62% 48%`) as a colour Cytoscape understands. */
 function token(name: string, fallback: string) {
@@ -165,6 +165,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   const insetRef = useRef(fitInsetTop); insetRef.current = fitInsetTop;
   const fitted = useRef<string | undefined>(undefined);
   const tierRef = useRef<ZoomTier>('detail'), [tier, setTier] = useState<ZoomTier>('detail');
+  /** The summary tier and chips belong to the grouped overview only (nextZoomTier, overviewChips). */
+  const groupedRef = useRef(render.grouped); groupedRef.current = render.grouped;
   /** Items Fit map left out (fitFocus); the badge counts those currently off screen. */
   const outsideRef = useRef<string[]>([]), [offscreen, setOffscreen] = useState(0);
   const frame = useRef(0), schedule = useRef<() => void>(() => {});
@@ -194,8 +196,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     const observer = new ResizeObserver(queue); observer.observe(section);
     return () => { cancelAnimationFrame(pending); window.removeEventListener('resize', queue); observer.disconnect(); };
   }, []);
-  const chips = useMemo<NodeChip[]>(() => render.nodes.filter((node) => !node.parent && node.kind !== 'group' && node.kind !== 'unidentified' && node.kind !== 'outside')
-    .map((node) => ({ id: node.id, title: node.label, detail: node.detail, glyph: node.glyph })), [render]);
+  const chips = useMemo<NodeChip[]>(() => overviewChips(render), [render]);
   const summaries = useMemo<SummaryCard[]>(() => {
     const counts = cardSummaries(render.nodes);
     return render.nodes.filter((node) => counts.has(node.id)).map((node) => ({ id: node.id, title: node.label, detail: node.detail, summary: counts.get(node.id)! }));
@@ -253,7 +254,7 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     /** Once per animation frame at most: zoom tier, summary boxes and anchors, the off-screen badge. */
     const sync = () => {
       frame.current = 0;
-      const next = nextZoomTier(tierRef.current, renderer.zoom());
+      const next = nextZoomTier(tierRef.current, renderer.zoom(), groupedRef.current);
       if (next !== tierRef.current) {
         tierRef.current = next;
         renderer.batch(() => { if (next === 'summary') renderer.elements().addClass('overview'); else renderer.elements().removeClass('overview'); retarget(); });
@@ -338,6 +339,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
 
   useEffect(() => {
     const renderer = cy.current; if (!renderer) return;
+    // Leaving the grouped overview while zoomed out: back to tiles before this render's edges and classes are built.
+    if (!render.grouped && tierRef.current === 'summary') { tierRef.current = 'detail'; setTier('detail'); }
     const sizes = new Map(boxes.map((box) => [box.id, box])), points = new Map(positions.map((point) => [point.nodeId, point]));
     const parentOf = new Map(render.nodes.filter((node) => node.parent).map((node) => [node.id, node.parent!]));
     const labelOf = new Map(render.nodes.map((node) => [node.id, node.label]));
