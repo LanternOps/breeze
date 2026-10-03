@@ -846,5 +846,23 @@
       "unlabeled": "Sessione senza etichetta",
       "openSession": "Apri il dettaglio della sessione"
     }
+  },
+  "activeSessionsBanner": {
+    "title_one": "Un'altra persona ha una sessione su questo dispositivo",
+    "title_other": "Altre {{count}} persone hanno sessioni su questo dispositivo",
+    "session": "{{name}} — {{type}}, da {{duration}}",
+    "unknownUser": "Utente sconosciuto",
+    "sessionConnecting": "{{name}} — {{type}}, connessione in corso…",
+    "duration": {
+      "minutes_one": "{{count}} minuto",
+      "minutes_other": "{{count}} minuti",
+      "hoursMinutes": "{{hours}} h e {{minutes}} min",
+      "lessThanMinute": "meno di un minuto",
+      "hours_one": "{{count}} ora",
+      "hours_other": "{{count}} ore"
+    },
+    "announcement_one": "{{names}} ha una sessione su questo dispositivo",
+    "announcement_other": "{{names}} hanno sessioni su questo dispositivo",
+    "announcementNone": "Nessun altro ha una sessione su questo dispositivo"
   }
 }

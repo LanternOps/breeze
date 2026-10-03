@@ -8,6 +8,7 @@ import {
 } from '../../services/remoteAccessProviders';
 import { sessionRoutes } from './sessions';
 import { supportSessionRoutes } from './supportSessions';
+import { deviceActiveSessionRoutes } from './deviceActiveSessions';
 
 export const remoteRoutes = new Hono();
 
@@ -47,5 +48,6 @@ remoteRoutes.get('/providers', async (c) => {
 
 // Mount sub-routes
 remoteRoutes.route('/', sessionRoutes);
+remoteRoutes.route('/', deviceActiveSessionRoutes);
 // Quick Support inherits the same auth + remote:access + MFA gate above.
 remoteRoutes.route('/', supportSessionRoutes);

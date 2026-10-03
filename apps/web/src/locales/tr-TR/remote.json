@@ -846,5 +846,23 @@
       "unlabeled": "Etiketlenmemiş oturum",
       "openSession": "Oturum ayrıntısını aç"
     }
+  },
+  "activeSessionsBanner": {
+    "title_one": "Bu cihazda başka birinin oturumu var",
+    "title_other": "Bu cihazda {{count}} başka kişinin oturumu var",
+    "session": "{{name}} — {{type}}, süre: {{duration}}",
+    "unknownUser": "Bilinmeyen kullanıcı",
+    "sessionConnecting": "{{name}} — {{type}}, bağlanıyor…",
+    "duration": {
+      "minutes_one": "{{count}} dakika",
+      "minutes_other": "{{count}} dakika",
+      "hoursMinutes": "{{hours}} sa {{minutes}} dk",
+      "lessThanMinute": "bir dakikadan az",
+      "hours_one": "{{count}} saat",
+      "hours_other": "{{count}} saat"
+    },
+    "announcement_one": "{{names}} bu cihazda bir oturuma sahip",
+    "announcement_other": "{{names}} bu cihazda oturumlara sahip",
+    "announcementNone": "Bu cihazda başka kimsenin oturumu yok"
   }
 }

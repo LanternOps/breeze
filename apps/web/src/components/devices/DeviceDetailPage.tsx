@@ -3,6 +3,7 @@ import { useEventStream } from "../../hooks/useEventStream";
 import { ArrowLeft } from "lucide-react";
 import { showToast } from "../shared/Toast";
 import DeviceDetails from "./DeviceDetails";
+import ActiveSessionsBanner from "../remote/ActiveSessionsBanner";
 import DeviceSettingsModal from "./DeviceSettingsModal";
 import ChangeSiteModal from "./ChangeSiteModal";
 import RemoveDeviceDialog from "./RemoveDeviceDialog";
@@ -734,6 +735,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           { label: device.hostname || "Device" },
         ]}
       />
+      <ActiveSessionsBanner key={device.id} deviceId={device.id} deviceStatus={device.status} />
       <DeviceDetails
         device={device}
         onBack={handleBack}
