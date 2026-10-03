@@ -5,6 +5,7 @@ package networkcontext
 import (
 	"context"
 	"encoding/binary"
+	"net"
 	"syscall"
 	"testing"
 )
@@ -78,5 +79,27 @@ func TestLinuxRuleHeaderSelectorsArePartial(t *testing.T) {
 				t.Fatal(got, err)
 			}
 		})
+	}
+}
+
+// #7819: the production reader probes the real sysfs root, and Interfaces/keys pass the probe through.
+func TestLinuxReaderReportsInterfaceKind(t *testing.T) {
+	r, ok := NewReader("epoch").(*LinuxReader)
+	if !ok || r.InterfaceKind == nil {
+		t.Fatal("NewReader did not wire an interface-kind probe")
+	}
+	// /sys/class/net/lo exists on every Linux host with ARPHRD_LOOPBACK (772).
+	if got := r.InterfaceKind(net.Interface{Name: "lo"}); got != "other" {
+		t.Fatalf("lo: kind %q, want other (sysfs root not read?)", got)
+	}
+	reader := &LinuxReader{Identities: NewInterfaceIdentities(func(string) (string, error) { return "key-1", nil }),
+		InterfacesOS: func() ([]net.Interface, error) {
+			return []net.Interface{{Index: 4, Name: "wg0", Flags: net.FlagUp}}, nil
+		},
+		InterfaceAddrs: func(net.Interface) ([]net.Addr, error) { return nil, nil },
+		InterfaceKind:  func(net.Interface) string { return "tunnel" }}
+	s, e := reader.Interfaces(context.Background(), Context{})
+	if e != nil || len(s.Rows) != 1 || s.Rows[0].Kind != "tunnel" {
+		t.Fatal(s.Rows, e)
 	}
 }

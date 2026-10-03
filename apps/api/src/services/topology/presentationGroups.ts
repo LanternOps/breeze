@@ -19,8 +19,12 @@ export { cidrContains, parseIpAddress } from './ipAddress';
 export type PresentationGroupInput = {
   /** Every active network node of the site under this view's node filters. */
   networks: { id: string; prefix: string | null }[];
-  /** Every active `network_member` row (endpoint → network) under this view's exposure. */
-  memberships: { id: string; endpointId: string; networkId: string; interfaceId: string | null; fresh: boolean; context?: string | null }[];
+  /**
+   * Every active `network_member` row (endpoint → network) under this view's exposure.
+   * `interfaceKind` is the agent-reported kind of the membership's interface (#7819); it
+   * decides the network class before any CIDR heuristic. Absent/null = unknown.
+   */
+  memberships: { id: string; endpointId: string; networkId: string; interfaceId: string | null; fresh: boolean; context?: string | null; interfaceKind?: string | null }[];
   /** Every active `default_route` row (endpoint → gateway); `address` is the gateway node's reported next hop. */
   routes: { id: string; endpointId: string; gatewayId: string; address: string | null; interfaceId: string | null; fresh: boolean; context?: string | null }[];
   /** Active endpoints with no `network_member` row at all, with their live inventory addresses. */
@@ -111,7 +115,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
   for (const row of input.memberships) {
     const prefix = prefixes.get(row.networkId);
     if (!prefix) continue;
-    memberships.push({ ...row, prefix, family: prefix.includes(':') ? 6 : 4, networkClass: topologyNetworkClass(prefix) });
+    memberships.push({ ...row, prefix, family: prefix.includes(':') ? 6 : 4, networkClass: topologyNetworkClass(prefix, row.interfaceKind) });
   }
   const routesByObserver = new Map<string, Route[]>();
   for (const row of input.routes) {
@@ -464,12 +468,16 @@ export async function readPresentationGroupInput(
       WHERE ${relationshipFilter(scope, view, 'r', exposure)} AND r.kind IN ('network_member', 'default_route')
         AND EXISTS (SELECT 1 FROM site_nodes s WHERE s.id = r.source_node_id) AND EXISTS (SELECT 1 FROM site_nodes t WHERE t.id = r.target_node_id)
     ), memberships AS (
-      SELECT r.* FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'network' WHERE r.kind = 'network_member'
+      -- The membership interface's agent-reported kind classifies the network (#7819); no interface = unknown.
+      SELECT r.*, i.kind AS interface_kind FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'network'
+        LEFT JOIN topology_interfaces i ON i.id = r.source_interface_id AND ${scoped(scope, 'i')}
+      WHERE r.kind = 'network_member'
     ) SELECT
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'prefix', s.attributes->>'prefix') ORDER BY s.id), '[]'::jsonb)
         FROM site_nodes s WHERE s.kind = 'network') AS networks,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', m.id, 'endpointId', m.source_node_id, 'networkId', m.target_node_id,
-          'interfaceId', m.source_interface_id, 'fresh', m.fresh, 'context', m.context) ORDER BY m.id), '[]'::jsonb) FROM memberships m) AS memberships,
+          'interfaceId', m.source_interface_id, 'fresh', m.fresh, 'context', m.context, 'interfaceKind', m.interface_kind) ORDER BY m.id), '[]'::jsonb)
+        FROM memberships m) AS memberships,
       (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'endpointId', r.source_node_id, 'gatewayId', r.target_node_id,
           'address', nullif(btrim(t.attributes->>'label'), ''), 'interfaceId', r.source_interface_id, 'fresh', r.fresh, 'context', r.context) ORDER BY r.id), '[]'::jsonb)
         FROM rels r JOIN site_nodes t ON t.id = r.target_node_id AND t.kind = 'gateway' WHERE r.kind = 'default_route') AS routes,

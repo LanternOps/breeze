@@ -164,32 +164,63 @@ export const graphRelationshipSchema = z.object({
 
 export const TOPOLOGY_NETWORK_CLASSES = ['lan', 'link_local', 'host', 'overlay', 'other'] as const;
 export type TopologyNetworkClass = typeof TOPOLOGY_NETWORK_CLASSES[number];
+/** Interface kinds an agent reports on its `interfaces` section rows (topologyCollection.ts). */
+export const TOPOLOGY_INTERFACE_KINDS = ['ethernet', 'wifi', 'tunnel', 'bridge', 'cellular', 'virtual', 'other', 'unknown'] as const;
+export type TopologyInterfaceKind = typeof TOPOLOGY_INTERFACE_KINDS[number];
+/**
+ * What an interface kind says about the networks on it (#7819):
+ * - `tunnel`: a point-to-point or overlay interface (tun/WireGuard/Tailscale, PPP, IPsec, VXLAN, TAP);
+ *   anything addressed on it is an overlay, whatever its CIDR looks like.
+ * - `link`: a link-layer LAN segment (Ethernet, Wi-Fi, a bridge); the CGNAT/Tailscale CIDR guess
+ *   never applies to it.
+ * - `unknown`: no usable evidence (`virtual` covers veth/macvlan/dummy as well as VPN adapters,
+ *   `cellular` is a carrier WAN uplink whose CGNAT address is not a site LAN, `other` is
+ *   unclassified, older or partial agents send `unknown`, a row may have no interface);
+ *   the CIDR heuristic decides.
+ */
+export function topologyInterfaceKindEvidence(kind: string | null | undefined): 'tunnel' | 'link' | 'unknown' {
+  switch (kind) {
+    case 'tunnel': return 'tunnel';
+    case 'ethernet': case 'wifi': case 'bridge': return 'link';
+    default: return 'unknown';
+  }
+}
 function ipv4Number(address: string): number | null {
   const parts = address.split('.');
   if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return null;
   return parts.reduce((value, part) => value * 256 + Number(part), 0);
 }
 /**
- * Display class of a CIDR for the grouped overview. Only `lan` prefixes form visible
+ * Display class of a network for the grouped overview. Only `lan` prefixes form visible
  * network cards by default; the rest are real but rarely what an operator means by
  * "the network" (link-local, single-host, overlay/VPN ranges, over-broad prefixes).
- * Overlay detection is a CIDR heuristic (Tailscale/CGNAT) until interface-kind evidence lands.
+ *
+ * The one classifier for the overview AND the neighbour-cache selector (#7819): the kind of
+ * the interface the prefix was observed on wins when it is known. A tunnel interface makes
+ * any prefix an overlay (a VPN on RFC1918 included); a link-layer interface disables the
+ * Tailscale/CGNAT range guess, so a genuine CGNAT LAN stays a LAN. Only an unknown kind
+ * falls back to that guess. Link-local scope, single-host and over-broad prefixes are
+ * properties of the address itself and apply to every kind (except that a tunnel's own
+ * single-host address is the overlay, not a host route).
  */
-export function topologyNetworkClass(prefix: string): TopologyNetworkClass {
+export function topologyNetworkClass(prefix: string, interfaceKind?: string | null): TopologyNetworkClass {
+  const evidence = topologyInterfaceKindEvidence(interfaceKind);
   const [address = '', lengthText = ''] = prefix.split('/');
   const length = Number(lengthText);
   if (address.includes(':')) {
     const head = address.toLowerCase();
     if (/^fe[89ab]/.test(head)) return 'link_local';
+    if (evidence === 'tunnel') return 'overlay';
     if (length === 128) return 'host';
-    if (head.startsWith('fd7a:115c:a1e0')) return 'overlay';
+    if (evidence === 'unknown' && head.startsWith('fd7a:115c:a1e0')) return 'overlay';
     return length < 16 ? 'other' : 'lan';
   }
   const value = ipv4Number(address);
   if (value === null) return 'other';
   if (Math.floor(value / 65_536) === 169 * 256 + 254) return 'link_local';
+  if (evidence === 'tunnel') return 'overlay';
   if (length === 32) return 'host';
-  if (Math.floor(value / 4_194_304) === (100 * 256 + 64) / 64) return 'overlay';
+  if (evidence === 'unknown' && Math.floor(value / 4_194_304) === (100 * 256 + 64) / 64) return 'overlay';
   return length < 8 ? 'other' : 'lan';
 }
 

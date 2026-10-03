@@ -44,7 +44,8 @@ import {
   reportKindSchema,
   topologyViewSchema,
 } from './topology';
-import { graphNodeSchema, topologyNetworkClass } from './topology';
+import { graphNodeSchema, TOPOLOGY_INTERFACE_KINDS, topologyInterfaceKindEvidence, topologyNetworkClass } from './topology';
+import { topologyInterfaceRowSchema } from './topologyCollection';
 
 const SITE_ID = '11111111-1111-4111-8111-111111111111';
 const NODE_ID = '22222222-2222-4222-8222-222222222222';
@@ -496,5 +497,41 @@ describe('grouped overview contract (2026-10-02)', () => {
     ['0.0.0.0/0', 'other'], ['::/0', 'other'], ['10.0.0.0/7', 'other'],
   ])('classifies %s as %s', (prefix, expected) => {
     expect(topologyNetworkClass(prefix)).toBe(expected);
+  });
+
+  // #7819: the agent-reported interface kind wins; CIDR is only the fallback for an unknown kind.
+  it.each([
+    // A VPN on an ordinary RFC1918 range is an overlay, whatever its CIDR looks like.
+    ['10.8.0.0/24', 'tunnel', 'overlay'], ['192.168.50.0/24', 'tunnel', 'overlay'], ['fd00:1234::/64', 'tunnel', 'overlay'],
+    // A tunnel's own single-host address (Tailscale 100.x/32, WireGuard /32) is the overlay, not a host route.
+    ['100.101.102.103/32', 'tunnel', 'overlay'], ['fd7a:115c:a1e0::1/128', 'tunnel', 'overlay'],
+    // A genuine CGNAT LAN on a link-layer interface stays a LAN.
+    ['100.64.0.0/10', 'ethernet', 'lan'], ['100.100.0.0/16', 'wifi', 'lan'], ['100.72.0.0/16', 'bridge', 'lan'],
+    // A cellular uplink is a WAN, not a site LAN: a carrier CGNAT address keeps the CIDR guess.
+    ['100.80.0.0/12', 'cellular', 'overlay'], ['10.20.0.0/16', 'cellular', 'lan'],
+    ['fd7a:115c:a1e0::/48', 'ethernet', 'lan'],
+    // Address-shape facts are not heuristics: link-local scope and single-host prefixes still apply on a link.
+    ['169.254.0.0/16', 'tunnel', 'link_local'], ['fe80::/64', 'tunnel', 'link_local'], ['169.254.0.0/16', 'ethernet', 'link_local'],
+    ['10.1.2.3/32', 'ethernet', 'host'], ['0.0.0.0/0', 'ethernet', 'other'],
+    // Unknown/ambiguous kinds (and old rows with no kind) keep the CIDR heuristic exactly.
+    ['100.64.0.0/10', 'unknown', 'overlay'], ['100.64.0.0/10', 'virtual', 'overlay'], ['100.64.0.0/10', 'other', 'overlay'],
+    ['100.64.0.0/10', null, 'overlay'], ['100.64.0.0/10', undefined, 'overlay'], ['100.64.0.0/10', 'not-a-kind', 'overlay'],
+    ['10.8.0.0/24', 'unknown', 'lan'], ['10.8.0.0/24', null, 'lan'], ['100.124.30.54/32', 'virtual', 'host'],
+  ] as const)('classifies %s on a %s interface as %s', (prefix, kind, expected) => {
+    expect(topologyNetworkClass(prefix, kind)).toBe(expected);
+  });
+
+  it('maps every reportable interface kind to exactly one evidence class', () => {
+    expect(Object.fromEntries(TOPOLOGY_INTERFACE_KINDS.map((kind) => [kind, topologyInterfaceKindEvidence(kind)]))).toEqual({
+      ethernet: 'link', wifi: 'link', bridge: 'link', cellular: 'unknown', tunnel: 'tunnel', virtual: 'unknown', other: 'unknown', unknown: 'unknown',
+    });
+    expect(topologyInterfaceKindEvidence(null)).toBe('unknown');
+    expect(topologyInterfaceKindEvidence(undefined)).toBe('unknown');
+  });
+
+  it('accepts exactly the shared interface kinds on the agent interface row', () => {
+    const row = { rowKey: 'k', interfaceKey: 'k', osIndex: 1, name: 'eth0', adminState: 'up', operState: 'up', mtu: 1500, addresses: [] };
+    for (const kind of TOPOLOGY_INTERFACE_KINDS) expect(topologyInterfaceRowSchema.safeParse({ ...row, kind }).success).toBe(true);
+    expect(topologyInterfaceRowSchema.safeParse({ ...row, kind: 'wireguard' }).success).toBe(false);
   });
 });

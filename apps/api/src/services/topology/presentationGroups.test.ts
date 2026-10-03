@@ -142,6 +142,31 @@ describe('buildPresentationGroups', () => {
     expect(unidentified(nodes)[0]!.group!.members.map((m) => m.nodeId).sort()).toEqual([E(40), E(41), E(42)].sort());
   });
 
+  it('classifies by the membership interface kind first; CIDR only when the kind is unknown (#7819)', () => {
+    const input = lan([
+      { n: 1, prefix: '10.8.0.0/24', gateway: '10.8.0.1' }, // WireGuard on RFC1918
+      { n: 2, prefix: '10.8.0.0/24', gateway: '10.8.0.1' }, // the same range as a real LAN elsewhere
+      { n: 3, prefix: '100.64.0.0/16', gateway: '100.64.0.1' }, // a genuine CGNAT LAN
+      { n: 4, prefix: '100.64.0.0/16' }, // CGNAT on an interface of unknown kind: the Tailscale guess stands
+      { n: 5, prefix: '100.101.102.103/32' }, // Tailscale's own /32 on its tunnel
+    ], { unplaced: [{ endpointId: E(40), addresses: ['10.8.0.50'] }, { endpointId: E(41), addresses: ['100.64.9.9'] }] });
+    const kinds: Record<string, string | null | undefined> = { [M(1)]: 'tunnel', [M(2)]: 'ethernet', [M(3)]: 'wifi', [M(4)]: undefined, [M(5)]: 'tunnel' };
+    input.memberships = input.memberships.map((m) => ({ ...m, interfaceKind: kinds[m.id] }));
+    const { nodes } = build(input);
+    const cards = networks(nodes).map((node) => ({ prefix: node.group!.prefix, networkClass: node.group!.networkClass,
+      members: node.group!.members.map((m) => `${m.nodeId}:${m.placement}`).sort() }));
+    expect(cards).toEqual(expect.arrayContaining([
+      { prefix: '10.8.0.0/24', networkClass: 'overlay', members: [`${E(1)}:observed`] },
+      { prefix: '10.8.0.0/24', networkClass: 'lan', members: [`${E(2)}:observed`, `${E(40)}:address_match`].sort() },
+      { prefix: '100.64.0.0/16', networkClass: 'lan', members: [`${E(3)}:observed`, `${E(41)}:address_match`].sort() },
+      { prefix: '100.64.0.0/16', networkClass: 'overlay', members: [`${E(4)}:observed`] },
+      { prefix: '100.101.102.103/32', networkClass: 'overlay', members: [`${E(5)}:observed`] },
+    ]));
+    expect(cards).toHaveLength(5);
+    // A tunnel's default route is never folded into a LAN card's gateway.
+    expect(gateways(nodes).flatMap((node) => node.group!.canonicalNodeIds).sort()).toEqual([G(2), G(3)].sort());
+  });
+
   it('puts an endpoint whose only membership targets an unparseable prefix into the unidentified group (#7821)', () => {
     const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.1' }], {
       networks: [{ id: N(50), prefix: 'not-a-prefix' }, { id: N(51), prefix: null }],

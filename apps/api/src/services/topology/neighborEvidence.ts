@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
-  TOPOLOGY_NEIGHBOR_MAPPING_STATES, topologyCidrSchema, topologyNetworkClass,
+  TOPOLOGY_NEIGHBOR_MAPPING_STATES, topologyCidrSchema, topologyInterfaceKindEvidence, topologyNetworkClass,
   type GraphQuery, type TopologyNeighborMappingState, type TopologyNetworkClass, type TopologyScope,
 } from '@breeze/shared';
 import type { db } from '../../db';
@@ -133,7 +133,8 @@ export function qualifyNeighborRow(row: NeighborRowInput, context: { addressFami
   const iface = context.interfaces.find((candidate) => candidate.interfaceKey === row.interfaceKey);
   if (!iface) return { ok: false, reason: 'interface' };
   if (iface.adminState === 'down' || iface.operState === 'down') return { ok: false, reason: 'interface_down' };
-  if (iface.kind === 'tunnel') return { ok: false, reason: 'tunnel' };
+  // The same interface-kind evidence the overview classifies networks with (#7819).
+  if (topologyInterfaceKindEvidence(iface.kind) === 'tunnel') return { ok: false, reason: 'tunnel' };
   for (const own of context.interfaces) {
     if ([own.currentMac, own.permanentMac].some((value) => canonicalMac(value) === mac)) return { ok: false, reason: 'self' };
     for (const address of own.addresses ?? []) {
@@ -160,7 +161,7 @@ export function qualifyNeighborRow(row: NeighborRowInput, context: { addressFami
     if (host === 0n || host === hostBits) return { ok: false, reason: 'address' };
   }
   return { ok: true, mac, addressKey: `${parsed.family}:${parsed.value.toString(16)}`, family: parsed.family, prefix: best.prefix,
-    networkClass: topologyNetworkClass(best.prefix), linkLocal: local, interfaceName: iface.name?.trim() ? iface.name.trim().slice(0, 255) : null };
+    networkClass: topologyNetworkClass(best.prefix, iface.kind), linkLocal: local, interfaceName: iface.name?.trim() ? iface.name.trim().slice(0, 255) : null };
 }
 
 const POSITIVE_OUTCOMES: ReadonlySet<string> = new Set(['complete', 'partial']);

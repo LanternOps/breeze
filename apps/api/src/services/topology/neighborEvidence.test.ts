@@ -95,6 +95,14 @@ describe('qualifyNeighborRow', () => {
     expect(qualify(row(), [eth({ kind: 'tunnel' })])).toEqual({ ok: false, reason: 'tunnel' });
   });
 
+  it('classifies the containing prefix with the interface kind, like the overview (#7819)', () => {
+    const cgnat = [{ address: '100.64.1.10', prefixLength: 16, family: 'ipv4', zone: null, state: 'preferred' }];
+    // A genuine CGNAT LAN on Ethernet is a LAN, so its caches can corroborate.
+    expect(qualify(row({ address: '100.64.1.80' }), [eth({ addresses: cgnat })])).toMatchObject({ ok: true, prefix: '100.64.0.0/16', networkClass: 'lan' });
+    // With no kind evidence the CIDR guess still calls it an overlay.
+    expect(qualify(row({ address: '100.64.1.80' }), [eth({ kind: 'unknown', addresses: cgnat })])).toMatchObject({ ok: true, networkClass: 'overlay' });
+  });
+
   it('rejects a family mismatch with the row or the source scope', () => {
     expect(qualify(row({ family: 'ipv6' }))).toEqual({ ok: false, reason: 'address' });
     expect(qualify(row(), [eth()], 'ipv6')).toEqual({ ok: false, reason: 'address' });

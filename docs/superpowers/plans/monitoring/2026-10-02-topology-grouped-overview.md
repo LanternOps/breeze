@@ -81,6 +81,13 @@ New presentation node roles (role is already a free string):
   - `networkClass`: `link_local` (169.254/16, fe80::/10), `host` (/32, /128), `overlay`
     (100.64.0.0/10, fd7a:115c:a1e0::/48), else `lan`. Non-`lan` groups are emitted but the client
     hides them by default behind a toggle; they never receive address-containment members.
+    **Amended (#7819):** the agent-reported kind of the membership's interface wins when known
+    (`topologyNetworkClass(prefix, interfaceKind)` in `@breeze/shared`, also used by the
+    neighbour-cache selector): a `tunnel` interface makes any non-link-local prefix `overlay` (a VPN
+    on RFC1918 included); a link-layer LAN kind (`ethernet`, `wifi`, `bridge`) disables the
+    Tailscale/CGNAT range guess, so a genuine CGNAT LAN stays `lan`. The CIDR guess remains only
+    for `unknown`/`virtual`/`cellular`/`other` kinds and memberships with no interface (a cellular
+    uplink is a carrier WAN, so its CGNAT address keeps the guess).
 - `gateway_group` — one per **(family, address)** for non-link-local gateways reported by observers
   inside the same network-group candidate; label `"Reported gateway 10.1.2.100"`,
   `observerCount`, `canonicalNodeIds` = per-observer gateway nodes. Link-local gateways
@@ -181,7 +188,7 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
   independently of the display label.
 - **Deferred (follow-up issues):** group-scoped expansion cursor claims (groups expose a focus token on
   their first canonical network node meanwhile), neighbour-cache gateway MAC corroboration, interface-kind
-  tunnel classification (CIDR heuristics for Tailscale/CGNAT meanwhile), VPN half-default handling in the
+  tunnel classification (CIDR heuristics for Tailscale/CGNAT meanwhile; done in #7819), VPN half-default handling in the
   projector ("Selected path unknown").
 
 ## Quorum questions (original)

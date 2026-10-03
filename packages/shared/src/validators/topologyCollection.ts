@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { collectionOutcomeSchema } from './topology';
+import { collectionOutcomeSchema, TOPOLOGY_INTERFACE_KINDS } from './topology';
 import { topologyCidrSchema, topologyDigestSchema, topologyFamilySchema, topologyIpSchema, topologyMacSchema, topologyPortSchema, topologyReasonSchema, topologySequenceSchema, topologyTimestampSchema, topologyUint32Schema, topologyUtf8KeySchema, topologyHostnameSchema, topologyWireGuard } from './topologyPrimitives';
 export { topologySequenceSchema, topologyCidrSchema, topologyIpSchema } from './topologyPrimitives';
 export const NETWORK_CONTEXT_MAX_BYTES = 512 * 1024;
@@ -22,7 +22,7 @@ export const topologyAddressRowSchema = z.object({
 });
 export const topologyInterfaceRowSchema = z.object({
   rowKey: key, interfaceKey: key, osIndex: uint, name: key,
-  kind: z.enum(['ethernet', 'wifi', 'tunnel', 'bridge', 'cellular', 'virtual', 'other', 'unknown']),
+  kind: z.enum(TOPOLOGY_INTERFACE_KINDS),
   adminState: z.enum(['up', 'down', 'unknown']), operState: z.enum(['up', 'down', 'unknown']), mtu: uint.nullable(),
   addresses: z.array(topologyAddressRowSchema).max(1024), permanentMac: topologyMacSchema.optional(), currentMac: topologyMacSchema.optional(), parentInterfaceKey: key.optional(),
 });
