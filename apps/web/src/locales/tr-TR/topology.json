@@ -715,6 +715,12 @@
     "bundle_other": "{{count}} bağlantı",
     "outside_one": "Görünümün dışında {{count}} öğe",
     "outside_other": "Görünümün dışında {{count}} öğe",
-    "showAll": "Tümünü göster"
+    "showAll": "Tümünü göster",
+    "gatewayFor_one": "{{count}} cihazın ağ geçidi",
+    "gatewayFor_other": "{{count}} cihazın ağ geçidi",
+    "cardVia": "{{gateways}} üzerinden",
+    "gatewaysDiffer": "ağ geçitleri farklı",
+    "sharedEdge_one": "{{count}} ortak",
+    "sharedEdge_other": "{{count}} ortak"
   }
 }

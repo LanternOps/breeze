@@ -7,7 +7,7 @@ import { TopologyLayoutController } from './layoutController';
 import { TopologyLayoutDraft, saveTopologyLayout } from './layoutPersistence';
 import { LAYOUT_VERSION, type LayoutBox, type LayoutPosition } from './layoutTypes';
 import { useTopologyGraph } from './useTopologyGraph';
-import { compileTopologyRender, type RenderNode } from './renderProjection';
+import { compileTopologyRender, type RenderNode, type RenderText } from './renderProjection';
 import { memberRank, sectionIndex } from './cardSections';
 import { parseTopologyHash, writeTopologyHash, type TopologyNavigation } from './topologyHash';
 import { isPresentation, selectedTopologyEntity, type TopologySelection } from './topologyPresentation';
@@ -72,7 +72,10 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   };
   // A bounded expansion can change the visible projection without changing the
   // site's structural revision. Health-only updates keep this key unchanged.
-  const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks, sharedAddress: (count) => t('grouped.sharedAddress', { count }) }) : undefined, [graph, showAllNetworks, t]);
+  const renderText = useMemo<RenderText>(() => ({ devices: (count) => t('grouped.devices', { count }), gatewayFor: (count) => t('grouped.gatewayFor', { count }),
+    via: (gateways) => t('grouped.cardVia', { gateways }), gatewaysDiffer: t('grouped.gatewaysDiffer'), agentOffline: t('grouped.presence.agent.offline'),
+    sharedEdge: (count) => t('grouped.sharedEdge', { count }) }), [t]);
+  const render = useMemo(() => graph ? compileTopologyRender(graph, { showAllNetworks, text: renderText, sharedAddress: (count) => t('grouped.sharedAddress', { count }) }) : undefined, [graph, showAllNetworks, t, renderText]);
   const measurementKey = JSON.stringify(render ? render.nodes.map((node) => [node.id, node.label, node.detail, node.note, node.address, node.kind, node.parent]) : []);
   const nodes = useMemo(() => render?.nodes ?? [], [measurementKey, graph?.view]);
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GraphNode, GraphRelationship, GraphResponse, PresentationEdge, PresentationNode } from '@breeze/shared';
-import { compileTopologyRender } from './renderProjection';
+import { compileTopologyRender, type RenderText } from './renderProjection';
 
 const health: GraphNode['health'] = { status: 'unknown', coverage: 'unmonitored', scope: 'node', originNodeId: null, resultId: null, freshness: 'unknown', reasons: [{ code: 'x', message: 'x' }] };
 const node = (id: string, kind: GraphNode['kind'], label: string, extra: Partial<GraphNode> = {}): GraphNode => ({ id, kind, role: null, label, bindings: [], lifecycle: 'active',
@@ -169,6 +169,23 @@ describe('compileTopologyRender', () => {
     expect(render.nodes.some((n) => n.parent === P('net-lan2'))).toBe(false);
     expect(render.edges.find((e) => e.id === P('sd-1'))).toMatchObject({ style: 'shared', target: P('net-lan2') });
     expect(render.nodes.find((n) => n.id === ids.a)?.parent).toBe(P('net-lan'));
+  });
+
+  it('takes every drawn string from the supplied text, so a localized UI never shows English', () => {
+    const { graph: g, ids } = lan();
+    g.presentation.nodes[0]!.group!.conflict = true;
+    g.presentation.nodes.push(group(P('net-lan2'), '10.9.9.0/24', net('10.9.9.0/24', 'lan', [{ nodeId: ids.a, primary: false }], [])));
+    g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
+      meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
+    const text: RenderText = { devices: (n) => `${n} Geräte`, gatewayFor: (n) => `Gateway für ${n} Geräte`, via: (gw) => `über ${gw}`, gatewaysDiffer: 'Gateways unterschiedlich',
+      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam` };
+    const render = compileTopologyRender(g, { showAllNetworks: false, text });
+    const byId = new Map(render.nodes.map((n) => [n.id, n]));
+    expect(byId.get(P('net-lan'))!.detail).toBe('3 Geräte · über 10.1.2.100 · Gateways unterschiedlich');
+    expect(byId.get(P('gw-1'))!.detail).toBe('Gateway für 2 Geräte');
+    expect(byId.get(P('net-lan2'))!.detail).toBe('1 Geräte');
+    expect(byId.get(ids.b)!.detail).toBe('10.1.2.58 · Agent ist offline');
+    expect(render.edges.find((e) => e.id === P('sd-1'))!.label).toBe('1 gemeinsam');
   });
 
   it('never draws a hidden group, folds its nodes away and counts decommissioned devices (#7879)', () => {

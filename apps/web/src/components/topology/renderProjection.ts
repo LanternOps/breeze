@@ -31,50 +31,62 @@ export type TopologyRender = { nodes: RenderNode[]; edges: RenderEdge[]; grouped
  * Tile title + second line. A nameless device whose server label is only its address reads as
  * what it is ("Yealink T54W") with the address underneath, so a card of phones is not a wall of IPs.
  */
-function tileText(node: GraphNode): { title: string; detail: string | null } {
+function tileText(node: GraphNode, text: RenderText): { title: string; detail: string | null } {
   const inventory = node.inventory;
   const address = inventory?.addresses[0] ?? null;
   const product = [inventory?.vendor, inventory?.model].filter(Boolean).join(' ');
   const title = !inventory?.name && address && node.label === address && product ? product : node.label;
   const offline = inventory?.presence.state === 'offline' && inventory.presence.source === 'agent';
-  return { title, detail: [address && address !== title ? address : null, offline ? 'Agent offline' : null].filter(Boolean).join(' · ') || null };
+  return { title, detail: [address && address !== title ? address : null, offline ? text.agentOffline : null].filter(Boolean).join(' · ') || null };
 }
 
-function canonicalNode(node: GraphNode, parent?: string, member?: { stale: boolean; placement: string }): RenderNode {
+function canonicalNode(node: GraphNode, strings: RenderText, parent?: string, member?: { stale: boolean; placement: string }): RenderNode {
   const kind: RenderKind = node.kind === 'gateway' ? 'gateway' : node.kind === 'internet' ? 'internet' : node.kind === 'network' ? 'network' : 'device';
-  const text = tileText(node);
+  const text = tileText(node, strings);
   return { id: node.id, label: text.title, detail: text.detail, kind, glyph: topologyGlyph(node), ...(parent ? { parent } : {}),
     presence: node.inventory?.presence.state ?? null, agentPresence: node.inventory?.presence.source === 'agent' ? node.inventory.presence.state : null, health: node.health.status === 'unknown' ? null : node.health.status,
     stale: member ? member.stale : false, unverified: member?.placement === 'address_match', corroborated: member?.placement === 'neighbor_seen',
     networkClass: null, memberCount: 0, address: node.inventory?.addresses[0] ?? null, note: null };
 }
 
-function groupNode(group: PresentationNode): RenderNode {
+function groupNode(group: PresentationNode, text: RenderText): RenderNode {
   const g = group.group!;
   if (g.kind === 'gateway') {
-    return { id: group.id, label: g.address ?? group.label, detail: `Gateway for ${g.observerCount} ${g.observerCount === 1 ? 'device' : 'devices'}`, kind: 'gateway', glyph: 'router',
+    return { id: group.id, label: g.address ?? group.label, detail: text.gatewayFor(g.observerCount), kind: 'gateway', glyph: 'router',
       presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: null, memberCount: group.memberCount, address: null, note: null };
   }
-  const devices = `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`;
-  const via = g.gatewayAddresses.length ? ` · via ${g.gatewayAddresses.join(', ')}` : '';
-  return { id: group.id, label: group.label, detail: g.kind === 'unidentified' ? devices : `${devices}${via}${g.conflict ? ' · gateways differ' : ''}`,
+  const devices = text.devices(group.memberCount);
+  const detail = [devices, g.gatewayAddresses.length ? text.via(g.gatewayAddresses.join(', ')) : null, g.conflict ? text.gatewaysDiffer : null].filter(Boolean).join(' · ');
+  return { id: group.id, label: group.label, detail: g.kind === 'unidentified' ? devices : detail,
     kind: g.kind === 'unidentified' ? 'unidentified' : 'group', glyph: 'network', presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false,
     networkClass: g.networkClass, memberCount: group.memberCount, address: null, note: null };
 }
 
 /** A network whose devices are all drawn in other cards: a compact tile, never an empty compound card. */
-function summaryNode(group: PresentationNode): RenderNode {
-  return { id: group.id, label: group.label, detail: `${group.memberCount} ${group.memberCount === 1 ? 'device' : 'devices'}`, kind: 'network', glyph: 'network',
+function summaryNode(group: PresentationNode, text: RenderText): RenderNode {
+  return { id: group.id, label: group.label, detail: text.devices(group.memberCount), kind: 'network', glyph: 'network',
     presence: null, agentPresence: null, health: null, stale: false, unverified: false, corroborated: false, networkClass: group.group!.networkClass, memberCount: group.memberCount, address: null, note: null };
 }
 
+/** Every string the render draws. The explorer passes translations; the English default serves tests and fixtures. */
+export type RenderText = {
+  devices: (count: number) => string; gatewayFor: (count: number) => string; via: (gateways: string) => string;
+  gatewaysDiffer: string; agentOffline: string; sharedEdge: (count: number) => string;
+};
+const plural = (count: number, one: string, other: string) => `${count} ${count === 1 ? one : other}`;
+export const ENGLISH_RENDER_TEXT: RenderText = {
+  devices: (count) => plural(count, 'device', 'devices'), gatewayFor: (count) => `Gateway for ${plural(count, 'device', 'devices')}`,
+  via: (gateways) => `via ${gateways}`, gatewaysDiffer: 'gateways differ', agentOffline: 'Agent offline', sharedEdge: (count) => `${count} shared`,
+};
+
 export type RenderOptions = {
   showAllNetworks: boolean;
+  text?: RenderText;
   /** Translated "IP shared with N other devices" (`count` = the other tiles). Omitted: no note, never English in a localized UI. */
   sharedAddress?: (count: number) => string;
 };
 
-export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, sharedAddress }: RenderOptions): TopologyRender {
+export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, sharedAddress, text = ENGLISH_RENDER_TEXT }: RenderOptions): TopologyRender {
   const allGroups = graph.presentation.nodes.filter((node) => node.group);
   // A hidden group (#7879) is never drawn: it only folds away the nodes the overview leaves out.
   const groups = allGroups.filter((group) => group.group!.kind !== 'hidden');
@@ -104,11 +116,11 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
   const renderedGroups = visibleGroups.filter((group) => group.group!.kind === 'gateway' ? shownGateways.has(group.id) : true);
   const renderedGroupIds = new Set(renderedGroups.map((group) => group.id));
   const nodes: RenderNode[] = [];
-  for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group) : groupNode(group));
+  for (const group of renderedGroups) nodes.push(summaries.has(group.id) ? summaryNode(group, text) : groupNode(group, text));
   for (const node of graph.nodes) {
     if (folded.has(node.id)) continue;
     const member = home.get(node.id);
-    nodes.push(canonicalNode(node, member?.group, member));
+    nodes.push(canonicalNode(node, text, member?.group, member));
   }
   for (const node of graph.presentation.nodes) {
     if (!node.group) nodes.push({ id: node.id, label: node.label, detail: null, kind: 'outside', glyph: 'device', presence: null, agentPresence: null, health: null, stale: false,
@@ -136,7 +148,7 @@ export function compileTopologyRender(graph: GraphResponse, { showAllNetworks, s
       // Drawn network → gateway; laid out gateway-first so the gateway ranks above its LAN.
       edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'route', label: null, layoutSource: edge.targetNodeId, layoutTarget: edge.sourceNodeId });
     } else if (edge.meaning === 'aggregate' && edge.role === 'shared_devices') {
-      edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'shared', label: `${edge.memberCount} shared`, layoutSource: edge.sourceNodeId, layoutTarget: edge.targetNodeId });
+      edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'shared', label: text.sharedEdge(edge.memberCount), layoutSource: edge.sourceNodeId, layoutTarget: edge.targetNodeId });
     } else {
       edges.push({ id: edge.id, source: edge.sourceNodeId, target: edge.targetNodeId, style: 'inferred', label: null, layoutSource: edge.sourceNodeId, layoutTarget: edge.targetNodeId });
     }

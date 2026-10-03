@@ -715,6 +715,12 @@
     "bundle_other": "{{count}} conexões",
     "outside_one": "{{count}} item fora da visualização",
     "outside_other": "{{count}} itens fora da visualização",
-    "showAll": "Mostrar tudo"
+    "showAll": "Mostrar tudo",
+    "gatewayFor_one": "Gateway de {{count}} dispositivo",
+    "gatewayFor_other": "Gateway de {{count}} dispositivos",
+    "cardVia": "via gateway {{gateways}}",
+    "gatewaysDiffer": "gateways diferentes",
+    "sharedEdge_one": "{{count}} compartilhado",
+    "sharedEdge_other": "{{count}} compartilhados"
   }
 }
