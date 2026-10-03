@@ -10,6 +10,7 @@ vi.mock('bullmq', () => ({
   Queue: class { add = mocks.add; close = mocks.close; },
   Worker: class { constructor(name: string, processor: unknown) { mocks.work(name, processor); } on() { return this; } close = mocks.close; },
 }));
+vi.mock('../services/autopay/reminderSweep', () => ({ runInvoiceReminderSweep: vi.fn() }));
 vi.mock('../services/autopay/cardExpiryCheck', () => ({ checkExpiringAutopayCards: mocks.expiry }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/autopay/noticeOutbox', () => ({ dispatchPendingBillingNotices: mocks.dispatch }));
@@ -31,7 +32,7 @@ describe('autopay worker registration', () => {
       jobId: 'billing-notice-dispatch', repeat: { pattern: '* * * * *', tz: 'UTC' },
     }));
     expect(jobSchedule('autopay-card-expiry-check')).toBe('28 6 * * *');
-    expect(mocks.add).toHaveBeenCalledTimes(2);
+    expect(mocks.add).toHaveBeenCalledTimes(3);
     expect(mocks.add).toHaveBeenCalledWith('card-expiry-check', { type: 'card-expiry-check' }, expect.objectContaining({
       jobId: 'autopay-card-expiry-check', repeat: { pattern: '28 6 * * *', tz: 'UTC' },
     }));
@@ -50,7 +51,7 @@ describe('autopay worker registration', () => {
     expect(mocks.close).toHaveBeenCalledTimes(2);
 
     await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-    expect(mocks.add).toHaveBeenCalledTimes(3);
+    expect(mocks.add).toHaveBeenCalledTimes(4);
     await shutdownAutopayWorkers();
   });
   it('is selected by the real worker registry and actual entrypoint uses that registry', () => {
@@ -101,6 +102,22 @@ it('cleans up and retries when the expiry schedule fails', async () => {
   await expect(initializeAutopayWorkers()).rejects.toThrow('expiry registration failed');
   expect(mocks.close).toHaveBeenCalledTimes(2);
   await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
-  expect(mocks.add).toHaveBeenCalledTimes(4);
+  expect(mocks.add).toHaveBeenCalledTimes(5);
   await shutdownAutopayWorkers();
+});
+
+it('cleans up and retries when the reminder schedule fails', async () => {
+  mocks.add.mockResolvedValueOnce({}).mockResolvedValueOnce({})
+    .mockRejectedValueOnce(new Error('reminder registration failed'));
+  try {
+    await expect(initializeAutopayWorkers()).rejects.toThrow('reminder registration failed');
+    expect(mocks.close).toHaveBeenCalledTimes(2);
+    await expect(initializeAutopayWorkers()).resolves.toBeUndefined();
+    expect(mocks.add).toHaveBeenCalledTimes(6);
+    await initializeAutopayWorkers();
+    expect(mocks.add).toHaveBeenCalledTimes(6);
+  } finally {
+    await shutdownAutopayWorkers();
+  }
+  expect(mocks.close).toHaveBeenCalledTimes(4);
 });

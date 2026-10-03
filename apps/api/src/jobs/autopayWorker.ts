@@ -4,10 +4,13 @@ import { getBullMQConnection } from '../services/redis';
 import { dispatchPendingBillingNotices } from '../services/autopay/noticeOutbox';
 import { drainAutopayMethodDetaches } from '../services/autopay/merge';
 import { checkExpiringAutopayCards } from '../services/autopay/cardExpiryCheck';
+import { runInvoiceReminderSweep } from '../services/autopay/reminderSweep';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 
-export type AutopayJobData = { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
+interface ReminderSweepJobData { type: 'reminder-sweep' }
+
+export type AutopayJobData = ReminderSweepJobData | { type: 'notice-dispatch' } | { type: 'card-expiry-check' };
 let queue: Queue<AutopayJobData> | null = null;
 let worker: Worker<AutopayJobData> | null = null;
 
@@ -32,10 +35,15 @@ export async function processNoticeDispatch(): Promise<{ sent: number; failed: n
   return result;
 }
 
+export async function processReminderSweep(): Promise<{ enqueued: number }> {
+  return runInvoiceReminderSweep();
+}
+
 export async function processAutopayJob(data: AutopayJobData) {
   switch (data.type) {
     case 'notice-dispatch': return processNoticeDispatch();
     case 'card-expiry-check': return checkExpiringAutopayCards();
+    case 'reminder-sweep': return processReminderSweep();
     default: throw new Error(`Unknown autopay job: ${(data as { type: string }).type}`);
   }
 }
@@ -58,6 +66,14 @@ export async function initializeAutopayWorkers(): Promise<void> {
       jobId: 'autopay-card-expiry-check',
       repeat: { pattern: jobSchedule('autopay-card-expiry-check'), tz: 'UTC' },
       removeOnComplete: { count: 10 }, removeOnFail: { count: 50 },
+    });
+    await pendingQueue.add('reminder-sweep', { type: 'reminder-sweep' }, {
+      jobId: 'invoice-reminder-sweep',
+      repeat: { pattern: jobSchedule('invoice-reminder-sweep'), tz: 'UTC' },
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 30_000 },
+      removeOnComplete: { count: 10 },
+      removeOnFail: { count: 50 },
     });
     queue = pendingQueue;
     worker = pendingWorker;
