@@ -1215,6 +1215,9 @@ export async function createAndEnqueueAgentRun(
   //     instead), no read-only tool denial. A designer runs on the design
   //     profile or it does not run.
   if (kind === 'designer' && (input.profile ?? 'full') !== 'design') return skip('ownership_mismatch');
+  // AI Suggested Fixes W2 — same shape as the designer arm: a research agent
+  // runs its read-only, zero-action profile or it does not run.
+  if (kind === 'research' && (input.profile ?? 'full') !== 'remediation_research') return skip('ownership_mismatch');
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
@@ -1640,6 +1643,12 @@ export async function createAndEnqueueAgentRun(
     //     patch agent already has on the `full` profile (POST
     //     /ai/agents/:id/runs), which this program does not remove.
     if (profile === 'patch' && (agentRow.kind !== 'patch' || deviceId !== null)) {
+      return skip('ownership_mismatch');
+    }
+    // 8a (research). The remediation_research profile is driven only by a
+    //     research agent, and always against exactly one device (its catalog
+    //     and OS filter are per-device; spec "submit_suggestions").
+    if (profile === 'remediation_research' && (agentRow.kind !== 'research' || deviceId === null)) {
       return skip('ownership_mismatch');
     }
 

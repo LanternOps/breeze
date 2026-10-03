@@ -2762,3 +2762,53 @@ describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)'
     expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'full', deviceId: DEVICE_ID });
   });
 });
+
+describe('createAndEnqueueAgentRun research-profile admission (AI Suggested Fixes W2, Review Focus 2)', () => {
+  /** Same read order as the design arm: a non-full profile skips cooldown. */
+  function seedResearchAdmissionReads(options: { agentKind?: string; concurrent?: number } = {}): void {
+    const { agentKind = 'research', concurrent = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour: 0, dailyCents: 0, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: 0 }], // 6b hourly rate
+      [{ totalCostCents: 0 }], // 7 daily spend
+    ];
+  }
+  const researchInput = (over: Partial<CreateAgentRunInput> = {}) =>
+    input({ kind: 'research', profile: 'remediation_research', ...over });
+
+  it('admits a research agent on its own profile against one device', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r1' }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'remediation_research', deviceId: DEVICE_ID });
+  });
+
+  it('ownership_mismatch when a research agent is admitted on any other profile', async () => {
+    // 'analysis' is omitted: its hosted/breaker gates run before rule 2a.
+    for (const profile of ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch'] as const) {
+      seedResearchAdmissionReads();
+      const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: `research:r2:${profile}`, profile }));
+      expect(result, profile).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a non-research agent is admitted on remediation_research', async () => {
+    seedResearchAdmissionReads({ agentKind: 'triage' });
+    const result = await createAndEnqueueAgentRun(researchInput({ kind: 'triage', dedupeKey: 'research:r3' }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('ownership_mismatch when a research run is device-less', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r4', deviceId: null }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('max_concurrent_research_runs at the research-only cap', async () => {
+    seedResearchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns });
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r5' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_research_runs' });
+  });
+});
