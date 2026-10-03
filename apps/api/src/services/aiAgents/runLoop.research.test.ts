@@ -234,6 +234,8 @@ vi.mock('../aiBudgetReservations', () => ({ reserveAiBudget, markAiBudgetReserva
 
 const loadResearchContext = vi.hoisted(() => vi.fn());
 vi.mock('./researchContext', async (orig) => ({ ...(await orig<typeof import('./researchContext')>()), loadResearchContext }));
+const persistResearchSuggestions = vi.hoisted(() => vi.fn<(input: Record<string, unknown>) => Promise<{ inserted: number }>>(async () => ({ inserted: 0 })));
+vi.mock('../fixMemory/researchPersist', () => ({ persistResearchSuggestions }));
 
 import { ResearchContextUnavailableError } from './researchContext';
 import { RESEARCH_TOOL_ALLOWLIST } from './researchProfile';
@@ -515,5 +517,28 @@ describe('remediation_research in the run loop (W2)', () => {
     dbMockState.rowQueues.ai_agent_runs![0]![0] = { ...(dbMockState.rowQueues.ai_agent_runs![0]![0] as object), profile: 'full' };
     await executeAgentRun(RUN_ID);
     expect(loadResearchContext).not.toHaveBeenCalled();
+  });
+  it('finalizes: accepted items are persisted; a run that never submitted is research_missing', async () => {
+    seedResearchRun('quick');
+    scriptQuery({ toolCalls: [{ tool: 'submit_suggestions', input: { summary: 's', items: [] } }] });
+    await executeAgentRun(RUN_ID);
+    expect(persistResearchSuggestions).toHaveBeenCalledWith(expect.objectContaining({ runId: RUN_ID, outcome: expect.objectContaining({ noSafeFix: true }) }));
+    expect(finalTransition()).toMatchObject({ to: 'completed' });
+
+    persistResearchSuggestions.mockClear();
+    transitionRunStatus.mockClear();
+    seedResearchRun('quick');
+    scriptQuery({ assistantText: 'I looked around.' });
+    await executeAgentRun(RUN_ID);
+    expect(persistResearchSuggestions).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('research_missing');
+  });
+
+  it('a persist failure finishes with research_persist_failed', async () => {
+    seedResearchRun('quick');
+    persistResearchSuggestions.mockRejectedValueOnce(new Error('db down'));
+    scriptQuery({ toolCalls: [{ tool: 'submit_suggestions', input: { summary: 's', items: [] } }] });
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.patch.errorCode).toBe('research_persist_failed');
   });
 });

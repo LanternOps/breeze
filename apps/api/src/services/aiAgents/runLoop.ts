@@ -203,6 +203,7 @@ import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } f
 import {
   finalizeFleetDesign,
   finalizePatchPlan,
+  finalizeResearch,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -2957,6 +2958,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `finishRun` serializes the outcome. At most one of the six codes below
     // is ever non-null.
     const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
+    // AI Suggested Fixes W2 — seventh: persist the accepted research items.
+    const researchErrorCode = await finalizeResearch(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -3018,6 +3021,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // that called `submit_analysis` and only then hit `error_max_turns` has
       // produced exactly what it was admitted to produce.
       || outcome.analysis !== undefined
+      // AI Suggested Fixes W2 — same rule for a research run's ONE job.
+      || outcome.research !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -3049,7 +3054,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
       verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
-        ?? patchPlanErrorCode,
+        ?? patchPlanErrorCode ?? researchErrorCode,
       result,
     );
   } catch (error) {
