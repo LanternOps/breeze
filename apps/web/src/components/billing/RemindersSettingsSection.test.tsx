@@ -27,7 +27,7 @@ describe('RemindersSettingsSection', () => {
     expect(reminderPatch({ ...value, remindersEnabled: '' }).remindersEnabled).toBeNull();
     expect(screen.getByTestId('autopay-reminders-repeat-help')).toHaveTextContent('cannot disable');
   });
-  it('uses one form save pattern: fields do not send requests or expose a second Save', () => {
+  it('disables controlled fields and exposes no second Save', () => {
     render(<I18nextProvider i18n={i18n}><RemindersSettingsSection scope="partner"
       value={reminderDraft(inherited, 'partner')} inherited={inherited} onChange={vi.fn()} disabled /></I18nextProvider>);
     expect(screen.getByTestId('autopay-reminders-enabled')).toBeDisabled();

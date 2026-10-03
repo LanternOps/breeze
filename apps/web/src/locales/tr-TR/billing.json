@@ -2509,6 +2509,17 @@
       "org": "kuruluş",
       "partner": "iş ortağı varsayılanı",
       "default": "sistem varsayılanı"
+    },
+    "save": "Ödeme ayarlarını kaydet",
+    "saving": "Kaydediliyor…",
+    "saved": "Hatırlatma ayarları kaydedildi",
+    "saveFailed": "Hatırlatma ayarları kaydedilemedi",
+    "loadFailed": "Hatırlatma ayarları yüklenemedi",
+    "retry": "Yeniden dene",
+    "loading": "Ödeme ayarları yükleniyor…",
+    "templates": {
+      "paymentReminder": "Ödeme hatırlatması",
+      "paymentOverdue": "Gecikmiş ödeme hatırlatması"
     }
   }
 }

@@ -2509,6 +2509,17 @@
       "org": "Organisation",
       "partner": "Partnerstandard",
       "default": "Systemstandard"
+    },
+    "save": "Zahlungseinstellungen speichern",
+    "saving": "Wird gespeichert…",
+    "saved": "Erinnerungseinstellungen gespeichert",
+    "saveFailed": "Erinnerungseinstellungen konnten nicht gespeichert werden",
+    "loadFailed": "Erinnerungseinstellungen konnten nicht geladen werden",
+    "retry": "Erneut versuchen",
+    "loading": "Zahlungseinstellungen werden geladen…",
+    "templates": {
+      "paymentReminder": "Zahlungserinnerung",
+      "paymentOverdue": "Erinnerung an überfällige Zahlung"
     }
   }
 }

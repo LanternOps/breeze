@@ -2509,6 +2509,17 @@
       "org": "organizzazione",
       "partner": "valore predefinito del partner",
       "default": "valore predefinito del sistema"
+    },
+    "save": "Salva impostazioni di pagamento",
+    "saving": "Salvataggio…",
+    "saved": "Impostazioni dei promemoria salvate",
+    "saveFailed": "Impossibile salvare le impostazioni dei promemoria",
+    "loadFailed": "Impossibile caricare le impostazioni dei promemoria",
+    "retry": "Riprova",
+    "loading": "Caricamento delle impostazioni di pagamento…",
+    "templates": {
+      "paymentReminder": "Promemoria di pagamento",
+      "paymentOverdue": "Promemoria di pagamento scaduto"
     }
   }
 }

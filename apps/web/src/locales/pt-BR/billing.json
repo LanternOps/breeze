@@ -2509,6 +2509,17 @@
       "org": "organização",
       "partner": "padrão do parceiro",
       "default": "padrão do sistema"
+    },
+    "save": "Salvar configurações de pagamento",
+    "saving": "Salvando…",
+    "saved": "Configurações de lembretes salvas",
+    "saveFailed": "Não foi possível salvar as configurações de lembretes",
+    "loadFailed": "Não foi possível carregar as configurações de lembretes",
+    "retry": "Tentar novamente",
+    "loading": "Carregando configurações de pagamento…",
+    "templates": {
+      "paymentReminder": "Lembrete de pagamento",
+      "paymentOverdue": "Lembrete de pagamento em atraso"
     }
   }
 }

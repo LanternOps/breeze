@@ -1,13 +1,18 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, renderHook, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import { i18n } from '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
-import PaymentsSettingsTab from './PaymentsSettingsTab';
+import PaymentsSettingsTab, { usePaymentSettings } from './PaymentsSettingsTab';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 const inherited = {
+  remindersEnabled: { value: false, source: 'default' },
+  reminderBeforeDueDays: { value: 3, source: 'default' },
+  reminderRepeatDays: { value: null, source: 'default' },
+  overdueReminderEveryDays: { value: 7, source: 'default' },
+
   autopayOffsetDays: { value: 7, source: 'partner' },
   autopayOffsetRule: { value: 'later', source: 'partner' },
   autopayCap: { value: { enabled: true, amount: '500.00', currency: 'USD' }, source: 'partner' },
@@ -32,7 +37,7 @@ it('keeps blank distinct from explicit unlimited and submits decimal cap without
   fireEvent.click(screen.getByTestId('autopay-settings-save'));
   await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, i]) => i?.method === 'PUT')).toBe(true));
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, i]) => i?.method === 'PUT')!;
-  expect(JSON.parse(call[1]!.body as string)).toEqual({ ...values, autopayCapEnabled: false });
+  expect(JSON.parse(call[1]!.body as string)).toEqual({ ...values, remindersEnabled: null, reminderBeforeDueDays: null, reminderRepeatDays: null, overdueReminderEveryDays: null, autopayCapEnabled: false });
 });
 it('requires amount and currency together and does not accept exponent money', async () => {
   mount();
@@ -44,11 +49,11 @@ it('requires amount and currency together and does not accept exponent money', a
   fireEvent.change(screen.getByTestId('autopay-cap-currency'), { target: { value: 'USD' } });
   expect(screen.getByTestId('autopay-settings-save')).not.toBeDisabled();
 });
-it('fails closed when autopay is disabled', async () => {
-  vi.mocked(fetchWithAuth).mockResolvedValue(Response.json({ autopayEnabled: false }));
+it('mounts reminders when autopay is disabled', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => Response.json(reminderView()));
   mount();
-  await waitFor(() => expect(screen.queryByTestId('autopay-settings-loading')).toBeNull());
-  expect(screen.queryByTestId('autopay-settings')).toBeNull();
+  expect(await screen.findByTestId('autopay-reminders-section')).toBeInTheDocument();
+  expect(screen.queryByTestId('autopay-settings-section')).toBeNull();
 });
 
 it('submits the exact decimal string only after valid complete cap terms', async () => {
@@ -61,7 +66,7 @@ it('submits the exact decimal string only after valid complete cap terms', async
   fireEvent.click(screen.getByTestId('autopay-settings-save'));
   await waitFor(() => expect(vi.mocked(fetchWithAuth).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'PUT')!;
-  expect(JSON.parse(call[1]!.body as string)).toEqual({ ...values, autopayCapEnabled: true,
+  expect(JSON.parse(call[1]!.body as string)).toEqual({ ...values, remindersEnabled: null, reminderBeforeDueDays: null, reminderRepeatDays: null, overdueReminderEveryDays: null, autopayCapEnabled: true,
     autopayCapAmount: '1000.50', autopayCapCurrency: 'USD' });
 });
 
@@ -127,4 +132,84 @@ it('clears previously loaded settings while switching organizations', async () =
   expect(screen.queryByTestId('autopay-settings-save')).toBeNull();
   await act(async () => { newRequest.resolve(settingsResponse(12)); });
   expect(screen.getByTestId('autopay-offset-days')).toHaveValue(12);
+});
+
+const reminderView = () => {
+  const effective = {
+    autopayOffsetDays: { value: 0, source: 'default' }, autopayOffsetRule: { value: 'later', source: 'default' },
+    autopayCap: { value: { enabled: false }, source: 'default' }, achMode: { value: 'ach_preferred', source: 'default' },
+    cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
+    remindersEnabled: { value: false, source: 'default' }, reminderBeforeDueDays: { value: 3, source: 'default' },
+    reminderRepeatDays: { value: null, source: 'default' }, overdueReminderEveryDays: { value: 7, source: 'default' },
+  };
+  return { autopayEnabled: false, effective, inherited: effective, values: {
+    autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
+    autopayCapAmount: null, autopayCapCurrency: null, achMode: null,
+  } };
+};
+it('saves reminder-only payload when rollout is off and retains draft after failure', async () => {
+  const fetch = vi.mocked(fetchWithAuth);
+  fetch.mockImplementation(async (_url, init) => Response.json(init?.method === 'PUT'
+    ? { error: 'Save failed' } : reminderView(), { status: init?.method === 'PUT' ? 500 : 200 }));
+  const { result } = renderHook(() => usePaymentSettings());
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  act(() => result.current.setReminders({ ...result.current.reminders!, reminderBeforeDueDays: '9', remindersEnabled: 'false' }));
+  await act(async () => { await expect(result.current.save()).rejects.toThrow(); });
+  expect(result.current.reminders?.reminderBeforeDueDays).toBe('9');
+  const call = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+  expect(JSON.parse(call[1]!.body as string)).toEqual({
+    remindersEnabled: false, reminderBeforeDueDays: 9, reminderRepeatDays: null, overdueReminderEveryDays: null,
+  });
+});
+it('does not let a late org-A load overwrite org-B and then save to B', async () => {
+  let finishA!: (response: Response) => void;
+  const fetch = vi.mocked(fetchWithAuth);
+  fetch.mockImplementation(async url => String(url).includes('/orgs/a/')
+    ? new Promise<Response>(resolve => { finishA = resolve; }) : Response.json(reminderView()));
+  const { result, rerender } = renderHook(({ id }) => usePaymentSettings(id), { initialProps: { id: 'a' } });
+  rerender({ id: 'b' });
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  act(() => result.current.setReminders({ ...result.current.reminders!, reminderBeforeDueDays: '8' }));
+  await act(async () => { finishA(Response.json(reminderView())); });
+  expect(result.current.reminders?.reminderBeforeDueDays).toBe('8');
+});
+it('saves blanks as null for an org then displays the inherited partner value', async () => {
+  const data = reminderView();
+  data.effective.reminderBeforeDueDays = { value: 5, source: 'partner' };
+  data.inherited.reminderBeforeDueDays = { value: 5, source: 'partner' };
+  const fetch = vi.mocked(fetchWithAuth); fetch.mockImplementation(async () => Response.json(data));
+  const { result } = renderHook(() => usePaymentSettings('11111111-1111-4111-8111-111111111111'));
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  await act(async () => { await result.current.save(); });
+  const call = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+  expect(JSON.parse(call[1]!.body as string).reminderBeforeDueDays).toBeNull();
+  expect(result.current.view?.inherited.reminderBeforeDueDays.value).toBe(5);
+});
+
+it('isolates a deferred save across A to B to A, including draft and saving state', async () => {
+  const oldSave = deferredResponse();
+  const currentSave = deferredResponse();
+  let puts = 0;
+  const fetch = vi.mocked(fetchWithAuth);
+  fetch.mockImplementation(async (_url, init) => init?.method === 'PUT'
+    ? (++puts === 1 ? oldSave.promise : currentSave.promise) : Response.json(reminderView()));
+  const { result, rerender } = renderHook(({ id }) => usePaymentSettings(id), { initialProps: { id: 'a' } });
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  let pendingOld!: Promise<void>;
+  act(() => { pendingOld = result.current.save(); });
+  rerender({ id: 'b' });
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  rerender({ id: 'a' });
+  await waitFor(() => expect(result.current.reminders).not.toBeNull());
+  act(() => result.current.setReminders({ ...result.current.reminders!, reminderBeforeDueDays: '8' }));
+  let pendingCurrent!: Promise<void>;
+  act(() => { pendingCurrent = result.current.save(); });
+  expect(result.current.saving).toBe(true);
+  const calls = fetch.mock.calls.length;
+  await act(async () => { oldSave.resolve(Response.json({ success: true })); await pendingOld; });
+  expect(fetch).toHaveBeenCalledTimes(calls);
+  expect(result.current.reminders?.reminderBeforeDueDays).toBe('8');
+  expect(result.current.saving).toBe(true);
+  await act(async () => { currentSave.resolve(Response.json({ success: true })); await pendingCurrent; });
+  expect(result.current.saving).toBe(false);
 });

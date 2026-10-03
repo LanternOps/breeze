@@ -77,7 +77,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
   // Billing & Service Desk
   { id: 'billing-payments', name: 'Payments', labelKey: 'nav.payments', href: '/settings/billing#payments',
-    icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiresAutopay: true,
+    icon: CreditCard, group: 'billing', partnerScopeOnly: true,
     requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'billing', name: 'Billing', labelKey: 'nav.billing', descriptionKey: card('billing', 'description'), href: '/settings/billing', icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
   { id: 'ticketing', name: 'Ticketing', labelKey: 'nav.ticketing', descriptionKey: card('ticketing', 'description'), href: '/settings/ticketing', icon: Ticket, group: 'billing', partnerScopeOnly: true },

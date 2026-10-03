@@ -2509,6 +2509,17 @@
       "org": "organization",
       "partner": "partner default",
       "default": "system default"
+    },
+    "save": "Save payment settings",
+    "saving": "Saving…",
+    "saved": "Reminder settings saved",
+    "saveFailed": "Could not save reminder settings",
+    "loadFailed": "Could not load reminder settings",
+    "retry": "Retry",
+    "loading": "Loading payment settings…",
+    "templates": {
+      "paymentReminder": "Payment reminder",
+      "paymentOverdue": "Overdue payment reminder"
     }
   }
 }

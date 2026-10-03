@@ -2509,6 +2509,17 @@
       "org": "organización",
       "partner": "valor predeterminado del socio",
       "default": "valor predeterminado del sistema"
+    },
+    "save": "Guardar configuración de pagos",
+    "saving": "Guardando…",
+    "saved": "Configuración de recordatorios guardada",
+    "saveFailed": "No se pudo guardar la configuración de recordatorios",
+    "loadFailed": "No se pudo cargar la configuración de recordatorios",
+    "retry": "Reintentar",
+    "loading": "Cargando configuración de pagos…",
+    "templates": {
+      "paymentReminder": "Recordatorio de pago",
+      "paymentOverdue": "Recordatorio de pago vencido"
     }
   }
 }
