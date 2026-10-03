@@ -9,6 +9,8 @@ import AccessReviewForm from './AccessReviewForm';
 import { formatDate as formatLocaleDate } from '@/lib/dateTimeFormat';
 import { asList } from '@/lib/asList';
 import { csvRow } from '@/lib/csvExport';
+import { showToast } from '@/components/shared/Toast';
+import { requestReviewerNotification, type NotifyFallbackReason } from '@/lib/accessReviewNotify';
 
 type AccessReviewDecision = 'pending' | 'approved' | 'revoked';
 
@@ -70,7 +72,9 @@ function formatDate(dateString?: string | null): string {
   if (!dateString) return '-';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return '-';
-  return formatLocaleDate(date, { year: 'numeric', month: 'short', day: 'numeric' });
+  // Due dates are date-only values stored as UTC midnight; format in UTC so a
+  // US-timezone browser doesn't show the previous day (#7805).
+  return formatLocaleDate(date, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 function formatRelativeDate(dateString?: string | null): string {
@@ -244,21 +248,37 @@ export default function AccessReviewPage() {
       setNotifying(true);
       setError(undefined);
       try {
-        const response = await fetchWithAuth(`/access-reviews/${context.id}/notify`, {
-          method: 'POST',
-          body: JSON.stringify({ reviewerIds: context.reviewerIds, name: context.name })
-        });
+        const outcome = await requestReviewerNotification(fetchWithAuth, context.id);
 
-        if (response.ok) {
+        if (outcome.emailed) {
+          // Reviews persist a single assigned reviewer; only that user is emailed.
+          const extra = (context.reviewerIds?.length ?? 0) > 1;
+          showToast({
+            type: extra ? 'warning' : 'success',
+            message: t(/* i18n-dynamic */ extra ? 'accessReviewPage.assignedReviewerEmailedOnly' : 'accessReviewPage.reviewersEmailed')
+          });
           return true;
         }
+
+        if (outcome.reason === 'rejected') {
+          throw new Error(outcome.message);
+        }
+
+        const fallbackReasonKeys: Record<NotifyFallbackReason, string> = {
+          email_not_configured: 'accessReviewPage.fallbackEmailNotConfigured',
+          no_reviewer_email: 'accessReviewPage.fallbackNoReviewerEmail',
+          send_failed: 'accessReviewPage.fallbackSendFailed',
+          request_failed: 'accessReviewPage.fallbackRequestFailed'
+        };
 
         const reviewerEmails = (context.reviewerIds ?? [])
           .map((id) => reviewers.find((reviewer) => reviewer.id === id)?.email)
           .filter((email): email is string => Boolean(email));
 
         if (reviewerEmails.length === 0) {
-          throw new Error(t('accessReviewPage.noReviewerEmailsAvailableForNotifications'));
+          throw new Error(
+            `${t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason])} ${t('accessReviewPage.noReviewerEmailsAvailableForNotifications')}`
+          );
         }
 
         if (typeof window !== 'undefined') {
@@ -269,6 +289,10 @@ export default function AccessReviewPage() {
           const body = encodeURIComponent(
             t('accessReviewPage.emailBody', { name: context.name, dueLabel })
           );
+          showToast({
+            type: 'warning',
+            message: t('accessReviewPage.fallbackToMailClient', { reason: t(/* i18n-dynamic */ fallbackReasonKeys[outcome.reason]) })
+          });
           window.location.href = `mailto:${reviewerEmails.join(',')}?subject=${subject}&body=${body}`;
           return true;
         }

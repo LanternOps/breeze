@@ -55,6 +55,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.alert_notification': { lane: 'platform' },
       'staff.workspace_drift_report': { lane: 'platform' },
       'staff.report_failure': { lane: 'platform' },
+      'staff.access_review_notice': { lane: 'platform' },
       'deployment.invite': { lane: 'platform' },
       'ticket.staff_notification': { lane: 'platform' },
       'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
