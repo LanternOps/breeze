@@ -149,6 +149,27 @@ describe('buildPresentationGroups', () => {
     expect(unidentified(nodes)[0]!.group!.members.map((m) => m.nodeId).sort()).toEqual([E(40), E(41), E(42)].sort());
   });
 
+  it('folds a tunnel or half-default route into the overlay card, never as a LAN gateway (VPN full tunnel)', () => {
+    // A laptop on the office LAN (via 10.1.2.100) whose VPN client installs half-default routes through its tunnel.
+    for (const marker of [{ interfaceKind: 'tunnel' }, { halfDefault: true }, { interfaceKind: 'tunnel', halfDefault: true }]) {
+      const input = lan([{ n: 1, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }, { n: 2, prefix: '10.1.2.0/24', gateway: '10.1.2.100' }]);
+      input.networks.push({ id: N(9), prefix: '10.212.134.0/24' });
+      input.memberships.push({ id: M(9), endpointId: E(1), networkId: N(9), interfaceId: I(9), fresh: true, interfaceKind: 'tunnel' });
+      input.routes.push({ id: R(9), endpointId: E(1), gatewayId: G(9), address: '10.212.134.1', interfaceId: marker.interfaceKind ? I(9) : I(1), fresh: true,
+        ...('halfDefault' in marker ? { halfDefault: true } : {}), ...(marker.interfaceKind ? { interfaceKind: marker.interfaceKind } : {}) });
+      const { nodes, edges } = build(input);
+      const lanCard = networks(nodes).find((node) => node.group!.networkClass === 'lan')!;
+      const overlay = networks(nodes).find((node) => node.group!.networkClass === 'overlay')!;
+      // The LAN card lists only its own gateway; the VPN gateway is folded under the overlay card.
+      expect(lanCard.group!.gatewayAddresses).toEqual(['10.1.2.100']);
+      const vpn = gateways(nodes).find((node) => node.group!.address === '10.212.134.1')!;
+      expect(vpn.group!.canonicalNodeIds).toEqual([G(9)]);
+      const routes = role(edges, 'routes_via');
+      expect(routes.find((edge) => edge.targetNodeId === vpn.id)?.sourceNodeId).toBe(overlay.id);
+      expect(routes.some((edge) => edge.sourceNodeId === lanCard.id && edge.targetNodeId === vpn.id)).toBe(false);
+    }
+  });
+
   it('classifies by the membership interface kind first; CIDR only when the kind is unknown (#7819)', () => {
     const input = lan([
       { n: 1, prefix: '10.8.0.0/24', gateway: '10.8.0.1' }, // WireGuard on RFC1918
