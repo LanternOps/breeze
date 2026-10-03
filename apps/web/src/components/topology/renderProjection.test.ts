@@ -79,7 +79,7 @@ describe('compileTopologyRender', () => {
 
   it('keeps every tile that shares an IP and notes the collision on each of them (#7880)', () => {
     const { graph: g, ids } = lan();
-    // A second device reports the phone's address (Whalers: .210, .212, .233); IPv6 spellings of one address also collide.
+    // A second device reports the phone's address (seen in production as three such pairs); IPv6 spellings of one address also collide.
     const twin = node(id(50), 'endpoint', 'LOBBY-PC', { inventory: { source: 'device', name: 'LOBBY-PC', addresses: ['10.1.2.200'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
     const v6a = node(id(51), 'endpoint', 'v6-a', { inventory: { source: 'device', name: 'v6-a', addresses: ['fe80::1'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
     const v6b = node(id(52), 'endpoint', 'v6-b', { inventory: { source: 'device', name: 'v6-b', addresses: ['FE80:0::0001'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
