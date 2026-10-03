@@ -26,7 +26,7 @@ import {
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
-import { scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
+import { presentEndpointTarget, scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
 import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 import { resolveNetworkCheckAlertDevice } from '../services/monitors/networkCheckAlertDevice';
@@ -396,8 +396,11 @@ async function evaluateMonitorAlertRules(
     }
 
     const title = `${monitor.name} ${rule.condition.replace(/_/g, ' ')}`;
+    // Alert rows, their event payload and every channel they reach show the
+    // target as scheme + host: an HTTP check URL can carry credentials.
+    const displayTarget = presentEndpointTarget(monitor.target).target;
     const message = rule.message
-      ?? `${condition.detail}. Target: ${monitor.target}. Status: ${result.status}.`;
+      ?? `${condition.detail}. Target: ${displayTarget}. Status: ${result.status}.`;
 
     // #5241: route through the shared create+publish path. A raw
     // `db.insert(alerts)` here left the alert visible only in the inbox —
@@ -420,7 +423,7 @@ async function evaluateMonitorAlertRules(
         legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
-        target: monitor.target,
+        target: displayTarget,
         status: result.status,
         responseMs: result.responseMs,
         statusCode: result.statusCode ?? null,
@@ -433,7 +436,7 @@ async function evaluateMonitorAlertRules(
         legacyNetworkMonitorId: monitor.id,
         alertRuleId: rule.id,
         monitorType: monitor.monitorType,
-        target: monitor.target
+        target: displayTarget
       }
     });
 

@@ -123,7 +123,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         conditions.push(
           // Target is matched on its host part only, so the search cannot be
           // used to probe a stored URL's path, query or userinfo.
-          sql`(${networkMonitors.name} ILIKE ${'%' + term + '%'} OR substring(${networkMonitors.target} from '^(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^/?#@]*@)?([^/?#]*)') ILIKE ${'%' + term + '%'})`
+          sql`(${networkMonitors.name} ILIKE ${'%' + term + '%'} OR substring(${networkMonitors.target} from '^(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^/?#]*@)?([^/?#]*)') ILIKE ${'%' + term + '%'})`
         );
       }
 

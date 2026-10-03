@@ -395,6 +395,34 @@ describe('recordMonitorCheckResult', () => {
     expect(vi.mocked(resolveAlert)).not.toHaveBeenCalled();
   });
 
+  it('creates a monitor alert whose message, context and event show a URL target as scheme + host', async () => {
+    const secretUrl = 'https://ops:hunter2@status.example.com/hooks/T1/B1/abc123?token=xyz789';
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'monitor-1', orgId: 'org-1', assetId: null, name: 'Status page',
+        target: secretUrl, monitorType: 'http_check', consecutiveFailures: 3,
+      }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([{
+        id: 'rule-1', monitorId: 'monitor-1', condition: 'offline', threshold: null,
+        severity: 'high', message: null, isActive: true,
+      }]) as any)
+      .mockReturnValueOnce(selectWhereOrderLimitResolved([{ id: 'device-1' }]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', {
+      monitorId: 'monitor-1', status: 'offline', responseMs: 250, error: 'timeout',
+    }, { orgId: 'org-1', deviceId: 'device-1' });
+
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(createSourcedAlert).mock.calls[0]![0] as any;
+    expect(args.message).toContain('Target: https://status.example.com.');
+    expect(args.context.target).toBe('https://status.example.com');
+    expect(args.eventPayload.target).toBe('https://status.example.com');
+    for (const fragment of ['hunter2', '/hooks/', 'abc123', 'xyz789']) {
+      expect(JSON.stringify(args)).not.toContain(fragment);
+    }
+  });
+
   it('does not burn the cooldown when alert creation fails (#5241)', async () => {
     vi.mocked(createSourcedAlert).mockResolvedValueOnce(null);
     vi.mocked(db.select)

@@ -53,6 +53,18 @@ describe('scrubUrlsInText', () => {
     expect(out).toBe('redirect from http://a.example.com to https://b.example.com:444 failed');
   });
 
+  it('keeps a single quote inside userinfo or path as part of the URL', () => {
+    expect(scrubUrlsInText('Get "https://admin:pa\'ss@host.example.com/x?token=abc": EOF'))
+      .toBe('Get "https://host.example.com": EOF');
+    expect(scrubUrlsInText('Get "https://host.example.com/a\'b/SECRETPATH?token=abc": EOF'))
+      .toBe('Get "https://host.example.com": EOF');
+  });
+
+  it('keeps trailing punctuation after a URL', () => {
+    expect(scrubUrlsInText("posting to 'https://h.example.com/p?t=1'.")).toBe("posting to 'https://h.example.com'.");
+    expect(scrubUrlsInText('(see https://h.example.com/p?t=1), then')).toBe('(see https://h.example.com), then');
+  });
+
   it('leaves text without URLs untouched', () => {
     expect(scrubUrlsInText('expected status 200, got 503')).toBe('expected status 200, got 503');
     expect(scrubUrlsInText('')).toBe('');

@@ -36,6 +36,20 @@ import { webhookOriginChangeWouldRetainAuthorization } from './credentialOriginB
 import { alertSiteScopeByDeviceIds, validateNotificationChannelConfig } from '../routes/alerts/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { resolveWritableToolOrgId } from './aiToolWriteOrg';
+import { presentEndpointTarget, scrubUrlsInText, scrubUrlsInValue } from '../utils/endpointDisplay';
+
+// Network-monitor alerts embed the check target in their message and context,
+// and rows created before the monitor worker reduced it still hold the full
+// HTTP check URL (which can carry credentials). Show those as scheme + host.
+const NETWORK_MONITOR_ALERT_SOURCE = 'network_monitor';
+
+function presentNetworkMonitorAlert<T extends { message?: string | null; context?: unknown }>(alert: T): T {
+  const context = alert.context as Record<string, unknown> | null | undefined;
+  if (!context || context.source !== NETWORK_MONITOR_ALERT_SOURCE) return alert;
+  const scrubbed = scrubUrlsInValue(context) as Record<string, unknown>;
+  if (typeof context.target === 'string') scrubbed.target = presentEndpointTarget(context.target).target;
+  return { ...alert, message: scrubUrlsInText(alert.message), context: scrubbed };
+}
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -211,6 +225,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
             severity: alerts.severity,
             title: alerts.title,
             message: alerts.message,
+            contextSource: sql<string | null>`${alerts.context}->>'source'`,
             deviceId: alerts.deviceId,
             triggeredAt: alerts.triggeredAt,
             // Q1: full microsecond-precision text for the keyset cursor —
@@ -226,7 +241,9 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(alerts.triggeredAt), desc(alerts.id))
           .limit(limit + 1);
 
-        const items = rows.map((row) => {
+        const items = rows.map((rawRow) => {
+          const { contextSource, ...row } = rawRow;
+          if (contextSource === NETWORK_MONITOR_ALERT_SOURCE) row.message = scrubUrlsInText(row.message);
           const truncated = !!row.message && row.message.length > 500;
           return {
             id: row.id,
@@ -267,7 +284,7 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
           .where(eq(devices.id, alert.deviceId))
           .limit(1);
 
-        return JSON.stringify({ alert, device });
+        return JSON.stringify({ alert: presentNetworkMonitorAlert(alert), device });
       }
 
       if (action === 'acknowledge') {

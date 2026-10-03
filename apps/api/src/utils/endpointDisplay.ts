@@ -66,17 +66,25 @@ export function presentEndpointTarget(target: string): EndpointTargetView {
   return { target: host || INVALID_URL_PLACEHOLDER, fingerprint: fingerprintOf(target) };
 }
 
-// A URL token inside free text: scheme://, then everything up to whitespace or
-// a quote/bracket. Go's *url.Error renders as `Get "https://…": <cause>`, so a
-// closing quote ends the token.
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
+// A URL token inside free text: scheme://, then everything up to whitespace,
+// a double quote, angle bracket or backtick. Go's *url.Error renders as
+// `Get "https://…": <cause>` (with any `"` in the URL escaped), so the closing
+// double quote ends the token. A single quote is legal inside userinfo and
+// paths, so it does not end the token; trailing punctuation is peeled off
+// after matching instead.
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"<>`]+/gi;
+const TRAILING_PUNCTUATION = /[)\]'.,;:!?]+$/;
 
 /** Replace every URL in `text` with its origin (or a placeholder). */
 export function scrubUrlsInText(text: string): string;
 export function scrubUrlsInText<T extends string | null | undefined>(text: T): T;
 export function scrubUrlsInText(text: string | null | undefined): string | null | undefined {
   if (!text) return text;
-  return text.replace(URL_IN_TEXT, (match) => originOf(match) ?? '[url]');
+  return text.replace(URL_IN_TEXT, (match) => {
+    const trailing = TRAILING_PUNCTUATION.exec(match)?.[0] ?? '';
+    const url = trailing ? match.slice(0, -trailing.length) : match;
+    return (originOf(url) ?? '[url]') + trailing;
+  });
 }
 
 /** scrubUrlsInText applied to every string inside a JSON-like value. */
