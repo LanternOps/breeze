@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { accessReviewRoutes } from '../../routes/accessReviews';
-import { accessReviewItems } from '../../db/schema';
+import { accessReviewItems, organizationUsers } from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
 import {
   assignUserToOrganization,
@@ -90,9 +90,14 @@ async function itemRow(id: string) {
 /**
  * One org with an admin (users:write) and a plain member (users:read only).
  * `coAdmin` optionally adds a second org member with users:write, in the given
- * status, optionally with a different HOME org.
+ * status, optionally with a different HOME org, optionally restricted to a
+ * subset of the org's sites.
  */
-async function seedOrg(coAdmin?: { status: 'active' | 'invited' | 'disabled'; foreignHome?: boolean }) {
+async function seedOrg(coAdmin?: {
+  status: 'active' | 'invited' | 'disabled';
+  foreignHome?: boolean;
+  siteRestricted?: boolean;
+}) {
   const unique = randomUUID().slice(0, 8);
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -115,7 +120,13 @@ async function seedOrg(coAdmin?: { status: 'active' | 'invited' | 'disabled'; fo
       status: coAdmin.status,
       email: `sod-co-${unique}@example.test`,
     });
-    await assignUserToOrganization(coUser.id, org.id, adminRole.id);
+    const membership = await assignUserToOrganization(coUser.id, org.id, adminRole.id);
+    if (coAdmin.siteRestricted) {
+      await (getTestDb() as any)
+        .update(organizationUsers)
+        .set({ siteIds: [randomUUID()] })
+        .where(eq(organizationUsers.id, membership!.id));
+    }
     co = {
       id: coUser.id,
       email: coUser.email,
@@ -172,6 +183,17 @@ describe('access review separation of duties (real Postgres)', () => {
     const app = buildApp();
     const { admin } = await seedOrg({ status: 'active', foreignHome: true });
     const { id, detail } = await createReview(app, admin);
+    const ownItem = itemFor(detail, admin.id);
+
+    const self = await call(app, admin, 'PATCH', `/access-reviews/${id}/items/${ownItem}`, { decision: 'approved' });
+    expect(self.status).toBe(403);
+  });
+
+  it('counts a co-admin restricted to some of the org\'s sites', async () => {
+    const app = buildApp();
+    const { admin } = await seedOrg({ status: 'active', siteRestricted: true });
+    const { id, detail } = await createReview(app, admin);
+    expect(detail.viewer.selfDecision).toBe('blocked');
     const ownItem = itemFor(detail, admin.id);
 
     const self = await call(app, admin, 'PATCH', `/access-reviews/${id}/items/${ownItem}`, { decision: 'approved' });
