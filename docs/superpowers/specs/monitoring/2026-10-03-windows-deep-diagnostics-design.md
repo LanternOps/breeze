@@ -640,7 +640,7 @@ Windows lab rows passed before release.
   numbers (CPU, false-positive rate). That is an owner decision at the end of W03.
 - **`run_script` idle-in-transaction failure.** On managed Postgres (1-minute idle-in-transaction
   timeout), chat `run_script` fails whenever a script runs past about 60 s, even though the script
-  completes. It affects the W01 script pack. It is filed as a separate prerequisite issue, and the fix
+  completes. It affects the W01 script pack. It is tracked as prerequisite #7918, and the fix
   is the `selfManagedDbContext` pattern. No W01 script may need more than 45 s until it lands.
 - **Sysinternals content churn.** Signer-plus-version verification accepts any Microsoft-signed build at
   or above the minimum. Re-evaluate if Microsoft ships versioned URLs.
