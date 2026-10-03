@@ -2557,6 +2557,22 @@
       "requires_action": "Onay gerekli",
       "canceled": "İptal edildi",
       "unapplied": "Ödeme mutabakat gerektiriyor"
+    },
+    "fees": {
+      "title": "İşlem ücretleri",
+      "cardBps": "Kredi kartı ücreti (baz puan, 0–300)",
+      "ach": "Banka ödemesi ücreti (USD, 0.00–25.00)",
+      "inactive": "İş ortağı yöneticiniz aşağıdaki iki beyanı da onaylayana kadar kart ücretleri uygulanmaz.",
+      "notified": "Üye işyeri hizmet sağlayıcımı (Stripe) ve kart ağlarını en az 30 gün önce bilgilendirdim",
+      "cost": "Bu ücret, kart kabul maliyetimi aşmıyor",
+      "rules": "Yalnızca kredi kartları. CA, CT, ME veya MA’da kart ücreti uygulanmaz; Colorado’da üst sınır %2’dir. Ücretler yalnızca USD cinsinden uygun ABD otomatik ödemelerine uygulanır. Boş alan üst düzeydeki değeri devralır; sıfır bu müşteriyi muaf tutar. Tek seferlik ödeme bağlantılarında ücret yoktur.",
+      "legal": "Breeze hukuki danışmanlık sağlamaz. Ek ücret uygunluğu, bildirimler ve vergi uygulamalarından siz sorumlusunuz.",
+      "lowerAuthorization": "Daha düşük ücretlere yetki veren müşteriler: {{count}}. Yeni koşulları kabul edene kadar mevcut yetkilendirmeleri geçerli kalır.",
+      "authorizedCard": "Yetkilendirilen: {{accepted}} baz puan; yapılandırılan: {{configured}}",
+      "authorizedAch": "Yetkilendirilen: USD {{accepted}}; yapılandırılan: USD {{configured}}",
+      "requestAuthorization": "Güncel yetkilendirme iste",
+      "requestFailed": "Güncel yetkilendirme istenemedi. Faturalandırma kişisini ve Stripe hazırlığını kontrol edin.",
+      "requested": "Güncel yetkilendirme istendi. Mevcut yetkilendirme geçerliliğini korur."
     }
   },
   "reminders": {

@@ -561,7 +561,7 @@ it('mounts org reminders independently of enrollment rollout', async () => {
   fetchMock.mockImplementation(async url => {
     if (String(url).endsWith('/billing/payment-settings')) return json({
       effective: fields, inherited: fields, autopayEnabled: false,
-      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null },
+      values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null, autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
     });
     if (url === '/billing-profiles') return json({ profiles: [] });
     return json({ id: '11111111-1111-4111-8111-111111111111', currencyCode: 'USD', billingContact: null });
@@ -580,6 +580,7 @@ describe('OrgBillingSettings reminder Save integration', () => {
       autopayOffsetRule: { value: 'later', source: 'default' },
       autopayCap: { value: { enabled: false }, source: 'default' },
       achMode: { value: 'ach_preferred', source: 'default' },
+      cardFeeBps: { value: 0, source: 'default' }, achFeeAmount: { value: '0.00', source: 'default' }, feeAttested: false,
       remindersEnabled: { value: false, source: 'default' },
       reminderBeforeDueDays: { value: 5, source: 'partner' },
       reminderRepeatDays: { value: null, source: 'default' },
@@ -589,7 +590,7 @@ describe('OrgBillingSettings reminder Save integration', () => {
       if (String(url).endsWith('/billing/payment-settings')) return json({
         autopayEnabled: false, effective: fields, inherited: fields,
         values: { autopayOffsetDays: null, autopayOffsetRule: null, autopayCapEnabled: null,
-          autopayCapAmount: null, autopayCapCurrency: null, achMode: null },
+          autopayCapAmount: null, autopayCapCurrency: null, achMode: null, cardFeeBps: null, achFeeAmount: null },
       });
       if (url === '/billing-profiles') return json({ profiles: [] });
       if (url === '/billing-profiles/work-types') return json({ workTypes: [] });

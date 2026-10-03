@@ -14,11 +14,11 @@ import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
 import { resolveBillingPaymentSettings, updatePartnerPaymentSettings, updateOrgPaymentSettings } from '../services/autopay/billingPaymentSettings';
 import { isAutopayEnabledForPartner } from '../services/autopay/autopayGate';
 
-import { paymentSettingsView } from '../services/autopay/paymentSettingsView';
+import { feeAuthorizationGaps, paymentSettingsView } from '../services/autopay/paymentSettingsView';
 
 export const billingPaymentSettingsRoutes = new Hono();
 const writePermission = requirePermission(PERMISSIONS.BILLING_MANAGE.resource, PERMISSIONS.BILLING_MANAGE.action);
-const autopayFields = new Set(['autopayOffsetDays', 'autopayOffsetRule', 'autopayCapEnabled', 'autopayCapAmount', 'autopayCapCurrency', 'achMode']);
+const autopayFields = new Set(['autopayOffsetDays', 'autopayOffsetRule', 'autopayCapEnabled', 'autopayCapAmount', 'autopayCapCurrency', 'achMode', 'cardFeeBps', 'achFeeAmount', 'feeAttestation']);
 function partnerFrom(c: Context): string {
   const partnerId = c.get('auth')?.partnerId;
   if (!partnerId) throw new HTTPException(403, { message: 'Partner context required' });
@@ -55,7 +55,9 @@ billingPaymentSettingsRoutes.put('/partner/billing/payment-settings', authMiddle
       action: 'partner.payment_settings.update', resourceType: 'partner', resourceId: partnerId,
       details: { changedFields: Object.keys(patch) } });
     return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId }),
-      autopayEnabled: await isAutopayEnabledForPartner(db, partnerId) });
+      autopayEnabled: await isAutopayEnabledForPartner(db, partnerId),
+      ...(Object.keys(patch).some(key => ['cardFeeBps', 'achFeeAmount', 'feeAttestation'].includes(key))
+        ? { feeAuthorizationGaps: await feeAuthorizationGaps(db, partnerId) } : {}) });
   });
 billingPaymentSettingsRoutes.get('/orgs/:orgId/billing/payment-settings', authMiddleware, requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
@@ -71,5 +73,7 @@ billingPaymentSettingsRoutes.put('/orgs/:orgId/billing/payment-settings', authMi
     await updateOrgPaymentSettings(db, orgId, patch, c.get('auth').user.id);
     writeRouteAudit(c as never, { orgId, action: 'organization.payment_settings.update', resourceType: 'organization',
       resourceId: orgId, details: { changedFields: Object.keys(patch) } });
-    return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId, orgId }) });
+    return c.json({ data: await resolveBillingPaymentSettings(db, { partnerId, orgId }),
+      ...(Object.keys(patch).some(key => ['cardFeeBps', 'achFeeAmount'].includes(key))
+        ? { feeAuthorizationGaps: await feeAuthorizationGaps(db, partnerId, orgId) } : {}) });
   });

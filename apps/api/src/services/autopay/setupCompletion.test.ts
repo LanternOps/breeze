@@ -216,3 +216,25 @@ it.each([false,true])('saving a bank method consumes only ordinary enroll tokens
  expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
  expect(m.writes.some(row=>'consumedAt' in row)).toBe(!bound);
 });
+
+it.each(['active','paused'])('records new fee consent on the same method and preserves %s state',async status=>{
+ const feeTerms={...snapshot.feeTerms,cardFeeBps:300,feeAttested:true};
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-02'),consentSnapshot:{...snapshot,feeTerms,textHash:'c'.repeat(64)}});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);
+ const effectiveFrom=new Date('2026-09-01');
+ Object.assign(m.rows[3]![0]!,{status,effectiveFrom,pausedAt:status==='paused'?new Date('2026-10-01'):null});
+ m.rows.push([{id:'method_one',status:'active',isAutopayMethod:true}],[],[{id:'method_one'}],[],[],[],[],[],[{settings:{}}]);
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([expect.objectContaining({generation:3,paymentMethodId:'method_one',feeTerms})]);
+ expect(m.writes).toContainEqual(expect.objectContaining({status,effectiveFrom}));
+ expect(m.writes.some(row=>'generation'in row&&row.generation!==3)).toBe(false);
+});
+
+it('fences a setup started before the current pause even with same-generation token authority',async()=>{
+ const value=attempt({tokenId:'token',source:'setup_page',createdAt:new Date('2026-10-01')});
+ m.intent.mockResolvedValue({...await m.intent(),metadata:{...(await m.intent()).metadata,token_id:'token'}});
+ queueAuthority(value);Object.assign(m.rows[3]![0]!,{status:'paused',pausedAt:new Date('2026-10-02')});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('stale_generation');
+ expect(m.writes.some(row=>'consentTextVersion'in row)).toBe(false);
+});

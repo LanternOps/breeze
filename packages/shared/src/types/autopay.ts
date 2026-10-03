@@ -79,9 +79,11 @@ export type AutopayPortalPage = AutopayCustomerPage | AutopayStopOnlyPage;
 export interface PaymentValues {
  autopayOffsetDays:number|null;autopayOffsetRule:AutopayOffsetRule|null;autopayCapEnabled:boolean|null;
  autopayCapAmount:string|null;autopayCapCurrency:string|null;achMode:AchMode|null;
+ cardFeeBps:number|null;achFeeAmount:string|null;
 }
 export type EffectivePaymentSetting<T>={value:T;source:'org'|'partner'|'default'};
 export interface ResolvedPaymentSettings {
+ cardFeeBps:EffectivePaymentSetting<number>;achFeeAmount:EffectivePaymentSetting<string>;feeAttested?:boolean;
  remindersEnabled:EffectivePaymentSetting<boolean>;
  reminderBeforeDueDays:EffectivePaymentSetting<number>;
  reminderRepeatDays:EffectivePaymentSetting<number|null>;
@@ -89,7 +91,11 @@ export interface ResolvedPaymentSettings {
  autopayOffsetDays:EffectivePaymentSetting<number>;autopayOffsetRule:EffectivePaymentSetting<AutopayOffsetRule>;
  autopayCap:EffectivePaymentSetting<AutopayScheduleTerms['cap']>;achMode:EffectivePaymentSetting<AchMode>;
 }
-export interface PaymentSettingsView { autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
+export interface FeeAuthorizationGap {
+ orgId:string;orgName:string;methodType:AutopayPaymentMethodType;
+ authorizedCardFeeBps:number;authorizedAchFeeAmount:string;cardFeeBps:number;achFeeAmount:string;
+}
+export interface PaymentSettingsView { feeAuthorizationGaps?:FeeAuthorizationGap[]; autopayEnabled:boolean;values:PaymentValues;inherited:ResolvedPaymentSettings;effective:ResolvedPaymentSettings }
 
 export const autopayScheduleTermsSchema=z.object({offsetDays:z.number().int().min(0).max(60),rule:z.enum(AUTOPAY_OFFSET_RULES),
  cap:z.discriminatedUnion('enabled',[z.object({enabled:z.literal(false)}),z.object({enabled:z.literal(true),amount:z.string(),currency:z.string()})])});

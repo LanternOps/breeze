@@ -23,7 +23,7 @@ autopayRoutes.get('/billing/autopay',async c=>{
   return c.json({data,notRequestedCount:data.filter(row=>row.status==='not_requested').length});
 });
 autopayRoutes.post('/billing/autopay/requests',zValidator('json',z.object({
-  orgIds:z.array(z.string().uuid()).min(1).max(500),recipientOverride:z.string().email().max(255).optional(),
+  orgIds:z.array(z.string().uuid()).min(1).max(500),mode:z.enum(['request','reauthorize']).optional(),recipientOverride:z.string().email().max(255).optional(),
 }).strict()),async c=>{
   const actor=invoiceActorFrom(c),input=c.req.valid('json');
   if(!allowed(actor,input.orgIds))return c.json({error:'Organization not found'},404);

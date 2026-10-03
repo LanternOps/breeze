@@ -2557,6 +2557,22 @@
       "requires_action": "Confirmation requise",
       "canceled": "Annulé",
       "unapplied": "Rapprochement du paiement nécessaire"
+    },
+    "fees": {
+      "title": "Frais de traitement",
+      "cardBps": "Frais de carte de crédit (points de base, 0–300)",
+      "ach": "Frais de paiement bancaire (USD, 0.00–25.00)",
+      "inactive": "Les frais de carte restent inactifs tant que votre administrateur partenaire n’a pas confirmé les deux déclarations ci-dessous.",
+      "notified": "J’ai informé mon acquéreur (Stripe) et les réseaux de cartes il y a au moins 30 jours",
+      "cost": "Ces frais ne dépassent pas mon coût d’acceptation des cartes",
+      "rules": "Cartes de crédit uniquement. Aucun frais de carte en CA, CT, ME ou MA ; plafond de 2 % au Colorado. Les frais s’appliquent uniquement aux paiements automatiques américains éligibles en USD. Un champ vide reprend la valeur héritée ; zéro exonère ce client. Les liens de paiement ponctuel sont sans frais.",
+      "legal": "Breeze ne fournit pas de conseils juridiques. Vous êtes responsable de l’éligibilité des majorations, des avis et du traitement fiscal.",
+      "lowerAuthorization": "Clients ayant autorisé des frais inférieurs : {{count}}. Leur autorisation actuelle reste en vigueur jusqu’à l’acceptation des nouvelles conditions.",
+      "authorizedCard": "Autorisé : {{accepted}} points de base ; configuré : {{configured}}",
+      "authorizedAch": "Autorisé : USD {{accepted}} ; configuré : USD {{configured}}",
+      "requestAuthorization": "Demander une nouvelle autorisation",
+      "requestFailed": "Impossible de demander une nouvelle autorisation. Vérifiez le contact de facturation et la disponibilité de Stripe.",
+      "requested": "Nouvelle autorisation demandée. L’autorisation actuelle reste en vigueur."
     }
   },
   "reminders": {

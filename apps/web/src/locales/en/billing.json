@@ -2557,6 +2557,22 @@
       "requires_action": "Confirmation required",
       "canceled": "Cancelled",
       "unapplied": "Payment needs reconciliation"
+    },
+    "fees": {
+      "title": "Processing fees",
+      "cardBps": "Credit-card fee (basis points, 0–300)",
+      "ach": "Bank payment fee (USD, 0.00–25.00)",
+      "inactive": "Card fees are inactive until your partner administrator affirms both statements below.",
+      "notified": "I notified my acquirer (Stripe) and the card networks at least 30 days ago",
+      "cost": "This fee does not exceed my cost of card acceptance",
+      "rules": "Credit cards only. No card fee in CA, CT, ME or MA; Colorado is capped at 2%. Fees apply only to eligible US automatic payments in USD. Blank inherits; zero exempts this customer. One-time pay links have no fee.",
+      "legal": "Breeze is not legal advice. You are responsible for surcharge eligibility, notices and tax treatment.",
+      "lowerAuthorization": "Clients with lower authorized fees: {{count}}. Their existing authorization remains in effect until they accept updated terms.",
+      "authorizedCard": "Authorized: {{accepted}} basis points; configured: {{configured}}",
+      "authorizedAch": "Authorized: USD {{accepted}}; configured: USD {{configured}}",
+      "requestAuthorization": "Request updated authorization",
+      "requestFailed": "Could not request updated authorization. Check the billing contact and Stripe readiness.",
+      "requested": "Updated authorization requested. Existing authorization remains in effect."
     }
   },
   "reminders": {

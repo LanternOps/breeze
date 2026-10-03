@@ -2557,6 +2557,22 @@
       "requires_action": "Bestätigung erforderlich",
       "canceled": "Abgebrochen",
       "unapplied": "Zahlung muss zugeordnet werden"
+    },
+    "fees": {
+      "title": "Bearbeitungsgebühren",
+      "cardBps": "Kreditkartengebühr (Basispunkte, 0–300)",
+      "ach": "Bankzahlungsgebühr (USD, 0.00–25.00)",
+      "inactive": "Kartengebühren sind erst aktiv, wenn Ihr Partneradministrator beide folgenden Erklärungen bestätigt.",
+      "notified": "Ich habe meinen Acquirer (Stripe) und die Kartennetzwerke vor mindestens 30 Tagen benachrichtigt",
+      "cost": "Diese Gebühr übersteigt nicht meine Kosten für die Kartenakzeptanz",
+      "rules": "Nur Kreditkarten. Keine Kartengebühr in CA, CT, ME oder MA; in Colorado gilt eine Obergrenze von 2 %. Gebühren gelten nur für berechtigte automatische US-Zahlungen in USD. Leer übernimmt den übergeordneten Wert; null befreit diesen Kunden. Einmalige Zahlungslinks sind gebührenfrei.",
+      "legal": "Breeze bietet keine Rechtsberatung. Sie sind für die Zulässigkeit von Zuschlägen, Hinweise und die steuerliche Behandlung verantwortlich.",
+      "lowerAuthorization": "Kunden mit niedrigeren autorisierten Gebühren: {{count}}. Ihre bisherige Autorisierung gilt, bis sie aktualisierte Bedingungen akzeptieren.",
+      "authorizedCard": "Autorisiert: {{accepted}} Basispunkte; eingestellt: {{configured}}",
+      "authorizedAch": "Autorisiert: USD {{accepted}}; eingestellt: USD {{configured}}",
+      "requestAuthorization": "Aktualisierte Autorisierung anfordern",
+      "requestFailed": "Aktualisierte Autorisierung konnte nicht angefordert werden. Prüfen Sie den Rechnungskontakt und die Stripe-Verfügbarkeit.",
+      "requested": "Aktualisierte Autorisierung angefordert. Die bisherige Autorisierung bleibt gültig."
     }
   },
   "reminders": {

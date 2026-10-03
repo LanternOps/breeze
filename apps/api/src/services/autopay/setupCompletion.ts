@@ -52,8 +52,11 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    return {outcome,orgId:attempt.orgId};
   }
   const wasPending=attempt.outcome==='pending_verification';
+  // A newly accepted update may finish while paused; a capture started before the pause cannot.
+  const pausedUpdate=enrollment?.status==='paused'&&!!enrollment.pausedAt&&!!attempt.tokenId&&
+   attempt.source==='setup_page'&&attempt.createdAt>enrollment.pausedAt;
   if(!org||org.deletedAt||!['active','trial'].includes(org.status)||!connection||connection.stripeAccountId!==attempt.stripeAccountId||!enrollment||
-   ['stripe_account_changed','key_missing_permissions'].includes(enrollment.needsAttentionReason??'')||attempt.outcome==='stale_generation'||setupAuthorityOutcome(wasPending&&enrollment.status==='paused'?{...enrollment,status:'active'}:enrollment,attempt.generation,wasPending||latest?.id===attempt.id)||
+   ['stripe_account_changed','key_missing_permissions'].includes(enrollment.needsAttentionReason??'')||attempt.outcome==='stale_generation'||setupAuthorityOutcome((wasPending||pausedUpdate)&&enrollment.status==='paused'?{...enrollment,status:'active'}:enrollment,attempt.generation,wasPending||latest?.id===attempt.id)||
    enrollment.stripeAccountId!==attempt.stripeAccountId||enrollment.stripeCustomerId!==attempt.stripeCustomerId||method?.customer!=null&&attempt.stripeCustomerId!==id(method.customer)){
    await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(eq(autopaySetupAttempts.id,attempt.id));
    await enqueueRejectedAutopayMethod(db,attempt,method);
@@ -104,7 +107,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   if(!consent)await db.insert(orgAutopayConsents).values({orgId:attempt.orgId,enrollmentId:enrollment.id,generation:attempt.generation,paymentMethodId:saved!.id,
    consentTextVersion:snapshot.version,consentTextHash:snapshot.textHash,feeTerms:snapshot.feeTerms,scheduleTerms:snapshot.scheduleTerms,
    contactEmail:snapshot.contactEmail,ip:snapshot.ip,userAgent:snapshot.userAgent,source:snapshot.source});
-  await db.update(orgAutopayEnrollments).set({status:wasPending&&enrollment.status==='paused'?'paused':'active',effectiveFrom:enrollment.effectiveFrom??new Date(),
+  await db.update(orgAutopayEnrollments).set({status:enrollment.status==='paused'?'paused':'active',effectiveFrom:enrollment.effectiveFrom??new Date(),
    needsAttentionReason:null}).where(eq(orgAutopayEnrollments.id,enrollment.id));
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));

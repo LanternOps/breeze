@@ -206,3 +206,25 @@ it('protects the pending Stop disclosure outside a custom notice body',async()=>
   expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
  }
 });
+
+it.each(['active','paused'])('reauthorizes %s once without changing enrollment or schedules',async status=>{
+ const current={...enrollment,status,stripeAccountId:'acct_test',stripeConnectionId:'connection'};
+ h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[]);
+ noticeRows('autopay_request');
+ expect(await requestAutopay(db,actor,{orgIds:[orgId,orgId],mode:'reauthorize'})).toEqual({requested:[orgId],skipped:[]});
+ expect(h.calls.some(c=>c.op==='update'||c.op==='insert')).toBe(false);
+ expect(h.revoke).not.toHaveBeenCalled();
+ expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
+ expect(h.mint).toHaveBeenCalledWith(db,expect.objectContaining({purpose:'enroll',generation:9}));
+ const queued=h.enqueue.mock.calls[0]![1];
+ expect(queued.kind).toBe('autopay_request');expect(queued.dedupeKey).toContain('reauthorize');
+ for(const body of [queued.rendered.html,queued.rendered.text]){
+  expect(body).toContain('Replacement body only');
+  expect(body).toContain('Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms');
+  expect(body).toContain('credit-card processing fee');expect(body).toContain('server-token/enroll');
+ }
+ h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);
+ await requestAutopay(db,actor,{orgIds:[orgId],mode:'reauthorize'});
+ expect(h.enqueue).toHaveBeenCalledTimes(1);
+ expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
+});

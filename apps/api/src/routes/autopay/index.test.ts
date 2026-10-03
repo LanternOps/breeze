@@ -132,3 +132,10 @@ it('reads the feature switch in a short context and releases it before the handl
     vi.mocked(withSystemDbAccessContext).mockReset().mockImplementation(async fn => fn());
   }
 });
+
+it('passes explicit reauthorization mode and rejects unknown modes',async()=>{
+ const response=await app.request('/billing/autopay/requests',{method:'POST',headers,body:JSON.stringify({orgIds:[orgId],mode:'reauthorize'})});
+ expect(response.status).toBe(200);
+ expect(h.request).toHaveBeenCalledWith({},expect.anything(),{orgIds:[orgId],mode:'reauthorize'});
+ expect((await app.request('/billing/autopay/requests',{method:'POST',headers,body:JSON.stringify({orgIds:[orgId],mode:'force'})})).status).toBe(400);
+});

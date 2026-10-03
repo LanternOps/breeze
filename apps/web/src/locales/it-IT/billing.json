@@ -2557,6 +2557,22 @@
       "requires_action": "Conferma richiesta",
       "canceled": "Annullato",
       "unapplied": "Il pagamento richiede riconciliazione"
+    },
+    "fees": {
+      "title": "Commissioni di elaborazione",
+      "cardBps": "Commissione carta di credito (punti base, 0–300)",
+      "ach": "Commissione pagamento bancario (USD, 0.00–25.00)",
+      "inactive": "Le commissioni sulle carte restano inattive finché l’amministratore del partner non conferma entrambe le dichiarazioni seguenti.",
+      "notified": "Ho informato il mio acquirer (Stripe) e i circuiti delle carte almeno 30 giorni fa",
+      "cost": "Questa commissione non supera il mio costo di accettazione delle carte",
+      "rules": "Solo carte di credito. Nessuna commissione sulle carte in CA, CT, ME o MA; in Colorado il limite è del 2%. Le commissioni si applicano solo ai pagamenti automatici statunitensi idonei in USD. Lasciare vuoto eredita il valore; zero esenta questo cliente. I link di pagamento una tantum non prevedono commissioni.",
+      "legal": "Breeze non fornisce consulenza legale. Sei responsabile dell’ammissibilità dei supplementi, delle comunicazioni e del trattamento fiscale.",
+      "lowerAuthorization": "Clienti con commissioni autorizzate inferiori: {{count}}. L’autorizzazione attuale resta valida fino all’accettazione dei nuovi termini.",
+      "authorizedCard": "Autorizzati: {{accepted}} punti base; configurati: {{configured}}",
+      "authorizedAch": "Autorizzato: USD {{accepted}}; configurato: USD {{configured}}",
+      "requestAuthorization": "Richiedi autorizzazione aggiornata",
+      "requestFailed": "Impossibile richiedere l’autorizzazione aggiornata. Verifica il contatto di fatturazione e la disponibilità di Stripe.",
+      "requested": "Autorizzazione aggiornata richiesta. L’autorizzazione attuale resta valida."
     }
   },
   "reminders": {
