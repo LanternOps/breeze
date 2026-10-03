@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'session_tap' } as const;
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
+import { classifyChatReadOnlyEventLogsQuery } from './aiChatEventLogsReadOnly';
 import { db } from '../db';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { checkTenantToolRateLimit } from './toolSources/guardrails';
@@ -1260,6 +1261,85 @@ describe('createSessionPreToolUse', () => {
 
       expect(result).toEqual({ allowed: true, context: { pinnedEventLogsQuery: pinned } });
       expect(session.currentPlanStepIndex).toBe(1);
+    });
+
+    it('paused then approved: the approval exit still carries the pinned payload to dispatch', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(eligibleCheck as any);
+      mockInsertReturning({ id: 'exec-ev-2' });
+      vi.mocked(waitForApproval).mockResolvedValue(true);
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', isPaused: true, auth: chatAuth() });
+
+      const result = await createSessionPreToolUse(session)('execute_command', input);
+
+      expect(waitForApproval).toHaveBeenCalled();
+      expect(result).toEqual(expect.objectContaining({ allowed: true, context: { pinnedEventLogsQuery: pinned } }));
+    });
+
+    // The real aiGuardrails module cannot load under this file's db/schema
+    // mocks, so the stand-in below reproduces checkGuardrails' #7906 branch
+    // (pinned by aiGuardrails.chatEventLogsReadOnly.test.ts against the real
+    // module) on top of the REAL classifier. What this proves is the wiring:
+    // the gate passes the chat opt-in and the raw input, and what it hands to
+    // dispatch is exactly what the real classifier parsed.
+    describe('with the real classifier (gate ↔ classifier integration)', () => {
+      beforeEach(() => {
+        vi.mocked(checkGuardrails).mockImplementation((toolName, toolInput, ctx) => {
+          const pinnedEventLogsQuery = ctx?.chatSession
+            ? classifyChatReadOnlyEventLogsQuery(toolName, toolInput)
+            : null;
+          return pinnedEventLogsQuery
+            ? { allowed: true, tier: 2, requiresApproval: false, readOnly: true, pinnedEventLogsQuery, description: 'q' }
+            : { allowed: true, tier: 3, requiresApproval: true, approvalScope: 'supervised', description: 'q' };
+        });
+      });
+
+      it.each(['per_step', 'auto_approve'] as const)(
+        '%s: an eligible System query auto-executes and pins the parsed payload',
+        async (approvalMode) => {
+          const values = mockInsertValues();
+          const session = makeActiveSession({ approvalMode, auth: chatAuth() });
+
+          const result = await createSessionPreToolUse(session)('execute_command', input);
+
+          expect(result).toEqual({
+            allowed: true,
+            context: { pinnedEventLogsQuery: { payload: { logName: 'System', level: 'error' } } },
+          });
+          expect(values).toHaveBeenCalledWith(expect.objectContaining({ status: 'executing' }));
+          expect(waitForApproval).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['a QueryList selecting Security', { logName: 'System', query: '<QueryList><Query><Select Path="Security">*</Select></Query></QueryList>' }],
+        ['Application', { logName: 'Application' }],
+      ])('%s does not auto-execute and pins nothing', async (_label, payload) => {
+        mockInsertReturning({ id: 'exec-ev-3' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: chatAuth() });
+
+        const result = await createSessionPreToolUse(session)('execute_command', { ...input, payload });
+
+        expect(result).toMatchObject({ allowed: false });
+        expect((result as any).context).toBeUndefined();
+        expect(mockCreateActionIntent).toHaveBeenCalled();
+      });
+
+      it.each([
+        ['an ai_agent principal', () => makeAuth({ principal: { kind: 'ai_agent' } } as any)],
+        ['no user_session principal', () => makeAuth()],
+      ])('%s with an eligible payload does not auto-execute', async (_label, auth) => {
+        mockInsertReturning({ id: 'exec-ev-4' });
+        vi.mocked(waitForApproval).mockResolvedValue(false);
+        const session = makeActiveSession({ approvalMode: 'auto_approve', auth: auth() });
+
+        const result = await createSessionPreToolUse(session)('execute_command', input);
+
+        expect(result).toMatchObject({ allowed: false });
+        expect(mockCreateActionIntent).toHaveBeenCalled();
+      });
     });
 
     it('postToolUse resolves the SAME tier as the gate (chat opt-in passed there too)', async () => {
