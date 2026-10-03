@@ -267,6 +267,9 @@ const _agentGuardrailCheckFields: Record<keyof ReturnType<typeof checkAgentGuard
   reason: true,
   approvalScope: true,
   readOnly: true,
+  // #7906: the payload a chat read-only event_logs_query dispatches with.
+  // Never set for an agent run (checkAgentGuardrails strips the chat opt-in).
+  pinnedEventLogsQuery: true,
   // Human-readable approval blurb only — see TOOLS_ECHOING_PROSE_INTO_APPROVAL_TEXT.
   description: false,
 };

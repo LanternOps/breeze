@@ -4,6 +4,7 @@ import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
 import type { TopologyRequestContext } from './topology/access';
 import type { VerifiedTopologyDiagnostic } from './topology/aiDiagnosticEffect';
+import type { PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 
 /**
  * One `run_script` release, resolved once and verified against the approval's
@@ -189,4 +190,13 @@ export type ToolExecutionContext = {
    * transaction; it never selects a different origin or target.
    */
   verifiedTopologyDiagnostic?: VerifiedTopologyDiagnostic;
+  /**
+   * #7906: the strictly-parsed `event_logs_query` payload the chat gate
+   * classified as Tier-2 read-only (System/Setup, no XPath). Set ONLY by
+   * `createSessionPreToolUse` from `checkGuardrails`' own parse — never from
+   * model arguments. `execute_command` dispatches exactly these values and
+   * refuses if it arrives on any other commandType, so the call that runs is
+   * the call that was classified.
+   */
+  pinnedEventLogsQuery?: PinnedEventLogsQuery;
 };
