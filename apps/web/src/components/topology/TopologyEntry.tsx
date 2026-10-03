@@ -3,13 +3,13 @@ import { useTranslation } from 'react-i18next';
 import { useHashState } from '../../lib/useHashState';
 import { useOrgStore } from '../../stores/orgStore';
 import { parseTopologyHash, writeTopologyHash } from './topologyHash';
-import { topologyApi, topologyNodeListSchema, topologyRead, type TopologySettings } from './topologyApi';
+import { topologyApi, topologyNodeListSchema, topologyRead, TopologyReadError, type TopologySettings } from './topologyApi';
 import { clearTopologyPrefetch, prefetchTopologyGraph, prefetchTopologySettings, takePrefetchedSettings } from './topologyPrefetch';
 import TopologyEmptyState from './TopologyEmptyState';
 const loadExplorer = () => import('./TopologyExplorer');
 const TopologyExplorer = lazy(loadExplorer);
 /** A `#topology/site/<id>` link to a site missing from this organization's list (#7880). */
-type LinkedSite = 'checking' | 'switching' | 'sameOrg' | 'missing';
+type LinkedSite = 'checking' | 'switching' | 'sameOrg' | 'missing' | 'failed';
 export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, legacy }: {
   siteId?: string | null; sites?: { id: string; name: string }[]; deviceId?: string; assetId?: string; legacy?: ReactNode;
 }) {
@@ -40,7 +40,11 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
         setLinked('sameOrg'); return;
       }
       store.selectOrganization(owner.orgId); setLinked('switching');
-    }).catch(() => { if (!controller.signal.aborted) setLinked('missing'); });
+    }).catch((cause) => {
+      if (controller.signal.aborted) return;
+      // Only "no such site / no access" means not in this organization; anything else is a load failure.
+      setLinked(cause instanceof TopologyReadError && [403, 404].includes(cause.status) ? 'missing' : 'failed');
+    });
     return () => controller.abort();
   }, [linkedSite, currentOrgId]);
   useEffect(() => {
@@ -74,7 +78,8 @@ export default function TopologyEntry({ siteId, sites = [], deviceId, assetId, l
   return <div className="space-y-4" data-testid="topology-entry">
     {!siteId && <label className="block text-sm">{t('site')}<select data-testid="topology-site" className="ml-3 rounded border bg-background p-2" value={selectedSite ?? ''} onChange={(event) => { setHashSite(event.target.value); writeTopologyHash({ siteId: event.target.value, view: 'overview', search: '' }); }}><option value="">{t('chooseSite')}</option>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>}
     {notInOrganization && <p role="alert" data-testid="topology-site-not-in-org" className="text-sm">{t('siteNotInOrganization')}</p>}
-    {linked && !notInOrganization && <p role="status">{t('loading')}</p>}
+    {linked === 'failed' && <p role="alert" data-testid="topology-site-lookup-failed" className="text-destructive">{t('loadFailed')}</p>}
+    {linked && linked !== 'failed' && !notInOrganization && <p role="status">{t('loading')}</p>}
     {!selectedSite && !linked && <p className="text-sm text-muted-foreground">{t('chooseSiteExplanation')}</p>}
     {error && <p role="alert" className="text-destructive">{error}</p>}
     {selectedSite && !settings && !error && <p role="status">{t('loading')}</p>}

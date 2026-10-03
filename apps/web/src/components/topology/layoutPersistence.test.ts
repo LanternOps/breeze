@@ -35,6 +35,18 @@ it('an automatic layout updates the draft without marking it dirty; a user layou
   expect(draft.dirty).toBe(true);
 });
 
+it('a clean draft keeps its automatic layout across re-measures of the same layout revision, and adopts a new one (#7880 review)', () => {
+  const draft = new TopologyLayoutDraft(), other = '33333333-3333-4333-8333-333333333333';
+  draft.load('3', []);
+  draft.applyLayout([{ nodeId, x: 40, y: 50, pinned: false }], { cardMembers: new Set(), userAction: false });
+  // A device appears (same layout revision): already-placed tiles must not be re-laid out from scratch.
+  draft.load('3', []);
+  expect(draft.positions.get(nodeId)).toMatchObject({ x: 40, y: 50 });
+  // Another editor saved: the shared layout wins over the automatic one.
+  draft.load('4', [{ nodeId: other, x: 1, y: 2, pinned: true, rowRevision: '4', source: 'user' }]);
+  expect(draft.revision).toBe('4'); expect([...draft.positions.keys()]).toEqual([other]);
+});
+
 it('keeps a card member\'s saved pin coordinates in the draft while the canvas draws it in the grid (revised Q3, #7880)', () => {
   const draft = new TopologyLayoutDraft(), loose = '33333333-3333-4333-8333-333333333333';
   draft.load('3', [{ nodeId, x: 5_000, y: 5_000, pinned: true, rowRevision: '1', source: 'legacy' }, { nodeId: loose, x: 9, y: 9, pinned: true, rowRevision: '1', source: 'user' }]);

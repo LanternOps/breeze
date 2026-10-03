@@ -1,10 +1,13 @@
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import TopologyExplorer from './TopologyExplorer';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from './topologyFixtures';
 import { fetchWithAuth } from '../../stores/auth';
+import { packTopologyLayout } from './layoutAdapter';
+import type { LayoutPosition, LayoutRequest } from './layoutTypes';
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
-vi.mock('./TopologyCanvas', () => ({ default: ({ positions }: { positions: unknown[] }) => <div data-testid="topology-canvas" data-positions={positions.length} /> }));
+const canvas = vi.hoisted(() => ({ props: undefined as undefined | { positions: LayoutPosition[]; onMove: (positions: LayoutPosition[]) => void } }));
+vi.mock('./TopologyCanvas', () => ({ default: (props: { positions: LayoutPosition[]; onMove: (positions: LayoutPosition[]) => void }) => { canvas.props = props; return <div data-testid="topology-canvas" data-positions={props.positions.length} />; } }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 beforeEach(() => {
   window.location.hash = '#topology';
@@ -151,6 +154,69 @@ it('takes diagnose and monitoring authority from the site settings, not the grap
   fireEvent.click(screen.getByTestId('topology-list-toggle'));
   fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
   expect(await screen.findByTestId('topology-diagnose')).toBeDisabled();
+});
+
+it('a moved card member re-packs its card instead of being drawn at its pin; a moved loose tile stays where it was dropped (#7880)', async () => {
+  const member = '10000000-0000-4000-8000-000000000042', card = 'presentation:overview:scope:net-lan';
+  const graph = topologyGraphFixture();
+  graph.nodes.push({ ...graph.nodes[0]!, id: member, kind: 'endpoint', role: null, label: 'PC-42', bindings: [], availableActions: [],
+    inventory: { source: 'device', name: 'PC-42', addresses: ['10.1.2.42'], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+  graph.presentation.nodes.push({ id: card, view: 'overview', role: 'network_group', label: '10.1.2.0/24', memberCount: 1, frontierToken: 't', authority: false,
+    group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix: '10.1.2.0/24', address: null, gatewayAddresses: [], conflict: false, observerCount: 1,
+      members: [{ nodeId: member, placement: 'observed', primary: true, stale: false }], canonicalNodeIds: [] } });
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(graph)));
+  const posted: LayoutRequest[] = [];
+  vi.stubGlobal('Worker', class { onmessage: ((event: { data: unknown }) => void) | null = null; onerror = null;
+    postMessage(request: LayoutRequest) { posted.push(request); setTimeout(() => this.onmessage?.({ data: packTopologyLayout(request) }), 0); } terminate() {} });
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await waitFor(() => expect(canvas.props?.positions.some((p) => p.nodeId === member)).toBe(true));
+  expect(posted[0]!.nodes.find((n) => n.id === member)).toMatchObject({ groupId: card, address: '10.1.2.42' });
+  const grid = canvas.props!.positions.find((p) => p.nodeId === member)!;
+  const runs = posted.length;
+  act(() => canvas.props!.onMove([{ nodeId: member, x: 9_000, y: 9_000, pinned: true }]));
+  await waitFor(() => expect(posted).toHaveLength(runs + 1));
+  await waitFor(() => expect(canvas.props!.positions.find((p) => p.nodeId === member)).toMatchObject({ pinned: true }));
+  // A single member's pin anchors the card on it, so the card (not the tile alone) moved there; never a stray tile.
+  const moved = canvas.props!.positions.find((p) => p.nodeId === member)!;
+  expect(moved).not.toEqual(grid);
+  expect(await screen.findByTestId('topology-unsaved-layout')).toBeInTheDocument();
+  act(() => canvas.props!.onMove([{ nodeId: NODE, x: 7_000, y: -7_000, pinned: true }]));
+  await waitFor(() => expect(canvas.props!.positions.find((p) => p.nodeId === NODE)).toEqual({ nodeId: NODE, x: 7_000, y: -7_000, pinned: true }));
+  expect(posted).toHaveLength(runs + 1);
+});
+
+it('saving keeps card members in the grid; the saved legacy pins are sent unchanged, not drawn (#7880 review)', async () => {
+  const [m1, m2] = ['10000000-0000-4000-8000-000000000051', '10000000-0000-4000-8000-000000000052'];
+  const card = 'presentation:overview:scope:net-lan';
+  const graph = topologyGraphFixture();
+  for (const [id, ip] of [[m1, '10.1.2.51'], [m2, '10.1.2.52']] as const) {
+    graph.nodes.push({ ...graph.nodes[0]!, id, kind: 'endpoint', role: null, label: id.slice(-2), bindings: [], availableActions: [],
+      inventory: { source: 'device', name: id.slice(-2), addresses: [ip], mac: null, vendor: null, model: null, os: null, type: 'workstation', presence: { state: 'online', source: 'agent', agentStatus: 'online', lastSeenAt: null } } });
+  }
+  graph.presentation.nodes.push({ id: card, view: 'overview', role: 'network_group', label: '10.1.2.0/24', memberCount: 2, frontierToken: 't', authority: false,
+    group: { kind: 'network', basis: 'inferred_site_prefix', networkClass: 'lan', prefix: '10.1.2.0/24', address: null, gatewayAddresses: [], conflict: false, observerCount: 2,
+      members: [m1, m2].map((nodeId) => ({ nodeId, placement: 'observed' as const, primary: true, stale: false })), canonicalNodeIds: [] } });
+  const legacy = [{ nodeId: m1, x: 5_000, y: 5_000, pinned: true, source: 'legacy' as const, rowRevision: '1' }, { nodeId: m2, x: -3_000, y: 100, pinned: true, source: 'legacy' as const, rowRevision: '1' }];
+  graph.layout = { algorithm: 'elk', version: 1, positions: legacy };
+  let saved: { positions: LayoutPosition[] } | undefined;
+  vi.mocked(fetchWithAuth).mockImplementation(async (_url, options) => {
+    if (options?.method === 'PATCH') {
+      saved = JSON.parse(String(options.body));
+      return new Response(JSON.stringify({ siteId: SITE, view: 'overview', layoutRevision: '2', positions: saved!.positions.map((p) => ({ ...p, source: p.nodeId === NODE ? 'user' : 'legacy', rowRevision: '2' })) }));
+    }
+    return new Response(JSON.stringify(graph));
+  });
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  await waitFor(() => expect(canvas.props?.positions.some((p) => p.nodeId === m1)).toBe(true));
+  const drawn = () => [m1, m2].map((id) => canvas.props!.positions.find((p) => p.nodeId === id)!);
+  const grid = drawn();
+  for (const [index, pin] of legacy.entries()) expect({ x: grid[index]!.x, y: grid[index]!.y }).not.toEqual({ x: pin.x, y: pin.y });
+  act(() => canvas.props!.onMove([{ nodeId: NODE, x: 7_000, y: -7_000, pinned: true }]));
+  fireEvent.click(await screen.findByTestId('topology-layout-save'));
+  await waitFor(() => expect(saved).toBeDefined());
+  for (const pin of legacy) expect(saved!.positions.find((p) => p.nodeId === pin.nodeId)).toEqual({ nodeId: pin.nodeId, x: pin.x, y: pin.y, pinned: true });
+  await waitFor(() => expect(screen.queryByTestId('topology-unsaved-layout')).not.toBeInTheDocument());
+  expect(drawn()).toEqual(grid);
 });
 
 it('collapses an expansion back to the base read (#7818)', async () => {

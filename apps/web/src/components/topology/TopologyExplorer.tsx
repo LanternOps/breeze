@@ -163,7 +163,8 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
     try {
       const ids = new Set(graph.nodes.map((node) => node.id));
       const result = await saveTopologyLayout({ siteId }, view, draft.revision, [...draft.positions.values()].filter((p) => ids.has(p.nodeId)).map(({ nodeId, x, y, pinned }) => ({ nodeId, x, y, pinned })));
-      draft.accept(result); setPositions([...draft.positions.values()]); setAnnouncement(t('saved'));
+      // The canvas keeps what it draws: the draft holds saved pins, which are not where card members are drawn (revised Q3).
+      draft.accept(result); setAnnouncement(t('saved'));
     } catch (cause) { if (cause instanceof ActionError && cause.status === 409) setConflict(true); handleActionError(cause, t('loadFailed'));  }
     finally { setSaving(false); }
   };

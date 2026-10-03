@@ -88,3 +88,47 @@ it('starts the topology settings and graph reads together instead of one after a
   expect(site).toBe(SITE);
   expect(Object.fromEntries(query)).toEqual({ view: 'overview', includeHealth: 'true' });
 });
+
+it('a failed site lookup (not 403/404) is a load error, not "not in this organization" (#7880 review)', async () => {
+  window.location.hash = `#topology/site/${OTHER}/view/overview`;
+  vi.mocked(topologyApi.siteOwner).mockRejectedValue(new TopologyReadError('Unable to load topology', 503));
+  render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
+  expect(await screen.findByTestId('topology-site-lookup-failed')).toHaveTextContent('Unable to load topology');
+  expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
+  expect(screen.queryByTestId('topology-explorer')).toBeNull();
+});
+
+it('opens a linked site that is the organization\'s only site (the first-commit guard must not block it)', async () => {
+  window.location.hash = `#topology/site/${SITE}/view/overview`;
+  vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+  render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
+  expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+  expect(topologyApi.settings).toHaveBeenCalledTimes(1);
+  expect(topologyApi.siteOwner).not.toHaveBeenCalled();
+});
+
+it('a same-org link waits for the site list, then opens the site with the reads it started early (#7880)', async () => {
+  const org = '55555555-5555-4555-8555-555555555555';
+  window.location.hash = `#topology/site/${OTHER}/view/overview`;
+  useOrgStore.setState({ currentOrgId: org });
+  vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: org });
+  vi.mocked(topologyApi.settings).mockResolvedValue(topologySettingsFixture());
+  const view = render(<TopologyEntry sites={[]} />);
+  await waitFor(() => expect(topologyApi.settings).toHaveBeenCalledWith(OTHER));
+  expect(topologyApi.graph).toHaveBeenCalledTimes(1);
+  expect(screen.queryByTestId('topology-site-not-in-org')).toBeNull();
+  expect(screen.getByRole('status')).toHaveTextContent('Loading topology');
+  view.rerender(<TopologyEntry sites={[{ id: OTHER, name: 'Warehouse' }]} />);
+  expect(await screen.findByTestId('topology-explorer')).toBeInTheDocument();
+  expect(topologyApi.settings).toHaveBeenCalledTimes(1);
+});
+
+it('says the site is not in this organization when its owner is the current org but the loaded list lacks it', async () => {
+  const org = '55555555-5555-4555-8555-555555555555';
+  window.location.hash = `#topology/site/${OTHER}/view/overview`;
+  useOrgStore.setState({ currentOrgId: org });
+  vi.mocked(topologyApi.siteOwner).mockResolvedValue({ id: OTHER, orgId: org });
+  render(<TopologyEntry sites={[{ id: SITE, name: 'HQ' }]} />);
+  expect(await screen.findByTestId('topology-site-not-in-org')).toBeInTheDocument();
+  expect(screen.queryByTestId('topology-explorer')).toBeNull();
+});

@@ -19,8 +19,15 @@ export class TopologyLayoutDraft {
   published = new Map<string, Position>();
   revision = '0';
   dirty = false;
+  private loaded = false;
+  /**
+   * Adopts the shared layout. Skipped while there are unsaved user changes, and when this revision is
+   * already loaded: re-measuring (a device appears, an expansion) must not throw away the automatic
+   * layout of tiles that are already placed, now that it no longer marks the draft dirty (#7880).
+   */
   load(revision: string, positions: Position[]) {
-    if (this.dirty) return;
+    if (this.dirty || (this.loaded && revision === this.revision)) return;
+    this.loaded = true;
     this.revision = revision; this.published = new Map(positions.map((p) => [p.nodeId, p]));
     this.positions = new Map(positions.map((p) => [p.nodeId, p]));
   }
