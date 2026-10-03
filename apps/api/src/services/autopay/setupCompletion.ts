@@ -102,9 +102,11 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    isAutopayMethod:true,removedAt:null,unusableReason:null};
   const [saved]=existing?await db.update(orgPaymentMethods).set(values).where(eq(orgPaymentMethods.id,existing.id)).returning():
    await db.insert(orgPaymentMethods).values(values).returning();
-  const [consent]=await db.select({id:orgAutopayConsents.id}).from(orgAutopayConsents).where(and(eq(orgAutopayConsents.enrollmentId,enrollment.id),
-   eq(orgAutopayConsents.generation,attempt.generation),eq(orgAutopayConsents.paymentMethodId,saved!.id),eq(orgAutopayConsents.consentTextHash,snapshot.textHash))).limit(1);
-  if(!consent)await db.insert(orgAutopayConsents).values({orgId:attempt.orgId,enrollmentId:enrollment.id,generation:attempt.generation,paymentMethodId:saved!.id,
+  // The locked setup attempt is the idempotency key, not the accepted text.
+  // A distinct attempt always appends consent, including A → B → A acceptance.
+  // Pending bank verification already recorded this attempt's consent;
+  // its later activation must not append another authorization.
+  if(!wasPending)await db.insert(orgAutopayConsents).values({orgId:attempt.orgId,enrollmentId:enrollment.id,generation:attempt.generation,paymentMethodId:saved!.id,
    consentTextVersion:snapshot.version,consentTextHash:snapshot.textHash,feeTerms:snapshot.feeTerms,scheduleTerms:snapshot.scheduleTerms,
    contactEmail:snapshot.contactEmail,ip:snapshot.ip,userAgent:snapshot.userAgent,source:snapshot.source});
   await db.update(orgAutopayEnrollments).set({status:enrollment.status==='paused'?'paused':'active',effectiveFrom:enrollment.effectiveFrom??new Date(),

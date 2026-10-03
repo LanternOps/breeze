@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import {and,eq,inArray,isNull,sql} from 'drizzle-orm';
+import {and,eq,gt,inArray,isNull,sql} from 'drizzle-orm';
 import {db as database,runAfterDbContextExit,withSystemDbAccessContext} from '../../db';
-import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts,billingNoticeOutbox} from '../../db/schema';
+import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts,billingNoticeOutbox,billingLinkTokens} from '../../db/schema';
 import {InvoiceServiceError,type InvoiceActor} from '../invoiceTypes';
 import {requireOrgAccess} from '../invoiceService';
 import {isHiddenOrgType} from '../unassignedPool/visibility';
@@ -97,14 +97,22 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
    const bank=card.achMode==='card_only'?null:await buildAutopayDisclosure(db,orgId,'us_bank_account');
    const termsHash=createHash('sha256').update(JSON.stringify([card.feeTerms,bank?.feeTerms])).digest('hex');
    const dedupeKey=`${existing!.id}:reauthorize:${existing!.generation}:${existing!.pausedAt?.toISOString()??'active'}:${termsHash}`;
+   // Bind each notice to its own token. Historical notices must not prevent
+   // recovery after expiry, consumption, revocation or terminal delivery failure.
+   // The org/enrollment locks serialize this check with concurrent requests.
    const [queued]=await db.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
-    .where(and(eq(billingNoticeOutbox.orgId,orgId),eq(billingNoticeOutbox.dedupeKey,dedupeKey))).limit(1);
+    .innerJoin(billingLinkTokens,eq(billingNoticeOutbox.dedupeKey,sql`${dedupeKey + ':'} || ${billingLinkTokens.id}::text`))
+    .where(and(eq(billingNoticeOutbox.orgId,orgId),eq(billingNoticeOutbox.enrollmentId,existing!.id),
+     eq(billingNoticeOutbox.kind,'autopay_request'),inArray(billingNoticeOutbox.status,['pending','sending','sent']),
+     eq(billingLinkTokens.orgId,orgId),eq(billingLinkTokens.enrollmentId,existing!.id),
+     eq(billingLinkTokens.generation,existing!.generation),eq(billingLinkTokens.purpose,'enroll'),
+     gt(billingLinkTokens.expiresAt,new Date()),isNull(billingLinkTokens.consumedAt),isNull(billingLinkTokens.revokedAt))).limit(1);
    if(!queued){
     const token=await mintBillingLinkToken(db,{orgId,purpose:'enroll',enrollmentId:existing!.id,generation:existing!.generation,ttlDays:30});
     const url=buildBillingLinkUrl('enroll',token.token);
     await notice(db,existing!,'autopay_request',recipient,{setup_link:url,
      ach_mode_text:card.achMode==='ach_only'?'Use a US bank account.':'Choose a bank account or card.'},url,undefined,
-     'Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms',dedupeKey);
+     'Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms',`${dedupeKey}:${token.id}`);
    }
    result.requested.push(orgId);continue;
   }

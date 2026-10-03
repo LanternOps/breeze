@@ -1,11 +1,14 @@
 import '../../__tests__/integration/setup';
-import { expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { expect, it, vi } from 'vitest';
+import type Stripe from 'stripe';
+vi.mock('./staffNotifications', () => ({ notifyAutopayStaff: vi.fn() }));
+import { and, asc, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext as system } from '../../db';
 import { partners, organizations, stripeConnectAccounts, orgAutopayEnrollments, orgPaymentMethods,
   orgAutopayConsents, billingPaymentSettings, billingNoticeOutbox, billingLinkTokens } from '../../db/schema';
-import { createPartner, createOrganization } from '../../__tests__/integration/db-utils';
+import { createPartner, createOrganization, createUser } from '../../__tests__/integration/db-utils';
 import { feeAuthorizationGaps } from './paymentSettingsView';
+import { persistCapturedAutopayMethod } from './setupCompletion';
 import { requestAutopay } from './enrollmentLifecycle';
 import { mintBillingLinkToken } from './linkTokens';
 import { prepareAutopayCapture } from './setupSession';
@@ -55,6 +58,10 @@ it.each(['active', 'paused'] as const)('deduplicates concurrent %s reauthorizati
   const f = await fixture(status);
   const actor = { userId: null, partnerId: f.partner.id, accessibleOrgIds: [f.org.id] };
   await Promise.all([1, 2].map(() => system(() => requestAutopay(db, actor, { orgIds: [f.org.id], mode: 'reauthorize' }))));
+  for (const noticeStatus of ['pending', 'sending', 'sent'] as const) {
+    await system(() => db.update(billingNoticeOutbox).set({ status: noticeStatus }).where(eq(billingNoticeOutbox.orgId, f.org.id)));
+    await system(() => requestAutopay(db, actor, { orgIds: [f.org.id], mode: 'reauthorize' }));
+  }
   await system(async () => {
     const [current] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, f.enrollment.id));
     expect(current).toEqual(f.enrollment);
@@ -79,4 +86,66 @@ it('captures current terms through a real same-generation token while preserving
   expect(captured.consentSnapshot).toMatchObject({ feeTerms: disclosure.feeTerms });
   const [current] = await system(() => db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, f.enrollment.id)));
   expect(current).toEqual(f.enrollment);
+});
+
+
+it.each(['expired', 'consumed', 'revoked', 'failed', 'handler_failed', 'cancelled'] as const)(
+  'reissues an unusable %s reauthorization and deduplicates concurrent retries', async reason => {
+    const f = await fixture();
+    const actor = { userId: null, partnerId: f.partner.id, accessibleOrgIds: [f.org.id] };
+    const request = () => system(() => requestAutopay(db, actor, { orgIds: [f.org.id], mode: 'reauthorize' }));
+    await request();
+    const previous = await system(async () => {
+      const [token] = await db.select().from(billingLinkTokens).where(and(eq(billingLinkTokens.orgId, f.org.id), eq(billingLinkTokens.purpose, 'enroll')));
+      const [notice] = await db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id));
+      if (reason === 'expired' || reason === 'consumed' || reason === 'revoked') {
+        await db.update(billingLinkTokens).set(reason === 'expired' ? { expiresAt: new Date(Date.now() - 1) }
+          : reason === 'consumed' ? { consumedAt: new Date() } : { revokedAt: new Date() }).where(eq(billingLinkTokens.id, token!.id));
+      } else {
+        await db.update(billingNoticeOutbox).set({ status: reason, attempts: 8 }).where(eq(billingNoticeOutbox.id, notice!.id));
+      }
+      return { token: token!, notice: notice! };
+    });
+    await Promise.all([request(), request()]);
+    await system(async () => {
+      const tokens = await db.select().from(billingLinkTokens).where(and(eq(billingLinkTokens.orgId, f.org.id), eq(billingLinkTokens.purpose, 'enroll')));
+      const notices = await db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id));
+      expect(tokens).toHaveLength(2);
+      expect(notices).toHaveLength(2);
+      const fresh = tokens.find(token => token.id !== previous.token.id)!;
+      expect(fresh).toMatchObject({ consumedAt: null, revokedAt: null });
+      expect(fresh.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(notices.find(notice => notice.id !== previous.notice.id)).toMatchObject({ status: 'pending' });
+      expect(notices.find(notice => notice.id === previous.notice.id)!.rendered).toEqual(previous.notice.rendered);
+      const [current] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.id, f.enrollment.id));
+      expect(current).toEqual(f.enrollment);
+    });
+  });
+
+it('appends consent for distinct A → B → A setups and makes each completion replay a no-op', async () => {
+  const f = await fixture();
+  const user = await createUser({ partnerId: f.partner.id });
+  const acceptedHashes: string[] = [];
+  for (const cardFeeBps of [300, 100, 300]) {
+    const disclosure = await system(async () => {
+      await db.update(billingPaymentSettings).set({ cardFeeBps, feeAttestedBy: user.id, feeAttestedAt: new Date() }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+      return buildAutopayDisclosure(db, f.org.id, 'card');
+    });
+    const token = await system(() => mintBillingLinkToken(db, { orgId: f.org.id, enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 30 }));
+    const captured = await withAcceptedAutopayDisclosure(disclosure.hash, () => prepareAutopayCapture({
+      orgId: f.org.id, methodType: 'card', consentAccepted: true, returnTo: 'public', tokenId: token.id,
+      contactEmail: 'billing@example.test', ip: null, userAgent: null,
+    }, 'setup_page'));
+    const method = { id: `pm_${f.org.id}`, type: 'card', customer: f.enrollment.stripeCustomerId,
+      card: { brand: 'visa', funding: 'credit', last4: '1234', exp_month: 12, exp_year: 2030, country: 'US' } } as Stripe.PaymentMethod;
+    await Promise.all([1, 2].map(() => persistCapturedAutopayMethod(captured.id, method, 'activated', `seti_${captured.id}`, null)));
+    acceptedHashes.push(disclosure.textHash);
+    const consents = await system(() => db.select().from(orgAutopayConsents)
+      .where(eq(orgAutopayConsents.enrollmentId, f.enrollment.id)).orderBy(asc(orgAutopayConsents.createdAt)));
+    expect(consents.map(consent => consent.consentTextHash)).toEqual(['old', ...acceptedHashes]);
+    expect(consents.at(-1)!.feeTerms).toEqual(disclosure.feeTerms);
+  }
+  expect(acceptedHashes[2]).toBe(acceptedHashes[0]);
+  expect(acceptedHashes[1]).not.toBe(acceptedHashes[0]);
+  expect(await system(() => feeAuthorizationGaps(db, f.partner.id))).toEqual([]);
 });
