@@ -272,6 +272,12 @@ export interface AccountingPaymentPayload {
   pushGeneration: number;
 }
 
+export interface AccountingFeeEntryPayload {
+  operationId:string; remoteCustomerId:string; amount:string; currencyCode:string; txnDate:string;
+  direction:'receipt'|'refund'; incomeRef:string; bankAccountRef:string|null; exemptTaxCodeRef:string|null;
+  firstSubmittedAt:string;
+}
+
 export interface AccountingDeletePaymentPayload {
   remotePaymentId: string;
   /** The remote version Breeze last saw. Null forces the provider to read a fresh one. */
@@ -480,6 +486,8 @@ export interface AccountingProvider {
    * for invoices (QuickBooks) declares none.
    */
   findRemoteInvoice?(conn: AccountingConnection, invoiceId: string): Promise<{ id: string; remoteVersion?: string } | null>;
+  /** Post or adopt a separate cash entry for an already collected or refunded processing fee. */
+  postFeeEntry(conn: AccountingConnection, entry: AccountingFeeEntryPayload): Promise<RemoteRef>;
   /**
    * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
    * QuickBooks Payment's amount would rewrite receipt history, and Intuit models
