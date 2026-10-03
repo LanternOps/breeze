@@ -8,7 +8,7 @@ import { partners, organizations, invoices, stripeConnectAccounts, orgAutopayEnr
 import { mintBillingLinkToken } from './linkTokens';
 import { skipInvoice, setInvoiceAutopayExcluded } from './invoiceControls';
 import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
-import { requestInvoiceControl } from './collectionControl';
+import { requestInvoiceControl, finalizeInvoiceControl } from './collectionControl';
 
 async function fixture() {
   return withSystemDbAccessContext(async () => {
@@ -98,3 +98,58 @@ it.each(['reserved', 'created', 'confirming', 'processing', 'requires_action'] a
       .rejects.toMatchObject({ status: 409, code: 'COLLECTION_IN_PROGRESS' });
   },
 );
+
+
+it('clears an already-excluded pending control after verified cancellation and allows reinclusion', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(invoices).set({ autopayExcluded: true }).where(eq(invoices.id, f.invoice.id));
+    await db.update(invoiceAutopaySchedules).set({
+      state: 'excluded_by_msp', stateReason: 'exclude', mspExcludedAt: new Date(),
+      termsSnapshot: { issuedAt: '2026-10-01', offsetDays: 0, rule: 'later',
+        cap: { enabled: false }, methodType: 'card', methodId: f.attempt.paymentMethodId,
+        last4: '4242', methodLabel: 'Card ending in 4242', accountHolderType: null,
+        noticeLeadDays: 1, principal: '100.00', currency: 'USD', feeAmount: '0.00',
+        feeKind: 'none', cardFeeBps: 0, achFeeAmount: '0.00', chargeDate: '2026-10-31', noticeSeq: 1 },
+    }).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    await db.insert(invoiceCollectionAttempts).values(f.attempt);
+  });
+
+  const exclude = () => withSystemDbAccessContext(() => db.transaction(tx =>
+    setInvoiceAutopayExcluded(tx, f.invoice.id, true, f.actor)));
+  expect(await exclude()).toEqual({ status: 'pending', control: 'exclude' });
+  expect(await exclude()).toEqual({ status: 'pending', control: 'exclude' });
+
+  await withSystemDbAccessContext(() => db.transaction(async tx => {
+    const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)).for('update');
+    const [schedule] = await tx.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id)).for('update');
+    expect(schedule).toMatchObject({ state: 'excluded_by_msp', stateReason: 'control_pending:exclude' });
+    const [attempt] = await tx.select().from(invoiceCollectionAttempts)
+      .where(eq(invoiceCollectionAttempts.invoiceId, f.invoice.id));
+    expect(attempt!.state).toBe('requires_action');
+    // Simulate the reconciler's verified provider cancellation; D never calls Stripe.
+    await tx.update(invoiceCollectionAttempts).set({ state: 'canceled' })
+      .where(eq(invoiceCollectionAttempts.id, attempt!.id));
+    expect(await finalizeInvoiceControl(tx, invoice!, schedule!, 'exclude')).toEqual({ status: 'excluded' });
+    const [finalized] = await tx.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    expect(finalized).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude', nextAttemptAt: null });
+    expect(await finalizeInvoiceControl(tx, invoice!, finalized!, 'exclude')).toEqual({ status: 'excluded' });
+  }));
+
+  expect(await exclude()).toEqual({ status: 'excluded' });
+  expect(await withSystemDbAccessContext(() => db.transaction(tx =>
+    setInvoiceAutopayExcluded(tx, f.invoice.id, false, f.actor)))).toEqual({ status: 'included' });
+  await withSystemDbAccessContext(async () => {
+    const [invoice] = await db.select().from(invoices).where(eq(invoices.id, f.invoice.id));
+    expect(invoice!.autopayExcluded).toBe(false);
+    const [schedule] = await db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    expect(schedule).toMatchObject({ state: 'awaiting_notice', stateReason: null, mspExcludedAt: null,
+      noticeSentAt: null, termsSnapshot: { noticeSeq: 2 } });
+    const notices = await db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId, f.invoice.id));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ kind: 'invoice_autopay', seq: 2 });
+  });
+});

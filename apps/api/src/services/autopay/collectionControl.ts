@@ -92,9 +92,14 @@ export async function requestInvoiceControl(tx: Tx, input: {
 export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$inferSelect,
   schedule: typeof invoiceAutopaySchedules.$inferSelect, kind: InvoiceControl): Promise<InvoiceControlResult> {
   const state = kind === 'skip' ? 'skipped_by_client' : 'excluded_by_msp';
-  if (schedule.state === state) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
-  await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
-    .where(eq(invoiceAutopaySchedules.id, schedule.id));
+  const alreadyFinalized = schedule.state === state;
+  // A later attempt can leave a pending control on an already-final schedule.
+  // Clear that metadata after reconciliation without repeating the final notices.
+  if (!alreadyFinalized || pendingInvoiceControl(schedule.stateReason)) {
+    await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
+      .where(eq(invoiceAutopaySchedules.id, schedule.id));
+  }
+  if (alreadyFinalized) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
   if (kind === 'exclude') return { status: 'excluded' };
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
   const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,

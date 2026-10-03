@@ -50,7 +50,7 @@ import {
   getInvoiceAutopayView,
 } from './invoiceControls';
 import { planAutopayForInvoice } from './scheduler';
-import { collectionFenced } from './collectionControl';
+import { collectionFenced, finalizeInvoiceControl } from './collectionControl';
 import { InvoiceServiceError } from '../invoiceTypes';
 import {
   invoices,
@@ -458,4 +458,59 @@ it.each([
   expect(f.sched.state).toBe('not_needed');
   expect(f.writes.some((write) => write.table === invoiceAutopaySchedules)).toBe(false);
   expect(h.notice).not.toHaveBeenCalled();
+});
+
+
+it('finalizes an already-excluded pending schedule and permits replay and reinclusion', async () => {
+  const attempt = { id: 'attempt', state: 'requires_action' };
+  const f = fixture({ state: 'excluded_by_msp', stateReason: 'exclude', mspExcludedAt: new Date() }, [attempt]);
+  f.inv.autopayExcluded = true;
+
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor))
+    .toEqual({ status: 'pending', control: 'exclude' });
+  expect(f.sched.stateReason).toBe('control_pending:exclude');
+  expect(attempt.state).toBe('requires_action');
+
+  // Model the reconciler after verified cancellation, under the invoice lock.
+  f.data.set(invoiceCollectionAttempts, []);
+  expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, 'exclude'))
+    .toEqual({ status: 'excluded' });
+  expect(f.sched).toMatchObject({ state: 'excluded_by_msp', stateReason: 'exclude', nextAttemptAt: null });
+  expect(f.inv.autopayExcluded).toBe(true);
+  const writes = f.writes.length;
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toEqual({ status: 'excluded' });
+  expect(f.writes).toHaveLength(writes);
+
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, false, actor)).toEqual({ status: 'included' });
+  expect(f.inv.autopayExcluded).toBe(false);
+  expect(f.sched).toMatchObject({ state: 'awaiting_notice', stateReason: null, mspExcludedAt: null });
+  expect(h.notice).toHaveBeenCalledExactlyOnceWith(f.tx, f.sched.id);
+  expect(h.confirmation).not.toHaveBeenCalled();
+  expect(h.staff).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['skip', 'skipped_by_client'],
+  ['exclude', 'excluded_by_msp'],
+] as const)('clears stale pending metadata on repeated %s finalization without duplicate notices', async (kind, state) => {
+  const f = fixture({ state, stateReason: `control_pending:${kind}`, nextAttemptAt: new Date() });
+  const result = await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, kind);
+
+  expect(result).toEqual({ status: kind === 'skip' ? 'skipped' : 'excluded' });
+  expect(f.sched).toMatchObject({ state, stateReason: kind, nextAttemptAt: null });
+  const writes = f.writes.length;
+  expect(writes).toBe(1);
+  expect(await finalizeInvoiceControl(f.tx, f.inv as any, f.sched as any, kind)).toEqual(result);
+  expect(f.writes).toHaveLength(writes);
+  expect(h.confirmation).not.toHaveBeenCalled();
+  expect(h.staff).not.toHaveBeenCalled();
+});
+
+it('does not mark an already-excluded schedule pending without an outstanding attempt', async () => {
+  const f = fixture({ state: 'excluded_by_msp', stateReason: 'exclude', mspExcludedAt: new Date() });
+  f.inv.autopayExcluded = true;
+
+  expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toEqual({ status: 'excluded' });
+  expect(f.writes).toEqual([]);
+  expect(f.sched.stateReason).toBe('exclude');
 });
