@@ -218,3 +218,107 @@ describe('m365_consent_sessions forced system-only RLS', () => {
     expect(after.sessions).not.toContainEqual(expect.objectContaining({ phase: 'identity_verification' }));
   });
 });
+
+describe('identity-first session shapes (flow_version 2)', () => {
+  const TENANT_A = '44444444-4444-4444-8444-444444444444';
+  const ADMIN = '55555555-5555-4555-8555-555555555555';
+  let stateCounter = 0;
+
+  type SessionShape = Partial<typeof m365ConsentSessions.$inferInsert> & {
+    flowVersion: number;
+    phase: string;
+  };
+
+  async function insertSession(
+    fx: Awaited<ReturnType<typeof seedFixture>>,
+    shape: SessionShape,
+  ) {
+    stateCounter += 1;
+    return withSystemDbAccessContext(() => db.insert(m365ConsentSessions).values({
+      stateHash: String(stateCounter).padStart(64, 'e'),
+      connectionId: fx.connection.id,
+      orgId: fx.org.id,
+      profile: 'customer-graph-read',
+      consentAttemptId,
+      userId: fx.user.id,
+      expiresAt: new Date(Date.now() + 300_000),
+      ...shape,
+    } as typeof m365ConsentSessions.$inferInsert).returning({ id: m365ConsentSessions.id }));
+  }
+
+  runDb('accepts a v2 identity row with no expected tenant', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 2, phase: 'identity_verification', tenantHintHash: null, nonce: 'n', codeVerifier: 'v'.repeat(43),
+    })).resolves.toHaveLength(1);
+  });
+
+  runDb('accepts a v2 identity row pinned to an expected tenant', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 2, phase: 'identity_verification', tenantHintHash: hashTenantHint(TENANT_A), nonce: 'n', codeVerifier: 'v'.repeat(43),
+    })).resolves.toHaveLength(1);
+  });
+
+  runDb('accepts a v2 admin_consent row carrying the verified identity', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 2, phase: 'admin_consent', verifiedTenantId: TENANT_A, verifiedAdminObjectId: ADMIN,
+      verifiedAdminUsername: 'admin@tenant.example', identityVerifiedAt: new Date(),
+    })).resolves.toHaveLength(1);
+  });
+
+  runDb('rejects a v2 admin_consent row without a verified tenant (23514)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, { flowVersion: 2, phase: 'admin_consent' }))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('rejects a v2 admin_consent row that still carries a PKCE verifier (23514)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 2, phase: 'admin_consent', verifiedTenantId: TENANT_A, verifiedAdminObjectId: ADMIN,
+      identityVerifiedAt: new Date(), codeVerifier: 'v'.repeat(43),
+    })).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('rejects a v2 identity row with verified fields pre-filled (23514)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 2, phase: 'identity_verification', nonce: 'n', codeVerifier: 'v'.repeat(43), verifiedTenantId: TENANT_A,
+    })).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('still accepts both legacy v1 shapes (in-flight rows at deploy time)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, { flowVersion: 1, phase: 'admin_consent' })).resolves.toHaveLength(1);
+    await expect(insertSession(fx, {
+      flowVersion: 1, phase: 'identity_verification', tenantHintHash: 'a'.repeat(64), nonce: 'n', codeVerifier: 'v'.repeat(43),
+    })).resolves.toHaveLength(1);
+  });
+
+  runDb('rejects a v1 row carrying verified-identity fields (23514)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 1, phase: 'admin_consent', verifiedTenantId: TENANT_A, verifiedAdminObjectId: ADMIN, identityVerifiedAt: new Date(),
+    })).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('rejects flow_version 3 (23514)', async () => {
+    const fx = await seedFixture();
+    await expect(insertSession(fx, {
+      flowVersion: 3, phase: 'identity_verification', nonce: 'n', codeVerifier: 'v'.repeat(43),
+    })).rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  runDb('remains unreadable to an org-scoped breeze_app context', async () => {
+    const fx = await seedFixture();
+    const [inserted] = await insertSession(fx, {
+      flowVersion: 2, phase: 'admin_consent', verifiedTenantId: TENANT_A, verifiedAdminObjectId: ADMIN, identityVerifiedAt: new Date(),
+    });
+    const selected = await withDbAccessContext(fx.contexts[0]![1], () => db.select({ id: m365ConsentSessions.id })
+      .from(m365ConsentSessions)
+      .where(eq(m365ConsentSessions.id, inserted!.id)));
+    expect(selected).toEqual([]);
+  });
+});
