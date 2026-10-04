@@ -301,7 +301,7 @@ describe('remediation suggestion routes', () => {
       sourceType: 'anomaly',
       sourceId: baseSuggestion.sourceId,
       actorUserId: 'user-1',
-    }));
+    }), { runInDbContext: expect.any(Function) });
     const body = await res.json();
     expect(body.data[0].title).toBe('Disk Cleanup');
     expect(dbMocks.writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -1408,6 +1408,13 @@ describe('research / memory / draft-brief routes', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // resetAllMocks wipes the context model; these routes now run their phases through it.
+    dbMocks.dbContextState.depth = 0;
+    dbMocks.dbContextState.events = [];
+    withAuthDbAccessContextMock.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => {
+      dbMocks.dbContextState.depth += 1;
+      try { return await fn(); } finally { dbMocks.dbContextState.depth -= 1; dbMocks.dbContextState.events.push('commit'); }
+    });
     dbMocks.loadSummariesMock.mockResolvedValue(new Map());
     currentPermissions = undefined;
     app = new Hono();
@@ -1533,6 +1540,36 @@ describe('research / memory / draft-brief routes', () => {
     expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(404);
   });
 
+  describe('A2: research-starting POSTs are self-managed (no context held across requestResearch)', () => {
+    it('POST /research gates in a short context, then calls requestResearch with none held and an RLS runReads', async () => {
+      currentPermissions = { permissions: [{ resource: 'ai_sessions', action: 'use' }], allowedSiteIds: ['site-allowed'] };
+      const depths: Record<string, number> = {};
+      dbMocks.sourceDeviceMock.mockImplementationOnce(async () => { depths.gate = dbMocks.dbContextState.depth; return { deviceId: 'dev-1' }; });
+      dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-allowed' }] }) }) });
+      dbMocks.requestResearchMock.mockImplementationOnce(async (input: { runReads: (fn: () => Promise<number>) => Promise<number> }) => {
+        depths.research = dbMocks.dbContextState.depth;
+        depths.reads = await input.runReads(async () => dbMocks.dbContextState.depth);
+        return { status: 'started', runId: 'r', depth: 'quick' };
+      });
+      const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+      expect(res.status).toBe(202);
+      expect(depths).toEqual({ gate: 1, research: 0, reads: 1 });
+    });
+
+    it('Generate runs the service with no context held and hands it the caller-scoped runner', async () => {
+      const depths: Record<string, number> = {};
+      dbMocks.generateMock.mockImplementationOnce(async (_input: unknown, opts: { runInDbContext: (fn: () => Promise<number>) => Promise<number> }) => {
+        depths.service = dbMocks.dbContextState.depth;
+        depths.runner = await opts.runInDbContext(async () => dbMocks.dbContextState.depth);
+        return { orgId: ORG, sourceType: 'anomaly', sourceId: baseSuggestion.sourceId, skipped: false, suggestions: [baseSuggestion], research: null };
+      });
+      dbMocks.loadSummariesMock.mockImplementationOnce(async () => { depths.outcomes = dbMocks.dbContextState.depth; return new Map(); });
+      const res = await app.request('/remediation-suggestions/generate', post({ sourceType: 'anomaly', sourceId: baseSuggestion.sourceId }));
+      expect(res.status).toBe(201);
+      expect(depths).toEqual({ service: 0, runner: 1, outcomes: 1 });
+    });
+  });
+
   describe('Generate research gating', () => {
     const gen = () => app.request('/remediation-suggestions/generate', post({ sourceType: 'anomaly', sourceId: baseSuggestion.sourceId }));
     const result = { orgId: ORG, sourceType: 'anomaly', sourceId: baseSuggestion.sourceId, skipped: false, suggestions: [], research: { status: 'started', runId: 'r', depth: 'quick' } };
@@ -1541,14 +1578,14 @@ describe('research / memory / draft-brief routes', () => {
       currentPermissions = { permissions: [{ resource: 'ai_sessions', action: 'use' }] };
       dbMocks.generateMock.mockResolvedValueOnce(result);
       const res = await gen();
-      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: true }));
+      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: true }), expect.anything());
       expect((await res.json()).research).toEqual(result.research);
     });
 
     it('passes allowResearch=false without that permission', async () => {
       dbMocks.generateMock.mockResolvedValueOnce(result);
       await gen();
-      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: false }));
+      expect(dbMocks.generateMock).toHaveBeenCalledWith(expect.objectContaining({ allowResearch: false }), expect.anything());
     });
   });
 });

@@ -2,7 +2,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   aiAgentRuns, aiAgents, alerts, deviceCommands, deviceFilesystemCleanupRuns, devices, fixOutcomes, remediationSuggestions, scripts,
 } from '../../db/schema';
@@ -135,9 +135,10 @@ async function orgWithDevice() {
   return { partnerId: partner.id, orgId: org.id, mkAlert };
 }
 
-const request = (orgId: string, sourceId: string, trigger: 'auto' | 'manual') => withSystemDbAccessContext(() => requestResearch({
-  orgId, sourceType: 'alert', sourceId, depth: 'quick', trigger, actorUserId: null,
-}));
+// The background contract: no wrapping context, reads in a short system tx (requestResearch asserts none is held).
+const request = (orgId: string, sourceId: string, trigger: 'auto' | 'manual') => requestResearch({
+  orgId, sourceType: 'alert', sourceId, depth: 'quick', trigger, actorUserId: null, runReads: (fn) => withSystemDbAccessContext(fn),
+});
 
 describe('requestResearch (real Postgres)', () => {
   beforeEach(() => {
@@ -175,6 +176,33 @@ describe('requestResearch (real Postgres)', () => {
     const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, w.orgId)));
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ profile: 'remediation_research', triggerKind: 'alert' });
+  });
+
+  it('A1/A3: auto research enqueues only after the run row has COMMITTED (a separate connection sees it queued)', async () => {
+    const w = await orgWithDevice();
+    const alertId = await w.mkAlert();
+    const seenAtEnqueue: Array<{ runId: string; status: string | null }> = [];
+    registerAgentRunEnqueuer(async (runId) => {
+      // runOutsideDbContext forces a NEW pooled connection even if the enqueue were
+      // (wrongly) running inside the admission transaction: an uncommitted row is invisible here.
+      const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+        .select({ status: aiAgentRuns.status }).from(aiAgentRuns).where(eq(aiAgentRuns.id, runId)).limit(1)));
+      seenAtEnqueue.push({ runId, status: row?.status ?? null });
+      return { enqueued: true };
+    });
+    await handleAlertTriggeredForFixMemory({ id: 'e', type: 'alert.triggered', orgId: w.orgId, source: 's', priority: 'normal', payload: { alertId, severity: 'critical' }, metadata: { timestamp: '' } } as never);
+    expect(seenAtEnqueue).toHaveLength(1);
+    expect(seenAtEnqueue[0]!.status).toBe('queued');
+    const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, w.orgId)));
+    expect(runs.map((r) => r.id)).toEqual([seenAtEnqueue[0]!.runId]);
+  });
+
+  it('A1: requestResearch refuses to run under a held DB context and starts nothing', async () => {
+    const w = await orgWithDevice();
+    const alertId = await w.mkAlert();
+    await expect(withSystemDbAccessContext(() => request(w.orgId, alertId, 'manual'))).rejects.toThrow(/no DB context/);
+    const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, w.orgId)));
+    expect(runs).toHaveLength(0);
   });
 
   it('an org-level research override row is not a baseline: provisioning still happens for the partner', async () => {
@@ -224,9 +252,11 @@ describe('requestResearch (real Postgres)', () => {
     const ctx: DbAccessContext = {
       scope: 'organization', orgId: b.orgId, accessibleOrgIds: [b.orgId], accessiblePartnerIds: [b.partnerId], userId: null, currentPartnerId: b.partnerId,
     };
-    const result = await withDbAccessContext(ctx, () => requestResearch({
+    // The route contract: reads run in the caller's RLS context, nothing wraps the call.
+    const result = await requestResearch({
       orgId: b.orgId, sourceType: 'alert', sourceId: aAlert, depth: 'quick', trigger: 'manual', actorUserId: null,
-    }));
+      runReads: (fn) => withDbAccessContext(ctx, fn),
+    });
     expect(result).toMatchObject({ status: 'denied', code: 'source_not_found' });
     const runs = await withSystemDbAccessContext(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.orgId, a.orgId)));
     expect(runs).toHaveLength(0);

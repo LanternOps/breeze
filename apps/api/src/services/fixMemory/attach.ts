@@ -125,10 +125,14 @@ export async function handleAlertTriggeredForFixMemory(event: BreezeEvent): Prom
   const severity = typeof payload.severity === 'string' ? payload.severity : null;
   if (proven > 0 || (severity !== 'high' && severity !== 'critical')) return;
   try {
-    const result = await inSystemDbContext(
-      () => requestResearch({ orgId: event.orgId, sourceType: 'alert', sourceId: alertId, depth: 'quick', trigger: 'auto', actorUserId: null }),
-      'fixMemory.autoResearch',
-    );
+    // NOT wrapped in a context: the attach transaction above has committed, and
+    // requestResearch reads in its own short system tx, then admits in a fresh
+    // one that commits BEFORE the BullMQ enqueue (#7187) — so the worker can
+    // never pick up a job whose ai_agent_runs row is not yet visible.
+    const result = await requestResearch({
+      orgId: event.orgId, sourceType: 'alert', sourceId: alertId, depth: 'quick', trigger: 'auto', actorUserId: null,
+      runReads: (fn) => inSystemDbContext(fn, 'fixMemory.autoResearch'),
+    });
     if (result.status === 'denied') {
       console.info('[fixMemory] auto research not started', { orgId: event.orgId, alertId, code: result.code });
     }

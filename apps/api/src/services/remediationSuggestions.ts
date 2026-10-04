@@ -134,15 +134,40 @@ async function resolveSourceContext(input: GenerateRemediationSuggestionsInput):
   };
 }
 
-export async function generateRemediationSuggestions(
-  input: GenerateRemediationSuggestionsInput
-): Promise<RemediationSuggestionGenerateResult> {
-  const ctx = await resolveSourceContext(input);
-  if (!ctx) {
-    throw new Error('Remediation suggestion source not found');
-  }
+export interface GenerateRemediationSuggestionsOptions {
+  /**
+   * Runs `fn` in a short DB context that COMMITS when it returns; the route
+   * passes `(fn) => withAuthDbAccessContext(auth, fn)`. Generate is a
+   * self-managed DB-context route because requestResearch provisions and
+   * admits in their own system transactions and must run with no context held
+   * (#2417 / #6671). Three phases, never nested: (1) resolve the source, check
+   * the flag and attach proven memory; (2) quick research with nothing held, so
+   * a research failure cannot poison a transaction the memory result still
+   * needs; (3) read the source's rows.
+   */
+  runInDbContext: <T>(fn: () => Promise<T>) => Promise<T>;
+}
 
-  if (!(await shouldProduceMlOutput(ctx.orgId, 'ml.remediation_suggestions.enabled'))) {
+export async function generateRemediationSuggestions(
+  input: GenerateRemediationSuggestionsInput,
+  options: GenerateRemediationSuggestionsOptions,
+): Promise<RemediationSuggestionGenerateResult> {
+  const { runInDbContext } = options;
+  const phase1 = await runInDbContext(async () => {
+    const resolved = await resolveSourceContext(input);
+    if (!resolved) {
+      throw new Error('Remediation suggestion source not found');
+    }
+    if (!(await shouldProduceMlOutput(resolved.orgId, 'ml.remediation_suggestions.enabled'))) {
+      return { ctx: resolved, skipped: true as const };
+    }
+    // AI Suggested Fixes W2: proven memory first (free), then quick research.
+    // The keyword matcher is gone (#7118 root cause).
+    await attachProvenFixes({ sourceType: input.sourceType, sourceId: input.sourceId, orgId: resolved.orgId });
+    return { ctx: resolved, skipped: false as const };
+  });
+  const { ctx } = phase1;
+  if (phase1.skipped) {
     return {
       sourceType: input.sourceType,
       sourceId: input.sourceId,
@@ -153,14 +178,11 @@ export async function generateRemediationSuggestions(
     };
   }
 
-  // AI Suggested Fixes W2: proven memory first (free), then quick research.
-  // The keyword matcher is gone (#7118 root cause).
-  await attachProvenFixes({ sourceType: input.sourceType, sourceId: input.sourceId, orgId: ctx.orgId });
   let research: ResearchRequestResult | null;
   if (input.sourceType === 'rca') {
     research = null;
   } else if (input.allowResearch) {
-    // Memory already attached above; a research failure must never take it down.
+    // Memory is attached and committed above; a research failure must never take it down.
     try {
       research = await requestResearch({
         orgId: ctx.orgId,
@@ -169,6 +191,7 @@ export async function generateRemediationSuggestions(
         depth: 'quick',
         trigger: 'manual',
         actorUserId: input.actorUserId ?? null,
+        runReads: runInDbContext,
       });
     } catch (error) {
       console.error('[remediationSuggestions] quick research failed to start', { orgId: ctx.orgId, sourceId: input.sourceId, error });
@@ -181,14 +204,14 @@ export async function generateRemediationSuggestions(
     research = { status: 'denied', code: 'permission', message: 'You need permission to use AI to research fixes.' };
   }
 
-  const suggestions = await db
+  const suggestions = await runInDbContext(() => db
     .select()
     .from(remediationSuggestions)
     .where(and(
       eq(remediationSuggestions.orgId, ctx.orgId),
       eq(remediationSuggestions.sourceType, input.sourceType),
       eq(remediationSuggestions.sourceId, input.sourceId),
-    ));
+    )));
 
   return { sourceType: input.sourceType, sourceId: input.sourceId, orgId: ctx.orgId, skipped: false, suggestions, research };
 }

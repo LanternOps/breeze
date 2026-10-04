@@ -38,7 +38,7 @@ describe('research eval seeding (real Postgres)', () => {
     expect(agent!.limits).toMatchObject(LIFTED_LIMITS);
 
     for (const depth of ['quick', 'deep'] as const) {
-      const result = await sys(() => requestResearch({ orgId, sourceType: 'alert', sourceId: alertId, depth, trigger: 'manual', actorUserId: null }));
+      const result = await requestResearch({ orgId, sourceType: 'alert', sourceId: alertId, depth, trigger: 'manual', actorUserId: null, runReads: sys });
       expect(result.status, JSON.stringify(result)).toBe('started');
       if (result.status !== 'started') return;
       const [run] = await sys(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, result.runId)));

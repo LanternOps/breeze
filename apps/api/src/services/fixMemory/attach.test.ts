@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   flag: vi.fn(async () => true), sig: vi.fn(), partner: vi.fn(async () => 'p-1'), lookup: vi.fn(),
   values: vi.fn(), onConflict: vi.fn(async () => undefined), onConflictNothing: vi.fn(async () => undefined), instructions: vi.fn(),
-  systemCtx: vi.fn((fn: () => unknown) => fn()),
+  // Models inSystemDbContext as a tx that commits when the callback settles; `depth` > 0 = inside one.
+  depth: 0,
+  systemCtx: vi.fn(async (fn: () => unknown) => { h.depth += 1; try { return await fn(); } finally { h.depth -= 1; } }),
 }));
 vi.mock('../../db', () => ({
   db: { insert: vi.fn(() => ({ values: (v: unknown) => { h.values(v); return { onConflictDoUpdate: h.onConflict, onConflictDoNothing: h.onConflictNothing }; } })) },
@@ -139,8 +141,18 @@ describe('auto research (W2 Task 14)', () => {
 
   it('high/critical with no proven hit -> quick auto research', async () => {
     h.lookup.mockResolvedValueOnce({ proven: [], similar: [] });
+    let depthAtCall = -1;
+    let readsDepth = -1;
+    research.mockImplementationOnce(async (input: unknown) => {
+      depthAtCall = h.depth;
+      readsDepth = await (input as { runReads: (fn: () => Promise<number>) => Promise<number> }).runReads(async () => h.depth);
+      return { status: 'started', runId: 'r', depth: 'quick' };
+    });
     await handleAlertTriggeredForFixMemory(evt('critical'));
-    expect(research).toHaveBeenCalledWith({ orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', depth: 'quick', trigger: 'auto', actorUserId: null });
+    expect(research).toHaveBeenCalledWith({ orgId: 'org-1', sourceType: 'alert', sourceId: 'a-1', depth: 'quick', trigger: 'auto', actorUserId: null, runReads: expect.any(Function) });
+    // A1/A3: called after the attach tx committed, with NO wrapping context; its reads use a system tx.
+    expect(depthAtCall).toBe(0);
+    expect(readsDepth).toBe(1);
   });
 
   it('a proven hit, or a low/medium alert, never auto-researches', async () => {

@@ -710,9 +710,15 @@ remediationSuggestionRoutes.post(
       return c.json({ error: 'Organization not found or access denied' }, 403);
     }
 
-    if (input.sourceType !== 'rca') {
+    // Self-managed DB-context route (selfManagedDbContextRoutes.ts): no request
+    // transaction is held here. Each phase opens its own short caller-scoped
+    // context; the quick research in between runs with none held, because it
+    // provisions and admits in its own system transactions (#2417 / #6671).
+    const runInDbContext = <T>(fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
+    const sourceType = input.sourceType;
+    if (sourceType !== 'rca') {
       const researchOrgId = resolveOrgForSource(auth, input.orgId);
-      if (researchOrgId && !(await researchSourceSiteAllowed(researchOrgId, input.sourceType, input.sourceId, perms))) {
+      if (researchOrgId && !(await runInDbContext(() => researchSourceSiteAllowed(researchOrgId, sourceType, input.sourceId, perms)))) {
         return c.json({ error: 'Suggestion source not found' }, 404);
       }
     }
@@ -722,8 +728,11 @@ remediationSuggestionRoutes.post(
       actorUserId: auth.user.id,
       allowResearch: Array.isArray(perms?.permissions)
         && hasPermission(perms, PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action),
+    }, { runInDbContext });
+    const { visible, outcomes } = await runInDbContext(async () => {
+      const rows = await filterSiteAllowedSuggestions(result.suggestions, perms);
+      return { visible: rows, outcomes: await loadOutcomeSummaries(rows.map((row) => row.id)) };
     });
-    const visible = await filterSiteAllowedSuggestions(result.suggestions, perms);
 
     writeRouteAudit(c, {
       orgId: result.orgId,
@@ -738,8 +747,7 @@ remediationSuggestionRoutes.post(
     });
 
     // Same shape as the list: the panel replaces its list with this response,
-    // so a suggestion that already has an attempt must keep its outcome.
-    const outcomes = await loadOutcomeSummaries(visible.map((row) => row.id));
+    // so a suggestion that already has an attempt keeps its outcome (loaded above).
     return c.json({
       skipped: result.skipped,
       research: result.research,
@@ -760,13 +768,18 @@ remediationSuggestionRoutes.post(
     if (!orgId) {
       return c.json({ error: body.orgId ? 'Organization not found or access denied' : 'Select an organization.' }, body.orgId ? 403 : 400);
     }
-    if (!(await researchSourceSiteAllowed(orgId, body.sourceType, body.sourceId, c.get('permissions') as UserPermissions | undefined))) {
+    // Self-managed DB-context route: no request transaction is held. The site
+    // gate runs in one short caller-scoped context; requestResearch then runs
+    // with none held (it asserts this) and does its own reads through the same
+    // RLS-scoped runner, so a source from another org is simply not found.
+    const runReads = <T>(fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (!(await runReads(() => researchSourceSiteAllowed(orgId, body.sourceType, body.sourceId, perms)))) {
       return c.json({ error: 'The alert or anomaly no longer exists.', code: 'source_not_found' }, 404);
     }
-    // requestResearch runs under this request's RLS context: a source from another org is simply not found.
     const result = await requestResearch({
       orgId, sourceType: body.sourceType, sourceId: body.sourceId, depth: body.depth,
-      trigger: 'manual', actorUserId: auth.user.id,
+      trigger: 'manual', actorUserId: auth.user.id, runReads,
     });
     writeRouteAudit(c, {
       orgId,

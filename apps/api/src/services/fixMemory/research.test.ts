@@ -5,12 +5,18 @@ const h = vi.hoisted(() => ({
   rows: [] as unknown[][],
   flag: vi.fn(async () => true), partner: vi.fn(async (): Promise<string | null> => 'p-1'), ensure: vi.fn(async () => ({ agentId: 'ag', created: false })),
   budget: vi.fn(async (): Promise<unknown> => null), create: vi.fn(),
+  // A1: `ambient` models a DB context held by the CALLER (must throw); `depth`
+  // counts runReads calls in flight, so each mock can record where it ran.
+  ambient: false, depth: 0, seen: [] as Array<{ what: string; depth: number }>,
 }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
   for (const m of ['select', 'from', 'where', 'limit', 'orderBy', 'innerJoin']) chain[m] = vi.fn(() => chain);
-  (chain as { then: unknown }).then = (r: (v: unknown) => unknown) => Promise.resolve(h.rows.shift() ?? []).then(r);
-  return { db: chain };
+  (chain as { then: unknown }).then = (r: (v: unknown) => unknown) => {
+    h.seen.push({ what: 'db', depth: h.depth });
+    return Promise.resolve(h.rows.shift() ?? []).then(r);
+  };
+  return { db: chain, hasDbAccessContext: () => h.ambient };
 });
 vi.mock('../mlFeatureFlags', () => ({ shouldProduceMlOutput: h.flag }));
 vi.mock('./catalog', () => ({ resolveOrgPartnerId: h.partner }));
@@ -21,14 +27,21 @@ vi.mock('../aiAgents/researchProvisioning', () => {
 vi.mock('../aiCostTracker', () => ({ checkBudgetDetailed: h.budget }));
 vi.mock('../aiAgents/runService', () => ({ createAndEnqueueAgentRun: h.create }));
 
-import { requestResearch, researchDedupeBase } from './research';
+import { requestResearch, researchDedupeBase, type ResearchReadRunner } from './research';
 
-const req = (over = {}) => ({ orgId: 'org-1', sourceType: 'alert' as const, sourceId: 'a-1', depth: 'quick' as const, trigger: 'manual' as const, actorUserId: 'u-1', ...over });
+const runReads = vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => {
+  h.depth += 1;
+  try { return await fn(); } finally { h.depth -= 1; }
+});
+const req = (over = {}) => ({ orgId: 'org-1', sourceType: 'alert' as const, sourceId: 'a-1', depth: 'quick' as const, trigger: 'manual' as const, actorUserId: 'u-1', runReads: runReads as unknown as ResearchReadRunner, ...over });
 const alertDevice = [{ deviceId: 'd-1' }];
 
 describe('requestResearch (Review Focus 3)', () => {
   beforeEach(() => {
     h.rows.length = 0;
+    h.ambient = false;
+    h.depth = 0;
+    h.seen.length = 0;
     vi.clearAllMocks();
     h.flag.mockResolvedValue(true);
     h.budget.mockResolvedValue(null);
@@ -131,5 +144,51 @@ describe('requestResearch (Review Focus 3)', () => {
     h.partner.mockResolvedValueOnce(null);
     await expect(requestResearch(req())).resolves.toMatchObject({ status: 'denied', code: 'source_not_found' });
     expect(h.ensure).not.toHaveBeenCalled();
+  });
+
+  describe('A1: context-sequential (no request transaction is ever held across system work)', () => {
+    it('refuses to run when the caller holds a DB context (programming error, nothing read or started)', async () => {
+      h.ambient = true;
+      await expect(requestResearch(req())).rejects.toThrow(/no DB context/);
+      expect(runReads).not.toHaveBeenCalled();
+      expect(h.ensure).not.toHaveBeenCalled();
+      expect(h.create).not.toHaveBeenCalled();
+    });
+
+    it('runs every read (flag, source, dedupe, partner) inside ONE runReads call; provisioning + admission run after it returns', async () => {
+      h.flag.mockImplementationOnce(async () => { h.seen.push({ what: 'flag', depth: h.depth }); return true; });
+      h.partner.mockImplementationOnce(async () => { h.seen.push({ what: 'partner', depth: h.depth }); return 'p-1'; });
+      h.ensure.mockImplementationOnce(async () => { h.seen.push({ what: 'ensure', depth: h.depth }); return { agentId: 'ag', created: false }; });
+      h.create.mockImplementationOnce(async () => { h.seen.push({ what: 'admit', depth: h.depth }); return { created: true, run: { id: 'run-1', status: 'queued' } }; });
+      h.rows.push(alertDevice, []);
+      await expect(requestResearch(req())).resolves.toMatchObject({ status: 'started' });
+      expect(runReads).toHaveBeenCalledTimes(1);
+      expect(h.seen).toEqual([
+        { what: 'flag', depth: 1 }, { what: 'db', depth: 1 }, { what: 'db', depth: 1 }, { what: 'partner', depth: 1 },
+        { what: 'ensure', depth: 0 }, { what: 'admit', depth: 0 },
+      ]);
+    });
+
+    it('admission is called with NO deferEnqueue: with no ambient context its own system tx commits before the enqueue', async () => {
+      h.rows.push(alertDevice, []);
+      await requestResearch(req());
+      const options = h.create.mock.calls[0]![1] as Record<string, unknown>;
+      expect(options.deferEnqueue).toBeUndefined();
+    });
+
+    it('the duplicate re-read also goes through runReads (a second, separate call)', async () => {
+      h.rows.push(alertDevice, [], [{ id: 'run-9', status: 'queued' }]);
+      h.create.mockResolvedValueOnce({ created: false, skipped: 'duplicate' });
+      await expect(requestResearch(req())).resolves.toMatchObject({ status: 'already_running', runId: 'run-9' });
+      expect(runReads).toHaveBeenCalledTimes(2);
+      expect(h.seen.filter((e) => e.what === 'db').every((e) => e.depth === 1)).toBe(true);
+    });
+
+    it('a denial found by the reads returns without provisioning or admitting', async () => {
+      h.rows.push(alertDevice, [{ id: 'run-0', status: 'running' }]);
+      await expect(requestResearch(req())).resolves.toMatchObject({ status: 'already_running' });
+      expect(h.ensure).not.toHaveBeenCalled();
+      expect(h.partner).not.toHaveBeenCalled();
+    });
   });
 });

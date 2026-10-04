@@ -83,8 +83,17 @@ import { shouldProduceMlOutput } from './mlFeatureFlags';
 import { attachProvenFixes } from './fixMemory/attach';
 import { requestResearch } from './fixMemory/research';
 
+// A2: models the caller's short DB context (commits when the callback returns).
+const ctx = vi.hoisted(() => ({ depth: 0 }));
+const runInDbContext = vi.fn(async <T,>(fn: () => Promise<T>): Promise<T> => {
+  ctx.depth += 1;
+  try { return await fn(); } finally { ctx.depth -= 1; }
+});
+const opts = { runInDbContext: runInDbContext as unknown as <T>(fn: () => Promise<T>) => Promise<T> };
+
 describe('Generate = memory first, then quick research (keyword matcher retired)', () => {
   beforeEach(() => {
+    ctx.depth = 0;
     insertedRows.length = 0;
     h.rows = {};
     vi.clearAllMocks();
@@ -92,7 +101,7 @@ describe('Generate = memory first, then quick research (keyword matcher retired)
   });
 
   it('attaches memory and starts quick research when allowed', async () => {
-    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true });
+    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true }, opts);
     expect(attachProvenFixes).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'anomaly-1', orgId: 'org-1' }));
     expect(requestResearch).toHaveBeenCalledWith(expect.objectContaining({
       orgId: 'org-1', sourceType: 'anomaly', sourceId: 'anomaly-1', depth: 'quick', trigger: 'manual', actorUserId: 'u-1',
@@ -102,7 +111,7 @@ describe('Generate = memory first, then quick research (keyword matcher retired)
   });
 
   it('without research permission it is memory-only and says so', async () => {
-    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: false });
+    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: false }, opts);
     expect(attachProvenFixes).toHaveBeenCalled();
     expect(requestResearch).not.toHaveBeenCalled();
     expect(out.research).toEqual({ status: 'denied', code: 'permission', message: expect.any(String) });
@@ -110,26 +119,40 @@ describe('Generate = memory first, then quick research (keyword matcher retired)
 
   it('a throwing requestResearch still returns Generate with research denied (memory never depends on research)', async () => {
     vi.mocked(requestResearch).mockRejectedValueOnce(new Error('boom'));
-    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true });
+    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true }, opts);
     expect(attachProvenFixes).toHaveBeenCalled();
     expect(out.skipped).toBe(false);
     expect(out.research).toEqual({ status: 'denied', code: 'research_unavailable', message: expect.any(String) });
   });
 
+  it('A2: memory attach runs inside the caller context; research runs with none held and reads through the same runner', async () => {
+    const depths: Record<string, number> = {};
+    vi.mocked(attachProvenFixes).mockImplementationOnce(async () => { depths.attach = ctx.depth; return { proven: 0, attached: 0 }; });
+    vi.mocked(requestResearch).mockImplementationOnce(async (input) => {
+      depths.research = ctx.depth;
+      depths.reads = await input.runReads(async () => ctx.depth);
+      return { status: 'started', runId: 'run-1', depth: 'quick' };
+    });
+    await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', actorUserId: 'u-1', allowResearch: true }, opts);
+    expect(depths).toEqual({ attach: 1, research: 0, reads: 1 });
+    // Phase 1 (resolve + flag + attach) and phase 3 (read the rows) are two separate committed contexts.
+    expect(runInDbContext).toHaveBeenCalledTimes(3);
+  });
+
   it('an rca source never starts research', async () => {
-    const out = await generateRemediationSuggestions({ sourceType: 'rca', sourceId: 'rca-1', orgId: 'org-1', allowResearch: true });
+    const out = await generateRemediationSuggestions({ sourceType: 'rca', sourceId: 'rca-1', orgId: 'org-1', allowResearch: true }, opts);
     expect(requestResearch).not.toHaveBeenCalled();
     expect(out.research).toBeNull();
   });
 
   it('never writes a keyword-matched row any more', async () => {
-    await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', allowResearch: false });
+    await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', allowResearch: false }, opts);
     expect(insertedRows).toEqual([]);
   });
 
   it('is skipped (no memory, no research) when the feature flag is off', async () => {
     vi.mocked(shouldProduceMlOutput).mockResolvedValue(false);
-    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', allowResearch: true });
+    const out = await generateRemediationSuggestions({ sourceType: 'anomaly', sourceId: 'anomaly-1', allowResearch: true }, opts);
     expect(out).toMatchObject({ skipped: true, suggestions: [], research: null });
     expect(attachProvenFixes).not.toHaveBeenCalled();
     expect(requestResearch).not.toHaveBeenCalled();

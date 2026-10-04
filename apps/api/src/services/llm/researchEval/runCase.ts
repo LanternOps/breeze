@@ -87,7 +87,8 @@ export async function runResearchEvalCase(c: ResearchEvalCase, depth: 'quick' | 
   const { orgId, alertId } = await seedResearchEvalCase(c);
   // In-process enqueuer: admission never touches BullMQ; the run is executed inline below.
   registerAgentRunEnqueuer(async () => ({ enqueued: true }));
-  const requested = await sys(() => requestResearch({ orgId, sourceType: 'alert', sourceId: alertId, depth, trigger: 'manual', actorUserId: null }));
+  // No wrapping context: requestResearch runs its reads through `sys` and provisions/admits in its own transactions.
+  const requested = await requestResearch({ orgId, sourceType: 'alert', sourceId: alertId, depth, trigger: 'manual', actorUserId: null, runReads: sys });
   if (requested.status === 'denied') {
     return { caseId: c.id, depth, status: 'denied', errorCode: requested.code, costCents: 0, turns: 0, outcome: null, denial: requested.message, model: null };
   }
