@@ -74,11 +74,45 @@ export function webhookOriginChangeWouldRetainAuthorization(
   return headerValues(patch.headers).some(isMaskedSecret);
 }
 
+/**
+ * Whether a remote-access launcher `urlTemplate` now points somewhere else.
+ * Templates carry `{id}`/`{password}` placeholders and may use a custom
+ * scheme (`rustdesk://{id}?password={password}`), so this compares scheme,
+ * host and port of the template with every placeholder replaced by the same
+ * constant — a placeholder in the host position compares equal to itself.
+ * An unchanged template is never a change; an unparseable one fails closed.
+ */
+export function launcherTemplateOriginChanged(current: string, next: string): boolean {
+  if (current === next) return false;
+  const parse = (template: string) => new URL(template.replace(/\{[^{}]*\}/g, 'placeholder'));
+  try {
+    const currentUrl = parse(current);
+    const nextUrl = parse(next);
+    return currentUrl.protocol !== nextUrl.protocol
+      || currentUrl.hostname.toLowerCase() !== nextUrl.hostname.toLowerCase()
+      || currentUrl.port !== nextUrl.port;
+  } catch {
+    return true;
+  }
+}
+
 export interface SettingsSecretDestination {
-  /** Path of the object holding the destination URL and its credentials. */
+  /**
+   * Path of the object holding the destination URL and its credentials — or,
+   * with `entryIdKey`, of a list of such objects.
+   */
   path: readonly string[];
   urlKey: string;
   secretKeys: readonly string[];
+  /**
+   * The value at `path` is a list of destination entries. Each incoming entry
+   * is compared with the stored entry carrying the same value under this key
+   * (by position when it has none), the same matching
+   * `restoreMaskedSettingsSecrets` uses to decide which stored secret it keeps.
+   */
+  entryIdKey?: string;
+  /** Destination comparison; defaults to `urlOriginChanged`. */
+  originChanged?: (current: string, next: string) => boolean;
 }
 
 function valueAt(value: unknown, path: readonly string[]): unknown {
@@ -106,24 +140,48 @@ export function settingsSecretWouldFollowNewOrigin(
 ): boolean {
   for (const destination of destinations) {
     const next = valueAt(incoming, destination.path);
-    if (!isRecord(next)) continue;
-    const nextUrl = next[destination.urlKey];
-    if (typeof nextUrl !== 'string' || nextUrl.trim().length === 0) continue;
-
     const current = valueAt(stored, destination.path);
-    const currentRecord = isRecord(current) ? current : {};
-    const currentUrl = currentRecord[destination.urlKey];
-
-    const carriesStoredSecret = destination.secretKeys.some((secretKey) => {
-      const storedSecret = currentRecord[secretKey];
-      if (typeof storedSecret !== 'string' || storedSecret.length === 0) return false;
-      if (!(secretKey in next) || next[secretKey] === undefined || next[secretKey] === null) return true;
-      const value = next[secretKey];
-      return isMaskedSecret(value) || (typeof value === 'string' && isEncryptedSecret(value));
-    });
-    if (!carriesStoredSecret) continue;
-
-    if (typeof currentUrl !== 'string' || urlOriginChanged(currentUrl, nextUrl)) return true;
+    if (destination.entryIdKey !== undefined) {
+      if (!Array.isArray(next)) continue;
+      const idKey = destination.entryIdKey;
+      const storedEntries = Array.isArray(current) ? current : [];
+      const followsNewOrigin = next.some((entry, index) => {
+        const id = isRecord(entry) ? entry[idKey] : undefined;
+        const storedEntry = typeof id === 'string' && id.length > 0
+          ? storedEntries.find((candidate) => isRecord(candidate) && candidate[idKey] === id)
+          : storedEntries[index];
+        return entryFollowsNewOrigin(entry, storedEntry, destination, isMaskedSecret);
+      });
+      if (followsNewOrigin) return true;
+      continue;
+    }
+    if (entryFollowsNewOrigin(next, current, destination, isMaskedSecret)) return true;
   }
   return false;
+}
+
+function entryFollowsNewOrigin(
+  next: unknown,
+  current: unknown,
+  destination: SettingsSecretDestination,
+  isMaskedSecret: (value: unknown) => boolean,
+): boolean {
+  if (!isRecord(next)) return false;
+  const nextUrl = next[destination.urlKey];
+  if (typeof nextUrl !== 'string' || nextUrl.trim().length === 0) return false;
+
+  const currentRecord = isRecord(current) ? current : {};
+  const currentUrl = currentRecord[destination.urlKey];
+
+  const carriesStoredSecret = destination.secretKeys.some((secretKey) => {
+    const storedSecret = currentRecord[secretKey];
+    if (typeof storedSecret !== 'string' || storedSecret.length === 0) return false;
+    if (!(secretKey in next) || next[secretKey] === undefined || next[secretKey] === null) return true;
+    const value = next[secretKey];
+    return isMaskedSecret(value) || (typeof value === 'string' && isEncryptedSecret(value));
+  });
+  if (!carriesStoredSecret) return false;
+
+  const originChanged = destination.originChanged ?? urlOriginChanged;
+  return typeof currentUrl !== 'string' || originChanged(currentUrl, nextUrl);
 }

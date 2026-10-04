@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { SettingsSecretDestination } from './credentialOriginBinding';
+import { launcherTemplateOriginChanged, type SettingsSecretDestination } from './credentialOriginBinding';
 import { isSettingsSecretPath } from './encryptedColumnRegistry';
 import { INTEGRATION_MASKED_SECRET } from './integrationSettingsSecrets';
 import { isMaskedIntegrationSecret } from './notificationChannelSecrets';
@@ -256,3 +256,21 @@ export const LOG_FORWARDING_SECRET_DESTINATIONS: readonly SettingsSecretDestinat
 
 export const LOG_FORWARDING_ORIGIN_CHANGE_MESSAGE =
   'Changing the log-forwarding destination requires re-entering the API key or password';
+
+/**
+ * Remote-access launcher passwords and the launcher they are substituted into
+ * (`{password}` in `urlTemplate`). Providers are matched by id, as the restore
+ * does; a kept password may not follow a template to a new scheme/host/port.
+ */
+export const REMOTE_ACCESS_LAUNCHER_SECRET_DESTINATIONS: readonly SettingsSecretDestination[] = [
+  {
+    path: ['remoteAccessProviders', 'providers'],
+    entryIdKey: 'id',
+    urlKey: 'urlTemplate',
+    secretKeys: ['password'],
+    originChanged: launcherTemplateOriginChanged,
+  },
+];
+
+export const REMOTE_ACCESS_LAUNCHER_ORIGIN_CHANGE_MESSAGE =
+  'Changing the host of a remote-access launcher URL requires re-entering its password';
