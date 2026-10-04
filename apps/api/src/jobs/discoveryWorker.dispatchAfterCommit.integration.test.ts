@@ -48,7 +48,7 @@ import { getTestDb } from '../__tests__/integration/setup';
 import { createTopologyTenant } from '../__tests__/integration/topology-fixtures';
 import { withSystemDbAccessContext } from '../db';
 import { discoveryJobs, discoveryProfiles } from '../db/schema';
-import { __testables, NEVER_DISPATCHED_FAIL_MINUTES } from './discoveryWorker';
+import { __testables, REDISPATCH_BATCH_LIMIT } from './discoveryWorker';
 
 async function cronProfile(cron: string) {
   const scope = await createTopologyTenant();
@@ -130,9 +130,9 @@ describe('undispatched scheduled jobs', () => {
     expect(jobs[0]!.status).toBe('scheduled');
   });
 
-  it('leaves a job alone while its dispatch is queued or running, even past the fail bound', async () => {
+  it('leaves a job alone while its dispatch is queued or running: no re-enqueue, no failure, no duplicate', async () => {
     const { scope, profile } = await cronProfile('* * * * *');
-    const slow = await scheduledJob(scope, profile.id, NEVER_DISPATCHED_FAIL_MINUTES + 5);
+    const slow = await scheduledJob(scope, profile.id, 60);
     inFlight.add(`discovery-dispatch-${slow.id}`);
 
     await runScheduleTick();
@@ -140,22 +140,29 @@ describe('undispatched scheduled jobs', () => {
 
     expect(addCalls.map((c) => c.jobId)).not.toContain(slow.id);
     const jobs = await jobsFor(profile.id);
-    // Not failed, and hasActiveJob still holds the profile: no duplicate scan.
+    // Still scheduled, and hasActiveJob still holds the profile.
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.status).toBe('scheduled');
   });
 
-  it('fails a job with no queued or running dispatch after the bound', async () => {
+  it('reaches a lost job behind a full batch of in-flight ones on the next tick', async () => {
     const { scope, profile } = await cronProfile(NEVER_DUE);
-    const lost = await scheduledJob(scope, profile.id, NEVER_DISPATCHED_FAIL_MINUTES + 5);
+    // A full batch of OLDER stale rows whose dispatches are all still queued.
+    const older: Array<{ id: string }> = [];
+    for (let i = 0; i < REDISPATCH_BATCH_LIMIT; i += 1) {
+      const job = await scheduledJob(scope, profile.id, 120 + i);
+      inFlight.add(`discovery-dispatch-${job.id}`);
+      older.push(job);
+    }
+    const lost = await scheduledJob(scope, profile.id, 10);
 
     await runScheduleTick();
-    await vi.waitFor(async () => {
-      const [after] = await getTestDb().select().from(discoveryJobs).where(eq(discoveryJobs.id, lost.id));
-      expect(after?.status).toBe('failed');
-      expect((after?.errors as { message?: string } | null)?.message).toMatch(/never dispatched/);
-    });
+    await settle();
     expect(addCalls.map((c) => c.jobId)).not.toContain(lost.id);
+
+    await runScheduleTick();
+    await vi.waitFor(() => expect(addCalls.map((c) => c.jobId)).toContain(lost.id));
+    expect(addCalls.map((c) => c.jobId).filter((id) => older.some((o) => o.id === id))).toEqual([]);
   });
 
   it('does not touch a job scheduled moments ago', async () => {

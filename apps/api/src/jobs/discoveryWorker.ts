@@ -21,7 +21,7 @@ import {
   deviceHardwareComponents
 } from '../db/schema';
 import type { DiscoveryProfileAlertSettings } from '../db/schema';
-import { eq, and, or, sql, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, or, sql, inArray, asc, type SQL } from 'drizzle-orm';
 import { normalizeMac, buildApprovalDecision } from '../services/assetApproval';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -430,33 +430,30 @@ async function expireStaleRunningJobs(): Promise<number> {
 /**
  * A job normally leaves 'scheduled' within seconds: the dispatch worker either
  * flips it to 'running' or fails it (no agent, send failed). One still
- * 'scheduled' after REDISPATCH_AFTER_MINUTES lost its dispatch: the enqueue
- * failed after commit, or the queue job was dropped. Because `hasActiveJob`
- * counts it as active, it would block its profile from ever being scheduled
- * again, so each schedule tick re-enqueues its dispatch.
+ * 'scheduled' after REDISPATCH_AFTER_MINUTES may have lost its dispatch: the
+ * enqueue failed after commit, or the queue job was dropped. Because
+ * `hasActiveJob` counts it as active, it would block its profile forever, so the
+ * schedule tick re-enqueues its dispatch.
  *
- * Re-enqueueing is safe against a dispatch that is merely slow: the dispatch
- * queue job id is fixed (`discovery-dispatch-<jobId>`) and a queued or running
- * one is reused, never duplicated (addUniqueDiscoveryJob). The same job row is
- * dispatched, never a replacement, and the dispatch handler only proceeds while
- * the row is still 'scheduled'. Only a job that is still undispatched after
- * NEVER_DISPATCHED_FAIL_MINUTES, with no queued or running dispatch, is failed.
+ * - Safe against a dispatch that is merely slow: the dispatch queue job id is
+ *   fixed (`discovery-dispatch-<jobId>`), and a queued or running one is left
+ *   alone (redispatchIfLost, addUniqueDiscoveryJob). The SAME row is dispatched,
+ *   never a replacement, and the dispatch handler proceeds only while the row
+ *   is still 'scheduled'.
+ * - Bounded and fair: each tick claims at most REDISPATCH_BATCH_LIMIT of the
+ *   longest-untouched rows and stamps their `updated_at`, so the next tick
+ *   moves on to the rest instead of re-reading the same rows.
+ * - Nothing is failed here. A re-dispatched job reaches a terminal state
+ *   through the dispatch handler (running, or failed with no agent / send
+ *   failed), so there is no race between a queue check and a status write.
  */
 export const REDISPATCH_AFTER_MINUTES = 2;
-export const NEVER_DISPATCHED_FAIL_MINUTES = 30;
-const REDISPATCH_BATCH_LIMIT = 100;
+export const REDISPATCH_BATCH_LIMIT = 100;
 
 async function sweepUndispatchedScheduledJobs(): Promise<number> {
   const threshold = new Date(Date.now() - REDISPATCH_AFTER_MINUTES * 60 * 1000);
-  const stale = await db
-    .select({
-      id: discoveryJobs.id,
-      profileId: discoveryJobs.profileId,
-      orgId: discoveryJobs.orgId,
-      siteId: discoveryJobs.siteId,
-      agentId: discoveryJobs.agentId,
-      createdAt: discoveryJobs.createdAt,
-    })
+  const oldestUntouched = db
+    .select({ id: discoveryJobs.id })
     .from(discoveryJobs)
     .where(
       and(
@@ -464,44 +461,39 @@ async function sweepUndispatchedScheduledJobs(): Promise<number> {
         sql`${discoveryJobs.updatedAt} < ${threshold.toISOString()}::timestamptz`
       )
     )
+    .orderBy(asc(discoveryJobs.updatedAt))
     .limit(REDISPATCH_BATCH_LIMIT);
+  const claimed = await db
+    .update(discoveryJobs)
+    .set({ updatedAt: new Date() })
+    .where(and(inArray(discoveryJobs.id, oldestUntouched), eq(discoveryJobs.status, 'scheduled')))
+    .returning({
+      id: discoveryJobs.id,
+      profileId: discoveryJobs.profileId,
+      orgId: discoveryJobs.orgId,
+      siteId: discoveryJobs.siteId,
+      agentId: discoveryJobs.agentId,
+    });
 
   // Queue I/O must not run inside this handler's transaction (#1105).
-  for (const job of stale) {
-    deferAfterCommit(`discovery: re-dispatch stale job ${job.id}`, () => redispatchOrExpire(job));
+  for (const job of claimed) {
+    deferAfterCommit(`discovery: re-dispatch stale job ${job.id}`, () => redispatchIfLost(job));
   }
-  if (stale.length > 0) {
-    console.warn(`[DiscoveryWorker] Re-dispatching ${stale.length} undispatched scheduled job(s)`);
+  if (claimed.length > 0) {
+    console.warn(`[DiscoveryWorker] Checking ${claimed.length} undispatched scheduled job(s) for a lost dispatch`);
   }
-  return stale.length;
+  return claimed.length;
 }
 
-async function redispatchOrExpire(job: {
+async function redispatchIfLost(job: {
   id: string;
   profileId: string;
   orgId: string;
   siteId: string;
   agentId: string | null;
-  createdAt: Date;
-}): Promise<'in-flight' | 'expired' | 'requeued'> {
+}): Promise<'in-flight' | 'requeued'> {
   const existing = await getDiscoveryQueue().getJob(`discovery-dispatch-${job.id}`);
   if (existing && isReusableState(await existing.getState())) return 'in-flight';
-
-  if (Date.now() - job.createdAt.getTime() > NEVER_DISPATCHED_FAIL_MINUTES * 60 * 1000) {
-    await runWithSystemDbAccess(() =>
-      db
-        .update(discoveryJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          errors: { message: `Job was never dispatched (still scheduled after ${NEVER_DISPATCHED_FAIL_MINUTES} minutes)` },
-          updatedAt: new Date()
-        })
-        .where(and(eq(discoveryJobs.id, job.id), eq(discoveryJobs.status, 'scheduled')))
-    );
-    return 'expired';
-  }
-
   await enqueueDiscoveryScan(job.id, job.profileId, job.orgId, job.siteId, job.agentId);
   return 'requeued';
 }
@@ -831,7 +823,6 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 export const __testables = {
   processDispatchScan,
   processScheduleProfiles,
-  redispatchOrExpire,
 };
 
 /**
