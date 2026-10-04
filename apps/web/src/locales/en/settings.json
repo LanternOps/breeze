@@ -2329,7 +2329,8 @@
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
       "helpdesk": "Picks up tickets and proposes replies and next steps.",
-      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+      "research": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -2475,7 +2476,8 @@
       "triage": "Alert triage",
       "patch": "Patching",
       "helpdesk": "Help desk",
-      "designer": "Fleet designer"
+      "designer": "Fleet designer",
+      "research": "Fix research"
     },
     "modes": {
       "off": "Off",
@@ -3779,6 +3781,11 @@
           "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
           "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
           "recommended": "a clean-slate migration, or a quarterly configuration audit"
+        },
+        "research": {
+          "blurb": "Built in. Researches one problem on one device when a technician asks, and suggests safe fixes. It never runs anything.",
+          "runsWhen": "a technician asks for fix suggestions on a device problem",
+          "recommended": "automatic, read-only research on one problem at a time"
         }
       },
       "kindCard": {
@@ -3806,6 +3813,36 @@
       "title": "This agent only reads and writes reports",
       "body": "A Fleet Designer never executes anything on a device. On means it may run and deliver its designs to the recipients you choose.",
       "ack": "I understand this agent runs unattended and delivers Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Research limits",
+      "builtInNote": "Built in and suggestion-only: it never runs anything. You can switch it off and set its spending caps.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Concurrent research runs",
+          "hint": "How many research runs may be in flight at once."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Research runs per hour",
+          "hint": "Upper bound on all research runs started in an hour."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Automatic research runs per hour",
+          "hint": "Upper bound on research started automatically from high and critical alerts. 0 turns automatic research off."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Quick research budget (cents)",
+          "hint": "Spending cap for one quick research run."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Deep research budget (cents)",
+          "hint": "Spending cap for one deep research run."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Daily research spend (cents)",
+          "hint": "Total spending cap per day across all of this agent's runs."
+        }
+      }
     }
   },
   "apiKeyForm": {

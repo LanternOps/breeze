@@ -512,7 +512,20 @@ it('self-manages POST /remediation-suggestions/:id/execute and no sibling route'
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/execute/')).toBe(true);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/elevation-request')).toBe(false);
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/remediation-suggestions/abc-123')).toBe(false);
-  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(false);
+});
+
+// PR #7939 fix pass A2 — Generate and Research call requestResearch, which
+// provisions the research agent and admits a run in their own system
+// transactions; it refuses to run under a held request transaction. Their GET
+// siblings do no system work and keep the ambient tx.
+it('self-manages the two research-starting remediation POSTs and no sibling route', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/research')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/research/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/remediation-suggestions/research')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/remediation-suggestions/memory')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/abc-123/done')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/remediation-suggestions/generate/extra')).toBe(false);
 });
 
 // #3127 — the four chat message-send routes may settle a turn blocked on

@@ -72,7 +72,7 @@ const catalog: AgentToolCatalogDto = {
       ],
     },
   ],
-  presets: { triage: [], patch: [], helpdesk: [], designer: [] },
+  presets: { triage: [], patch: [], helpdesk: [], designer: [], research: [] },
   unreachableTools: [],
 };
 

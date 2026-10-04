@@ -2329,7 +2329,8 @@
       "triage": "Examine les nouvelles alertes et propose la marche à suivre.",
       "patch": "Passe en revue les correctifs manquants et propose ceux à installer.",
       "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes.",
-      "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver."
+      "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
+      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -2475,7 +2476,8 @@
       "triage": "Tri des alertes",
       "patch": "Correctifs",
       "helpdesk": "Centre d’assistance",
-      "designer": "Concepteur du parc"
+      "designer": "Concepteur du parc",
+      "research": "Recherche de correctifs"
     },
     "modes": {
       "off": "Désactivé",
@@ -3779,6 +3781,11 @@
           "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
           "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
           "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
+        },
+        "research": {
+          "blurb": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+          "runsWhen": "un technicien demande des suggestions de correctifs pour un problème d’appareil",
+          "recommended": "recherche automatique en lecture seule, un problème à la fois"
         }
       },
       "kindCard": {
@@ -3806,6 +3813,36 @@
       "title": "Cet agent ne fait que lire et rédiger des rapports",
       "body": "Un Fleet Designer n'exécute jamais rien sur un appareil. Activé signifie qu'il peut s'exécuter et remettre ses designs aux destinataires que vous choisissez.",
       "ack": "Je comprends que cet agent s'exécute sans surveillance et remet des Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Limites de recherche",
+      "builtInNote": "Intégré et limité aux suggestions : il n'exécute jamais rien. Vous pouvez le désactiver et fixer ses plafonds de dépenses.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Recherches simultanées",
+          "hint": "Nombre de recherches pouvant être en cours en même temps."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Recherches par heure",
+          "hint": "Maximum de recherches lancées en une heure."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Recherches automatiques par heure",
+          "hint": "Maximum de recherches lancées automatiquement par les alertes élevées et critiques. 0 désactive la recherche automatique."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Budget de recherche rapide (centimes)",
+          "hint": "Plafond de dépenses pour une recherche rapide."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Budget de recherche approfondie (centimes)",
+          "hint": "Plafond de dépenses pour une recherche approfondie."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Dépenses quotidiennes de recherche (centimes)",
+          "hint": "Plafond total de dépenses par jour pour toutes les exécutions de cet agent."
+        }
+      }
     }
   },
   "apiKeyForm": {

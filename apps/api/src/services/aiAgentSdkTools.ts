@@ -8,6 +8,7 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
  */
 
 import { z } from 'zod';
+import { fixProblemSchema } from './fixMemory/problemSignature';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
@@ -33,7 +34,7 @@ import {
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { CONTACT_ROLES } from './contacts/types';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema } from '@breeze/shared';
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
@@ -3222,6 +3223,8 @@ export function buildBreezeSdkTools(
       {
         alertId: z.string().guid().optional(),
         anomalyEpisodeId: z.string().guid().optional(),
+        deviceId: z.string().guid().optional(),
+        problem: fixProblemSchema.optional(),
         limit: z.number().int().min(1).max(20).optional(),
       },
       makeHandler('find_proven_fixes', getAuth, onPreToolUse, onPostToolUse)
@@ -3468,7 +3471,7 @@ export function buildBreezeSdkTools(
       registryDescription('manage_ai_agents'),
       {
         action: z.enum(['authorize_supervised_key']),
-        kind: z.enum(AI_AGENT_KINDS),
+        kind: z.enum(AI_AGENT_ACTING_KINDS),
         opKey: z.string().min(3).max(120),
         // Required, and re-checked against the intent's own org at creation and
         // again at execution. It is here so the approval can PIN this org's

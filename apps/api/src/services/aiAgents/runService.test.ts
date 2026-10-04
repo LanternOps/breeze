@@ -2762,3 +2762,70 @@ describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)'
     expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'full', deviceId: DEVICE_ID });
   });
 });
+
+describe('createAndEnqueueAgentRun research-profile admission (AI Suggested Fixes W2, Review Focus 2)', () => {
+  /** Same read order as the design arm: a non-full profile skips cooldown. */
+  function seedResearchAdmissionReads(options: { agentKind?: string; concurrent?: number } = {}): void {
+    const { agentKind = 'research', concurrent = 0 } = options;
+    seedAdmissionReads({ concurrent, perHour: 0, dailyCents: 0, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [], // 4c reap candidates
+      [{ value: concurrent }], // 6b concurrency
+      [{ value: 0 }], // 6b hourly rate
+      [{ totalCostCents: 0 }], // 7 daily spend
+    ];
+  }
+  const researchInput = (over: Partial<CreateAgentRunInput> = {}) =>
+    input({ kind: 'research', profile: 'remediation_research', ...over });
+
+  it('admits a research agent on its own profile against one device', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r1' }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'remediation_research', deviceId: DEVICE_ID });
+  });
+
+  it('ownership_mismatch when a research agent is admitted on any other profile', async () => {
+    // 'analysis' is omitted: its hosted/breaker gates run before rule 2a.
+    for (const profile of ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch'] as const) {
+      seedResearchAdmissionReads();
+      const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: `research:r2:${profile}`, profile }));
+      expect(result, profile).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a non-research agent is admitted on remediation_research', async () => {
+    seedResearchAdmissionReads({ agentKind: 'triage' });
+    const result = await createAndEnqueueAgentRun(researchInput({ kind: 'triage', dedupeKey: 'research:r3' }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('ownership_mismatch when a research run is device-less', async () => {
+    seedResearchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r4', deviceId: null }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('max_concurrent_research_runs at the research-only cap', async () => {
+    seedResearchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns });
+    const result = await createAndEnqueueAgentRun(researchInput({ dedupeKey: 'research:r5' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_research_runs' });
+  });
+
+  it('auto research at the hourly auto cap skips research_auto_cap; below it admits; manual is never counted', async () => {
+    const auto = (dedupeKey: string) => researchInput({ triggerKind: 'alert', dedupeKey });
+    const queue = (autoCount: number) => {
+      seedResearchAdmissionReads();
+      dbMockState.rowQueues.ai_agent_runs = [[], [{ value: 0 }], [{ value: 0 }], [{ value: autoCount }], [{ totalCostCents: 0 }]];
+    };
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-1'))).toEqual({ created: false, skipped: 'research_auto_cap' });
+
+    queue(AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour - 1);
+    expect(await createAndEnqueueAgentRun(auto('research:auto-2'))).toMatchObject({ created: true });
+
+    // manual: the queue without the auto-count entry has no auto count; an extra read would throw "No queued rows"
+    seedResearchAdmissionReads();
+    expect(await createAndEnqueueAgentRun(researchInput({ triggerKind: 'manual', dedupeKey: 'research:manual-1' }))).toMatchObject({ created: true });
+  });
+});

@@ -287,6 +287,12 @@ describe('classifyTerminal per profile (AI patch agent W01)', () => {
     expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
     expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
   });
+
+  it('remediation_research runs are streak-neutral on completion and approval (W2)', () => {
+    expect(classifyTerminal('completed', null, 'needs_attention', 'remediation_research')).toBe('neutral');
+    expect(classifyTerminal('awaiting_approval', null, null, 'remediation_research')).toBe('neutral');
+    expect(classifyTerminal('failed', 'llm_unavailable', null, 'remediation_research')).toBe('increment');
+  });
 });
 
 // Phase 2 wave P2-2 (scheduled sweeps) — a clean sweep must NOT reset an

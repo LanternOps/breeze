@@ -66,6 +66,7 @@
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Ejecuciones de agentes de IA",
     "aiImpact": "Impacto de IA",
+    "fixMemory": "Memoria de correcciones",
     "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
@@ -2377,7 +2378,10 @@
           "script": "Script",
           "template": "Plantilla",
           "playbook": "Playbook",
-          "diagnostic": "Diagnóstico"
+          "diagnostic": "Diagnóstico",
+          "builtin": "Acción integrada",
+          "manualSteps": "Pasos manuales",
+          "scriptDraft": "Borrador de script"
         },
         "targetIdentifiers": {
           "script": "script {{id}}",
@@ -2386,7 +2390,8 @@
           "templateMissing": "plantilla sin plantilla ID",
           "playbook": "libro de jugadas {{id}}",
           "playbookMissing": "libro de jugadas sin libro de jugadas ID",
-          "diagnostic": "acción diagnóstica"
+          "diagnostic": "acción diagnóstica",
+          "builtin": "acción integrada {{action}}"
         },
         "targetDevices": {
           "none": "No hay ningún dispositivo objetivo en esta sugerencia",
@@ -2398,9 +2403,12 @@
           "generateFailed": "No se pudieron generar correcciones sugeridas",
           "updateFailed": "No se pudo actualizar la solución sugerida",
           "executeFailed": "No se pudo ejecutar la solución sugerida",
-          "approvalFailed": "No se pudo solicitar la aprobación"
+          "approvalFailed": "No se pudo solicitar la aprobación",
+          "researchFailed": "No se pudo iniciar la investigación",
+          "draftFailed": "No se pudo abrir el borrador del script."
         },
         "messages": {
+          "draftCopied": "El almacenamiento está bloqueado: se copió el resumen; pégalo en el generador de scripts.",
           "disabled": "Las correcciones sugeridas están deshabilitadas",
           "generated": "Correcciones sugeridas generadas",
           "accepted": "Solución sugerida aceptada",
@@ -2484,6 +2492,52 @@
             "inconclusive": "no concluyente",
             "cancelled": "cancelado"
           }
+        },
+        "groups": {
+          "proven": "Soluciones comprobadas",
+          "ai": "Sugerencias de IA",
+          "similar": "Soluciones similares",
+          "legacy": "Coincidencias anteriores por palabras clave"
+        },
+        "badges": {
+          "aiResearched": "Investigado por IA",
+          "aiWritten": "Escrito por IA: revíselo antes de seguirlo"
+        },
+        "track": {
+          "lastVerified": "verificado por última vez hace {{days}} d",
+          "neverVerified": "aún sin verificar"
+        },
+        "research": {
+          "running": "Investigando…",
+          "runningDeep": "Investigando a fondo…",
+          "stalled": "Todavía investigando: vuelva a revisar en unos minutos.",
+          "failed": "La investigación falló.",
+          "noSafeFix": "La IA no encontró una solución segura para este problema.",
+          "checkBudget": "Revisar presupuesto de IA",
+          "deeper": "Investigar más a fondo",
+          "retry": "Reintentar",
+          "denial": {
+            "credits": "Los créditos de IA de este período de facturación se agotaron.",
+            "dailyBudget": "Se alcanzó el presupuesto diario de IA para investigación.",
+            "orgBudget": "Se alcanzó el presupuesto de IA de esta organización.",
+            "autoCap": "Se alcanzó el límite de investigación automática. Aún puede iniciar una investigación manualmente.",
+            "busy": "La investigación está ocupada en este momento. Inténtelo de nuevo en unos minutos.",
+            "permission": "No tiene permiso para iniciar una investigación con IA.",
+            "unavailable": "La investigación con IA no está disponible temporalmente.",
+            "modelUnavailable": "El modelo de IA para la investigación no está disponible.",
+            "notProvisioned": "La investigación con IA aún no está configurada en esta instalación."
+          }
+        },
+        "runBuiltin": "Ejecutar {{action}}",
+        "draftScript": "Redactar un script",
+        "emptyHint": "Generar revisa primero las soluciones comprobadas y luego consulta a la IA.",
+        "reviewed": {
+          "pickerLabel": "Pasos revisados",
+          "asWritten": "Pasos tal como están escritos (no compartidos)",
+          "save": "Guardar como pasos revisados",
+          "saved": "Guardado como pasos revisados",
+          "failed": "No se pudieron guardar los pasos revisados",
+          "stepsLabel": "Pasos (uno por línea)"
         }
       }
     },
@@ -2542,5 +2596,66 @@
     "noneConfigured": "No hay {{source}} configurado",
     "overriding": "Anula {{source}}",
     "overridingWithValue": "Anula {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memoria de correcciones",
+    "subtitle": "Correcciones que su equipo ejecutó y con qué frecuencia realmente se mantuvieron resueltas.",
+    "tabs": {
+      "fixes": "Correcciones",
+      "steps": "Pasos revisados"
+    },
+    "filters": {
+      "os": "Sistema operativo",
+      "anyOs": "Cualquier sistema operativo",
+      "status": "Estado",
+      "anyStatus": "Cualquier estado",
+      "scope": "Alcance",
+      "anyScope": "Cualquier alcance",
+      "condition": "Buscar por condición"
+    },
+    "columns": {
+      "fix": "Corrección",
+      "record": "Historial de resultados",
+      "rate": "Tasa de éxito",
+      "scope": "Alcance",
+      "os": "SO",
+      "condition": "Condición",
+      "lastVerified": "Última verificación",
+      "status": "Estado",
+      "actions": "Acciones"
+    },
+    "status": {
+      "active": "Activa",
+      "demoted": "Degradada",
+      "retired": "Retirada",
+      "stale": "Obsoleta"
+    },
+    "scope": {
+      "everyClient": "Todos los clientes",
+      "oneClient": "Este cliente"
+    },
+    "signature": "Firma {{prefix}}",
+    "retire": {
+      "action": "Retirar",
+      "confirmTitle": "¿Retirar esta corrección?",
+      "confirmBody": "Las correcciones retiradas dejan de sugerirse. Se conserva su historial.",
+      "confirm": "Retirar corrección",
+      "success": "Corrección retirada.",
+      "failed": "No se pudo retirar la corrección."
+    },
+    "steps": {
+      "heading": "Pasos",
+      "retire": "Retirar pasos",
+      "success": "Pasos retirados.",
+      "failed": "No se pudieron retirar los pasos.",
+      "empty": "Aún no hay pasos revisados. Guarde pasos desde una sugerencia para verlos aquí."
+    },
+    "empty": "Aún no se recuerda ninguna corrección. Las correcciones aparecen aquí después de ejecutarse y de observar su resultado.",
+    "loadMore": "Cargar más",
+    "never": "Nunca",
+    "retry": "Reintentar",
+    "errors": {
+      "loadFailed": "No se pudo cargar la memoria de correcciones."
+    }
   }
 }

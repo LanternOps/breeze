@@ -882,6 +882,7 @@ export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
+export * from './remediationResearch';
 export * from './devicePatchApproval';
 export * from './deviceFunction';
 export * from './sendingDomains';

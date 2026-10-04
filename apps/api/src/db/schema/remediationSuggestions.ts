@@ -7,11 +7,12 @@ import {
   jsonb,
   integer,
   doublePrecision,
+  smallint,
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { RemediationSuggestionOrigin } from '@breeze/shared';
+import type { RemediationSuggestionOrigin, ResearchBuiltinAction } from '@breeze/shared';
 
 import { organizations } from './orgs';
 import { devices } from './devices';
@@ -21,6 +22,8 @@ import { metricAnomalies } from './analytics';
 import { scripts, scriptExecutions, scriptTemplates } from './scripts';
 import { playbookDefinitions, playbookExecutions } from './playbooks';
 import { aiToolExecutions } from './ai';
+import { aiAgentRuns } from './aiAgents';
+import { fixInstructions } from './fixInstructions';
 import { elevationRequests } from './elevations';
 
 export const remediationSuggestions = pgTable('remediation_suggestions', {
@@ -41,6 +44,11 @@ export const remediationSuggestions = pgTable('remediation_suggestions', {
   rationale: text('rationale').notNull(),
   expectedAction: text('expected_action').notNull(),
   origin: varchar('origin', { length: 20 }).$type<RemediationSuggestionOrigin>().notNull().default('catalog_match'),
+  // AI Suggested Fixes W2.
+  agentRunId: uuid('agent_run_id').references(() => aiAgentRuns.id, { onDelete: 'set null' }),
+  builtinAction: varchar('builtin_action', { length: 40 }).$type<ResearchBuiltinAction>(),
+  researchOrdinal: smallint('research_ordinal'),
+  instructionsId: uuid('instructions_id').references(() => fixInstructions.id, { onDelete: 'set null' }),
   riskTier: varchar('risk_tier', { length: 20 }).notNull().default('medium'),
   status: varchar('status', { length: 40 }).notNull().default('suggested'),
   confidence: doublePrecision('confidence'),

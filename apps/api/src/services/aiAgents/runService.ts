@@ -33,7 +33,7 @@ import { aiBudgets } from '../../db/schema/ai';
 import { deviceGroupMemberships, devices } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
 import {
-  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
+  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents, type AiBillingSource,
 } from '../aiCostTracker';
 import { WORKSPACE_TOOL_NAMES } from '../workspace/workspaceToolNames';
 import { deploymentRegion } from '../workspace/workspacePaths';
@@ -210,6 +210,24 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            taskLimits.ts, #6590): non-terminal tasks in the
  *                            org, counted under a per-org advisory lock;
  *                            refusal is the route's 429. Merged with min.
+ *  - maxConcurrentResearchRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            research-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (AI Suggested Fixes W2).
+ *  - maxResearchRunsPerHour — HERE (admission rule 6b, via profileCaps()),
+ *                            research-profile runs only — counted separately
+ *                            from every other per-hour cap.
+ *  - maxAutoResearchRunsPerHour — HERE (admission rule 6c): caps AUTO research
+ *                            (trigger_kind 'alert') per org under the
+ *                            (agent, org) advisory lock; 0 disables auto research.
+ *  - researchQuickMaxTurns / researchDeepMaxTurns — run loop (researchLimits(),
+ *                            researchProfile.ts): substitute for maxTurnsPerRun
+ *                            on a research-profile run, keyed by depth; not
+ *                            enforced here.
+ *  - researchQuickBudgetCentsPerRun / researchDeepBudgetCentsPerRun — run loop
+ *                            (researchLimits(), researchProfile.ts): substitute
+ *                            for maxBudgetCentsPerRun on a research-profile
+ *                            run, keyed by depth; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -368,6 +386,8 @@ export type AgentRunSkipReason =
   | 'max_concurrent_runs' | 'max_runs_per_hour' | 'org_budget_exceeded'
   | 'agent_daily_budget_exceeded' | 'duplicate' | 'ownership_mismatch'
   | 'device_not_in_org'
+  // AI Suggested Fixes W2 — research-profile volume guards.
+  | 'max_concurrent_research_runs' | 'research_rate' | 'research_auto_cap'
   // Phase 2 wave P2-1 (alert verdicts) — the verdict-profile equivalents of
   // max_concurrent_runs/max_runs_per_hour, counted against
   // maxConcurrentVerdictRuns/maxVerdictRunsPerHour instead (admission rule
@@ -453,6 +473,13 @@ export type CreateAgentRunOptions = {
    * this flag and calls `enqueue()` after its transaction commits.
    */
   deferEnqueue?: boolean;
+  /**
+   * Called with the funding admission resolved for this run (step 3d), once
+   * the agent's model is known. Lets a caller attach budget/credit denial
+   * detail computed against the SAME funding admission used, instead of
+   * re-resolving it (and risking disagreeing on a pinned offering).
+   */
+  onFundingResolved?: (funding: AiBillingSource) => void;
 };
 
 /**
@@ -1010,6 +1037,17 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_analysis_runs',
         rateSkip: 'analysis_rate',
       };
+    // AI Suggested Fixes W2 — per-(agent, org) research caps. The partner
+    // baseline research agent is the run's agentId for every org, so this is
+    // per org. Auto research has its own tighter hourly cap (rule 6c below).
+    case 'remediation_research':
+      return {
+        maxConcurrent: limits.maxConcurrentResearchRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns,
+        maxPerWindow: limits.maxResearchRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxResearchRunsPerHour,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_research_runs',
+        rateSkip: 'research_rate',
+      };
     default: {
       const exhaustive: never = profile;
       throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
@@ -1202,6 +1240,9 @@ export async function createAndEnqueueAgentRun(
   //     instead), no read-only tool denial. A designer runs on the design
   //     profile or it does not run.
   if (kind === 'designer' && (input.profile ?? 'full') !== 'design') return skip('ownership_mismatch');
+  // AI Suggested Fixes W2 — same shape as the designer arm: a research agent
+  // runs its read-only, zero-action profile or it does not run.
+  if (kind === 'research' && (input.profile ?? 'full') !== 'remediation_research') return skip('ownership_mismatch');
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');
@@ -1315,6 +1356,7 @@ export async function createAndEnqueueAgentRun(
     return skip('model_unavailable');
   }
   const billingSource = agentModel.resolved.funding;
+  options.onFundingResolved?.(billingSource);
   const admittedOfferingId = agentModel.resolved.offering.id;
 
   // 4. Maintenance windows. Reads partner-wide (org_id NULL) windows, so it has
@@ -1522,6 +1564,22 @@ export async function createAndEnqueueAgentRun(
       return skip(caps.rateSkip);
     }
 
+    // 6c. AI Suggested Fixes W2 — AUTO research has its own, tighter hourly
+    //     cap (spec "rate-capped per org per hour"). Counted here, under the
+    //     (agent, org) advisory lock taken at 4b, so two concurrent automatic
+    //     requests for different alerts cannot both read cap-1 and both admit.
+    //     Every research admission for this org resolves the same effective
+    //     agent, so agentOrgScope is the per-org scope. Manual runs are never
+    //     counted. A cap of 0 disables auto research.
+    if (profile === 'remediation_research' && triggerKind === 'alert') {
+      const autoCap = effective.limits.maxAutoResearchRunsPerHour ?? AI_AGENT_LIMIT_DEFAULTS.maxAutoResearchRunsPerHour;
+      const [autoRecent] = await db
+        .select({ value: count() })
+        .from(aiAgentRuns)
+        .where(and(agentOrgScope, profileScope, eq(aiAgentRuns.triggerKind, 'alert'), gte(aiAgentRuns.queuedAt, new Date(now - 3_600_000))));
+      if ((autoRecent?.value ?? 0) >= autoCap) return skip('research_auto_cap');
+    }
+
     // 7. Budgets: the org's AI budget first, then the agent's own daily cap
     //    (spec §4.3 — "per org, on top of ai_budgets"). `billingSource` is the
     //    funding of the offering resolved in step 3d.
@@ -1627,6 +1685,12 @@ export async function createAndEnqueueAgentRun(
     //     patch agent already has on the `full` profile (POST
     //     /ai/agents/:id/runs), which this program does not remove.
     if (profile === 'patch' && (agentRow.kind !== 'patch' || deviceId !== null)) {
+      return skip('ownership_mismatch');
+    }
+    // 8a (research). The remediation_research profile is driven only by a
+    //     research agent, and always against exactly one device (its catalog
+    //     and OS filter are per-device; spec "submit_suggestions").
+    if (profile === 'remediation_research' && (agentRow.kind !== 'research' || deviceId === null)) {
       return skip('ownership_mismatch');
     }
 
