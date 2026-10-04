@@ -142,3 +142,70 @@ export function coveredCommands(policies: readonly PolicyRow[], matches: Predica
   }
   return covered;
 }
+
+/**
+ * True when `pred` admits rows by the caller's identity: it calls
+ * breeze_current_user_id(), or joins through `users` (the "an admin of the
+ * row's user can see it" branch, EXISTS (SELECT 1 FROM users u WHERE
+ * u.id = <t>.user_id AND (breeze_has_partner_access(u.partner_id) OR ...))).
+ */
+export function predicateReferencesUserIdentity(pred: string | null): boolean {
+  const text = normalizePredicate(pred);
+  if (text === '') return false;
+  return /\bbreeze_current_user_id\s*\(/i.test(text) || /\b(?:FROM|JOIN)\s+(?:public\.)?users\b/i.test(text);
+}
+
+/**
+ * True when `pred` joins some table OTHER than `users` and applies
+ * breeze_has_org_access(<alias>.org_id) / breeze_has_partner_access(<alias>.partner_id)
+ * to that join's alias — i.e. it checks the owner of the row's parent.
+ * A helper on the `users` alias describes the row's user, not its parent.
+ */
+export function predicateHasParentOrgCheck(pred: string | null): boolean {
+  const text = normalizePredicate(pred);
+  if (text === '') return false;
+  // Every relation introduced by FROM, JOIN or a comma join (Postgres deparses
+  // explicit joins as `FROM (a x JOIN b y ON ...)`), mapped alias -> table.
+  const aliasToTable = new Map<string, string>();
+  const relation = /(?:\bFROM|\bJOIN|,)\s*\(*\s*(?:public\.)?([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?/gi;
+  for (const m of text.matchAll(relation)) {
+    const table = m[1]!.toLowerCase();
+    const alias = m[2] && !NOT_AN_ALIAS.has(m[2].toLowerCase()) ? m[2].toLowerCase() : table;
+    aliasToTable.set(alias, table);
+  }
+  for (const m of text.matchAll(/\bbreeze_has_(?:org|partner)_access\(\s*([A-Za-z_][A-Za-z0-9_]*)\.(?:org_id|partner_id)\s*\)/gi)) {
+    const table = aliasToTable.get(m[1]!.toLowerCase());
+    if (table !== undefined && table !== 'users') return true;
+  }
+  return false;
+}
+
+export interface UserBranchOffence {
+  policyname: string;
+  cmd: string;
+  slot: PredicateSlot;
+}
+
+/**
+ * Every (permissive policy, slot) whose predicate admits by user identity but
+ * never checks a parent row's owner. Postgres ORs permissive policies, so one
+ * such slot on a child table without its own org_id is enough to reach rows
+ * whose parent belongs to an org the caller cannot access.
+ *
+ * Co-presence only: a slot that mentions both a user branch and a parent check
+ * passes even if the two are OR'd rather than AND'd. The behavioural proof for
+ * each table lives in its own *Rls.integration.test.ts.
+ */
+export function userBranchesWithoutParentOrgCheck(policies: readonly PolicyRow[]): UserBranchOffence[] {
+  const out: UserBranchOffence[] = [];
+  for (const p of policies) {
+    if (p.permissive !== 'PERMISSIVE') continue;
+    for (const slot of ['qual', 'with_check'] as const) {
+      const pred = p[slot];
+      if (predicateReferencesUserIdentity(pred) && !predicateHasParentOrgCheck(pred)) {
+        out.push({ policyname: p.policyname, cmd: p.cmd, slot });
+      }
+    }
+  }
+  return out;
+}

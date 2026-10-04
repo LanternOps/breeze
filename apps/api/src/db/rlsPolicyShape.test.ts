@@ -6,6 +6,9 @@ import {
   predicateCoversOrgAxis,
   predicateCoversParent,
   predicateCoversParents,
+  predicateHasParentOrgCheck,
+  predicateReferencesUserIdentity,
+  userBranchesWithoutParentOrgCheck,
   type PolicyRow,
 } from './rlsPolicyShape';
 
@@ -136,5 +139,76 @@ describe('rlsPolicyShape — coveredCommands (command → slot)', () => {
       (pred, cmd, slot) => { seen.push(`${cmd}:${slot}`); return true; },
     );
     expect(seen).toEqual(['UPDATE:qual', 'UPDATE:with_check']);
+  });
+});
+
+// Deparsed shapes copied from pg_policies on a migrated test DB.
+const USER_BRANCH_ONLY =
+  '((user_id = breeze_current_user_id()) OR (EXISTS ( SELECT 1\n   FROM users u\n  WHERE ((u.id = push_notifications.user_id) AND (breeze_has_partner_access(u.partner_id) OR breeze_has_org_access(u.org_id))))))';
+const OWNER_ONLY = '((user_id = breeze_current_user_id()) OR (breeze_current_scope() = \'system\'::text))';
+const PARENT_AND_USER =
+  '((EXISTS ( SELECT 1\n   FROM tickets t\n  WHERE ((t.id = ticket_comments.ticket_id) AND breeze_has_org_access(t.org_id)))) AND ((user_id = breeze_current_user_id()) OR (EXISTS ( SELECT 1\n   FROM users u\n  WHERE ((u.id = ticket_comments.user_id) AND (breeze_has_partner_access(u.partner_id) OR breeze_has_org_access(u.org_id)))))))';
+const PARENT_JOIN_NO_HELPER =
+  '((user_id = breeze_current_user_id()) OR (EXISTS ( SELECT 1 FROM alerts a WHERE (a.id = push_notifications.alert_id))))';
+const PARENT_ONLY = '(EXISTS ( SELECT 1 FROM tickets t WHERE ((t.id = ticket_comments.ticket_id) AND breeze_has_org_access(t.org_id))))';
+
+describe('rlsPolicyShape — user-identity branches on child tables', () => {
+  it('detects breeze_current_user_id() and joins through users', () => {
+    expect(predicateReferencesUserIdentity(OWNER_ONLY)).toBe(true);
+    expect(predicateReferencesUserIdentity(USER_BRANCH_ONLY)).toBe(true);
+    expect(predicateReferencesUserIdentity('(EXISTS ( SELECT 1 FROM public.users u WHERE (u.id = x.user_id)))')).toBe(true);
+    expect(predicateReferencesUserIdentity(PARENT_ONLY)).toBe(false);
+    expect(predicateReferencesUserIdentity("(breeze_current_scope() = 'system'::text)")).toBe(false);
+    // `FROM users_extra` is a different table.
+    expect(predicateReferencesUserIdentity('(EXISTS ( SELECT 1 FROM users_extra e WHERE true))')).toBe(false);
+    expect(predicateReferencesUserIdentity(null)).toBe(false);
+  });
+
+  it('a parent org check is an access helper on a joined non-users table alias', () => {
+    expect(predicateHasParentOrgCheck(PARENT_AND_USER)).toBe(true);
+    expect(predicateHasParentOrgCheck(PARENT_ONLY)).toBe(true);
+    // The users join carries access helpers but describes the user, not the parent row.
+    expect(predicateHasParentOrgCheck(USER_BRANCH_ONLY)).toBe(false);
+    // Joining the parent without an access helper on it is not a check.
+    expect(predicateHasParentOrgCheck(PARENT_JOIN_NO_HELPER)).toBe(false);
+    expect(predicateHasParentOrgCheck(null)).toBe(false);
+  });
+
+  it('recognises a parent introduced by an explicit JOIN or a comma join', () => {
+    expect(predicateHasParentOrgCheck(
+      '(EXISTS ( SELECT 1 FROM (child c JOIN tickets t ON ((t.id = c.ticket_id))) WHERE (breeze_has_org_access(t.org_id) AND (c.user_id = breeze_current_user_id()))))',
+    )).toBe(true);
+    expect(predicateHasParentOrgCheck(
+      '(EXISTS ( SELECT 1 FROM child c, tickets t WHERE ((t.id = c.ticket_id) AND breeze_has_org_access(t.org_id))))',
+    )).toBe(true);
+    // A users alias joined the same way still does not count.
+    expect(predicateHasParentOrgCheck(
+      '(EXISTS ( SELECT 1 FROM (child c JOIN users u ON ((u.id = c.user_id))) WHERE breeze_has_org_access(u.org_id)))',
+    )).toBe(false);
+  });
+
+  it('accepts (knowingly) a parent check OR-ed beside an owner branch: co-presence, not boolean structure', () => {
+    // push_notifications keeps the recipient's own rows by design, so the
+    // owner branch is OR-ed with the parent-checked branch. The matcher cannot
+    // tell this from an accidental OR; behavioural tests own that distinction.
+    expect(userBranchesWithoutParentOrgCheck([
+      policy({ cmd: 'SELECT', qual: '((user_id = breeze_current_user_id()) OR (EXISTS ( SELECT 1 FROM alerts a WHERE ((a.id = push_notifications.alert_id) AND breeze_has_org_access(a.org_id)))))' }),
+    ])).toEqual([]);
+  });
+
+  it('flags each permissive slot that admits by user identity without a parent org check', () => {
+    const flagged = userBranchesWithoutParentOrgCheck([
+      policy({ policyname: 'sel', cmd: 'SELECT', qual: USER_BRANCH_ONLY }),
+      policy({ policyname: 'ins', cmd: 'INSERT', with_check: OWNER_ONLY }),
+      policy({ policyname: 'upd', cmd: 'UPDATE', qual: PARENT_AND_USER, with_check: USER_BRANCH_ONLY }),
+      policy({ policyname: 'ok', cmd: 'ALL', qual: PARENT_AND_USER, with_check: PARENT_AND_USER }),
+      policy({ policyname: 'parent', cmd: 'SELECT', qual: PARENT_ONLY }),
+      policy({ policyname: 'restrictive', cmd: 'ALL', permissive: 'RESTRICTIVE', qual: USER_BRANCH_ONLY }),
+    ]);
+    expect(flagged).toEqual([
+      { policyname: 'sel', cmd: 'SELECT', slot: 'qual' },
+      { policyname: 'ins', cmd: 'INSERT', slot: 'with_check' },
+      { policyname: 'upd', cmd: 'UPDATE', slot: 'with_check' },
+    ]);
   });
 });

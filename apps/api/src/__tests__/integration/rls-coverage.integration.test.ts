@@ -17,6 +17,7 @@ import {
   coveredCommands,
   predicateCoversOrgAxis,
   predicateCoversParents,
+  userBranchesWithoutParentOrgCheck,
   type Cmd,
   type ParentRule,
   type PolicyRow,
@@ -1124,6 +1125,34 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // Request paths are limited to the exact user owner; the explicit system
   // branch lets the bounded retry worker drain work for every user.
   'oauth_revocation_retries',
+]);
+
+// Tables WITHOUT their own org_id whose permissive policies may admit rows by
+// user identity (breeze_current_user_id(), or a join through `users`) with no
+// check on a parent row's owner. Entry criterion: the row is the user's OWN
+// data (their session, credential, device, preference or request) — it does
+// not copy or annotate content that belongs to an organization.
+//
+// A child row that derives from an org-scoped parent (a ticket comment, a
+// review item, a notification for an alert) does NOT belong here, even if it
+// also has a user_id: Postgres ORs permissive policies, so a single user-keyed
+// policy lets the row through without its parent's org being checked. Such a
+// table needs every user branch paired with a parent owner check instead —
+// see 'every child table without org_id checks its parent org wherever a policy
+// admits by user identity' below.
+const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
+  'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
+  'authenticator_devices', // the user's own approver device keys.
+  'email_verification_tokens', // verification token for the user's own address; also carries its own partner_id.
+  'mobile_devices', // the user's own registered phone/tablet.
+  'oauth_interactions', // the user's own in-flight OAuth login interaction.
+  'oauth_revocation_retries', // retry work for revoking the user's own OAuth grants.
+  'oauth_sessions', // the user's own OAuth provider session.
+  'refresh_token_families', // the user's own refresh-token chain.
+  'sessions', // the user's own login session.
+  'ticket_push_preferences', // the user's own push preference row (user_id PK, no ticket reference).
+  'user_passkeys', // the user's own WebAuthn credentials.
+  'user_sso_identities', // the user's own link to an external identity.
 ]);
 
 // Platform bookkeeping tables that hold no tenant data and are not a tenancy
@@ -2275,6 +2304,79 @@ describe('RLS coverage contract', () => {
         `Each policy predicate must reference breeze_current_user_id(), e.g.: ` +
         `user_id = breeze_current_user_id(). ` +
         `See the Phase 6 migration for the canonical shape.`
+    ).toEqual([]);
+  });
+
+  // A child table with no org_id of its own derives its tenancy from a parent
+  // (ticket -> comment, alert -> notification). If ANY permissive policy on it
+  // admits rows by user identity alone — `user_id = breeze_current_user_id()`
+  // or an EXISTS over `users` checking the row's user's partner/org — the
+  // parent's org is never consulted for that branch, because Postgres ORs
+  // permissive policies. This class has been fixed table by table
+  // (ticket_comments 2026-11-14-100700, access_review_items 2026-11-19-101100);
+  // this assertion catches the next one mechanically.
+  it('every child table without org_id checks its parent org wherever a policy admits by user identity', async () => {
+    const rows = (await db.execute(sql`
+      SELECT c.relname AS table_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND NOT c.relispartition
+        AND c.relrowsecurity
+        AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns col
+          WHERE col.table_schema = n.nspname AND col.table_name = c.relname AND col.column_name = 'org_id'
+        )
+      ORDER BY c.relname;
+    `)) as unknown as Array<{ table_name: string }>;
+    const policiesByTable = await loadPublicPolicies();
+
+    const offenders = rows
+      .map((r) => r.table_name)
+      .filter((table) => !USER_OWNED_CHILD_TABLES.has(table))
+      .map((table) => ({ table, policies: userBranchesWithoutParentOrgCheck(policiesByTable.get(table) ?? []) }))
+      .filter((o) => o.policies.length > 0);
+
+    expect(
+      offenders,
+      `Tables without an org_id column whose permissive policies admit rows by user identity ` +
+        `(breeze_current_user_id() or a join through users) without checking the parent row's org:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Postgres ORs permissive policies, so each listed slot reaches rows whose parent belongs to an org the ` +
+        `caller cannot access. Fix (preferred): in a new idempotent migration, AND every user branch in each listed ` +
+        `policy slot with an owner check on the parent, e.g. ` +
+        `EXISTS (SELECT 1 FROM tickets t WHERE t.id = ticket_comments.ticket_id AND breeze_has_org_access(t.org_id)) ` +
+        `(use breeze_has_partner_access(<alias>.partner_id) too for an org-XOR-partner parent). Keep a bare ` +
+        `breeze_current_scope() = 'system' branch if the worker needs it. References: ` +
+        `2026-11-14-100700-ticket-comments-parent-org-policies.sql, ` +
+        `2026-11-19-101100-access-review-items-parent-review-policies.sql. ` +
+        `Only if the table's rows are the user's OWN data (session, credential, device, preference) and do not ` +
+        `copy or annotate an organization's content, add it to USER_OWNED_CHILD_TABLES with a one-line reason.`
+    ).toEqual([]);
+  });
+
+  it('USER_OWNED_CHILD_TABLES names only existing RLS tables without an org_id column', async () => {
+    const rows = (await db.execute(sql`
+      SELECT c.relname AS table_name,
+        c.relrowsecurity AS rls_on,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns col
+          WHERE col.table_schema = n.nspname AND col.table_name = c.relname AND col.column_name = 'org_id'
+        ) AS has_org_id
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p');
+    `)) as unknown as Array<{ table_name: string; rls_on: boolean; has_org_id: boolean }>;
+    const byName = new Map(rows.map((r) => [r.table_name, r]));
+    const stale = [...USER_OWNED_CHILD_TABLES].filter((t) => {
+      const r = byName.get(t);
+      return !r || !r.rls_on || r.has_org_id;
+    });
+    expect(
+      stale,
+      `USER_OWNED_CHILD_TABLES entries that no longer exist, have RLS off, or now carry an org_id column ` +
+        `(so the child-table assertion above no longer considers them). Remove them: ${JSON.stringify(stale)}`
     ).toEqual([]);
   });
 });
