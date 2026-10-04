@@ -15,6 +15,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../../db';
 import { aiAgentRuns, aiAgents } from '../../../db/schema/aiAgents';
 import { alertRules, alertTemplates, alerts, devices, organizations, partners, scripts, sites } from '../../../db/schema';
+import { cutScriptVersion } from '../../scriptVersions';
 import { ensureResearchAgent } from '../../aiAgents/researchProvisioning';
 import { registerAgentRunEnqueuer } from '../../aiAgents/runService';
 import { executeAgentRun } from '../../aiAgents/runLoop';
@@ -45,7 +46,15 @@ export async function seedResearchEvalCase(c: ResearchEvalCase): Promise<{ orgId
       osVersion: 'eval', architecture: 'x86_64', agentVersion: '0.0.0-eval',
     }).returning({ id: devices.id });
     for (const sc of c.catalog) {
-      await db.insert(scripts).values({ orgId: o!.id, name: sc.name, description: sc.description, language: sc.language, osTypes: sc.osTypes, content: '# eval fixture' });
+      // The row and its v1 version are one unit of work (#5622): version 0 is
+      // transient, cutScriptVersion moves it to 1 and snapshots it.
+      await db.transaction(async (tx) => {
+        const [row] = await tx.insert(scripts).values({
+          orgId: o!.id, name: sc.name, description: sc.description, language: sc.language, osTypes: sc.osTypes,
+          content: '# eval fixture', version: 0, origin: 'human',
+        }).returning({ id: scripts.id });
+        await cutScriptVersion(tx, { scriptId: row!.id, provenance: { origin: 'human', changelog: 'Eval fixture', createdBy: null } });
+      });
     }
     let ruleId: string | null = null;
     if (c.alert.ruleConditions !== undefined) {
