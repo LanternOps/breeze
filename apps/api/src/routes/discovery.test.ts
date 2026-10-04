@@ -6,7 +6,7 @@ import { authMiddleware } from '../middleware/auth';
 import { isRedisAvailable } from '../services/redis';
 import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
 import { writeRouteAudit } from '../services/auditEvents';
-import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
+import { enqueueDiscoveryScanAfterCommit, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 import { moveDiscoveredAssetsToSite } from '../services/discoveredAssetSiteMove';
@@ -54,7 +54,7 @@ vi.mock('../services/redis', () => ({
 }));
 
 vi.mock('../jobs/discoveryWorker', () => ({
-  enqueueDiscoveryScan: vi.fn(async () => {}),
+  enqueueDiscoveryScanAfterCommit: vi.fn(),
   getDiscoveryQueue: vi.fn(() => null),
 }));
 
@@ -1153,6 +1153,13 @@ describe('discovery routes', () => {
       const body = await res.json();
       expect(body.id).toBe('job-001');
       expect(body.status).toBe('scheduled');
+      // Dispatch is deferred until the request transaction commits (#7187 hazard).
+      expect(enqueueDiscoveryScanAfterCommit).toHaveBeenCalledWith(expect.objectContaining({
+        jobId: 'job-001',
+        profileId,
+        agentId: null,
+        failureMessage: 'Failed to enqueue scan job',
+      }));
     });
 
     it('rejects requested agents from a different site', async () => {
@@ -1888,7 +1895,7 @@ describe('discovery routes', () => {
 
       expect(res.status).toBe(403);
       expect(createDiscoveryJobIfIdle).not.toHaveBeenCalled();
-      expect(enqueueDiscoveryScan).not.toHaveBeenCalled();
+      expect(enqueueDiscoveryScanAfterCommit).not.toHaveBeenCalled();
     });
 
     it('rejects a mixed-site bulk approve atomically before any update', async () => {

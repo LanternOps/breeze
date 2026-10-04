@@ -10,7 +10,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { compareBaselineScan, normalizeBaselineScanSchedule } from '../services/networkBaseline';
-import { enqueueDiscoveryScan, type DiscoveredHostResult } from './discoveryWorker';
+import { enqueueDiscoveryScanAfterCommit, type DiscoveredHostResult } from './discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { attachWorkerObservability } from './workerObservability';
 import {
@@ -340,27 +340,16 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
   }
 
   if (created.created) {
-    try {
-      await enqueueDiscoveryScan(
-        discoveryJob.id,
-        profile.id,
-        baseline.orgId,
-        baseline.siteId,
-        null
-      );
-    } catch (error) {
-      await db
-        .update(discoveryJobs)
-        .set({
-          status: 'failed',
-          completedAt: new Date(),
-          errors: { message: 'Failed to enqueue baseline discovery scan' },
-          updatedAt: new Date()
-        })
-        .where(eq(discoveryJobs.id, discoveryJob.id));
-
-      throw error;
-    }
+    // This handler runs inside runWithSystemDbAccess; enqueue only after the
+    // job row commits (#7187 hazard). An enqueue failure marks the job failed.
+    enqueueDiscoveryScanAfterCommit({
+      jobId: discoveryJob.id,
+      profileId: profile.id,
+      orgId: baseline.orgId,
+      siteId: baseline.siteId,
+      agentId: null,
+      failureMessage: 'Failed to enqueue baseline discovery scan',
+    });
   }
 
   await db

@@ -21,7 +21,7 @@ import {
   snmpMetrics,
   devices
 } from '../db/schema';
-import { enqueueDiscoveryScan, getDiscoveryQueue } from '../jobs/discoveryWorker';
+import { enqueueDiscoveryScanAfterCommit, getDiscoveryQueue } from '../jobs/discoveryWorker';
 import { isRedisAvailable } from '../services/redis';
 import { writeRouteAudit } from '../services/auditEvents';
 import { withLegacyTopologyWrite, requireLegacyLayoutNodes } from '../services/topology/legacyWrites';
@@ -949,24 +949,17 @@ discoveryRoutes.post(
       return c.json({ error: 'Background job service unavailable. Redis is required for scan dispatch.' }, 503);
     }
 
-    try {
-      await enqueueDiscoveryScan(
-        job.id,
-        profile.id,
-        profile.orgId,
-        profile.siteId,
-        body.agentId
-      );
-    } catch (err) {
-      console.error('[Discovery] Failed to enqueue scan:', err);
-      await db.update(discoveryJobs).set({
-        status: 'failed',
-        completedAt: new Date(),
-        errors: { message: 'Failed to enqueue scan job' },
-        updatedAt: new Date()
-      }).where(eq(discoveryJobs.id, job.id));
-      return c.json({ error: 'Failed to enqueue scan job' }, 503);
-    }
+    // The job row commits with this request's transaction; the dispatch worker
+    // must not see the queue job before then (#7187 hazard). An enqueue failure
+    // after commit marks the job failed.
+    enqueueDiscoveryScanAfterCommit({
+      jobId: job.id,
+      profileId: profile.id,
+      orgId: profile.orgId,
+      siteId: profile.siteId,
+      agentId: body.agentId ?? null,
+      failureMessage: 'Failed to enqueue scan job',
+    });
 
     writeRouteAudit(c, {
       orgId: job.orgId,
