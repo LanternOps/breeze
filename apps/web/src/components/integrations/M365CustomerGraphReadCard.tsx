@@ -21,6 +21,7 @@ import { handleActionError, runAction } from "../../lib/runAction";
 import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
+import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
 import type { M365ConsentStepSummary } from "./m365ConsentSummary";
 
 const STATUSES = [
@@ -92,6 +93,9 @@ export const M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS = [
   "active",
   "degraded",
   ...STABLE_ERROR_CODES,
+  // Not an outcome: the identity callback parked a verified tenant and the
+  // operator must confirm it before Microsoft's consent screen (#7913 W03).
+  "confirm-tenant",
 ] as const;
 export type M365CustomerGraphReadCallbackResult =
   (typeof M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS)[number];
@@ -721,9 +725,11 @@ export default function M365CustomerGraphReadCard({
     ? t("m365CustomerGraphRead.callback.active")
     : callbackResult === "degraded"
       ? t("m365CustomerGraphRead.callback.degraded")
-      : callbackResult
+      : callbackResult && callbackResult !== "confirm-tenant"
         ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${callbackResult}`)
         : null;
+  const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
+  const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);
 
   // Onboarding is gated by an instance-level server flag, not by anything the
   // org can change. With nothing connected there is nothing to manage, so the
@@ -777,6 +783,17 @@ export default function M365CustomerGraphReadCard({
         >
           {callbackCopy}
         </p>
+      )}
+
+      {showConfirmTenant && orgId && (
+        <M365ConfirmTenantPanel
+          key={orgId}
+          apiBase="/m365/connections/customer-graph-read/consent"
+          orgId={orgId}
+          canWrite={canWrite}
+          onCancelled={reloadAfterCancel}
+          testId="m365-read-confirm-tenant"
+        />
       )}
 
       {loadState === "unavailable" && (
@@ -928,6 +945,10 @@ export default function M365CustomerGraphReadCard({
                 </div>
               )}
             </div>
+          )}
+
+          {data.onboardingEnabled && !canRetestConnection && (
+            <M365ConsentSteps className="border-t pt-5" />
           )}
 
           <div className="flex flex-col gap-3 border-t pt-5 sm:flex-row sm:flex-wrap sm:items-center">

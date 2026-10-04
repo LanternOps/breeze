@@ -204,6 +204,12 @@ const TARGET_GLOBS = [
   'src/components/billing/quotes/QuotesPage.tsx',
   'src/components/billing/quotes/QuoteEditor.tsx',
   'src/components/alerts/CorrelatedAlertGroups.tsx',
+  // M365 confirm-tenant interstitial (#7913 W03): continue/cancel are the
+  // last step before Microsoft consent — in the targeted set from birth, with
+  // the two cards that host it.
+  'src/components/integrations/M365ConfirmTenantPanel.tsx',
+  'src/components/integrations/M365CustomerGraphReadCard.tsx',
+  'src/components/integrations/M365CustomerGraphActionsCard.tsx',
   'src/components/integrations/SecurityIntegration.tsx',
   // Accounting entity mapping workbench (QuickBooks, and Xero from W02):
   // confirm/create/unlink/sync decisions
@@ -893,7 +899,9 @@ describe('no silent mutations in targeted set', () => {
     // W06 #7604 Task 14 adds aiModels/ManualModelForm.tsx: 213 → 214.
     // (connectionForms/*.tsx hold no fetch calls: ConnectionDrawer performs the connection mutations.)
     // W02 autopay adds the settings writer and shared transport.
-    expect(absoluteFiles.length).toBe(216);
+    // M365 identity-first W03 #7913 adds M365ConfirmTenantPanel.tsx and the
+    // two Customer Graph cards that host it: 216 → 219.
+    expect(absoluteFiles.length).toBe(219);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
