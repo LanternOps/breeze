@@ -75,3 +75,18 @@ describe('persisted parameters byte bound (parameters_size_check = 8192 octets)'
     expect(out.items).toHaveLength(1);
   });
 });
+
+describe('invalid text (U+0000 / lone surrogate) drops the item, not the batch', () => {
+  const manual = (step: string) => ({ kind: 'manual_steps', steps: [step], ...base });
+
+  it('rejects items carrying NUL or a lone surrogate; well-formed (incl. emoji pairs) items survive', () => {
+    const out = validateResearchSubmission({
+      summary: 's',
+      items: [manual('a\u0000b'), manual('x\uD83Dy'), manual('y\uDE00'), manual('ok 😀')],
+    }, refs);
+    expect(out.rejected).toEqual([
+      { index: 0, reason: 'item_invalid_text' }, { index: 1, reason: 'item_invalid_text' }, { index: 2, reason: 'item_invalid_text' },
+    ]);
+    expect(out.items).toHaveLength(1);
+  });
+});

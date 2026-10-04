@@ -33,9 +33,20 @@ export function cleanupActionsForOs(os: ResearchToolRefs['deviceOs']): ReadonlyS
   return new Set(SYSTEM_CLEANUP_ACTION_IDS.filter((id) => id.startsWith(OS_PREFIX[os])));
 }
 
+// Postgres text/jsonb cannot store U+0000, and a lone UTF-16 surrogate has no
+// valid UTF-8 encoding; either would abort the whole batch insert.
+const INVALID_TEXT = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+function hasInvalidText(v: unknown): boolean {
+  if (typeof v === 'string') return INVALID_TEXT.test(v);
+  if (Array.isArray(v)) return v.some(hasInvalidText);
+  if (v && typeof v === 'object') return Object.entries(v).some(([k, x]) => INVALID_TEXT.test(k) || hasInvalidText(x));
+  return false;
+}
+
 function rejectionFor(item: ResearchSuggestionItem, refs: ResearchToolRefs): ResearchRejection['reason'] | null {
   // Byte bound of the persisted parameters JSON (multi-byte text can exceed the
   // DB's 8192-octet CHECK well within the character limits the schema allows).
+  if (hasInvalidText(item)) return 'item_invalid_text';
   if (researchItemTooLarge(item)) return 'item_too_large';
   switch (item.kind) {
     case 'catalog':
