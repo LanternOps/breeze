@@ -613,11 +613,13 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     // fails the run with a typed code rather than researching the wrong box.
     let research: RunContext['research'] = null;
     if (isResearchProfile(run as RunRow)) {
+      // A device-less run must fail typed, not hand '' to a uuid column (22P02).
+      if (!run.deviceId) throw new AgentRunError('research_device_unavailable', 'remediation_research run has no device');
       try {
         research = await loadResearchContext({
           orgId: run.orgId,
           partnerId: org.partnerId,
-          deviceId: run.deviceId ?? '',
+          deviceId: run.deviceId,
           triggerRef: (run.triggerRef ?? {}) as Record<string, unknown>,
         });
       } catch (error) {

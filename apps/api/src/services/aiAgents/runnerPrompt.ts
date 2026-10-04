@@ -1660,7 +1660,7 @@ function buildResearchTaskPrompt(ctx: AgentRunPromptContext): string {
   const lines: string[] = [];
   lines.push(`Depth: ${r.depth} (${r.depth === 'deep' ? 'investigate with your tools before suggesting' : 'suggest from what is below; at most a couple of tool calls'})`);
   lines.push(`Device: ${r.device.osType}, id ${r.device.id}`);
-  lines.push(`Problem source: ${r.source.sourceType} ${r.source.sourceId}`);
+  lines.push(`Problem source: ${r.source.sourceType} ${safeToken(r.source.sourceId, 64)}`);
   if (r.source.severity) lines.push(`Severity: ${sanitizeSweepText(r.source.severity, 16)}`);
   if (r.signature) {
     lines.push(`Problem signature: ${safeToken(r.signature.condition, 120)}${r.signature.discriminatorKind ? ` (specific ${safeToken(r.signature.discriminatorKind, 40)})` : ' (broad)'}`);
@@ -1680,17 +1680,17 @@ function buildResearchTaskPrompt(ctx: AgentRunPromptContext): string {
   if (r.memory && r.memory.proven.length > 0) {
     for (const f of r.memory.proven) {
       const id = f.scriptId ?? f.playbookId ?? f.builtinAction ?? f.fixKind;
-      lines.push(`- ${id} — ${quoteData(f.scriptName ?? f.fixKind, 120)} worked ${f.verified}/${f.attempts}`);
+      lines.push(`- ${safeToken(id, 60)} — ${quoteData(f.scriptName ?? f.fixKind, 120)} worked ${f.verified}/${f.attempts}`);
     }
   } else {
     lines.push('- none');
   }
   lines.push(`Catalog runnable on ${r.device.osType} (id — name):`);
   for (const sc of r.catalog.scripts) {
-    lines.push(`- ${sc.id} — ${quoteData(sc.name, 120)}${sc.description ? `: ${quoteData(sc.description, 160)}` : ''}`);
+    lines.push(`- ${safeToken(sc.id, 64)} — ${quoteData(sc.name, 120)}${sc.description ? `: ${quoteData(sc.description, 160)}` : ''}`);
   }
   if (r.catalog.scripts.length === 0) lines.push('- none listed (use list_scripts)');
-  for (const pb of r.catalog.playbooks) lines.push(`- playbook ${pb.id} — ${quoteData(pb.name, 120)}`);
+  for (const pb of r.catalog.playbooks) lines.push(`- playbook ${safeToken(pb.id, 64)} — ${quoteData(pb.name, 120)}`);
   lines.push('</untrusted_data>');
   return lines.join('\n');
 }
