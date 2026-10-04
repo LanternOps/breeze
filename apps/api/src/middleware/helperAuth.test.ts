@@ -48,7 +48,12 @@ vi.mock('../services/tenantStatus', () => ({
   getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
+vi.mock('../services/helperSettings', () => ({
+  buildHelperConfigUpdate: vi.fn(),
+}));
+
 import { helperAuth, helperDbAccessContext } from './helperAuth';
+import { buildHelperConfigUpdate } from '../services/helperSettings';
 import { db, withDbAccessContext } from '../db';
 import { matchAgentTokenHash } from './agentAuth';
 import { getAgentTenantState } from '../services/tenantStatus';
@@ -102,6 +107,7 @@ describe('helperAuth middleware', () => {
     vi.clearAllMocks();
     vi.mocked(matchAgentTokenHash).mockReturnValue(true as never);
     vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(buildHelperConfigUpdate).mockResolvedValue({ enabled: true } as never);
   });
 
   it('rejects a missing bearer token', async () => {
@@ -279,6 +285,69 @@ describe('helperAuth middleware', () => {
 
       const middlewareCtx = vi.mocked(withDbAccessContext).mock.calls[0]?.[0];
       expect(middlewareCtx).toEqual(helperDbAccessContext({ orgId: 'org-1', partnerId: 'partner-1' }));
+    });
+  });
+  describe('Helper disabled by policy', () => {
+    const TOKEN = { Authorization: 'Bearer brz_' + 'a'.repeat(64) };
+    const disabledApp = new Hono();
+    disabledApp.use('*', helperAuth);
+    disabledApp.get('/api/v1/helper/config', (c) => c.json({ ok: true, deviceId: c.get('helperDevice').id }));
+    disabledApp.post('/api/v1/helper/config', (c) => c.json({ ok: true }));
+    disabledApp.get('/api/v1/helper/chat/sessions', (c) => c.json({ ok: true }));
+    disabledApp.get('/api/v1/extensions/acme/helper/config', (c) => c.json({ ok: true }));
+
+    beforeEach(() => {
+      vi.mocked(buildHelperConfigUpdate).mockResolvedValue({ enabled: false } as never);
+    });
+
+    it('resolves the effective setting for the authenticated device and org', async () => {
+      mockDeviceRow();
+      await disabledApp.request('/api/v1/helper/chat/sessions', { headers: TOKEN });
+      expect(buildHelperConfigUpdate).toHaveBeenCalledWith('dev-1', 'org-1');
+    });
+
+    it('refuses an ordinary helper route with 403 helper_disabled', async () => {
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/helper/chat/sessions', { headers: TOKEN });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Breeze Helper is disabled for this device by policy',
+        code: 'helper_disabled',
+      });
+      expect(withDbAccessContext).not.toHaveBeenCalled();
+    });
+
+    it('still serves GET /helper/config so the Helper can learn it is disabled', async () => {
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/helper/config', { headers: TOKEN });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, deviceId: 'dev-1' });
+    });
+
+    it('does not extend the allowance to other methods on /helper/config', async () => {
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/helper/config', { method: 'POST', headers: TOKEN });
+      expect(res.status).toBe(403);
+    });
+
+    it('does not extend the allowance to extension routes ending in /helper/config', async () => {
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/extensions/acme/helper/config', { headers: TOKEN });
+      expect(res.status).toBe(403);
+    });
+
+    it('admits ordinary routes when the effective setting is enabled (control)', async () => {
+      vi.mocked(buildHelperConfigUpdate).mockResolvedValue({ enabled: true } as never);
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/helper/chat/sessions', { headers: TOKEN });
+      expect(res.status).toBe(200);
+    });
+
+    it('answers 503 when the effective setting cannot be resolved', async () => {
+      vi.mocked(buildHelperConfigUpdate).mockRejectedValue(new Error('db down'));
+      mockDeviceRow();
+      const res = await disabledApp.request('/api/v1/helper/chat/sessions', { headers: TOKEN });
+      expect(res.status).toBe(503);
     });
   });
 });

@@ -103,6 +103,10 @@ vi.mock('../../services/helperPermissions', () => ({
   resolveHelperPermissionLevelForDevice: vi.fn(),
 }));
 
+vi.mock('../../services/helperSettings', () => ({
+  buildHelperConfigUpdate: vi.fn(async () => ({ enabled: true })),
+}));
+
 vi.mock('../../services/helperAiAgent', () => ({
   buildHelperSystemPrompt: vi.fn(() => 'helper system prompt'),
 }));
@@ -198,6 +202,7 @@ import { settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
+import { buildHelperConfigUpdate } from '../../services/helperSettings';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
 import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
@@ -380,6 +385,33 @@ describe('helper routes permission derivation', () => {
     const body = await res.json();
     expect(body.permissionLevel).toBe('extended');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  it('reports the effective enabled setting from policy, not a constant', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    vi.mocked(buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
+
+    const res = await app.request('/helper/config', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).enabled).toBe(false);
+    expect(buildHelperConfigUpdate).toHaveBeenCalledWith('device-1', 'org-1');
+  });
+
+  it('reports enabled:true when the effective setting is enabled', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    vi.mocked(buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: true } as never);
+
+    const res = await app.request('/helper/config', {
+      headers: { Authorization: 'Bearer brz_agent_token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).enabled).toBe(true);
   });
 
   it('uses server-derived permissionLevel and allowlist when sending messages', async () => {

@@ -657,7 +657,10 @@ helperRoutes.get('/config', async (c) => {
   const permissionLevel = await resolveHelperPermissionLevelForDevice(device.id, DEFAULT_PERMISSION_LEVEL);
 
   return c.json({
-    enabled: true,
+    // Resolved by helperAuth (services/helperSettings — same resolver as the
+    // agent heartbeat). This route stays reachable while disabled so a running
+    // Helper can learn it.
+    enabled: c.get('helperEnabled') === true,
     permissionLevel,
     allowScreenCapture: true,
     sessionRetentionHours: 24,
