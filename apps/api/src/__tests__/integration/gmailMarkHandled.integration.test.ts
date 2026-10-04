@@ -51,7 +51,9 @@ async function seed(parseStatus: string | null, credentialStatus = 'active') {
   });
 }
 
-const deps = { sleep: async () => {}, modifyClient: () => ({ fake: true }) as never };
+const FAKE_GMAIL = { fake: true } as never;
+const sessionFor = (liveSub: string) => () => ({ gmail: FAKE_GMAIL, identity: async () => ({ sub: liveSub, email: MAILBOX }) });
+const deps = { sleep: async () => {}, modifyClient: sessionFor(SUB) };
 
 describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
   beforeEach(() => {
@@ -72,7 +74,7 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
   it('labels (and archives by default) a message that became a ticket', async () => {
     const { email, generation } = await seed('created');
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
-    expect(gm.markGmailHandled).toHaveBeenCalledWith({ fake: true }, MAILBOX, 'msg-123', expect.objectContaining({ labelName: 'Handled', archive: true, accountSub: SUB }));
+    expect(gm.markGmailHandled).toHaveBeenCalledWith(FAKE_GMAIL, MAILBOX, 'msg-123', expect.objectContaining({ labelName: 'Handled', archive: true, accountSub: SUB }));
   });
 
   it('labels a reply threaded onto an existing ticket (matched)', async () => {
@@ -103,6 +105,14 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
   });
 
+  it('never modifies when the org credential now resolves the mailbox to a different account', async () => {
+    // Credential replaced in place (no generation rotation): the row still
+    // matches, but the live identity behind the modify token is another account.
+    const { email, generation } = await seed('created');
+    expect(await markIngestedGmailHandled(email, generation, { ...deps, modifyClient: sessionFor('goog-sub-OTHER') })).toBe('not_ticketed');
+    expect(gm.markGmailHandled).not.toHaveBeenCalled();
+  });
+
   it('a reconnect that lands during the Gmail call waits until the call has finished', async () => {
     const { email, generation, connId } = await seed('created');
     let reconnect: Promise<unknown> | undefined;
@@ -130,7 +140,7 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     const { email, generation, connId } = await seed('created');
     gm.markGmailHandled.mockImplementationOnce(async () => { throw Object.assign(new Error('backend'), { code: 503 }); });
     const retryDeps = {
-      modifyClient: () => ({ fake: true }) as never,
+      modifyClient: sessionFor(SUB),
       sleep: async () => {
         await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
           .set({ googleAccountSub: 'goog-sub-NEW' } as never)

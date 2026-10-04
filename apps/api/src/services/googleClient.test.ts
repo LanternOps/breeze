@@ -104,11 +104,16 @@ describe('inbound mailbox scopes (mark-handled opt-in)', () => {
     }
   });
 
-  it('builds a modify client that requests only gmail.modify', async () => {
+  it('builds a modify session with gmail.modify plus identity scopes, never readonly', async () => {
     const { getInboundModifyGmailClient } = await import('./googleClient');
-    const client = getInboundModifyGmailClient(VALID_KEY, 'support@example.com');
-    const scopes = (client as unknown as { context: { _options: { auth: { scopes: string[] } } } }).context._options.auth.scopes;
-    expect(scopes).toEqual(['https://www.googleapis.com/auth/gmail.modify']);
-    expect(typeof client.users.messages.modify).toBe('function');
+    const session = getInboundModifyGmailClient(VALID_KEY, 'support@example.com');
+    const scopes = (session.gmail as unknown as { context: { _options: { auth: { scopes: string[] } } } }).context._options.auth.scopes;
+    expect(scopes).toEqual([
+      'https://www.googleapis.com/auth/gmail.modify',
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+    ]);
+    expect(typeof session.gmail.users.messages.modify).toBe('function');
+    expect(typeof session.identity).toBe('function');
   });
 });

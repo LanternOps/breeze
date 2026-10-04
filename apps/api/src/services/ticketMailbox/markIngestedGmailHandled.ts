@@ -11,13 +11,12 @@
  * failed label is a cosmetic miss (the message stays in the inbox), not lost mail.
  */
 import { and, eq, inArray } from 'drizzle-orm';
-import type { gmail_v1 } from '@googleapis/gmail';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, ticketMailboxConnections } from '../../db/schema';
 import type { NormalizedInboundEmail } from '../inboundEmail/types';
 import type { MailboxGenerationContext } from '../inboundEmailQueue';
 import { loadGoogleConnection, decryptConnectionKey } from '../googleHelpers';
-import { getInboundModifyGmailClient } from '../googleClient';
+import { getInboundModifyGmailClient, type InboundMailboxSession } from '../googleClient';
 import { classifyGmailError, markGmailHandled } from './googleMailboxClient';
 import { gmailHandledConfig } from './gmailHandledConfig';
 
@@ -26,7 +25,7 @@ const RETRY_DELAYS_MS = [500, 2000];
 
 export interface MarkIngestedDeps {
   sleep?: (ms: number) => Promise<void>;
-  modifyClient?: (saKey: string, mailbox: string) => gmail_v1.Gmail;
+  modifyClient?: (saKey: string, mailbox: string) => InboundMailboxSession;
 }
 
 /** The account sub and Gmail message id from a normalized provider message id
@@ -109,7 +108,18 @@ export async function markIngestedGmailHandled(
           .limit(1)
           .for('share');
         if (!live) return false;
-        await markGmailHandled(build(saKey, mailbox), mailbox, gmailId, { ...cfg, accountSub: sub });
+        // The row lock does not cover the org credential, which can be replaced
+        // in place. Prove through the SAME token that will modify that the
+        // mailbox is still the account the message came from.
+        const session = build(saKey, mailbox);
+        const liveSub = (await session.identity()).sub;
+        if (liveSub !== sub) {
+          console.warn('[gmailHandled] mailbox now resolves to a different Google account; not modifying', {
+            connectionId: generation.connectionId,
+          });
+          return false;
+        }
+        await markGmailHandled(session.gmail, mailbox, gmailId, { ...cfg, accountSub: sub });
         return true;
       }, 'gmailHandled.mark'));
       return marked ? 'marked' : 'not_ticketed';

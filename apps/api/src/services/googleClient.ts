@@ -137,34 +137,42 @@ export interface InboundMailboxSession {
 }
 
 /**
- * Gmail client used ONLY to mark an ingested message handled (label + optional
- * archive). Requests GMAIL_INBOUND_MODIFY_SCOPES (gmail.modify) and nothing else,
- * and is separate from the read session so a missing modify grant fails only the
- * best-effort label call, never ingestion. Only built when GMAIL_HANDLED_LABEL is set.
+ * DWD session used ONLY to mark an ingested message handled (label + optional
+ * archive). Requests gmail.modify plus the identity scopes the read session
+ * already uses (openid, userinfo.email) and never gmail.readonly, and is separate
+ * from the read session so a missing modify grant fails only the best-effort
+ * label call, never ingestion. Its identity() reads the account sub through the
+ * SAME token that performs the modify, so the caller can prove the mailbox is
+ * still the account the message was ingested from. Only built when
+ * GMAIL_HANDLED_LABEL is set.
  */
 export function getInboundModifyGmailClient(
   decryptedKeyJson: string,
   targetMailboxEmail: string,
-): gmail_v1.Gmail {
-  const key = parseServiceAccountKey(decryptedKeyJson);
-  const auth = new gmailAuth.JWT({
-    email: key.client_email,
-    key: key.private_key,
-    scopes: [...GMAIL_INBOUND_MODIFY_SCOPES],
-    subject: targetMailboxEmail,
-  });
-  return gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS });
+): InboundMailboxSession {
+  return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [
+    ...GMAIL_INBOUND_MODIFY_SCOPES,
+    ...GMAIL_INBOUND_SCOPES.filter((sc) => sc !== 'https://www.googleapis.com/auth/gmail.readonly'),
+  ]);
 }
 
 export function getInboundMailboxSession(
   decryptedKeyJson: string,
   targetMailboxEmail: string,
 ): InboundMailboxSession {
+  return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [...GMAIL_INBOUND_SCOPES]);
+}
+
+function buildInboundSession(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+  scopes: string[],
+): InboundMailboxSession {
   const key = parseServiceAccountKey(decryptedKeyJson);
   const auth = new gmailAuth.JWT({
     email: key.client_email,
     key: key.private_key,
-    scopes: [...GMAIL_INBOUND_SCOPES],
+    scopes,
     subject: targetMailboxEmail, // DWD: impersonate the mailbox
   });
   return {
