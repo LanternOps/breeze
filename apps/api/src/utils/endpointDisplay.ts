@@ -269,6 +269,9 @@ export function findDisplayPlaceholderPath(value: unknown, path = ''): string | 
 }
 
 const NETWORK_MONITOR_ALERT_SOURCE = 'network_monitor';
+// Kept in step with the backfill migration
+// 2026-12-07-110000-network-monitor-alert-endpoint-display.sql.
+const MIN_SUBSTITUTABLE_TARGET_LENGTH = 4;
 
 /**
  * Text copied out of an alert (title, message) into another record. Every URL
@@ -284,7 +287,13 @@ export function scrubAlertText(text: string | null | undefined, context: unknown
   const ctx = context as { source?: unknown; target?: unknown } | null | undefined;
   if (ctx && ctx.source === NETWORK_MONITOR_ALERT_SOURCE && typeof ctx.target === 'string' && ctx.target) {
     const presented = presentEndpointTarget(ctx.target).target;
-    if (presented !== ctx.target) out = out.split(ctx.target).join(presented);
+    // A target with no host part ('@', '/', 'x@') reduces to the placeholder;
+    // replacing such a short substring would rewrite unrelated characters of
+    // the message, so only a host-shaped target is substituted.
+    const substitutable = presented !== ctx.target
+      && presented !== INVALID_URL_PLACEHOLDER
+      && ctx.target.length >= MIN_SUBSTITUTABLE_TARGET_LENGTH;
+    if (substitutable) out = out.split(ctx.target).join(presented);
   }
   return scrubUrlsInText(out);
 }

@@ -53,7 +53,12 @@ BEGIN
       s.id,
       regexp_replace(
         CASE
-          WHEN s.shown_target IS NOT NULL AND s.raw_target <> '' AND s.shown_target <> s.raw_target
+          -- Same guard as scrubAlertText: a target with no host part ('@',
+          -- '/', 'x@') would rewrite unrelated characters of the message.
+          WHEN s.shown_target IS NOT NULL
+           AND s.shown_target <> s.raw_target
+           AND s.shown_target <> '[invalid-url]'
+           AND length(s.raw_target) >= 4
             THEN replace(s.message, s.raw_target, s.shown_target)
           ELSE s.message
         END,

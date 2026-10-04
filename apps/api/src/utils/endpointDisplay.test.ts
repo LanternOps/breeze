@@ -223,6 +223,14 @@ describe('scrubAlertText', () => {
     expect(scrubAlertText('x admin:pw@db.example.com/status', context)).toBe('x admin:pw@db.example.com/status');
   });
 
+  it('does not rewrite the message for a target that is not host-shaped', () => {
+    for (const target of ['@', '/', '?', '#', 'x@']) {
+      const context = { source: 'network_monitor', target };
+      expect(scrubAlertText('Check a@b/c?d#e failed. Target: ' + target + '.', context))
+        .toBe('Check a@b/c?d#e failed. Target: ' + target + '.');
+    }
+  });
+
   it('passes null and empty text through', () => {
     expect(scrubAlertText(null, null)).toBeNull();
     expect(scrubAlertText(undefined, {})).toBeUndefined();
