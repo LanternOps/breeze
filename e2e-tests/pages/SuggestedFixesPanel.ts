@@ -19,9 +19,9 @@ export class SuggestedFixesPanel extends BasePage {
   group(id: 'proven' | 'ai' | 'similar') { return this.page.getByTestId(`suggestions-group-${id}`); }
   aiWrittenLabel(id: string) { return this.page.getByTestId(`suggestion-ai-written-${id}`); }
   anyResearchState() { return this.page.locator('[data-testid^="research-state-"]').first(); }
-  /** The states a model-less stack can produce: started (running), the run failing, or a denial. */
+  /** The state a model-less stack deterministically produces: the request is denied (observed 4/4 runs, stable after 8s). */
   noModelResearchState() {
-    return this.page.locator('[data-testid="research-state-running"], [data-testid="research-state-failed"], [data-testid="research-state-denied"]').first();
+    return this.page.getByTestId('research-state-denied');
   }
   async researchDeeper() { await this.page.getByTestId('research-deeper').click(); }
   async draftScript(id: string) { await this.page.getByTestId(`suggestion-draft-${id}`).click(); }

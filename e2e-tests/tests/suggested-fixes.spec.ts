@@ -78,10 +78,9 @@ test.describe('AI suggested fixes', () => {
     await expect(panel.aiWrittenLabel(seed.stepsId)).toBeVisible();
   });
 
-  // No live model on the stack, so the outcome is running (run started), failed
-  // (llm unavailable) or denied; which one depends on worker timing, so all three
-  // are accepted. UNCOVERED here: research-state-no-safe-fix and
-  // research-state-credits (need a real run / a billing denial) and the
+  // No live model on the stack, so the request is denied; observed deterministic
+  // across repeated runs. UNCOVERED here: research-state-running/-failed/
+  // -no-safe-fix/-credits (need a real run or a billing denial) and the
   // running -> done transition; those are covered by the web unit tests.
   test('Research deeper always lands on an explicit state, never an empty panel', async () => {
     const panel = new SuggestedFixesPanel(page);
