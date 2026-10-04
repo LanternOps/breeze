@@ -61,8 +61,10 @@ import {
   POWER_STATE_BARRIER_TYPES,
   TEARDOWN_CLAIM_EXEMPT_TYPES,
   partitionClaimable,
+  registerCommandRevalidation,
   registerTypeHold,
   typeHolds,
+  __resetCommandRevalidationsForTests,
   __resetEligibilityFaultThrottleForTests,
   __resetTypeHoldsForTests,
 } from './commandClaimEligibility';
@@ -355,6 +357,25 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     ]);
     expect(r.cancelled).toEqual([{ id: 'b', reason: 'device_moved_org' }]);
     expect(r.claimable.map((x) => x.id)).toEqual(['c']);
+  });
+
+  it('a delivery-revalidation fault HOLDS the row (fail closed, recoverable) and spares siblings', async () => {
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('script', async () => {
+      throw new Error('function breeze_command_requester_authority does not exist');
+    });
+    try {
+      const r = await partitionClaimable(tx(), device, [
+        row({ id: 'bad', type: 'script', createdBy: USER }),
+        row({ id: 'ok' }),
+      ]);
+      expect(r.held).toEqual([{ id: 'bad', reason: 'eligibility_check_failed' }]);
+      expect(r.cancelled).toEqual([]);
+      expect(r.claimable.map((x) => x.id)).toEqual(['ok']);
+      expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
   });
 
   it('a registered type hold keeps the row pending without cancelling it', async () => {
