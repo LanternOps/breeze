@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemediationSuggestionsPanel from './RemediationSuggestionsPanel';
 import { fetchWithAuth } from '../../stores/auth';
@@ -10,6 +10,7 @@ const showToast = vi.fn();
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: { canManagePartnerWide: boolean } }) => unknown) => select({ user: { canManagePartnerWide: true } }),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -81,7 +82,7 @@ describe('RemediationSuggestionsPanel', () => {
 
     await screen.findByText('Suggested Fixes');
     expect(screen.getByText('Disk Cleanup')).toBeTruthy();
-    expect(screen.getByText('82%')).toBeTruthy();
+    expect(screen.queryByText(/%/)).toBeNull(); // no confidence percentage
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/remediation-suggestions?sourceType=anomaly&sourceId=anomaly-1&limit=5');
   });
 
@@ -603,5 +604,279 @@ describe('RemediationSuggestionsPanel', () => {
     await screen.findByTestId('remediation-outcome');
     expect(screen.queryByTestId('remediation-vote-up')).toBeNull();
     expect(screen.queryByTestId('remediation-vote-down')).toBeNull();
+  });
+
+  const memoryUrl = '/remediation-suggestions/memory?sourceType=anomaly&sourceId=anomaly-1';
+  const researchUrl = '/remediation-suggestions/research?sourceType=anomaly&sourceId=anomaly-1';
+  const serveW2 = (opts: { list?: unknown[]; memory?: unknown; research?: unknown; extra?: (url: string, method: string, init?: RequestInit) => Response | undefined }) =>
+    serve(opts.list ?? [], (url, method, init) => {
+      const custom = opts.extra?.(url, method, init); // a test's own answer wins over the defaults
+      if (custom) return custom;
+      if (url === memoryUrl) return makeJsonResponse({ data: opts.memory ?? { proven: [], similar: [] } });
+      if (url === researchUrl) return makeJsonResponse({ data: opts.research ?? null });
+      return undefined;
+    });
+
+  it('renders three labelled groups', async () => {
+    serveW2({
+      list: [
+        { ...suggestion, id: 'm', title: 'Clear temp', origin: 'memory', evidence: { memoryId: 'mem-1', scope: 'all_clients', attempts: 8, verifiedCount: 7 }, outcome: null },
+        { ...suggestion, id: 'a', title: 'Restart spooler', origin: 'ai_research', targetType: 'builtin_action', builtinAction: 'restart_service', scriptId: null, outcome: null },
+      ],
+      memory: { proven: [], similar: [{ memoryId: 'mem-9', scope: 'this_client', fixKind: 'org_script', scriptName: 'Old fix', builtinAction: null, instructionsTitle: null, attempts: 3, verified: 1, successRate: 0.33, lastVerifiedAt: null, status: 'active' }] },
+    });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(within(await screen.findByTestId('suggestions-group-proven')).getByText('Clear temp')).toBeTruthy();
+    expect(within(screen.getByTestId('suggestions-group-ai')).getByText('Restart spooler')).toBeTruthy();
+    expect(within(screen.getByTestId('suggestions-group-ai')).getByText('AI researched')).toBeTruthy();
+    expect(within(screen.getByTestId('suggestions-group-similar')).getByText('Old fix')).toBeTruthy();
+    expect(screen.queryByText(/%/)).toBeNull(); // no confidence percentage anywhere
+  });
+
+  it('renders memory groups even when research is denied (memory never depends on research)', async () => {
+    serveW2({
+      memory: { proven: [{ memoryId: 'mem-2', scope: 'all_clients', fixKind: 'builtin_action', scriptName: null, builtinAction: 'disk_cleanup', instructionsTitle: null, attempts: 8, verified: 7, successRate: 0.875, lastVerifiedAt: null, status: 'active' }], similar: [] },
+      extra: (url, method) => (url === '/remediation-suggestions/research' && method === 'POST'
+        ? makeJsonResponse({ error: 'No AI access', code: 'permission' }, false, 403)
+        : undefined),
+    });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    await screen.findByTestId('research-state-denied');
+    expect(screen.getByTestId('research-state-denied').getAttribute('data-code')).toBe('permission');
+    expect(within(screen.getByTestId('suggestions-group-proven')).getByText('disk_cleanup')).toBeTruthy();
+  });
+
+  it('shows the explicit empty state with Generate when there is nothing', async () => {
+    serveW2({});
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(await screen.findByTestId('suggestions-empty')).toBeTruthy();
+    expect(screen.getByTestId('suggestions-generate')).toBeTruthy();
+  });
+
+  it('labels AI-written manual steps', async () => {
+    serveW2({ list: [{ ...suggestion, id: 's', origin: 'ai_research', targetType: 'manual_steps', scriptId: null, parameters: { steps: ['Open Services'] }, evidence: { aiWritten: true }, outcome: null }] });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(await screen.findByText('Written by AI — review before following')).toBeTruthy();
+  });
+
+  it('polls a running research run and then shows its result', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let calls = 0;
+      serveW2({ extra: (url) => {
+        if (url !== researchUrl) return undefined;
+        calls += 1;
+        return makeJsonResponse({ data: { runId: 'r', depth: 'quick', status: calls < 2 ? 'running' : 'completed', errorCode: null, noSafeFix: calls >= 2, finishedAt: null } });
+      } });
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      expect(await screen.findByTestId('research-state-running')).toBeTruthy();
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(await screen.findByTestId('research-state-no-safe-fix')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Research deeper → credits exhausted renders the explicit credits state (never empty)', async () => {
+    serveW2({ extra: (url, method) => (url === '/remediation-suggestions/research' && method === 'POST'
+      ? makeJsonResponse({ error: 'AI credits are exhausted', code: 'credits_exhausted' }, false, 402)
+      : undefined) });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    const state = await screen.findByTestId('research-state-credits');
+    expect(state.textContent).toContain('AI credits are exhausted');
+  });
+
+  it('maps a raw skip code to friendly copy', async () => {
+    serveW2({ extra: (url, method) => (url === '/remediation-suggestions/research' && method === 'POST'
+      ? makeJsonResponse({ error: 'agent_daily_budget_exceeded', code: 'agent_daily_budget_exceeded' }, false, 409)
+      : undefined) });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    const state = await screen.findByTestId('research-state-credits');
+    expect(state.textContent).toContain('daily AI budget');
+    expect(state.textContent).not.toContain('agent_daily_budget_exceeded');
+  });
+
+  it('a Generate denial from the response body is shown, not swallowed', async () => {
+    serveW2({ extra: (url, method) => (url === '/remediation-suggestions/generate' && method === 'POST'
+      ? makeJsonResponse({ skipped: false, data: [], research: { status: 'denied', code: 'permission', message: 'raw' } }, true, 201)
+      : undefined) });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('suggestions-generate'));
+    const state = await screen.findByTestId('research-state-denied');
+    expect(state.textContent).toContain('permission');
+  });
+
+  it('a failed run offers retry at the same depth through runAction', async () => {
+    const posts: unknown[] = [];
+    serveW2({
+      research: { runId: 'r', depth: 'deep', status: 'failed', errorCode: 'research_missing', noSafeFix: false, finishedAt: null },
+      extra: (url, method, init) => {
+        if (url === '/remediation-suggestions/research' && method === 'POST') { posts.push(JSON.parse(String(init?.body))); return makeJsonResponse({ data: { status: 'started', runId: 'r2', depth: 'deep' } }, true, 202); }
+        return undefined;
+      },
+    });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-retry'));
+    await waitFor(() => expect(posts).toEqual([{ sourceType: 'anomaly', sourceId: 'anomaly-1', depth: 'deep' }]));
+    expect(await screen.findByTestId('research-state-running')).toBeTruthy();
+  });
+
+  it('Done offers reviewed steps and sends the chosen id', async () => {
+    const done: unknown[] = [];
+    serveW2({
+      list: [{ ...suggestion, id: 's', origin: 'ai_research', targetType: 'manual_steps', scriptId: null, status: 'accepted', parameters: { steps: ['a'] }, outcome: null }],
+      extra: (url, method, init) => {
+        if (url === '/fix-memory/instructions') return makeJsonResponse({ data: [{ id: 'fi-1', title: 'Clear print queue', steps: ['a'], osType: null }] });
+        if (url === '/remediation-suggestions/s/done' && method === 'POST') { done.push(JSON.parse(String(init?.body))); return makeJsonResponse({ data: { outcome: { state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null } } }, true, 201); }
+        return undefined;
+      },
+    });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    await screen.findByText('Clear print queue', { selector: 'option' });
+    fireEvent.change(screen.getByTestId('suggestion-done-reviewed-s'), { target: { value: 'fi-1' } });
+    fireEvent.click(screen.getByTestId('suggestion-done-s'));
+    await waitFor(() => expect(done).toEqual([{ instructionsId: 'fi-1' }]));
+  });
+
+  it('saves AI-written steps as reviewed steps and preselects them for Done', async () => {
+    const saves: unknown[] = [];
+    serveW2({
+      list: [{ ...suggestion, id: 's', title: 'Clear queue', origin: 'ai_research', targetType: 'manual_steps', scriptId: null, status: 'accepted', parameters: { steps: ['a', 'b'] }, evidence: { aiWritten: true }, outcome: null }],
+      extra: (url, method, init) => {
+        if (url === '/fix-memory/instructions' && method === 'POST') { saves.push(JSON.parse(String(init?.body))); return makeJsonResponse({ data: { id: 'fi-9', title: 'Clear queue', steps: ['a', 'b'], osType: null } }, true, 201); }
+        if (url === '/fix-memory/instructions') return makeJsonResponse({ data: [] });
+        return undefined;
+      },
+    });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('suggestion-save-reviewed-s'));
+    fireEvent.click(screen.getByTestId('suggestion-reviewed-save-s'));
+    await waitFor(() => expect(saves).toEqual([{ title: 'Clear queue', steps: ['a', 'b'], osType: null, fromSuggestionId: 's' }]));
+    await waitFor(() => expect((screen.getByTestId('suggestion-done-reviewed-s') as HTMLSelectElement).value).toBe('fi-9'));
+  });
+
+  it('runs a built-in action through the same accept → Run flow', async () => {
+    serveW2({ list: [{ ...suggestion, id: 'b', origin: 'ai_research', targetType: 'builtin_action', builtinAction: 'restart_service', scriptId: null, status: 'accepted', outcome: null }] });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(await screen.findByRole('button', { name: 'Run restart_service' })).toBeTruthy();
+  });
+
+  it('attached proven rows show the track record and when it was last verified', async () => {
+    const lastVerifiedAt = new Date(Date.now() - 3 * 86_400_000 - 3_600_000).toISOString();
+    serveW2({ list: [{ ...suggestion, id: 'm', title: 'Clear temp', origin: 'memory', evidence: { memoryId: 'mem-1', scope: 'all_clients', attempts: 8, verifiedCount: 7, lastVerifiedAt }, outcome: null }] });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(await screen.findByText(/Worked 7 of 8 times across your clients/)).toBeTruthy();
+    expect(screen.getByText(/last verified 3d ago/)).toBeTruthy();
+  });
+
+  it('after polling stalls, Refresh restarts polling', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let gets = 0;
+      serveW2({ extra: (url) => {
+        if (url !== researchUrl) return undefined;
+        gets += 1;
+        return makeJsonResponse({ data: { runId: 'r', depth: 'quick', status: 'running', errorCode: null, noSafeFix: false, finishedAt: null } });
+      } });
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      await screen.findByTestId('research-state-running');
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 8_000);
+      const refresh = await screen.findByTestId('research-refresh');
+      expect(screen.getByText(/check back in a few minutes/)).toBeTruthy();
+      const before = gets;
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(gets).toBe(before); // gave up
+      fireEvent.click(refresh);
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(gets).toBeGreaterThan(before + 1); // the refresh read plus a resumed poll
+      expect(screen.queryByTestId('research-refresh')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a 401 on Research deeper shows no denial and no error toast (auth redirect owns it)', async () => {
+    serveW2({ extra: (url, method) => (url === '/remediation-suggestions/research' && method === 'POST'
+      ? makeJsonResponse({ error: 'Unauthorized' }, false, 401)
+      : undefined) });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    await waitFor(() => expect((screen.getByTestId('research-deeper') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId('research-state-denied')).toBeNull();
+    expect(screen.queryByTestId('research-state-credits')).toBeNull();
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  describe('Draft a script hand-off', () => {
+    const draftRow = { ...suggestion, id: 'd', origin: 'ai_research', targetType: 'script_draft', scriptId: null, parameters: { brief: 'Clear queue', language: 'powershell' }, outcome: null };
+    const briefUrl = '/remediation-suggestions/d/draft-brief';
+    const serveBrief = (brief: Response) => serveW2({ list: [draftRow], extra: (url) => (url === briefUrl ? brief : undefined) });
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    beforeEach(() => {
+      sessionStorage.clear();
+      assign.mockReset();
+      Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true, configurable: true });
+    });
+    afterEach(() => {
+      vi.restoreAllMocks(); // Storage.prototype.setItem spy
+      Object.defineProperty(window, 'location', { value: originalLocation, writable: true, configurable: true });
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+    });
+
+    it('fetches the brief, stashes it and navigates to the builder', async () => {
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      const button = await screen.findByTestId('suggestion-draft-d');
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(button);
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('/scripts/new'));
+      expect(JSON.parse(sessionStorage.getItem('breeze.scriptDraftHandoff')!)).toMatchObject({ brief: 'Clear queue', suggestionId: 'd' });
+    });
+
+    it('toasts an error and does not navigate when the brief cannot be fetched', async () => {
+      serveBrief(makeJsonResponse({ error: 'nope' }, false, 500));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Could not open the script draft.' })));
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('copies the prompt to the clipboard when storage is blocked', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('Write a PowerShell script for this fix: Clear queue'));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('shows the failure toast, not "copied", when storage is blocked and there is no Clipboard API', async () => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Could not open the script draft.' })));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed brief without stashing or navigating', async () => {
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'ruby', title: 'x' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(sessionStorage.getItem('breeze.scriptDraftHandoff')).toBeNull();
+      expect(assign).not.toHaveBeenCalled();
+    });
   });
 });

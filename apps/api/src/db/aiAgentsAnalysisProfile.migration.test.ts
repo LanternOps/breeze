@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AI_AGENT_RUN_PROFILES } from '@breeze/shared';
 
 const FILE = '2026-10-16-190500-ai-analysis-profile-org-switch.sql';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
@@ -18,12 +17,17 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 describe(`${FILE}`, () => {
   const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, FILE), 'utf8');
 
-  it('ai_agent_runs_profile_chk lists exactly AI_AGENT_RUN_PROFILES', () => {
+  // FROZEN at what THIS shipped migration says (8 profiles): the live-contract
+  // moves to the newest migration redefining the constraint, today
+  // aiAgentsResearchKind.migration.test.ts.
+  it('ai_agent_runs_profile_chk lists the eight profiles that existed when it shipped', () => {
     const match = /ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/.exec(sql);
     expect(match, 'profile CHECK not found').not.toBeNull();
     const listed = (match?.[1] ?? '')
       .split(',').map((v) => v.trim().replace(/^'|'$/g, '')).filter(Boolean).sort();
-    expect(listed).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+    expect(listed).toEqual(
+      ['analysis', 'design', 'full', 'narrative', 'patch', 'sweep', 'triage', 'verdict'],
+    );
   });
 
   it('adds both columns idempotently and drops the constraint before re-adding it', () => {

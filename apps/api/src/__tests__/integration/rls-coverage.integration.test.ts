@@ -272,6 +272,10 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['script_categories', 'partner_id'],
   ['script_tags', 'partner_id'],
   ['alert_templates', 'partner_id'],
+  // fix_instructions (AI Suggested Fixes W2): reviewed generic manual steps,
+  // partner-axis; SELECT-only own-partner branch for org readers ships in
+  // 2026-12-07-100100. Functional proof: fixInstructionsRls.integration.test.ts.
+  ['fix_instructions', 'partner_id'],
   // Product catalog (2026-06-14): partner-axis (RLS shape 3), flat
   // breeze_has_partner_access(partner_id) policies. catalog_bundle_components
   // denormalizes partner_id (rather than join through the bundle item) to

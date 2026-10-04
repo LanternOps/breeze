@@ -74,7 +74,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Derived aggregate recomputed from fix_outcomes by background system-context
   // jobs (outcome watcher, sweeper, tenant-erasure rebuild). No caller chooses
   // an owner axis: owner is resolved from the fix's own current ownership.
-  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; no caller-facing write and no caller-chosen owner axis',
+  'services/fixMemory/store.ts': 'derived aggregate written only by background system-context recompute/rebuild from fix_outcomes; its only caller-facing write is retireFixMemory, and routes/fixMemory.ts gates partner-owned rows on canManagePartnerWidePolicies (org rows on canAccessOrg); no caller-chosen owner axis',
+  'services/fixMemory/instructions.ts': 'Sole writer of fix_instructions; its only request-path caller, routes/fixMemory.ts, gates every write on canManagePartnerWidePolicies (403 pinned in fixMemory.test.ts).',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs
@@ -170,6 +171,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/abuseSignals/scriptContent.ts': 'abuse-sweep script-host cache, populated only by the system abuse pipeline',
   'services/inboundEmail/inboundEmailService.ts': 'inbound-mail worker queue state (jobs/inboundEmailWorker); no tenant caller',
   'services/llm/llmConfigResolver.ts': 'runtime resolver; only write is the system-context version-CASed credential-error stamp',
+  'services/llm/researchEval/runCase.ts': 'dev-only research-eval fixture seeding of a disposable partner/org/agent on a LOCAL database; the CLI refuses unless DATABASE_URL is loopback, RESEARCH_EVAL_ALLOW_WRITES=1 and NODE_ENV != production; never reachable from a request',
   'services/partnerCreate.ts': 'new-partner bootstrap seeds first roles/user/org before any partner capability can exist',
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
   'routes/alerts/rules.ts': 'the only write left (#7626, PATCH /alerts/rules/:id/active) switches a built-in system anchor rule on/off; it refuses an org_id NULL rule with 410 before writing and scopes the UPDATE `alertRules.orgId = <rule org>`, which can never match a partner-wide row',
@@ -245,6 +247,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
+  'services/aiAgents/researchProvisioning.ts': 'system provisioner: inserts the one built-in research baseline per partner (kind research, no caller-chosen fields) the first time research is admitted; every caller-facing edit goes through agentService, which gates partner rows',
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
   // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
   // construction: the clone it may insert pins `partnerId: null` +

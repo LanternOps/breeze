@@ -2334,7 +2334,8 @@
       "triage": "Investiga las alertas nuevas y propone qué hacer con ellas.",
       "patch": "Revisa los parches faltantes y propone qué instalar.",
       "helpdesk": "Toma tickets y propone respuestas y próximos pasos.",
-      "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe."
+      "designer": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
+      "research": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada."
     },
     "emptyState": {
       "title": "Aún no hay agentes",
@@ -2480,7 +2481,8 @@
       "triage": "Clasificación de alertas",
       "patch": "Aplicación de parches",
       "helpdesk": "Mesa de ayuda",
-      "designer": "Diseñador de flota"
+      "designer": "Diseñador de flota",
+      "research": "Investigación de soluciones"
     },
     "modes": {
       "off": "Desactivado",
@@ -3784,6 +3786,11 @@
           "blurb": "Lee toda la flota y escribe un diseño de monitoreo justificado para que un técnico lo apruebe.",
           "runsWhen": "inicias un Diseño de flota para una organización, o según una programación trimestral",
           "recommended": "una migración desde cero, o una auditoría de configuración trimestral"
+        },
+        "research": {
+          "blurb": "Integrado. Investiga un problema en un dispositivo cuando un técnico lo pide y sugiere soluciones seguras. Nunca ejecuta nada.",
+          "runsWhen": "un técnico pide sugerencias de solución para un problema de un dispositivo",
+          "recommended": "investigación automática y de solo lectura, un problema a la vez"
         }
       },
       "kindCard": {
@@ -3811,6 +3818,36 @@
       "title": "Este agente solo lee y escribe informes",
       "body": "Un Fleet Designer nunca ejecuta nada en un dispositivo. Activado significa que puede ejecutarse y entregar sus diseños a los destinatarios que elijas.",
       "ack": "Entiendo que este agente se ejecuta sin supervisión y entrega Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Límites de investigación",
+      "builtInNote": "Integrado y solo sugiere: nunca ejecuta nada. Puede apagarlo y definir sus límites de gasto.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Investigaciones simultáneas",
+          "hint": "Cuántas investigaciones pueden estar en curso a la vez."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Investigaciones por hora",
+          "hint": "Máximo de investigaciones iniciadas en una hora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Investigaciones automáticas por hora",
+          "hint": "Máximo de investigaciones iniciadas automáticamente por alertas altas y críticas. 0 apaga la investigación automática."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación rápida (centavos)",
+          "hint": "Límite de gasto de una investigación rápida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Presupuesto de investigación profunda (centavos)",
+          "hint": "Límite de gasto de una investigación profunda."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Gasto diario de investigación (centavos)",
+          "hint": "Límite total de gasto por día entre todas las ejecuciones de este agente."
+        }
+      }
     }
   },
   "apiKeyForm": {

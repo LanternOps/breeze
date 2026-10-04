@@ -26,7 +26,7 @@ const B = 'b'.repeat(64);
 const ctx = { orgId: 'org-a', partnerId: 'p-1', signatureKey: K, broadKey: B, broad: false, osFamily: 'windows' };
 const row = (over: Partial<MemoryCandidateRow> = {}): MemoryCandidateRow => ({
   id: 'm-1', orgId: null, partnerId: 'p-1', signatureKey: K, broadKey: B, osType: 'windows', fixKind: 'partner_script',
-  scriptId: 's-1', scriptVersionId: 'v-1', builtinAction: null, playbookId: null,
+  scriptId: 's-1', scriptVersionId: 'v-1', builtinAction: null, playbookId: null, instructionsRef: null, instructionsTitle: null,
   attempts: 4, verifiedCount: 4, failedCount: 0, recurredCount: 0, upVotes: 1, downVotes: 0,
   rollingSuccessRate: 1, recentOutcomes: ['verified', 'verified', 'verified', 'verified'], status: 'active',
   staleSince: null, lastVerifiedAt: new Date('2026-11-01T00:00:00Z'),
@@ -65,6 +65,13 @@ describe('classifyMemoryRows', () => {
   it('an active playbook is proven', () => {
     const pb = row({ fixKind: 'playbook', scriptId: null, scriptVersionId: null, script: null, scriptVersionNumber: null, playbookId: 'pb-1', playbook: { isActive: true } });
     expect(classifyMemoryRows([pb], ctx, 5).proven).toHaveLength(1);
+  });
+
+  it('reviewed manual steps are proven with their ref and title; a deleted reviewed row is not offered (W2 Task 16)', () => {
+    const steps = row({ fixKind: 'manual_steps', scriptId: null, scriptVersionId: null, script: null, scriptVersionNumber: null, instructionsRef: 'fi-1', instructionsTitle: 'Clear print queue' });
+    const out = classifyMemoryRows([steps], ctx, 5);
+    expect(out.proven[0]).toMatchObject({ fixKind: 'manual_steps', instructionsRef: 'fi-1', instructionsTitle: 'Clear print queue' });
+    expect(classifyMemoryRows([{ ...steps, instructionsTitle: null }], ctx, 5)).toEqual({ proven: [], similar: [] });
   });
 
   it('a proven PARTNER entry whose script was re-scoped to org A is never offered to org B (Review Focus 5, system-scope attach)', () => {

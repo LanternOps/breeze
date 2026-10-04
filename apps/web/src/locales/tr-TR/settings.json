@@ -2334,7 +2334,8 @@
       "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
       "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
-      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar."
+      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
+      "research": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz."
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -2480,7 +2481,8 @@
       "triage": "Uyarı önceliklendirme",
       "patch": "Yama yönetimi",
       "helpdesk": "Yardım masası",
-      "designer": "Filo tasarımcısı"
+      "designer": "Filo tasarımcısı",
+      "research": "Çözüm araştırması"
     },
     "modes": {
       "off": "Kapalı",
@@ -3784,6 +3786,11 @@
           "blurb": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
           "runsWhen": "bir kuruluş için Filo tasarımı başlattığınızda veya üç aylık bir zamanlamada",
           "recommended": "sıfırdan bir geçiş veya üç aylık bir yapılandırma denetimi"
+        },
+        "research": {
+          "blurb": "Yerleşik. Bir teknisyen istediğinde bir cihazdaki tek bir sorunu araştırır ve güvenli çözümler önerir. Asla bir şey çalıştırmaz.",
+          "runsWhen": "bir teknisyen bir cihaz sorunu için çözüm önerisi istediğinde",
+          "recommended": "her seferinde tek bir sorun için otomatik, salt okunur araştırma"
         }
       },
       "kindCard": {
@@ -3811,6 +3818,36 @@
       "title": "Bu aracı yalnızca okur ve rapor yazar",
       "body": "Bir Fleet Designer hiçbir zaman bir cihazda bir şey çalıştırmaz. Açık, çalışabileceği ve tasarımlarını seçtiğiniz alıcılara teslim edebileceği anlamına gelir.",
       "ack": "Bu aracının gözetimsiz çalıştığını ve Fleet Design teslim ettiğini anlıyorum."
+    },
+    "research": {
+      "capsTitle": "Araştırma limitleri",
+      "builtInNote": "Yerleşik ve yalnızca öneri sunar: hiçbir şey çalıştırmaz. Kapatabilir ve harcama limitlerini belirleyebilirsiniz.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Eşzamanlı araştırmalar",
+          "hint": "Aynı anda kaç araştırma çalışabilir."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Saatlik araştırma",
+          "hint": "Bir saatte başlatılan araştırmaların üst sınırı."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Saatlik otomatik araştırma",
+          "hint": "Yüksek ve kritik uyarılardan otomatik başlatılan araştırmaların üst sınırı. 0 otomatik araştırmayı kapatır."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Hızlı araştırma bütçesi (sent)",
+          "hint": "Bir hızlı araştırma için harcama limiti."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Derin araştırma bütçesi (sent)",
+          "hint": "Bir derin araştırma için harcama limiti."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Günlük araştırma harcaması (sent)",
+          "hint": "Bu ajanın tüm çalışmaları için günlük toplam harcama limiti."
+        }
+      }
     }
   },
   "apiKeyForm": {

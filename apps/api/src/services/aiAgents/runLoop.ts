@@ -186,6 +186,9 @@ import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProf
 import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
 import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
+import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowlist } from './researchProfile';
+import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
+import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { isToolAllowlisted } from './toolAllowlist';
 import { aiTools } from '../aiToolNames';
@@ -200,6 +203,7 @@ import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } f
 import {
   finalizeFleetDesign,
   finalizePatchPlan,
+  finalizeResearch,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -603,6 +607,27 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       };
     }
 
+    // AI Suggested Fixes W2. Runs INSIDE this same system context like the
+    // other evidence loaders; its catalog queries carry W1's explicit
+    // visibility condition. A device that left the org or has no supported OS
+    // fails the run with a typed code rather than researching the wrong box.
+    let research: RunContext['research'] = null;
+    if (isResearchProfile(run as RunRow)) {
+      // A device-less run must fail typed, not hand '' to a uuid column (22P02).
+      if (!run.deviceId) throw new AgentRunError('research_device_unavailable', 'remediation_research run has no device');
+      try {
+        research = await loadResearchContext({
+          orgId: run.orgId,
+          partnerId: org.partnerId,
+          deviceId: run.deviceId,
+          triggerRef: (run.triggerRef ?? {}) as Record<string, unknown>,
+        });
+      } catch (error) {
+        if (error instanceof ResearchContextUnavailableError) throw new AgentRunError(error.code, error.message);
+        throw error;
+      }
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -616,6 +641,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       narrative,
       design,
       patch,
+      research,
       sessionId: null,
       workspace: null,
     };
@@ -704,10 +730,12 @@ export function createAgentRunPreToolUse(args: {
    * on every non-patch run.
    */
   patch?: PatchPlanToolRefs;
+  /** AI Suggested Fixes W2 — the SAME refs the SDK handler and post-hook receive. */
+  research?: ResearchToolRefs;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch, research,
     runTargets, stagedBytesRemaining,
   } = args;
 
@@ -956,12 +984,31 @@ export function createAgentRunPreToolUse(args: {
         });
         return { allowed: false, error: 'not available on this run' };
       }
+      // AI Suggested Fixes W2 — first submission wins. A second call would
+      // otherwise replace an already-validated outcome with whatever the model
+      // sends next; tell it so it stops instead of retrying.
+      if (toolName === 'submit_suggestions' && outcome.research !== undefined) {
+        const reason = 'submit_suggestions was already submitted for this run; the first submission is final';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
       try {
-        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : design);
+        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : toolName === 'submit_suggestions' ? research : design);
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
       return { allowed: true, context: runFrame };
+    }
+
+    // AI Suggested Fixes W2 — a research run may call ONLY its floor. The
+    // guardrail alone would let a read-classified tool outside the floor
+    // (e.g. `propose_script`, tier 1) through, and research must never draft
+    // or propose anything: the hand-off to the script builder is a human step.
+    // Exposure (`onlyTools`) already hides these; this is the authority backstop.
+    if (isResearchProfile(run) && !researchToolAllowlist([]).includes(toolName)) {
+      const reason = `${toolName} is not available to remediation_research runs`;
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
     }
 
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
@@ -1021,7 +1068,7 @@ export function createAgentRunPreToolUse(args: {
     // output channel is `submit_fleet_design`, handled above this branch.
     if (
       (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
-        || isDesignProfile(run) || isPatchProfile(run))
+        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -1203,8 +1250,10 @@ export function createAgentRunPostToolUse(args: {
   design?: FleetDesignOutcomeRefs;
   /** AI patch agent W01 — see the pre-hook's `patch` param. */
   patch?: PatchPlanToolRefs;
+  /** AI Suggested Fixes W2 — see the pre-hook's `research` param. */
+  research?: ResearchToolRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch, research } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
     // Outcome tools (Phase 2 wave P2-1): never went through
@@ -1273,6 +1322,13 @@ export function createAgentRunPostToolUse(args: {
           // maxActionsPerRun pinned to 0).
           case 'submit_analysis':
             outcome.analysis = validateOutcomeToolInput(toolName, input);
+            break;
+          case 'submit_suggestions':
+            // AI Suggested Fixes W2 — the SERVER-BUILT outcome: accepted items plus
+            // recorded rejections (kept for the run trace, never persisted).
+            // finalizeResearch persists; nothing here executes.
+            if (!research) throw new Error('[aiAgentRunLoop] submit_suggestions captured with no research refs');
+            outcome.research = validateOutcomeToolInput(toolName, input, research);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1582,6 +1638,11 @@ function patchOutcomeRefs(ctx: RunContext): PatchPlanToolRefs | undefined {
   };
 }
 
+/** AI Suggested Fixes W2 — computed once by loadResearchContext; shared by pre-hook, SDK tool and post-hook. */
+function researchOutcomeRefs(ctx: RunContext): ResearchToolRefs | undefined {
+  return ctx.research?.refs;
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
@@ -1610,6 +1671,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
           focusDeviceId: ctx.patch.focusDeviceId ?? null,
         }
       : null,
+    research: ctx.research ?? null,
   };
 }
 
@@ -1709,7 +1771,8 @@ export function declaredFullRunToolExposure(agentAllowlist: readonly string[]): 
   return fullRunToolExposure(agentAllowlist).filter((name) => declared.has(name));
 }
 
-type RunProfileRef = { profile: AiAgentRunProfile };
+/** `triggerRef` is read only by `remediation_research` (its depth); optional so every other call site stays valid. */
+type RunProfileRef = { profile: AiAgentRunProfile; triggerRef?: Record<string, unknown> | null };
 
 /**
  * The run's effective limits: each narrow profile pins its own turn, budget
@@ -1724,6 +1787,7 @@ export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimit
   if (isTriageProfile(run)) return triageLimits(limits);
   if (isDesignProfile(run)) return designLimits(limits);
   if (isPatchProfile(run)) return patchLimits(limits);
+  if (isResearchProfile(run)) return researchLimits(limits, researchDepthOf(run.triggerRef));
   if (isAnalysisProfile(run)) return analysisLimits(limits);
   return limits;
 }
@@ -1740,6 +1804,7 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isTriageProfile(run)) return triageToolAllowlist(agentAllowlist);
   if (isDesignProfile(run)) return designToolAllowlist(agentAllowlist);
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
+  if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
   return null;
 }
@@ -2134,10 +2199,11 @@ async function driveSdkLoop(
   // timestamps for the same run.
   const designRefs = designOutcomeRefs(ctx);
   const patchRefs = patchOutcomeRefs(ctx);
+  const researchRefs = researchOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs, design: designRefs, patch: patchRefs,
+    actReservation, deadlineMs, design: designRefs, patch: patchRefs, research: researchRefs,
     revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, readCurrentPolicy, toolName),
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
@@ -2159,6 +2225,7 @@ async function driveSdkLoop(
     agentUserId: agentAuth.user.id,
     design: designRefs,
     patch: patchRefs,
+    research: researchRefs,
   });
 
   // Exposure (`allowedTools`) and registration (`onlyTools`) — see
@@ -2176,7 +2243,7 @@ async function driveSdkLoop(
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
     buildOutcomeSdkTools(
       outcomeToolsForRun(run),
-      designRefs || patchRefs ? { design: designRefs, patch: patchRefs } : undefined,
+      designRefs || patchRefs || researchRefs ? { design: designRefs, patch: patchRefs, research: researchRefs } : undefined,
     ),
     onlyTools ? { onlyTools } : undefined);
 
@@ -2901,6 +2968,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `finishRun` serializes the outcome. At most one of the six codes below
     // is ever non-null.
     const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
+    // AI Suggested Fixes W2 — seventh: persist the accepted research items.
+    const researchErrorCode = await finalizeResearch(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -2962,6 +3031,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // that called `submit_analysis` and only then hit `error_max_turns` has
       // produced exactly what it was admitted to produce.
       || outcome.analysis !== undefined
+      // AI Suggested Fixes W2 — same rule for a research run's ONE job.
+      || outcome.research !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2993,7 +3064,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
       verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
-        ?? patchPlanErrorCode,
+        ?? patchPlanErrorCode ?? researchErrorCode,
       result,
     );
   } catch (error) {
@@ -3311,7 +3382,10 @@ async function finishRun(
   // (`TRIAGE_TOOL_ALLOWLIST`), so — exactly like sweep and narrative — it
   // executes nothing, and there is no fix whose regression `scheduleFixWatch`
   // could watch for.
-  const notifies = !isVerdictProfile(ctx.run);
+  // AI Suggested Fixes W2: a research run has no recipients (its agent is
+  // system-provisioned) and its result is the suggestion rows, so it neither
+  // notifies nor watches.
+  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run);
   // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
   // reasoning as sweep/narrative/triage — a design run executes nothing (its
   // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
@@ -3322,7 +3396,8 @@ async function finishRun(
     && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run)
     // AI patch agent W01: a patch run executes nothing, so there is no fix
     // whose regression a fix-watch could watch for.
-    && !isPatchProfile(ctx.run);
+    && !isPatchProfile(ctx.run)
+    && !isResearchProfile(ctx.run);
 
   if (notifies) {
     try {

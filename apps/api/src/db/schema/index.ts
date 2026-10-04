@@ -153,6 +153,7 @@ export * from './clientAi';
 export * from './mlFeedback';
 export * from './remediationSuggestions';
 export * from './fixMemory';
+export * from './fixInstructions';
 export * from './pax8';
 export * from './pax8Orders';
 export * from './accounting';

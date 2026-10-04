@@ -66,7 +66,7 @@ export const PAM_AUDIT_WRITER_DETAIL_KEYS = {
   ],
   'routes/devices/actuateElevation.ts': ['deviceId', 'outcome', 'actualStatus', 'commandId', 'timeoutMs'],
   'routes/pam.ts': ['reason', 'duration_minutes', 'assurance_level', 'factor'],
-  'routes/remediationSuggestions.ts': ['triggerSource', 'remediationSuggestionId', 'sourceType', 'sourceId', 'scriptId'],
+  'routes/remediationSuggestions.ts': ['triggerSource', 'remediationSuggestionId', 'sourceType', 'sourceId', 'scriptId', 'builtinAction'],
   'services/aiToolsPam.ts': ['subjectUsername', 'reason', 'triggerSource', 'pamRuleId', 'pamRuleName', 'durationMinutes'],
   'services/approvals/decideApprovalRequest.ts': [
     'source', 'approval_request_id', 'reason', 'assurance_downgraded_grace', 'required_assurance_level',

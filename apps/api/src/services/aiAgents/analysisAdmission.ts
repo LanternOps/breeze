@@ -112,6 +112,9 @@ export const SKIP_REASON_REFUSALS = {
   design_rate: 'analysis_rate',
   max_concurrent_patch_runs: 'max_concurrent_analysis_runs',
   patch_rate: 'analysis_rate',
+  max_concurrent_research_runs: 'max_concurrent_analysis_runs',
+  research_rate: 'analysis_rate',
+  research_auto_cap: 'analysis_rate',
   // This wave's own.
   analysis_not_available: 'analysis_not_available',
   external_processing_disabled: 'external_processing_disabled',

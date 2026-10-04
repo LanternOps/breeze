@@ -965,6 +965,7 @@ export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './aiPatchPlan';
+export * from './remediationResearch';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 export * from './aiAgentImpactMeasured';

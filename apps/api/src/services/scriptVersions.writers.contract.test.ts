@@ -98,6 +98,7 @@ describe('script_versions has exactly one writer', () => {
 const SCRIPT_INSERTERS: ReadonlySet<string> = new Set<string>([
   'db/seed.ts',
   'routes/scripts.ts',
+  'services/llm/researchEval/runCase.ts',
   'services/scriptWrite.ts',
   'services/scriptClone.ts',
   'services/systemScriptLibrary.ts',

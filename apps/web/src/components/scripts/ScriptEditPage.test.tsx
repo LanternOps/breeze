@@ -5,6 +5,7 @@ import '@/lib/i18n';
 import ScriptEditPage from './ScriptEditPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useScriptAiStore } from '@/stores/scriptAiStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -202,5 +203,36 @@ describe('ScriptEditPage back link (#7158 a11y)', () => {
     render(<ScriptEditPage />);
 
     expect(screen.getByRole('link', { name: 'Back to Scripts' })).toHaveAttribute('href', '/scripts');
+  });
+});
+
+describe('ScriptEditPage draft hand-off (AI Suggested Fixes W2)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    useScriptAiStore.setState({ panelOpen: false, draftInput: null });
+  });
+
+  it('a new script opened from a draft hand-off defaults name/language, opens the AI panel and pre-fills (not sends) the brief', async () => {
+    const sendMessageSpy = vi.fn();
+    useScriptAiStore.setState({ sendMessage: sendMessageSpy });
+    sessionStorage.setItem('breeze.scriptDraftHandoff', JSON.stringify({ brief: 'Clear queue', language: 'powershell', title: 'Clear print queue', suggestionId: 's-1' }));
+    render(<ScriptEditPage />);
+    await waitFor(() => expect(useScriptAiStore.getState().panelOpen).toBe(true));
+    expect(useScriptAiStore.getState().draftInput).toBe('Write a PowerShell script for this fix: Clear queue');
+    expect(scriptFormPropsSpy).toHaveBeenCalledWith(expect.objectContaining({
+      defaultValues: expect.objectContaining({ name: 'Clear print queue', language: 'powershell', osTypes: ['windows'] }),
+    }));
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('breeze.scriptDraftHandoff')).toBeNull();
+  });
+
+  it('an existing script never consumes a hand-off', async () => {
+    sessionStorage.setItem('breeze.scriptDraftHandoff', JSON.stringify({ brief: 'x', language: 'bash', title: 't', suggestionId: 's' }));
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse(baseScript));
+    render(<ScriptEditPage scriptId="script-1" />);
+    await screen.findByText('script form');
+    expect(useScriptAiStore.getState().panelOpen).toBe(false);
+    expect(sessionStorage.getItem('breeze.scriptDraftHandoff')).not.toBeNull();
   });
 });

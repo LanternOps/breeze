@@ -25,7 +25,8 @@ import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  registerOrgIdProvider: vi.fn()
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: (select: (state: { user: { canManagePartnerWide: boolean } }) => unknown) => select({ user: { canManagePartnerWide: true } }),
 }));
 
 const showToast = vi.fn();

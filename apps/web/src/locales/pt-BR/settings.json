@@ -2334,7 +2334,8 @@
       "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
       "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
-      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar."
+      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
+      "research": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada."
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -2480,7 +2481,8 @@
       "triage": "Triagem de alertas",
       "patch": "Aplicação de patches",
       "helpdesk": "Central de ajuda",
-      "designer": "Projetista de frota"
+      "designer": "Projetista de frota",
+      "research": "Pesquisa de correções"
     },
     "modes": {
       "off": "Desligado",
@@ -3784,6 +3786,11 @@
           "blurb": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
           "runsWhen": "você inicia um Projeto de frota para uma organização, ou em um agendamento trimestral",
           "recommended": "uma migração do zero, ou uma auditoria de configuração trimestral"
+        },
+        "research": {
+          "blurb": "Integrado. Pesquisa um problema em um dispositivo quando um técnico pede e sugere correções seguras. Nunca executa nada.",
+          "runsWhen": "um técnico pede sugestões de correção para um problema de um dispositivo",
+          "recommended": "pesquisa automática somente leitura, um problema por vez"
         }
       },
       "kindCard": {
@@ -3811,6 +3818,36 @@
       "title": "Este agente apenas lê e escreve relatórios",
       "body": "Um Fleet Designer nunca executa nada em um dispositivo. Ligado significa que ele pode ser executado e entregar seus designs aos destinatários que você escolher.",
       "ack": "Entendo que este agente é executado sem supervisão e entrega Fleet Designs."
+    },
+    "research": {
+      "capsTitle": "Limites de pesquisa",
+      "builtInNote": "Integrado e somente sugere: nunca executa nada. Você pode desativá-lo e definir seus limites de gasto.",
+      "caps": {
+        "maxConcurrentResearchRuns": {
+          "label": "Pesquisas simultâneas",
+          "hint": "Quantas pesquisas podem estar em andamento ao mesmo tempo."
+        },
+        "maxResearchRunsPerHour": {
+          "label": "Pesquisas por hora",
+          "hint": "Máximo de pesquisas iniciadas em uma hora."
+        },
+        "maxAutoResearchRunsPerHour": {
+          "label": "Pesquisas automáticas por hora",
+          "hint": "Máximo de pesquisas iniciadas automaticamente por alertas altos e críticos. 0 desativa a pesquisa automática."
+        },
+        "researchQuickBudgetCentsPerRun": {
+          "label": "Orçamento de pesquisa rápida (centavos)",
+          "hint": "Limite de gasto de uma pesquisa rápida."
+        },
+        "researchDeepBudgetCentsPerRun": {
+          "label": "Orçamento de pesquisa aprofundada (centavos)",
+          "hint": "Limite de gasto de uma pesquisa aprofundada."
+        },
+        "maxBudgetCentsPerDay": {
+          "label": "Gasto diário de pesquisa (centavos)",
+          "hint": "Limite total de gasto por dia em todas as execuções deste agente."
+        }
+      }
     }
   },
   "apiKeyForm": {

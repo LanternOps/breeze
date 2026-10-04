@@ -28,6 +28,7 @@ import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipien
 import type { AgentModelBinding } from './agentModelBinding';
 import { AgentModelNotAllowedError } from './agentModelErrors';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
+import { assertResearchAgentEdit, pinResearchCreateInput, ResearchAgentEditError } from './researchAgentEdit';
 import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
@@ -230,7 +231,11 @@ async function assertActPrerequisites(
     recipients: Partial<AiAgentRecipients>;
   },
 ): Promise<void> {
-  if (resolved.mode !== 'act') return;
+  // AI Suggested Fixes W2: a research agent is suggestion-only (profile
+  // maxActionsPerRun 0, output = suggestion rows, no delivery), so neither the
+  // recipient nor the act-eligible-surface prerequisite applies. Without this,
+  // every research PATCH — even { enabled: false } — 422s.
+  if (resolved.mode !== 'act' || resolved.kind === 'research') return;
 
   const missing: Array<'recipient' | 'act_eligible_tool'> = [];
   const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
@@ -660,9 +665,21 @@ async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> 
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
-  input: CreateAiAgentInput,
+  rawInput: CreateAiAgentInput,
 ): Promise<AiAgentRow> {
+  // W2: research rows are pinned to the provisioned shape (see
+  // pinResearchCreateInput) before any validation or persistence sees them.
+  const input = rawInput.kind === 'research' ? pinResearchCreateInput(rawInput) : rawInput;
   assertAgentWriteAllowed(auth, owner);
+
+  // AI Suggested Fixes W2: the partner baseline research agent is provisioned
+  // by the system (researchProvisioning.ts); a user may not create one by any
+  // path (explicit or omitted ownerScope). An org-level research row is an
+  // override of that baseline.
+  // NOT assertResearchAgentEdit(input): create input is the createAiAgentSchema
+  // output with every default materialised (limits, mode, triggers...), so a
+  // PATCH-shaped field check would refuse every legitimate create.
+  if (input.kind === 'research' && !owner.orgId) throw new ResearchAgentEditError(['ownerScope']);
 
   // Recipients are membership-validated BEFORE anything is written: a typo'd
   // or cross-tenant id must never be persisted, because notification-time
@@ -789,6 +806,9 @@ export async function updateAgent(
       throw new AgentAccessDeniedError('Agent not found');
     }
     assertAgentWriteAllowed(auth, existing);
+    // W2: the built-in research agent (baseline or org override) takes only
+    // enable/disable and research budget/cap edits.
+    if (existing.kind === 'research') assertResearchAgentEdit(input as Record<string, unknown>);
 
     let modelColumns: Partial<typeof aiAgents.$inferInsert> = {};
     if (offeringChoice !== undefined && offeringNeedsBinding(existing, offeringChoice)) {
