@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   fleetFindings,
@@ -21,6 +21,9 @@ export async function actionItemsTile(orgId: string, now: Date) {
       .where(and(
         eq(remediationSuggestions.orgId, orgId),
         eq(remediationSuggestions.status, 'suggested'),
+        // Unreviewed AI research output is technician-facing; customers only
+        // see suggestions that came from the reviewed catalog/ML path.
+        ne(remediationSuggestions.origin, 'ai_research'),
       )),
     db
       .select({ topIssues: securityPostureOrgSnapshots.topIssues })
