@@ -47,6 +47,7 @@ export default function ScriptAiInput() {
     <div className="border-t bg-background p-3">
       <div className="flex items-end gap-2">
         <textarea
+          data-testid="script-ai-input"
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}

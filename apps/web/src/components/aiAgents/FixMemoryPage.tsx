@@ -262,7 +262,7 @@ export default function FixMemoryPage() {
             <EmptyState size="sm" headingLevel={2} testId="fix-memory-empty" icon={<BookCheck className="h-5 w-5" />} title={t('fixMemoryPage.empty')} />
           ) : (
             <div className="overflow-x-auto rounded-lg border bg-card">
-              <table className="w-full text-sm">
+              <table data-testid="fix-memory-table" className="w-full text-sm">
                 <thead className="border-b bg-muted/30">
                   <tr>
                     <th className={thClass}>{t('fixMemoryPage.columns.fix')}</th>
@@ -289,7 +289,7 @@ export default function FixMemoryPage() {
                         <td className="px-3 py-2 font-mono text-xs">{r.condition ?? t('fixMemoryPage.signature', { prefix: r.signatureKeyPrefix })}</td>
                         <td className="px-3 py-2">{fmtDate(r.lastVerifiedAt)}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${tone.className}`}>{statusLabel(tone.key)}</span>
+                          <span data-testid={`fix-memory-status-${r.id}`} data-status={tone.key} className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${tone.className}`}>{statusLabel(tone.key)}</span>
                         </td>
                         <td className="px-3 py-2 text-right">
                           {canRetire(r) && (
