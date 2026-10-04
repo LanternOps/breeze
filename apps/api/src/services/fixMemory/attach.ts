@@ -31,8 +31,12 @@ export function memoryRationale(fix: Pick<FixTrackRecord, 'verified' | 'attempts
 type Insert = typeof remediationSuggestions.$inferInsert;
 type AttachInput = { sourceType: 'alert' | 'anomaly' | 'correlation' | 'rca'; sourceId: string; orgId: string };
 
-/** One memory-origin row per proven fix kind; null = proven but not attachable runnable (still counts as proven). */
-async function memorySuggestionValues(fix: FixTrackRecord, resolved: ResolvedFixSource, input: AttachInput): Promise<Insert | null> {
+/** Why a proven fix produced no row. Logged by kind only — never a script/service/process name or parameter value. */
+type NotAttachableReason = 'builtin_params_unavailable' | 'instructions_unavailable' | 'unsupported_kind';
+type MemoryValues = { values: Insert } | { skip: NotAttachableReason };
+
+/** One memory-origin row per proven fix kind; `skip` = proven but not attachable as a runnable row. */
+async function memorySuggestionValues(fix: FixTrackRecord, resolved: ResolvedFixSource, input: AttachInput): Promise<MemoryValues> {
   const common = {
     orgId: input.orgId, sourceType: input.sourceType, sourceId: input.sourceId, deviceId: resolved.deviceId,
     alertId: input.sourceType === 'alert' ? input.sourceId : null,
@@ -46,30 +50,32 @@ async function memorySuggestionValues(fix: FixTrackRecord, resolved: ResolvedFix
     },
   };
   if (fix.scriptId && fix.scriptName) {
-    return {
+    return { values: {
       ...common, targetType: 'script', scriptId: fix.scriptId, title: fix.scriptName.slice(0, 255), riskTier: 'medium', parameters: {},
       expectedAction: `Run script "${fix.scriptName}" through the existing script execution flow.`,
-    };
+    } };
   }
   if (fix.fixKind === 'builtin_action' && fix.builtinAction) {
     const action = fix.builtinAction as ResearchBuiltinAction;
     const params = builtinParamsFromSignature(action, resolved.signature.facets.discriminator, resolved.signature.facets.osFamily);
-    if (!params) return null;
+    // disk_cleanup (no stored cleaner ids) and non-Windows service/process signatures.
+    if (!params) return { skip: 'builtin_params_unavailable' };
     const label = action.replace('_', ' ');
-    return {
+    return { values: {
       ...common, targetType: 'builtin_action', builtinAction: action, parameters: params, riskTier: clampBuiltinRisk(action, 'low'),
       title: `Built-in: ${label}`, expectedAction: `Run the built-in ${label} action on this device.`,
-    };
+    } };
   }
   if (fix.fixKind === 'manual_steps' && fix.instructionsRef) {
     const reviewed = await loadActiveInstructions(fix.instructionsRef);
-    if (!reviewed) return null;
-    return {
+    // Retired, or not visible to this org.
+    if (!reviewed) return { skip: 'instructions_unavailable' };
+    return { values: {
       ...common, targetType: 'manual_steps', instructionsId: reviewed.id, parameters: { steps: reviewed.steps }, riskTier: 'low',
       title: reviewed.title, expectedAction: reviewed.steps.map((step, i) => `${i + 1}. ${step}`).join('\n'),
-    };
+    } };
   }
-  return null;
+  return { skip: 'unsupported_kind' };
 }
 
 async function insertMemorySuggestion(values: Insert): Promise<void> {
@@ -102,9 +108,14 @@ export async function attachProvenFixes(input: AttachInput): Promise<{ proven: n
   const { proven } = await lookupFixes({ orgId: input.orgId, partnerId, signature: resolved.signature, limit: ATTACH_LIMIT });
   let attached = 0;
   for (const fix of proven) {
-    const values = await memorySuggestionValues(fix, resolved, input);
-    if (!values) continue;
-    await insertMemorySuggestion(values);
+    const built = await memorySuggestionValues(fix, resolved, input);
+    if ('skip' in built) {
+      console.info('[fixMemory] proven fix not attachable', {
+        orgId: input.orgId, memoryId: fix.memoryId, fixKind: fix.fixKind, builtinAction: fix.builtinAction ?? null, reason: built.skip,
+      });
+      continue;
+    }
+    await insertMemorySuggestion(built.values);
     attached += 1;
   }
   return { proven: proven.length, attached };
@@ -115,15 +126,17 @@ export async function handleAlertTriggeredForFixMemory(event: BreezeEvent): Prom
   const payload = (event.payload ?? {}) as Record<string, unknown>;
   const alertId = typeof payload.alertId === 'string' ? payload.alertId : null;
   if (!alertId || !event.orgId) return;
-  const { proven } = await inSystemDbContext(
+  const { attached } = await inSystemDbContext(
     () => attachProvenFixes({ sourceType: 'alert', sourceId: alertId, orgId: event.orgId }),
     'fixMemory.attach',
   );
-  // Spec P3: LLM research runs automatically only for high/critical severity when memory has NO proven fix (a proven non-script fix still counts).
+  // Spec P3: LLM research runs automatically only for high/critical severity when memory left the alert with
+  // NOTHING to run. Gated on attached rows, not proven fixes: a proven fix that cannot be attached (disk_cleanup,
+  // non-Windows restart/kill, retired reviewed steps) must not leave a high/critical alert with no suggestion.
   // Dedupe, the per-org hourly cap and credits are requestResearch's job. A refusal is an answer, and a
   // research failure must never fail this durable subscriber (it would retry the already-done attach).
   const severity = typeof payload.severity === 'string' ? payload.severity : null;
-  if (proven > 0 || (severity !== 'high' && severity !== 'critical')) return;
+  if (attached > 0 || (severity !== 'high' && severity !== 'critical')) return;
   try {
     // NOT wrapped in a context: the attach transaction above has committed, and
     // requestResearch reads in its own short system tx, then admits in a fresh

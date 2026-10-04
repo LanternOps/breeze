@@ -181,11 +181,34 @@ describe('auto research (W2 Task 14)', () => {
     err.mockRestore();
   });
 
-  it('a proven non-script fix (builtin/playbook) counts as proven: no auto research', async () => {
-    h.lookup.mockResolvedValueOnce({ proven: [{ ...proven, scriptId: null, scriptName: null, fixKind: 'builtin_action' }], similar: [] });
+  it('a proven built-in that DID attach: no auto research', async () => {
+    h.sig.mockResolvedValueOnce({ signature: { ...signature, facets: { osFamily: 'windows', discriminator: { kind: 'service', value: 'spooler' } } }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+    h.lookup.mockResolvedValueOnce({ proven: [{ ...proven, scriptId: null, scriptName: null, fixKind: 'builtin_action', builtinAction: 'restart_service' }], similar: [] });
+    await handleAlertTriggeredForFixMemory(evt('critical'));
+    expect(h.values).toHaveBeenCalledWith(expect.objectContaining({ targetType: 'builtin_action', builtinAction: 'restart_service' }));
+    expect(research).not.toHaveBeenCalled();
+  });
+
+  it('A3: a proven disk_cleanup that did NOT attach still starts research, and the skip is logged without names or values', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [{ ...proven, scriptId: null, scriptName: null, fixKind: 'builtin_action', builtinAction: 'disk_cleanup' }], similar: [] });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     await handleAlertTriggeredForFixMemory(evt('critical'));
     expect(h.values).not.toHaveBeenCalled();
-    expect(research).not.toHaveBeenCalled();
+    expect(research).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'a-1', trigger: 'auto' }));
+    expect(info).toHaveBeenCalledWith('[fixMemory] proven fix not attachable', {
+      orgId: 'org-1', memoryId: 'm-1', fixKind: 'builtin_action', builtinAction: 'disk_cleanup', reason: 'builtin_params_unavailable',
+    });
+    info.mockRestore();
+  });
+
+  it('A3: retired reviewed steps (proven, not attachable) still start research', async () => {
+    h.lookup.mockResolvedValueOnce({ proven: [{ ...proven, scriptId: null, scriptName: null, fixKind: 'manual_steps', instructionsRef: 'fi-1', instructionsTitle: 'x' }], similar: [] });
+    h.instructions.mockResolvedValueOnce(null);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    await handleAlertTriggeredForFixMemory(evt('high'));
+    expect(research).toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith('[fixMemory] proven fix not attachable', expect.objectContaining({ fixKind: 'manual_steps', reason: 'instructions_unavailable' }));
+    info.mockRestore();
   });
 
   it('missing or non-string severity never auto-researches', async () => {
