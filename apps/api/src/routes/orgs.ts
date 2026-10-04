@@ -24,6 +24,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 // on the mock") before a single test runs.
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
+import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
@@ -2404,13 +2405,13 @@ async function readOrgLifecycleStatus(orgId: string): Promise<string | null> {
 // and platformAdminMiddleware (/admin/*) already treats that flag as the
 // grant, so this mirrors the established authority model. Applied ONLY to the
 // org update route, not globally.
-const requireOrgWriteOrPlatformAdmin = async (c: Context, next: Next) => {
+const requireOrgWriteOrPlatformAdmin = markPermissionGate(async (c: Context, next: Next) => {
   const auth = c.get('auth') as AuthContext | undefined;
   if (auth?.scope === 'system' && auth.user?.isPlatformAdmin === true) {
     return next();
   }
   return requireOrgWrite(c, next);
-};
+}, 'orgs:write|platform-admin');
 
 const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPlatformAdmin, requireMfa(), zValidator('json', updateOrganizationSchema), async (c: any) => {
   const auth = c.get('auth') as AuthContext;
