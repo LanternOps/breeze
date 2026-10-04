@@ -66,6 +66,7 @@
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",
     "aiImpact": "KI-Wirkung",
+    "fixMemory": "Fix-Gedächtnis",
     "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "Kein {{source}} konfiguriert",
     "overriding": "Überschreibt {{source}}",
     "overridingWithValue": "Überschreibt {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Fix-Gedächtnis",
+    "subtitle": "Fixes, die Ihr Team ausgeführt hat, und wie oft sie tatsächlich behoben blieben.",
+    "tabs": {
+      "fixes": "Fixes",
+      "steps": "Geprüfte Schritte"
+    },
+    "filters": {
+      "os": "Betriebssystem",
+      "anyOs": "Beliebiges Betriebssystem",
+      "status": "Status",
+      "anyStatus": "Beliebiger Status",
+      "scope": "Geltungsbereich",
+      "anyScope": "Beliebiger Geltungsbereich",
+      "condition": "Nach Bedingung suchen"
+    },
+    "columns": {
+      "fix": "Fix",
+      "record": "Erfolgsbilanz",
+      "rate": "Erfolgsquote",
+      "scope": "Geltungsbereich",
+      "os": "BS",
+      "condition": "Bedingung",
+      "lastVerified": "Zuletzt verifiziert",
+      "status": "Status",
+      "actions": "Aktionen"
+    },
+    "status": {
+      "active": "Aktiv",
+      "demoted": "Herabgestuft",
+      "retired": "Zurückgezogen",
+      "stale": "Veraltet"
+    },
+    "scope": {
+      "everyClient": "Alle Kunden",
+      "oneClient": "Dieser Kunde"
+    },
+    "signature": "Signatur {{prefix}}",
+    "retire": {
+      "action": "Zurückziehen",
+      "confirmTitle": "Diesen Fix zurückziehen?",
+      "confirmBody": "Zurückgezogene Fixes werden nicht mehr vorgeschlagen. Ihr Verlauf bleibt erhalten.",
+      "confirm": "Fix zurückziehen",
+      "success": "Fix zurückgezogen.",
+      "failed": "Der Fix konnte nicht zurückgezogen werden."
+    },
+    "steps": {
+      "heading": "Schritte",
+      "retire": "Schritte zurückziehen",
+      "success": "Schritte zurückgezogen.",
+      "failed": "Die Schritte konnten nicht zurückgezogen werden.",
+      "empty": "Noch keine geprüften Schritte. Speichern Sie Schritte aus einem Vorschlag, damit sie hier erscheinen."
+    },
+    "empty": "Noch keine Fixes gespeichert. Fixes erscheinen hier, nachdem sie ausgeführt und ihr Ergebnis beobachtet wurde.",
+    "loadMore": "Mehr laden",
+    "never": "Nie",
+    "retry": "Erneut versuchen",
+    "errors": {
+      "loadFailed": "Fix-Gedächtnis konnte nicht geladen werden."
+    }
   }
 }

@@ -66,6 +66,7 @@
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Ejecuciones de agentes de IA",
     "aiImpact": "Impacto de IA",
+    "fixMemory": "Memoria de correcciones",
     "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "No hay {{source}} configurado",
     "overriding": "Anula {{source}}",
     "overridingWithValue": "Anula {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memoria de correcciones",
+    "subtitle": "Correcciones que su equipo ejecutó y con qué frecuencia realmente se mantuvieron resueltas.",
+    "tabs": {
+      "fixes": "Correcciones",
+      "steps": "Pasos revisados"
+    },
+    "filters": {
+      "os": "Sistema operativo",
+      "anyOs": "Cualquier sistema operativo",
+      "status": "Estado",
+      "anyStatus": "Cualquier estado",
+      "scope": "Alcance",
+      "anyScope": "Cualquier alcance",
+      "condition": "Buscar por condición"
+    },
+    "columns": {
+      "fix": "Corrección",
+      "record": "Historial de resultados",
+      "rate": "Tasa de éxito",
+      "scope": "Alcance",
+      "os": "SO",
+      "condition": "Condición",
+      "lastVerified": "Última verificación",
+      "status": "Estado",
+      "actions": "Acciones"
+    },
+    "status": {
+      "active": "Activa",
+      "demoted": "Degradada",
+      "retired": "Retirada",
+      "stale": "Obsoleta"
+    },
+    "scope": {
+      "everyClient": "Todos los clientes",
+      "oneClient": "Este cliente"
+    },
+    "signature": "Firma {{prefix}}",
+    "retire": {
+      "action": "Retirar",
+      "confirmTitle": "¿Retirar esta corrección?",
+      "confirmBody": "Las correcciones retiradas dejan de sugerirse. Se conserva su historial.",
+      "confirm": "Retirar corrección",
+      "success": "Corrección retirada.",
+      "failed": "No se pudo retirar la corrección."
+    },
+    "steps": {
+      "heading": "Pasos",
+      "retire": "Retirar pasos",
+      "success": "Pasos retirados.",
+      "failed": "No se pudieron retirar los pasos.",
+      "empty": "Aún no hay pasos revisados. Guarde pasos desde una sugerencia para verlos aquí."
+    },
+    "empty": "Aún no se recuerda ninguna corrección. Las correcciones aparecen aquí después de ejecutarse y de observar su resultado.",
+    "loadMore": "Cargar más",
+    "never": "Nunca",
+    "retry": "Reintentar",
+    "errors": {
+      "loadFailed": "No se pudo cargar la memoria de correcciones."
+    }
   }
 }

@@ -66,6 +66,7 @@
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
     "aiImpact": "Impact de l’IA",
+    "fixMemory": "Mémoire des correctifs",
     "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "Aucun {{source}} configuré",
     "overriding": "Remplace {{source}}",
     "overridingWithValue": "Remplace {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Mémoire des correctifs",
+    "subtitle": "Les correctifs exécutés par votre équipe et la fréquence à laquelle ils ont réellement tenu.",
+    "tabs": {
+      "fixes": "Correctifs",
+      "steps": "Étapes révisées"
+    },
+    "filters": {
+      "os": "Système d’exploitation",
+      "anyOs": "Tout système d’exploitation",
+      "status": "Statut",
+      "anyStatus": "Tout statut",
+      "scope": "Portée",
+      "anyScope": "Toute portée",
+      "condition": "Rechercher par condition"
+    },
+    "columns": {
+      "fix": "Correctif",
+      "record": "Historique de résultats",
+      "rate": "Taux de réussite",
+      "scope": "Portée",
+      "os": "SE",
+      "condition": "Condition",
+      "lastVerified": "Dernière vérification",
+      "status": "Statut",
+      "actions": "Actions"
+    },
+    "status": {
+      "active": "Actif",
+      "demoted": "Rétrogradé",
+      "retired": "Retiré",
+      "stale": "Périmé"
+    },
+    "scope": {
+      "everyClient": "Tous les clients",
+      "oneClient": "Ce client"
+    },
+    "signature": "Signature {{prefix}}",
+    "retire": {
+      "action": "Retirer",
+      "confirmTitle": "Retirer ce correctif?",
+      "confirmBody": "Les correctifs retirés ne sont plus suggérés. Leur historique est conservé.",
+      "confirm": "Retirer le correctif",
+      "success": "Correctif retiré.",
+      "failed": "Impossible de retirer le correctif."
+    },
+    "steps": {
+      "heading": "Étapes",
+      "retire": "Retirer les étapes",
+      "success": "Étapes retirées.",
+      "failed": "Impossible de retirer les étapes.",
+      "empty": "Aucune étape révisée pour l’instant. Enregistrez des étapes à partir d’une suggestion pour les voir ici."
+    },
+    "empty": "Aucun correctif mémorisé pour l’instant. Les correctifs apparaissent ici après leur exécution et l’observation de leur résultat.",
+    "loadMore": "Charger plus",
+    "never": "Jamais",
+    "retry": "Réessayer",
+    "errors": {
+      "loadFailed": "Impossible de charger la mémoire des correctifs."
+    }
   }
 }

@@ -66,6 +66,7 @@
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
     "aiImpact": "AI Impact",
+    "fixMemory": "Fix memory",
     "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "No {{source}} configured",
     "overriding": "Overrides {{source}}",
     "overridingWithValue": "Overrides {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Fix memory",
+    "subtitle": "Fixes your team has run, and how often they actually stayed fixed.",
+    "tabs": {
+      "fixes": "Fixes",
+      "steps": "Reviewed steps"
+    },
+    "filters": {
+      "os": "Operating system",
+      "anyOs": "Any operating system",
+      "status": "Status",
+      "anyStatus": "Any status",
+      "scope": "Scope",
+      "anyScope": "Any scope",
+      "condition": "Search by condition"
+    },
+    "columns": {
+      "fix": "Fix",
+      "record": "Track record",
+      "rate": "Success rate",
+      "scope": "Scope",
+      "os": "OS",
+      "condition": "Condition",
+      "lastVerified": "Last verified",
+      "status": "Status",
+      "actions": "Actions"
+    },
+    "status": {
+      "active": "Active",
+      "demoted": "Demoted",
+      "retired": "Retired",
+      "stale": "Stale"
+    },
+    "scope": {
+      "everyClient": "All clients",
+      "oneClient": "This client"
+    },
+    "signature": "Signature {{prefix}}",
+    "retire": {
+      "action": "Retire",
+      "confirmTitle": "Retire this fix?",
+      "confirmBody": "Retired fixes are no longer suggested. Their history is kept.",
+      "confirm": "Retire fix",
+      "success": "Fix retired.",
+      "failed": "Could not retire the fix."
+    },
+    "steps": {
+      "heading": "Steps",
+      "retire": "Retire steps",
+      "success": "Steps retired.",
+      "failed": "Could not retire the steps.",
+      "empty": "No reviewed steps yet. Save steps from a suggestion to see them here."
+    },
+    "empty": "No fixes remembered yet. Fixes appear here after they are run and their outcome is observed.",
+    "loadMore": "Load more",
+    "never": "Never",
+    "retry": "Try again",
+    "errors": {
+      "loadFailed": "Could not load fix memory."
+    }
   }
 }

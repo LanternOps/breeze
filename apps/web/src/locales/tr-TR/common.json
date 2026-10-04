@@ -66,6 +66,7 @@
     "aiAgents": "Yapay Zeka Aracıları",
     "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
     "aiImpact": "Yapay Zeka Etkisi",
+    "fixMemory": "Düzeltme belleği",
     "fleetDesign": "Filo Tasarımı",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "Yapılandırılmış {{source}} yok",
     "overriding": "{{source}} değerini geçersiz kılıyor",
     "overridingWithValue": "{{source}} değerini geçersiz kılıyor ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Düzeltme belleği",
+    "subtitle": "Ekibinizin uyguladığı düzeltmeler ve bunların gerçekten ne sıklıkla kalıcı olduğu.",
+    "tabs": {
+      "fixes": "Düzeltmeler",
+      "steps": "İncelenmiş adımlar"
+    },
+    "filters": {
+      "os": "İşletim sistemi",
+      "anyOs": "Herhangi bir işletim sistemi",
+      "status": "Durum",
+      "anyStatus": "Herhangi bir durum",
+      "scope": "Kapsam",
+      "anyScope": "Herhangi bir kapsam",
+      "condition": "Koşula göre ara"
+    },
+    "columns": {
+      "fix": "Düzeltme",
+      "record": "Sonuç geçmişi",
+      "rate": "Başarı oranı",
+      "scope": "Kapsam",
+      "os": "İS",
+      "condition": "Koşul",
+      "lastVerified": "Son doğrulama",
+      "status": "Durum",
+      "actions": "Eylemler"
+    },
+    "status": {
+      "active": "Etkin",
+      "demoted": "Düşürüldü",
+      "retired": "Kullanımdan kaldırıldı",
+      "stale": "Eski"
+    },
+    "scope": {
+      "everyClient": "Tüm müşteriler",
+      "oneClient": "Bu müşteri"
+    },
+    "signature": "İmza {{prefix}}",
+    "retire": {
+      "action": "Kaldır",
+      "confirmTitle": "Bu düzeltme kaldırılsın mı?",
+      "confirmBody": "Kaldırılan düzeltmeler artık önerilmez. Geçmişi saklanır.",
+      "confirm": "Düzeltmeyi kaldır",
+      "success": "Düzeltme kaldırıldı.",
+      "failed": "Düzeltme kaldırılamadı."
+    },
+    "steps": {
+      "heading": "Adımlar",
+      "retire": "Adımları kaldır",
+      "success": "Adımlar kaldırıldı.",
+      "failed": "Adımlar kaldırılamadı.",
+      "empty": "Henüz incelenmiş adım yok. Burada görmek için bir öneriden adımları kaydedin."
+    },
+    "empty": "Henüz hatırlanan düzeltme yok. Düzeltmeler, çalıştırılıp sonuçları gözlemlendikten sonra burada görünür.",
+    "loadMore": "Daha fazla yükle",
+    "never": "Hiçbir zaman",
+    "retry": "Yeniden dene",
+    "errors": {
+      "loadFailed": "Düzeltme belleği yüklenemedi."
+    }
   }
 }

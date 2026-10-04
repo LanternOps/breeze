@@ -66,6 +66,7 @@
     "aiAgents": "Agenti AI",
     "aiAgentRuns": "Esecuzioni agenti IA",
     "aiImpact": "Impatto IA",
+    "fixMemory": "Memoria delle correzioni",
     "fleetDesign": "Progettazione flotta",
     "customFields": "Campi personalizzati",
     "savedFilters": "Filtri salvati",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "Nessun {{source}} configurato",
     "overriding": "Sovrascrive {{source}}",
     "overridingWithValue": "Sovrascrive {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memoria delle correzioni",
+    "subtitle": "Le correzioni eseguite dal tuo team e con quale frequenza hanno davvero risolto il problema.",
+    "tabs": {
+      "fixes": "Correzioni",
+      "steps": "Passaggi verificati"
+    },
+    "filters": {
+      "os": "Sistema operativo",
+      "anyOs": "Qualsiasi sistema operativo",
+      "status": "Stato",
+      "anyStatus": "Qualsiasi stato",
+      "scope": "Ambito",
+      "anyScope": "Qualsiasi ambito",
+      "condition": "Cerca per condizione"
+    },
+    "columns": {
+      "fix": "Correzione",
+      "record": "Storico dei risultati",
+      "rate": "Tasso di successo",
+      "scope": "Ambito",
+      "os": "SO",
+      "condition": "Condizione",
+      "lastVerified": "Ultima verifica",
+      "status": "Stato",
+      "actions": "Azioni"
+    },
+    "status": {
+      "active": "Attiva",
+      "demoted": "Declassata",
+      "retired": "Ritirata",
+      "stale": "Obsoleta"
+    },
+    "scope": {
+      "everyClient": "Tutti i clienti",
+      "oneClient": "Questo cliente"
+    },
+    "signature": "Firma {{prefix}}",
+    "retire": {
+      "action": "Ritira",
+      "confirmTitle": "Ritirare questa correzione?",
+      "confirmBody": "Le correzioni ritirate non vengono più suggerite. La loro cronologia viene conservata.",
+      "confirm": "Ritira correzione",
+      "success": "Correzione ritirata.",
+      "failed": "Impossibile ritirare la correzione."
+    },
+    "steps": {
+      "heading": "Passaggi",
+      "retire": "Ritira passaggi",
+      "success": "Passaggi ritirati.",
+      "failed": "Impossibile ritirare i passaggi.",
+      "empty": "Nessun passaggio verificato. Salva i passaggi da un suggerimento per vederli qui."
+    },
+    "empty": "Nessuna correzione memorizzata. Le correzioni compaiono qui dopo essere state eseguite e dopo l’osservazione del risultato.",
+    "loadMore": "Carica altro",
+    "never": "Mai",
+    "retry": "Riprova",
+    "errors": {
+      "loadFailed": "Impossibile caricare la memoria delle correzioni."
+    }
   }
 }

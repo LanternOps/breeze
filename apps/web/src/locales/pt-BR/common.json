@@ -66,6 +66,7 @@
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Execuções de Agentes de IA",
     "aiImpact": "Impacto da IA",
+    "fixMemory": "Memória de correções",
     "fleetDesign": "Design de frota",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
@@ -2593,5 +2594,66 @@
     "noneConfigured": "Nenhum {{source}} configurado",
     "overriding": "Substitui {{source}}",
     "overridingWithValue": "Substitui {{source}} ({{value}})"
+  },
+  "fixMemoryPage": {
+    "title": "Memória de correções",
+    "subtitle": "Correções que sua equipe executou e com que frequência elas realmente se mantiveram resolvidas.",
+    "tabs": {
+      "fixes": "Correções",
+      "steps": "Etapas revisadas"
+    },
+    "filters": {
+      "os": "Sistema operacional",
+      "anyOs": "Qualquer sistema operacional",
+      "status": "Status",
+      "anyStatus": "Qualquer status",
+      "scope": "Escopo",
+      "anyScope": "Qualquer escopo",
+      "condition": "Buscar por condição"
+    },
+    "columns": {
+      "fix": "Correção",
+      "record": "Histórico de resultados",
+      "rate": "Taxa de sucesso",
+      "scope": "Escopo",
+      "os": "SO",
+      "condition": "Condição",
+      "lastVerified": "Última verificação",
+      "status": "Status",
+      "actions": "Ações"
+    },
+    "status": {
+      "active": "Ativa",
+      "demoted": "Rebaixada",
+      "retired": "Aposentada",
+      "stale": "Desatualizada"
+    },
+    "scope": {
+      "everyClient": "Todos os clientes",
+      "oneClient": "Este cliente"
+    },
+    "signature": "Assinatura {{prefix}}",
+    "retire": {
+      "action": "Aposentar",
+      "confirmTitle": "Aposentar esta correção?",
+      "confirmBody": "Correções aposentadas deixam de ser sugeridas. O histórico é mantido.",
+      "confirm": "Aposentar correção",
+      "success": "Correção aposentada.",
+      "failed": "Não foi possível aposentar a correção."
+    },
+    "steps": {
+      "heading": "Etapas",
+      "retire": "Aposentar etapas",
+      "success": "Etapas aposentadas.",
+      "failed": "Não foi possível aposentar as etapas.",
+      "empty": "Nenhuma etapa revisada ainda. Salve etapas de uma sugestão para vê-las aqui."
+    },
+    "empty": "Nenhuma correção memorizada ainda. As correções aparecem aqui depois de executadas e de o resultado ser observado.",
+    "loadMore": "Carregar mais",
+    "never": "Nunca",
+    "retry": "Tentar novamente",
+    "errors": {
+      "loadFailed": "Não foi possível carregar a memória de correções."
+    }
   }
 }
