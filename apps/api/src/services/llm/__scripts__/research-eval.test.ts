@@ -88,7 +88,7 @@ it('refuses a non-loopback DATABASE_URL unless explicitly overridden', async () 
 
 it('classifies loopback hosts', () => {
   for (const u of ['postgresql://a@localhost:1/x', 'postgresql://a@127.0.0.1:1/x', 'postgresql://a@[::1]:1/x']) expect(isLoopbackDatabaseUrl(u), u).toBe(true);
-  for (const u of ['postgresql://a@10.0.0.5:1/x', 'postgresql://a@localhost.evil-host:1/x', 'nonsense', undefined]) expect(isLoopbackDatabaseUrl(u), String(u)).toBe(false);
+  for (const u of ['postgresql://a@10.0.0.5:1/x', 'postgresql://a@localhost.example.com:1/x', 'nonsense', undefined]) expect(isLoopbackDatabaseUrl(u), String(u)).toBe(false);
 });
 
 it('an unexpected non-usage exception exits 1', async () => {
