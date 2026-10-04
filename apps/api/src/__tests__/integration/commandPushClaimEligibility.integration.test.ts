@@ -1,0 +1,156 @@
+import './setup';
+
+import { randomUUID } from 'node:crypto';
+
+import { eq, sql } from 'drizzle-orm';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { withSystemDbAccessContext } from '../../db';
+import { deviceCommands, devices } from '../../db/schema';
+import { claimPendingCommandForDelivery } from '../../services/commandDispatch';
+import {
+  assignUserToPartner,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+} from './db-utils';
+import { getTestDb } from './setup';
+
+/**
+ * The WebSocket push leg (`claimPendingCommandForDelivery`) must apply the SAME
+ * claim-time eligibility as the heartbeat claim: a command queued by a user who
+ * has since been disabled, or for a device that has since moved to another
+ * org, is cancelled with the heartbeat's `result` and never flipped to `sent`.
+ *
+ * Runs against real Postgres under the system context the push opens (it is
+ * called from `executeCommand`'s `runOutsideDbContext` block), so the
+ * SECURITY DEFINER resolvers and the `FOR UPDATE ... SKIP LOCKED` row lock are
+ * the real ones.
+ */
+
+async function makeDevice(orgId: string, siteId: string) {
+  const [device] = await getTestDb()
+    .insert(devices)
+    .values({
+      orgId,
+      siteId,
+      agentId: `push-claim-${randomUUID()}`,
+      hostname: `host-${randomUUID().slice(0, 8)}`,
+      osType: 'linux',
+      osVersion: 'test',
+      architecture: 'x64',
+      agentVersion: '0.0.0-test',
+      status: 'online',
+    })
+    .returning();
+  if (!device) throw new Error('device fixture insert failed');
+  return device;
+}
+
+async function queue(deviceId: string, orgId: string, createdBy: string) {
+  const [row] = await getTestDb()
+    .insert(deviceCommands)
+    .values({
+      deviceId,
+      type: 'refresh_inventory',
+      payload: {},
+      status: 'pending',
+      targetRole: 'agent',
+      createdBy,
+      submittedOrgId: orgId,
+      deliverBy: new Date(Date.now() + 60 * 60 * 1000),
+    })
+    .returning();
+  if (!row) throw new Error('command fixture insert failed');
+  return row;
+}
+
+async function commandRow(id: string) {
+  const [row] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, id)).limit(1);
+  return row;
+}
+
+function push(commandId: string) {
+  return withSystemDbAccessContext(() => claimPendingCommandForDelivery(commandId));
+}
+
+describe('WebSocket push claim — same claim-time eligibility as the heartbeat claim', () => {
+  let partner: Awaited<ReturnType<typeof createPartner>>;
+  let org: Awaited<ReturnType<typeof createOrganization>>;
+  let device: Awaited<ReturnType<typeof makeDevice>>;
+
+  beforeEach(async () => {
+    partner = await createPartner();
+    org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    device = await makeDevice(org.id, site.id);
+  });
+
+  async function partnerTech(status: 'active' | 'disabled' = 'active') {
+    const user = await createUser({
+      partnerId: partner.id,
+      orgId: null,
+      email: `tech-${randomUUID()}@example.com`,
+      status,
+    });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    return user;
+  }
+
+  it('control: pushes a command queued by an active technician', async () => {
+    const tech = await partnerTech();
+    const cmd = await queue(device.id, org.id, tech.id);
+
+    const claimed = await push(cmd.id);
+
+    expect(claimed?.id).toBe(cmd.id);
+    expect((await commandRow(cmd.id))?.status).toBe('sent');
+  });
+
+  it('does not push a command whose requester was disabled; cancels it like the heartbeat does', async () => {
+    const tech = await partnerTech('disabled');
+    const cmd = await queue(device.id, org.id, tech.id);
+
+    expect(await push(cmd.id)).toBeNull();
+
+    const row = await commandRow(cmd.id);
+    expect(row?.status).toBe('cancelled');
+    expect(row?.executedAt).toBeNull();
+    expect(row?.result).toMatchObject({ status: 'cancelled', reason: 'requester_inactive', cancelledBy: 'claim_eligibility' });
+  });
+
+  it('does not push a command queued before the device moved to another org; cancels it like the heartbeat does', async () => {
+    const tech = await partnerTech();
+    const cmd = await queue(device.id, org.id, tech.id);
+    const otherOrg = await createOrganization({ partnerId: partner.id });
+    const otherSite = await createSite({ orgId: otherOrg.id });
+    await getTestDb().update(devices).set({ orgId: otherOrg.id, siteId: otherSite.id }).where(eq(devices.id, device.id));
+
+    expect(await push(cmd.id)).toBeNull();
+
+    const row = await commandRow(cmd.id);
+    expect(row?.status).toBe('cancelled');
+    expect(row?.executedAt).toBeNull();
+    expect(row?.result).toMatchObject({ status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'claim_eligibility' });
+  });
+
+  it('skips a row another claim holds locked, leaving it pending (no double delivery)', async () => {
+    const tech = await partnerTech();
+    const cmd = await queue(device.id, org.id, tech.id);
+
+    let duringLock: Awaited<ReturnType<typeof push>> | undefined;
+    await getTestDb().transaction(async (t) => {
+      // Stand-in for a concurrent heartbeat claim holding the row.
+      await t.execute(sql`SELECT id FROM device_commands WHERE id = ${cmd.id} FOR UPDATE`);
+      duringLock = await push(cmd.id);
+    });
+
+    expect(duringLock).toBeNull();
+    expect((await commandRow(cmd.id))?.status).toBe('pending');
+    // Once released, the push claims it normally.
+    expect((await push(cmd.id))?.id).toBe(cmd.id);
+  });
+});

@@ -391,10 +391,10 @@ const GUARDS: Array<{ name: string; file: string; anchor: string; markers: strin
     markers: ['conn.parked', 'isParkedDeliverableCommandType('],
   },
   {
-    name: 'the single-row push claim cancels non-removal rows for a parked device',
+    name: 'the single-row push claim hands the device org type to the shared claim-time eligibility (which cancels non-removal rows for a parked device)',
     file: 'services/commandDispatch.ts',
     anchor: 'export async function claimPendingCommandForDelivery(',
-    markers: ['organizations.type', 'isUnassignedPoolOrgType(', 'isParkedDeliverableCommandType('],
+    markers: ['orgType: organizations.type', 'orgType: candidate.orgType', 'partitionClaimable('],
   },
   {
     name: 'the batch claim reads the device org type',

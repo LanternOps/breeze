@@ -1,12 +1,8 @@
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, peripheralPolicyDeviceStates } from '../db/schema';
-import { partitionClaimable, revalidateCommandForDelivery } from './commandClaimEligibility';
+import { partitionClaimable, POWER_STATE_BARRIER_TYPES } from './commandClaimEligibility';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
-import {
-  isParkedDeliverableCommandType,
-  PARKED_DEVICE_CANCEL_REASON,
-} from './unassignedPool/deliveryEligibility';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // Side-effect import: registers the `network_diagnostic` delivery
 // revalidation. Both delivery legs live in this module, so this is the one
@@ -32,53 +28,97 @@ export async function claimPendingCommandForDelivery(
   // device_commands is system-scoped (agent WS path) and this runs from
   // executeCommand's runOutsideDbContext block — establish a system context so
   // the write isn't a contextless bare-pool write (#1375 warning flood).
-  const rows = await withSystemDbAccessContext(async () => {
-    // M1 Task 15: the WebSocket push leg runs the SAME delivery-time
-    // revalidation as the heartbeat claim below, so a diagnostic whose origin,
-    // site, context or deadline moved cannot reach the agent through the direct
-    // push instead. The claim itself stays a compare-and-set on `pending`, so a
-    // concurrent heartbeat claim still wins or loses atomically.
+  // The whole claim runs on ONE connection: the system context's transaction
+  // (or the caller's own context, which withSystemDbAccessContext joins), with
+  // a savepoint so `partitionClaimable` gets a real transaction handle for its
+  // own savepointed resolver reads. Nothing below opens a second pooled
+  // connection (#1105, #7919).
+  const rows = await withSystemDbAccessContext(() => db.transaction(async (tx) => {
+    // The WebSocket push applies EXACTLY the claim-time eligibility the
+    // heartbeat claim applies (`partitionClaimable`): parked-org, org drift
+    // (`submitted_org_id` vs the device's CURRENT org), erased submitter org,
+    // device lifecycle, partner trust, requester still active, the per-type
+    // delivery revalidation, per-type holds and the power-state barrier. A row
+    // it cancels is terminalised (and its owning record propagated) on this
+    // transaction with the same `result` the heartbeat writes; a held row stays
+    // `pending` for the next heartbeat.
     //
-    // The device's org type rides the same read: a device parked in a holding
-    // org receives lifecycle removal only, on this leg exactly as on the batch
-    // claim. Inner joins, so a row whose device or org this context cannot see
-    // is simply not delivered here (it stays `pending` for the heartbeat).
-    const [candidate] = await db
+    // Same row selection as the heartbeat scan: `pending`, inside its delivery
+    // deadline (a past-deadline row is the reaper's), locked
+    // `FOR UPDATE ... SKIP LOCKED` on the command row only. A row a concurrent
+    // heartbeat claim holds is skipped here (and vice versa), so the two legs
+    // never evaluate or deliver the same row at once. Inner joins: a row whose
+    // device or org this context cannot see is not delivered here.
+    const now = executedAt;
+    const [candidate] = await tx
       .select({
         id: deviceCommands.id,
         type: deviceCommands.type,
         deviceId: deviceCommands.deviceId,
         payload: deviceCommands.payload,
         createdBy: deviceCommands.createdBy,
+        submittedOrgId: deviceCommands.submittedOrgId,
+        deliverBy: deviceCommands.deliverBy,
+        targetRole: deviceCommands.targetRole,
+        deviceOrgId: devices.orgId,
+        deviceStatus: devices.status,
         orgType: organizations.type,
       })
       .from(deviceCommands)
       .innerJoin(devices, eq(devices.id, deviceCommands.deviceId))
       .innerJoin(organizations, eq(organizations.id, devices.orgId))
-      .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')))
-      .limit(1);
+      .where(
+        and(
+          eq(deviceCommands.id, commandId),
+          eq(deviceCommands.status, 'pending'),
+          or(isNull(deviceCommands.deliverBy), gt(deviceCommands.deliverBy, now)),
+        ),
+      )
+      .limit(1)
+      .for('update', { of: deviceCommands, skipLocked: true });
     if (!candidate) return [];
-    const revalidation =
-      isUnassignedPoolOrgType(candidate.orgType) && !isParkedDeliverableCommandType(candidate.type)
-        ? PARKED_DEVICE_CANCEL_REASON
-        : await revalidateCommandForDelivery(db, candidate);
-    if (revalidation) {
-      await db
-        .update(deviceCommands)
-        .set({
-          status: 'cancelled',
-          completedAt: executedAt,
-          result: {
-            status: 'cancelled',
-            reason: revalidation,
-            cancelledBy: 'delivery_revalidation',
-          },
-          ...terminalPayloadErasureSet(),
-        })
-        .where(and(eq(deviceCommands.id, commandId), eq(deviceCommands.status, 'pending')));
-      return [];
+
+    // The power-state barrier needs the device's in-flight count; only read it
+    // when the candidate is a power-state command (it is ignored otherwise).
+    let inFlight = 0;
+    if (POWER_STATE_BARRIER_TYPES.has(candidate.type)) {
+      const [inFlightRow] = await tx
+        .select({ inFlight: sql<number>`count(*)::int` })
+        .from(deviceCommands)
+        .where(
+          and(
+            eq(deviceCommands.deviceId, candidate.deviceId),
+            eq(deviceCommands.status, 'sent'),
+            eq(deviceCommands.targetRole, candidate.targetRole),
+          ),
+        )
+        .limit(1);
+      inFlight = inFlightRow?.inFlight ?? 0;
     }
-    return db
+
+    const { claimable } = await partitionClaimable(
+      tx,
+      {
+        id: candidate.deviceId,
+        orgId: candidate.deviceOrgId,
+        status: candidate.deviceStatus,
+        orgType: candidate.orgType,
+      },
+      [
+        {
+          id: candidate.id,
+          type: candidate.type,
+          createdBy: candidate.createdBy,
+          submittedOrgId: candidate.submittedOrgId,
+          deliverBy: candidate.deliverBy,
+          payload: candidate.payload,
+        },
+      ],
+      { inFlight },
+    );
+    if (!claimable.some((c) => c.id === candidate.id)) return [];
+
+    return tx
       .update(deviceCommands)
       .set({ status: 'sent', executedAt })
       .where(
@@ -92,7 +132,7 @@ export async function claimPendingCommandForDelivery(
         ),
       )
       .returning({ id: deviceCommands.id });
-  });
+  }));
 
   return rows.length > 0 ? { id: commandId, executedAt } : null;
 }

@@ -119,15 +119,41 @@ function selectChain(pending: unknown[], opts: { device?: unknown; inFlight?: nu
 }
 
 /**
- * The single-command claim now re-reads its candidate row so both delivery legs
- * share one revalidation seam. Stub that lookup for the direct-claim tests.
+ * The single-command (WebSocket push) claim reads its candidate row inside a
+ * savepoint transaction, joined to the device and its org and locked
+ * `FOR UPDATE OF device_commands SKIP LOCKED`, then hands it to the SAME
+ * claim-time eligibility (`partitionClaimable`) the heartbeat batch uses. The
+ * savepoint's tx is `db` itself here.
  */
-function stubSingleClaimCandidate(row: unknown = { id: 'cmd-1', type: 'script', deviceId: 'dev-1', payload: null }) {
-  const where = vi.fn(() => ({ limit: vi.fn().mockResolvedValue(row ? [row] : []) }));
-  // The candidate read joins the device and its org (for the org type).
+const DEFAULT_CANDIDATE = {
+  id: 'cmd-1',
+  type: 'script',
+  deviceId: 'dev-1',
+  payload: null,
+  createdBy: 'user-1',
+  submittedOrgId: 'org-1',
+  deliverBy: null,
+  targetRole: 'agent',
+  deviceOrgId: 'org-1',
+  deviceStatus: 'online',
+  orgType: 'customer',
+};
+let candidateFor: ReturnType<typeof vi.fn>;
+function stubSingleClaimCandidate(
+  row: Record<string, unknown> | null = {},
+  opts: { inFlight?: number } = {},
+) {
+  const candidate = row === null ? null : { ...DEFAULT_CANDIDATE, ...row };
+  candidateFor = vi.fn().mockResolvedValue(candidate ? [candidate] : []);
+  // `.limit(1)` is either locked (`.for(...)`, the candidate read) or awaited
+  // directly (the in-flight count for the power-state barrier).
+  const where = vi.fn(() => ({
+    limit: vi.fn(() => Object.assign(Promise.resolve([{ inFlight: opts.inFlight ?? 0 }]), { for: candidateFor })),
+  }));
   const joined: Record<string, unknown> = { where };
   joined.innerJoin = vi.fn(() => joined);
   vi.mocked(db.select).mockReturnValue({ from: vi.fn(() => joined) } as any);
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db));
 }
 
 describe('command dispatch helpers', () => {
@@ -468,17 +494,6 @@ describe('command dispatch helpers', () => {
 
   // #5128: the single-command delivery UPDATE carries the same deadline
   // predicate as the batch scan, so a stale row can't be delivered directly.
-  it('the single-command claim cancels a row whose delivery authority is gone', async () => {
-    stubSingleClaimCandidate({ id: 'cmd-1', type: 'network_diagnostic', deviceId: 'dev-1', payload: {} });
-    revalidateCommandForDeliveryMock.mockResolvedValue('scope_changed');
-    const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn().mockReturnValue({ where });
-    vi.mocked(db.update).mockReturnValue({ set } as any);
-
-    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
-    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
-  });
-
   it('the single-command claim refuses a row past its delivery deadline', async () => {
     stubSingleClaimCandidate();
     const where = vi.fn().mockReturnValue({
@@ -523,35 +538,101 @@ describe('command dispatch helpers', () => {
     );
   });
 
-  it('the single-command claim cancels a non-removal row for a parked device', async () => {
-    stubSingleClaimCandidate({
-      id: 'cmd-1', type: 'script', deviceId: 'dev-1', payload: {}, orgType: 'unassigned_pool',
-    });
-    const where = vi.fn().mockResolvedValue(undefined);
-    const set = vi.fn().mockReturnValue({ where });
-    vi.mocked(db.update).mockReturnValue({ set } as any);
+  describe('the WebSocket push claim applies the heartbeat claim-time eligibility', () => {
+    function stubSentUpdate() {
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+      });
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return set;
+    }
 
-    expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
-    expect(set).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'cancelled',
-      result: expect.objectContaining({ reason: 'device_pending_assignment' }),
-    }));
-    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
-    expect(revalidateCommandForDeliveryMock).not.toHaveBeenCalled();
-  });
+    it('hands the candidate and the device\'s CURRENT org/status/org type to partitionClaimable on the claim tx', async () => {
+      stubSingleClaimCandidate({ deviceOrgId: 'org-2', deviceStatus: 'online', orgType: 'customer' });
+      stubSentUpdate();
 
-  it('the single-command claim still delivers lifecycle removal to a parked device', async () => {
-    stubSingleClaimCandidate({
-      id: 'cmd-1', type: 'self_uninstall', deviceId: 'dev-1', payload: {}, orgType: 'unassigned_pool',
-    });
-    const set = vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
-    });
-    vi.mocked(db.update).mockReturnValue({ set } as any);
+      await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'));
 
-    const at = new Date('2026-03-31T00:00:00Z');
-    expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ id: 'cmd-1', executedAt: at });
-    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
+      expect(partitionClaimableMock).toHaveBeenCalledTimes(1);
+      const [tx, device, rows] = partitionClaimableMock.mock.calls[0]!;
+      expect(tx).toBe(db);
+      expect(device).toEqual({ id: 'dev-1', orgId: 'org-2', status: 'online', orgType: 'customer' });
+      expect(rows).toEqual([
+        expect.objectContaining({ id: 'cmd-1', type: 'script', createdBy: 'user-1', submittedOrgId: 'org-1' }),
+      ]);
+      // Locked like the heartbeat scan, and only the command row.
+      expect(candidateFor).toHaveBeenCalledWith('update', expect.objectContaining({ skipLocked: true }));
+    });
+
+    it('does not push a command whose requester is no longer active', async () => {
+      stubSingleClaimCandidate();
+      partitionClaimableMock.mockResolvedValue({
+        claimable: [],
+        cancelled: [{ id: 'cmd-1', reason: 'requester_inactive' }],
+        held: [],
+      });
+      const set = stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
+    });
+
+    it('does not push a command queued before the device moved to another org', async () => {
+      stubSingleClaimCandidate({ submittedOrgId: 'org-1', deviceOrgId: 'org-2' });
+      partitionClaimableMock.mockResolvedValue({
+        claimable: [],
+        cancelled: [{ id: 'cmd-1', reason: 'device_moved_org' }],
+        held: [],
+      });
+      const set = stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
+    });
+
+    it('leaves a held command pending (not pushed, not cancelled)', async () => {
+      stubSingleClaimCandidate({ type: 'install_patches' });
+      partitionClaimableMock.mockResolvedValue({
+        claimable: [],
+        cancelled: [],
+        held: [{ id: 'cmd-1', reason: 'held_maintenance_suppression' }],
+      });
+      const set = stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('passes the device\'s in-flight count for a power-state command', async () => {
+      stubSingleClaimCandidate({ type: 'reboot' }, { inFlight: 2 });
+      partitionClaimableMock.mockResolvedValue({
+        claimable: [],
+        cancelled: [],
+        held: [{ id: 'cmd-1', reason: 'power_state_barrier' }],
+      });
+      stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(partitionClaimableMock.mock.calls[0]![3]).toEqual({ inFlight: 2 });
+    });
+
+    it('control: a command every check admits is still pushed', async () => {
+      stubSingleClaimCandidate();
+      const set = stubSentUpdate();
+
+      const at = new Date('2026-03-31T00:00:00Z');
+      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ id: 'cmd-1', executedAt: at });
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent', executedAt: at }));
+    });
+
+    it('returns null without consulting eligibility when the row is gone, locked or not pending', async () => {
+      stubSingleClaimCandidate(null);
+      const set = stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1')).toBeNull();
+      expect(partitionClaimableMock).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+    });
   });
   it('a parked device claimed under the removal allowlist hands its refused rows to eligibility to cancel', async () => {
     const refusedRows = [{ id: 'cmd-script', type: 'script', deviceId: 'dev-1', status: 'pending' }];
