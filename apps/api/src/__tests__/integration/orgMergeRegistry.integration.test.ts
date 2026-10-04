@@ -265,6 +265,11 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // AI Suggested Fixes W2 (2026-12-07-100000): BEFORE INSERT OR UPDATE guard
+  // that compares only created_by / provisioned_by and RAISEs on a change
+  // outside the system scope. It never reads org_id, and org merge runs in the
+  // system scope anyway, so a repoint is never obstructed.
+  'ai_agents.ai_agents_provenance_guard': 'checks only created_by/provisioned_by changes (and passes everything in the system scope); an org_id repoint is exempt',
   // Topology M4-D2 (2026-11-06-220000): BEFORE UPDATE OF topology_site_id only;
   // RAISEs when the site pin changes. Merge repoints org_id (never the pin),
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the
