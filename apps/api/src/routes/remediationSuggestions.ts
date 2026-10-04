@@ -17,6 +17,7 @@ import { loadActiveInstructions } from '../services/fixMemory/instructions';
 import { dispatchBuiltinAction } from '../services/fixMemory/builtinActions';
 import { signatureForSource, sourceRefFor } from '../services/fixMemory/signatureLoader';
 import { resolveOrgPartnerId } from '../services/fixMemory/catalog';
+import { captureException } from '../services/sentry';
 import { createManualStepsOutcome, loadOutcomeSummaries, recordBuiltinOutcome, recordExecutionOutcome, recordOutcomeVote, type OutcomeSummary } from '../services/fixMemory/outcomeRecorder';
 
 export const remediationSuggestionRoutes = new Hono();
@@ -1029,74 +1030,114 @@ remediationSuggestionRoutes.post(
 
 /**
  * /execute for a built-in action (W2). Same three phases as the script path
- * (the route is self-managed, #7109): the gate already ran in a short context;
- * the dispatch holds NO context (dispatchBuiltinAction pins the org with
- * expectedOrgId and escapes any context itself); the link + outcome record run
- * in a second short context. A refused dispatch returns before phase 3, so it
- * leaves the suggestion accepted and writes no fix_outcomes row.
+ * (the route is self-managed, #7109), none nested:
+ *  1. the gate (a short context) checked everything and CLAIMED the row —
+ *     status `executed`, committed — so no second request can dispatch;
+ *  2. the dispatch holds NO context (dispatchBuiltinAction pins the org with
+ *     expectedOrgId and escapes any context itself);
+ *  3. the feedback + outcome record run in a second short context.
+ * A refused dispatch releases the claim (back to the gated status) and writes
+ * no fix_outcomes row. A dispatch that throws, or a phase 3 that fails after a
+ * successful dispatch, KEEPS the claim: the command may have been sent, and a
+ * retry must never send a second reboot/kill. The script path is unchanged
+ * (its idempotency is tracked in #7276).
  */
 async function runBuiltinExecution(
   c: Context,
   auth: AuthContext,
   gate: {
     existing: typeof remediationSuggestions.$inferSelect;
+    claimed: typeof remediationSuggestions.$inferSelect;
     deviceId: string;
     builtinAction: NonNullable<(typeof remediationSuggestions.$inferSelect)['builtinAction']>;
     device: { id: string; orgId: string; osType: string; agentVersion: string | null; status: string };
   },
 ) {
-  const { existing, deviceId, builtinAction, device } = gate;
-  const dispatched = await dispatchBuiltinAction({
-    action: builtinAction,
-    parameters: existing.parameters,
-    device,
-    userId: auth.user.id,
-  });
+  const { existing, claimed, deviceId, builtinAction, device } = gate;
+  let dispatched: Awaited<ReturnType<typeof dispatchBuiltinAction>>;
+  try {
+    dispatched = await dispatchBuiltinAction({
+      action: builtinAction,
+      parameters: existing.parameters,
+      device,
+      userId: auth.user.id,
+    });
+  } catch (err) {
+    // Unknown whether the command left: keep the claim (fail safe against a double send).
+    console.error('[remediationSuggestions] built-in dispatch threw; claim kept', { suggestionId: existing.id, err });
+    captureException(err, undefined, { component: 'remediationSuggestions.builtinDispatch', suggestionId: existing.id });
+    throw err;
+  }
   if (!dispatched.ok) {
+    await releaseBuiltinClaim(auth, existing, claimed);
     return c.json({ error: dispatched.error }, dispatched.status);
   }
 
-  // The command is already sent: a failure below leaves it unlinked, exactly as
-  // on the script path.
-  const phase3 = await withAuthDbAccessContext(auth, async () => {
-    const now = new Date();
-    const [row] = await db
-      .update(remediationSuggestions)
-      .set({ status: 'executed', executedBy: auth.user.id, executedAt: now, updatedAt: now })
-      .where(eq(remediationSuggestions.id, existing.id))
-      .returning();
-    if (!row) return undefined;
+  // The command is already sent. Any failure from here on keeps the claim and
+  // answers 202 with the commandId, so the technician can see what went out
+  // and a retry cannot re-send it.
+  const { commandId, cleanupRunId } = dispatched;
+  let phase3: { row: typeof remediationSuggestions.$inferSelect; outcome: OutcomeSummary | null } | undefined;
+  let phase3Error: unknown = null;
+  try {
+    phase3 = await withAuthDbAccessContext(auth, async () => {
+      // Idempotent: the claim already set status/executedBy/executedAt; this
+      // only re-asserts `executed` (and so matches the claimed row) and bumps
+      // updatedAt. The feedback dedupe key is the commandId.
+      const [row] = await db
+        .update(remediationSuggestions)
+        .set({ updatedAt: new Date() })
+        .where(and(eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, 'executed')))
+        .returning();
+      if (!row) return undefined;
 
-    await emitRemediationSuggestionFeedback({
-      orgId: row.orgId,
-      suggestionId: row.id,
-      eventType: 'suggestion.executed',
-      dedupeKey: remediationFeedbackDedupeKey({ status: 'executed', actionCommandId: dispatched.commandId }),
-      outcome: 'executed',
-      actorUserId: auth.user.id,
-      metadata: {
-        route: 'remediation_suggestions.execute',
-        sourceType: row.sourceType,
-        sourceId: row.sourceId,
-        targetType: row.targetType,
-        builtinAction: row.builtinAction,
-        actionCommandId: dispatched.commandId,
-        elevationRequestId: row.elevationRequestId,
-        riskTier: row.riskTier,
+      await emitRemediationSuggestionFeedback({
+        orgId: row.orgId,
+        suggestionId: row.id,
+        eventType: 'suggestion.executed',
+        dedupeKey: remediationFeedbackDedupeKey({ status: 'executed', actionCommandId: commandId }),
+        outcome: 'executed',
+        actorUserId: auth.user.id,
+        metadata: {
+          route: 'remediation_suggestions.execute',
+          sourceType: row.sourceType,
+          sourceId: row.sourceId,
+          targetType: row.targetType,
+          builtinAction: row.builtinAction,
+          actionCommandId: commandId,
+          elevationRequestId: row.elevationRequestId,
+          riskTier: row.riskTier,
+        },
+      });
+
+      // SAVEPOINT + never throws, like the script path's recorder.
+      const outcome = await recordBuiltinOutcome({ suggestion: row, deviceId, commandId, cleanupRunId });
+      return { row, outcome };
+    });
+  } catch (err) {
+    phase3Error = err;
+  }
+  if (!phase3) {
+    const err = phase3Error ?? new Error('claimed built-in suggestion was no longer executed at record time');
+    console.error('[remediationSuggestions] built-in dispatched but not recorded; claim kept', { suggestionId: existing.id, commandId, cleanupRunId, err });
+    captureException(err, undefined, {
+      component: 'remediationSuggestions.builtinRecord', suggestionId: existing.id, commandId, ...(cleanupRunId ? { cleanupRunId } : {}),
+    });
+    writeRouteAudit(c, {
+      orgId: claimed.orgId,
+      action: 'ml.remediation_suggestion.execute',
+      resourceType: 'remediation_suggestion',
+      resourceId: claimed.id,
+      resourceName: claimed.title,
+      details: {
+        sourceType: claimed.sourceType, sourceId: claimed.sourceId, targetType: 'builtin_action', builtinAction: claimed.builtinAction,
+        commandId, cleanupRunId, elevationRequestId: claimed.elevationRequestId, riskTier: claimed.riskTier, recorded: false,
       },
     });
-
-    // SAVEPOINT + never throws, like the script path's recorder.
-    const outcome = await recordBuiltinOutcome({
-      suggestion: row,
-      deviceId,
-      commandId: dispatched.commandId,
-      cleanupRunId: dispatched.cleanupRunId,
-    });
-    return { row, outcome };
-  });
-  if (!phase3) {
-    return c.json({ error: 'Failed to update suggestion' }, 500);
+    return c.json({
+      dispatched: true, recorded: false, commandId, cleanupRunId,
+      data: serializeSuggestion(claimed),
+    }, 202);
   }
   const { row: updated, outcome } = phase3;
 
@@ -1111,8 +1152,8 @@ async function runBuiltinExecution(
       sourceId: updated.sourceId,
       targetType: 'builtin_action',
       builtinAction: updated.builtinAction,
-      commandId: dispatched.commandId,
-      cleanupRunId: dispatched.cleanupRunId,
+      commandId,
+      cleanupRunId,
       elevationRequestId: updated.elevationRequestId,
       riskTier: updated.riskTier,
     },
@@ -1120,8 +1161,39 @@ async function runBuiltinExecution(
 
   return c.json({
     data: serializeSuggestion(updated, outcome),
-    execution: { commandId: dispatched.commandId, cleanupRunId: dispatched.cleanupRunId },
+    execution: { commandId, cleanupRunId },
   }, 201);
+}
+
+/**
+ * Undo a built-in claim after a REFUSED dispatch (nothing was sent): restore
+ * the gated status and execution stamps. Conditional on the claim still being
+ * ours (status executed + our executedAt), so it can never clobber a later
+ * change. A failure is logged and captured; the refusal is still returned, and
+ * the row stays `executed` (a human can re-accept it), never re-dispatchable.
+ */
+async function releaseBuiltinClaim(
+  auth: AuthContext,
+  existing: typeof remediationSuggestions.$inferSelect,
+  claimed: typeof remediationSuggestions.$inferSelect,
+): Promise<void> {
+  try {
+    await withAuthDbAccessContext(auth, async () => {
+      const conditions: SQL[] = [eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, 'executed')];
+      if (claimed.executedAt) conditions.push(eq(remediationSuggestions.executedAt, claimed.executedAt));
+      const released = await db
+        .update(remediationSuggestions)
+        .set({ status: existing.status, executedBy: existing.executedBy ?? null, executedAt: existing.executedAt ?? null, updatedAt: new Date() })
+        .where(and(...conditions))
+        .returning({ id: remediationSuggestions.id });
+      if (released.length === 0) {
+        console.warn('[remediationSuggestions] built-in claim release matched no row', { suggestionId: existing.id });
+      }
+    });
+  } catch (err) {
+    console.error('[remediationSuggestions] could not release a built-in claim after a refused dispatch', { suggestionId: existing.id, err });
+    captureException(err, undefined, { component: 'remediationSuggestions.builtinRelease', suggestionId: existing.id });
+  }
 }
 
 remediationSuggestionRoutes.post(
@@ -1162,6 +1234,10 @@ remediationSuggestionRoutes.post(
       if (!(await siteAllowedForSuggestion(existing, perms))) {
         return { ok: false as const, error: 'Suggestion not found or access denied', status: 403 as const };
       }
+      if (existing.targetType === 'builtin_action' && existing.status === 'executed') {
+        // Claimed by an earlier /execute (dispatched, or mid-dispatch): a retry must never re-send.
+        return { ok: false as const, error: 'This built-in action was already run', code: 'already_executed' as const, status: 409 as const };
+      }
       if (existing.status !== 'accepted' && existing.status !== 'edited') {
         return { ok: false as const, error: 'Suggestion must be accepted or edited before it can be executed', status: 400 as const };
       }
@@ -1192,8 +1268,23 @@ remediationSuggestionRoutes.post(
         if (!device || (perms?.allowedSiteIds && !canAccessSite(perms, device.siteId))) {
           return { ok: false as const, error: 'Device not found or access denied', status: 404 as const };
         }
+        // Atomic CLAIM before dispatch (#7276, built-in half): flip the row to
+        // `executed` only if it is still in the state we gated on. It commits
+        // with this context, so a retry or a concurrent /execute (blocked on the
+        // row lock, then re-evaluating the WHERE) matches nothing and gets a
+        // 409 instead of re-sending a reboot/kill. `executed` without a link is
+        // allowed for built-ins (remediation_suggestions_terminal_execution_link_check).
+        const claimedAt = new Date();
+        const [claimed] = await db
+          .update(remediationSuggestions)
+          .set({ status: 'executed', executedBy: auth.user.id, executedAt: claimedAt, updatedAt: claimedAt })
+          .where(and(eq(remediationSuggestions.id, existing.id), eq(remediationSuggestions.status, existing.status)))
+          .returning();
+        if (!claimed) {
+          return { ok: false as const, error: 'This built-in action is already being run', code: 'already_dispatching' as const, status: 409 as const };
+        }
         return {
-          ok: true as const, kind: 'builtin' as const, existing, deviceId: builtinDeviceId,
+          ok: true as const, kind: 'builtin' as const, existing, claimed, deviceId: builtinDeviceId,
           builtinAction: existing.builtinAction, device,
         };
       }
@@ -1213,7 +1304,7 @@ remediationSuggestionRoutes.post(
       return { ok: true as const, kind: 'script' as const, existing, scriptId: existing.scriptId, deviceId };
     });
     if (!gate.ok) {
-      return c.json({ error: gate.error }, gate.status);
+      return c.json({ error: gate.error, ...('code' in gate ? { code: gate.code } : {}) }, gate.status);
     }
     if (gate.kind === 'builtin') {
       return runBuiltinExecution(c, auth, gate);

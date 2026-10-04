@@ -126,6 +126,9 @@ vi.mock('../services/fixMemory/signatureLoader', () => ({
 }));
 vi.mock('../services/fixMemory/catalog', () => ({ resolveOrgPartnerId: vi.fn(async () => 'p-1') }));
 
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));
+
 vi.mock('../services/mlFeedbackEmitters', () => ({
   emitRemediationSuggestionFeedback: dbMocks.emitFeedbackMock,
 }));
@@ -661,12 +664,27 @@ describe('remediation suggestion routes', () => {
     const withDevicesExecute = () => { currentPermissions = { permissions: [{ resource: 'devices', action: 'execute' }] }; };
     const deviceRow = { id: builtinRow.deviceId, orgId: builtinRow.orgId, siteId: '99999999-9999-4999-8999-999999999999', osType: 'windows', agentVersion: '1.0.0', status: 'online' };
     const phase3Row = { ...builtinRow, status: 'executed', executedBy: 'user-1', executedAt: new Date('2026-06-18T12:10:00.000Z') };
+    // A5: the gate's conditional claim (accepted/edited -> executed) and phase 3's idempotent update.
+    const updateCalls: Array<{ depth: number; set: Record<string, unknown> }> = [];
+    const mockUpdateReturning = (rows: unknown[]) => {
+      dbMocks.updateMock.mockImplementationOnce(() => ({
+        set: vi.fn((set: Record<string, unknown>) => {
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) };
+        }),
+      }));
+    };
+    const mockClaim = (claimed = true) => mockUpdateReturning(claimed ? [phase3Row] : []);
     const mockPhase3 = (depths?: Record<string, number>) => {
       dbMocks.updateMock.mockImplementationOnce(() => {
         if (depths) depths.update = dbMocks.dbContextState.depth;
-        return { set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([phase3Row]) }) }) };
+        return { set: vi.fn((set: Record<string, unknown>) => {
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([phase3Row]) }) };
+        }) };
       });
     };
+    beforeEach(() => { updateCalls.length = 0; });
 
     it('needs devices:execute on top of scripts:execute', async () => {
       mockSuggestionLoad(builtinRow);
@@ -676,11 +694,12 @@ describe('remediation suggestion routes', () => {
       expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
     });
 
-    it('dispatches outside any db context, then marks executed and records the attempt inside one', async () => {
+    it('claims the row in the gate context, dispatches outside any db context, then records the attempt inside one', async () => {
       withDevicesExecute();
       const depths: Record<string, number> = {};
       mockSuggestionLoad(builtinRow);
       mockDeviceLoad(deviceRow);
+      mockClaim();
       dbMocks.dispatchBuiltinMock.mockImplementationOnce(async () => {
         depths.dispatch = dbMocks.dbContextState.depth;
         return { ok: true, commandId: 'cmd-1', cleanupRunId: null };
@@ -702,22 +721,57 @@ describe('remediation suggestion routes', () => {
         suggestion: expect.objectContaining({ id: builtinRow.id }), deviceId: builtinRow.deviceId, commandId: 'cmd-1', cleanupRunId: null,
       });
       expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: 'executed:command:cmd-1' }));
-      // The three-phase contract: nothing held across dispatch; link + record share phase 3's context.
+      // The claim commits in the gate context BEFORE dispatch; nothing is held across dispatch; link + record share phase 3's.
+      expect(updateCalls[0]).toMatchObject({ depth: 1, set: expect.objectContaining({ status: 'executed', executedBy: 'user-1' }) });
+      expect(dbMocks.dbContextState.events[0]).toBe('commit');
       expect(depths.dispatch).toBe(0);
       expect(depths.update).toBeGreaterThan(0);
       expect(depths.record).toBeGreaterThan(0);
     });
 
-    it('surfaces a dispatch refusal with its status and code, and records nothing', async () => {
+    it('A5: a claim that matches no row (a concurrent /execute won) is a 409 and nothing is dispatched', async () => {
       withDevicesExecute();
       mockSuggestionLoad(builtinRow);
       mockDeviceLoad(deviceRow);
+      mockClaim(false);
+      const res = await run();
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'already_dispatching' });
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a dispatch refusal with its status and code, releases the claim, and records nothing', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      mockClaim();
       dbMocks.dispatchBuiltinMock.mockResolvedValueOnce({ ok: false, status: 409, error: 'process_ambiguous' });
+      mockUpdateReturning([builtinRow]);
       const res = await run();
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'process_ambiguous' });
-      expect(dbMocks.updateMock).not.toHaveBeenCalled();
+      expect(updateCalls).toHaveLength(2);
+      expect(updateCalls[1]).toMatchObject({ depth: 1, set: expect.objectContaining({ status: 'accepted', executedBy: null, executedAt: null }) });
       expect(dbMocks.recordBuiltinMock).not.toHaveBeenCalled();
+      expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+    });
+
+    it('A5: dispatch ok but phase 3 throws -> 202 dispatched/not recorded with the commandId, captured, claim kept', async () => {
+      withDevicesExecute();
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      mockClaim();
+      dbMocks.dispatchBuiltinMock.mockResolvedValueOnce({ ok: true, commandId: 'cmd-7', cleanupRunId: null });
+      mockPhase3();
+      dbMocks.emitFeedbackMock.mockRejectedValueOnce(new Error('feedback down'));
+      const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const res = await run();
+      expect(res.status).toBe(202);
+      expect(await res.json()).toMatchObject({ dispatched: true, recorded: false, commandId: 'cmd-7' });
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ suggestionId: builtinRow.id, commandId: 'cmd-7' }));
+      // No release: only the claim + the failed phase-3 update ran.
+      expect(updateCalls.map((c) => c.set.status)).toEqual(['executed', undefined]);
+      err.mockRestore();
     });
 
     it('a high-risk built-in (reboot) still requires an approved elevation', async () => {
@@ -737,12 +791,14 @@ describe('remediation suggestion routes', () => {
       expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
     });
 
-    it('an already-executed suggestion is refused before dispatch', async () => {
+    it('A5: an already-executed (or claimed) built-in is a 409 before dispatch, so a retry never re-sends', async () => {
       withDevicesExecute();
       mockSuggestionLoad({ ...builtinRow, status: 'executed' });
       const res = await run();
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'already_executed' });
       expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+      expect(dbMocks.updateMock).not.toHaveBeenCalled();
     });
 
     it('refuses a built-in elevation request without devices:execute', async () => {
