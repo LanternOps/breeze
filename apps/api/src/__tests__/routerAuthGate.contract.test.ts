@@ -6,10 +6,15 @@
  * reject missing auth. Removing a redundant gate may still satisfy the contract.
  * Only the normal unit setup's Redis mock applies; auth and handlers stay real.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  chargingMounts,
+  indexCallsChargingMount,
+  indexMounts,
+  indexRouteCallCount,
+  loadMountedRouter,
+} from './helpers/indexMounts';
 
 // Key by router expression, not mount path: public and protected routers often
 // share a prefix. Auth-equivalent gates (MCP, helper, tunnel, etc.) are tested.
@@ -50,32 +55,7 @@ const EXEMPT: Record<string, string> = {
   'createEventWsRoutes(upgradeWebSocket)': 'Event WebSocket handshake authenticates tickets; requires upgrade adapter.',
 };
 
-const indexSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-const imports = new Map<string, { module: string; exported: string }>();
-for (const match of indexSource.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
-  for (const binding of match[1]!.split(',')) {
-    const [exported, local = exported] = binding.trim().split(/\s+as\s+/);
-    if (exported && local) imports.set(local, { module: match[2]!, exported });
-  }
-}
-
-// Capture the complete expression (including factory calls), not only names.
-const mounts = [...indexSource.matchAll(/^\s*(api|app)\.route\(\s*['"]([^'"]+)['"]\s*,\s*(.*?)\s*\);/gm)]
-  .map((match) => ({ owner: match[1]!, path: match[2]!, expression: match[3]! }));
-// Inspect helper composition as well as literal index mounts. Keep its call pinned
-// so removing it cannot leave an apparently covered but unreachable router.
-const chargingMountSource = readFileSync(new URL('../routes/autopay/mount.ts', import.meta.url), 'utf8');
-expect(indexSource).toContain('mountAutopayChargingRoutes(api)');
-for (const match of chargingMountSource.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g)) {
-  for (const binding of match[1]!.split(',')) {
-    const [exported, local = exported] = binding.trim().split(/\s+as\s+/);
-    if (exported && local) imports.set(local, { module: `./routes/autopay/${match[2]!}`, exported });
-  }
-}
-const chargingMounts = [...chargingMountSource.matchAll(/api\.route\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)\s*\)/g)]
-  .map(match => ({ owner: 'api', path: match[1]!, expression: match[2]! }));
-expect(chargingMounts).toHaveLength(1);
-mounts.push(...chargingMounts);
+const mounts = indexMounts;
 const protectedMounts = mounts.filter(({ expression }) => !Object.hasOwn(EXEMPT, expression));
 
 beforeAll(() => {
@@ -89,7 +69,11 @@ describe('index.ts router auth gate contract', () => {
   it('discovers every mount and keeps exemptions explicit and current', () => {
     expect(mounts.length).toBeGreaterThan(0);
     expect(protectedMounts.length).toBeGreaterThan(0);
-    expect(mounts).toHaveLength([...indexSource.matchAll(/\b(?:api|app)\.route\s*\(/g)].length + chargingMounts.length);
+    // Keep the autopay helper call pinned so removing it cannot leave an
+    // apparently covered but unreachable router.
+    expect(indexCallsChargingMount).toBe(true);
+    expect(chargingMounts).toHaveLength(1);
+    expect(mounts).toHaveLength(indexRouteCallCount + chargingMounts.length);
     for (const [expression, reason] of Object.entries(EXEMPT)) {
       expect(mounts.some((mount) => mount.expression === expression), expression).toBe(true);
       expect(reason.trim().length, expression).toBeGreaterThan(0);
@@ -99,13 +83,7 @@ describe('index.ts router auth gate contract', () => {
   it.each(protectedMounts)('$owner: $path ($expression) rejects a bare request', async ({ path, expression }) => {
     // No arbitrary eval: ordinary imports and zero-argument router factories
     // are supported. New composition syntax fails loudly instead of escaping.
-    const parsed = /^(\w+)(\(\))?$/.exec(expression);
-    expect(parsed, `Unsupported router expression: ${expression}`).not.toBeNull();
-    const binding = imports.get(parsed![1]!);
-    expect(binding, `No import found for ${expression}`).toBeDefined();
-    const modulePath = fileURLToPath(new URL(binding!.module, new URL('../index.ts', import.meta.url)));
-    const exports = await import(modulePath);
-    const router: Hono = parsed![2] ? exports[binding!.exported]() : exports[binding!.exported];
+    const router = await loadMountedRouter(expression);
     expect(router, expression).toBeInstanceOf(Hono);
 
     // Hono records use() middleware as ALL entries too. Prefer an endpoint

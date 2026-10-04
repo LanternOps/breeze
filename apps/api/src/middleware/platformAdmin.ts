@@ -1,6 +1,7 @@
 import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { authMiddleware } from './auth';
+import { markPermissionGate } from './permissionGate';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 
@@ -53,6 +54,9 @@ export async function platformAdminMiddleware(c: Context, next: Next) {
     throw new HTTPException(403, { message: 'platform admin access required' });
   }
 }
+
+// Platform-admin access is the grant for /admin/* (see permissionGate.ts).
+markPermissionGate(platformAdminMiddleware, 'platform-admin');
 
 function buildRouteAction(path: string): string {
   const cleaned = path.replace(/^\/api\/v1\/admin\//, '').replace(/^\/admin\//, '');
