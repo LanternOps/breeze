@@ -448,8 +448,9 @@ async function researchSourceSiteAllowed(
 ): Promise<boolean> {
   if (!perms?.allowedSiteIds) return true;
   const source = await researchSourceDeviceId({ orgId, sourceType, sourceId });
-  // Unknown source / no device: nothing site-scoped to protect; downstream answers not-found / no_device.
-  if (!source?.deviceId) return true;
+  // Fail CLOSED: a site-limited caller cannot be shown to be inside their sites
+  // when the source or its device is unresolved, so answer not-found.
+  if (!source?.deviceId) return false;
   return siteAllowedForSuggestion({ deviceId: source.deviceId }, perms);
 }
 

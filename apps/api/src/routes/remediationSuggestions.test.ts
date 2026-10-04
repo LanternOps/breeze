@@ -1497,6 +1497,16 @@ describe('research / memory / draft-brief routes', () => {
       expect(dbMocks.generateMock).not.toHaveBeenCalled();
     });
 
+    it('F4: fails CLOSED (404, nothing started) when the source or its device cannot be resolved', async () => {
+      for (const unresolved of [null, { deviceId: null }]) {
+        dbMocks.requestResearchMock.mockClear();
+        dbMocks.sourceDeviceMock.mockResolvedValue(unresolved);
+        const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+        expect(res.status).toBe(404);
+        expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+      }
+    });
+
     it('an in-site source still proceeds', async () => {
       dbMocks.selectMock.mockReset();
       dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-allowed' }] }) }) });
