@@ -782,6 +782,47 @@ describe('remediation suggestion routes', () => {
       expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
     });
 
+    it('B3: a PATCH that edits a built-in to an out-of-allowlist shape cannot be executed: 400, no claim, no dispatch', async () => {
+      withDevicesExecute();
+      // What a PATCH can leave behind (parameters is a free-form record there).
+      mockSuggestionLoad({ ...builtinRow, parameters: { serviceName: 42, extra: 'x' } });
+      const res = await run();
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'invalid_builtin_parameters' });
+      expect(dbMocks.dispatchBuiltinMock).not.toHaveBeenCalled();
+      expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    });
+
+    it('B3: PATCH cannot lower a built-in below its stored (floor-clamped) tier', async () => {
+      const reboot = { ...builtinRow, builtinAction: 'reboot', parameters: {}, riskTier: 'high' };
+      mockSuggestionLoad(reboot);
+      const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...reboot, status: 'edited' }]) }) });
+      dbMocks.updateMock.mockReturnValueOnce({ set: setMock });
+      const res = await app.request(`/remediation-suggestions/${reboot.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'edited', riskTier: 'low' }),
+      });
+      expect(res.status).toBe(200);
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ riskTier: 'high' }));
+    });
+
+    it('B3: a high-risk built-in (reboot) with an approved same-device elevation dispatches and returns 201', async () => {
+      withDevicesExecute();
+      const elevationRequestId = '88888888-8888-4888-8888-888888888888';
+      const reboot = { ...builtinRow, builtinAction: 'reboot', parameters: {}, riskTier: 'high', elevationRequestId };
+      mockSuggestionLoad(reboot);
+      mockElevationLoad({ id: elevationRequestId, orgId: reboot.orgId, deviceId: reboot.deviceId, status: 'approved', expiresAt: new Date('2099-01-01T00:00:00.000Z') });
+      mockDeviceLoad(deviceRow);
+      mockUpdateReturning([{ ...phase3Row, builtinAction: 'reboot', riskTier: 'high', elevationRequestId }]);
+      dbMocks.dispatchBuiltinMock.mockResolvedValueOnce({ ok: true, commandId: 'cmd-r', cleanupRunId: null });
+      mockPhase3();
+      dbMocks.recordBuiltinMock.mockResolvedValueOnce({ state: 'pending', stateReason: null, humanVote: null });
+      const res = await run();
+      expect(res.status).toBe(201);
+      expect(dbMocks.dispatchBuiltinMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'reboot' }));
+    });
+
     it('a device the caller cannot reach is a 404 and nothing is dispatched', async () => {
       withDevicesExecute();
       mockSuggestionLoad(builtinRow);

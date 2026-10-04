@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { RESEARCH_BUILTIN_PARAM_SCHEMAS } from '@breeze/shared';
 import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 
 import { db, withDbTransaction } from '../db';
@@ -1255,6 +1256,12 @@ remediationSuggestionRoutes.post(
         const builtinDeviceId = singleTargetDeviceId(existing);
         if (!builtinDeviceId || !existing.builtinAction) {
           return { ok: false as const, error: 'A built-in action needs exactly one target device', status: 400 as const };
+        }
+        // PATCH accepts a free-form `parameters` record, so re-parse with the
+        // allowlist schema HERE, before the claim: an off-shape row is a 400
+        // that never claims or dispatches (dispatch re-parses as a backstop).
+        if (!RESEARCH_BUILTIN_PARAM_SCHEMAS[existing.builtinAction].safeParse(existing.parameters ?? {}).success) {
+          return { ok: false as const, error: 'The built-in action parameters are not valid', code: 'invalid_builtin_parameters' as const, status: 400 as const };
         }
         const builtinApprovalError = await validateRemediationExecutionApproval(existing, builtinDeviceId);
         if (builtinApprovalError) {
