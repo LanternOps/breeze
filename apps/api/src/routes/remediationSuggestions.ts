@@ -857,6 +857,9 @@ remediationSuggestionRoutes.get(
     if (orgCond) conditions.push(orgCond);
     const [row] = await db.select().from(remediationSuggestions).where(and(...conditions)).limit(1);
     if (!row) return c.json({ error: 'Suggestion not found' }, 404);
+    if (!(await siteAllowedForSuggestion(row, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ error: 'Suggestion not found' }, 404);
+    }
     if (row.targetType !== 'script_draft') return c.json({ error: 'not_a_draft_request' }, 400);
     const p = (row.parameters ?? {}) as { brief?: unknown; language?: unknown };
     return c.json({

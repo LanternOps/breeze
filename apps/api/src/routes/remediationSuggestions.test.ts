@@ -1556,6 +1556,15 @@ describe('research / memory / draft-brief routes', () => {
     expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(400);
   });
 
+  it('GET /draft-brief 404s a site-limited user whose site does not cover the suggestion device', async () => {
+    currentPermissions = { allowedSiteIds: ['site-allowed'] };
+    mockSuggestionLoad({ ...baseSuggestion, targetType: 'script_draft', parameters: { brief: 'secret brief', language: 'powershell' } });
+    dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-other' }] }) }) });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth);
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain('secret brief');
+  });
+
   it('GET /draft-brief 404s a non-uuid id without querying', async () => {
     expect((await app.request('/remediation-suggestions/not-a-uuid/draft-brief', auth)).status).toBe(404);
     expect(dbMocks.selectMock).not.toHaveBeenCalled();
