@@ -2312,7 +2312,7 @@ async function executeAiTriageAction(
         console.error('[automationRuntime] proven-fix attach failed; admitting the triage run', {
           alertId: memoryAlertId, orgId: context.device.orgId, error,
         });
-        captureException(error, undefined, { alertId: memoryAlertId, orgId: context.device.orgId, stage: 'proven_fix_attach' });
+        captureException(error, undefined, { alertId: memorySource.sourceId, orgId: context.device.orgId, stage: 'proven_fix_attach' });
       }
       if (attached > 0) {
         const message = 'ai_triage skipped: proven_fix_available (proven fix attached; shadow triage run not started)';
