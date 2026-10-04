@@ -267,3 +267,24 @@ export function findDisplayPlaceholderPath(value: unknown, path = ''): string | 
   }
   return null;
 }
+
+const NETWORK_MONITOR_ALERT_SOURCE = 'network_monitor';
+
+/**
+ * Text copied out of an alert (title, message) into another record. Every URL
+ * is reduced to its origin. A network-monitor alert stored before the monitor
+ * worker presented its target also embeds the raw check target, which can be
+ * scheme-less (`user@host/path`); that is reduced the way
+ * presentEndpointTarget reduces it.
+ */
+export function scrubAlertText<T extends string | null | undefined>(text: T, context: unknown): T;
+export function scrubAlertText(text: string | null | undefined, context: unknown): string | null | undefined {
+  if (!text) return text;
+  let out = text;
+  const ctx = context as { source?: unknown; target?: unknown } | null | undefined;
+  if (ctx && ctx.source === NETWORK_MONITOR_ALERT_SOURCE && typeof ctx.target === 'string' && ctx.target) {
+    const presented = presentEndpointTarget(ctx.target).target;
+    if (presented !== ctx.target) out = out.split(ctx.target).join(presented);
+  }
+  return scrubUrlsInText(out);
+}
