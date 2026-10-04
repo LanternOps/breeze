@@ -29,21 +29,18 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
       dbMocks.order.push('delete-session-by-connection');
       consentMocks.validStates.clear();
     }),
-    createAdmin: vi.fn(async () => {
+    createIdentity: vi.fn(async () => {
       dbMocks.order.push('insert-session');
       consentMocks.stateCounter += 1;
       const rawState = consentMocks.stateCounter === 1 ? 'raw-state' : `raw-state-${consentMocks.stateCounter}`;
       consentMocks.validStates.add(rawState);
-      return { rawState, session: {} };
+      return { rawState, session: {}, nonce: 'nonce', codeChallenge: 'challenge' };
     }),
+    insertVerified: vi.fn(async () => ({ rawState: 'consent-state', session: {} })),
     consumeAdmin: vi.fn(async (input: { rawState: string }) => {
       dbMocks.order.push('consume-admin-session');
       if (!consentMocks.validStates.delete(input.rawState)) return null;
       return { userId: '66666666-6666-4666-8666-666666666666' };
-    }),
-    insertIdentity: vi.fn(async (_owner: unknown, prepared: Record<string, unknown>) => {
-      dbMocks.order.push('insert-identity-session');
-      return { rawState: prepared.rawState, codeChallenge: prepared.codeChallenge, session: {} };
     }),
   },
   columns: {
@@ -141,9 +138,10 @@ vi.mock('../../middleware/auth', () => ({
 vi.mock('./consentSessionService', () => ({
   deleteConsentSessionsForAttemptInTransaction: consentMocks.deleteAttempt,
   deleteConsentSessionsForConnection: consentMocks.deleteForConnection,
-  createAdminConsentSessionInTransaction: consentMocks.createAdmin,
+  createIdentitySessionInTransaction: consentMocks.createIdentity,
+  insertVerifiedConsentSessionInTransaction: consentMocks.insertVerified,
   consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
-  insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,
+  verifiedIdentityFromSession: vi.fn(() => null),
 }));
 
 vi.mock('./metrics', () => ({
@@ -170,16 +168,16 @@ vi.mock('./writeActionRuntimeConfig', () => ({
 
 import {
   actionsConnectionService,
-  applyIdentityVerificationResult,
+  applyConsentFinalizationResult,
   applyRetestResult,
+  beginConsentFinalization,
   disconnectCustomerGraphActionsConnection,
   initiateCustomerGraphActionsConsent,
   listCustomerGraphActionsConnections,
   loadRetestSnapshot,
-  markAdminConsentReturned,
   markConsentAttemptFailed,
   retestCustomerGraphActionsConnection,
-  transitionAdminConsentToIdentity,
+  transitionIdentityToConsent,
 } from './writeActionConnectionService';
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
@@ -235,18 +233,24 @@ describe('customer Graph-actions connection service instance', () => {
     consentMocks.stateCounter = 0;
   });
 
-  it('initiates actions consent with the actions app client id + callback', async () => {
+  it('initiates actions identity sign-in with the actions app client id + callback at /organizations', async () => {
     dbMocks.selectResults.push([]);
-    dbMocks.insertResults.push((values) => [row({ ...values })]);
+    dbMocks.insertResults.push((values) => [row({ ...values, tenantId: null })]);
 
-    const { consentUrl, connection } = await initiateCustomerGraphActionsConsent({
+    const { authorizationUrl, connection, binding } = await initiateCustomerGraphActionsConsent({
       orgId: ORG_ID,
       actorId: ACTOR_ID,
     });
 
     expect(connection.profile).toBe('customer-graph-actions');
-    expect(consentUrl).toContain(`client_id=${ACTIONS_CLIENT_ID}`);
-    expect(consentUrl).toContain(encodeURIComponent('/api/v1/m365/actions-consent/callback'));
+    const url = new URL(authorizationUrl);
+    expect(url.pathname).toBe('/organizations/oauth2/v2.0/authorize');
+    expect(url.searchParams.get('client_id')).toBe(ACTIONS_CLIENT_ID);
+    expect(url.searchParams.get('redirect_uri')).toBe(ACTIONS_CALLBACK_URL);
+    expect(binding).toMatchObject({ phase: 'identity_verification', tenantId: null });
+    expect(consentMocks.createIdentity).toHaveBeenCalledWith(expect.objectContaining({
+      profile: 'customer-graph-actions', expectedTenantId: null,
+    }));
   });
 
   it('rejects a read-profile connection id when retesting through the actions surface', async () => {
@@ -284,10 +288,10 @@ describe('customer Graph-actions connection service instance', () => {
   });
 
   it('exports the callback-facing lifecycle functions bound to the actions instance', () => {
-    expect(markAdminConsentReturned).toBe(actionsConnectionService.markAdminConsentReturned);
-    expect(transitionAdminConsentToIdentity).toBe(actionsConnectionService.transitionAdminConsentToIdentity);
+    expect(transitionIdentityToConsent).toBe(actionsConnectionService.transitionIdentityToConsent);
     expect(markConsentAttemptFailed).toBe(actionsConnectionService.markConsentAttemptFailed);
-    expect(applyIdentityVerificationResult).toBe(actionsConnectionService.applyIdentityVerificationResult);
+    expect(beginConsentFinalization).toBe(actionsConnectionService.beginConsentFinalization);
+    expect(applyConsentFinalizationResult).toBe(actionsConnectionService.applyConsentFinalizationResult);
     expect(loadRetestSnapshot).toBe(actionsConnectionService.loadRetestSnapshot);
     expect(applyRetestResult).toBe(actionsConnectionService.applyRetestResult);
     expect(listCustomerGraphActionsConnections).toBe(actionsConnectionService.listConnections);

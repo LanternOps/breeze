@@ -253,13 +253,10 @@ m365CustomerGraphActionsRoutes.post(
         orgId: resolved.orgId,
         actorId: c.get('auth').user.id,
       });
-      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie({
-        phase: 'admin_consent',
-        rawState: initiated.rawState,
-        connectionId: initiated.connection.id,
-        consentAttemptId: initiated.connection.consentAttemptId,
-        tenantHint: null,
-      }), { append: true });
+      // Identity-first (#7910): the service returns the identity-phase
+      // binding (tenant pinned for a bound row / upgrade, null for
+      // /organizations); the route only signs it into the cookie.
+      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie(initiated.binding), { append: true });
       const auth = c.get('auth');
       recordM365CustomerGraphActionsEvent(c, {
         event: 'm365.customer_graph_actions.consent_initiated',
@@ -273,7 +270,8 @@ m365CustomerGraphActionsRoutes.post(
         actorId: auth.user.id,
         actorEmail: auth.user.email,
       });
-      return c.json({ adminConsentUrl: initiated.consentUrl });
+      // Key kept for the W2 web cards (they validate only the Microsoft host).
+      return c.json({ adminConsentUrl: initiated.authorizationUrl });
     } catch (error) {
       return lifecycleFailure(c, error);
     }

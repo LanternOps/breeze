@@ -493,7 +493,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // exclusion exists for.
   "ticket_mailbox_connections": tablePolicy("org_id", {"included":["id","partner_id","consent_attempt_id","provider","tenant_id","org_id","google_account_sub","mailbox_address","display_name","status","delta_link","history_id","eligible_after","strict_sender_auth","last_polled_at","last_message_at","last_error","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "m365_connections": tablePolicy("org_id", {"included":["id","org_id","user_id","tenant_id","client_id","profile","auth_mode","permission_manifest_version","consent_attempt_id","delegated_user_object_id","consent_generation","grants_verified_at","display_name","status","consented_at","last_verified_at","expires_at","revoked_at","last_error_code","created_by","created_at","updated_at"],"reviewedIncluded":["credential_domain","credential_version"],"excludedSensitive":["client_secret","vault_ref"],"excludedOpen":["observed_grants","observed_delegated_scopes"]}),
-  "m365_consent_sessions": tablePolicy("org_id", {"included":["id","phase","purpose","connection_id","org_id","profile","consent_attempt_id","user_id","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":["state_hash","tenant_hint_hash","nonce","code_verifier"],"excludedOpen":[]}),
+  // #7910 W02 identity-first columns are identifiers, a display-only UPN and
+  // timestamps: none matches SUSPICIOUS_NAME_PARTS and none is json/bytea. The
+  // PKCE verifier, nonce and state/tenant hashes stay excludedSensitive.
+  "m365_consent_sessions": tablePolicy("org_id", {"included":["id","phase","purpose","connection_id","org_id","profile","consent_attempt_id","user_id","expires_at","created_at","flow_version","verified_tenant_id","verified_admin_object_id","verified_admin_username","identity_verified_at"],"reviewedIncluded":[],"excludedSensitive":["state_hash","tenant_hint_hash","nonce","code_verifier"],"excludedOpen":[]}),
   // M365 tenant sync (spec §3, §8). Every jsonb column is excludedOpen: a CA
   // policy's conditions/grant/session blocks name users, groups and apps by id
   // and are a capability list, and assigned_sku_ids / admin_roles / sources /

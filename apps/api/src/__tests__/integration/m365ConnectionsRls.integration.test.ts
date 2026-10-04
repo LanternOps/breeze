@@ -44,6 +44,10 @@ function migrationText(filename: string): string {
 async function replayGraphReadConsentMigration(): Promise<void> {
   await getTestDb().execute(sql.raw(migrationText('2026-07-14-m365-customer-graph-read-consent.sql')));
   await getTestDb().execute(sql.raw(migrationText('2026-07-22-m365-consent-sessions-actions-profile.sql')));
+  // 2026-07-14 also drops and re-adds m365_consent_sessions_phase_check /
+  // _phase_fields_check in their pre-identity-first form, which rejects every
+  // flow_version 2 row. Re-apply the identity-first migration (idempotent).
+  await getTestDb().execute(sql.raw(migrationText('2026-12-06-090000-m365-consent-identity-first.sql')));
   // 2026-07-14's unconditional DROP+ADD of m365_consent_sessions_connection_identity_fkey
   // carries no DEFERRABLE clause, so replaying it undoes the org-lifecycle branch's
   // deferrable-FK contract (migrations/2026-09-12-100001-org-lifecycle-foundations.sql

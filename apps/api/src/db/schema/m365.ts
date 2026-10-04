@@ -7,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -98,7 +99,17 @@ export const m365Connections = pgTable(
 export type M365ConnectionRow = typeof m365Connections.$inferSelect;
 export type NewM365ConnectionRow = typeof m365Connections.$inferInsert;
 
-export type M365ConsentPhase = 'admin_consent' | 'identity_verification';
+/**
+ * `tenant_confirmation` is reserved for the W03 confirm-tenant interstitial
+ * (#7910); W02 never writes it.
+ */
+export type M365ConsentPhase = 'admin_consent' | 'identity_verification' | 'tenant_confirmation';
+
+/**
+ * Consent-session layout. 1 = pre-identity-first rows (in-flight at the W02
+ * deploy; never consumed by current code, removed in W04). 2 = identity-first.
+ */
+export type M365ConsentFlowVersion = 1 | 2;
 
 /**
  * Which flow a consent session belongs to. `initial` is a first-time (or
@@ -130,6 +141,13 @@ export const m365ConsentSessions = pgTable(
       .$type<M365ConsentPurpose>()
       .notNull()
       .default('initial'),
+    flowVersion: smallint('flow_version').$type<M365ConsentFlowVersion>().notNull().default(1),
+    /** Tenant the identity phase cryptographically verified (flow 2, post-identity phases only). */
+    verifiedTenantId: uuid('verified_tenant_id'),
+    verifiedAdminObjectId: uuid('verified_admin_object_id'),
+    /** Display-only (`preferred_username`); never used for authorization. */
+    verifiedAdminUsername: varchar('verified_admin_username', { length: 256 }),
+    identityVerifiedAt: timestamp('identity_verified_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -164,20 +182,44 @@ export const m365ConsentSessions = pgTable(
     ),
     phaseCheck: check(
       'm365_consent_sessions_phase_check',
-      sql`${t.phase} IN ('admin_consent', 'identity_verification')`,
+      sql`${t.phase} IN ('admin_consent', 'identity_verification', 'tenant_confirmation')`,
+    ),
+    flowVersionCheck: check(
+      'm365_consent_sessions_flow_version_check',
+      sql`${t.flowVersion} IN (1, 2)`,
     ),
     phaseFieldsCheck: check(
       'm365_consent_sessions_phase_fields_check',
       sql`(
-        ${t.phase} = 'admin_consent'
+        ${t.flowVersion} = 1
+        AND ${t.verifiedTenantId} IS NULL
+        AND ${t.verifiedAdminObjectId} IS NULL
+        AND ${t.verifiedAdminUsername} IS NULL
+        AND ${t.identityVerifiedAt} IS NULL
+        AND (
+          (${t.phase} = 'admin_consent'
+            AND ${t.tenantHintHash} IS NULL AND ${t.nonce} IS NULL AND ${t.codeVerifier} IS NULL)
+          OR (${t.phase} = 'identity_verification'
+            AND ${t.tenantHintHash} IS NOT NULL AND ${t.nonce} IS NOT NULL AND ${t.codeVerifier} IS NOT NULL)
+        )
+      ) OR (
+        ${t.flowVersion} = 2
+        AND ${t.phase} = 'identity_verification'
+        AND ${t.nonce} IS NOT NULL
+        AND ${t.codeVerifier} IS NOT NULL
+        AND ${t.verifiedTenantId} IS NULL
+        AND ${t.verifiedAdminObjectId} IS NULL
+        AND ${t.verifiedAdminUsername} IS NULL
+        AND ${t.identityVerifiedAt} IS NULL
+      ) OR (
+        ${t.flowVersion} = 2
+        AND ${t.phase} IN ('tenant_confirmation', 'admin_consent')
         AND ${t.tenantHintHash} IS NULL
         AND ${t.nonce} IS NULL
         AND ${t.codeVerifier} IS NULL
-      ) OR (
-        ${t.phase} = 'identity_verification'
-        AND ${t.tenantHintHash} IS NOT NULL
-        AND ${t.nonce} IS NOT NULL
-        AND ${t.codeVerifier} IS NOT NULL
+        AND ${t.verifiedTenantId} IS NOT NULL
+        AND ${t.verifiedAdminObjectId} IS NOT NULL
+        AND ${t.identityVerifiedAt} IS NOT NULL
       )`,
     ),
     purposeCheck: check(

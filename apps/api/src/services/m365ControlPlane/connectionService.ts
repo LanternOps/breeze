@@ -3,7 +3,6 @@ import {
   canonicalGrantKey,
   M365_PERMISSION_PROFILES,
   type CanonicalAppRoleAssignment,
-  type CompleteConsentResult,
   type M365ConnectionProfile,
   type M365PermissionProfileManifest,
   type RetestRequest,
@@ -13,15 +12,19 @@ import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
+import type { M365ConsentBrowserBinding } from './browserBinding';
 import {
   consumeConsentSessionInTransaction,
-  createAdminConsentSessionInTransaction,
+  createIdentitySessionInTransaction,
   deleteConsentSessionsForAttemptInTransaction,
   deleteConsentSessionsForConnection,
-  insertPreparedIdentityVerificationSessionInTransaction,
+  insertVerifiedConsentSessionInTransaction,
+  verifiedIdentityFromSession,
+  type M365ConsentPurpose,
   type M365ConsentSessionProfile,
-  type PreparedIdentityVerificationSession,
+  type VerifiedConsentIdentity,
 } from './consentSessionService';
+import { buildMicrosoftIdentityAuthorizationUrl } from './microsoftAuthorization';
 import {
   createGraphReadExecutorClient,
   type GraphReadExecutorClient,
@@ -31,6 +34,10 @@ import { onConnectionDisconnected } from '../m365Sync/lifecycle';
 
 const EXECUTABLE_STATUSES = ['active', 'degraded'] as const;
 const CALLBACK_STATUSES = ['pending-consent', 'verifying'] as const;
+
+function lockKey(orgId: string, profile: string) {
+  return sql`select pg_advisory_xact_lock(hashtextextended(${`${orgId}/${profile}`}, 0))`;
+}
 
 export type GrantHealthState =
   | 'active'
@@ -118,6 +125,7 @@ export type ConnectionLifecycleErrorCode =
   | 'connection_not_executable'
   | 'stale_attempt'
   | 'tenant_already_bound'
+  | 'tenant_mismatch'
   | 'manifest_current';
 
 export class ConnectionLifecycleError extends Error {
@@ -249,46 +257,66 @@ export interface InitiateUpgradeConsentInput {
   auth: AuthContext;
 }
 
+/**
+ * Identity-first consent (#7910): initiate returns the phase-1 identity
+ * sign-in URL and the browser binding the route sets as a cookie.
+ */
 export interface InitiatedConsent<P extends M365ConnectionProfile = M365ConnectionProfile> {
   connection: M365ConnectionSnapshot<P>;
-  rawState: string;
-  consentUrl: string;
+  /** phase `identity_verification`; tenantId = pinned authority or null for /organizations. */
+  binding: M365ConsentBrowserBinding;
+  /** v2 OIDC + PKCE authorize URL at /organizations or the bound tenant. */
+  authorizationUrl: string;
+}
+
+/** The attempt the second callback resumes, after its consent session is consumed. */
+export interface StartedConsentFinalization<P extends M365ConnectionProfile = M365ConnectionProfile> {
+  /** `verifying` for a first-time consent; unchanged (executable) for an upgrade. */
+  attempt: M365ConsentAttemptSnapshot<P>;
+  purpose: M365ConsentPurpose;
+  verified: VerifiedConsentIdentity;
+  /** The Breeze user who initiated the attempt (the session owner). */
+  actorId: string;
+}
+
+/** Executor application-token proof against the tenant verified in phase 1. */
+export interface ConsentFinalization {
+  verifiedTenantId: string;
+  result: RetestResult;
 }
 
 export interface ConnectionService<P extends M365ConsentSessionProfile, Client> {
   initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>>;
   initiateUpgradeConsent(input: InitiateUpgradeConsentInput): Promise<InitiatedConsent<P>>;
   listConnections(orgId: string): Promise<Array<M365ConnectionSnapshot<P> & { grantHealth: GrantHealth }>>;
-  markAdminConsentReturned(input: M365ConsentAttemptSnapshot<P>): Promise<M365ConnectionSnapshot<P>>;
-  transitionAdminConsentToIdentity(input: {
+  /**
+   * Identity verified → continue to tenant-pinned admin consent. Mints the
+   * post-identity session under a rotated state. Writes nothing to the
+   * connection row: no consent has been given yet.
+   */
+  transitionIdentityToConsent(input: {
     attempt: M365ConsentAttemptSnapshot<P>;
-    rawAdminState: string;
-    prepared: PreparedIdentityVerificationSession;
-  }): Promise<{
-    connection: M365ConnectionSnapshot<P>;
-    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+    purpose: M365ConsentPurpose;
     actorId: string;
-  }>;
+    verified: VerifiedConsentIdentity;
+    nextPhase: 'admin_consent' | 'tenant_confirmation';
+  }): Promise<{ rawState: string; verifiedTenantId: string }>;
   markConsentAttemptFailed(
     input: M365ConsentAttemptSnapshot<P>,
     errorCode: string,
   ): Promise<M365ConnectionSnapshot<P>>;
-  applyIdentityVerificationResult(
-    input: M365ConsentAttemptSnapshot<P>,
-    result: CompleteConsentResult,
-  ): Promise<M365ConnectionSnapshot<P>>;
-  transitionUpgradeConsentToIdentity(input: {
+  /** Consent returned → consume the consent session; first-time: pending-consent → verifying. */
+  beginConsentFinalization(input: {
     attempt: M365ConsentAttemptSnapshot<P>;
-    rawAdminState: string;
-    prepared: PreparedIdentityVerificationSession;
-  }): Promise<{
-    connection: M365ConnectionSnapshot<P>;
-    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
-    actorId: string;
-  }>;
-  applyUpgradeVerificationResult(
+    rawConsentState: string;
+  }): Promise<StartedConsentFinalization<P>>;
+  applyConsentFinalizationResult(
     input: M365ConsentAttemptSnapshot<P>,
-    result: CompleteConsentResult,
+    finalization: ConsentFinalization,
+  ): Promise<M365ConnectionSnapshot<P>>;
+  applyUpgradeFinalizationResult(
+    input: M365ConsentAttemptSnapshot<P>,
+    finalization: ConsentFinalization,
   ): Promise<AppliedUpgradeVerification<P>>;
   loadRetestSnapshot(input: {
     id: string;
@@ -427,7 +455,7 @@ export function createConnectionService<
     const config = deps.loadRuntimeConfig();
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       // Serialize both the no-row and existing-row cases for this exact owner/profile.
-      await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${input.orgId}/${profile}`}, 0))`);
+      await db.execute(lockKey(input.orgId, profile));
       const existingRows = await db.select().from(m365Connections).where(and(
         eq(m365Connections.orgId, input.orgId),
         eq(m365Connections.profile, profile),
@@ -491,19 +519,55 @@ export function createConnectionService<
       const connection = connectionRow ? snapshot(connectionRow) : null;
       if (!connection) throw lifecycleError('stale_attempt');
 
-      const created = await createAdminConsentSessionInTransaction({
-        connectionId: connection.id,
-        orgId: connection.orgId,
-        consentAttemptId: connection.consentAttemptId,
-        userId: input.actorId,
-        profile,
-      });
-      const consentUrl = new URL('https://login.microsoftonline.com/common/adminconsent');
-      consentUrl.searchParams.set('client_id', config.clientId);
-      consentUrl.searchParams.set('redirect_uri', config.callbackUrl);
-      consentUrl.searchParams.set('state', created.rawState);
-      return { connection, rawState: created.rawState, consentUrl: consentUrl.toString() };
+      // Identity first (#7910). A row that is still bound (reconnect of a
+      // degraded/pending row) pins the sign-in to its tenant; an unbound row
+      // (first connect, or reconnect after disconnect cleared tenant_id) signs
+      // in at /organizations and learns the tenant from the verified id_token.
+      return startIdentityPhase(config, connection, input.actorId, 'initial', connection.tenantId ?? null);
     }));
+  }
+
+  /**
+   * Mints the phase-1 identity session in the caller's system transaction and
+   * builds its v2 authorize URL + browser binding. Shared by first-time and
+   * upgrade initiation so both profiles and both purposes take one code path.
+   */
+  async function startIdentityPhase(
+    config: Config,
+    connection: M365ConnectionSnapshot<P>,
+    actorId: string,
+    purpose: M365ConsentPurpose,
+    expectedTenantId: string | null,
+  ): Promise<InitiatedConsent<P>> {
+    const created = await createIdentitySessionInTransaction({
+      connectionId: connection.id,
+      orgId: connection.orgId,
+      consentAttemptId: connection.consentAttemptId,
+      userId: actorId,
+      profile,
+      purpose,
+      expectedTenantId,
+    });
+    const authorizationUrl = buildMicrosoftIdentityAuthorizationUrl({
+      authority: expectedTenantId ?? 'organizations',
+      clientId: config.clientId,
+      redirectUri: config.callbackUrl,
+      expectedCallbackPath: new URL(config.callbackUrl).pathname,
+      state: created.rawState,
+      nonce: created.nonce,
+      codeChallenge: created.codeChallenge,
+    });
+    return {
+      connection,
+      binding: {
+        phase: 'identity_verification',
+        rawState: created.rawState,
+        connectionId: connection.id,
+        consentAttemptId: connection.consentAttemptId,
+        tenantId: expectedTenantId,
+      },
+      authorizationUrl,
+    };
   }
 
   /**
@@ -545,7 +609,7 @@ export function createConnectionService<
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       // Same key initiateConsent takes, so an upgrade and a full re-consent on
       // the same owner/profile can never interleave.
-      await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${input.orgId}/${profile}`}, 0))`);
+      await db.execute(lockKey(input.orgId, profile));
       const rows = await db.select().from(m365Connections).where(and(
         eq(m365Connections.id, current.id),
         eq(m365Connections.orgId, input.orgId),
@@ -565,69 +629,105 @@ export function createConnectionService<
         profile,
       });
 
-      const created = await createAdminConsentSessionInTransaction({
-        connectionId: locked.id,
-        orgId: locked.orgId,
-        consentAttemptId: locked.consentAttemptId,
-        userId: input.auth.user.id,
-        profile,
-        purpose: 'upgrade',
-      });
-      const consentUrl = new URL('https://login.microsoftonline.com/common/adminconsent');
-      consentUrl.searchParams.set('client_id', config.clientId);
-      consentUrl.searchParams.set('redirect_uri', config.callbackUrl);
-      consentUrl.searchParams.set('state', created.rawState);
-      return { connection: locked, rawState: created.rawState, consentUrl: consentUrl.toString() };
+      if (!locked.tenantId) throw lifecycleError('connection_not_executable');
+      // Upgrade pins BOTH phases to the bound tenant.
+      return startIdentityPhase(config, locked, input.auth.user.id, 'upgrade', locked.tenantId);
     }));
   }
 
-  async function markAdminConsentReturned(
-    input: M365ConsentAttemptSnapshot<P>,
-  ): Promise<M365ConnectionSnapshot<P>> {
-    if (input.status !== 'pending-consent') throw lifecycleError('stale_attempt');
-    return runOutsideDbContext(() => withSystemDbAccessContext(async () => requireCasRow(
-      await db.update(m365Connections).set({
-        status: 'verifying',
-        consentedAt: new Date(),
-        lastErrorCode: null,
-        updatedAt: new Date(),
-      }).where(attemptPredicate(input)).returning(),
-    )));
+  function isExecutable(status: M365ConnectionStatus): boolean {
+    return EXECUTABLE_STATUSES.includes(status as typeof EXECUTABLE_STATUSES[number]);
+  }
+
+  /** The status an attempt must hold while its consent flow is in flight. */
+  function inFlightStatusAllowed(status: M365ConnectionStatus, purpose: M365ConsentPurpose): boolean {
+    return purpose === 'upgrade' ? isExecutable(status) : status === 'pending-consent';
   }
 
   /**
-   * Advances admin consent to identity verification in one system transaction.
-   * Any consume, CAS, or insert failure rolls back the entire phase change, so
-   * the original admin callback remains retryable and no identity session can be
-   * orphaned.
+   * Identity verified → tenant-pinned admin consent, in one system
+   * transaction under the owner/profile advisory lock. Writes NO status: the
+   * administrator has proven who they are, not consented to anything, so a
+   * row only ever reaches `verifying` once consent has returned
+   * (beginConsentFinalization) and only ever binds after the application proof
+   * (applyConsentFinalizationResult).
+   *
+   * A row that already carries a tenant (reconnect of a bound row, upgrade)
+   * only ever continues with an identity verified in THAT tenant; the binding
+   * is never moved by this flow.
    */
-  async function transitionAdminConsentToIdentity(input: {
+  async function transitionIdentityToConsent(input: {
     attempt: M365ConsentAttemptSnapshot<P>;
-    rawAdminState: string;
-    prepared: PreparedIdentityVerificationSession;
-  }): Promise<{
-    connection: M365ConnectionSnapshot<P>;
-    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
+    purpose: M365ConsentPurpose;
     actorId: string;
-  }> {
-    if (input.attempt.status !== 'pending-consent') throw lifecycleError('stale_attempt');
+    verified: VerifiedConsentIdentity;
+    nextPhase: 'admin_consent' | 'tenant_confirmation';
+  }): Promise<{ rawState: string; verifiedTenantId: string }> {
+    if (!inFlightStatusAllowed(input.attempt.status, input.purpose)) throw lifecycleError('stale_attempt');
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      const adminSession = await consumeConsentSessionInTransaction({
-        rawState: input.rawAdminState,
+      await db.execute(lockKey(input.attempt.orgId, profile));
+      const rows = await db.select().from(m365Connections)
+        .where(attemptPredicate(input.attempt)).limit(1).for('update');
+      const locked = rows[0] ? snapshot(rows[0]) : null;
+      if (!locked) throw lifecycleError('stale_attempt');
+
+      if (input.purpose === 'upgrade') {
+        // Strict equality: an upgrade always has a bound tenant.
+        if (!locked.tenantId || locked.tenantId !== input.verified.tenantId) {
+          throw lifecycleError('tenant_mismatch');
+        }
+      } else if (locked.tenantId && locked.tenantId !== input.verified.tenantId) {
+        throw lifecycleError('tenant_mismatch');
+      }
+
+      const created = await insertVerifiedConsentSessionInTransaction({
+        connectionId: locked.id,
+        orgId: locked.orgId,
+        consentAttemptId: locked.consentAttemptId,
+        userId: input.actorId,
+        profile,
+        purpose: input.purpose,
+        phase: input.nextPhase,
+        verified: input.verified,
+      });
+      return { rawState: created.rawState, verifiedTenantId: input.verified.tenantId };
+    }));
+  }
+
+  /**
+   * Consent returned from Microsoft. Consumes the one-use consent session (the
+   * returned authorization code is never seen here — the route discards it)
+   * and, for a first-time consent, CAS-moves pending-consent → verifying in the
+   * SAME transaction so a failed CAS leaves the session consumable for a
+   * retry and a replayed state finds nothing to consume.
+   */
+  async function beginConsentFinalization(input: {
+    attempt: M365ConsentAttemptSnapshot<P>;
+    rawConsentState: string;
+  }): Promise<StartedConsentFinalization<P>> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const session = await consumeConsentSessionInTransaction({
+        rawState: input.rawConsentState,
         phase: 'admin_consent',
         connectionId: input.attempt.id,
         orgId: input.attempt.orgId,
         consentAttemptId: input.attempt.consentAttemptId,
         profile,
       });
-      if (!adminSession) throw lifecycleError('stale_attempt');
-      // Symmetric with the upgrade transition: the consumed row is the
-      // authority on which flow this is. Today an upgrade session cannot exist
-      // on a pending-consent connection, so this is unreachable — but that is
-      // an invariant of two separate status gates, not of this function, and
-      // an upgrade reaching here would move a live connection to `verifying`.
-      // Rows predating the purpose column default to 'initial'.
-      if (adminSession.purpose !== 'initial') throw lifecycleError('stale_attempt');
+      if (!session) throw lifecycleError('stale_attempt');
+      const verified = verifiedIdentityFromSession(session);
+      if (!verified) throw lifecycleError('stale_attempt');
+      const purpose = session.purpose;
+      // The consumed row is the authority on which flow this is; the
+      // callback's non-consuming lookup only routed us here.
+      if (!inFlightStatusAllowed(input.attempt.status, purpose)) throw lifecycleError('stale_attempt');
+
+      if (purpose === 'upgrade') {
+        const rows = await db.select().from(m365Connections)
+          .where(attemptPredicate(input.attempt)).limit(1).for('update');
+        if (!rows[0] || !snapshot(rows[0])) throw lifecycleError('stale_attempt');
+        return { attempt: input.attempt, purpose, verified, actorId: session.userId };
+      }
 
       const connection = await requireCasRow(await db.update(m365Connections).set({
         status: 'verifying',
@@ -635,15 +735,18 @@ export function createConnectionService<
         lastErrorCode: null,
         updatedAt: new Date(),
       }).where(attemptPredicate(input.attempt)).returning());
-
-      const identity = await insertPreparedIdentityVerificationSessionInTransaction({
-        connectionId: input.attempt.id,
-        orgId: input.attempt.orgId,
-        consentAttemptId: input.attempt.consentAttemptId,
-        userId: adminSession.userId,
-        profile,
-      }, input.prepared);
-      return { connection, identity, actorId: adminSession.userId };
+      return {
+        attempt: {
+          id: connection.id,
+          orgId: connection.orgId,
+          profile,
+          consentAttemptId: connection.consentAttemptId,
+          status: connection.status,
+        },
+        purpose,
+        verified,
+        actorId: session.userId,
+      };
     }));
   }
 
@@ -663,11 +766,18 @@ export function createConnectionService<
     )));
   }
 
-  async function applyIdentityVerificationResult(
+  /**
+   * Applies the executor application-token proof (retest against the tenant
+   * verified in phase 1). This is the ONLY place a first-time consent binds a
+   * tenant, and it binds `verifiedTenantId` only when the proof was obtained
+   * for exactly that tenant.
+   */
+  async function applyConsentFinalizationResult(
     input: M365ConsentAttemptSnapshot<P>,
-    result: CompleteConsentResult,
+    finalization: ConsentFinalization,
   ): Promise<M365ConnectionSnapshot<P>> {
     if (input.status !== 'verifying') throw lifecycleError('stale_attempt');
+    const { result, verifiedTenantId } = finalization;
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       if (!result.success) {
         return requireCasRow(await db.update(m365Connections).set({
@@ -686,10 +796,19 @@ export function createConnectionService<
           updatedAt: new Date(),
         }).where(attemptPredicate(input)).returning());
       }
+      // The executor proved an application token for result.tenantId; it must
+      // be exactly the tenant whose administrator was verified in phase 1.
+      if (result.tenantId !== verifiedTenantId) {
+        return requireCasRow(await db.update(m365Connections).set({
+          status: 'pending-consent',
+          lastErrorCode: 'tenant_mismatch',
+          updatedAt: new Date(),
+        }).where(attemptPredicate(input)).returning());
+      }
 
       const verifiedAt = new Date(result.verifiedAt);
       const common = {
-        tenantId: result.tenantId,
+        tenantId: verifiedTenantId,
         clientId: result.applicationId,
         displayName: result.organizationDisplayName,
         permissionManifestVersion: result.manifestVersion,
@@ -718,64 +837,13 @@ export function createConnectionService<
       try {
         const rows = await db.update(m365Connections).set(set).where(and(
           attemptPredicate(input),
-          or(isNull(m365Connections.tenantId), eq(m365Connections.tenantId, result.tenantId)),
+          or(isNull(m365Connections.tenantId), eq(m365Connections.tenantId, verifiedTenantId)),
         )).returning();
-        if (!rows[0]) return distinguishTenantConflict(input, result.tenantId);
+        if (!rows[0]) return distinguishTenantConflict(input, verifiedTenantId);
         return requireCasRow(rows);
       } catch (error) {
         return bindingError(error);
       }
-    }));
-  }
-
-  function isExecutable(status: M365ConnectionStatus): boolean {
-    return EXECUTABLE_STATUSES.includes(status as typeof EXECUTABLE_STATUSES[number]);
-  }
-
-  /**
-   * Upgrade counterpart of transitionAdminConsentToIdentity. Same consume +
-   * insert, minus the status write: the connection is `active`/`degraded`
-   * throughout an upgrade and moving it to `verifying` would stop reads for the
-   * duration of a Microsoft round trip.
-   */
-  async function transitionUpgradeConsentToIdentity(input: {
-    attempt: M365ConsentAttemptSnapshot<P>;
-    rawAdminState: string;
-    prepared: PreparedIdentityVerificationSession;
-  }): Promise<{
-    connection: M365ConnectionSnapshot<P>;
-    identity: Awaited<ReturnType<typeof insertPreparedIdentityVerificationSessionInTransaction>>;
-    actorId: string;
-  }> {
-    if (!isExecutable(input.attempt.status)) throw lifecycleError('stale_attempt');
-    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      const adminSession = await consumeConsentSessionInTransaction({
-        rawState: input.rawAdminState,
-        phase: 'admin_consent',
-        connectionId: input.attempt.id,
-        orgId: input.attempt.orgId,
-        consentAttemptId: input.attempt.consentAttemptId,
-        profile,
-      });
-      if (!adminSession) throw lifecycleError('stale_attempt');
-      // The consumed row is the authority on which flow this is; the callback's
-      // non-consuming lookup only routed us here.
-      if (adminSession.purpose !== 'upgrade') throw lifecycleError('stale_attempt');
-
-      const rows = await db.select().from(m365Connections)
-        .where(attemptPredicate(input.attempt)).limit(1).for('update');
-      const connection = rows[0] ? snapshot(rows[0]) : null;
-      if (!connection) throw lifecycleError('stale_attempt');
-
-      const identity = await insertPreparedIdentityVerificationSessionInTransaction({
-        connectionId: input.attempt.id,
-        orgId: input.attempt.orgId,
-        consentAttemptId: input.attempt.consentAttemptId,
-        userId: adminSession.userId,
-        profile,
-        purpose: 'upgrade',
-      }, input.prepared);
-      return { connection, identity, actorId: adminSession.userId };
     }));
   }
 
@@ -789,11 +857,12 @@ export function createConnectionService<
    * the stored manifest version, so deriveGrantHealth keeps reporting
    * manifest-stale and the card keeps offering the banner.
    */
-  async function applyUpgradeVerificationResult(
+  async function applyUpgradeFinalizationResult(
     input: M365ConsentAttemptSnapshot<P>,
-    result: CompleteConsentResult,
+    finalization: ConsentFinalization,
   ): Promise<AppliedUpgradeVerification<P>> {
     if (!isExecutable(input.status)) throw lifecycleError('stale_attempt');
+    const { result, verifiedTenantId } = finalization;
     return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
       const rows = await db.select().from(m365Connections)
         .where(attemptPredicate(input)).limit(1).for('update');
@@ -810,8 +879,9 @@ export function createConnectionService<
         return { connection: current, failureCode: 'application_token_invalid' };
       }
       // Strict equality, not "NULL or equal": an upgrade always has a bound
-      // tenant, so a different tenant is a rebind attempt, never a binding.
-      if (result.tenantId !== current.tenantId) {
+      // tenant, so a different tenant — verified in phase 1 or proven by the
+      // application token — is a rebind attempt, never a binding.
+      if (verifiedTenantId !== current.tenantId || result.tenantId !== current.tenantId) {
         return { connection: current, failureCode: 'tenant_mismatch' };
       }
       if (result.grantReconciliation !== 'complete') {
@@ -1046,12 +1116,11 @@ export function createConnectionService<
     initiateConsent,
     initiateUpgradeConsent,
     listConnections,
-    markAdminConsentReturned,
-    transitionAdminConsentToIdentity,
+    transitionIdentityToConsent,
     markConsentAttemptFailed,
-    applyIdentityVerificationResult,
-    transitionUpgradeConsentToIdentity,
-    applyUpgradeVerificationResult,
+    beginConsentFinalization,
+    applyConsentFinalizationResult,
+    applyUpgradeFinalizationResult,
     loadRetestSnapshot,
     applyRetestResult,
     retestConnection,
@@ -1085,12 +1154,11 @@ export type InitiatedCustomerGraphReadConsent = InitiatedConsent<'customer-graph
 export const initiateCustomerGraphReadConsent = readConnectionService.initiateConsent;
 export const initiateCustomerGraphReadUpgradeConsent = readConnectionService.initiateUpgradeConsent;
 export const listCustomerGraphReadConnections = readConnectionService.listConnections;
-export const markAdminConsentReturned = readConnectionService.markAdminConsentReturned;
-export const transitionAdminConsentToIdentity = readConnectionService.transitionAdminConsentToIdentity;
+export const transitionIdentityToConsent = readConnectionService.transitionIdentityToConsent;
 export const markConsentAttemptFailed = readConnectionService.markConsentAttemptFailed;
-export const applyIdentityVerificationResult = readConnectionService.applyIdentityVerificationResult;
-export const transitionUpgradeConsentToIdentity = readConnectionService.transitionUpgradeConsentToIdentity;
-export const applyUpgradeVerificationResult = readConnectionService.applyUpgradeVerificationResult;
+export const beginConsentFinalization = readConnectionService.beginConsentFinalization;
+export const applyConsentFinalizationResult = readConnectionService.applyConsentFinalizationResult;
+export const applyUpgradeFinalizationResult = readConnectionService.applyUpgradeFinalizationResult;
 export const loadRetestSnapshot = readConnectionService.loadRetestSnapshot;
 export const applyRetestResult = readConnectionService.applyRetestResult;
 export const retestCustomerGraphReadConnection = readConnectionService.retestConnection;

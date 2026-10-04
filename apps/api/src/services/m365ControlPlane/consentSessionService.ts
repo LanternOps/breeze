@@ -18,7 +18,7 @@ export type M365ConsentSession = M365ConsentSessionRow;
 
 /**
  * Consent sessions exist only for the certificate-based customer Graph
- * profiles that run the two-phase admin-consent + identity-verification flow.
+ * profiles that run the two-phase identity-verification + admin-consent flow.
  * This is narrower than M365ConnectionProfile on purpose and matches the
  * m365_consent_sessions.profile column type / CHECK constraint.
  */
@@ -55,13 +55,29 @@ export interface CreatedConsentSession {
   session: M365ConsentSession;
 }
 
-export interface PreparedIdentityVerificationSession {
-  rawState: string;
-  tenantHintHash: string;
+/**
+ * The identity an administrator proved in the identity phase (executor
+ * `verify-identity`): a cryptographically verified tenant and object id.
+ * `administratorUsername` is display-only and never used for authorization.
+ */
+export interface VerifiedConsentIdentity {
+  tenantId: string;
+  administratorObjectId: string;
+  administratorUsername: string | null;
+  verifiedAt: Date;
+}
+
+export interface CreatedIdentitySession extends CreatedConsentSession {
   nonce: string;
-  codeVerifier: string;
   codeChallenge: string;
-  expiresAt: Date;
+}
+
+/** Canonical lower-case GUID, as Entra tenant/object ids are stored and compared. */
+const CANONICAL_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function requireCanonicalGuid(value: string): string {
+  if (!CANONICAL_GUID.test(value)) throw new Error('m365_consent_session_invalid');
+  return value;
 }
 
 function generateRandomValue(): string {
@@ -76,11 +92,26 @@ export function hashTenantHint(tenantId: string): string {
   return sha256Hex(tenantId.trim().toLowerCase());
 }
 
+type SessionFields = Pick<
+  NewM365ConsentSessionRow,
+  | 'phase'
+  | 'tenantHintHash'
+  | 'nonce'
+  | 'codeVerifier'
+  | 'verifiedTenantId'
+  | 'verifiedAdminObjectId'
+  | 'verifiedAdminUsername'
+  | 'identityVerifiedAt'
+>;
+
+/**
+ * Inserts a flow-2 session using the caller's active system transaction, with
+ * a freshly generated one-use state (regenerated on the vanishingly unlikely
+ * state-hash collision). Every call mints a NEW state, so the state is rotated
+ * between phases by construction.
+ */
 async function insertConsentSessionInTransaction(
-  input: ConsentSessionOwnerInput & Pick<
-    NewM365ConsentSessionRow,
-    'phase' | 'tenantHintHash' | 'nonce' | 'codeVerifier'
-  >,
+  input: ConsentSessionOwnerInput & SessionFields,
 ): Promise<CreatedConsentSession> {
   const expiresAt = new Date(Date.now() + CONSENT_SESSION_TTL_MS);
 
@@ -91,6 +122,7 @@ async function insertConsentSessionInTransaction(
       stateHash: sha256Hex(rawState),
       profile: input.profile,
       purpose: input.purpose ?? 'initial',
+      flowVersion: 2,
       expiresAt,
     }).onConflictDoNothing({
       target: m365ConsentSessions.stateHash,
@@ -101,89 +133,79 @@ async function insertConsentSessionInTransaction(
 }
 
 /**
- * Inserts an admin-consent session using the caller's active system
- * transaction. This helper deliberately does not open its own DB context so a
- * connection attempt and its session can be rotated atomically.
+ * Identity phase (phase 1). Mints the PKCE verifier/challenge and the OIDC
+ * nonce for a v2 sign-in at `/organizations` (`expectedTenantId: null`) or at
+ * the already-bound tenant. Only a hash of the expected tenant is stored.
+ * Runs in the caller's system transaction so the attempt rotation and its
+ * session commit atomically.
  */
-export function createAdminConsentSessionInTransaction(
-  input: ConsentSessionOwnerInput,
+export async function createIdentitySessionInTransaction(
+  input: ConsentSessionOwnerInput & { expectedTenantId: string | null },
+): Promise<CreatedIdentitySession> {
+  const { expectedTenantId, ...owner } = input;
+  if (expectedTenantId !== null) requireCanonicalGuid(expectedTenantId);
+  const codeVerifier = generateRandomValue();
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  const nonce = generateRandomValue();
+  const created = await insertConsentSessionInTransaction({
+    ...owner,
+    phase: 'identity_verification',
+    tenantHintHash: expectedTenantId === null ? null : hashTenantHint(expectedTenantId),
+    nonce,
+    codeVerifier,
+    verifiedTenantId: null,
+    verifiedAdminObjectId: null,
+    verifiedAdminUsername: null,
+    identityVerifiedAt: null,
+  });
+  return { ...created, nonce, codeChallenge };
+}
+
+/**
+ * Post-identity phase (admin consent; W03 adds tenant confirmation). Carries
+ * the verified identity server-side under a NEW one-use state. Holds nothing
+ * PKCE-shaped: the consent phase's authorization code is never redeemed.
+ */
+export async function insertVerifiedConsentSessionInTransaction(
+  input: ConsentSessionOwnerInput & {
+    phase: 'admin_consent' | 'tenant_confirmation';
+    verified: VerifiedConsentIdentity;
+  },
 ): Promise<CreatedConsentSession> {
+  const { verified, ...owner } = input;
+  requireCanonicalGuid(verified.tenantId);
+  requireCanonicalGuid(verified.administratorObjectId);
   return insertConsentSessionInTransaction({
-    ...input,
-    phase: 'admin_consent',
+    ...owner,
     tenantHintHash: null,
     nonce: null,
     codeVerifier: null,
+    verifiedTenantId: verified.tenantId,
+    verifiedAdminObjectId: verified.administratorObjectId,
+    verifiedAdminUsername: verified.administratorUsername,
+    identityVerifiedAt: verified.verifiedAt,
   });
 }
 
-export async function createAdminConsentSession(
-  input: ConsentSessionOwnerInput,
-): Promise<CreatedConsentSession> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => createAdminConsentSessionInTransaction(input)),
-  );
-}
-
-/** See createAdminConsentSessionInTransaction for the transaction contract. */
-export function createIdentityVerificationSessionInTransaction(
-  input: ConsentSessionOwnerInput & { tenantHint: string },
-): Promise<CreatedConsentSession & { codeChallenge: string }> {
-  return insertPreparedIdentityVerificationSessionInTransaction(
-    {
-      connectionId: input.connectionId,
-      orgId: input.orgId,
-      consentAttemptId: input.consentAttemptId,
-      userId: input.userId,
-      profile: input.profile,
-    },
-    prepareIdentityVerificationSession({ tenantHint: input.tenantHint }),
-  );
-}
-
-export function prepareIdentityVerificationSession(input: {
-  tenantHint: string;
-}): PreparedIdentityVerificationSession {
-  const codeVerifier = generateRandomValue();
-  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+/**
+ * The verified identity a post-identity flow-2 session carries, or null when
+ * the row is not such a session (legacy v1 row, identity-phase row, or any
+ * verified field missing).
+ */
+export function verifiedIdentityFromSession(
+  session: M365ConsentSession,
+): VerifiedConsentIdentity | null {
+  if (session.flowVersion !== 2) return null;
+  if (session.phase !== 'admin_consent' && session.phase !== 'tenant_confirmation') return null;
+  if (!session.verifiedTenantId || !session.verifiedAdminObjectId || !session.identityVerifiedAt) {
+    return null;
+  }
   return {
-    rawState: generateRandomValue(),
-    tenantHintHash: hashTenantHint(input.tenantHint),
-    nonce: generateRandomValue(),
-    codeVerifier,
-    codeChallenge,
-    expiresAt: new Date(Date.now() + CONSENT_SESSION_TTL_MS),
+    tenantId: session.verifiedTenantId,
+    administratorObjectId: session.verifiedAdminObjectId,
+    administratorUsername: session.verifiedAdminUsername,
+    verifiedAt: session.identityVerifiedAt,
   };
-}
-
-export async function insertPreparedIdentityVerificationSessionInTransaction(
-  input: ConsentSessionOwnerInput,
-  prepared: PreparedIdentityVerificationSession,
-): Promise<CreatedConsentSession & { codeChallenge: string }> {
-  const rows = await db.insert(m365ConsentSessions).values({
-    ...input,
-    stateHash: sha256Hex(prepared.rawState),
-    profile: input.profile,
-    purpose: input.purpose ?? 'initial',
-    phase: 'identity_verification',
-    tenantHintHash: prepared.tenantHintHash,
-    nonce: prepared.nonce,
-    codeVerifier: prepared.codeVerifier,
-    expiresAt: prepared.expiresAt,
-  }).onConflictDoNothing({
-    target: m365ConsentSessions.stateHash,
-  }).returning();
-  const session = rows[0];
-  if (!session) throw new Error('m365_consent_state_collision');
-  return { rawState: prepared.rawState, session, codeChallenge: prepared.codeChallenge };
-}
-
-export async function createIdentityVerificationSession(
-  input: ConsentSessionOwnerInput & { tenantHint: string },
-): Promise<CreatedConsentSession & { codeChallenge: string }> {
-  return runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => createIdentityVerificationSessionInTransaction(input)),
-  );
 }
 
 export async function consumeConsentSession(
@@ -200,6 +222,8 @@ export async function consumeConsentSessionInTransaction(
   const rows = await db.delete(m365ConsentSessions).where(and(
     eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
     eq(m365ConsentSessions.phase, input.phase),
+    // A legacy (pre-identity-first) row can never be consumed by current code.
+    eq(m365ConsentSessions.flowVersion, 2),
     gt(m365ConsentSessions.expiresAt, sql`now()`),
     eq(m365ConsentSessions.connectionId, input.connectionId),
     eq(m365ConsentSessions.orgId, input.orgId),
@@ -246,9 +270,10 @@ export interface ConsentSessionPurposeLookup {
  * The callback must know this before it can decide which connection statuses
  * are legal for the callback it is servicing — an upgrade session expects an
  * `active`/`degraded` connection, a first-time session expects
- * `pending-consent`/`verifying`. The authoritative consume happens afterwards
- * and re-checks state hash, phase, expiry, connection, org, profile and
- * attempt, so this lookup routes and never authorizes. Deliberately not scoped
+ * `pending-consent`. The authoritative consume happens afterwards
+ * and re-checks state hash, phase, flow version, expiry, connection, org,
+ * profile and attempt, so this lookup routes and never authorizes. Flow-2 rows
+ * only: a legacy row is never routed. Deliberately not scoped
  * by org: the org id is not known until the attempt is loaded, and state_hash
  * is unique.
  */
@@ -261,6 +286,7 @@ export async function readConsentSessionPurpose(
       .where(and(
         eq(m365ConsentSessions.stateHash, sha256Hex(input.rawState)),
         eq(m365ConsentSessions.phase, input.phase),
+        eq(m365ConsentSessions.flowVersion, 2),
         gt(m365ConsentSessions.expiresAt, sql`now()`),
         eq(m365ConsentSessions.connectionId, input.connectionId),
         eq(m365ConsentSessions.profile, input.profile),
