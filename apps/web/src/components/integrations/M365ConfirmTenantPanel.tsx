@@ -111,9 +111,13 @@ export function M365ConfirmTenantPanel({
   const [panel, setPanel] = useState<PanelState>({ kind: "loading" });
   const [busy, setBusy] = useState<"continue" | "cancel" | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  // Guards a slow response from an org the operator has since left.
-  const orgRef = useRef(orgId);
-  orgRef.current = orgId;
+  // The cards remount this panel per org (key={orgId}), so "the operator left
+  // this org" means "this panel unmounted": never act on a late response then.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -145,11 +149,11 @@ export function M365ConfirmTenantPanel({
         parseSuccess: parseMicrosoftConsentUrl,
         errorFallback: t("m365ConfirmTenant.continueFailed"),
       });
-      if (orgRef.current === target) navigateToMicrosoftLogin(url);
+      if (mountedRef.current) navigateToMicrosoftLogin(url);
     } catch (error) {
-      if (orgRef.current === target) handleActionError(error, t("m365ConfirmTenant.continueFailed"));
+      if (mountedRef.current) handleActionError(error, t("m365ConfirmTenant.continueFailed"));
     } finally {
-      setBusy(null);
+      if (mountedRef.current) setBusy(null);
     }
   }, [apiBase, busy, canWrite, orgId, t]);
 
@@ -162,14 +166,14 @@ export function M365ConfirmTenantPanel({
         request: () => fetchWithAuth(`${apiBase}/cancel?orgId=${target}`, { method: "POST" }),
         errorFallback: t("m365ConfirmTenant.cancelFailed"),
       });
-      if (orgRef.current === target) {
+      if (mountedRef.current) {
         setPanel({ kind: "cancelled" });
         onCancelled();
       }
     } catch (error) {
-      if (orgRef.current === target) handleActionError(error, t("m365ConfirmTenant.cancelFailed"));
+      if (mountedRef.current) handleActionError(error, t("m365ConfirmTenant.cancelFailed"));
     } finally {
-      setBusy(null);
+      if (mountedRef.current) setBusy(null);
     }
   }, [apiBase, busy, canWrite, onCancelled, orgId, t]);
 
