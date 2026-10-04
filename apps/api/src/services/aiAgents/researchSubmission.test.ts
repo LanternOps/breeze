@@ -89,4 +89,11 @@ describe('invalid text (U+0000 / lone surrogate) drops the item, not the batch',
     ]);
     expect(out.items).toHaveLength(1);
   });
+
+  it('throws (the model retries) when the top-level summary carries NUL or a lone surrogate; an emoji pair is fine', () => {
+    for (const bad of ['a\u0000b', 'x\uD83Dy', 'y\uDE00']) {
+      expect(() => validateResearchSubmission({ summary: bad, items: [] }, refs)).toThrow(/invalid text/i);
+    }
+    expect(validateResearchSubmission({ summary: 'fine 😀', items: [] }, refs).summary).toBe('fine 😀');
+  });
 });

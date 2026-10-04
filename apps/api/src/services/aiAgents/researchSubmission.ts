@@ -65,6 +65,9 @@ function rejectionFor(item: ResearchSuggestionItem, refs: ResearchToolRefs): Res
 
 export function validateResearchSubmission(input: unknown, refs: ResearchToolRefs): ResearchOutcome {
   const parsed = researchSubmissionSchema.parse(input); // throws → model retries
+  // The summary lands in the run outcome jsonb, so it needs the same guard the
+  // items get; it is structural (not per-item), so throw and let the model retry.
+  if (hasInvalidText(parsed.summary)) throw new Error('summary contains invalid text (NUL or a lone surrogate)');
   const items: ResearchSuggestionItem[] = [];
   const rejected: ResearchRejection[] = [];
   parsed.items.forEach((item, index) => {
