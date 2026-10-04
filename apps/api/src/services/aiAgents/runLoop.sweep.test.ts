@@ -77,6 +77,14 @@ function nextRows(table: string): unknown[] {
   throw new Error(`No queued rows for table ${table}`);
 }
 
+// AI Suggested Fixes W3 — loadRunContext's proven-fix lookup. Mocked so it never
+// consumes this file's queued db rows; returns null (no memory) by default.
+const loadProvenFixesForRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+vi.mock('../fixMemory/runMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fixMemory/runMemory')>()),
+  loadProvenFixesForRun,
+}));
+
 vi.mock('../../db', () => {
   const makeSelect = () => ({
     from: vi.fn((table: unknown) => {
@@ -594,6 +602,12 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
 });
 
 describe('sweep profile exposure and context in the run loop (P2-2)', () => {
+  it('sweep run has no provenFixes lookup (Review Focus 5)', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }), profile: 'sweep' });
+    await executeAgentRun(RUN_ID);
+    expect(loadProvenFixesForRun).not.toHaveBeenCalled();
+  });
+
   it('exposes the sweep floor + sweep outcome tool with the sweep limits', async () => {
     // Deliberately mismatched agent allowlist — the floor is served regardless.
     seedRows({ effective: policy({ toolAllowlist: ['manage_services'] }), profile: 'sweep' });

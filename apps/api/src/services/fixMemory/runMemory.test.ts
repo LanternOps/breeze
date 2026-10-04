@@ -5,7 +5,8 @@ vi.mock('../mlFeatureFlags', () => ({ shouldProduceMlOutput: h.flag }));
 vi.mock('./signatureLoader', () => ({ signatureForSource: h.sig }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
 
-import { loadProvenFixesForRun } from './runMemory';
+import { AI_AGENT_RUN_PROFILES } from '@breeze/shared';
+import { loadProvenFixesForRun, profileConsultsFixMemory } from './runMemory';
 
 const signature = { version: 1, key: 'k', broadKey: 'b', broad: false, facets: { osFamily: 'windows' } };
 const track = (over = {}) => ({
@@ -61,4 +62,13 @@ describe('loadProvenFixesForRun', () => {
     h.lookup.mockResolvedValueOnce({ signature: {}, proven: [], similar: [] });
     await expect(loadProvenFixesForRun(input)).resolves.toBeNull();
   });
+});
+
+describe('profileConsultsFixMemory (Review Focus 5)', () => {
+  it.each(AI_AGENT_RUN_PROFILES.map((p) => [p, p === 'verdict' || p === 'full'] as const))(
+    '%s → %s',
+    (profile, expected) => {
+      expect(profileConsultsFixMemory(profile)).toBe(expected);
+    },
+  );
 });

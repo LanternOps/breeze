@@ -188,6 +188,7 @@ import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
 import { isResearchProfile, researchDepthOf, researchLimits, researchToolAllowlist } from './researchProfile';
 import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
+import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
 import { isToolAllowlisted } from './toolAllowlist';
@@ -496,6 +497,25 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       }
     }
 
+    // AI Suggested Fixes W3. Verdict and full runs only, and only when the
+    // ORG-PINNED alert or group read above resolved: the signature loader
+    // reads by id, so an alert or group that left this org must not be
+    // signatured for this run. Runs inside this same system context and opens
+    // none of its own; lookupFixes filters by run org + partner and re-checks
+    // script ownership itself (W1 Task 16). Never throws: null when memory is
+    // off, empty or unavailable.
+    let provenFixes: RunContext['provenFixes'] = null;
+    const memoryAlertId = alert ? run.alertId : null;
+    const memoryGroupId = correlationGroup ? run.correlationGroupId : null;
+    if (profileConsultsFixMemory(run.profile) && (memoryAlertId || memoryGroupId)) {
+      provenFixes = await loadProvenFixesForRun({
+        orgId: run.orgId,
+        partnerId: org.partnerId,
+        alertId: memoryAlertId,
+        correlationGroupId: memoryGroupId,
+      });
+    }
+
     // Phase 2 wave P2-2 (scheduled sweeps). Runs INSIDE this same system
     // context (`loadSweepEvidence`'s own header states it manages none of its
     // own) — the `org_id = run.orgId` predicate every one of its statements
@@ -642,6 +662,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       design,
       patch,
       research,
+      provenFixes,
       sessionId: null,
       workspace: null,
     };
@@ -1672,6 +1693,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
         }
       : null,
     research: ctx.research ?? null,
+    provenFixes: ctx.provenFixes ?? null,
   };
 }
 

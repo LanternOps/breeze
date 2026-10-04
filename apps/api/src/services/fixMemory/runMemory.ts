@@ -13,7 +13,7 @@
  *
  * NEVER throws: memory is an optimisation, a run must not fail without it.
  */
-import type { FixKind } from '@breeze/shared';
+import type { AiAgentRunProfile, FixKind } from '@breeze/shared';
 import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { lookupFixes } from './lookup';
 import { signatureForSource, type FixSourceRef } from './signatureLoader';
@@ -35,6 +35,19 @@ export interface RunProvenFixes {
 }
 
 export const RUN_PROVEN_FIX_LIMIT = 3;
+
+/**
+ * The run profiles that consult fix memory at context load: the alert verdict
+ * and the full alert run. Every other profile — sweep, narrative, patch,
+ * design, ticket triage, analysis, and remediation_research (which loads
+ * memory through its own research context, W2) — is unchanged. An allowlist,
+ * so a future profile starts without memory until it opts in.
+ */
+const FIX_MEMORY_RUN_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set<AiAgentRunProfile>(['verdict', 'full']);
+
+export function profileConsultsFixMemory(profile: AiAgentRunProfile): boolean {
+  return FIX_MEMORY_RUN_PROFILES.has(profile);
+}
 
 export async function loadProvenFixesForRun(input: {
   orgId: string;
