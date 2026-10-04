@@ -212,8 +212,12 @@ export type CommandRevalidationRow = {
  * Re-derive a queued command's authority from live rows. Returns `null` to
  * deliver, or the cancel reason that terminalises the row. A revalidation must
  * never write: cancellation is the caller's, inside its own claim transaction.
+ * `execute` / `transaction` are there only for savepointed reads through
+ * SECURITY DEFINER resolvers on the claim's own connection (the agent's
+ * org-scoped context cannot see partner-level rows, and escalating to a system
+ * context would borrow a second pooled connection — #1105).
  */
-export type CommandRevalidationReader = Pick<Tx, 'select'>;
+export type CommandRevalidationReader = Pick<Tx, 'select' | 'execute' | 'transaction'>;
 export type CommandRevalidation = (
   reader: CommandRevalidationReader,
   row: CommandRevalidationRow,
@@ -501,13 +505,45 @@ export async function partitionClaimable(
     // Delivery-time authority re-derivation (M1 Task 15). Runs after the
     // tenant/trust checks and before the hold: a row whose issuing authority is
     // gone is terminal, not deferrable.
-    const revalidation = await revalidateCommandForDelivery(tx, {
+    //
+    // A registered revalidation reads the database, so it runs inside its own
+    // savepoint: a SQL error anywhere in it (device lookup, resolver call,
+    // another type's reads) rolls back to that savepoint instead of aborting
+    // the claim transaction, so only this row is held and the rest of the
+    // batch — and the cancel writes below — still run. Types with no
+    // registered revalidation touch no SQL and skip the savepoint.
+    const revalidationFacts: CommandRevalidationRow = {
       id: row.id,
       type: row.type,
       deviceId: device.id,
       payload: row.payload,
       createdBy: row.createdBy,
-    });
+    };
+    let revalidation: ClaimCancelReason | null;
+    try {
+      revalidation = commandRevalidations[row.type]
+        ? await tx.transaction((sp) => revalidateCommandForDelivery(sp, revalidationFacts))
+        : await revalidateCommandForDelivery(tx, revalidationFacts);
+    } catch (e) {
+      // Same fail-closed contract as the trust and requester checks above:
+      // never deliver on an unresolved authority, never cancel on a fault —
+      // hold. The savepoint above has already rolled back, so the claim
+      // transaction is still usable for the rest of the batch.
+      console.error(
+        '[commandClaimEligibility] delivery revalidation failed; holding the command rather than delivering or cancelling it',
+        {
+          commandId: row.id,
+          deviceId: device.id,
+          type: row.type,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      );
+      if (shouldReportEligibilityFault(device.id, Date.now())) {
+        captureException(e instanceof Error ? e : new Error(String(e)));
+      }
+      held.push({ id: row.id, reason: 'eligibility_check_failed' });
+      continue;
+    }
     if (revalidation) {
       cancelled.push({ id: row.id, reason: revalidation });
       continue;
