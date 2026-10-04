@@ -2167,7 +2167,12 @@
     "sending": "Sending...",
     "notifyReviewers": "Notify Reviewers",
     "completing": "Completing...",
-    "completeReview": "Complete Review"
+    "completeReview": "Complete Review",
+    "selfDecided": "Self-decided",
+    "selfDecidedHint": "Decided by the user it is about, because no other administrator could review it (single-admin exception).",
+    "ownItemBlocked": "You can't decide on your own access. Another administrator with user management rights must review this item.",
+    "ownItemBlockedShort": "Needs another reviewer",
+    "ownItemSelfDecisionWarning": "You are the only administrator who can review this, so you may decide your own access. It will be recorded as a self-decision."
   },
   "aiUsagePage": {
     "aIUsageBudget": "AI Usage",

@@ -2167,7 +2167,12 @@
     "sending": "Enviando...",
     "notifyReviewers": "Notificar a los revisores",
     "completing": "Completando...",
-    "completeReview": "Revisión completa"
+    "completeReview": "Revisión completa",
+    "selfDecided": "Autodecidido",
+    "selfDecidedHint": "Lo decidió el propio usuario evaluado, porque ningún otro administrador podía revisarlo (excepción de administrador único).",
+    "ownItemBlocked": "No puedes decidir sobre tu propio acceso. Otro administrador con permisos de gestión de usuarios debe revisar este elemento.",
+    "ownItemBlockedShort": "Requiere otro revisor",
+    "ownItemSelfDecisionWarning": "Eres el único administrador que puede revisar esto, así que puedes decidir sobre tu propio acceso. Se registrará como autodecisión."
   },
   "aiUsagePage": {
     "aIUsageBudget": "Uso de IA",

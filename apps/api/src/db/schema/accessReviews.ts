@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, pgEnum, boolean } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users, roles } from './users';
 
@@ -28,5 +28,8 @@ export const accessReviewItems = pgTable('access_review_items', {
   notes: text('notes'),
   reviewedAt: timestamp('reviewed_at'),
   reviewedBy: uuid('reviewed_by').references(() => users.id),
+  // True when the current decision was made by the user the item is about,
+  // under the single-admin exception (services/accessReviewSelfDecision.ts).
+  selfDecided: boolean('self_decided').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 });
