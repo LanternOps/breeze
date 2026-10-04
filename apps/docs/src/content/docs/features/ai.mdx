@@ -320,14 +320,14 @@ The page includes pre-populated AI chat buttons that open the AI sidebar with a 
 
 ## Suggested fixes and fix memory
 
-On an alert or anomaly, **Suggested Fixes** lists things a technician could do about it. Suggestions come from three sources: fixes your fleet has already proven, the built-in research agent, and steps your team has reviewed. The feature is controlled by the `ml.remediation_suggestions.enabled` flag (see [ML Insights](/features/ml-insights/)); research also needs AI credits (or the organization's AI budget) to be available.
+On an alert or anomaly, **Suggested Fixes** lists things a technician could do about it. The panel groups suggestions as **Proven fixes** (fixes your fleet has already seen work), **AI suggestions** (from the built-in research agent), **Similar fixes**, and a collapsed **Earlier keyword matches** group. AI suggestions carry an **AI researched** badge. The feature is controlled by the `ml.remediation_suggestions.enabled` flag (see [ML Insights](/features/ml-insights/)); research also needs AI credits (or the organization's AI budget) to be available, and a manual request needs the `ai_sessions:use` permission.
 
 ### Generate and Research deeper
 
-- **Generate** looks at proven fix memory first. If your fleet has a fix that worked for the same kind of problem on the same operating system, it is suggested straight away with its track record. If there is none, Generate starts a **quick** research run.
+- **Generate** attaches proven fix memory first: a fix that worked for the same kind of problem on the same operating system is suggested straight away with its track record. It then also starts a **quick** research run, whether or not a proven fix exists, provided you have `ai_sessions:use`. Without that permission the panel tells you so.
 - **Research deeper** starts a **deep** research run for the same alert or anomaly. It gets a larger turn and budget ceiling than a quick run, and is meant for when the first answer was not enough.
 
-Every attempt ends in an explicit state on the panel, never a silent blank: researching, nothing safe to suggest (with the reason), or one of the reasons a run could not start, such as the feature being off for the organization, AI credits being used up, the budget limit being reached, the hourly automatic-research limit, or the alert having no single device. Asking again while a run is active shows that run instead of starting a second one.
+Every attempt ends in an explicit state on the panel, never a silent blank: researching; "AI found no safe fix for this problem"; research failed, with a **Retry** button; still researching after about five minutes ("check back", with **Refresh**); busy, when concurrency or rate limits are reached; no permission; or one of the other reasons a run could not start, such as the feature being off for the organization, AI credits being used up, or the alert having no single device. Asking again while a run is active shows that run instead of starting a second one.
 
 **Research never runs anything.** The research agent is read-only: it can look at device details, logs, your script and playbook catalog and proven fixes, and it submits suggestions. It cannot execute, change or draft a script on its own. A technician always chooses what to accept and run.
 
@@ -342,20 +342,20 @@ Every attempt ends in an explicit state on the panel, never a silent blank: rese
 
 **Built-in actions and approval.** Running a built-in action needs `devices:execute` in addition to `scripts:execute`. Each action has a minimum risk level the server enforces regardless of what the agent proposed: `reboot` is always high risk, so it always goes through approval before it runs; `restart_service` and `kill_process` are at least medium; `disk_cleanup` is low. `kill_process` resolves the process by name when you run it and refuses if none or more than one process matches.
 
-**Draft a script.** A script draft request opens the script builder with the brief and language pre-filled. Nothing is sent or saved until you do it yourself.
+**Draft a script.** On a script draft request, **Draft a script** opens the script builder with the brief and language pre-filled (it needs `scripts:write`). If the hand-off cannot be stashed in your browser, the brief is copied to the clipboard as a prompt instead. Nothing is sent or saved until you do it yourself.
 
 ### Written by AI and reviewed steps
 
-Manual steps written by the research agent are labelled **Written by AI**. After checking them, a partner administrator can save them as **reviewed steps** for an operating system. Reviewed steps lose the label, are offered to later research as a stronger starting point, and can be retired at any time.
+Manual steps written by the research agent are labelled **Written by AI — review before following**, and that label stays on the suggestion. After checking the steps, a user with `scripts:write` and partner-wide management rights can use **Save as reviewed steps** to keep a reusable copy for an operating system. When a technician later marks a manual-steps suggestion **Done**, a picker offers the reviewed steps (or "Steps as written (not shared)"). The choice is recorded with the outcome, and once verified outcomes accumulate the fix appears as a proven fix labelled with the reviewed title, visible to your organizations' users. The research agent does not read reviewed steps; it only sees that a proven manual-steps fix exists and its track record.
 
 ### The Fix memory page
 
-**Fix memory** lists the fixes Breeze has learned from observed outcomes, each with its condition, operating system, kind, scope (this client or all clients) and track record. Only counts are shared across clients, never another client's details. Retire an entry to stop it being suggested; retiring needs the AI agents write permission and MFA, and retiring an all-clients entry needs partner-wide management rights.
+**Fix memory** (in the AI Agents section of the navigation) has two tabs. **Fixes** lists what Breeze has learned from observed outcomes, each with its condition, operating system, kind, scope (this client or all clients), status (including Demoted and Stale) and track record. **Reviewed steps** lists the saved reviewed steps and lets you retire them. Only counts are shared across clients, never another client's details. Retire an entry to stop it being suggested; retiring needs the AI agents write permission and MFA, and retiring an all-clients entry needs partner-wide management rights.
 
 ### The "Fix research (built-in)" agent
 
 - **Provisioned for you.** Each partner gets one built-in agent, named "Fix research (built-in)", created the first time research is requested. It cannot be created by hand at partner level.
-- **Only a few things are editable.** You can enable or disable it and adjust its research caps. Its instructions, tools and mode are fixed.
+- **Only a few things are editable.** You can enable or disable it, rename it and adjust its research caps. Its instructions, tools and mode are fixed.
 - **Default ceilings.** A quick run is limited to 4 turns and 5 cents; a deep run to 10 turns and 25 cents. These are configurable ceilings, not typical costs. There are also per-hour and concurrency limits.
 - **Organization override.** An organization can have its own override of the agent, for example to disable it or set tighter caps for that client. The override carries only those same editable settings.
 - **Automatic research.** For **high** and **critical** alerts that have no proven fix, research starts on its own, once per alert and depth, and is capped per organization per hour (6 by default). Medium and low alerts are only researched when a technician asks.
