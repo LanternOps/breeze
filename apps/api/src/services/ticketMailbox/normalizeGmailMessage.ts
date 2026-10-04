@@ -262,11 +262,14 @@ export function normalizeGmailMessage(
   // filename): walkParts already recorded it as attachment metadata and left the
   // body empty on purpose, so decoding it here would copy the attachment's contents
   // into the ticket description. isAttachmentPart is the same check walkParts uses.
+  // walkParts only ever fills acc.text from a real text/plain part.
+  let textIsPlain = !!acc.text;
   if (!acc.text && !acc.html && msg.payload?.body?.data
       && !(msg.payload && isAttachmentPart(msg.payload))) {
     const mime = (msg.payload.mimeType ?? '').toLowerCase();
     const decoded = decodeBody(msg.payload.body.data, partCharset(msg.payload ?? undefined));
     if (mime === 'text/html') acc.html = decoded; else acc.text = decoded;
+    textIsPlain = mime === 'text/plain';
   }
   // An HTML-only message has no text/plain part. Derive the FULL body text from
   // the HTML (the consumer persists only `text`), not just Gmail's truncated
@@ -285,6 +288,7 @@ export function normalizeGmailMessage(
     fromName: from.name,
     subject: header(headers, 'Subject') ?? '',
     text,
+    forwardScanText: textIsPlain && acc.text ? acc.text : undefined,
     html: acc.html,
     messageId: header(headers, 'Message-ID') ?? header(headers, 'Message-Id'),
     inReplyTo: header(headers, 'In-Reply-To'),

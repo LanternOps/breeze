@@ -465,6 +465,9 @@ x-api-env: &api-env
   EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: ${EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
+  # Optional inbound-email routing (off when unset): STAFF_FORWARD_DOMAINS files a
+  # staff forward under the ORIGINAL sender's mapped domain.
+  STAFF_FORWARD_DOMAINS: ${STAFF_FORWARD_DOMAINS:-}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
   INBOUND_QUEUE_MAX_PER_SEC: ${INBOUND_QUEUE_MAX_PER_SEC:-20}
   # SMS MFA + alert notifications (Twilio)

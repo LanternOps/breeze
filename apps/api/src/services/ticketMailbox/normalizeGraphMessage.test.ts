@@ -35,6 +35,11 @@ describe('normalizeGraphMessage', () => {
     expect(n.html).toBe('<p>help</p>');
   });
 
+  it('exposes a text body, never an HTML body, for staff-forward detection', () => {
+    expect(normalizeGraphMessage(msg, 'p', 'support@a.com').forwardScanText).toBeUndefined();
+    expect(normalizeGraphMessage({ ...msg, body: { contentType: 'text', content: 'help' } }, 'p', 'support@a.com').forwardScanText).toBe('help');
+  });
+
   it('carries Graph hasAttachments through so the inbound worker knows to fetch them (#6688)', () => {
     expect(normalizeGraphMessage({ ...msg, hasAttachments: true }, 'p', 'support@a.com').hasAttachments).toBe(true);
     expect(normalizeGraphMessage({ ...msg, hasAttachments: false }, 'p', 'support@a.com').hasAttachments).toBe(false);

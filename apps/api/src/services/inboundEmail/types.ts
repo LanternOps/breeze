@@ -51,6 +51,11 @@ export interface NormalizedInboundEmail {
   fromName?: string;
   subject: string;
   text: string;          // plain body
+  /** The message's provider-supplied text/plain body, unstripped, for staff-forward
+   *  detection only. Absent when the message had no text/plain part (its `text`
+   *  was derived from HTML or a preview) or when the producer predates this
+   *  field; detection then does not run (fail closed). */
+  forwardScanText?: string;
   html?: string;         // retained raw, not rendered in v1
   messageId?: string;
   inReplyTo?: string;

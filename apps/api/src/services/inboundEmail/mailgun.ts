@@ -37,6 +37,9 @@ export class MailgunInboundProvider implements InboundEmailProvider {
   async parse(req: HonoRequest): Promise<NormalizedInboundEmail> {
     const b = (await req.parseBody()) as Record<string, string>;
     const from = extractEmail(b.sender || b.from || '');
+    // A missing or null envelope sender proves nothing, so it never matches.
+    const envelopeSender = b.sender ? extractEmail(b.sender) : '';
+    const envelopeMatchesFrom = envelopeSender !== '' && envelopeSender !== '<>' && envelopeSender === extractEmail(b.from || '');
     const fromName = extractName(b.from || '');
     const refs = (b['References'] || '').trim();
     // When no Message-Id is present, fall back to a content hash that is STABLE
@@ -65,6 +68,12 @@ export class MailgunInboundProvider implements InboundEmailProvider {
       fromName: fromName || undefined,
       subject: b.subject || '',
       text: b['stripped-text'] || b['body-plain'] || '',
+      // Staff-forward detection needs the forwarded block, which stripped-text
+      // removes as quoted content; body-plain keeps it. `from` above is the
+      // envelope sender when Mailgun supplies one, so scan only when it is also
+      // the visible From address: the staff check then applies to the address
+      // the message shows, as it does for Gmail and Microsoft 365.
+      forwardScanText: envelopeMatchesFrom ? (b['body-plain'] || undefined) : undefined,
       html: b['body-html'] || undefined,
       messageId: b['Message-Id'] || undefined,
       inReplyTo: b['In-Reply-To'] || undefined,

@@ -846,6 +846,14 @@ Two failure modes are silent from the sender's side, so check these first if mai
 
 Breeze trusts the `Authentication-Results` header only when Mailgun itself stamped it, and requires **DMARC pass** to mark a sender verified — SPF and DKIM alone are not sufficient.
 
+## Inbound email routing options
+
+Optional, applies to every inbound mailbox path, and does nothing while unset.
+
+| Variable | Default | Description |
+|---|---|---|
+| `STAFF_FORWARD_DOMAINS` | — | Comma list of your own staff domains. When mail that passes sender authentication comes from one of them and from an **active Breeze user of the partner** the mailbox belongs to, matches no existing ticket, and contains an inline Gmail (`---------- Forwarded message ---------`) or Outlook (`-----Original Message-----`) marker line immediately followed by a `From:` header block, the ticket is filed under the customer mapped to the **original** sender's domain instead of the forwarder's. A forward whose original sender is on the forwarder's own domain is not rerouted. Only a provider-supplied `text/plain` body is checked: HTML-only mail routes normally by sender, and Microsoft 365 mailbox mail is usually delivered as HTML. For Mailgun the body is checked only when an envelope sender is present and matches the visible `From` address. Other forward styles, messages forwarded as attachments, and `From:`/`Sent:`/`Subject:` lines without the marker are ignored. Recognition is textual: the same marker and header block typed by such a staff user routes the same way. Domain routing only: it never authenticates the original sender, sends no autoresponse and creates no contact. An unmapped original domain falls through to normal routing. |
+
 ## Ticket Mailbox (M365 email-to-ticket)
 
 These enable partners to connect a Microsoft 365 shared support mailbox so customer email becomes tickets and replies are sent from that mailbox. This is a **separate** Azure app registration from the Cloud-to-Cloud Backup app above, and an alternative to the Mailgun inbound path above — it needs no MX records or DNS changes.

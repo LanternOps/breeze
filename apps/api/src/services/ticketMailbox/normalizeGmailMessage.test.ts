@@ -118,6 +118,23 @@ describe('normalizeGmailMessage', () => {
     expect(n.raw.fromName).toBe('Cust Name');
   });
 
+  it('exposes only a real text/plain body for staff-forward detection', () => {
+    const withPlain = baseMessage([{ name: 'From', value: 'a@x.com' }], [
+      { mimeType: 'text/plain', filename: '', body: { data: b64url('plain') } },
+      { mimeType: 'text/html', filename: '', body: { data: b64url('<p>plain</p>') } },
+    ]);
+    const htmlOnly = baseMessage([{ name: 'From', value: 'a@x.com' }], [
+      { mimeType: 'text/html', filename: '', body: { data: b64url('<p>html only</p>') } },
+    ]);
+    expect(normalizeGmailMessage(withPlain, 'p', MAILBOX, SUB).forwardScanText).toBe('plain');
+    expect(normalizeGmailMessage(htmlOnly, 'p', MAILBOX, SUB).forwardScanText).toBeUndefined();
+    const rootOther = baseMessage([{ name: 'From', value: 'a@x.com' }]);
+    rootOther.payload!.mimeType = 'text/calendar';
+    expect(normalizeGmailMessage(rootOther, 'p', MAILBOX, SUB).forwardScanText).toBeUndefined();
+    const rootPlain = baseMessage([{ name: 'From', value: 'a@x.com' }]);
+    expect(normalizeGmailMessage(rootPlain, 'p', MAILBOX, SUB).forwardScanText).toBe('plain body');
+  });
+
   it('trusts a Google-stamped Authentication-Results (verified on DMARC pass)', () => {
     const msg = baseMessage([
       { name: 'From', value: 'cust@x.com' },
