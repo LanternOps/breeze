@@ -240,6 +240,12 @@ export function createGuardedLookup(opts?: SsrfGuardOptions): LookupFunction {
  * For SDKs that build their own HTTP client and therefore cannot go through
  * `safeFetch` (the AWS SDK is the motivating case), handing them these agents
  * applies the same connect-time policy to every request they make.
+ *
+ * These agents keep sockets alive, and a reused socket skips the lookup. That
+ * is sound only because every socket in a pair's pool was opened under the one
+ * `opts` the pair was built with. Never share a pair between callers with
+ * different policies — build a new pair per policy, as `createGuardedS3Client`
+ * does per client.
  */
 export function createGuardedHttpAgents(opts?: SsrfGuardOptions): {
   httpAgent: http.Agent;
@@ -654,7 +660,14 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
     port,
     path: u.pathname + u.search,
     headers,
-    lookup: pinnedLookup
+    lookup: pinnedLookup,
+    // A fresh connection per request. Node's global agent keeps sockets alive
+    // and pools them by host:port alone, so a pooled socket would carry this
+    // request to whatever address an EARLIER request pinned — possibly under a
+    // looser policy (`allowPrivateNetwork` / `allowCarrierNat`) — without ever
+    // calling `pinnedLookup` or re-checking the address. `agent: false` makes
+    // every request dial through its own pinned, policy-checked lookup.
+    agent: false
     // No `rejectUnauthorized: false` — cert chain validation stays on.
     // Node's default `servername` for https.request is `host`, which is the
     // original hostname — so SNI and cert hostname check both work correctly.
@@ -834,7 +847,11 @@ export async function safeFetch(urlStr: string, init: SafeFetchInit = {}): Promi
       if (init.signal.aborted) {
         onAbort();
       } else {
-        init.signal.addEventListener('abort', onAbort, { once: true });
+        const signal = init.signal;
+        signal.addEventListener('abort', onAbort, { once: true });
+        // Drop the listener once the request is finished with, so a long-lived
+        // caller signal does not accumulate one closure per completed request.
+        req.once('close', () => signal.removeEventListener('abort', onAbort));
       }
     }
 
