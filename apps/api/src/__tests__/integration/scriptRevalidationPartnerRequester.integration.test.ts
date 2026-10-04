@@ -26,6 +26,11 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceCommands, devices } from '../../db/schema';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import {
+  __resetCommandRevalidationsForTests,
+  registerCommandRevalidation,
+} from '../../services/commandClaimEligibility';
+import { revalidateScriptCommandAuthority } from '../../services/scriptCommandRevalidation';
+import {
   assignUserToOrganization,
   assignUserToPartner,
   createOrganization,
@@ -320,5 +325,80 @@ describe('heartbeat claim — script revalidation for a partner-level requester'
     expect(fn.def).toContain("set_config('breeze.scope', COALESCE(_prev_scope, ''), true)");
     expect(fn.app_exec).toBe(true);
     expect(fn.public_exec).toBe(false);
+  });
+  describe('org-level user with a site restriction', () => {
+    async function restrictedOrgUser(siteIds: string[]) {
+      const user = await orgUser([READ, EXECUTE]);
+      await getTestDb().execute(
+        sql`UPDATE organization_users SET site_ids = ${`{${siteIds.join(',')}}`}::uuid[] WHERE user_id = ${user.id}::uuid AND org_id = ${org.id}::uuid`,
+      );
+      return user;
+    }
+
+    it('an EMPTY site allowlist cancels (scope_changed) — it restricts to nothing, not everything', async () => {
+      const user = await restrictedOrgUser([]);
+      const cmd = await queueScript(user.id);
+
+      expect(await claimAsAgent()).toEqual([]);
+      const row = await commandRow(cmd.id);
+      expect(row?.status).toBe('cancelled');
+      expect((row?.result as { reason?: string } | null)?.reason).toBe('scope_changed');
+    });
+
+    it('an allowlist of a DIFFERENT site cancels (scope_changed)', async () => {
+      const otherSite = await createSite({ orgId: org.id });
+      const user = await restrictedOrgUser([otherSite.id]);
+      const cmd = await queueScript(user.id);
+
+      expect(await claimAsAgent()).toEqual([]);
+      expect(((await commandRow(cmd.id))?.result as { reason?: string } | null)?.reason).toBe('scope_changed');
+    });
+
+    it('an allowlist containing the device site delivers', async () => {
+      const otherSite = await createSite({ orgId: org.id });
+      const user = await restrictedOrgUser([otherSite.id, site.id]);
+      const cmd = await queueScript(user.id);
+
+      const claimed = await claimAsAgent();
+
+      expect(claimed.map((c) => c.id)).toEqual([cmd.id]);
+      expect((await commandRow(cmd.id))?.status).toBe('sent');
+    });
+  });
+
+  // Keep LAST: swaps the module-global script revalidation for one that
+  // raises a real SQL error, then restores it.
+  it('a SQL error inside one row\'s revalidation holds only that row; the rest of the batch is still delivered', async () => {
+    const tech = await partnerTech([READ, EXECUTE]);
+    const bad = await queueScript(tech.id);
+    const [ok] = await getTestDb()
+      .insert(deviceCommands)
+      .values({
+        deviceId,
+        type: 'refresh_inventory',
+        payload: {},
+        status: 'pending',
+        targetRole: 'agent',
+        createdBy: tech.id,
+        submittedOrgId: org.id,
+        deliverBy: new Date(Date.now() + 60 * 60 * 1000),
+      })
+      .returning();
+
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('script', async (reader) => {
+      await reader.execute(sql`SELECT 1 / 0`);
+      return null;
+    });
+    try {
+      const claimed = await claimAsAgent();
+
+      expect(claimed.map((c) => c.id)).toEqual([ok!.id]);
+      expect((await commandRow(bad.id))?.status).toBe('pending');
+      expect((await commandRow(ok!.id))?.status).toBe('sent');
+    } finally {
+      __resetCommandRevalidationsForTests();
+      registerCommandRevalidation('script', revalidateScriptCommandAuthority);
+    }
   });
 });

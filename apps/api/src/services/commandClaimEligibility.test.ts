@@ -359,6 +359,56 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.claimable.map((x) => x.id)).toEqual(['c']);
   });
 
+  it('a SQL error inside a revalidation is confined to that row\'s savepoint — later rows still resolve and cancel on the live claim transaction', async () => {
+    // Models Postgres: an error raised OUTSIDE a savepoint aborts the whole
+    // transaction (every later statement fails); one raised inside a savepoint
+    // is rolled back with it and the transaction stays usable.
+    const state = { depth: 0, aborted: false };
+    const guard = () => {
+      if (state.aborted) throw new Error('current transaction is aborted, commands ignored until end of transaction block');
+    };
+    returningMock.mockResolvedValue([{ id: 'flipped' }]);
+    whereMock.mockReturnValue({ returning: (...a: unknown[]) => returningMock(...(a as [])) });
+    setMock.mockReturnValue({ where: (...a: unknown[]) => whereMock(...(a as [])) });
+    const conn: Record<string, unknown> = {
+      update: (...a: unknown[]) => { guard(); return updateMock.mockReturnValue({ set: (...b: unknown[]) => setMock(...(b as [])) })(...(a as [])); },
+      execute: async (q: unknown) => { guard(); return requesterActiveMock(q); },
+      select: () => {
+        guard();
+        if (state.depth === 0) state.aborted = true;
+        throw new Error('relation "devices" does not exist');
+      },
+      transaction: async (fn: (sp: unknown) => Promise<unknown>) => {
+        guard();
+        state.depth += 1;
+        try {
+          return await fn(conn);
+        } finally {
+          state.depth -= 1;
+        }
+      },
+    };
+
+    __resetCommandRevalidationsForTests();
+    registerCommandRevalidation('script', async (reader) => {
+      await (reader as unknown as { select: () => unknown }).select();
+      return null;
+    });
+    try {
+      const r = await partitionClaimable(conn as never, device, [
+        row({ id: 'bad', type: 'script', createdBy: USER }),
+        row({ id: 'ok', createdBy: OTHER_USER }),
+        row({ id: 'moved', submittedOrgId: OTHER_ORG }),
+      ]);
+      expect(r.held).toEqual([{ id: 'bad', reason: 'eligibility_check_failed' }]);
+      expect(r.claimable.map((x) => x.id)).toEqual(['ok']);
+      expect(r.cancelled).toEqual([{ id: 'moved', reason: 'device_moved_org' }]);
+      expect(state.aborted).toBe(false);
+    } finally {
+      __resetCommandRevalidationsForTests();
+    }
+  });
+
   it('a delivery-revalidation fault HOLDS the row (fail closed, recoverable) and spares siblings', async () => {
     __resetCommandRevalidationsForTests();
     registerCommandRevalidation('script', async () => {
