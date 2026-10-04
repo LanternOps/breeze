@@ -51,11 +51,19 @@ export async function loadActiveInstructions(id: string): Promise<FixInstruction
  * Typed params for re-attaching a proven built-in, from the signature's
  * STRUCTURED discriminator only. null = cannot be attached runnable.
  */
-export function builtinParamsFromSignature(action: ResearchBuiltinAction, discriminator: FixDiscriminator | null): Record<string, unknown> | null {
+export function builtinParamsFromSignature(
+  action: ResearchBuiltinAction,
+  discriminator: FixDiscriminator | null,
+  osFamily: string,
+): Record<string, unknown> | null {
+  // The signature discriminator is lowercased. Windows service/process names are
+  // case-insensitive, so the lowercased value is safe there; on Linux/macOS names
+  // are case-sensitive and a lowercased one could target the wrong unit, so those
+  // are counted as proven but never auto-attached (same path as disk_cleanup).
   switch (action) {
     case 'reboot': return {};
-    case 'restart_service': return discriminator?.kind === 'service' ? { serviceName: discriminator.value } : null;
-    case 'kill_process': return discriminator?.kind === 'process' ? { processName: discriminator.value } : null;
+    case 'restart_service': return osFamily === 'windows' && discriminator?.kind === 'service' ? { serviceName: discriminator.value } : null;
+    case 'kill_process': return osFamily === 'windows' && discriminator?.kind === 'process' ? { processName: discriminator.value } : null;
     case 'disk_cleanup': return null;
   }
 }

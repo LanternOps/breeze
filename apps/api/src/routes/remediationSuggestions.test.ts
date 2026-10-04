@@ -43,6 +43,7 @@ vi.mock('../db', () => ({
     insert: dbMocks.insertMock,
     update: dbMocks.updateMock,
   },
+  withDbTransaction: async (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -1363,6 +1364,17 @@ describe('remediation suggestion routes', () => {
     expect(res.status).toBe(201);
     expect(dbMocks.createDoneMock).toHaveBeenCalledWith(expect.objectContaining({ instructionsId: RID }));
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ instructionsId: RID }));
+  });
+
+  it('F5: a 23505 on the instructions link is a 409 (no uncaught 500) and never a half-written Done', async () => {
+    manualAccepted();
+    dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce({ id: RID, osType: null });
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    const where = vi.fn().mockRejectedValue(Object.assign(new Error('duplicate key value violates unique constraint "source_instructions_uq"'), { code: '23505' }));
+    dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where }) });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: RID }));
+    expect(res.status).toBe(409);
+    expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'ml.remediation_suggestion.done' }));
   });
 
   it('Done with no body is an unreviewed Done (no instructions lookup)', async () => {

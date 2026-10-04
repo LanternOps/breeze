@@ -1,9 +1,9 @@
 import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, withDbTransaction } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
 import { authMiddleware, type AuthContext, requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -1375,11 +1375,29 @@ remediationSuggestionRoutes.post(
       const reviewed = await loadActiveInstructions(instructionsId);
       if (!reviewed) return c.json({ error: 'Reviewed steps not found or retired' }, 404);
     }
-    const outcome = await createManualStepsOutcome({ suggestion: existing, deviceId, instructionsId: instructionsId ?? null });
-    if (!outcome) return c.json({ error: 'This suggestion was already marked done' }, 409);
-    if (instructionsId) {
-      await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() }).where(eq(remediationSuggestions.id, existing.id));
+    // Outcome + instructions link in ONE savepoint: a unique violation on the
+    // link (source_instructions_uq) rolls the outcome back too, so a conflict
+    // can never leave a half-written Done, and it answers 409 rather than 500.
+    let outcome: Awaited<ReturnType<typeof createManualStepsOutcome>>;
+    try {
+      outcome = await withAuthDbAccessContext(auth, () => withDbTransaction(async () => {
+        const created = await createManualStepsOutcome({ suggestion: existing, deviceId, instructionsId: instructionsId ?? null });
+        if (created && instructionsId) {
+          // Only ever fill an empty link (or re-set the same id) — never overwrite another reviewed row.
+          await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() })
+            .where(and(
+              eq(remediationSuggestions.id, existing.id),
+              or(isNull(remediationSuggestions.instructionsId), eq(remediationSuggestions.instructionsId, instructionsId)),
+            ));
+        }
+        return created;
+      }));
+    } catch (err) {
+      const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
+      if (code === '23505') return c.json({ error: 'These reviewed steps are already linked to another suggestion for this source' }, 409);
+      throw err;
     }
+    if (!outcome) return c.json({ error: 'This suggestion was already marked done' }, 409);
     writeRouteAudit(c, {
       orgId: existing.orgId,
       action: 'ml.remediation_suggestion.done',

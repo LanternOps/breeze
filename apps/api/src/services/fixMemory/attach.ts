@@ -53,7 +53,7 @@ async function memorySuggestionValues(fix: FixTrackRecord, resolved: ResolvedFix
   }
   if (fix.fixKind === 'builtin_action' && fix.builtinAction) {
     const action = fix.builtinAction as ResearchBuiltinAction;
-    const params = builtinParamsFromSignature(action, resolved.signature.facets.discriminator);
+    const params = builtinParamsFromSignature(action, resolved.signature.facets.discriminator, resolved.signature.facets.osFamily);
     if (!params) return null;
     const label = action.replace('_', ' ');
     return {

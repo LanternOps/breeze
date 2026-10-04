@@ -36,13 +36,18 @@ describe('reviewed instructions', () => {
 
 describe('built-in params from the signature discriminator', () => {
   it.each([
-    ['restart_service', { kind: 'service', value: 'spooler' }, { serviceName: 'spooler' }],
-    ['kill_process', { kind: 'process', value: 'spoolsv.exe' }, { processName: 'spoolsv.exe' }],
-    ['reboot', null, {}],
-    ['restart_service', { kind: 'process', value: 'x' }, null],
-    ['restart_service', null, null],
-    ['disk_cleanup', null, null],
-  ])('%s + %o → %o', (action, disc, expected) => {
-    expect(builtinParamsFromSignature(action as never, disc as never)).toEqual(expected);
+    ['restart_service', { kind: 'service', value: 'spooler' }, 'windows', { serviceName: 'spooler' }],
+    ['kill_process', { kind: 'process', value: 'spoolsv.exe' }, 'windows', { processName: 'spoolsv.exe' }],
+    ['reboot', null, 'windows', {}],
+    ['reboot', null, 'linux', {}],
+    ['restart_service', { kind: 'process', value: 'x' }, 'windows', null],
+    ['restart_service', null, 'windows', null],
+    ['disk_cleanup', null, 'windows', null],
+    // The discriminator is lowercased; names are case-sensitive off Windows, so never auto-attach there.
+    ['restart_service', { kind: 'service', value: 'nginx' }, 'linux', null],
+    ['restart_service', { kind: 'service', value: 'com.apple.foo' }, 'macos', null],
+    ['kill_process', { kind: 'process', value: 'nginx' }, 'linux', null],
+  ])('%s + %o on %s → %o', (action, disc, os, expected) => {
+    expect(builtinParamsFromSignature(action as never, disc as never, os as never)).toEqual(expected);
   });
 });
