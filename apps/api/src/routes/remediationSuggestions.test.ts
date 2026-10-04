@@ -793,6 +793,42 @@ describe('remediation suggestion routes', () => {
       expect(dbMocks.updateMock).not.toHaveBeenCalled();
     });
 
+    it('B8: PATCH cannot move an executed (claimed) built-in back: 409 already_executed, nothing written', async () => {
+      mockSuggestionLoad({ ...builtinRow, status: 'executed' });
+      const res = await app.request(`/remediation-suggestions/${builtinRow.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'accepted' }),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'already_executed' });
+      expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    });
+
+    it('B8: a PATCH losing the race to an /execute claim (no row matched) is a 409, not a 500', async () => {
+      mockSuggestionLoad(builtinRow);
+      mockUpdateReturning([]);
+      const res = await app.request(`/remediation-suggestions/${builtinRow.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'edited' }),
+      });
+      expect(res.status).toBe(409);
+      expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+    });
+
+    it('B8: other target types can still move out of executed', async () => {
+      const script = { ...baseSuggestion, status: 'executed' };
+      mockSuggestionLoad(script);
+      dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...script, status: 'accepted' }]) }) }) });
+      const res = await app.request(`/remediation-suggestions/${script.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ status: 'accepted' }),
+      });
+      expect(res.status).toBe(200);
+    });
+
     it('B3: PATCH cannot lower a built-in below its stored (floor-clamped) tier', async () => {
       const reboot = { ...builtinRow, builtinAction: 'reboot', parameters: {}, riskTier: 'high' };
       mockSuggestionLoad(reboot);

@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { RESEARCH_BUILTIN_PARAM_SCHEMAS } from '@breeze/shared';
-import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 
 import { db, withDbTransaction } from '../db';
 import { devices, elevationAudit, elevationRequests, mlFeedbackEvents, remediationSuggestions } from '../db/schema';
@@ -1575,6 +1575,13 @@ remediationSuggestionRoutes.patch(
       return c.json({ error: validationError }, 400);
     }
 
+    // `executed` is the built-in dispatch claim (/execute flips it BEFORE the
+    // command is sent). Moving it back would re-arm the action, even mid-dispatch.
+    const isBuiltin = existing.targetType === 'builtin_action';
+    if (isBuiltin && existing.status === 'executed' && input.status !== 'executed') {
+      return c.json({ error: 'This built-in action was already run', code: 'already_executed' }, 409);
+    }
+
     const now = new Date();
     const [updated] = await db
       .update(remediationSuggestions)
@@ -1599,10 +1606,14 @@ remediationSuggestionRoutes.patch(
         executedAt: input.status === 'executed' || input.status === 'failed' ? now : existing.executedAt,
         updatedAt: now,
       })
-      .where(eq(remediationSuggestions.id, existing.id))
+      // A concurrent /execute claim between the read and this write must win.
+      .where(isBuiltin
+        ? and(eq(remediationSuggestions.id, existing.id), ne(remediationSuggestions.status, 'executed'))
+        : eq(remediationSuggestions.id, existing.id))
       .returning();
 
     if (!updated) {
+      if (isBuiltin) return c.json({ error: 'This built-in action was already run', code: 'already_executed' }, 409);
       return c.json({ error: 'Failed to update suggestion' }, 500);
     }
 
