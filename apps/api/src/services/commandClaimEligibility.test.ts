@@ -3,6 +3,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 const {
   assertAllowedMock,
+  gateFactoryMock,
   requesterActiveMock,
   updateMock,
   setMock,
@@ -12,6 +13,7 @@ const {
   captureExceptionMock,
 } = vi.hoisted(() => ({
   assertAllowedMock: vi.fn(),
+  gateFactoryMock: vi.fn(),
   requesterActiveMock: vi.fn(),
   updateMock: vi.fn(),
   setMock: vi.fn(),
@@ -23,6 +25,7 @@ const {
 
 vi.mock('./partnerTrust.commands', () => ({
   assertDeviceExecuteAllowed: (...a: unknown[]) => assertAllowedMock(...(a as [])),
+  createDeviceExecuteBatchGate: (...a: unknown[]) => gateFactoryMock(...(a as [])),
   TrustDeniedError: class TrustDeniedError extends Error {
     capability = 'device_execute' as const;
     constructor(
@@ -102,6 +105,12 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     assertAllowedMock.mockResolvedValue(undefined);
+    // The per-row verdict is still driven by `assertAllowedMock` so the cases
+    // below read the same; the batch gate's own logic is covered by
+    // partnerTrust.claimBatch.test.ts.
+    gateFactoryMock.mockImplementation(
+      (deviceId: string) => (type: string, createdBy?: string | null) => assertAllowedMock(deviceId, type, createdBy),
+    );
     requesterActiveMock.mockResolvedValue([{ active: true }]);
     __resetTypeHoldsForTests();
     __resetEligibilityFaultThrottleForTests();
@@ -181,6 +190,31 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
       const r = await partitionClaimable(tx(), { ...device, status }, [row()]);
       expect(r.claimable).toHaveLength(1);
     }
+  });
+
+  it('builds ONE trust gate per batch, reading the snapshot through the claim transaction (no second pooled connection)', async () => {
+    const trustQueries: string[] = [];
+    const dialect = new PgDialect();
+    const t = tx() as unknown as { transaction: unknown };
+    t.transaction = async (fn: (sp: unknown) => Promise<unknown>) =>
+      fn({
+        execute: async (q: unknown) => {
+          const { sql: text, params } = dialect.sqlToQuery(q as never);
+          if (text.includes('breeze_org_partner_trust_state(')) {
+            trustQueries.push(text);
+            expect(params).toEqual([ORG]);
+            return [{ partner_id: 'p1', trust_state: 'restricted' }];
+          }
+          return requesterActiveMock(q);
+        },
+      });
+    const r = await partitionClaimable(t as never, device, [row(), row({ id: 'c2' }), row({ id: 'c3' })]);
+    expect(r.claimable).toHaveLength(3);
+    expect(gateFactoryMock).toHaveBeenCalledTimes(1);
+    expect(gateFactoryMock.mock.calls[0]![0]).toBe('d1');
+    const read = gateFactoryMock.mock.calls[0]![1] as () => Promise<unknown>;
+    await expect(read()).resolves.toEqual({ partnerId: 'p1', trustState: 'restricted' });
+    expect(trustQueries).toHaveLength(1);
   });
 
   it('cancels on trust denial', async () => {

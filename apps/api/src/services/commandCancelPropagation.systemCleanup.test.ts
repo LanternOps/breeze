@@ -9,7 +9,11 @@ vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
 }));
-vi.mock('../db', () => ({ db: { update: updateMock, select: vi.fn(), insert: vi.fn() } }));
+vi.mock('../db', () => ({
+  db: { update: updateMock, select: vi.fn(), insert: vi.fn() },
+  getCurrentDbAccessContext: () => undefined,
+  runAfterDbContextExit: vi.fn(),
+}));
 vi.mock('../db/schema', () => ({
   deploymentResults: { deviceCommandId: 'dr.deviceCommandId', status: 'dr.status' },
   deviceFilesystemCleanupRuns: { id: 'runs.id', status: 'runs.status', commandId: 'runs.commandId' },

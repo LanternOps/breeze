@@ -8,14 +8,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * automation action that dispatched it.
  */
 
-const { finalizeMock, applyAutomationMock, captureExceptionMock, updateMock } = vi.hoisted(() => ({
+const { finalizeMock, applyAutomationMock, captureExceptionMock, updateMock, contextMock, afterExitMock } = vi.hoisted(() => ({
+  contextMock: vi.fn(),
+  afterExitMock: vi.fn(),
   finalizeMock: vi.fn(),
   applyAutomationMock: vi.fn(),
   captureExceptionMock: vi.fn(),
   updateMock: vi.fn(),
 }));
 
-vi.mock('../db', () => ({ db: { update: (...a: unknown[]) => updateMock(...(a as [])), select: vi.fn() } }));
+vi.mock('../db', () => ({
+  db: { update: (...a: unknown[]) => updateMock(...(a as [])), select: vi.fn() },
+  getCurrentDbAccessContext: () => contextMock(),
+  runAfterDbContextExit: (...a: unknown[]) => afterExitMock(...(a as [])),
+}));
 vi.mock('../db/schema', () => ({
   deploymentResults: {
     deviceCommandId: 'deployment_results.device_command_id',
@@ -64,6 +70,7 @@ function executor() {
 describe('propagateCancelledDeviceCommand (#5128 §G)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    contextMock.mockReturnValue(undefined);
     finalizeMock.mockResolvedValue({ terminalised: true });
     applyAutomationMock.mockResolvedValue(true);
   });
@@ -134,6 +141,60 @@ describe('propagateCancelledDeviceCommand (#5128 §G)', () => {
       error: ERROR,
       completedAt: COMPLETED_AT,
     });
+  });
+
+  it('inside a tenant-scoped transaction the automation step is deferred until it settles (no second pooled connection while it is held)', async () => {
+    // The heartbeat claim cancels rows inside the agent's org-scoped
+    // transaction. `applyAutomationActionTerminal` runs in its own system
+    // context, i.e. on a SECOND pooled connection; doing that while the claim
+    // still holds the first deadlocks the pool under concurrent heartbeats.
+    contextMock.mockReturnValue({ scope: 'organization' });
+    const { handle } = executor();
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1',
+      type: 'reboot',
+      payload: null,
+      completedAt: COMPLETED_AT,
+      executor: handle,
+    });
+    expect(applyAutomationMock).not.toHaveBeenCalled();
+    expect(afterExitMock).toHaveBeenCalledTimes(1);
+    await (afterExitMock.mock.calls[0]![1] as () => Promise<void>)();
+    expect(applyAutomationMock).toHaveBeenCalledWith(expect.objectContaining({ commandId: 'cmd-1', terminalStatus: 'cancelled' }));
+  });
+
+  it('a deferred automation failure is still reported', async () => {
+    contextMock.mockReturnValue({ scope: 'partner' });
+    applyAutomationMock.mockRejectedValue(new Error('automation down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { handle } = executor();
+      await propagateCancelledDeviceCommand({
+        commandId: 'cmd-1',
+        type: 'reboot',
+        payload: null,
+        completedAt: COMPLETED_AT,
+        executor: handle,
+      });
+      await (afterExitMock.mock.calls[0]![1] as () => Promise<void>)();
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a system-scoped caller still runs the automation step inline, in its own transaction', async () => {
+    contextMock.mockReturnValue({ scope: 'system' });
+    const { handle } = executor();
+    await propagateCancelledDeviceCommand({
+      commandId: 'cmd-1',
+      type: 'reboot',
+      payload: null,
+      completedAt: COMPLETED_AT,
+      executor: handle,
+    });
+    expect(applyAutomationMock).toHaveBeenCalledTimes(1);
+    expect(afterExitMock).not.toHaveBeenCalled();
   });
 
   it('an automation bookkeeping failure is reported, never thrown into the caller', async () => {

@@ -5,7 +5,12 @@ import {
   propagateCancelledDeviceCommands,
   type DeviceCommandCancelSubject,
 } from './commandCancelPropagation';
-import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+import {
+  createDeviceExecuteBatchGate,
+  TrustDeniedError,
+  type DeviceExecuteTrustSnapshot,
+} from './partnerTrust.commands';
+import type { PartnerTrustState } from '../db/schema/orgs';
 import { captureException } from './sentry';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from './drainClaimAllowlist';
 import { PARKED_DEVICE_CANCEL_REASON } from './unassignedPool/deliveryEligibility';
@@ -48,8 +53,8 @@ export type ClaimHoldReason =
 /**
  * The device facts claim-time eligibility needs. Deliberately NOT carrying a
  * partner id: `devices` has no `partner_id` column (partner ownership is
- * resolved through the org), and `assertDeviceExecuteAllowed` does that
- * resolution itself.
+ * resolved through the org), and the trust gate resolves it from `orgId` on
+ * the claim transaction (`readOrgTrustSnapshot`).
  */
 export type ClaimEligibilityDevice = {
   id: string;
@@ -269,6 +274,30 @@ async function resolveRequesterActive(tx: Tx, userId: string, orgId: string): Pr
 }
 
 /**
+ * The device org's partner and that partner's trust state, read on the CLAIM
+ * TRANSACTION's own connection through `breeze_org_partner_trust_state`
+ * (migration 2026-12-05-110000). The agent's org-scoped context cannot read
+ * `partners`, and the alternative — the system-context readers in
+ * `partnerTrust.repo` — borrows a second pooled connection while the claim
+ * still holds this one, which deadlocks the pool under concurrent heartbeats
+ * (#1105). Savepointed like `resolveRequesterActive`, so a failure leaves the
+ * claim transaction usable and the caller holds the gated rows.
+ */
+async function readOrgTrustSnapshot(tx: Tx, orgId: string): Promise<DeviceExecuteTrustSnapshot> {
+  return tx.transaction(async (sp) => {
+    const rows = (await sp.execute(
+      sql`SELECT partner_id, trust_state FROM public.breeze_org_partner_trust_state(${orgId}::uuid)`,
+    )) as unknown as Array<{ partner_id: string | null; trust_state: string | null }>;
+    return {
+      partnerId: rows[0]?.partner_id ?? null,
+      // Any value other than 'trusted' is denied by the gate, so an
+      // unexpected string can only fail closed.
+      trustState: (rows[0]?.trust_state ?? null) as PartnerTrustState | null,
+    };
+  });
+}
+
+/**
  * Splits claim candidates into claimable / cancelled / held (#5128 §G).
  *
  * A queued command may be claimed days after it was requested, so the
@@ -307,6 +336,9 @@ export async function partitionClaimable(
   const cancelled: Array<{ id: string; reason: ClaimCancelReason }> = [];
   const held: Array<{ id: string; reason: ClaimHoldReason }> = [];
   const requesterActive = new Map<string, boolean | 'error'>();
+  // One trust read per batch, on this transaction, and only if some row is
+  // actually gated — never a nested connection per row.
+  const assertTrusted = createDeviceExecuteBatchGate(device.id, () => readOrgTrustSnapshot(tx, device.orgId));
 
   for (const row of rows) {
     // Checked FIRST, ahead of every cancel: see DRAIN_EXEMPT_TYPES above.
@@ -354,7 +386,7 @@ export async function partitionClaimable(
     }
 
     try {
-      await assertDeviceExecuteAllowed(device.id, row.type, row.createdBy ?? undefined);
+      await assertTrusted(row.type, row.createdBy);
     } catch (e) {
       if (e instanceof TrustDeniedError) {
         cancelled.push({ id: row.id, reason: 'trust_denied' });
