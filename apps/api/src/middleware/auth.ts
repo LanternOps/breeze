@@ -18,6 +18,7 @@ import { writeAuditEvent } from '../services/auditEvents';
 import { captureException, withSentryRequestScope } from '../services/sentry';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { ipAllowlistGuard } from './ipAllowlistGuard';
+import { markPermissionGate } from './permissionGate';
 import { isSelfManagedDbContextRoute } from './selfManagedDbContextRoutes';
 import { isReportHistoryReadRoute } from './reportHistoryRoutes';
 import {
@@ -971,7 +972,7 @@ export function requireOrg(c: Context, next: Next) {
 
 // Permission-based middleware
 export function requirePermission(resource: string, action: string) {
-  return async (c: Context, next: Next) => {
+  return markPermissionGate(async (c: Context, next: Next) => {
     const auth = c.get('auth');
 
     if (!auth) {
@@ -1007,7 +1008,7 @@ export function requirePermission(resource: string, action: string) {
     c.set('permissions', userPerms);
 
     await next();
-  };
+  }, `${resource}:${action}`);
 }
 
 /**
