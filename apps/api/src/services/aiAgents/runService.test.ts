@@ -2839,7 +2839,8 @@ describe('proven-fix short-circuit for shadow triage (AI Suggested Fixes W3)', (
     const result = await createAndEnqueueAgentRun(input({ provenFixProbe: probe }));
     expect(result).toEqual({ created: false, skipped: 'proven_fix_available' });
     expect(probe).toHaveBeenCalledTimes(1);
-    // Ruling 3: the probe joins admission's ONE system context, never a second.
+    // The probe joins admission's ONE system context, never a second pooled
+    // connection (W3 plan Global Constraints, "Contexts").
     expect(depthAtProbe).toBe(1);
     expect(dbMockState.insertValues).toEqual([]);
     expect(dbMockState.executed).toEqual([]);
@@ -2867,6 +2868,23 @@ describe('proven-fix short-circuit for shadow triage (AI Suggested Fixes W3)', (
     const probe = vi.fn(async () => true);
     expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toEqual({ created: false, skipped: reason });
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('the probe runs BEFORE the dedupe insert: a redelivered shadow alert answers proven_fix_available, not duplicate', async () => {
+    // Deliberate ordering (W3 plan Task 5: probe after the opt-outs, before
+    // the admission lock). A redelivery whose dedupe row already exists would
+    // otherwise answer `duplicate`; answering proven_fix_available instead is
+    // benign — the lane's attach is idempotent and no row is inserted.
+    seedAdmissionReads();
+    dbMockState.insertRows = []; // what makes the same admission answer `duplicate` without a probe
+    expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'duplicate' });
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.insertConflictTargets = [];
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: async () => true }))).toEqual({
+      created: false, skipped: 'proven_fix_available',
+    });
+    expect(dbMockState.insertConflictTargets).toEqual([]);
   });
 
   it('no proven fix admits the full run as today', async () => {

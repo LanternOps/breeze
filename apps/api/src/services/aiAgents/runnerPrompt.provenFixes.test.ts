@@ -53,9 +53,10 @@ describe('proven fixes in the task prompt', () => {
     expect(buildAgentRunTaskPrompt(ctx('full', undefined))).not.toContain('Proven fixes');
   });
 
-  it('a broad signature is labelled as a lower-confidence match with no proven list', () => {
+  it('nothing proven (e.g. a broad signature): says so, points at the similar fixes, lists no track record', () => {
     const lines = provenFixPromptLines({ broad: true, proven: [], similarCount: 3 }, 'full').join('\n');
-    expect(lines).toContain('3 similar fix(es)');
+    expect(lines).toContain('- none proven for this exact problem');
+    expect(lines).toContain('Also: 3 similar fix(es) exist for related problems; find_proven_fixes lists them.');
     expect(lines).not.toContain('worked');
   });
 

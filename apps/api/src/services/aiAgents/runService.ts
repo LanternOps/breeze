@@ -320,7 +320,8 @@ export interface CreateAgentRunInput {
   /**
    * AI Suggested Fixes W3 — supplied ONLY by the automation `ai_triage` lane.
    * Asked after every opt-out gate (kill switch, enabled, mode, resource
-   * scope, circuit, trigger filters, maintenance), and only when the run would
+   * scope, circuit, trigger filters, model availability, maintenance), and
+   * only when the run would
    * start in shadow: true means fix memory would attach a proven fix for this
    * alert, so a shadow full run is skipped (`proven_fix_available`) and the
    * caller attaches the fix instead. Never consulted in act mode. Runs inside
@@ -1397,7 +1398,8 @@ export async function createAndEnqueueAgentRun(
       if (await isDeviceInMaintenanceWindow(deviceId)) return skip('maintenance_window');
     }
 
-    // 4a. AI Suggested Fixes W3 (orchestrator decision, W3 Q1 = C): a SHADOW
+    // 4a. AI Suggested Fixes W3 (plan Decisions, Q1 = C:
+    //     docs/superpowers/plans/ai-mcp/2026-09-26-ai-suggested-fixes-w3-consumers.md): a SHADOW
     //     full triage run is skipped when fix memory would attach a proven fix
     //     for this alert. After every opt-out gate above, so an org that opted
     //     out (or an alert the filters exclude) keeps its own skip; keyed on
