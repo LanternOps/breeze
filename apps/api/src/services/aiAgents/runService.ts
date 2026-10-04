@@ -210,6 +210,24 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *                            taskLimits.ts, #6590): non-terminal tasks in the
  *                            org, counted under a per-org advisory lock;
  *                            refusal is the route's 429. Merged with min.
+ *  - maxConcurrentResearchRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            research-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (AI Suggested Fixes W2).
+ *  - maxResearchRunsPerHour — HERE (admission rule 6b, via profileCaps()),
+ *                            research-profile runs only — counted separately
+ *                            from every other per-hour cap.
+ *  - maxAutoResearchRunsPerHour — HERE (admission rule 6c): caps AUTO research
+ *                            (trigger_kind 'alert') per org under the
+ *                            (agent, org) advisory lock; 0 disables auto research.
+ *  - researchQuickMaxTurns / researchDeepMaxTurns — run loop (researchLimits(),
+ *                            researchProfile.ts): substitute for maxTurnsPerRun
+ *                            on a research-profile run, keyed by depth; not
+ *                            enforced here.
+ *  - researchQuickBudgetCentsPerRun / researchDeepBudgetCentsPerRun — run loop
+ *                            (researchLimits(), researchProfile.ts): substitute
+ *                            for maxBudgetCentsPerRun on a research-profile
+ *                            run, keyed by depth; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -1021,7 +1039,7 @@ function profileCaps(
       };
     // AI Suggested Fixes W2 — per-(agent, org) research caps. The partner
     // baseline research agent is the run's agentId for every org, so this is
-    // per org. Auto research has its own tighter hourly cap in requestResearch.
+    // per org. Auto research has its own tighter hourly cap (rule 6c below).
     case 'remediation_research':
       return {
         maxConcurrent: limits.maxConcurrentResearchRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentResearchRuns,

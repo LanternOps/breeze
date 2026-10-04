@@ -18,7 +18,7 @@ export class ResearchAgentEditError extends Error {
   constructor(readonly fields: string[]) {
     super(fields.length === 1 && fields[0] === 'ownerScope'
       ? 'A partner-level research agent is provisioned by the system and cannot be created; only organization overrides can be created'
-      : `A built-in research agent only allows enabled and research budget/cap changes; refused: ${fields.join(', ')}`);
+      : `A built-in research agent only allows changes to enabled, name and the research caps; refused: ${fields.join(', ')}`);
     this.name = 'ResearchAgentEditError';
   }
 }
@@ -26,7 +26,7 @@ export class ResearchAgentEditError extends Error {
 const ALLOWED_TOP = new Set(['enabled', 'limits', 'name']);
 const ALLOWED_LIMITS = new Set<string>(RESEARCH_EDITABLE_LIMIT_KEYS);
 
-/** Spec: "Only enable/disable and budget caps are editable." PATCH-shaped input only. */
+/** Only enabled, name and the research caps are editable. PATCH-shaped input only. */
 export function assertResearchAgentEdit(input: Record<string, unknown>): void {
   const refused: string[] = [];
   for (const key of Object.keys(input)) {

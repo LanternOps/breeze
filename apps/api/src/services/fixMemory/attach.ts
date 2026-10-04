@@ -1,7 +1,9 @@
 /**
  * Free fix-memory attach (AI Suggested Fixes W1, spec P3): a PROVEN hit for a
  * new problem becomes a remediation_suggestions row with origin 'memory'. No
- * LLM, no cost. Broad signatures never auto-attach. Script, built-in
+ * LLM, no cost in `attachProvenFixes` (the same file's
+ * `handleAlertTriggeredForFixMemory` is what starts LLM research when nothing
+ * attached). Broad signatures never auto-attach. Script, built-in
  * (params derived from the signature's structured discriminator; disk_cleanup
  * never) and reviewed-steps fixes attach. An existing untouched
  * ('suggested') keyword-matcher row for the same script is upgraded in place.

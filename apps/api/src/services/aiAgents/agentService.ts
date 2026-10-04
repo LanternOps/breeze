@@ -674,8 +674,8 @@ export async function createAgent(
 
   // AI Suggested Fixes W2: the partner baseline research agent is provisioned
   // by the system (researchProvisioning.ts); a user may not create one by any
-  // path (explicit or omitted ownerScope) — the shared schema only refuses the
-  // explicit form. An org-level research row is an override of that baseline.
+  // path (explicit or omitted ownerScope). An org-level research row is an
+  // override of that baseline.
   // NOT assertResearchAgentEdit(input): create input is the createAiAgentSchema
   // output with every default materialised (limits, mode, triggers...), so a
   // PATCH-shaped field check would refuse every legitimate create.

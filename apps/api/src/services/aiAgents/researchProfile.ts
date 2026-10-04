@@ -3,7 +3,7 @@
  * AI Suggested Fixes W2 — the `remediation_research` run profile. Same
  * "floor, not intersection" construction as verdictProfile.ts / designProfile.ts:
  * the agent's own allowlist is ignored (a research agent has none by
- * provisioning, and an org override cannot add one — researchProvisioning.ts).
+ * provisioning, and an org override cannot add one — pinResearchCreateInput in researchAgentEdit.ts).
  * Zero actions: research SUGGESTS, and the draft hand-off opens the script
  * builder for a human; `propose_script` is deliberately absent.
  */

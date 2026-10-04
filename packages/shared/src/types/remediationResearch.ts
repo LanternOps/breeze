@@ -18,7 +18,7 @@ export const RESEARCH_PROVISIONER = 'system:remediation_research' as const;
 export const RESEARCH_MAX_ITEMS = 6;
 export const RESEARCH_MAX_STEPS = 12;
 
-/** Spec: only enable/disable and budget caps are editable on a research agent. */
+/** The research caps a user may edit (alongside enabled and name) on a research agent. */
 export const RESEARCH_EDITABLE_LIMIT_KEYS = [
   'maxConcurrentResearchRuns', 'maxResearchRunsPerHour', 'maxAutoResearchRunsPerHour',
   'researchQuickBudgetCentsPerRun', 'researchDeepBudgetCentsPerRun', 'maxBudgetCentsPerDay',

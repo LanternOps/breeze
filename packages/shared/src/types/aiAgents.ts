@@ -269,10 +269,11 @@ export interface AiAgentLimits {
   /**
    * v16 (AI Suggested Fixes W2) — `remediation_research` caps. Turns and
    * budgets are per DEPTH (quick = Generate/auto, deep = "Research deeper").
-   * The budgets are CEILINGS, not estimates; the W2 eval (Task 22) measures
-   * real cost before these defaults are finalized.
-   * `maxAutoResearchRunsPerHour` caps AUTO research (high/critical alerts with
-   * no proven fix) per org and is enforced by `requestResearch`, not admission.
+   * The budgets are CEILINGS, not estimates; see services/llm/researchEval
+   * for the harness that measures real cost.
+   * `maxAutoResearchRunsPerHour` caps AUTO research (trigger_kind 'alert') per
+   * org; enforced by admission (rule 6c) under the (agent, org) advisory lock.
+   * 0 disables auto research.
    */
   maxConcurrentResearchRuns: number;
   maxResearchRunsPerHour: number;

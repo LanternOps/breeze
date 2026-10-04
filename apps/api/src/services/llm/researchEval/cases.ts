@@ -1,5 +1,5 @@
 /**
- * Research eval dataset (AI Suggested Fixes W2, Task 22): ~20 generic alert
+ * Research eval dataset (AI Suggested Fixes W2): ~20 generic alert
  * shapes spanning OS x problem family. Every case seeds a catalog with one
  * right-OS script, one wrong-OS script and one irrelevant script, so validity
  * and OS filtering are measured. Public repo: invented names only, no hosts,

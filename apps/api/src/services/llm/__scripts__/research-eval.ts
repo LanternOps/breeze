@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Research eval (AI Suggested Fixes W2, Task 22): runs REAL research on ~20
+ * Research eval (AI Suggested Fixes W2): runs REAL research on ~20
  * alert shapes against a DISPOSABLE stack and reports cost, turns and
  * suggestion validity per depth, with a recommended per-run cap. Budget
  * ceilings are lifted to 100 cents for the run; turn caps stay as shipped.

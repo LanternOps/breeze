@@ -8,11 +8,10 @@
  * re-reads the winner. A partner that SWITCHED OFF the agent (enabled=false)
  * keeps that row; only a soft-deleted (disabled_at) baseline is re-provisioned.
  *
- * A live partner-level research row that was NOT system-provisioned (a
- * "squatter": created through some path that bypassed the service backstop)
- * is never adopted or mutated — provenance cannot change outside the system
- * scope, and silently trusting a human-authored row as the built-in agent
- * would let it carry arbitrary instructions/allowlist. Fail closed instead.
+ * Only a system-provisioned row is adopted as the baseline. A live
+ * partner-level research row with any other provenance is never adopted or
+ * mutated: the built-in agent's instructions and allowlist come from the
+ * system alone. Fail closed instead.
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { RESEARCH_AGENT_NAME, RESEARCH_PROVISIONER } from '@breeze/shared';

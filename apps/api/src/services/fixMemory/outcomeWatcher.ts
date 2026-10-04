@@ -14,6 +14,9 @@
  *      ▼
  *   verified
  *
+ * For built-in actions (W2) the pending reading comes from device_commands or
+ * the cleanup run, mapped to the same script-shaped reading (readActionReading).
+ *
  * The deciders are PURE. advanceOutcome reads, decides, and hands the
  * transition to store.transitionOutcome, whose CAS makes every path
  * (sweeper, event, redelivery) safe to run concurrently.
