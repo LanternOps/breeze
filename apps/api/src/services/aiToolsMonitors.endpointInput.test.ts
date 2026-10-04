@@ -111,6 +111,47 @@ describe('manage_monitor_definitions update with displayed endpoint values', () 
     expect(lastUpdateCondition().headers).toEqual({ Authorization: 'Bearer stored-value', 'X-Trace': 'off' });
   });
 
+  it('rejects a masked header when the target moves to another origin, leaving the stored row alone', async () => {
+    const result = await manage({
+      action: 'update', monitorId: 'm1',
+      definition: {
+        condition: { checkType: 'http_check', target: 'https://other.example.net/health', headers: { Authorization: '[REDACTED]' } },
+      },
+    });
+    expect(result.error).toMatch(/Authorization/);
+    expect(updateMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a fully masked header map when the target moves to another origin', async () => {
+    const result = await manage({
+      action: 'update', monitorId: 'm1',
+      definition: { condition: { checkType: 'http_check', target: 'https://other.example.net/health', headers: '[REDACTED]' } },
+    });
+    expect(result.error).toMatch(/header/i);
+    expect(updateMonitorDefinitionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stored header when the target changes path on the same origin', async () => {
+    const result = await manage({
+      action: 'update', monitorId: 'm1',
+      definition: {
+        condition: { checkType: 'http_check', target: 'https://status.example.com/v2/health', headers: { Authorization: '[REDACTED]' } },
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(lastUpdateCondition().target).toBe('https://status.example.com/v2/health');
+    expect(lastUpdateCondition().headers).toEqual({ Authorization: 'Bearer stored-value' });
+  });
+
+  it('keeps a stored header when the condition omits the target', async () => {
+    const result = await manage({
+      action: 'update', monitorId: 'm1',
+      definition: { condition: { checkType: 'http_check', headers: { Authorization: '[REDACTED]' } } },
+    });
+    expect(result.error).toBeUndefined();
+    expect(lastUpdateCondition().headers).toEqual({ Authorization: 'Bearer stored-value' });
+  });
+
   it('stores a genuinely new full URL', async () => {
     const result = await manage({
       action: 'update', monitorId: 'm1',

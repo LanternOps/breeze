@@ -178,19 +178,44 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * True when two endpoints share an origin (scheme + host + port). Identical
+ * strings (bare hosts included) count as the same; anything that cannot be
+ * parsed to an origin on either side counts as changed.
+ */
+export function endpointOriginUnchanged(stored: string | null | undefined, next: string | null | undefined): boolean {
+  if (typeof stored !== 'string' || typeof next !== 'string') return false;
+  if (stored === next) return true;
+  const a = originOf(stored);
+  const b = originOf(next);
+  return a !== null && a === b;
+}
+
+/**
  * Resolve a header map supplied on a write: a masked value keeps the stored
  * value for that header name; a whole-map placeholder keeps every stored
  * header. A masked value with nothing stored under that name is refused.
+ *
+ * Stored values are kept only while the endpoint origin is unchanged. When
+ * `endpoints` is given and the origin differs, a masked value is refused so
+ * the caller supplies the header values meant for the new endpoint.
  */
 export function resolveHeaderValuesInput(
   incoming: unknown,
   stored: unknown,
   field: string,
+  endpoints?: { storedEndpoint: string | null | undefined; nextEndpoint: string | null | undefined },
 ): DisplayedValueResolution<unknown> {
-  const storedRecord = isPlainRecord(stored) ? stored : null;
+  const allowStoredReuse = !endpoints || endpointOriginUnchanged(endpoints.storedEndpoint, endpoints.nextEndpoint);
+  const storedRecord = allowStoredReuse && isPlainRecord(stored) ? stored : null;
+  const originNote = allowStoredReuse
+    ? ''
+    : ' The endpoint is changing to a different origin, so stored header values are not carried over.';
   if (isDisplayPlaceholder(incoming)) {
     if (storedRecord) return { ok: true, value: storedRecord, keptStored: true };
-    return { ok: false, error: `${field} is a masked placeholder and there are no stored headers to keep. Supply the header values.` };
+    return {
+      ok: false,
+      error: `${field} is a masked placeholder and there are no stored header values to keep.${originNote} Supply the header values.`,
+    };
   }
   if (!isPlainRecord(incoming)) return { ok: true, value: incoming, keptStored: false };
 
@@ -212,7 +237,7 @@ export function resolveHeaderValuesInput(
   if (missing.length > 0) {
     return {
       ok: false,
-      error: `${field} has masked values for ${missing.join(', ')} with no stored value to keep. Supply the actual header value, or omit the header.`,
+      error: `${field} has masked values for ${missing.join(', ')} with no stored value to keep.${originNote} Supply the actual header value, or omit the header.`,
     };
   }
   return { ok: true, value: resolved, keptStored };

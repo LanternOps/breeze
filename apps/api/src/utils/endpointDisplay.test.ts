@@ -160,6 +160,40 @@ describe('resolveHeaderValuesInput', () => {
   });
 });
 
+describe('resolveHeaderValuesInput when the endpoint changes', () => {
+  const stored = { Authorization: 'Bearer abc' };
+  const storedUrl = 'https://status.example.com/hooks/a?token=1';
+
+  it('rejects a masked header when the endpoint moves to another origin', () => {
+    const r = resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://other.example.net/hooks/a',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/endpoint/);
+    expect(resolveHeaderValuesInput('[REDACTED]', stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'not a url',
+    }).ok).toBe(false);
+  });
+
+  it('keeps a masked header when only the path changes on the same origin', () => {
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://status.example.com/other',
+    })).toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('keeps a masked header when the endpoint is unchanged', () => {
+    expect(resolveHeaderValuesInput({ Authorization: '[REDACTED]' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: storedUrl,
+    })).toEqual({ ok: true, value: stored, keptStored: true });
+  });
+
+  it('still accepts new header values on a new origin', () => {
+    expect(resolveHeaderValuesInput({ Authorization: 'Bearer new' }, stored, 'headers', {
+      storedEndpoint: storedUrl, nextEndpoint: 'https://other.example.net',
+    }).ok).toBe(true);
+  });
+});
+
 describe('findDisplayPlaceholderPath', () => {
   it('finds a masked value anywhere in a nested value', () => {
     expect(findDisplayPlaceholderPath({ a: [{ b: 'x' }, { c: '[REDACTED]' }] })).toBe('a[1].c');

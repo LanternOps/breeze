@@ -51,9 +51,10 @@ export function resolveMonitorDefinitionInput(
     const storedCondition =
       stored?.kind === 'network_check' && isRecord(stored.condition) ? stored.condition : null;
 
+    const storedTarget = typeof storedCondition?.target === 'string' ? storedCondition.target : null;
     if (typeof condition.target === 'string') {
       const target = resolveEndpointTargetInput(condition.target, {
-        stored: typeof storedCondition?.target === 'string' ? storedCondition.target : null,
+        stored: storedTarget,
         fingerprint: targetFingerprint,
         field: 'condition.target',
       });
@@ -63,7 +64,13 @@ export function resolveMonitorDefinitionInput(
     }
 
     if (condition.headers !== undefined) {
-      const headers = resolveHeaderValuesInput(condition.headers, storedCondition?.headers, 'condition.headers');
+      // Stored header values are kept only while the endpoint origin is
+      // unchanged; an omitted target means the stored one stays.
+      const nextTarget = typeof condition.target === 'string' ? condition.target : storedTarget;
+      const headers = resolveHeaderValuesInput(condition.headers, storedCondition?.headers, 'condition.headers', {
+        storedEndpoint: storedTarget,
+        nextEndpoint: nextTarget,
+      });
       if (!headers.ok) return headers;
       condition.headers = headers.value;
       if (headers.keptStored) keptStored.push('condition.headers');
