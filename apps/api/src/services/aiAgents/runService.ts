@@ -21,6 +21,7 @@ import {
   db,
   getCurrentDbAccessContext,
   runOutsideDbContext,
+  withDbTransaction,
   withSystemDbAccessContext,
 } from '../../db';
 // Direct module imports, NOT the ../../db/schema barrel: this module is the
@@ -1404,8 +1405,12 @@ export async function createAndEnqueueAgentRun(
     //     asks. The probe is read-only and runs on this same connection, so it
     //     sits before the admission lock — a short-circuit inserts nothing.
     if (modeAtStart === 'shadow' && input.provenFixProbe) {
-      const proven = await input.provenFixProbe().catch((error: unknown) => {
+      // Savepoint, catch outside: a failed read would otherwise abort THIS
+      // admission transaction (the lock and insert below would hit 25P02).
+      const probe = input.provenFixProbe;
+      const proven = await withDbTransaction(() => probe()).catch((error: unknown) => {
         console.error('[aiAgentRunService] proven-fix probe failed; admitting the full run', { orgId, error });
+        captureException(error, undefined, { orgId, stage: 'proven_fix_probe' });
         return false;
       });
       if (proven) return skip('proven_fix_available');

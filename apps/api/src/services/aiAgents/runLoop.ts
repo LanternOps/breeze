@@ -3513,6 +3513,9 @@ export function __setResourceScopeRecheckClockForTests(clock: (() => number) | n
   resourceScopeRecheckClock = clock ?? (() => Date.now());
 }
 
+/** TEST ONLY — real-Postgres suites drive the context load directly (fixMemoryTxSafety). */
+export const __loadRunContextForTests = (runId: string) => loadRunContext(runId);
+
 type CurrentPolicyReader = () => Promise<ResolvedAgent | null>;
 
 /**

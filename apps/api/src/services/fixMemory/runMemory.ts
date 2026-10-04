@@ -12,8 +12,12 @@
  * alert text, parameters, and never the org-authored reviewed-steps title.
  *
  * NEVER throws: memory is an optimisation, a run must not fail without it.
+ * Its reads run in a savepoint (`withDbTransaction`) with the catch OUTSIDE
+ * it: a statement error aborts the caller's transaction otherwise, and
+ * postgres.js would poison the caller's commit even after the catch.
  */
 import type { AiAgentRunProfile, FixKind } from '@breeze/shared';
+import { withDbTransaction } from '../../db';
 import { shouldProduceMlOutput } from '../mlFeatureFlags';
 import { lookupFixes } from './lookup';
 import { signatureForSource, type FixSourceRef } from './signatureLoader';
@@ -55,31 +59,33 @@ export async function loadProvenFixesForRun(input: {
   alertId: string | null;
   correlationGroupId: string | null;
 }): Promise<RunProvenFixes | null> {
+  const ref: FixSourceRef | null = input.correlationGroupId
+    ? { kind: 'correlation', correlationGroupId: input.correlationGroupId }
+    : input.alertId ? { kind: 'alert', alertId: input.alertId } : null;
+  if (!ref) return null;
   try {
-    const ref: FixSourceRef | null = input.correlationGroupId
-      ? { kind: 'correlation', correlationGroupId: input.correlationGroupId }
-      : input.alertId ? { kind: 'alert', alertId: input.alertId } : null;
-    if (!ref) return null;
-    if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return null;
-    const resolved = await signatureForSource(ref);
-    if (!resolved) return null;
-    const result = await lookupFixes({
-      orgId: input.orgId, partnerId: input.partnerId, signature: resolved.signature, limit: RUN_PROVEN_FIX_LIMIT,
+    return await withDbTransaction(async () => {
+      if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return null;
+      const resolved = await signatureForSource(ref);
+      if (!resolved) return null;
+      const result = await lookupFixes({
+        orgId: input.orgId, partnerId: input.partnerId, signature: resolved.signature, limit: RUN_PROVEN_FIX_LIMIT,
+      });
+      if (result.proven.length === 0 && result.similar.length === 0) return null;
+      return {
+        broad: resolved.signature.broad,
+        proven: result.proven.map((fix) => ({
+          scriptName: fix.scriptName,
+          builtinAction: fix.builtinAction,
+          fixKind: fix.fixKind,
+          scope: fix.scope,
+          verified: fix.verified,
+          attempts: fix.attempts,
+          lastVerifiedAt: fix.lastVerifiedAt,
+        })),
+        similarCount: result.similar.length,
+      };
     });
-    if (result.proven.length === 0 && result.similar.length === 0) return null;
-    return {
-      broad: resolved.signature.broad,
-      proven: result.proven.map((fix) => ({
-        scriptName: fix.scriptName,
-        builtinAction: fix.builtinAction,
-        fixKind: fix.fixKind,
-        scope: fix.scope,
-        verified: fix.verified,
-        attempts: fix.attempts,
-        lastVerifiedAt: fix.lastVerifiedAt,
-      })),
-      similarCount: result.similar.length,
-    };
   } catch (error) {
     console.error('[fixMemory] proven-fix lookup for an agent run failed; continuing without memory', {
       orgId: input.orgId, alertId: input.alertId, correlationGroupId: input.correlationGroupId, error,

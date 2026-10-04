@@ -129,6 +129,8 @@ vi.mock('../../db', () => {
     },
     getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    // W3: a savepoint on the ambient connection — same depth, no new context.
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
       const previous = dbMockState.ambientContext;
       dbMockState.ambientContext = { scope: 'system' };

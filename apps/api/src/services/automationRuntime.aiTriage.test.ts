@@ -35,6 +35,7 @@ vi.mock('../db', () => ({
     selectDistinct: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbTransaction: vi.fn((fn: () => unknown) => fn()),
 }));
 
 vi.mock('./eventBus', () => ({
@@ -557,6 +558,28 @@ describe('shadow short-circuit on the ai_triage lane (AI Suggested Fixes W3)', (
     expect(gateInput(1).provenFixProbe).toBeUndefined();
     expect(gateInput(1)).toMatchObject({ kind: 'triage', alertId: 'alert-1', dedupeKey: 'alert:alert-1' });
     expect(out.outcome).toMatchObject({ status: 'queued', agentRunId: 'run-z' });
+  });
+
+  it('a THROWING attach after proven_fix_available re-admits the full run without the probe', async () => {
+    attachProvenFixesMock.mockRejectedValueOnce(new Error('insert failed'));
+    createAndEnqueueAgentRunMock
+      .mockResolvedValueOnce({ created: false, skipped: 'proven_fix_available' })
+      .mockResolvedValueOnce({ created: true, run: { id: 'run-t', status: 'queued', errorCode: null } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(2);
+    expect(gateInput(1).provenFixProbe).toBeUndefined();
+    expect(out.outcome).toMatchObject({ status: 'queued', agentRunId: 'run-t' });
+  });
+
+  it('a re-admit that is itself skipped reports that skip (no silent success)', async () => {
+    attachProvenFixesMock.mockResolvedValueOnce({ proven: 1, attached: 0 });
+    createAndEnqueueAgentRunMock
+      .mockResolvedValueOnce({ created: false, skipped: 'proven_fix_available' })
+      .mockResolvedValueOnce({ created: false, skipped: 'device_not_in_org' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(out.outcome).toEqual({ status: 'failed', message: 'ai_triage skipped: device_not_in_org' });
   });
 
   it('no alert on the trigger → no probe', async () => {

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ flag: vi.fn(async () => true), sig: vi.fn(), lookup: vi.fn() }));
+// The reads run in a savepoint (withDbTransaction) with the catch outside it.
+const savepoint = vi.hoisted(() => vi.fn(async (fn: () => Promise<unknown>) => fn()));
+vi.mock('../../db', () => ({ withDbTransaction: savepoint }));
 vi.mock('../mlFeatureFlags', () => ({ shouldProduceMlOutput: h.flag }));
 vi.mock('./signatureLoader', () => ({ signatureForSource: h.sig }));
 vi.mock('./lookup', () => ({ lookupFixes: h.lookup }));
@@ -32,6 +35,7 @@ describe('loadProvenFixesForRun', () => {
     });
     expect(h.sig).toHaveBeenCalledWith({ kind: 'alert', alertId: 'a-1' });
     expect(h.lookup).toHaveBeenCalledWith({ orgId: 'org-1', partnerId: 'p-1', signature, limit: 3 });
+    expect(savepoint).toHaveBeenCalledTimes(1);
   });
 
   it('prefers the correlation group when the run is group-bound', async () => {
@@ -49,6 +53,13 @@ describe('loadProvenFixesForRun', () => {
     await expect(loadProvenFixesForRun({ ...input, alertId: null })).resolves.toBeNull();
     h.sig.mockResolvedValueOnce(null);
     await expect(loadProvenFixesForRun(input)).resolves.toBeNull();
+  });
+
+  it('a failed savepoint (the inner SQL error rolled back) → null, never an exception', async () => {
+    savepoint.mockRejectedValueOnce(new Error('division by zero'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(loadProvenFixesForRun(input)).resolves.toBeNull();
+    err.mockRestore();
   });
 
   it('a throwing lookup → null, never an exception (Review Focus 2)', async () => {

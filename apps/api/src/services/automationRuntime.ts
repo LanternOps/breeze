@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { automationActionSchema, scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, runOutsideDbContext, withDbTransaction, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
   alerts,
@@ -2296,13 +2296,24 @@ async function executeAiTriageAction(
       : triageAdmission);
 
     if (!result.created && result.skipped === 'proven_fix_available' && memorySource) {
-      // Idempotent (W1 Task 17's upserts), so a redelivered alert re-attaches
-      // nothing new. Joins the dispatch loop's claim transaction when there
-      // is one, else opens one context of its own (never nested).
-      const { attached } = await inSystemDbContext(
-        () => attachProvenFixes(memorySource),
-        'automationRuntime.aiTriage.provenFix',
-      );
+      // Idempotent (W1 Task 17: an upsert for script rows, insert-on-conflict-
+      // do-nothing for the rest), so a redelivered alert re-attaches nothing
+      // new. Joins the dispatch loop's claim transaction when there is one,
+      // else opens one context of its own (never nested). The savepoint keeps
+      // a failed attach from aborting that claim transaction; a failure falls
+      // through to admitting the run below, like an attach that wrote nothing.
+      let attached = 0;
+      try {
+        ({ attached } = await inSystemDbContext(
+          () => withDbTransaction(() => attachProvenFixes(memorySource)),
+          'automationRuntime.aiTriage.provenFix',
+        ));
+      } catch (error) {
+        console.error('[automationRuntime] proven-fix attach failed; admitting the triage run', {
+          alertId: memoryAlertId, orgId: context.device.orgId, error,
+        });
+        captureException(error, undefined, { alertId: memoryAlertId, orgId: context.device.orgId, stage: 'proven_fix_attach' });
+      }
       if (attached > 0) {
         const message = 'ai_triage skipped: proven_fix_available (proven fix attached; shadow triage run not started)';
         return {
@@ -2313,7 +2324,7 @@ async function executeAiTriageAction(
         };
       }
       // The probe saw an attachable fix and the attach then wrote nothing
-      // (memory changed in between). An alert must never be left with neither
+      // (memory changed in between) or failed. An alert must never be left with neither
       // a suggestion nor a triage run, so admit the run as before the probe.
       console.warn('[automationRuntime] proven fix vanished between probe and attach; admitting the triage run', {
         alertId: memoryAlertId, orgId: context.device.orgId,
