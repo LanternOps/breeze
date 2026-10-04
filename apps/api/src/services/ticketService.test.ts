@@ -2737,6 +2737,56 @@ describe('createTicketFromAlert', () => {
     await expect(createTicketFromAlert('missing', actor)).rejects.toThrow(/alert not found/i);
   });
 
+  // Consistent with #7920's endpoint display: text copied from an alert shows
+  // endpoints as scheme + host, including alerts stored before that change.
+  function primeAlertCreate(alert: Record<string, unknown>) {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'a-3', orgId: 'o-1', deviceId: null, severity: 'high', ...alert }])
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 't-11', orgId: 'o-1', partnerId: 'p-1', status: 'new' }])
+      .mockResolvedValueOnce([{ id: 'a-3', orgId: 'o-1', title: 'x' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-11', orgId: 'o-1', internalNumber: 'T-2026-0042' }]);
+  }
+
+  it('shows endpoint URLs copied from the alert title and message as scheme + host', async () => {
+    primeAlertCreate({
+      title: 'Check https://status.example.com/hook?token=abc failed',
+      message: 'Monitor API is offline. Target: https://u:pw@api.example.com:8443/v1/health?key=k1. Status: offline.'
+    });
+
+    await createTicketFromAlert('a-3', actor);
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.subject).toBe('Check https://status.example.com failed');
+    expect(payload.description).toBe('Monitor API is offline. Target: https://api.example.com:8443. Status: offline.');
+  });
+
+  it('reduces a scheme-less network-monitor target in a stored alert message to its host', async () => {
+    primeAlertCreate({
+      title: 'API offline',
+      message: 'Monitor API is offline. Target: admin:pw@db.example.com/status?k=1. Status: offline.',
+      context: { source: 'network_monitor', target: 'admin:pw@db.example.com/status?k=1' }
+    });
+
+    await createTicketFromAlert('a-3', actor);
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.description).toBe('Monitor API is offline. Target: db.example.com. Status: offline.');
+  });
+
+  it('keeps a subject and description supplied by the user as typed', async () => {
+    primeAlertCreate({ title: 'https://a.example.com/x?t=1', message: 'https://a.example.com/y?t=2' });
+
+    await createTicketFromAlert('a-3', actor, {
+      subject: 'See https://kb.example.com/article/42',
+      description: 'Runbook: https://kb.example.com/runbooks/api?step=3'
+    });
+
+    const payload = valuesMock.mock.calls[0]![0];
+    expect(payload.subject).toBe('See https://kb.example.com/article/42');
+    expect(payload.description).toBe('Runbook: https://kb.example.com/runbooks/api?step=3');
+  });
+
   it('link failure after create → rejects with plain Error (not TicketServiceError), making create+link atomic', async () => {
     // Selects: alert, org (createTicket), ticket (linkAlertToTicket), alert (linkAlertToTicket)
     dbMocks.selectResult

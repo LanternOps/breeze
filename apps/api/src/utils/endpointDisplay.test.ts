@@ -5,6 +5,7 @@ import {
   presentEndpointTarget,
   resolveEndpointTargetInput,
   resolveHeaderValuesInput,
+  scrubAlertText,
   scrubUrlsInText,
 } from './endpointDisplay';
 
@@ -202,5 +203,37 @@ describe('findDisplayPlaceholderPath', () => {
 
   it('returns null when nothing is masked', () => {
     expect(findDisplayPlaceholderPath({ a: [1, 'x', { b: null }] })).toBeNull();
+  });
+});
+
+describe('scrubAlertText', () => {
+  it('reduces every URL in alert text to its origin', () => {
+    expect(scrubAlertText('Target: https://api.example.com/v1?token=abc. Status: offline.', null))
+      .toBe('Target: https://api.example.com. Status: offline.');
+  });
+
+  it('reduces the raw scheme-less target of a network-monitor alert to its host', () => {
+    const context = { source: 'network_monitor', target: 'admin:pw@db.example.com/status?k=1' };
+    expect(scrubAlertText('Target: admin:pw@db.example.com/status?k=1. Status: offline.', context))
+      .toBe('Target: db.example.com. Status: offline.');
+  });
+
+  it('leaves a scheme-less target alone for alerts from other sources', () => {
+    const context = { source: 'agent', target: 'admin:pw@db.example.com/status' };
+    expect(scrubAlertText('x admin:pw@db.example.com/status', context)).toBe('x admin:pw@db.example.com/status');
+  });
+
+  it('does not rewrite the message for a target that is not host-shaped', () => {
+    for (const target of ['@', '/', '?', '#', 'x@']) {
+      const context = { source: 'network_monitor', target };
+      expect(scrubAlertText('Check a@b/c?d#e failed. Target: ' + target + '.', context))
+        .toBe('Check a@b/c?d#e failed. Target: ' + target + '.');
+    }
+  });
+
+  it('passes null and empty text through', () => {
+    expect(scrubAlertText(null, null)).toBeNull();
+    expect(scrubAlertText(undefined, {})).toBeUndefined();
+    expect(scrubAlertText('', {})).toBe('');
   });
 });
