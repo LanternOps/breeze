@@ -341,14 +341,14 @@ export async function processExecuteScan(data: ExecuteBaselineScanJobData): Prom
 
   if (created.created) {
     // This handler runs inside runWithSystemDbAccess; enqueue only after the
-    // job row commits (#7187 hazard). An enqueue failure marks the job failed.
+    // job row commits (#7187 hazard). A failed enqueue leaves the row 'scheduled'
+    // for the discovery scheduler's re-dispatch sweep.
     enqueueDiscoveryScanAfterCommit({
       jobId: discoveryJob.id,
       profileId: profile.id,
       orgId: baseline.orgId,
       siteId: baseline.siteId,
       agentId: null,
-      failureMessage: 'Failed to enqueue baseline discovery scan',
     });
   }
 

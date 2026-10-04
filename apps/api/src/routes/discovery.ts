@@ -950,15 +950,15 @@ discoveryRoutes.post(
     }
 
     // The job row commits with this request's transaction; the dispatch worker
-    // must not see the queue job before then (#7187 hazard). An enqueue failure
-    // after commit marks the job failed.
+    // must not see the queue job before then (#7187 hazard). 201 means the job
+    // is durably recorded: an enqueue that fails after commit leaves it
+    // 'scheduled', and the scheduler's sweep re-enqueues it.
     enqueueDiscoveryScanAfterCommit({
       jobId: job.id,
       profileId: profile.id,
       orgId: profile.orgId,
       siteId: profile.siteId,
       agentId: body.agentId ?? null,
-      failureMessage: 'Failed to enqueue scan job',
     });
 
     writeRouteAudit(c, {

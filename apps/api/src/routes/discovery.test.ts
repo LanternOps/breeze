@@ -1158,7 +1158,6 @@ describe('discovery routes', () => {
         jobId: 'job-001',
         profileId,
         agentId: null,
-        failureMessage: 'Failed to enqueue scan job',
       }));
     });
 

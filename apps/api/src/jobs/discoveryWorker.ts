@@ -393,7 +393,6 @@ async function enqueueScheduledProfileRun(
     orgId,
     siteId,
     agentId: null,
-    failureMessage: 'Failed to enqueue scheduled profile scan',
   });
   return { queued: true, jobId: createdJobId };
 }
@@ -429,37 +428,82 @@ async function expireStaleRunningJobs(): Promise<number> {
 }
 
 /**
- * A job leaves 'scheduled' within seconds: the dispatch worker either flips it
- * to 'running' or fails it (no agent, send failed). One still 'scheduled' long
- * after that was never dispatched — its queue job was lost, or read the row
- * before it committed — and because `hasActiveJob` counts it as active, it
- * would block its profile from ever being scheduled again. Fail it so the
- * profile's next due run goes ahead.
+ * A job normally leaves 'scheduled' within seconds: the dispatch worker either
+ * flips it to 'running' or fails it (no agent, send failed). One still
+ * 'scheduled' after REDISPATCH_AFTER_MINUTES lost its dispatch: the enqueue
+ * failed after commit, or the queue job was dropped. Because `hasActiveJob`
+ * counts it as active, it would block its profile from ever being scheduled
+ * again, so each schedule tick re-enqueues its dispatch.
+ *
+ * Re-enqueueing is safe against a dispatch that is merely slow: the dispatch
+ * queue job id is fixed (`discovery-dispatch-<jobId>`) and a queued or running
+ * one is reused, never duplicated (addUniqueDiscoveryJob). The same job row is
+ * dispatched, never a replacement, and the dispatch handler only proceeds while
+ * the row is still 'scheduled'. Only a job that is still undispatched after
+ * NEVER_DISPATCHED_FAIL_MINUTES, with no queued or running dispatch, is failed.
  */
-export const STALE_SCHEDULED_JOB_MINUTES = 30;
+export const REDISPATCH_AFTER_MINUTES = 2;
+export const NEVER_DISPATCHED_FAIL_MINUTES = 30;
+const REDISPATCH_BATCH_LIMIT = 100;
 
-async function expireStaleScheduledJobs(): Promise<number> {
-  const staleThreshold = new Date(Date.now() - STALE_SCHEDULED_JOB_MINUTES * 60 * 1000);
-  const expired = await db
-    .update(discoveryJobs)
-    .set({
-      status: 'failed',
-      completedAt: new Date(),
-      errors: { message: `Job was never dispatched (still scheduled after ${STALE_SCHEDULED_JOB_MINUTES} minutes)` },
-      updatedAt: new Date()
+async function sweepUndispatchedScheduledJobs(): Promise<number> {
+  const threshold = new Date(Date.now() - REDISPATCH_AFTER_MINUTES * 60 * 1000);
+  const stale = await db
+    .select({
+      id: discoveryJobs.id,
+      profileId: discoveryJobs.profileId,
+      orgId: discoveryJobs.orgId,
+      siteId: discoveryJobs.siteId,
+      agentId: discoveryJobs.agentId,
+      createdAt: discoveryJobs.createdAt,
     })
+    .from(discoveryJobs)
     .where(
       and(
         eq(discoveryJobs.status, 'scheduled'),
-        sql`${discoveryJobs.updatedAt} < ${staleThreshold.toISOString()}::timestamptz`
+        sql`${discoveryJobs.updatedAt} < ${threshold.toISOString()}::timestamptz`
       )
     )
-    .returning({ id: discoveryJobs.id });
+    .limit(REDISPATCH_BATCH_LIMIT);
 
-  if (expired.length > 0) {
-    console.warn(`[DiscoveryWorker] Expired ${expired.length} never-dispatched scheduled job(s)`);
+  // Queue I/O must not run inside this handler's transaction (#1105).
+  for (const job of stale) {
+    deferAfterCommit(`discovery: re-dispatch stale job ${job.id}`, () => redispatchOrExpire(job));
   }
-  return expired.length;
+  if (stale.length > 0) {
+    console.warn(`[DiscoveryWorker] Re-dispatching ${stale.length} undispatched scheduled job(s)`);
+  }
+  return stale.length;
+}
+
+async function redispatchOrExpire(job: {
+  id: string;
+  profileId: string;
+  orgId: string;
+  siteId: string;
+  agentId: string | null;
+  createdAt: Date;
+}): Promise<'in-flight' | 'expired' | 'requeued'> {
+  const existing = await getDiscoveryQueue().getJob(`discovery-dispatch-${job.id}`);
+  if (existing && isReusableState(await existing.getState())) return 'in-flight';
+
+  if (Date.now() - job.createdAt.getTime() > NEVER_DISPATCHED_FAIL_MINUTES * 60 * 1000) {
+    await runWithSystemDbAccess(() =>
+      db
+        .update(discoveryJobs)
+        .set({
+          status: 'failed',
+          completedAt: new Date(),
+          errors: { message: `Job was never dispatched (still scheduled after ${NEVER_DISPATCHED_FAIL_MINUTES} minutes)` },
+          updatedAt: new Date()
+        })
+        .where(and(eq(discoveryJobs.id, job.id), eq(discoveryJobs.status, 'scheduled')))
+    );
+    return 'expired';
+  }
+
+  await enqueueDiscoveryScan(job.id, job.profileId, job.orgId, job.siteId, job.agentId);
+  return 'requeued';
 }
 
 /**
@@ -492,9 +536,9 @@ async function processScheduleProfiles(): Promise<{ enqueued: number }> {
     console.error('[DiscoveryWorker] Failed to expire stale jobs:', err);
   }
   try {
-    await expireStaleScheduledJobs();
+    await sweepUndispatchedScheduledJobs();
   } catch (err) {
-    console.error('[DiscoveryWorker] Failed to expire never-dispatched jobs:', err);
+    console.error('[DiscoveryWorker] Failed to sweep undispatched scheduled jobs:', err);
   }
 
   const profiles = await db
@@ -787,6 +831,7 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
 export const __testables = {
   processDispatchScan,
   processScheduleProfiles,
+  redispatchOrExpire,
 };
 
 /**
@@ -1750,19 +1795,37 @@ export async function enqueueDiscoveryScan(
 }
 
 /**
+ * Run queue work once the caller's transaction has settled, outside any DB
+ * context (db/index.ts runAfterDbContextExit). Falls back to starting it now
+ * when the DB module provides no deferral (unit-test mocks).
+ */
+function deferAfterCommit(label: string, work: () => Promise<unknown>): void {
+  const run = () => work().catch((error) => {
+    console.error(`[DiscoveryWorker] ${label} failed:`, error);
+  });
+  const defer = dbModule.runAfterDbContextExit;
+  if (typeof defer === 'function') {
+    defer(label, run);
+    return;
+  }
+  void run();
+}
+
+/**
  * Enqueue a scan's dispatch once the caller's transaction has settled.
  *
  * The dispatch worker reads the job row on its own connection
  * (loadDispatchScanInputs) and skips any job that is not 'scheduled'. Enqueued
  * inside the transaction that INSERTed the row, a fast worker finds no row,
- * logs "status is missing", and returns — and the row then stays 'scheduled'
- * forever, blocking its profile (the #7187 enqueue-before-commit hazard).
- * Callers hold a transaction here: the schedule-profiles and baseline handlers
- * run inside runWithSystemDbAccess, and API routes inside the request context.
+ * logs "status is missing", and returns, and the row then stays 'scheduled'
+ * (the #7187 enqueue-before-commit hazard). Callers hold a transaction here:
+ * the schedule-profiles and baseline handlers run inside runWithSystemDbAccess,
+ * and API routes inside the request context.
  *
- * Fire-and-forget: the caller cannot observe an enqueue failure, so this marks
- * the job failed itself. On rollback the job row never existed and the queued
- * dispatch skips it as missing, which is harmless.
+ * Fire-and-forget. The job row is the durable record: if this enqueue fails,
+ * the row stays 'scheduled' and the schedule tick's sweep re-enqueues it
+ * (sweepUndispatchedScheduledJobs). On rollback the row never existed and the
+ * queued dispatch skips it as missing, which is harmless.
  */
 export function enqueueDiscoveryScanAfterCommit(input: {
   jobId: string;
@@ -1770,22 +1833,10 @@ export function enqueueDiscoveryScanAfterCommit(input: {
   orgId: string;
   siteId: string;
   agentId?: string | null;
-  failureMessage: string;
 }): void {
-  const work = async () => {
-    try {
-      await enqueueDiscoveryScan(input.jobId, input.profileId, input.orgId, input.siteId, input.agentId ?? null);
-    } catch (error) {
-      console.error(`[DiscoveryWorker] Failed to enqueue dispatch for job ${input.jobId}:`, error);
-      await runWithSystemDbAccess(() => markJobFailed(input.jobId, input.failureMessage));
-    }
-  };
-  const defer = dbModule.runAfterDbContextExit;
-  if (typeof defer === 'function') {
-    defer(`discovery: enqueue dispatch for job ${input.jobId}`, work);
-    return;
-  }
-  void work();
+  deferAfterCommit(`discovery: enqueue dispatch for job ${input.jobId}`, () =>
+    enqueueDiscoveryScan(input.jobId, input.profileId, input.orgId, input.siteId, input.agentId ?? null)
+  );
 }
 
 /**

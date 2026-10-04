@@ -324,7 +324,6 @@ describe('enqueueDiscoveryScanAfterCommit (#7187 enqueue-before-commit hazard)',
     orgId: 'org-9',
     siteId: 'site-9',
     agentId: 'agent-9',
-    failureMessage: 'Failed to enqueue scan job',
   };
 
   beforeEach(() => {
@@ -351,14 +350,13 @@ describe('enqueueDiscoveryScanAfterCommit (#7187 enqueue-before-commit hazard)',
     expect(queueAdd.mock.calls[0]![1]).toMatchObject({ type: 'dispatch-scan', jobId: 'job-9', agentId: 'agent-9' });
   });
 
-  it('marks the job failed in its own context when the enqueue fails after commit', async () => {
+  it('leaves the job row untouched when the enqueue fails after commit (the sweep retries it)', async () => {
     queueAdd.mockRejectedValue(new Error('redis down'));
-    mockDb.update.mockReturnValue(updateChain('markJobFailed') as never);
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     enqueueDiscoveryScanAfterCommit(INPUT);
 
-    await vi.waitFor(() => expect(ctxState.events).toContain('markJobFailed@depth1'));
-    expect(mockDb.update).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 });
