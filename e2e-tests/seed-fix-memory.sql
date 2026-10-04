@@ -36,8 +36,8 @@ DECLARE
   v_draft      uuid;
   v_memory_id  uuid;
   v_tag        text := substr(gen_random_uuid()::text, 1, 8);
-  v_sig        text := repeat('c', 64);
-  v_broad      text := repeat('d', 64);
+  v_sig        text := encode(sha256(('sig-' || gen_random_uuid()::text)::bytea), 'hex');
+  v_broad      text := encode(sha256(('broad-' || gen_random_uuid()::text)::bytea), 'hex');
 BEGIN
   SELECT id INTO v_user_id FROM users WHERE email = 'admin@breeze.local';
   IF v_user_id IS NULL THEN
