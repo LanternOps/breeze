@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  rows: [] as unknown[][], sig: vi.fn(), lookup: vi.fn(), scripts: vi.fn(), playbooks: vi.fn(),
+  rows: [] as unknown[][], partner: vi.fn(), sig: vi.fn(), lookup: vi.fn(), scripts: vi.fn(), playbooks: vi.fn(),
 }));
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
@@ -19,6 +19,7 @@ vi.mock('../fixMemory/catalog', () => ({
   listCatalogScripts: h.scripts,
   listCatalogPlaybooks: h.playbooks,
   scriptVisibilityCondition: vi.fn(() => ({})),
+  resolveOrgPartnerId: h.partner,
 }));
 
 import { loadResearchContext, ResearchContextUnavailableError } from './researchContext';
@@ -29,6 +30,7 @@ describe('loadResearchContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.rows.length = 0;
+    h.partner.mockResolvedValue('p-1');
     h.sig.mockResolvedValue({ signature: { version: 1, key: 'k', broadKey: 'b', broad: false, facets: { family: 'alert', condition: 'rule:service_stopped', osFamily: 'windows', discriminator: { kind: 'service', value: 'spooler' } } }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
     h.lookup.mockResolvedValue({ proven: [{ memoryId: 'm' }], similar: [] });
     h.scripts.mockResolvedValue([{ id: 's-win', name: 'Restart spooler', description: 'x', osTypes: ['windows'] }]);
@@ -67,5 +69,37 @@ describe('loadResearchContext', () => {
     await expect(loadResearchContext(input)).rejects.toBeInstanceOf(ResearchContextUnavailableError);
     h.rows.push([{ id: 'd-1', hostname: 'X', osType: 'solaris' }]);
     await expect(loadResearchContext(input)).rejects.toMatchObject({ code: 'research_device_unavailable' });
+  });
+
+  it('F1a: does not trust a caller-supplied partnerId (derived from the org)', async () => {
+    h.partner.mockResolvedValue('p-real');
+    h.rows.push([{ id: 'd-1', hostname: 'WS-01', osType: 'windows' }]);
+    await expect(loadResearchContext(input)).rejects.toMatchObject({ code: 'research_device_unavailable' });
+    expect(h.partner).toHaveBeenCalledWith('org-1');
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('F1b: a foreign/missing correlation group is research_source_unavailable', async () => {
+    h.rows.push([{ id: 'd-1', hostname: 'WS-01', osType: 'windows' }], []);
+    await expect(loadResearchContext({ ...input, triggerRef: { sourceType: 'correlation', sourceId: 'g-1' } }))
+      .rejects.toMatchObject({ code: 'research_source_unavailable' });
+  });
+
+  it('F1b: a source resolving to a different device is research_source_unavailable', async () => {
+    h.sig.mockResolvedValueOnce({ signature: { version: 1, key: 'k', broadKey: 'b', broad: false, facets: { family: 'alert', condition: 'c', osFamily: 'windows', discriminator: null } }, deviceId: 'd-OTHER', alertId: 'a-1', anomalyEpisodeId: null });
+    h.rows.push([{ id: 'd-1', hostname: 'WS-01', osType: 'windows' }], [{ title: 't', severity: 'low', message: null }]);
+    await expect(loadResearchContext(input)).rejects.toMatchObject({ code: 'research_source_unavailable' });
+  });
+
+  it('F1c: scriptIds always include every prompt-listed script and are a subset of scriptIdsAnyOs', async () => {
+    h.rows.push(
+      [{ id: 'd-1', hostname: 'WS-01', osType: 'windows' }],
+      [{ title: 't', severity: 'low', message: null }],
+      [{ id: 'x1' }], // truncated OS ids lacking the prompt script s-win
+      [{ id: 'x2' }],
+    );
+    const ctx = await loadResearchContext(input);
+    expect(ctx.refs.scriptIds.has('s-win')).toBe(true);
+    for (const id of ctx.refs.scriptIds) expect(ctx.refs.scriptIdsAnyOs.has(id)).toBe(true);
   });
 });

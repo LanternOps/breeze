@@ -8,11 +8,11 @@
  * versa. Catalog visibility is W1's explicit app-layer condition
  * (system / own-partner partner-wide / own-org, OS-filtered).
  */
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { ResearchDepth } from '@breeze/shared';
 import { db } from '../../db';
-import { alerts, devices, metricAnomalies, scripts } from '../../db/schema';
-import { listCatalogPlaybooks, listCatalogScripts, scriptVisibilityCondition } from '../fixMemory/catalog';
+import { alertCorrelationGroups, alerts, devices, metricAnomalies, scripts } from '../../db/schema';
+import { listCatalogPlaybooks, listCatalogScripts, resolveOrgPartnerId, scriptVisibilityCondition } from '../fixMemory/catalog';
 import { lookupFixes, type FixTrackRecord } from '../fixMemory/lookup';
 import { isFixOsFamily, type FixOsFamily } from '../fixMemory/signature';
 import { signatureForSource, sourceRefFor } from '../fixMemory/signatureLoader';
@@ -55,7 +55,12 @@ async function loadSourceText(orgId: string, sourceType: SourceType, sourceId: s
       .from(metricAnomalies).where(and(eq(metricAnomalies.id, sourceId), eq(metricAnomalies.orgId, orgId))).limit(1);
     return a ? { title: `${a.anomalyType} anomaly on ${a.metricName}`, severity: null, message: null } : null;
   }
-  if (sourceType === 'correlation') return { title: 'Correlated alert group (root alert)', severity: null, message: null };
+  if (sourceType === 'correlation') {
+    // Org-scoped existence check: a foreign or deleted group is "gone".
+    const [g] = await db.select({ id: alertCorrelationGroups.id }).from(alertCorrelationGroups)
+      .where(and(eq(alertCorrelationGroups.id, sourceId), eq(alertCorrelationGroups.orgId, orgId))).limit(1);
+    return g ? { title: 'Correlated alert group (root alert)', severity: null, message: null } : null;
+  }
   const [row] = await db.select({ title: alerts.title, severity: alerts.severity, message: alerts.message })
     .from(alerts).where(and(eq(alerts.id, sourceId), eq(alerts.orgId, orgId))).limit(1);
   return row ?? null;
@@ -64,6 +69,13 @@ async function loadSourceText(orgId: string, sourceType: SourceType, sourceId: s
 export async function loadResearchContext(input: {
   orgId: string; partnerId: string; deviceId: string; triggerRef: Record<string, unknown>;
 }): Promise<ResearchRunContext> {
+  // Never trust a caller-supplied partner id: system scope has no RLS
+  // backstop, so a stale/wrong one would expose another partner's partner-wide
+  // scripts and memory. Derive it from the org and require agreement.
+  const partnerId = await resolveOrgPartnerId(input.orgId);
+  if (!partnerId || partnerId !== input.partnerId) {
+    throw new ResearchContextUnavailableError('research_device_unavailable', `partner mismatch for org ${input.orgId}`);
+  }
   const [device] = await db.select({ id: devices.id, hostname: devices.hostname, osType: devices.osType })
     .from(devices).where(and(eq(devices.id, input.deviceId), eq(devices.orgId, input.orgId))).limit(1);
   if (!device || !isFixOsFamily(device.osType)) {
@@ -80,18 +92,25 @@ export async function loadResearchContext(input: {
 
   const ref = sourceRefFor({ sourceType, sourceId });
   const resolved = ref ? await signatureForSource(ref) : null;
+  if (resolved && resolved.deviceId !== device.id) {
+    throw new ResearchContextUnavailableError('research_source_unavailable', `source ${sourceType}:${sourceId} belongs to a different device`);
+  }
   const memory = resolved
-    ? await lookupFixes({ orgId: input.orgId, partnerId: input.partnerId, signature: resolved.signature, limit: 5 })
+    ? await lookupFixes({ orgId: input.orgId, partnerId, signature: resolved.signature, limit: 5 })
     : null;
 
-  const catalogCtx = { orgId: input.orgId, partnerId: input.partnerId, deviceOs: osType };
+  const catalogCtx = { orgId: input.orgId, partnerId, deviceOs: osType };
   const [scriptRows, playbookRows, osIds, anyOsIds] = await Promise.all([
     listCatalogScripts(catalogCtx, RESEARCH_CATALOG_PROMPT_LIMIT),
     listCatalogPlaybooks(catalogCtx, RESEARCH_REF_ID_LIMIT),
-    db.select({ id: scripts.id }).from(scripts).where(scriptVisibilityCondition(catalogCtx)).limit(RESEARCH_REF_ID_LIMIT),
-    db.select({ id: scripts.id }).from(scripts).where(scriptVisibilityCondition({ ...catalogCtx, deviceOs: null })).limit(RESEARCH_REF_ID_LIMIT),
+    db.select({ id: scripts.id }).from(scripts).where(scriptVisibilityCondition(catalogCtx)).orderBy(desc(scripts.updatedAt), scripts.id).limit(RESEARCH_REF_ID_LIMIT),
+    db.select({ id: scripts.id }).from(scripts).where(scriptVisibilityCondition({ ...catalogCtx, deviceOs: null })).orderBy(desc(scripts.updatedAt), scripts.id).limit(RESEARCH_REF_ID_LIMIT),
   ]);
   const cleanup = cleanupActionsForOs(osType);
+  // Every script shown in the prompt is validator-visible, and the OS-matched
+  // set is always a subset of the any-OS set, whatever the 2000 cap truncated.
+  const scriptIds = new Set([...osIds.map((r) => r.id), ...scriptRows.map((s) => s.id)]);
+  const scriptIdsAnyOs = new Set([...anyOsIds.map((r) => r.id), ...scriptIds]);
 
   return {
     depth: researchDepthOf(input.triggerRef),
@@ -111,8 +130,8 @@ export async function loadResearchContext(input: {
     },
     refs: {
       deviceOs: osType,
-      scriptIds: new Set(osIds.map((r) => r.id)),
-      scriptIdsAnyOs: new Set(anyOsIds.map((r) => r.id)),
+      scriptIds,
+      scriptIdsAnyOs,
       playbookIds: new Set(playbookRows.map((p) => p.id)),
     },
   };
