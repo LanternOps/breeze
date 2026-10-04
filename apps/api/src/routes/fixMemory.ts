@@ -123,6 +123,7 @@ fixMemoryRoutes.post(
   '/instructions',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
   zValidator('json', reviewedInstructionsSchema.extend({ fromSuggestionId: z.string().uuid().optional() })),
   async (c) => {
     const auth = c.get('auth');
@@ -138,6 +139,7 @@ fixMemoryRoutes.post(
   '/instructions/:id/retire',
   requireScope('partner', 'system'),
   requirePermission(PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action),
+  requireMfa(),
   zValidator('param', z.object({ id: z.string().uuid() })),
   async (c) => {
     const auth = c.get('auth');

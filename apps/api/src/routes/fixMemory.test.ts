@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
   auth: {} as Record<string, unknown>,
+  mfa: true,
   rows: [] as unknown[][],
   retire: vi.fn(),
   save: vi.fn(),
@@ -14,7 +15,7 @@ vi.mock('../middleware/auth', () => ({
   authMiddleware: async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => { c.set('auth', h.auth); c.set('permissions', {}); await next(); },
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
   requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requireMfa: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requireMfa: () => async (c: { json: (b: unknown, s: number) => Response }, next: () => Promise<void>) => (h.mfa ? next() : c.json({ error: 'MFA required' }, 403)),
 }));
 vi.mock('../db', () => {
   const chain: Record<string, unknown> = {};
@@ -35,7 +36,7 @@ const orgTech = { scope: 'organization', partnerId: 'p-1', partnerOrgAccess: nul
 const MEM = '11111111-1111-4111-8111-111111111111';
 
 describe('fix memory routes', () => {
-  beforeEach(() => { h.rows.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => { h.rows.length = 0; h.mfa = true; vi.clearAllMocks(); });
 
   it('the condition subquery keeps (partner OR org) grouped before the key/identity ANDs', () => {
     const { sql: text } = new PgDialect().sqlToQuery(conditionSql);
@@ -94,6 +95,19 @@ describe('fix memory routes', () => {
     expect((await app.request(`/fix-memory/instructions/${MEM}/retire`, post())).status).toBe(200);
     h.retireSteps.mockResolvedValueOnce(false);
     expect((await app.request(`/fix-memory/instructions/${MEM}/retire`, post())).status).toBe(404);
+  });
+
+  it('every fix-memory write needs MFA: retire a fix, save reviewed steps, retire reviewed steps', async () => {
+    h.auth = partnerAll;
+    h.mfa = false;
+    expect((await app.request(`/fix-memory/${MEM}/retire`, post())).status).toBe(403);
+    expect((await app.request('/fix-memory/instructions', post({ title: 't', steps: ['a'], osType: 'windows' }))).status).toBe(403);
+    expect((await app.request(`/fix-memory/instructions/${MEM}/retire`, post())).status).toBe(403);
+    expect(h.retire).not.toHaveBeenCalled();
+    expect(h.save).not.toHaveBeenCalled();
+    expect(h.retireSteps).not.toHaveBeenCalled();
+    // reads stay MFA-free
+    expect((await app.request('/fix-memory/instructions')).status).toBe(200);
   });
 
   it('an org tech can read their partner\'s reviewed steps for the Done picker', async () => {
