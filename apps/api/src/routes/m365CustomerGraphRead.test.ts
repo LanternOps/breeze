@@ -39,6 +39,9 @@ const { authRef, mocks } = vi.hoisted(() => ({
     releaseSlot: vi.fn(async (_orgId: string) => {}),
     requestSync: vi.fn(async (_input: unknown) => {}),
     summary: vi.fn(async (_orgId: string, _tenantId: string | null): Promise<unknown> => null),
+    pending: vi.fn(),
+    continueConsent: vi.fn(),
+    cancelConfirmation: vi.fn(),
   },
 }));
 
@@ -97,6 +100,9 @@ vi.mock('../services/m365ControlPlane/connectionService', async (importActual) =
   initiateCustomerGraphReadUpgradeConsent: mocks.upgrade,
   retestCustomerGraphReadConnection: mocks.retest,
   disconnectCustomerGraphReadConnection: mocks.disconnect,
+  readPendingCustomerGraphReadTenantConfirmation: mocks.pending,
+  continueCustomerGraphReadConsent: mocks.continueConsent,
+  cancelCustomerGraphReadTenantConfirmation: mocks.cancelConfirmation,
 }));
 
 vi.mock('../services/m365ControlPlane/runtimeConfig', () => ({
@@ -743,5 +749,127 @@ describe('customer-graph-read mutations — org-wide governance site ceiling', (
 
   it.each(mutationRequests)('%s still succeeds for an UNRESTRICTED caller', async (_name, request) => {
     expect((await request()).status).toBe(200);
+  });
+});
+
+describe('confirm-tenant interstitial (W03)', () => {
+  const BASE = '/m365/connections/customer-graph-read/consent';
+  const HOME_TENANT = '99999999-9999-4999-8999-999999999999';
+  const EXPIRES = new Date('2026-10-03T12:10:00.000Z');
+  const CONSENT_URL = `https://login.microsoftonline.com/${HOME_TENANT}/oauth2/authorize?state=fresh`;
+
+  beforeEach(() => {
+    mocks.pending.mockResolvedValue({ tenantId: HOME_TENANT, administratorUsername: 'tech@home.example', expiresAt: EXPIRES });
+    mocks.continueConsent.mockResolvedValue({
+      connection: connection({ status: 'pending-consent', tenantId: null }),
+      binding: {
+        phase: 'admin_consent', rawState: 'fresh', connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId: HOME_TENANT,
+      },
+      consentUrl: CONSENT_URL,
+      verifiedTenantId: HOME_TENANT,
+      verifiedAdministratorObjectId: 'abababab-abab-4bab-8bab-abababababab',
+    });
+    mocks.cancelConfirmation.mockResolvedValue(connection({
+      status: 'pending-consent', tenantId: null, lastErrorCode: 'consent_cancelled', grantHealth: undefined,
+    }));
+  });
+
+  it('pending returns the verified tenant and username for the caller only', async () => {
+    const response = await app().request(`${BASE}/pending?orgId=${ORG_ID}`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      tenantId: HOME_TENANT, administratorUsername: 'tech@home.example', expiresAt: EXPIRES.toISOString(),
+    });
+    expect(mocks.pending).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
+  });
+
+  it('pending is a non-oracular 404 when nothing is parked for this user', async () => {
+    mocks.pending.mockResolvedValue(null);
+    const response = await app().request(`${BASE}/pending?orgId=${ORG_ID}`);
+    expect(response.status).toBe(404);
+  });
+
+  it('continue mints the consent cookie for the VERIFIED tenant and returns the server-built consent URL', async () => {
+    const response = await app().request(`${BASE}/continue?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ adminConsentUrl: CONSENT_URL });
+    expect(mocks.continueConsent).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
+    expect(mocks.buildBindingCookie).toHaveBeenCalledWith({
+      phase: 'admin_consent', rawState: 'fresh', connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId: HOME_TENANT,
+    });
+    expect(response.headers.get('set-cookie')).toContain('binding-cookie=opaque');
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.tenant_confirmed',
+      outcome: 'tenant_confirmed',
+      orgId: ORG_ID,
+      connectionId: CONNECTION_ID,
+      verifiedTenantId: HOME_TENANT,
+      verifiedAdministratorObjectId: 'abababab-abab-4bab-8bab-abababababab',
+      actorId: USER_ID,
+    }));
+  });
+
+  it('the tenant cannot be chosen at confirm time: a tenant in the body is ignored and one in the query is rejected', async () => {
+    const response = await app().request(`${BASE}/continue?orgId=${ORG_ID}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: TENANT_ID }),
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.continueConsent).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
+
+    mocks.continueConsent.mockClear();
+    const withQuery = await app().request(`${BASE}/continue?orgId=${ORG_ID}&tenantId=${TENANT_ID}`, { method: 'POST' });
+    expect(withQuery.status).toBe(400);
+    expect(mocks.continueConsent).not.toHaveBeenCalled();
+  });
+
+  it('a replayed or expired confirmation is a 404 and sets no cookie', async () => {
+    mocks.continueConsent.mockRejectedValue(Object.assign(new Error('stale_attempt'), { code: 'stale_attempt' }));
+    const response = await app().request(`${BASE}/continue?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(response.status).toBe(404);
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('cancel records consent_cancelled and returns the safe connection DTO', async () => {
+    const response = await app().request(`${BASE}/cancel?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.connection).toMatchObject({ status: 'pending-consent', tenantId: null, lastErrorCode: 'consent_cancelled' });
+    expect(mocks.cancelConfirmation).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.verification_failed', outcome: 'consent_cancelled', actorId: USER_ID,
+    }));
+  });
+
+  it('cancel with nothing parked is a 404', async () => {
+    mocks.cancelConfirmation.mockRejectedValue(Object.assign(new Error('stale_attempt'), { code: 'stale_attempt' }));
+    expect((await app().request(`${BASE}/cancel?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(404);
+  });
+
+  it.each([
+    ['GET', 'pending'],
+    ['POST', 'continue'],
+    ['POST', 'cancel'],
+  ] as const)('%s %s requires organizations:write, MFA, the org-wide governance gate, and an accessible org', async (method, leaf) => {
+    const url = `${BASE}/${leaf}?orgId=${ORG_ID}`;
+    authRef.current = auth({ permissions: new Set(['organizations:read']) });
+    expect((await app().request(url, { method })).status).toBe(403);
+    authRef.current = auth({ mfa: false });
+    expect((await app().request(url, { method })).status).toBe(403);
+    authRef.current = auth({ allowedSiteIds: [] });
+    expect((await app().request(url, { method })).status).toBe(403);
+    authRef.current = auth();
+    expect((await app().request(`${BASE}/${leaf}?orgId=${OTHER_ORG_ID}`, { method })).status).toBe(404);
+    expect(mocks.pending).not.toHaveBeenCalled();
+    expect(mocks.continueConsent).not.toHaveBeenCalled();
+    expect(mocks.cancelConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('continue 404s when onboarding is disabled for the org', async () => {
+    mocks.onboardingEnabled.mockReturnValue(false);
+    expect((await app().request(`${BASE}/continue?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(404);
+    expect(mocks.continueConsent).not.toHaveBeenCalled();
   });
 });

@@ -17,10 +17,13 @@ import {
 import {
   deriveGrantHealth,
   type GrantHealthState,
+  cancelCustomerGraphReadTenantConfirmation,
+  continueCustomerGraphReadConsent,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
   initiateCustomerGraphReadUpgradeConsent,
   listCustomerGraphReadConnections,
+  readPendingCustomerGraphReadTenantConfirmation,
   retestCustomerGraphReadConnection,
   type CustomerGraphReadConnectionSnapshot,
   type GrantHealth,
@@ -289,6 +292,118 @@ m365CustomerGraphReadRoutes.post(
       });
       // Key kept for the W2 web cards (they validate only the Microsoft host).
       return c.json({ adminConsentUrl: initiated.authorizationUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+/**
+ * Confirm-tenant interstitial (#7913 W03). After an /organizations identity
+ * sign-in the callback parks the VERIFIED tenant server-side and sends the
+ * operator back to the card, which shows it and asks for an explicit
+ * confirm before Microsoft's consent screen. Same gates as starting consent:
+ * organizations:write + MFA + org-wide governance + the partner-wide write
+ * gate + onboarding. None of these routes accepts a tenant — it only ever
+ * comes from the parked session, which is bound to this org, profile,
+ * current attempt and calling user. Every miss is the same 404.
+ */
+function confirmTenantGate(c: Context): { orgId: string } | Response {
+  if (!canMutateOrgWideGovernance(c.get('auth'))) {
+    return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+  }
+  const resolved = mutationOrg(c);
+  if (resolved instanceof Response) return resolved;
+  if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+  if (!isM365CustomerGraphReadOnboardingEnabledForOrg(resolved.orgId)) {
+    return c.json({ error: 'Connection not found' }, 404);
+  }
+  return resolved;
+}
+
+m365CustomerGraphReadRoutes.get(
+  '/connections/customer-graph-read/consent/pending',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    const pending = await readPendingCustomerGraphReadTenantConfirmation({
+      orgId: resolved.orgId,
+      actorId: c.get('auth').user.id,
+    });
+    if (!pending) return c.json({ error: 'Connection not found' }, 404);
+    return c.json({
+      tenantId: pending.tenantId,
+      administratorUsername: pending.administratorUsername,
+      expiresAt: pending.expiresAt.toISOString(),
+    });
+  },
+);
+
+m365CustomerGraphReadRoutes.post(
+  '/connections/customer-graph-read/consent/continue',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    // canAccessOrg is true for system scope: the holding org is never a target.
+    if (await isHoldingOrg(resolved.orgId)) return c.json(PROTECTED_ORG_ERROR, 409);
+    const auth = c.get('auth');
+    try {
+      const continued = await continueCustomerGraphReadConsent({
+        orgId: resolved.orgId,
+        actorId: auth.user.id,
+      });
+      c.header('Set-Cookie', buildM365ConsentBindingCookie(continued.binding), { append: true });
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.tenant_confirmed',
+        orgId: resolved.orgId,
+        connectionId: continued.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: continued.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'tenant_confirmed',
+        correlationId: randomUUID(),
+        verifiedTenantId: continued.verifiedTenantId,
+        verifiedAdministratorObjectId: continued.verifiedAdministratorObjectId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ adminConsentUrl: continued.consentUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+m365CustomerGraphReadRoutes.post(
+  '/connections/customer-graph-read/consent/cancel',
+  requireOrgsWrite,
+  requireMfa(),
+  async (c) => {
+    const resolved = confirmTenantGate(c);
+    if (resolved instanceof Response) return resolved;
+    const auth = c.get('auth');
+    try {
+      const connection = await cancelCustomerGraphReadTenantConfirmation({
+        orgId: resolved.orgId,
+        actorId: auth.user.id,
+      });
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.verification_failed',
+        orgId: resolved.orgId,
+        connectionId: connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'consent_cancelled',
+        correlationId: randomUUID(),
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ connection: toConnectionDto(connection) });
     } catch (error) {
       return lifecycleFailure(c, error);
     }

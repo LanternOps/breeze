@@ -307,14 +307,14 @@ describe('M365 consent callback mounts', () => {
 });
 
 describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
-  it('identity phase verifies via executor, rotates state, and redirects to the v1 consent URL for the VERIFIED tenant', async () => {
+  it('identity phase on a pinned (bound) sign-in verifies via executor, rotates state, and redirects straight to the v1 consent URL for the VERIFIED tenant', async () => {
     const verifyIdentity = vi.fn().mockResolvedValue(identityOk(TENANT_A));
     const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A });
     const buildBindingCookie = vi.fn(() => 'binding=consent');
     const audit = vi.fn();
-    const consumeSession = vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null }));
+    const consumeSession = vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) }));
     const app = h.app({
-      verifyBindingCookie: () => identityBinding(null),
+      verifyBindingCookie: () => identityBinding(TENANT_A),
       consumeSession, verifyIdentity, transitionIdentityToConsent, buildBindingCookie, audit,
       loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
     });
@@ -332,7 +332,7 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
     expect(verifyIdentity).toHaveBeenCalledWith({
       correlationId: CORRELATION_ID,
       consentAttemptId: ATTEMPT_ID,
-      expectedTenantId: null,
+      expectedTenantId: TENANT_A,
       authorizationCode: 'id-code',
       codeVerifier: 'v'.repeat(43),
       nonce: 'identity-nonce',
@@ -353,6 +353,66 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
       verifiedAdministratorObjectId: ADMIN, actorId: USER_ID, correlationId: CORRELATION_ID,
     }));
     expect(JSON.stringify(audit.mock.calls)).not.toMatch(/id-code|identity-nonce|admin@tenant\.example/);
+  });
+
+  it('identity phase on an /organizations sign-in parks at confirm-tenant instead of jumping to consent', async () => {
+    const verifyIdentity = vi.fn().mockResolvedValue(identityOk(TENANT_A));
+    const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'confirm-state', verifiedTenantId: TENANT_A });
+    const buildBindingCookie = vi.fn(() => 'binding=consent');
+    const audit = vi.fn();
+    const app = h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity, transitionIdentityToConsent, buildBindingCookie, audit,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    });
+
+    const res = await app.request(`${h.path}?state=id-state&code=id-code`, { headers: { cookie: 'x' } });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/confirm-tenant`);
+    expect(verifyIdentity).toHaveBeenCalledWith(expect.objectContaining({ expectedTenantId: null }));
+    expect(transitionIdentityToConsent).toHaveBeenCalledWith({
+      attempt: h.attempt('pending-consent'), purpose: 'initial', actorId: USER_ID,
+      verified: verified(TENANT_A), nextPhase: 'tenant_confirmation',
+    });
+    // No consent cookie yet: the confirm step mints it. The identity cookie is cleared.
+    expect(buildBindingCookie).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(res.headers.get('location')).not.toContain('login.microsoftonline.com');
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: h.events.adminIdentityVerified, outcome: 'identity_verified', verifiedTenantId: TENANT_A,
+    }));
+  });
+
+  it('a pinned-tenant reconnect still goes straight to consent (no confirm-tenant)', async () => {
+    const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'consent-state', verifiedTenantId: TENANT_A });
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(TENANT_A),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: hashTenant(TENANT_A) })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_A)),
+      transitionIdentityToConsent,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(new URL(res.headers.get('location')!).host).toBe('login.microsoftonline.com');
+    expect(transitionIdentityToConsent).toHaveBeenCalledWith(expect.objectContaining({ nextPhase: 'admin_consent' }));
+  });
+
+  it('a transition failure while parking at confirm-tenant fails the attempt and never redirects to Microsoft', async () => {
+    const markAttemptFailed = vi.fn(async () => h.snapshot() as never);
+    const res = await h.app({
+      verifyBindingCookie: () => identityBinding(null),
+      consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
+      verifyIdentity: vi.fn().mockResolvedValue(identityOk(TENANT_A)),
+      transitionIdentityToConsent: vi.fn().mockRejectedValue(lifecycle('tenant_mismatch')),
+      markAttemptFailed,
+      loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
+    }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
+
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
+    expect(markAttemptFailed).toHaveBeenCalledWith(h.attempt('pending-consent'), 'tenant_mismatch');
   });
 
   it('identity phase on a bound reconnect pins the executor to the bound tenant', async () => {
@@ -686,20 +746,26 @@ describe.each(HARNESSES)('%s identity-first callback', (_name, h) => {
     expect(refused.headers.get('location')).toBe(`${h.redirectBase}/tenant_mismatch`);
   });
 
-  it("guest admin home tenant: identity verified in the admin's home tenant targets consent at THAT tenant, never the org's intended one, and the audit records it", async () => {
+  it("guest admin home tenant: identity verified in the admin's home tenant parks at confirm-tenant showing THAT tenant, and the audit records it", async () => {
     // /organizations resolved the admin's home tenant HOME; Breeze cannot know the intent.
     const audit = vi.fn();
+    const transitionIdentityToConsent = vi.fn().mockResolvedValue({ rawState: 'cs', verifiedTenantId: HOME });
     const res = await h.app({
       verifyBindingCookie: () => identityBinding(null),
       consumeSession: vi.fn().mockResolvedValue(identitySession({ tenantHintHash: null })),
       verifyIdentity: vi.fn().mockResolvedValue({ ...identityOk(HOME), administratorUsername: 'tech@msp.example' }),
-      transitionIdentityToConsent: vi.fn().mockResolvedValue({ rawState: 'cs', verifiedTenantId: HOME }), audit,
+      transitionIdentityToConsent, audit,
       loadAttempt: vi.fn().mockResolvedValue(h.attempt('pending-consent')),
     }).request(`${h.path}?state=id-state&code=c`, { headers: { cookie: 'x' } });
 
-    expect(new URL(res.headers.get('location')!).pathname).toBe(`/${HOME}/oauth2/authorize`);
+    // W03: the operator is shown HOME on the confirm-tenant screen before any
+    // consent URL exists; the verified identity is parked server-side.
+    expect(res.headers.get('location')).toBe(`${h.redirectBase}/confirm-tenant`);
+    expect(transitionIdentityToConsent).toHaveBeenCalledWith(expect.objectContaining({
+      nextPhase: 'tenant_confirmation',
+      verified: expect.objectContaining({ tenantId: HOME, administratorUsername: 'tech@msp.example' }),
+    }));
     expect(audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: h.events.adminIdentityVerified, verifiedTenantId: HOME }));
-    // W3 Task 14 replaces this redirect with the confirm-tenant interstitial for organizations sign-ins.
   });
 
   it.each(['identity', 'consent'] as const)('a provider error in the %s phase is consent_cancelled and marks the initial attempt failed', async (phase) => {

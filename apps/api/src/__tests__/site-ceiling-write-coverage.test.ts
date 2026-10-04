@@ -142,8 +142,9 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // The M365 control-plane connection lifecycle (consent / upgrade-consent /
   // retest / sync / disconnect, for BOTH the customer-graph-read and
   // customer-graph-actions profiles). Every caller-facing entry point is
-  // gated by its ROUTE: routes/m365CustomerGraphRead.ts (5 POST handlers) and
-  // routes/m365CustomerGraphActions.ts (3) each call
+  // gated by its ROUTE: routes/m365CustomerGraphRead.ts (7 POST handlers, incl.
+  // the W03 confirm-tenant continue/cancel) and routes/m365CustomerGraphActions.ts
+  // (5) each call
   // canMutateOrgWideGovernance before they resolve the org. The only other
   // caller, routes/m365ConsentCallback.ts, is the Microsoft admin-consent
   // redirect landing — it runs no authMiddleware and never reads `auth` at
