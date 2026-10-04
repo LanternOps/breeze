@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { insertValuesMock, selectMock, updateSetMock, sendEmailMock, getEmailServiceMock, withSystemDbAccessContextMock } = vi.hoisted(() => {
   const insertValuesMock = vi.fn().mockResolvedValue([]);
@@ -47,6 +47,8 @@ vi.mock('../db/schema', () => ({
   tickets: { id: 'id' },
   partners: { id: 'id', slug: 'slug', name: 'name', settings: 'settings' },
   organizations: { id: 'id', name: 'name' },
+  devices: { id: 'id', orgId: 'org_id', displayName: 'display_name', hostname: 'hostname' },
+  ticketStatuses: { id: 'id', partnerId: 'partner_id', name: 'name' },
   userNotifications: {},
   users: { id: 'id', partnerId: 'partner_id', status: 'status', email: 'email' },
   mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },
@@ -1077,5 +1079,93 @@ describe('sla_breached fan-out (W07)', () => {
     const exitAt = push.order.lastIndexOf('ctx:exit');
     expect(push.order.filter((x) => x === 'dispatch').length).toBe(2);
     expect(push.order.slice(0, exitAt)).not.toContain('dispatch');
+  });
+});
+
+describe('assignee notification: rich email', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    withSystemDbAccessContextMock.mockImplementation(async (fn: () => unknown) => fn());
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
+    process.env.DASHBOARD_URL = 'https://rmm.example.com/';
+    // Fallback for every read after the queued ticket row (org name, device name).
+    selectMock.mockResolvedValue([{ name: 'Client Co', displayName: 'FRONT-DESK-01', hostname: 'fd01' }]);
+  });
+  afterEach(() => {
+    delete process.env.DASHBOARD_URL;
+  });
+
+  const ticketRow = { id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', subject: 'Printer <down>', description: 'Line one\nLine <two>', priority: 'high', status: 'new', submitterName: 'Jane', submitterEmail: 'jane@client.example', deviceId: null };
+  const event = { type: 'ticket.created' as const, ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: 'u-1', eventId: 'evt-rich', payload: { assigneeId: 'u-2' } };
+
+  it('sends an escaped assignee email with customer, priority, status, requester, body and an absolute link', async () => {
+    selectMock.mockResolvedValueOnce([ticketRow]);
+
+    await handleTicketEvent(event as never);
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('Client Co');
+    expect(html).toContain('T-2026-0042');
+    expect(html).toContain('high');
+    expect(html).toContain('new');
+    expect(html).toContain('Printer &lt;down&gt;');
+    expect(html).toContain('Line one<br>Line &lt;two&gt;');
+    expect(html).toContain('jane@client.example');
+    expect(html).toContain('https://rmm.example.com/tickets/t-1');
+    expect(html).not.toContain('<down>');
+    expect(html).not.toContain('<two>');
+    expect(html).not.toContain('FRONT-DESK-01'); // no linked device
+    expect(html).toMatch(/>Status<\/td><td[^>]*>new</); // no custom status: core status
+  });
+
+  it('escapes every interpolated value (customer, number, priority, status, requester, device)', async () => {
+    const x = '<img src=x onerror=alert(1)>';
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, internalNumber: `T-${x}`, priority: `high${x}`, status: `new${x}`, submitterName: `Jane${x}`, submitterEmail: `j${x}@client.example`, deviceId: 'd-1' }]);
+    selectMock.mockResolvedValue([{ name: `Client${x}`, displayName: `Desk${x}`, hostname: 'fd01' }]);
+
+    await handleTicketEvent(event as never);
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).not.toContain('<img');
+    expect(html.split('&lt;img src=x onerror=alert(1)&gt;').length - 1).toBeGreaterThanOrEqual(6);
+  });
+
+  it('falls back to the hostname when the device display name is blank', async () => {
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
+    selectMock.mockResolvedValue([{ name: 'Client Co', displayName: '   ', hostname: 'WS-01' }]);
+
+    await handleTicketEvent(event as never);
+
+    expect((sendEmailMock.mock.calls[0]![0] as { html: string }).html).toMatch(/>Device<\/td><td[^>]*>WS-01</);
+  });
+
+  it('names the linked device when the ticket has one', async () => {
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, deviceId: 'd-1' }]);
+
+    await handleTicketEvent(event as never);
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('FRONT-DESK-01');
+  });
+
+  it('shows the partner\'s configured status name when the ticket uses a custom status', async () => {
+    selectMock.mockResolvedValueOnce([{ ...ticketRow, statusId: 's-1' }]);
+    selectMock.mockResolvedValue([{ name: 'Waiting on vendor' }]);
+
+    await handleTicketEvent(event as never);
+
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toMatch(/>Status<\/td><td[^>]*>Waiting on vendor</);
+  });
+
+  it('a replayed event (dedupe anchor already written) sends no email', async () => {
+    push.createNotification.mockResolvedValueOnce(null);
+    selectMock.mockResolvedValueOnce([ticketRow]);
+
+    await handleTicketEvent(event as never);
+
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 });
