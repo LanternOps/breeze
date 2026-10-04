@@ -15,16 +15,21 @@ import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth
 import type { M365ConsentBrowserBinding } from './browserBinding';
 import {
   consumeConsentSessionInTransaction,
+  consumeTenantConfirmationSessionInTransaction,
   createIdentitySessionInTransaction,
   deleteConsentSessionsForAttemptInTransaction,
   deleteConsentSessionsForConnection,
   insertVerifiedConsentSessionInTransaction,
+  readTenantConfirmationSessionInTransaction,
   verifiedIdentityFromSession,
   type M365ConsentPurpose,
   type M365ConsentSessionProfile,
   type VerifiedConsentIdentity,
 } from './consentSessionService';
-import { buildMicrosoftIdentityAuthorizationUrl } from './microsoftAuthorization';
+import {
+  buildMicrosoftIdentityAuthorizationUrl,
+  buildMicrosoftTenantAdminConsentUrl,
+} from './microsoftAuthorization';
 import {
   createGraphReadExecutorClient,
   type GraphReadExecutorClient,
@@ -269,6 +274,35 @@ export interface InitiatedConsent<P extends M365ConnectionProfile = M365Connecti
   authorizationUrl: string;
 }
 
+/**
+ * Confirm-tenant interstitial (#7913 W03). The caller is the Breeze user who
+ * started the attempt; the org has already been resolved and authorized by
+ * the route. Nothing here accepts a tenant: the tenant only ever comes from
+ * the server-side session the identity callback parked.
+ */
+export interface TenantConfirmationInput {
+  orgId: string;
+  actorId: string;
+}
+
+/** What the confirm-tenant screen shows. Display only — never authority. */
+export interface PendingTenantConfirmation {
+  tenantId: string;
+  /** Display-only username from the verified id_token; may be null. */
+  administratorUsername: string | null;
+  expiresAt: Date;
+}
+
+export interface ContinuedToConsent<P extends M365ConnectionProfile = M365ConnectionProfile> {
+  connection: M365ConnectionSnapshot<P>;
+  /** phase `admin_consent`, tenant = the verified tenant, under a NEW one-use state. */
+  binding: M365ConsentBrowserBinding;
+  /** v1 tenant-pinned admin-consent URL for the verified tenant. */
+  consentUrl: string;
+  verifiedTenantId: string;
+  verifiedAdministratorObjectId: string;
+}
+
 /** The attempt the second callback resumes, after its consent session is consumed. */
 export interface StartedConsentFinalization<P extends M365ConnectionProfile = M365ConnectionProfile> {
   /** `verifying` for a first-time consent; unchanged (executable) for an upgrade. */
@@ -301,6 +335,12 @@ export interface ConnectionService<P extends M365ConsentSessionProfile, Client> 
     verified: VerifiedConsentIdentity;
     nextPhase: 'admin_consent' | 'tenant_confirmation';
   }): Promise<{ rawState: string; verifiedTenantId: string }>;
+  /** The parked confirm-tenant session for this user's current attempt, or null. */
+  readPendingTenantConfirmation(input: TenantConfirmationInput): Promise<PendingTenantConfirmation | null>;
+  /** Operator confirmed the verified tenant → mint the admin-consent session + URL. One-shot. */
+  continueToConsent(input: TenantConfirmationInput): Promise<ContinuedToConsent<P>>;
+  /** Operator rejected the verified tenant → consume the park, record consent_cancelled. */
+  cancelTenantConfirmation(input: TenantConfirmationInput): Promise<M365ConnectionSnapshot<P>>;
   markConsentAttemptFailed(
     input: M365ConsentAttemptSnapshot<P>,
     errorCode: string,
@@ -691,6 +731,139 @@ export function createConnectionService<
         verified: input.verified,
       });
       return { rawState: created.rawState, verifiedTenantId: input.verified.tenantId };
+    }));
+  }
+
+  /**
+   * The first-time attempt a confirm-tenant step may act on: this org's
+   * profile row, still `pending-consent`. Runs in the caller's system
+   * transaction; `lock` adds FOR UPDATE for the mutating paths.
+   */
+  async function loadPendingAttemptInTransaction(
+    orgId: string,
+    lock: boolean,
+  ): Promise<M365ConnectionSnapshot<P> | null> {
+    const query = db.select().from(m365Connections).where(and(
+      eq(m365Connections.orgId, orgId),
+      eq(m365Connections.profile, profile),
+      eq(m365Connections.status, 'pending-consent'),
+    )).limit(1);
+    const rows = lock ? await query.for('update') : await query;
+    return rows[0] ? snapshot(rows[0]) : null;
+  }
+
+  function tenantConfirmationLookup(connection: M365ConnectionSnapshot<P>, actorId: string) {
+    return {
+      connectionId: connection.id,
+      orgId: connection.orgId,
+      consentAttemptId: connection.consentAttemptId,
+      profile,
+      userId: actorId,
+    };
+  }
+
+  async function readPendingTenantConfirmation(
+    input: TenantConfirmationInput,
+  ): Promise<PendingTenantConfirmation | null> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      const connection = await loadPendingAttemptInTransaction(input.orgId, false);
+      if (!connection) return null;
+      const session = await readTenantConfirmationSessionInTransaction(
+        tenantConfirmationLookup(connection, input.actorId),
+      );
+      const verified = session ? verifiedIdentityFromSession(session) : null;
+      if (!session || !verified) return null;
+      return {
+        tenantId: verified.tenantId,
+        administratorUsername: verified.administratorUsername,
+        expiresAt: session.expiresAt,
+      };
+    }));
+  }
+
+  /**
+   * The operator confirmed the tenant shown on the interstitial. In one system
+   * transaction under the owner/profile advisory lock: consume the parked
+   * session (one-shot; bound to this org, profile, current attempt and user,
+   * unexpired), mint a fresh admin_consent session carrying the SAME verified
+   * identity under a new state, and build the v1 tenant-pinned consent URL.
+   * Writes nothing to the connection row. Any throw rolls the consume back.
+   */
+  async function continueToConsent(input: TenantConfirmationInput): Promise<ContinuedToConsent<P>> {
+    const config = deps.loadRuntimeConfig();
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await db.execute(lockKey(input.orgId, profile));
+      const locked = await loadPendingAttemptInTransaction(input.orgId, true);
+      if (!locked) throw lifecycleError('stale_attempt');
+      const session = await consumeTenantConfirmationSessionInTransaction(
+        tenantConfirmationLookup(locked, input.actorId),
+      );
+      const verified = session ? verifiedIdentityFromSession(session) : null;
+      if (!session || !verified || session.purpose !== 'initial') throw lifecycleError('stale_attempt');
+      // An unbound row is the only kind that parks; the belt for a row that
+      // somehow gained a different tenant meanwhile.
+      if (locked.tenantId && locked.tenantId !== verified.tenantId) throw lifecycleError('tenant_mismatch');
+
+      const created = await insertVerifiedConsentSessionInTransaction({
+        connectionId: locked.id,
+        orgId: locked.orgId,
+        consentAttemptId: locked.consentAttemptId,
+        userId: input.actorId,
+        profile,
+        purpose: 'initial',
+        phase: 'admin_consent',
+        verified,
+      });
+      const consentUrl = buildMicrosoftTenantAdminConsentUrl({
+        tenantId: verified.tenantId,
+        clientId: config.clientId,
+        redirectUri: config.callbackUrl,
+        expectedCallbackPath: new URL(config.callbackUrl).pathname,
+        state: created.rawState,
+      });
+      return {
+        connection: locked,
+        binding: {
+          phase: 'admin_consent',
+          rawState: created.rawState,
+          connectionId: locked.id,
+          consentAttemptId: locked.consentAttemptId,
+          tenantId: verified.tenantId,
+        },
+        consentUrl,
+        verifiedTenantId: verified.tenantId,
+        verifiedAdministratorObjectId: verified.administratorObjectId,
+      };
+    }));
+  }
+
+  /**
+   * The operator rejected the tenant (for example it is their own MSP tenant).
+   * Consumes the parked session and records `consent_cancelled` on the still
+   * pending-consent attempt. Nothing was consented and nothing is bound.
+   */
+  async function cancelTenantConfirmation(
+    input: TenantConfirmationInput,
+  ): Promise<M365ConnectionSnapshot<P>> {
+    return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await db.execute(lockKey(input.orgId, profile));
+      const locked = await loadPendingAttemptInTransaction(input.orgId, true);
+      if (!locked) throw lifecycleError('stale_attempt');
+      const session = await consumeTenantConfirmationSessionInTransaction(
+        tenantConfirmationLookup(locked, input.actorId),
+      );
+      if (!session) throw lifecycleError('stale_attempt');
+      return requireCasRow(await db.update(m365Connections).set({
+        status: 'pending-consent',
+        lastErrorCode: 'consent_cancelled',
+        updatedAt: new Date(),
+      }).where(attemptPredicate({
+        id: locked.id,
+        orgId: locked.orgId,
+        profile,
+        consentAttemptId: locked.consentAttemptId,
+        status: 'pending-consent',
+      })).returning());
     }));
   }
 
@@ -1117,6 +1290,9 @@ export function createConnectionService<
     initiateUpgradeConsent,
     listConnections,
     transitionIdentityToConsent,
+    readPendingTenantConfirmation,
+    continueToConsent,
+    cancelTenantConfirmation,
     markConsentAttemptFailed,
     beginConsentFinalization,
     applyConsentFinalizationResult,
@@ -1155,6 +1331,9 @@ export const initiateCustomerGraphReadConsent = readConnectionService.initiateCo
 export const initiateCustomerGraphReadUpgradeConsent = readConnectionService.initiateUpgradeConsent;
 export const listCustomerGraphReadConnections = readConnectionService.listConnections;
 export const transitionIdentityToConsent = readConnectionService.transitionIdentityToConsent;
+export const readPendingCustomerGraphReadTenantConfirmation = readConnectionService.readPendingTenantConfirmation;
+export const continueCustomerGraphReadConsent = readConnectionService.continueToConsent;
+export const cancelCustomerGraphReadTenantConfirmation = readConnectionService.cancelTenantConfirmation;
 export const markConsentAttemptFailed = readConnectionService.markConsentAttemptFailed;
 export const beginConsentFinalization = readConnectionService.beginConsentFinalization;
 export const applyConsentFinalizationResult = readConnectionService.applyConsentFinalizationResult;

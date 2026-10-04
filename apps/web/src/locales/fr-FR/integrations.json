@@ -92,7 +92,7 @@
       "conditional_access_blocked": "Microsoft a bloqué cette connexion : la stratégie d'accès conditionnel du locataire l'a interrompue (par exemple une vérification de l'appareil). Réessayez depuis un navigateur approuvé par le locataire ou adressez-vous à l'administrateur du locataire.",
       "consent_provider_error": "Microsoft a renvoyé une erreur lors de la connexion. Réessayez ; si l'erreur se reproduit, consultez les journaux de connexion du locataire.",
       "admin_role_required": "Un administrateur général ou un administrateur de rôle privilégié doit accorder le consentement.",
-      "tenant_mismatch": "Microsoft a renvoyé un autre locataire. Redémarrez le consentement pour cette organisation.",
+      "tenant_mismatch": "L'administrateur avec lequel vous vous êtes connecté appartient à un autre locataire Microsoft que cette connexion. Connectez-vous avec un administrateur du locataire connecté.",
       "tenant_already_bound": "Ce locataire Microsoft est déjà connecté à une autre organisation.",
       "credential_unavailable": "Les informations d’identification de la connexion ne sont pas disponibles. Contactez un administrateur Breeze.",
       "identity_token_invalid": "La vérification de l’identité de l’administrateur Microsoft a échoué.",
@@ -176,7 +176,7 @@
       "conditional_access_blocked": "Microsoft a bloqué cette connexion : la stratégie d'accès conditionnel du locataire l'a interrompue (par exemple une vérification de l'appareil). Réessayez depuis un navigateur approuvé par le locataire ou adressez-vous à l'administrateur du locataire.",
       "consent_provider_error": "Microsoft a renvoyé une erreur lors de la connexion. Réessayez ; si l'erreur se reproduit, consultez les journaux de connexion du locataire.",
       "admin_role_required": "Un administrateur général ou un administrateur de rôle privilégié doit accorder le consentement.",
-      "tenant_mismatch": "Microsoft a renvoyé un autre locataire. Redémarrez le consentement pour cette organisation.",
+      "tenant_mismatch": "L'administrateur avec lequel vous vous êtes connecté appartient à un autre locataire Microsoft que cette connexion. Connectez-vous avec un administrateur du locataire connecté.",
       "tenant_already_bound": "Ce locataire Microsoft est déjà connecté à une autre organisation.",
       "credential_unavailable": "Les informations d’identification de la connexion ne sont pas disponibles. Contactez un administrateur Breeze.",
       "identity_token_invalid": "La vérification de l’identité de l’administrateur Microsoft a échoué.",
@@ -201,6 +201,30 @@
       "revoke": "Pour révoquer l'accès plus tard, déconnectez ici ou supprimez l'application d'entreprise Breeze dans Microsoft Entra.",
       "continue": "Continuer vers Microsoft",
       "defaultTarget": "le locataire Microsoft 365 de cette organisation"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Confirmer le locataire Microsoft",
+    "loading": "Chargement du locataire auquel vous vous êtes connecté…",
+    "signedInAs": "Vous vous êtes connecté en tant que {{username}} dans le locataire Microsoft {{tenantId}}.",
+    "signedInTo": "Vous vous êtes connecté au locataire Microsoft {{tenantId}}.",
+    "tenantIdLabel": "ID du locataire",
+    "usernameLabel": "Connecté en tant que",
+    "requestFor": "Breeze demandera l'accès à CE locataire pour {{orgName}}.",
+    "requestForThisOrg": "Breeze demandera l'accès à CE locataire pour cette organisation.",
+    "mspWarning": "S'il s'agit du locataire de votre propre MSP et non de celui du client, annulez et connectez-vous avec le compte administrateur du client. Un compte invité se connecte toujours à son propre locataire d'origine.",
+    "continue": "Continuer vers le consentement Microsoft",
+    "cancel": "Annuler, mauvais locataire",
+    "continueFailed": "Le consentement Microsoft n'a pas pu être démarré.",
+    "cancelFailed": "La connexion n'a pas pu être annulée.",
+    "cancelled": "Annulé. Rien n'a été connecté. Redémarrez le consentement et connectez-vous avec le compte administrateur du client.",
+    "expired": "Cette confirmation a expiré ou a déjà été utilisée. Redémarrez le consentement.",
+    "steps": {
+      "title": "Fonctionnement de la connexion",
+      "identity": "Connectez-vous à Microsoft en tant qu'administrateur général ou administrateur de rôle privilégié du locataire du client. Breeze vérifie qui vous êtes et à quel locataire vous appartenez.",
+      "confirm": "Confirmez dans Breeze qu'il s'agit bien du locataire du client et non du vôtre.",
+      "consent": "Approuvez les autorisations de Breeze pour ce locataire sur l'écran de consentement de Microsoft.",
+      "verify": "Breeze vérifie son accès à ce locataire avant de le connecter."
     }
   },
   "m365TenantPanel": {

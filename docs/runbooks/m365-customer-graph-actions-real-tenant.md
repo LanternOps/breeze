@@ -17,6 +17,10 @@ One allowlisted Breeze organization ("Org A"), one disposable tenant, one shippe
 - A Breeze test operator with `organizations:read`, `organizations:write`, `approvals:decide`, and current MFA.
 - Read-only access to sanitized API/log/audit evidence and controlled database inspection. Do not copy secret-bearing rows, provider callback URLs, or the revealed temporary password into the evidence package once the run is closed.
 
+Consent uses the identity-first flow described in the read runbook's [Identity-first consent flow](./m365-customer-graph-read-real-tenant.md#identity-first-consent-flow): sign in (identity verified, role checked), confirm the tenant on the card (`#m365/customer-graph-actions/confirm-tenant`, `/organizations` sign-ins only), Microsoft's consent screen for that tenant, then verification and binding. Run that runbook's [identity-first scenarios A–F and redirect-shape capture](./m365-customer-graph-read-real-tenant.md#identity-first-acceptance-7910) against this profile too, recording the actions callback (`/api/v1/m365/actions-consent/callback`) key sets separately from the read ones.
+
+**Non-disposable tenant.** Scenario A3 resets a real user's password. If the run has to use a tenant that is not disposable, skip A3 and A4 (and any step that changes the tenant's app-role assignments or consent) and record them as *skipped (non-disposable tenant)*, not passed.
+
 Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Never place raw state, cookie values, authorization codes, PKCE verifiers, nonces, tokens, private keys, certificate PEM, private JWKs, provider error bodies, raw vault references, or the revealed temporary password itself in this document, screenshots, tickets, shell history, or attachments — capture only that a value existed, its shape/length, and that it was cleared.
 
 ## Authoritative permission manifest — exactly two grants
@@ -28,13 +32,13 @@ The expected profile is `customer-graph-actions`, manifest version `1`, Microsof
 | `User.ReadWrite.All` | `204e0828-b5ca-4ad8-b9f3-f32a958e7cc4` |
 | `User-PasswordProfile.ReadWrite.All` | `56760768-b641-451f-8906-e1b8ab31bca7` |
 
-This differs from the read profile's nine-role manifest: the actions app registration should request and be consented for only these two scopes for this acceptance run. Do **not** pre-consent any of the four roadmap scopes documented in the [deploy runbook's permission manifest section](../deploy/m365-customer-graph-actions-executor.md#entra-application-and-permission-manifest) — they are not wired to any shipped action, and consenting them widens the mutation blast radius for no test value.
+This differs from the read profile's thirteen-role manifest: the actions app registration should request and be consented for only these two scopes for this acceptance run. Do **not** pre-consent any of the four roadmap scopes documented in the [deploy runbook's permission manifest section](../deploy/m365-customer-graph-actions-executor.md#entra-application-and-permission-manifest) — they are not wired to any shipped action, and consenting them widens the mutation blast radius for no test value.
 
 ## Evidence key
 
 Reuse the read runbook's [evidence key](./m365-customer-graph-read-real-tenant.md#evidence-key) conventions (UI/API/DB/Audit/Metric/log/Entra categories, redaction rules) with these actions-specific additions:
 
-- **Consent audit** — `m365.customer_graph_actions.consent_initiated`, `m365.customer_graph_actions.admin_consent_returned`, `m365.customer_graph_actions.tenant_binding_verified`, `m365.customer_graph_actions.retested`. Metrics: `breeze_m365_customer_graph_actions_events_total{event,outcome}`.
+- **Consent audit** — `m365.customer_graph_actions.consent_initiated`, `m365.customer_graph_actions.admin_identity_verified`, `m365.customer_graph_actions.tenant_confirmed`, `m365.customer_graph_actions.admin_consent_returned`, `m365.customer_graph_actions.tenant_binding_verified` (with `verifiedAdministratorObjectId`: the administrator Breeze verified, not who clicked Accept), `m365.customer_graph_actions.verification_failed`, `m365.customer_graph_actions.retested`. Metrics: `breeze_m365_customer_graph_actions_events_total{event,outcome}`.
 - **Mutation audit** — exactly one `m365.customer_graph_actions.action_executed` row per executed attempt, `details` limited to `actionType` and `outcome` — never a Graph request/response body or the temporary password. Metric: `breeze_m365_graph_actions_total{action,outcome}`.
 - **Reveal audit** — `action_intent.temp_password.reveal` (success and denial), `details` limited to `intentId`, `actionName`, `revealPath` — never the password.
 - **Intent state** — `action_intents.status` transitions (`pending_approval` → `approved` → `executing` → `completed`), visible via the admin tool-executions feed (`intentId` + `tempPasswordState`) and the AI Risk Dashboard's Approval History feed at `/ai-risk`.
@@ -67,10 +71,11 @@ A name/ID mismatch, omitted role, extra role, or presence of any roadmap scope i
 
 1. Confirm Org A is the only organization present in `M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS`.
 2. At **Integrations → Identity → Microsoft 365**, confirm the Customer Graph Actions card renders exactly the two required permissions from the API manifest and no tenant/client/secret/certificate field is editable.
-3. Choose **Connect**, complete current MFA, sign in as the eligible administrator, capture consent-screen copy per the section above, and accept.
-4. Confirm the terminal browser location resolves to the actions card in an `active` state and the card refreshes.
-5. Verify status `active`, manifest version 1, the signed tenant GUID, organization display name, exactly two observed assignments, `last_verified_at`, and `grants_verified_at`.
-6. Verify `tenant_binding_verified` has outcome `active`; audit details contain only the fixed profile, attempt/correlation identifiers, manifest version, bounded outcome, and verified tenant after proof.
+3. Choose **Grant admin actions…**, review the pre-flight (it lists the four steps: identity, confirm, consent, verify), choose **Continue to Microsoft**, complete current MFA, and sign in as the eligible administrator.
+4. On the confirm-tenant screen, confirm it shows the disposable tenant's ID and the eligible administrator's username, then choose **Continue to Microsoft consent**.
+5. Capture consent-screen copy per the section above and accept. Confirm the terminal browser location resolves to the actions card in an `active` state and the card refreshes.
+6. Verify status `active`, manifest version 1, the signed tenant GUID, organization display name, exactly two observed assignments, `last_verified_at`, and `grants_verified_at`.
+7. Verify `tenant_binding_verified` has outcome `active`; audit details contain only the fixed profile, attempt/correlation identifiers, manifest version, bounded outcome, and verified tenant after proof.
 
 ### A2. Exact two-grant reconciliation
 

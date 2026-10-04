@@ -92,7 +92,7 @@
       "conditional_access_blocked": "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin.",
       "consent_provider_error": "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.",
       "admin_role_required": "A Global Administrator or Privileged Role Administrator must grant consent.",
-      "tenant_mismatch": "Microsoft returned a different tenant. Start consent again for this organization.",
+      "tenant_mismatch": "The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.",
       "tenant_already_bound": "This Microsoft tenant is already connected to another organization.",
       "credential_unavailable": "The connection credential is unavailable. Contact a Breeze administrator.",
       "identity_token_invalid": "Microsoft administrator identity verification failed.",
@@ -176,7 +176,7 @@
       "conditional_access_blocked": "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin.",
       "consent_provider_error": "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.",
       "admin_role_required": "A Global Administrator or Privileged Role Administrator must grant consent.",
-      "tenant_mismatch": "Microsoft returned a different tenant. Start consent again for this organization.",
+      "tenant_mismatch": "The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.",
       "tenant_already_bound": "This Microsoft tenant is already connected to another organization.",
       "credential_unavailable": "The connection credential is unavailable. Contact a Breeze administrator.",
       "identity_token_invalid": "Microsoft administrator identity verification failed.",
@@ -201,6 +201,30 @@
       "revoke": "To revoke access later, disconnect here or remove the Breeze enterprise application in Microsoft Entra.",
       "continue": "Continue to Microsoft",
       "defaultTarget": "this organization's Microsoft 365 tenant"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Confirm the Microsoft tenant",
+    "loading": "Loading the tenant you signed in to…",
+    "signedInAs": "You signed in as {{username}} in Microsoft tenant {{tenantId}}.",
+    "signedInTo": "You signed in to Microsoft tenant {{tenantId}}.",
+    "tenantIdLabel": "Tenant ID",
+    "usernameLabel": "Signed in as",
+    "requestFor": "Breeze will request access to THIS tenant for {{orgName}}.",
+    "requestForThisOrg": "Breeze will request access to THIS tenant for this organization.",
+    "mspWarning": "If this is your own MSP tenant rather than the customer's, cancel and sign in with the customer's admin account. A guest account always signs in to its own home tenant.",
+    "continue": "Continue to Microsoft consent",
+    "cancel": "Cancel, wrong tenant",
+    "continueFailed": "Microsoft consent could not be started.",
+    "cancelFailed": "The sign-in could not be cancelled.",
+    "cancelled": "Cancelled. Nothing was connected. Start consent again and sign in with the customer's admin account.",
+    "expired": "This confirmation expired or was already used. Start consent again.",
+    "steps": {
+      "title": "How connecting works",
+      "identity": "Sign in to Microsoft as a Global Administrator or Privileged Role Administrator of the customer's tenant. Breeze verifies who you are and which tenant you belong to.",
+      "confirm": "Confirm in Breeze that this is the customer's tenant, not your own.",
+      "consent": "Approve Breeze's permissions for that tenant on Microsoft's consent screen.",
+      "verify": "Breeze checks its access to that tenant before connecting it."
     }
   },
   "m365TenantPanel": {

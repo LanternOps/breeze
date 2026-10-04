@@ -72,6 +72,18 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
       dbMocks.order.push('delete-session-by-connection');
       consentMocks.validStates.clear();
     }),
+    /** The parked confirm-tenant session (W03), or null when none is live. */
+    confirmation: null as Record<string, unknown> | null,
+    readConfirmation: vi.fn(async (_input: Record<string, unknown>) => {
+      dbMocks.order.push('read-confirmation-session');
+      return consentMocks.confirmation;
+    }),
+    consumeConfirmation: vi.fn(async (_input: Record<string, unknown>) => {
+      dbMocks.order.push('consume-confirmation-session');
+      const session = consentMocks.confirmation;
+      consentMocks.confirmation = null;
+      return session;
+    }),
   },
   columns: {
     id: { name: 'id' }, orgId: { name: 'org_id' }, tenantId: { name: 'tenant_id' },
@@ -179,6 +191,8 @@ vi.mock('./consentSessionService', async (importActual) => {
     createIdentitySessionInTransaction: consentMocks.createIdentity,
     insertVerifiedConsentSessionInTransaction: consentMocks.insertVerified,
     consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
+    readTenantConfirmationSessionInTransaction: consentMocks.readConfirmation,
+    consumeTenantConfirmationSessionInTransaction: consentMocks.consumeConfirmation,
   };
 });
 
@@ -1249,6 +1263,140 @@ describe.each([
     expect(consentMocks.createIdentity).toHaveBeenCalledWith(expect.objectContaining({
       purpose: 'upgrade', expectedTenantId: TENANT_ID,
     }));
+  });
+
+  describe('confirm-tenant interstitial (W03)', () => {
+    const EXPIRES = new Date('2026-07-14T16:09:00.000Z');
+    function parked(overrides: Record<string, unknown> = {}) {
+      return {
+        userId: ACTOR_ID,
+        purpose: 'initial',
+        flowVersion: 2,
+        phase: 'tenant_confirmation',
+        verifiedTenantId: TENANT_B,
+        verifiedAdminObjectId: ADMIN_ID,
+        verifiedAdminUsername: 'tech@home.example',
+        identityVerifiedAt: new Date('2026-07-14T15:59:00.000Z'),
+        expiresAt: EXPIRES,
+        ...overrides,
+      };
+    }
+    beforeEach(() => { consentMocks.confirmation = null; });
+
+    it('pending returns the parked verified tenant + username, looked up for the SAME user and current attempt', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+      consentMocks.confirmation = parked();
+
+      const pending = await service().readPendingTenantConfirmation({ orgId: ORG_ID, actorId: ACTOR_ID });
+
+      expect(pending).toEqual({ tenantId: TENANT_B, administratorUsername: 'tech@home.example', expiresAt: EXPIRES });
+      expect(consentMocks.readConfirmation).toHaveBeenCalledWith({
+        connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, profile, userId: ACTOR_ID,
+      });
+      expect(dbMocks.updateSets).toHaveLength(0);
+      expect(consentMocks.consumeConfirmation).not.toHaveBeenCalled();
+    });
+
+    it('pending is null without a pending-consent connection or without a live parked session', async () => {
+      dbMocks.selectResults.push([]);
+      await expect(service().readPendingTenantConfirmation({ orgId: ORG_ID, actorId: ACTOR_ID })).resolves.toBeNull();
+      expect(consentMocks.readConfirmation).not.toHaveBeenCalled();
+
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+      await expect(service().readPendingTenantConfirmation({ orgId: ORG_ID, actorId: ACTOR_ID })).resolves.toBeNull();
+    });
+
+    it('continue consumes the parked session, mints a NEW admin_consent session for the same verified identity, and returns the tenant-pinned consent URL', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+      consentMocks.confirmation = parked();
+
+      const out = await service().continueToConsent({ orgId: ORG_ID, actorId: ACTOR_ID });
+
+      expect(dbMocks.order).toEqual(['lock', 'consume-confirmation-session', 'insert-verified-session']);
+      expect(consentMocks.consumeConfirmation).toHaveBeenCalledWith({
+        connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, profile, userId: ACTOR_ID,
+      });
+      expect(consentMocks.insertVerified).toHaveBeenCalledWith(expect.objectContaining({
+        connectionId: CONNECTION_ID, orgId: ORG_ID, consentAttemptId: ATTEMPT_ID, userId: ACTOR_ID, profile,
+        purpose: 'initial', phase: 'admin_consent',
+        verified: {
+          tenantId: TENANT_B, administratorObjectId: ADMIN_ID, administratorUsername: 'tech@home.example',
+          verifiedAt: new Date('2026-07-14T15:59:00.000Z'),
+        },
+      }));
+      const rawState = 'consent-state-1';
+      expect(out.binding).toEqual({
+        phase: 'admin_consent', rawState, connectionId: CONNECTION_ID, consentAttemptId: ATTEMPT_ID, tenantId: TENANT_B,
+      });
+      const url = new URL(out.consentUrl);
+      expect(url.origin + url.pathname).toBe(`https://login.microsoftonline.com/${TENANT_B}/oauth2/authorize`);
+      expect(url.searchParams.get('state')).toBe(rawState);
+      expect(url.searchParams.get('prompt')).toBe('admin_consent');
+      expect(url.searchParams.get('redirect_uri')).toBe(callbackUrl);
+      expect(url.searchParams.get('client_id')).toBe(CLIENT_ID);
+      expect(out.verifiedTenantId).toBe(TENANT_B);
+      // Confirming writes nothing to the connection row.
+      expect(dbMocks.updateSets).toHaveLength(0);
+    });
+
+    it('continue is one-shot: with no live parked session it is stale_attempt and mints nothing', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+
+      await expect(service().continueToConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'stale_attempt' });
+      expect(consentMocks.insertVerified).not.toHaveBeenCalled();
+    });
+
+    it('continue without a pending-consent connection never touches a session', async () => {
+      dbMocks.selectResults.push([]);
+      consentMocks.confirmation = parked();
+
+      await expect(service().continueToConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'stale_attempt' });
+      expect(consentMocks.consumeConfirmation).not.toHaveBeenCalled();
+      expect(consentMocks.insertVerified).not.toHaveBeenCalled();
+    });
+
+    it('continue refuses a parked session that is not a first-time (initial) flow', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+      consentMocks.confirmation = parked({ purpose: 'upgrade' });
+
+      await expect(service().continueToConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'stale_attempt' });
+      expect(consentMocks.insertVerified).not.toHaveBeenCalled();
+    });
+
+    it('continue on a row bound to a different tenant is tenant_mismatch and mints nothing', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: TENANT_ID })]);
+      consentMocks.confirmation = parked();
+
+      await expect(service().continueToConsent({ orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'tenant_mismatch' });
+      expect(consentMocks.insertVerified).not.toHaveBeenCalled();
+    });
+
+    it('cancel consumes the parked session and records consent_cancelled on the pending attempt, binding nothing', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+      dbMocks.updateResults.push((set) => [profileRow({ status: 'pending-consent', tenantId: null, ...set })]);
+      consentMocks.confirmation = parked();
+
+      const connection = await service().cancelTenantConfirmation({ orgId: ORG_ID, actorId: ACTOR_ID });
+
+      expect(dbMocks.order).toEqual(['lock', 'consume-confirmation-session', 'update']);
+      expect(consentMocks.consumeConfirmation).toHaveBeenCalledWith(expect.objectContaining({ userId: ACTOR_ID }));
+      expect(dbMocks.updateSets[0]).toMatchObject({ status: 'pending-consent', lastErrorCode: 'consent_cancelled' });
+      expect(dbMocks.updateSets[0]).not.toHaveProperty('tenantId');
+      expect(connection).toMatchObject({ status: 'pending-consent', tenantId: null, lastErrorCode: 'consent_cancelled' });
+      expect(consentMocks.insertVerified).not.toHaveBeenCalled();
+    });
+
+    it('cancel with no live parked session is stale_attempt and writes nothing', async () => {
+      dbMocks.selectResults.push([profileRow({ status: 'pending-consent', tenantId: null })]);
+
+      await expect(service().cancelTenantConfirmation({ orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'stale_attempt' });
+      expect(dbMocks.updateSets).toHaveLength(0);
+    });
   });
 
   it('identity → consent writes a verified session and does NOT move status or bind', async () => {

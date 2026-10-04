@@ -21,6 +21,7 @@ import { handleActionError, runAction } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
+import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
 import type { M365ConsentStepSummary } from "./m365ConsentSummary";
 
 const STATUSES = [
@@ -72,6 +73,9 @@ export const M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS = [
   "active",
   "degraded",
   ...STABLE_ERROR_CODES,
+  // Not an outcome: the identity callback parked a verified tenant and the
+  // operator must confirm it before Microsoft's consent screen (#7913 W03).
+  "confirm-tenant",
 ] as const;
 export type M365CustomerGraphActionsCallbackResult =
   (typeof M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS)[number];
@@ -593,9 +597,11 @@ export default function M365CustomerGraphActionsCard({
     ? t("m365CustomerGraphActions.callback.active")
     : callbackResult === "degraded"
       ? t("m365CustomerGraphActions.callback.degraded")
-      : callbackResult
+      : callbackResult && callbackResult !== "confirm-tenant"
         ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${callbackResult}`)
         : null;
+  const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
+  const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);
 
   // Onboarding is gated by an instance-level server flag, not by anything the
   // org can change. With nothing connected there is nothing to manage, so the
@@ -645,6 +651,17 @@ export default function M365CustomerGraphActionsCard({
         >
           {callbackCopy}
         </p>
+      )}
+
+      {showConfirmTenant && orgId && (
+        <M365ConfirmTenantPanel
+          key={orgId}
+          apiBase="/m365/customer-graph-actions/connections/consent"
+          orgId={orgId}
+          canWrite={canWrite}
+          onCancelled={reloadAfterCancel}
+          testId="m365-actions-confirm-tenant"
+        />
       )}
 
       {loadState === "unavailable" && (
@@ -797,6 +814,7 @@ export default function M365CustomerGraphActionsCard({
               <p className="mt-3 max-w-prose text-sm text-foreground">
                 {t("m365CustomerGraphActions.preflight.adminRequired", { target: preflightTarget })}
               </p>
+              <M365ConsentSteps className="mt-3" />
               <p className="mt-2 max-w-prose text-sm text-muted-foreground">
                 {t("m365CustomerGraphActions.preflight.revoke")}
               </p>

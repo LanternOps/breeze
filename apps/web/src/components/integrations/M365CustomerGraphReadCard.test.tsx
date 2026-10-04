@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import M365CustomerGraphReadCard from "./M365CustomerGraphReadCard";
+import M365CustomerGraphReadCard, { M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS } from "./M365CustomerGraphReadCard";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction } from "../../lib/runAction";
 import { navigateToMicrosoftLogin } from "@/lib/navigation";
@@ -277,14 +277,14 @@ describe("M365CustomerGraphReadCard", () => {
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
 
     view.rerender(<M365CustomerGraphReadCard callbackResult="tenant_mismatch" callbackRefreshKey={1} />);
-    expect(await screen.findByText("Microsoft returned a different tenant. Start consent again for this organization.")).toBeInTheDocument();
+    expect(await screen.findByText("The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.")).toBeInTheDocument();
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
 
     view.rerender(<M365CustomerGraphReadCard callbackResult="tenant_mismatch" callbackRefreshKey={2} />);
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(3));
 
     view.rerender(<M365CustomerGraphReadCard callbackResult={null} callbackRefreshKey={2} />);
-    expect(screen.queryByText("Microsoft returned a different tenant. Start consent again for this organization.")).not.toBeInTheDocument();
+    expect(screen.queryByText("The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.")).not.toBeInTheDocument();
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
   });
 
@@ -313,13 +313,13 @@ describe("M365CustomerGraphReadCard", () => {
         callbackRefreshKey={1}
       />,
     );
-    expect(screen.getByText("Microsoft returned a different tenant. Start consent again for this organization.")).toBeInTheDocument();
+    expect(screen.getByText("The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.")).toBeInTheDocument();
 
     state.currentOrgId = ORG_B;
     view.rerender(
       <M365CustomerGraphReadCard callbackResult={null} callbackRefreshKey={1} />,
     );
-    expect(screen.queryByText("Microsoft returned a different tenant. Start consent again for this organization.")).not.toBeInTheDocument();
+    expect(screen.queryByText("The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.")).not.toBeInTheDocument();
     expect(await screen.findByText("Contoso B")).toBeInTheDocument();
 
     pendingOrgA.resolve(makeResponse(envelope({ connection: connection() })));
@@ -1316,5 +1316,101 @@ describe("M365CustomerGraphReadCard", () => {
         }),
       );
     });
+  });
+});
+
+describe("M365CustomerGraphReadCard — identity-first consent (W03)", () => {
+  it("accepts confirm-tenant as a callback result so the page passes it through", () => {
+    expect(M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS).toContain("confirm-tenant");
+  });
+
+  const TENANT = "99999999-9999-4999-8999-999999999999";
+  const CONSENT_URL = `https://login.microsoftonline.com/${TENANT}/oauth2/authorize?state=fresh`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  function route(map: Record<string, Response>) {
+    fetchWithAuthMock.mockImplementation((async (url: string, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${url}`;
+      const found = map[key];
+      if (!found) throw new Error(`unexpected ${key}`);
+      return found;
+    }) as typeof fetchWithAuth);
+  }
+
+  it("on #m365/customer-graph-read/confirm-tenant shows the verified tenant and continues via runAction", async () => {
+    route({
+      [`GET /m365/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/connections/customer-graph-read/consent/pending?orgId=${ORG_A}`]: makeResponse({
+        tenantId: TENANT, administratorUsername: "admin@customer.example", expiresAt: "2026-10-03T12:10:00.000Z",
+      }),
+      [`POST /m365/connections/customer-graph-read/consent/continue?orgId=${ORG_A}`]: makeResponse({ adminConsentUrl: CONSENT_URL }),
+    });
+
+    render(<M365CustomerGraphReadCard callbackResult="confirm-tenant" />);
+
+    const panel = await screen.findByTestId("m365-read-confirm-tenant");
+    await waitFor(() => expect(panel).toHaveTextContent(TENANT));
+    expect(panel).toHaveTextContent("admin@customer.example");
+    // The interstitial is not an error: no error-callback copy for it.
+    expect(screen.queryByText(/errors\.confirm-tenant/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue to Microsoft consent" }));
+    await waitFor(() => expect(navigateToMicrosoftLoginMock).toHaveBeenCalledWith(CONSENT_URL));
+    expect(runActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains identity → confirm → consent → verify next to Connect, and not on a working connection", async () => {
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: null })));
+    const view = render(<M365CustomerGraphReadCard />);
+
+    const steps = await screen.findByTestId("m365-consent-steps");
+    expect(steps).toHaveTextContent("Breeze verifies who you are and which tenant you belong to.");
+    expect(steps).toHaveTextContent("Confirm in Breeze that this is the customer's tenant, not your own.");
+    expect(steps).toHaveTextContent("Approve Breeze's permissions for that tenant on Microsoft's consent screen.");
+    expect(steps).toHaveTextContent("Breeze checks its access to that tenant before connecting it.");
+    view.unmount();
+
+    fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByRole("button", { name: "Disconnect from Breeze" })).toBeInTheDocument();
+    expect(screen.queryByTestId("m365-consent-steps")).not.toBeInTheDocument();
+  });
+
+  it("confirm-tenant with no pending confirmation shows the expired copy", async () => {
+    route({
+      [`GET /m365/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/connections/customer-graph-read/consent/pending?orgId=${ORG_A}`]: makeResponse({ error: "Connection not found" }, false, 404),
+    });
+
+    render(<M365CustomerGraphReadCard callbackResult="confirm-tenant" />);
+
+    expect(await screen.findByText("This confirmation expired or was already used. Start consent again.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue to Microsoft consent" })).not.toBeInTheDocument();
+  });
+
+  it("cancel on the confirm screen reloads the card and shows the cancelled state", async () => {
+    route({
+      [`GET /m365/connections?orgId=${ORG_A}`]: makeResponse(envelope({ connection: null })),
+      [`GET /m365/connections/customer-graph-read/consent/pending?orgId=${ORG_A}`]: makeResponse({
+        tenantId: TENANT, administratorUsername: null, expiresAt: "2026-10-03T12:10:00.000Z",
+      }),
+      [`POST /m365/connections/customer-graph-read/consent/cancel?orgId=${ORG_A}`]: makeResponse({ connection: {} }),
+    });
+
+    render(<M365CustomerGraphReadCard callbackResult="confirm-tenant" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel, wrong tenant" }));
+    expect(await screen.findByText(/Cancelled\. Nothing was connected\./)).toBeInTheDocument();
+    expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
+    const listCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith("/m365/connections?orgId="));
+    expect(listCalls.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -221,12 +221,31 @@ async function driveToConsentPhase(
     { headers: { cookie: identityCookie } },
   );
   expect(identityCallbackRes.status).toBe(302);
-  const consentUrl = new URL(identityCallbackRes.headers.get('location')!);
+  // W03: an /organizations sign-in parks at the confirm-tenant interstitial.
+  expect(redirectHash(identityCallbackRes.headers.get('location'))).toBe(
+    '#m365/customer-graph-actions/confirm-tenant',
+  );
+
+  // The card reads the parked tenant, then the operator confirms it — both
+  // through the real routes with the operator's own MFA token.
+  const pendingRes = await app.request(
+    `/api/v1/m365/customer-graph-actions/connections/consent/pending?orgId=${orgId}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  expect(pendingRes.status).toBe(200);
+  expect(await pendingRes.json()).toMatchObject({ tenantId, administratorUsername: null });
+  const continueRes = await app.request(
+    `/api/v1/m365/customer-graph-actions/connections/consent/continue?orgId=${orgId}`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+  );
+  expect(continueRes.status).toBe(200);
+  const consentUrl = new URL((await continueRes.json() as { adminConsentUrl: string }).adminConsentUrl);
   expect(consentUrl.origin + consentUrl.pathname).toBe(
     `https://login.microsoftonline.com/${tenantId}/oauth2/authorize`,
   );
   const consentState = consentUrl.searchParams.get('state')!;
-  const consentCookie = cookiePair(identityCallbackRes.headers.get('set-cookie'));
+  const consentCookie = cookiePair(continueRes.headers.get('set-cookie'));
+  expect(continueRes.headers.get('set-cookie')).toContain('Path=/api/v1/m365/actions-consent/callback');
 
   return { consentState, consentCookie };
 }

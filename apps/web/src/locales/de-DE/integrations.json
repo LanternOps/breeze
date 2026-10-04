@@ -92,7 +92,7 @@
       "conditional_access_blocked": "Microsoft hat diese Anmeldung blockiert: Die Richtlinie für bedingten Zugriff des Mandanten hat sie unterbrochen (zum Beispiel eine Geräteprüfung). Versuchen Sie es erneut in einem Browser, dem der Mandant vertraut, oder wenden Sie sich an den Mandantenadministrator.",
       "consent_provider_error": "Microsoft hat bei der Anmeldung einen Fehler zurückgegeben. Versuchen Sie es erneut; falls er erneut auftritt, prüfen Sie die Anmeldeprotokolle des Mandanten.",
       "admin_role_required": "Ein globaler Administrator oder Administrator für privilegierte Rollen muss die Zustimmung erteilen.",
-      "tenant_mismatch": "Microsoft hat einen anderen Mandanten zurückgegeben. Starten Sie die Zustimmung für diese Organisation erneut.",
+      "tenant_mismatch": "Der Administrator, mit dem Sie sich angemeldet haben, gehört zu einem anderen Microsoft-Mandanten als diese Verbindung. Melden Sie sich mit einem Administrator des verbundenen Mandanten an.",
       "tenant_already_bound": "Dieser Microsoft-Mandant ist bereits mit einer anderen Organisation verbunden.",
       "credential_unavailable": "Die Verbindungsanmeldeinformationen sind nicht verfügbar. Wenden Sie sich an einen Breeze-Administrator.",
       "identity_token_invalid": "Die Identitätsprüfung des Microsoft-Administrators ist fehlgeschlagen.",
@@ -176,7 +176,7 @@
       "conditional_access_blocked": "Microsoft hat diese Anmeldung blockiert: Die Richtlinie für bedingten Zugriff des Mandanten hat sie unterbrochen (zum Beispiel eine Geräteprüfung). Versuchen Sie es erneut in einem Browser, dem der Mandant vertraut, oder wenden Sie sich an den Mandantenadministrator.",
       "consent_provider_error": "Microsoft hat bei der Anmeldung einen Fehler zurückgegeben. Versuchen Sie es erneut; falls er erneut auftritt, prüfen Sie die Anmeldeprotokolle des Mandanten.",
       "admin_role_required": "Ein globaler Administrator oder Administrator für privilegierte Rollen muss die Zustimmung erteilen.",
-      "tenant_mismatch": "Microsoft hat einen anderen Mandanten zurückgegeben. Starten Sie die Zustimmung für diese Organisation erneut.",
+      "tenant_mismatch": "Der Administrator, mit dem Sie sich angemeldet haben, gehört zu einem anderen Microsoft-Mandanten als diese Verbindung. Melden Sie sich mit einem Administrator des verbundenen Mandanten an.",
       "tenant_already_bound": "Dieser Microsoft-Mandant ist bereits mit einer anderen Organisation verbunden.",
       "credential_unavailable": "Die Verbindungsanmeldeinformationen sind nicht verfügbar. Wenden Sie sich an einen Breeze-Administrator.",
       "identity_token_invalid": "Die Identitätsprüfung des Microsoft-Administrators ist fehlgeschlagen.",
@@ -201,6 +201,30 @@
       "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
       "continue": "Weiter zu Microsoft",
       "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Microsoft-Mandanten bestätigen",
+    "loading": "Der Mandant, bei dem Sie sich angemeldet haben, wird geladen…",
+    "signedInAs": "Sie haben sich als {{username}} im Microsoft-Mandanten {{tenantId}} angemeldet.",
+    "signedInTo": "Sie haben sich im Microsoft-Mandanten {{tenantId}} angemeldet.",
+    "tenantIdLabel": "Mandanten-ID",
+    "usernameLabel": "Angemeldet als",
+    "requestFor": "Breeze fordert Zugriff auf DIESEN Mandanten für {{orgName}} an.",
+    "requestForThisOrg": "Breeze fordert Zugriff auf DIESEN Mandanten für diese Organisation an.",
+    "mspWarning": "Wenn dies Ihr eigener MSP-Mandant und nicht der des Kunden ist, brechen Sie ab und melden Sie sich mit dem Administratorkonto des Kunden an. Ein Gastkonto meldet sich immer bei seinem eigenen Basismandanten an.",
+    "continue": "Weiter zur Microsoft-Zustimmung",
+    "cancel": "Abbrechen, falscher Mandant",
+    "continueFailed": "Die Microsoft-Zustimmung konnte nicht gestartet werden.",
+    "cancelFailed": "Die Anmeldung konnte nicht abgebrochen werden.",
+    "cancelled": "Abgebrochen. Es wurde nichts verbunden. Starten Sie die Zustimmung erneut und melden Sie sich mit dem Administratorkonto des Kunden an.",
+    "expired": "Diese Bestätigung ist abgelaufen oder wurde bereits verwendet. Starten Sie die Zustimmung erneut.",
+    "steps": {
+      "title": "So funktioniert die Verbindung",
+      "identity": "Melden Sie sich bei Microsoft als globaler Administrator oder Administrator für privilegierte Rollen des Kundenmandanten an. Breeze überprüft, wer Sie sind und zu welchem Mandanten Sie gehören.",
+      "confirm": "Bestätigen Sie in Breeze, dass dies der Mandant des Kunden ist und nicht Ihr eigener.",
+      "consent": "Genehmigen Sie die Berechtigungen von Breeze für diesen Mandanten im Microsoft-Zustimmungsdialog.",
+      "verify": "Breeze prüft seinen Zugriff auf diesen Mandanten, bevor er verbunden wird."
     }
   },
   "m365TenantPanel": {

@@ -18,15 +18,18 @@ import {
   type VerifyConsentIdentityResult,
 } from '@breeze/shared/m365';
 import { db, withSystemDbAccessContext } from '../../db';
-import { m365Connections, m365ConsentSessions } from '../../db/schema';
+import { m365Connections, m365ConsentSessions, organizations } from '../../db/schema';
 import {
   buildM365ActionsConsentBindingCookie,
   buildM365ConsentBindingCookie,
   type M365ConsentBrowserBinding,
 } from '../../services/m365ControlPlane/browserBinding';
 import {
+  cancelCustomerGraphReadTenantConfirmation,
+  continueCustomerGraphReadConsent,
   initiateCustomerGraphReadConsent,
   initiateCustomerGraphReadUpgradeConsent,
+  readPendingCustomerGraphReadTenantConfirmation,
 } from '../../services/m365ControlPlane/connectionService';
 import {
   consumeConsentSession,
@@ -34,7 +37,10 @@ import {
 } from '../../services/m365ControlPlane/consentSessionService';
 import {
   actionsConnectionService,
+  cancelCustomerGraphActionsTenantConfirmation,
+  continueCustomerGraphActionsConsent,
   initiateCustomerGraphActionsConsent,
+  readPendingCustomerGraphActionsTenantConfirmation,
 } from '../../services/m365ControlPlane/writeActionConnectionService';
 import { createM365ConsentCallbackRoutes } from '../../routes/m365ConsentCallback';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -214,11 +220,38 @@ async function seedBound(orgId: string, profile: Profile, tenantId: string, stat
   }).where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.profile, profile))));
 }
 
-/** initiate → identity → consent → finalize for `tenantId`; returns the final callback. */
+const confirmation = {
+  pending: (profile: Profile, input: { orgId: string; actorId: string }) => (profile === 'customer-graph-actions'
+    ? readPendingCustomerGraphActionsTenantConfirmation(input)
+    : readPendingCustomerGraphReadTenantConfirmation(input)),
+  continue: (profile: Profile, input: { orgId: string; actorId: string }) => (profile === 'customer-graph-actions'
+    ? continueCustomerGraphActionsConsent(input)
+    : continueCustomerGraphReadConsent(input)),
+  cancel: (profile: Profile, input: { orgId: string; actorId: string }) => (profile === 'customer-graph-actions'
+    ? cancelCustomerGraphActionsTenantConfirmation(input)
+    : cancelCustomerGraphReadTenantConfirmation(input)),
+};
+
+/**
+ * W03: an /organizations sign-in parks at confirm-tenant; the operator's
+ * confirm (the real service the route calls) mints the consent cookie + URL.
+ * A pinned sign-in already redirected to Microsoft and is returned unchanged.
+ */
+async function throughConfirm(
+  profile: Profile,
+  owner: { orgId: string; actorId: string },
+  step1: { location: string; cookie: string },
+): Promise<{ location: string; cookie: string }> {
+  if (!step1.location.endsWith('/confirm-tenant')) return step1;
+  const continued = await confirmation.continue(profile, owner);
+  return { location: continued.consentUrl, cookie: cookieFor(profile, continued.binding) };
+}
+
+/** initiate → identity → [confirm] → consent → finalize for `tenantId`; returns the final callback. */
 async function runToFinalize(profile: Profile, owner: { orgId: string; actorId: string }, tenantId: string) {
   const { cookie, url } = await initiate(profile, owner);
   executor.verifyConsentIdentity.mockResolvedValue(identityOk(tenantId));
-  const step1 = await callback(profile, cookie, { state: stateOf(url), code: 'id-code' });
+  const step1 = await throughConfirm(profile, owner, await callback(profile, cookie, { state: stateOf(url), code: 'id-code' }));
   executor.retest.mockResolvedValue(retestOk(tenantId, profile));
   return callback(profile, step1.cookie, { state: stateOf(step1.location), code: 'discarded' });
 }
@@ -235,7 +268,16 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
     })]);
 
     executor.verifyConsentIdentity.mockResolvedValue(identityOk(TENANT_A));
-    const step1 = await callback(profile, cookie, { state: stateOf(url), code: 'id-code', session_state: 'ss' });
+    const parked = await callback(profile, cookie, { state: stateOf(url), code: 'id-code', session_state: 'ss' });
+    // W03: an /organizations sign-in parks at confirm-tenant; no consent URL yet.
+    expect(parked.location).toBe(`/integrations#m365/${profile}/confirm-tenant`);
+    expect(await sessionRows(owner.orgId, profile)).toEqual([expect.objectContaining({
+      phase: 'tenant_confirmation', flowVersion: 2, verifiedTenantId: TENANT_A, userId: owner.actorId,
+    })]);
+    expect(await confirmation.pending(profile, owner)).toMatchObject({
+      tenantId: TENANT_A, administratorUsername: 'admin@tenant.example',
+    });
+    const step1 = await throughConfirm(profile, owner, parked);
     const consentUrl = new URL(step1.location);
     expect(consentUrl.origin + consentUrl.pathname).toBe(`https://login.microsoftonline.com/${TENANT_A}/oauth2/authorize`);
     expect(consentUrl.searchParams.get('prompt')).toBe('admin_consent');
@@ -264,7 +306,7 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
     const TENANT_A = randomUUID();
     const { cookie, url } = await initiate(profile, owner);
     executor.verifyConsentIdentity.mockResolvedValue(identityOk(TENANT_A));
-    const step1 = await callback(profile, cookie, { state: stateOf(url), code: 'id-code' });
+    const step1 = await throughConfirm(profile, owner, await callback(profile, cookie, { state: stateOf(url), code: 'id-code' }));
     executor.retest.mockResolvedValue(retestOk(TENANT_A, profile));
     const step2 = await callback(profile, step1.cookie, { state: stateOf(step1.location), code: 'c' });
     expect(step2.location).toMatch(/\/active$/);
@@ -275,6 +317,8 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
 
     expect(replay1.location).toMatch(/\/consent_state_mismatch$/);
     expect(replay2.location).toMatch(/\/consent_state_mismatch$/);
+    // The confirm step is one-shot too, and the row has left pending-consent.
+    await expect(confirmation.continue(profile, owner)).rejects.toMatchObject({ code: 'stale_attempt' });
     expect(await connectionRow(owner.orgId, profile)).toEqual(before);
     expect(executor.verifyConsentIdentity).toHaveBeenCalledTimes(1);
     expect(executor.retest).toHaveBeenCalledTimes(1);
@@ -354,7 +398,7 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
       .toMatch(/consent_state_mismatch$/);
     expect(executor.verifyConsentIdentity).not.toHaveBeenCalled();
     expect((await callback(profile, second.cookie, { state: stateOf(second.url), code: 'c' })).location)
-      .toContain(`/${TENANT_A}/oauth2/authorize`);
+      .toBe(`/integrations#m365/${profile}/confirm-tenant`);
   });
 
   runDb('a pre-W1 executor (verify-identity unavailable) fails the attempt without binding', async () => {
@@ -376,7 +420,7 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
     const TENANT_A = randomUUID();
     const { cookie, url } = await initiate(profile, owner);
     executor.verifyConsentIdentity.mockResolvedValue(identityOk(TENANT_A));
-    const step1 = await callback(profile, cookie, { state: stateOf(url), code: 'c' });
+    const step1 = await throughConfirm(profile, owner, await callback(profile, cookie, { state: stateOf(url), code: 'c' }));
     executor.retest.mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
 
     const step2 = await callback(profile, step1.cookie, { state: stateOf(step1.location), code: 'c' });
@@ -428,6 +472,115 @@ describe.each(['customer-graph-read', 'customer-graph-actions'] as const)('%s id
 
     expect(res.location).toMatch(/\/consent_expired$/);
     expect(await connectionRow(owner.orgId, profile)).toMatchObject({ status: 'pending-consent', tenantId: null });
+  });
+
+  // ---- W03 confirm-tenant interstitial -----------------------------------
+  async function parkAt(owner: { orgId: string; actorId: string }, tenantId: string) {
+    const { cookie, url } = await initiate(profile, owner);
+    executor.verifyConsentIdentity.mockResolvedValue(identityOk(tenantId));
+    const parked = await callback(profile, cookie, { state: stateOf(url), code: 'c' });
+    expect(parked.location).toBe(`/integrations#m365/${profile}/confirm-tenant`);
+    return { cookie, url, parked };
+  }
+
+  runDb('confirm-tenant: continue is one-shot, rotates state, and the parked identity callback cannot be replayed', async () => {
+    const owner = await ownerFixture();
+    const TENANT_A = randomUUID();
+    const { cookie, url } = await parkAt(owner, TENANT_A);
+    const parkedRow = (await sessionRows(owner.orgId, profile))[0]!;
+
+    const continued = await confirmation.continue(profile, owner);
+
+    expect(new URL(continued.consentUrl).pathname).toBe(`/${TENANT_A}/oauth2/authorize`);
+    const rows = await sessionRows(owner.orgId, profile);
+    expect(rows).toEqual([expect.objectContaining({ phase: 'admin_consent', verifiedTenantId: TENANT_A })]);
+    expect(rows[0]!.stateHash).not.toBe(parkedRow.stateHash);
+    expect(createHash('sha256').update(stateOf(continued.consentUrl)).digest('hex')).toBe(rows[0]!.stateHash);
+    await expect(confirmation.continue(profile, owner)).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(await confirmation.pending(profile, owner)).toBeNull();
+    expect((await callback(profile, cookie, { state: stateOf(url), code: 'c' })).location).toMatch(/\/consent_state_mismatch$/);
+    expect(executor.verifyConsentIdentity).toHaveBeenCalledTimes(1);
+    expect(await connectionRow(owner.orgId, profile)).toMatchObject({ status: 'pending-consent', tenantId: null });
+  });
+
+  runDb('confirm-tenant: only the Breeze user who signed in can read or confirm the parked tenant', async () => {
+    const owner = await ownerFixture();
+    const TENANT_A = randomUUID();
+    await parkAt(owner, TENANT_A);
+    const colleague = await withSystemDbAccessContext(async () => {
+      const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+        .where(eq(organizations.id, owner.orgId));
+      return (await createUser({
+        partnerId: org!.partnerId,
+        orgId: owner.orgId,
+        email: `m365-colleague-${randomUUID()}@example.com`,
+      })).id;
+    });
+    const other = { orgId: owner.orgId, actorId: colleague };
+
+    expect(await confirmation.pending(profile, other)).toBeNull();
+    await expect(confirmation.continue(profile, other)).rejects.toMatchObject({ code: 'stale_attempt' });
+    await expect(confirmation.cancel(profile, other)).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(await sessionRows(owner.orgId, profile)).toEqual([expect.objectContaining({ phase: 'tenant_confirmation' })]);
+    expect(await confirmation.pending(profile, owner)).toMatchObject({ tenantId: TENANT_A });
+  });
+
+  runDb("confirm-tenant: org B cannot read or consume org A's parked confirmation", async () => {
+    const ownerA = await ownerFixture();
+    const ownerB = await ownerFixture();
+    const TENANT_A = randomUUID();
+    await parkAt(ownerA, TENANT_A);
+    await initiate(profile, ownerB);
+
+    // Same Breeze user id, org B: nothing parked there.
+    const crossed = { orgId: ownerB.orgId, actorId: ownerA.actorId };
+    expect(await confirmation.pending(profile, crossed)).toBeNull();
+    await expect(confirmation.continue(profile, crossed)).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(await sessionRows(ownerA.orgId, profile)).toEqual([expect.objectContaining({ phase: 'tenant_confirmation' })]);
+    expect((await sessionRows(ownerB.orgId, profile)).every((row) => row.phase === 'identity_verification')).toBe(true);
+  });
+
+  runDb('confirm-tenant: an expired confirmation can be neither read nor confirmed, and binds nothing', async () => {
+    const owner = await ownerFixture();
+    await parkAt(owner, randomUUID());
+    await withSystemDbAccessContext(() => db.update(m365ConsentSessions)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(and(eq(m365ConsentSessions.orgId, owner.orgId), eq(m365ConsentSessions.profile, profile))));
+
+    expect(await confirmation.pending(profile, owner)).toBeNull();
+    await expect(confirmation.continue(profile, owner)).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect((await sessionRows(owner.orgId, profile)).filter((row) => row.phase === 'admin_consent')).toEqual([]);
+    expect(await connectionRow(owner.orgId, profile)).toMatchObject({ status: 'pending-consent', tenantId: null });
+  });
+
+  runDb('confirm-tenant: cancel consumes the park, records consent_cancelled, binds nothing; continue afterwards is refused', async () => {
+    const owner = await ownerFixture();
+    await parkAt(owner, randomUUID());
+
+    const cancelled = await confirmation.cancel(profile, owner);
+
+    expect(cancelled).toMatchObject({ status: 'pending-consent', tenantId: null, lastErrorCode: 'consent_cancelled' });
+    expect(await sessionRows(owner.orgId, profile)).toEqual([]);
+    expect(await connectionRow(owner.orgId, profile)).toMatchObject({
+      status: 'pending-consent', tenantId: null, lastErrorCode: 'consent_cancelled',
+    });
+    await expect(confirmation.continue(profile, owner)).rejects.toMatchObject({ code: 'stale_attempt' });
+    expect(executor.retest).not.toHaveBeenCalled();
+  });
+
+  runDb('confirm-tenant: a pinned (bound) reconnect never parks', async () => {
+    const owner = await ownerFixture();
+    const TENANT_A = randomUUID();
+    await initiate(profile, owner);
+    await seedBound(owner.orgId, profile, TENANT_A, 'degraded');
+    const { cookie, url } = await initiate(profile, owner);
+    executor.verifyConsentIdentity.mockResolvedValue(identityOk(TENANT_A));
+
+    const step1 = await callback(profile, cookie, { state: stateOf(url), code: 'c' });
+
+    expect(new URL(step1.location).pathname).toBe(`/${TENANT_A}/oauth2/authorize`);
+    expect(await sessionRows(owner.orgId, profile)).toEqual([expect.objectContaining({ phase: 'admin_consent' })]);
+    expect(await confirmation.pending(profile, owner)).toBeNull();
   });
 
   runDb('a row left in verifying by the old flow is restartable by initiating again', async () => {

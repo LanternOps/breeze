@@ -92,7 +92,7 @@
       "conditional_access_blocked": "Microsoft bu oturum açmayı engelledi: kiracının Koşullu Erişim ilkesi işlemi kesti (örneğin bir cihaz denetimi). Kiracının güvendiği bir tarayıcıdan yeniden deneyin veya kiracı yöneticisine başvurun.",
       "consent_provider_error": "Microsoft oturum açma sırasında bir hata döndürdü. Yeniden deneyin; tekrarlanırsa kiracının oturum açma günlüklerini kontrol edin.",
       "admin_role_required": "Bir Genel Yönetici veya Ayrıcalıklı Rol Yöneticisinin onay vermesi gerekir.",
-      "tenant_mismatch": "Microsoft farklı bir kiracıyı iade etti. Bu kuruluş için izni yeniden başlatın.",
+      "tenant_mismatch": "Oturum açtığınız yönetici bu bağlantıdan farklı bir Microsoft kiracısına ait. Bağlı kiracının bir yöneticisiyle oturum açın.",
       "tenant_already_bound": "Bu Microsoft kiracısı zaten başka bir kuruluşa bağlı.",
       "credential_unavailable": "Bağlantı kimlik bilgisi mevcut değil. Breeze yöneticisiyle iletişime geçin.",
       "identity_token_invalid": "Microsoft yönetici kimlik doğrulaması başarısız oldu.",
@@ -176,7 +176,7 @@
       "conditional_access_blocked": "Microsoft bu oturum açmayı engelledi: kiracının Koşullu Erişim ilkesi işlemi kesti (örneğin bir cihaz denetimi). Kiracının güvendiği bir tarayıcıdan yeniden deneyin veya kiracı yöneticisine başvurun.",
       "consent_provider_error": "Microsoft oturum açma sırasında bir hata döndürdü. Yeniden deneyin; tekrarlanırsa kiracının oturum açma günlüklerini kontrol edin.",
       "admin_role_required": "Bir Genel Yönetici veya Ayrıcalıklı Rol Yöneticisinin onay vermesi gerekir.",
-      "tenant_mismatch": "Microsoft farklı bir kiracıyı iade etti. Bu kuruluş için izni yeniden başlatın.",
+      "tenant_mismatch": "Oturum açtığınız yönetici bu bağlantıdan farklı bir Microsoft kiracısına ait. Bağlı kiracının bir yöneticisiyle oturum açın.",
       "tenant_already_bound": "Bu Microsoft kiracısı zaten başka bir kuruluşa bağlı.",
       "credential_unavailable": "Bağlantı kimlik bilgisi mevcut değil. Breeze yöneticisiyle iletişime geçin.",
       "identity_token_invalid": "Microsoft yönetici kimlik doğrulaması başarısız oldu.",
@@ -201,6 +201,30 @@
       "revoke": "Erişimi daha sonra iptal etmek için buradan bağlantıyı kesin veya Microsoft Entra'da Breeze kurumsal uygulamasını kaldırın.",
       "continue": "Microsoft'a devam et",
       "defaultTarget": "bu kuruluşun Microsoft 365 kiracısı"
+    }
+  },
+  "m365ConfirmTenant": {
+    "title": "Microsoft kiracısını onaylayın",
+    "loading": "Oturum açtığınız kiracı yükleniyor…",
+    "signedInAs": "Microsoft kiracısı {{tenantId}} içinde {{username}} olarak oturum açtınız.",
+    "signedInTo": "Microsoft kiracısı {{tenantId}} içinde oturum açtınız.",
+    "tenantIdLabel": "Kiracı Kimliği",
+    "usernameLabel": "Oturum açan",
+    "requestFor": "Breeze, {{orgName}} için BU kiracıya erişim isteyecek.",
+    "requestForThisOrg": "Breeze, bu kuruluş için BU kiracıya erişim isteyecek.",
+    "mspWarning": "Bu, müşterinin değil kendi MSP kiracınızsa iptal edin ve müşterinin yönetici hesabıyla oturum açın. Konuk hesap her zaman kendi ana kiracısında oturum açar.",
+    "continue": "Microsoft onayına devam et",
+    "cancel": "İptal et, yanlış kiracı",
+    "continueFailed": "Microsoft onayı başlatılamadı.",
+    "cancelFailed": "Oturum açma iptal edilemedi.",
+    "cancelled": "İptal edildi. Hiçbir şey bağlanmadı. Onayı yeniden başlatın ve müşterinin yönetici hesabıyla oturum açın.",
+    "expired": "Bu onayın süresi doldu veya zaten kullanıldı. Onayı yeniden başlatın.",
+    "steps": {
+      "title": "Bağlantı nasıl çalışır",
+      "identity": "Microsoft'ta müşteri kiracısının Genel Yöneticisi veya Ayrıcalıklı Rol Yöneticisi olarak oturum açın. Breeze kim olduğunuzu ve hangi kiracıya ait olduğunuzu doğrular.",
+      "confirm": "Breeze'de bunun sizin değil, müşterinin kiracısı olduğunu onaylayın.",
+      "consent": "Microsoft onay ekranında Breeze'in bu kiracı için izinlerini onaylayın.",
+      "verify": "Breeze, bağlamadan önce bu kiracıya erişimini kontrol eder."
     }
   },
   "m365TenantPanel": {

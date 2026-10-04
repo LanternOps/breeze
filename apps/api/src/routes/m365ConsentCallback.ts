@@ -689,7 +689,7 @@ export function createM365ConsentCallbackRoutes(
 
   routes.get(callbackPath, async (c) => {
     const correlationId = dependencies.correlationId();
-    const terminalRedirect = (outcome: PublicOutcome) => {
+    const terminalRedirect = (outcome: PublicOutcome | 'confirm-tenant') => {
       c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
       return c.redirect(`${dependencies.redirectBase}/${outcome}`);
     };
@@ -906,22 +906,37 @@ export function createM365ConsentCallbackRoutes(
         actorId,
       });
 
+      // Confirm-tenant interstitial (#7913 W03). An /organizations sign-in
+      // (no pinned authority — first connect, or reconnect after a disconnect
+      // cleared the tenant) learned its tenant from the verified id_token, and
+      // that may be the operator's OWN home tenant (an MSP technician, or a
+      // guest administrator). Park the verified identity server-side and send
+      // the operator to the card to confirm it; the consent URL is only built
+      // once they do (POST …/consent/continue). A pinned reconnect or upgrade
+      // has nothing to confirm — the tenant is already the bound one.
+      const needsTenantConfirmation = expectedTenantId === null && session.purpose === 'initial';
+
       let consentState: string;
       try {
-        // W3 (Task 14) inserts the confirm-tenant interstitial here for
-        // /organizations sign-ins; W2 continues straight to consent.
         const transitioned = await dependencies.transitionIdentityToConsent({
           attempt,
           purpose: session.purpose,
           actorId,
           verified,
-          nextPhase: 'admin_consent',
+          nextPhase: needsTenantConfirmation ? 'tenant_confirmation' : 'admin_consent',
         });
         consentState = transitioned.rawState;
       } catch (error) {
         const outcome = errorOutcome(error);
         if (outcome === 'consent_state_mismatch') return terminalFailure(outcome, attempt, actorId);
         return failAttempt(outcome, attempt, isUpgrade, actorId);
+      }
+
+      if (needsTenantConfirmation) {
+        // The identity cookie is spent; the confirm route mints the consent
+        // cookie. The parked session's state never leaves the server — the
+        // confirm step finds it by (connection, attempt, user), not by state.
+        return terminalRedirect('confirm-tenant');
       }
 
       let consentCookie: string;
