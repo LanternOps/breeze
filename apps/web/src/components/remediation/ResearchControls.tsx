@@ -15,6 +15,8 @@ type ResearchControlsProps = {
   onGenerate: () => void;
   onResearchDeeper: () => void;
   onRetry: () => void;
+  /** Re-read the run and restart polling (offered once polling has stalled). */
+  onRefresh: () => void;
 };
 
 /** Generate / Research deeper buttons plus the explicit research state (never a silent empty panel). */
@@ -53,6 +55,12 @@ export default function ResearchControls(props: ResearchControlsProps) {
           {props.stalled
             ? t('longTail.remediation.RemediationSuggestionsPanel.research.stalled')
             : state.depth === 'deep' ? t('longTail.remediation.RemediationSuggestionsPanel.research.runningDeep') : t('longTail.remediation.RemediationSuggestionsPanel.research.running')}
+          {props.stalled && (
+            <button type="button" data-testid="research-refresh" onClick={props.onRefresh} className="inline-flex items-center gap-1 underline">
+              <RefreshCw className="h-3 w-3" />
+              {t('longTail.remediation.RemediationSuggestionsPanel.refresh')}
+            </button>
+          )}
         </p>
       )}
       {state.kind === 'failed' && (

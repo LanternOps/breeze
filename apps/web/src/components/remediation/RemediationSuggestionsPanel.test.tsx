@@ -763,4 +763,50 @@ describe('RemediationSuggestionsPanel', () => {
     render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
     expect(await screen.findByRole('button', { name: 'Run restart_service' })).toBeTruthy();
   });
+
+  it('attached proven rows show the track record and when it was last verified', async () => {
+    const lastVerifiedAt = new Date(Date.now() - 3 * 86_400_000 - 3_600_000).toISOString();
+    serveW2({ list: [{ ...suggestion, id: 'm', title: 'Clear temp', origin: 'memory', evidence: { memoryId: 'mem-1', scope: 'all_clients', attempts: 8, verifiedCount: 7, lastVerifiedAt }, outcome: null }] });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    expect(await screen.findByText(/Worked 7 of 8 times across your clients/)).toBeTruthy();
+    expect(screen.getByText(/last verified 3d ago/)).toBeTruthy();
+  });
+
+  it('after polling stalls, Refresh restarts polling', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let gets = 0;
+      serveW2({ extra: (url) => {
+        if (url !== researchUrl) return undefined;
+        gets += 1;
+        return makeJsonResponse({ data: { runId: 'r', depth: 'quick', status: 'running', errorCode: null, noSafeFix: false, finishedAt: null } });
+      } });
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      await screen.findByTestId('research-state-running');
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 8_000);
+      const refresh = await screen.findByTestId('research-refresh');
+      expect(screen.getByText(/check back in a few minutes/)).toBeTruthy();
+      const before = gets;
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(gets).toBe(before); // gave up
+      fireEvent.click(refresh);
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(gets).toBeGreaterThan(before + 1); // the refresh read plus a resumed poll
+      expect(screen.queryByTestId('research-refresh')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a 401 on Research deeper shows no denial and no error toast (auth redirect owns it)', async () => {
+    serveW2({ extra: (url, method) => (url === '/remediation-suggestions/research' && method === 'POST'
+      ? makeJsonResponse({ error: 'Unauthorized' }, false, 401)
+      : undefined) });
+    render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+    fireEvent.click(await screen.findByTestId('research-deeper'));
+    await waitFor(() => expect((screen.getByTestId('research-deeper') as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId('research-state-denied')).toBeNull();
+    expect(screen.queryByTestId('research-state-credits')).toBeNull();
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
 });
