@@ -839,6 +839,34 @@ describe('executeAgentRun', () => {
       expect(loadProvenFixesForRun).not.toHaveBeenCalled();
     });
 
+    const GROUP_ID = '00000000-0000-4000-8000-0000000000c9';
+    const groupRow = { id: GROUP_ID, memberCount: 3, noiseReductionPercent: 66, rootAlertId: ALERT_ID, metadata: { correlationTypes: ['device'] } };
+
+    it('a group-bound verdict run looks memory up by its correlation group', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alert_correlation_groups = [[groupRow]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID, alertId: ALERT_ID, correlationGroupId: GROUP_ID });
+    });
+
+    it('a correlation group that left the run org is never signatured — the run falls back to its org-pinned alert', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alert_correlation_groups = [[]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: PARTNER_ID, alertId: ALERT_ID, correlationGroupId: null });
+    });
+
+    it('neither the alert nor the group is in the run org → no lookup at all', async () => {
+      seedRows({ profile: 'verdict', correlationGroupId: GROUP_ID });
+      dbMockState.rowQueues.alerts = [[]];
+      dbMockState.rowQueues.alert_correlation_groups = [[]];
+      scriptQuery({ toolCalls: [{ tool: 'submit_alert_verdict', input: { classification: 'actionable', confidence: 0.9, rationale: 'Known, fixable.' } }] });
+      await executeAgentRun(RUN_ID);
+      expect(loadProvenFixesForRun).not.toHaveBeenCalled();
+    });
+
     it('an alert that is no longer in the run org is never signatured for this run', async () => {
       seedRows();
       dbMockState.rowQueues.alerts = [[]];
