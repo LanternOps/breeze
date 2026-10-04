@@ -40,7 +40,7 @@ vi.mock('./commandQueue', async () => {
   return { CommandTypes, queueCommand: vi.fn() };
 });
 vi.mock('./commandDispatch', () => ({
-  claimPendingCommandForDelivery: vi.fn().mockResolvedValue(null),
+  claimPendingCommandForDelivery: vi.fn().mockResolvedValue({ status: 'not_claimable', id: 'cmd-1' }),
   releaseClaimedCommandDelivery: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./sensitiveCommandPayload', () => ({

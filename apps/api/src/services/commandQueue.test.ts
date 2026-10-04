@@ -25,6 +25,7 @@ import {
   expireRefusedClaimedCommandDelivery,
 } from './commandDispatch';
 import { deliveryRefreshers } from './commandDelivery';
+import { cancelledCommandError } from './commandCancelMessage';
 import { decryptCommandForDelivery } from './sensitiveCommandPayload';
 import { TrustDeniedError } from './partnerTrust.commands';
 import { captureException } from './sentry';
@@ -337,6 +338,39 @@ describe('command queue service', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 
+  it('reports command_cancelled (not a retryable delivery failure) when the re-armed push is cancelled', async () => {
+    const commandId = '11111111-1111-4111-8111-111111111111';
+    const deviceId = '22222222-2222-4222-8222-222222222222';
+    const payload = { sessionId: '33333333-3333-4333-8333-333333333333', finalizationId: commandId };
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: commandId, deviceId, type: 'desktop_stream_stop', targetRole: 'agent', payload,
+            }]),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }),
+        }),
+      } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(isAgentConnected).mockReturnValue(true);
+    vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+      status: 'cancelled', id: commandId, reason: 'requester_inactive',
+    });
+
+    await expect(rearmIdempotentCommandForDelivery({
+      commandId, deviceId, type: 'desktop_stream_stop', payload,
+    })).resolves.toEqual({ delivered: false, reason: 'command_cancelled' });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
   it('should queue a command for a device', async () => {
     const queued = {
       id: 'cmd-1',
@@ -614,6 +648,33 @@ describe('command queue service', () => {
 
     expect(result).toEqual(completed);
     expect(limitMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops waiting as soon as the command is cancelled', async () => {
+    vi.useFakeTimers();
+    const pending = { id: 'cmd-c', status: 'pending' };
+    const cancelled = {
+      id: 'cmd-c',
+      status: 'cancelled',
+      result: { status: 'cancelled', reason: 'requester_inactive', cancelledBy: 'claim_eligibility' },
+    };
+    const limitMock = vi.fn()
+      .mockResolvedValueOnce([pending])
+      .mockResolvedValueOnce([cancelled]);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: limitMock }) }),
+    } as any);
+    const updateSet = vi.fn();
+    vi.mocked(db.update).mockReturnValue({ set: updateSet } as any);
+
+    const promise = waitForCommandResult('cmd-c', 10_000, 100);
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await promise;
+
+    expect(result).toEqual(cancelled);
+    expect(limitMock).toHaveBeenCalledTimes(2);
+    // Never overwritten with a timeout.
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it('should mark commands as failed on timeout', async () => {
@@ -1038,6 +1099,7 @@ describe('command queue service', () => {
       } as any);
 
       vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+        status: 'claimed',
         id: 'cmd-x',
         executedAt: new Date(),
       });
@@ -1136,13 +1198,13 @@ describe('command queue service', () => {
       expect(result.error).toBe(DEVICE_UNREACHABLE_ERROR);
     });
 
-    it('skips dispatch entirely when claimPendingCommandForDelivery returns null', async () => {
+    it('skips dispatch entirely when the push claim reports not_claimable', async () => {
       // Simulates another worker (or the heartbeat path) having already
       // claimed the command. The send path must be a no-op so we don't
       // double-dispatch, and we must still poll for the eventual result.
       setupOnlineDeviceMocks();
       vi.mocked(isAgentConnected).mockReturnValue(true);
-      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue(null);
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'not_claimable', id: 'cmd-x' });
 
       const result = await executeCommand('dev-online', CommandTypes.FILE_LIST, { path: '/' });
 
@@ -1150,6 +1212,61 @@ describe('command queue service', () => {
       expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
       // Polling still happens — the other worker will fulfill the command.
       expect(result.status).toBe('completed');
+    });
+
+    it('returns a terminal failure with the reason when the push claim cancels the command, without waiting', async () => {
+      setupOnlineDeviceMocks();
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+        status: 'cancelled', id: 'cmd-x', reason: 'requester_inactive',
+      });
+      const selectCallsBefore = vi.mocked(db.select).mock.calls.length;
+
+      const result = await executeCommand('dev-online', CommandTypes.TERMINAL_START, {});
+
+      expect(result).toMatchObject({
+        status: 'failed',
+        error: cancelledCommandError('requester_inactive'),
+        commandId: 'cmd-x',
+      });
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+      expect(releaseClaimedCommandDelivery).not.toHaveBeenCalled();
+      // No result polling on a terminal row.
+      expect(vi.mocked(db.select).mock.calls.length - selectCallsBefore).toBeLessThanOrEqual(1);
+    });
+
+    it('queueCommandForExecution surfaces a push the claim cancelled as an error with the reason', async () => {
+      setupOnlineDeviceMocks();
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({
+        status: 'cancelled', id: 'cmd-x', reason: 'requester_inactive',
+      });
+
+      const result = await queueCommandForExecution('dev-online', CommandTypes.FILE_LIST, { path: '/' });
+
+      expect(result.error).toBe(cancelledCommandError('requester_inactive'));
+      expect(result.command?.status).toBe('cancelled');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports a command the heartbeat cancelled while we waited as failed with its reason', async () => {
+      setupOnlineDeviceMocks({
+        completedResult: {
+          id: 'cmd-x',
+          status: 'cancelled',
+          result: { status: 'cancelled', reason: 'device_moved_org', cancelledBy: 'claim_eligibility' },
+        },
+      });
+      vi.mocked(isAgentConnected).mockReturnValue(true);
+      vi.mocked(claimPendingCommandForDelivery).mockResolvedValue({ status: 'not_claimable', id: 'cmd-x' });
+
+      const result = await executeCommand('dev-online', CommandTypes.FILE_LIST, { path: '/' });
+
+      expect(result).toMatchObject({
+        status: 'failed',
+        error: cancelledCommandError('device_moved_org'),
+        commandId: 'cmd-x',
+      });
     });
 
     // Regression guard: executeCommand with targetRole='watchdog' must

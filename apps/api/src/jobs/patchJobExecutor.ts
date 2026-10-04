@@ -39,6 +39,7 @@ import {
   checkAndFinalizeJob,
   finalizePatchJobDevice,
   type ApprovedPatchRef,
+  type PatchDeviceContext,
   type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
@@ -869,6 +870,18 @@ type QueuedDeviceExecution = {
   patchCount: number;
 };
 
+/**
+ * The push's claim-time eligibility check cancelled the install before it was
+ * delivered. Terminal: the device is closed out here (skipped, with the reason,
+ * exactly as any other cancel door records it) and nothing is polled.
+ */
+type CancelledDeviceExecution = {
+  kind: 'cancelled';
+  commandId: string;
+  reason: string;
+  applied: boolean;
+};
+
 type SkippedDeviceExecution = { kind: 'skipped'; skipped: true; reason: string };
 type FailedDeviceExecution = { kind: 'error'; error: string };
 
@@ -967,6 +980,7 @@ async function deferUntilParentRunning(
 type DeviceExecutionOutcome =
   | PreparedDeviceExecution
   | QueuedDeviceExecution
+  | CancelledDeviceExecution
   | SkippedDeviceExecution
   | FailedDeviceExecution
   | ParentNotStartedExecution;
@@ -978,6 +992,7 @@ async function processExecuteDevice(data: ExecutePatchJobDeviceData): Promise<un
   const prep = await runWithSystemDbAccess(() => prepareDeviceExecution(data));
   switch (prep.kind) {
     case 'queued':
+    case 'cancelled':
     case 'skipped':
     case 'error':
     case 'parent_not_started':
@@ -1377,7 +1392,43 @@ async function prepareDeviceExecution(
     };
   }
 
+  if (res.delivery === 'cancelled') {
+    // The push's claim-time check refused the install and cancelled the row.
+    // Its own propagation cannot close this device (a deferred door with no
+    // result rows yet defers to this task), so close it here — the same
+    // `cancelled` terminal every other cancel door records — instead of
+    // polling a terminal row for 30 minutes.
+    const reason = res.cancelReason ?? 'cancelled';
+    const { applied } = await finalizePatchJobDevice({
+      patchJobId,
+      deviceId,
+      commandId,
+      completedAt: new Date(),
+      terminal: { kind: 'cancelled', reason },
+      source: { kind: 'synchronous', context: synchronousContext(orgId, targets, approvedPatches) },
+    });
+    return { kind: 'cancelled', commandId, reason, applied };
+  }
+
   return { kind: 'prepared', commandId, approvedPatches, targets };
+}
+
+function synchronousContext(
+  orgId: string,
+  targets: PreparedDeviceExecution['targets'] | undefined,
+  approvedPatches: PreparedDeviceExecution['approvedPatches'],
+): PatchDeviceContext {
+  return {
+    orgId,
+    rebootPolicy: targets?.deployment?.rebootPolicy ?? 'if_required',
+    approvedPatches: approvedPatches.map(
+      (p): ApprovedPatchRef => ({
+        patchId: p.patchId,
+        externalId: p.externalId,
+        requiresReboot: p.requiresReboot,
+      }),
+    ),
+  };
 }
 
 /**
@@ -1449,7 +1500,9 @@ async function pollForPatchCommandResult(commandId: string) {
     );
 
     if (!updated) return null;
-    if (updated.status === 'completed' || updated.status === 'failed') {
+    // `cancelled` is terminal too (a claim-time refusal, an org move, a user
+    // cancel): nothing will ever complete it, so stop polling.
+    if (updated.status === 'completed' || updated.status === 'failed' || updated.status === 'cancelled') {
       return updated;
     }
   }
@@ -1488,7 +1541,12 @@ async function recordDeviceExecution(
   // terminal — not a `result` carrying nothing, which would run the agent-result
   // parsing path and log "no patch installed successfully" for a run whose
   // result never arrived at all.
-  const terminal: PatchDeviceTerminal = finalCommand
+  const terminal: PatchDeviceTerminal = finalCommand?.status === 'cancelled'
+    ? {
+        kind: 'cancelled',
+        reason: (finalCommand.result as { reason?: string } | null)?.reason ?? 'cancelled',
+      }
+    : finalCommand
     ? {
         kind: 'result',
         commandResult: {
@@ -1507,20 +1565,7 @@ async function recordDeviceExecution(
     commandId: prep.commandId,
     completedAt: new Date(),
     terminal,
-    source: {
-      kind: 'synchronous',
-      context: {
-        orgId,
-        rebootPolicy: targets?.deployment?.rebootPolicy ?? 'if_required',
-        approvedPatches: approvedPatches.map(
-          (p): ApprovedPatchRef => ({
-            patchId: p.patchId,
-            externalId: p.externalId,
-            requiresReboot: p.requiresReboot,
-          }),
-        ),
-      },
-    },
+    source: { kind: 'synchronous', context: synchronousContext(orgId, targets, approvedPatches) },
   });
 
   return {

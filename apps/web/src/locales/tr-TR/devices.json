@@ -2439,6 +2439,7 @@
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
+      "commandCancelled": "{{action}}, {{hostname}} cihazına gönderilmedi: komut iptal edildi ({{reason}})",
       "compareNeedsTwo": "Karşılaştırma en az 2 aracı cihaza ihtiyaç duyar.",
       "decommissionCancelled": "Çıkarma İptal Edildi",
       "decommissionFailed": "Çıkarma Başarısız",

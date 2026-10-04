@@ -174,7 +174,7 @@ beforeEach(() => {
   dbState.commandRows = [{ id: 'cmd-1', status: 'completed', type: 'list_services', result: { status: 'completed', stdout: '{}' } }];
   agentWsMocks.sendCommandToAgent.mockReturnValue(true);
   agentWsMocks.isAgentConnected.mockReturnValue(true);
-  commandDispatchMocks.claimPendingCommandForDelivery.mockResolvedValue({ executedAt: new Date() });
+  commandDispatchMocks.claimPendingCommandForDelivery.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date() });
 });
 
 describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {

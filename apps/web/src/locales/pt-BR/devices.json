@@ -2439,6 +2439,7 @@
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
       "commandQueued": "{{action}} na fila — será executado quando {{hostname}} reconectar",
       "commandSent": "{{action}} enviado para {{hostname}}",
+      "commandCancelled": "{{action}} não foi enviado para {{hostname}}: o comando foi cancelado ({{reason}})",
       "compareNeedsTwo": "A comparação requer pelo menos 2 dispositivos com agente.",
       "decommissionCancelled": "Remoção cancelada",
       "decommissionFailed": "Falha ao remover",
