@@ -59,6 +59,7 @@ vi.mock('./commandCancelPropagation', () => ({
 
 import {
   POWER_STATE_BARRIER_TYPES,
+  TEARDOWN_CLAIM_EXEMPT_TYPES,
   partitionClaimable,
   registerTypeHold,
   typeHolds,
@@ -507,6 +508,56 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(updateMock).not.toHaveBeenCalled();
     // The trust check is not even consulted — the drain short-circuits first.
     expect(assertAllowedMock).not.toHaveBeenCalled();
+  });
+
+  // ── Teardown exemption ──────────────────────────────────────────────────
+
+  it('a desktop_stream_stop queued by a since-deactivated starter is still delivered', async () => {
+    // Cancelling the stop would leave the deactivated user's live session
+    // running — the opposite of what deactivation intends.
+    requesterActiveMock.mockResolvedValue([{ active: false }]);
+    const r = await partitionClaimable(tx(), device, [
+      row({ id: 'stop', type: 'desktop_stream_stop', createdBy: USER }),
+      row({ id: 'other', createdBy: USER }),
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['stop']);
+    expect(r.cancelled).toEqual([{ id: 'other', reason: 'requester_inactive' }]);
+  });
+
+  it.each([...TEARDOWN_CLAIM_EXEMPT_TYPES])(
+    '%s survives inactive requester + org drift + erased submitter org + lifecycle + trust denial',
+    async (type) => {
+      const { TrustDeniedError } = await import('./partnerTrust.commands');
+      assertAllowedMock.mockRejectedValue(new TrustDeniedError('TRUST_RESTRICTED', 'suspended', 'd1', type));
+      requesterActiveMock.mockResolvedValue([{ active: false }]);
+
+      const r = await partitionClaimable(tx(), { ...device, status: 'quarantined' }, [
+        row({ id: 'moved', type, createdBy: USER, submittedOrgId: OTHER_ORG }),
+        row({ id: 'erased', type, createdBy: USER, submittedOrgId: null, deliverBy: new Date(Date.now() + 3600_000) }),
+      ]);
+
+      expect(r.claimable.map((x) => x.id)).toEqual(['moved', 'erased']);
+      expect(r.cancelled).toEqual([]);
+      expect(updateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a teardown command to a PARKED device is still cancelled (parked delivery is unchanged)', async () => {
+    const r = await partitionClaimable(tx(), { ...device, orgType: 'unassigned_pool' }, [
+      row({ id: 'stop', type: 'desktop_stream_stop' }),
+    ]);
+    expect(r.cancelled).toEqual([{ id: 'stop', reason: 'device_pending_assignment' }]);
+  });
+
+  it('the teardown exemption covers no type that starts, executes or reveals', () => {
+    const forbidden = [
+      'script', 'terminal_start', 'terminal_data', 'terminal_resize', 'take_screenshot', 'computer_action',
+      'file_read', 'file_write', 'registry_set', 'kill_process', 'stop_service', 'task_run', 'task_disable',
+      'software_install', 'software_uninstall', 'update_agent', 'pam_apply_v2', 'actuate_elevation',
+      'backup_run', 'backup_restore', 'backup_cleanup', 'system_cleanup_run', 'security_threat_remove',
+      'network_diagnostic', 'restart_agent', 'reboot', 'shutdown',
+    ];
+    for (const type of forbidden) expect(TEARDOWN_CLAIM_EXEMPT_TYPES.has(type)).toBe(false);
   });
 
   // ── Registry guard + Sentry throttle ────────────────────────────────────

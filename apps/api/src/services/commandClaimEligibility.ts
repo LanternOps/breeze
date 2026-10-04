@@ -122,6 +122,47 @@ export const POWER_STATE_BARRIER_TYPES: ReadonlySet<string> = new Set(['reboot',
  */
 const DRAIN_EXEMPT_TYPES: ReadonlySet<string> = new Set(DRAIN_CLAIM_TYPE_ALLOWLIST);
 
+/**
+ * Teardown types: commands that only END or REVOKE something Breeze itself
+ * started on the device — a desktop stream or session, a terminal, a tunnel, a
+ * running script or diagnostic, a backup job, a PAM elevation grant, a quick
+ * support session, a pending reboot. Exempt from the requester-active, org
+ * drift, erased-submitter-org, device-lifecycle and partner-trust cancels.
+ *
+ * Each of those checks answers "should this device still do work for this
+ * requester / tenant?". For a teardown the answer is always yes, because NOT
+ * delivering it keeps the capability alive: cancelling a `desktop_stream_stop`
+ * queued for a since-deactivated starter leaves that user's live session
+ * running, which is the opposite of what deactivating them intends. The same
+ * holds after an org move, on a quarantined device, or for a partner whose
+ * trust was revoked (most of these are already trust-exempt lifecycle types,
+ * `LIFECYCLE_COMMAND_TYPES` in partnerTrust.ts).
+ *
+ * Membership rule: a type is listed ONLY if it reduces capability and carries
+ * no operator-chosen content, target, credential or binary. Nothing that
+ * starts, executes, changes or reveals anything may be added (kill_process,
+ * stop_service, task_disable and software_uninstall act on the customer's own
+ * workload with an operator-chosen target and are deliberately NOT here).
+ * `commandClaimEligibility.test.ts` pins a forbidden list.
+ *
+ * Still applied to these rows: the parked-holding-org cancel (a parked device
+ * is claimed under the removal allowlist and its socket refuses everything but
+ * removal), the per-type delivery revalidation, holds, and the caller's
+ * `deliver_by` predicate.
+ */
+export const TEARDOWN_CLAIM_EXEMPT_TYPES: ReadonlySet<string> = new Set([
+  'desktop_stream_stop',
+  'stop_desktop',
+  'terminal_stop',
+  'tunnel_close',
+  'support_end',
+  'script_cancel',
+  'network_diagnostic_cancel',
+  'backup_stop',
+  'pam_cleanup_v2',
+  'cancel_reboot',
+]);
+
 /** Device states in which ordinary queued work must never be delivered. */
 const NON_DELIVERABLE_LIFECYCLE: ReadonlySet<string> = new Set(['decommissioned', 'quarantined']);
 
@@ -357,8 +398,12 @@ export async function partitionClaimable(
       continue;
     }
 
+    // Teardown types skip every requester / tenant cancel below (see
+    // TEARDOWN_CLAIM_EXEMPT_TYPES) but still get the revalidation and holds.
+    const teardown = TEARDOWN_CLAIM_EXEMPT_TYPES.has(row.type);
+
     const submittedOrgId = row.submittedOrgId ?? null;
-    if (submittedOrgId !== null && submittedOrgId !== device.orgId) {
+    if (!teardown && submittedOrgId !== null && submittedOrgId !== device.orgId) {
       cancelled.push({ id: row.id, reason: 'device_moved_org' });
       continue;
     }
@@ -375,18 +420,18 @@ export async function partitionClaimable(
     //    the org-merge path leaves behind (the loser org survives as a shell,
     //    is later erased, and the row's provenance goes NULL underneath a
     //    device that has since been repointed to the surviving org).
-    if (submittedOrgId === null && row.deliverBy !== null && row.deliverBy !== undefined) {
+    if (!teardown && submittedOrgId === null && row.deliverBy !== null && row.deliverBy !== undefined) {
       cancelled.push({ id: row.id, reason: 'submitter_org_erased' });
       continue;
     }
 
-    if (NON_DELIVERABLE_LIFECYCLE.has(device.status)) {
+    if (!teardown && NON_DELIVERABLE_LIFECYCLE.has(device.status)) {
       cancelled.push({ id: row.id, reason: 'device_lifecycle' });
       continue;
     }
 
     try {
-      await assertTrusted(row.type, row.createdBy);
+      if (!teardown) await assertTrusted(row.type, row.createdBy);
     } catch (e) {
       if (e instanceof TrustDeniedError) {
         cancelled.push({ id: row.id, reason: 'trust_denied' });
@@ -417,7 +462,7 @@ export async function partitionClaimable(
       continue;
     }
 
-    if (row.createdBy) {
+    if (row.createdBy && !teardown) {
       let active = requesterActive.get(row.createdBy);
       if (active === undefined) {
         try {

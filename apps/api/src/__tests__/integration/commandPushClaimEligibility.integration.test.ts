@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices, users } from '../../db/schema';
-import { claimPendingCommandForDelivery } from '../../services/commandDispatch';
+import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import {
   assignUserToPartner,
   createOrganization,
@@ -49,13 +49,13 @@ async function makeDevice(orgId: string, siteId: string) {
   return device;
 }
 
-async function queue(deviceId: string, orgId: string, createdBy: string) {
+async function queue(deviceId: string, orgId: string, createdBy: string, type = 'refresh_inventory', payload: Record<string, unknown> = {}) {
   const [row] = await getTestDb()
     .insert(deviceCommands)
     .values({
       deviceId,
-      type: 'refresh_inventory',
-      payload: {},
+      type,
+      payload,
       status: 'pending',
       targetRole: 'agent',
       createdBy,
@@ -184,6 +184,53 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
       const cmd = await queue(device.id, org.id, foreignTech.id);
 
       expect(await push(cmd.id)).toEqual({ status: 'cancelled', id: cmd.id, reason: 'requester_inactive' });
+    });
+  });
+
+  describe('teardown commands are not cancelled by requester / org gates', () => {
+    const stopPayload = () => {
+      const id = randomUUID();
+      return { sessionId: randomUUID(), finalizationId: id };
+    };
+    const AGENT_CAPS = { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 } as const;
+    function agentContext() {
+      return {
+        scope: 'organization' as const,
+        orgId: org.id,
+        accessibleOrgIds: [org.id],
+        accessiblePartnerIds: [],
+        currentPartnerId: partner.id,
+      };
+    }
+
+    it('push: a desktop_stream_stop queued by a since-deactivated starter is still delivered', async () => {
+      const starter = await partnerTech('disabled');
+      const cmd = await queue(device.id, org.id, starter.id, 'desktop_stream_stop', stopPayload());
+
+      expect(await push(cmd.id)).toMatchObject({ status: 'claimed', id: cmd.id });
+      expect((await commandRow(cmd.id))?.status).toBe('sent');
+    });
+
+    it('heartbeat: a desktop_stream_stop queued by a since-deactivated starter is still delivered', async () => {
+      const starter = await partnerTech('disabled');
+      const cmd = await queue(device.id, org.id, starter.id, 'desktop_stream_stop', stopPayload());
+
+      const claimed = await withDbAccessContext(agentContext(), () =>
+        claimPendingCommandsForDevice(device.id, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      );
+
+      expect(claimed.map((c) => c.id)).toEqual([cmd.id]);
+      expect((await commandRow(cmd.id))?.status).toBe('sent');
+    });
+
+    it('push: a terminal_stop queued before the device moved org is still delivered', async () => {
+      const tech = await partnerTech();
+      const cmd = await queue(device.id, org.id, tech.id, 'terminal_stop', { sessionId: randomUUID() });
+      const otherOrg = await createOrganization({ partnerId: partner.id });
+      const otherSite = await createSite({ orgId: otherOrg.id });
+      await getTestDb().update(devices).set({ orgId: otherOrg.id, siteId: otherSite.id }).where(eq(devices.id, device.id));
+
+      expect(await push(cmd.id)).toMatchObject({ status: 'claimed', id: cmd.id });
     });
   });
 
