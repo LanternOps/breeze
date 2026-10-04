@@ -2435,6 +2435,7 @@
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
       "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}",
       "commandSent": "{{action}} envoyé à {{hostname}}",
+      "commandCancelled": "{{action}} n’a pas été envoyé à {{hostname}} : commande annulée ({{reason}})",
       "compareNeedsTwo": "La comparaison nécessite au moins 2 appareils avec agent.",
       "decommissionCancelled": "Retrait annulé",
       "decommissionFailed": "Échec du retrait",

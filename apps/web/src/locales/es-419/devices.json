@@ -2435,6 +2435,7 @@
       "bulkWakeSomeFailed": "Despertar en masa algunos falló",
       "commandQueued": "{{action}} en cola — se ejecutará cuando {{hostname}} se reconecte",
       "commandSent": "{{action}} enviado a {{hostname}}",
+      "commandCancelled": "{{action}} no se envió a {{hostname}}: el comando se canceló ({{reason}})",
       "compareNeedsTwo": "La comparación requiere al menos 2 dispositivos con agente.",
       "decommissionCancelled": "Remoción cancelada",
       "decommissionFailed": "Error al quitar",

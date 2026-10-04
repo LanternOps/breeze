@@ -10,15 +10,20 @@ export interface CommandResult {
   createdAt: string;
   // #5128 W2 — present on the single-command POST response: how the command
   // was handed over, and (for a queued one) when it expires undelivered.
-  delivery?: 'delivered' | 'queued_offline' | 'queued_live';
+  // 'cancelled' = the server's claim-time check refused the command before it
+  // reached the agent; it will never run. `cancelReason` says why.
+  delivery?: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled';
   deliverBy?: string | null;
+  cancelReason?: string;
 }
 
 export type BulkCommandFailureCode =
   | 'TARGET_NOT_FOUND'
   | 'SITE_ACCESS_DENIED'
   | 'DECOMMISSIONED'
-  | 'INSERT_FAILED';
+  | 'INSERT_FAILED'
+  // The command was created but cancelled before delivery; `message` carries the reason.
+  | 'CANCELLED';
 
 export interface BulkCommandFailed {
   deviceId: string;

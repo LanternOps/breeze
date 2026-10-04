@@ -30,6 +30,7 @@ import { propagateCancelledDeviceCommand } from '../../services/commandCancelPro
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
 import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
+import { cancelledCommandError } from '../../services/commandCancelMessage';
 
 export const commandsRoutes = new Hono();
 
@@ -162,6 +163,8 @@ commandsRoutes.post(
       | 'SITE_ACCESS_DENIED'
       | 'DECOMMISSIONED'
       | 'INSERT_FAILED'
+      // Created, then cancelled by the push's claim-time check before delivery.
+      | 'CANCELLED'
       | TrustDenyCode;
     const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
     // Devices that completed successfully on a prior call and would queue
@@ -244,6 +247,12 @@ commandsRoutes.post(
               message: res.error,
             });
           }
+          continue;
+        }
+        if (res.delivery === 'cancelled') {
+          // The row exists but will never run: report it as a failure with the
+          // reason, not as a queued command.
+          failed.push({ deviceId, code: 'CANCELLED', message: cancelledCommandError(res.cancelReason) });
           continue;
         }
         command = res.command;
