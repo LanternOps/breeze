@@ -1356,7 +1356,8 @@ describe('remediation suggestion routes', () => {
   it('Done with reviewed steps passes the id through', async () => {
     manualAccepted();
     dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce({ id: RID, osType: null });
-    const where = vi.fn().mockResolvedValue(undefined);
+    const returning = vi.fn().mockResolvedValue([{ id: baseSuggestion.id }]);
+    const where = vi.fn().mockReturnValue({ returning });
     const set = vi.fn().mockReturnValue({ where });
     dbMocks.updateMock.mockReturnValueOnce({ set });
     dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
@@ -1370,11 +1371,30 @@ describe('remediation suggestion routes', () => {
     manualAccepted();
     dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce({ id: RID, osType: null });
     dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
-    const where = vi.fn().mockRejectedValue(Object.assign(new Error('duplicate key value violates unique constraint "source_instructions_uq"'), { code: '23505' }));
-    dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where }) });
+    const returning = vi.fn().mockRejectedValue(Object.assign(new Error('duplicate key value violates unique constraint "source_instructions_uq"'), { code: '23505' }));
+    dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }) });
     const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: RID }));
     expect(res.status).toBe(409);
     expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'ml.remediation_suggestion.done' }));
+  });
+
+  it('A4: a link UPDATE that matches no row (another reviewed row already linked) is a 409 and the outcome rolls back', async () => {
+    manualAccepted();
+    dbMocks.loadActiveInstructionsMock.mockResolvedValueOnce({ id: RID, osType: null });
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    const returning = vi.fn().mockResolvedValue([]);
+    dbMocks.updateMock.mockReturnValueOnce({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) }) });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({ instructionsId: RID }));
+    expect(res.status).toBe(409);
+    expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'ml.remediation_suggestion.done' }));
+  });
+
+  it('A4: Done rides the ambient request transaction (a savepoint), never a second caller context', async () => {
+    manualAccepted();
+    dbMocks.createDoneMock.mockResolvedValueOnce({ state: 'awaiting_recovery', stateReason: 'manual_steps_done', humanVote: null });
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/done`, json({}));
+    expect(res.status).toBe(201);
+    expect(withAuthDbAccessContextMock).not.toHaveBeenCalled();
   });
 
   it('Done with no body is an unreviewed Done (no instructions lookup)', async () => {

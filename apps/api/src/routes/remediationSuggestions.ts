@@ -77,6 +77,14 @@ function resolveOrgForSource(auth: AuthContext, orgId: string | undefined): stri
   return auth.orgId ?? null;
 }
 
+/** Thrown inside /done's savepoint so the outcome insert rolls back when the guarded link UPDATE matches no row. */
+class InstructionsLinkConflictError extends Error {
+  constructor() {
+    super('remediation suggestion already links different reviewed steps');
+    this.name = 'InstructionsLinkConflictError';
+  }
+}
+
 // Done on manual steps; instructionsId names a reviewed (active) fix_instructions row. An empty body is valid.
 const doneBodySchema = z.object({ instructionsId: z.string().uuid().optional() }).strict();
 
@@ -1388,24 +1396,34 @@ remediationSuggestionRoutes.post(
       const reviewed = await loadActiveInstructions(instructionsId);
       if (!reviewed) return c.json({ error: 'Reviewed steps not found or retired' }, 404);
     }
-    // Outcome + instructions link in ONE savepoint: a unique violation on the
-    // link (source_instructions_uq) rolls the outcome back too, so a conflict
-    // can never leave a half-written Done, and it answers 409 rather than 500.
+    // Outcome + instructions link in ONE savepoint on the ambient request
+    // transaction (this route is not self-managed, so opening a caller context
+    // here would take a second pooled connection). Two 409s, both rolling the
+    // outcome back so a conflict never leaves a half-written Done:
+    //  - the guarded UPDATE matches no row: this suggestion already links a
+    //    DIFFERENT reviewed row;
+    //  - a unique violation (remediation_suggestions_source_instructions_uq):
+    //    another suggestion for this source already links these steps.
     let outcome: Awaited<ReturnType<typeof createManualStepsOutcome>>;
     try {
-      outcome = await withAuthDbAccessContext(auth, () => withDbTransaction(async () => {
+      outcome = await withDbTransaction(async () => {
         const created = await createManualStepsOutcome({ suggestion: existing, deviceId, instructionsId: instructionsId ?? null });
         if (created && instructionsId) {
           // Only ever fill an empty link (or re-set the same id) — never overwrite another reviewed row.
-          await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() })
+          const linked = await db.update(remediationSuggestions).set({ instructionsId, updatedAt: new Date() })
             .where(and(
               eq(remediationSuggestions.id, existing.id),
               or(isNull(remediationSuggestions.instructionsId), eq(remediationSuggestions.instructionsId, instructionsId)),
-            ));
+            ))
+            .returning({ id: remediationSuggestions.id });
+          if (linked.length === 0) throw new InstructionsLinkConflictError();
         }
         return created;
-      }));
+      });
     } catch (err) {
+      if (err instanceof InstructionsLinkConflictError) {
+        return c.json({ error: 'This suggestion is already linked to different reviewed steps' }, 409);
+      }
       const code = (err as { code?: string; cause?: { code?: string } })?.code ?? (err as { cause?: { code?: string } })?.cause?.code;
       if (code === '23505') return c.json({ error: 'These reviewed steps are already linked to another suggestion for this source' }, 409);
       throw err;
