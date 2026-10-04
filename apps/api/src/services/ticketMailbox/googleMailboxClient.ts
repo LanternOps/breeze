@@ -389,11 +389,15 @@ export function assertUsableHandledLabelName(name: string): void {
   }
 }
 
-/** Resolved label ids per (mailbox, labelName). Label ids are immutable but names
- *  are mutable, so a rename (no error) is bounded by the TTL; a deleted/recreated
- *  label self-heals via the 400/404 retry in markGmailHandled. */
+/** Resolved label ids per (Google account, mailbox, labelName). Label ids are
+ *  per account, so the immutable account sub is part of the key: a mailbox
+ *  address that moves to a different Google account never reuses the old
+ *  account's id. Names are mutable, so a rename (no error) is bounded by the
+ *  TTL; a deleted/recreated label self-heals via the 400/404 retry in
+ *  markGmailHandled. */
 const handledLabelIdCache = new Map<string, { id: string; at: number }>();
-const handledCacheKey = (mailbox: string, labelName: string) => `${mailbox.toLowerCase()}::${labelName}`;
+const handledCacheKey = (accountSub: string, mailbox: string, labelName: string) =>
+  `${accountSub}::${mailbox.toLowerCase()}::${labelName}`;
 
 /** Test hook. */
 export function resetHandledLabelCache(): void {
@@ -403,11 +407,11 @@ export function resetHandledLabelCache(): void {
 async function resolveHandledLabelId(
   gmail: gmail_v1.Gmail,
   mailbox: string,
-  labelName: string,
-  ttlMs: number,
+  o: MarkHandledOptions,
 ): Promise<string> {
+  const { labelName, labelCacheTtlMs: ttlMs } = o;
   assertUsableHandledLabelName(labelName);
-  const cacheKey = handledCacheKey(mailbox, labelName);
+  const cacheKey = handledCacheKey(o.accountSub, mailbox, labelName);
   const cached = handledLabelIdCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ttlMs) return cached.id;
 
@@ -438,13 +442,15 @@ async function resolveHandledLabelId(
 }
 
 export interface MarkHandledOptions {
+  /** Immutable Google account id (`sub`) of the mailbox; scopes the label cache. */
+  accountSub: string;
   labelName: string;
   archive: boolean;
   labelCacheTtlMs: number;
 }
 
 async function applyHandled(gmail: gmail_v1.Gmail, mailbox: string, messageId: string, o: MarkHandledOptions): Promise<void> {
-  const labelId = await resolveHandledLabelId(gmail, mailbox, o.labelName, o.labelCacheTtlMs);
+  const labelId = await resolveHandledLabelId(gmail, mailbox, o);
   await gmail.users.messages.modify({
     userId: 'me',
     id: messageId,
@@ -470,7 +476,7 @@ export async function markGmailHandled(
   } catch (err) {
     const status = httpStatus(err);
     if (status !== 400 && status !== 404) throw err;
-    handledLabelIdCache.delete(handledCacheKey(mailbox, o.labelName));
+    handledLabelIdCache.delete(handledCacheKey(o.accountSub, mailbox, o.labelName));
     await applyHandled(gmail, mailbox, messageId, o);
   }
 }

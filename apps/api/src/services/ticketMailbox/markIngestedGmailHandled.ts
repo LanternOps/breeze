@@ -10,7 +10,7 @@
  * bounded number of times, and never throws: the ticket already exists, so a
  * failed label is a cosmetic miss (the message stays in the inbox), not lost mail.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketEmailInbound, ticketMailboxConnections } from '../../db/schema';
@@ -48,15 +48,16 @@ export async function markIngestedGmailHandled(
   if (!parsed) return 'skipped';
   const { sub, gmailId } = parsed;
 
-  // The SAME generation that authorized ingestion, still connected, still the
-  // same Google account: a reconnect to a different account rotates
-  // consent_attempt_id / google_account_sub, and that account's mail must never
-  // be modified with an id taken from the old one.
+  // The SAME generation that authorized ingestion, in a status ingestion itself
+  // accepts for that generation (inboundEmailService: connected, reauth_required,
+  // error), still the same Google account: a reconnect to a different account
+  // rotates consent_attempt_id / google_account_sub, and that account's mail must
+  // never be modified with an id taken from the old one. Disabled stops marking.
   const sameGeneration = and(
     eq(ticketMailboxConnections.id, generation.connectionId),
     eq(ticketMailboxConnections.partnerId, generation.partnerId),
     eq(ticketMailboxConnections.provider, 'gmail'),
-    eq(ticketMailboxConnections.status, 'connected'),
+    inArray(ticketMailboxConnections.status, ['connected', 'reauth_required', 'error']),
     eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
     eq(ticketMailboxConnections.googleAccountSub, sub),
   );
@@ -108,7 +109,7 @@ export async function markIngestedGmailHandled(
           .limit(1)
           .for('share');
         if (!live) return false;
-        await markGmailHandled(build(saKey, mailbox), mailbox, gmailId, cfg);
+        await markGmailHandled(build(saKey, mailbox), mailbox, gmailId, { ...cfg, accountSub: sub });
         return true;
       }, 'gmailHandled.mark'));
       return marked ? 'marked' : 'not_ticketed';

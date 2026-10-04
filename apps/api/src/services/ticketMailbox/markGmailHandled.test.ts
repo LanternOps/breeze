@@ -23,8 +23,8 @@ function fakeGmail(opts: { labels?: Label[]; createId?: string; createThrows?: u
 }
 
 const MB = 'support@example.com';
-const opts = (o: Partial<{ labelName: string; archive: boolean; labelCacheTtlMs: number }> = {}) =>
-  ({ labelName: 'Handled', archive: true, labelCacheTtlMs: 600_000, ...o });
+const opts = (o: Partial<{ accountSub: string; labelName: string; archive: boolean; labelCacheTtlMs: number }> = {}) =>
+  ({ accountSub: 'sub-A', labelName: 'Handled', archive: true, labelCacheTtlMs: 600_000, ...o });
 
 describe('gmailHandledConfig', () => {
   it('is OFF when GMAIL_HANDLED_LABEL is unset or blank (connector stays read-only)', () => {
@@ -65,6 +65,15 @@ describe('markGmailHandled', () => {
     f.list.mockResolvedValueOnce({ data: { labels: [] } }).mockResolvedValueOnce({ data: { labels: [{ id: 'Lrace', name: 'Handled', type: 'user' }] } });
     await markGmailHandled(f.gmail, MB, 'm3', opts());
     expect(f.modify.mock.calls[0]![0]).toMatchObject({ requestBody: { addLabelIds: ['Lrace'] } });
+  });
+
+  it('never reuses a cached label id after the mailbox address moves to another Google account', async () => {
+    const a = fakeGmail({ labels: [{ id: 'LA', name: 'Handled', type: 'user' }] });
+    await markGmailHandled(a.gmail, MB, 'm1', opts({ accountSub: 'sub-A' }));
+    const b = fakeGmail({ labels: [{ id: 'LB', name: 'Handled', type: 'user' }] });
+    await markGmailHandled(b.gmail, MB, 'm2', opts({ accountSub: 'sub-B' }));
+    expect(b.list).toHaveBeenCalledTimes(1);
+    expect(b.modify.mock.calls[0]![0]).toMatchObject({ requestBody: { addLabelIds: ['LB'] } });
   });
 
   it('caches the label id within the TTL and re-resolves with TTL=0', async () => {

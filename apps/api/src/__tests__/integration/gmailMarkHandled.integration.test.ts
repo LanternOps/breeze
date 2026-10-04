@@ -72,7 +72,7 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
   it('labels (and archives by default) a message that became a ticket', async () => {
     const { email, generation } = await seed('created');
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
-    expect(gm.markGmailHandled).toHaveBeenCalledWith({ fake: true }, MAILBOX, 'msg-123', expect.objectContaining({ labelName: 'Handled', archive: true }));
+    expect(gm.markGmailHandled).toHaveBeenCalledWith({ fake: true }, MAILBOX, 'msg-123', expect.objectContaining({ labelName: 'Handled', archive: true, accountSub: SUB }));
   });
 
   it('labels a reply threaded onto an existing ticket (matched)', async () => {
@@ -95,6 +95,12 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     await withSystemDbAccessContext(() => db.update(ticketMailboxConnections).set(patch as never).where(eq(ticketMailboxConnections.id, connId)));
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('not_ticketed');
     expect(gm.markGmailHandled).not.toHaveBeenCalled();
+  });
+
+  it.each(['reauth_required', 'error'])('still marks a ticketed message while the same generation is %s (as ingestion does)', async (status) => {
+    const { email, generation, connId } = await seed('created');
+    await withSystemDbAccessContext(() => db.update(ticketMailboxConnections).set({ status } as never).where(eq(ticketMailboxConnections.id, connId)));
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
   });
 
   it('a reconnect that lands during the Gmail call waits until the call has finished', async () => {
