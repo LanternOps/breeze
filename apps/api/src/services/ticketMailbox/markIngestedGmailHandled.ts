@@ -12,24 +12,39 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { ticketEmailInbound, ticketMailboxConnections } from '../../db/schema';
+import { tightenLockTimeout, tightenStatementTimeout } from '../../db/lockTimeout';
+import { googleWorkspaceConnections, ticketEmailInbound, ticketMailboxConnections } from '../../db/schema';
 import type { NormalizedInboundEmail } from '../inboundEmail/types';
 import type { MailboxGenerationContext } from '../inboundEmailQueue';
-import { loadGoogleConnection, decryptConnectionKey } from '../googleHelpers';
+import { decryptConnectionKey } from '../googleHelpers';
 import { getInboundModifyGmailClient, type InboundMailboxSession } from '../googleClient';
 import { classifyGmailError, markGmailHandled } from './googleMailboxClient';
 import { gmailHandledConfig } from './gmailHandledConfig';
 
 const TICKETED_STATUSES = new Set(['created', 'matched']);
 const RETRY_DELAYS_MS = [500, 2000];
+/** Hard deadline for the whole mark operation, retries included: every Gmail
+ *  request of an attempt is aborted when it passes, and no attempt starts after. */
+const MARK_BUDGET_MS = 15_000;
 
 export interface MarkIngestedDeps {
   sleep?: (ms: number) => Promise<void>;
-  modifyClient?: (saKey: string, mailbox: string) => InboundMailboxSession;
+  now?: () => number;
+  /** Test hook: override MARK_BUDGET_MS. */
+  budgetMs?: number;
+  modifyClient?: (saKey: string, mailbox: string, signal?: AbortSignal) => InboundMailboxSession;
 }
 
 /** The account sub and Gmail message id from a normalized provider message id
  *  (`gmail:<accountSub>:<gmailId>`), or null for any other shape. */
+/** SET LOCAL lock and statement timeouts for this transaction (never widening a
+ *  stricter caller), so a blocked lock or slow statement fails at the deadline. */
+async function boundDbWaits(ms: number): Promise<void> {
+  const bound = Math.max(1, Math.floor(ms));
+  await tightenLockTimeout(db, bound);
+  await tightenStatementTimeout(db, bound);
+}
+
 export function parseGmailProviderMessageId(providerMessageId: string): { sub: string; gmailId: string } | null {
   const parts = providerMessageId.split(':');
   if (parts.length !== 3 || parts[0] !== 'gmail' || !parts[1] || !parts[2]) return null;
@@ -41,6 +56,11 @@ export async function markIngestedGmailHandled(
   generation: MailboxGenerationContext | undefined,
   deps: MarkIngestedDeps = {},
 ): Promise<'skipped' | 'not_ticketed' | 'marked' | 'failed'> {
+  // The deadline covers the whole operation, from the first DB read on.
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const budgetMs = deps.budgetMs ?? MARK_BUDGET_MS;
+  const remainingMs = () => budgetMs - (now() - startedAt);
   const cfg = gmailHandledConfig();
   if (!cfg.enabled || email.provider !== 'gmail' || generation?.provider !== 'gmail') return 'skipped';
   const parsed = parseGmailProviderMessageId(email.providerMessageId);
@@ -61,9 +81,10 @@ export async function markIngestedGmailHandled(
     eq(ticketMailboxConnections.googleAccountSub, sub),
   );
 
-  let ctx: { saKey: string; mailbox: string } | null = null;
+  let ticketed = false;
   try {
-    ctx = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    ticketed = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      await boundDbWaits(remainingMs());
       const [log] = await db.select({ parseStatus: ticketEmailInbound.parseStatus })
         .from(ticketEmailInbound)
         .where(and(
@@ -71,17 +92,7 @@ export async function markIngestedGmailHandled(
           eq(ticketEmailInbound.providerMessageId, email.providerMessageId),
         ))
         .limit(1);
-      if (!log || !TICKETED_STATUSES.has(log.parseStatus)) return null;
-      const [conn] = await db.select({
-        orgId: ticketMailboxConnections.orgId,
-        mailboxAddress: ticketMailboxConnections.mailboxAddress,
-      }).from(ticketMailboxConnections)
-        .where(sameGeneration)
-        .limit(1);
-      if (!conn?.orgId || !conn.mailboxAddress) return null;
-      const cred = await loadGoogleConnection(conn.orgId);
-      if (!cred || cred.status !== 'active') return null;
-      return { saKey: decryptConnectionKey(cred), mailbox: conn.mailboxAddress };
+      return !!log && TICKETED_STATUSES.has(log.parseStatus);
     }));
   } catch (err) {
     console.warn('[gmailHandled] lookup failed; message stays in the inbox', {
@@ -89,29 +100,44 @@ export async function markIngestedGmailHandled(
     });
     return 'failed';
   }
-  if (!ctx) return 'not_ticketed';
-  const { saKey, mailbox } = ctx;
+  if (!ticketed) return 'not_ticketed';
 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const build = deps.modifyClient ?? getInboundModifyGmailClient;
   for (let attempt = 0; ; attempt++) {
+    const remaining = remainingMs();
+    if (remaining <= 0) {
+      console.warn('[gmailHandled] mark-handled deadline reached; message stays in the inbox', { connectionId: generation.connectionId });
+      return 'failed';
+    }
     try {
-      // Each attempt re-checks the generation under a FOR SHARE lock held across
-      // the Gmail call, so a reconnect (which updates this row) either commits
-      // first and this attempt stops, or waits until the call has finished. The
-      // call is bounded by GMAIL_REQUEST_TIMEOUT_MS; no lock is held while
-      // sleeping between attempts.
+      // Each attempt re-checks the generation AND re-reads the org credential
+      // under FOR SHARE locks held across the Gmail calls: a reconnect or an
+      // in-place credential replacement (both update these rows) either commits
+      // first, so this attempt uses the current state, or waits until the calls
+      // have finished. Each call is bounded by GMAIL_MODIFY_REQUEST_TIMEOUT_MS;
+      // no lock is held while sleeping between attempts.
       const marked = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-        const [live] = await db.select({ id: ticketMailboxConnections.id })
+        // DB waits (row locks, statements) are bounded by the same deadline.
+        await boundDbWaits(remaining);
+        const [live] = await db.select({
+          orgId: ticketMailboxConnections.orgId,
+          mailboxAddress: ticketMailboxConnections.mailboxAddress,
+        })
           .from(ticketMailboxConnections)
           .where(sameGeneration)
           .limit(1)
           .for('share');
-        if (!live) return false;
-        // The row lock does not cover the org credential, which can be replaced
-        // in place. Prove through the SAME token that will modify that the
-        // mailbox is still the account the message came from.
-        const session = build(saKey, mailbox);
+        if (!live?.orgId || !live.mailboxAddress) return false;
+        const [cred] = await db.select()
+          .from(googleWorkspaceConnections)
+          .where(eq(googleWorkspaceConnections.orgId, live.orgId))
+          .limit(1)
+          .for('share');
+        if (!cred || cred.status !== 'active') return false;
+        // Prove through the SAME token that will modify that the mailbox is
+        // still the account the message came from.
+        const session = build(decryptConnectionKey(cred), live.mailboxAddress, AbortSignal.timeout(remaining));
         const liveSub = (await session.identity()).sub;
         if (liveSub !== sub) {
           console.warn('[gmailHandled] mailbox now resolves to a different Google account; not modifying', {
@@ -119,14 +145,15 @@ export async function markIngestedGmailHandled(
           });
           return false;
         }
-        await markGmailHandled(session.gmail, mailbox, gmailId, { ...cfg, accountSub: sub });
+        await markGmailHandled(session.gmail, live.mailboxAddress, gmailId, { ...cfg, accountSub: sub });
         return true;
       }, 'gmailHandled.mark'));
       return marked ? 'marked' : 'not_ticketed';
     } catch (err) {
       const kind = classifyGmailError(err);
       const delay = RETRY_DELAYS_MS[attempt];
-      if ((kind === 'rate_limit' || kind === 'transient') && delay !== undefined) {
+      // Retries stop once the deadline would pass.
+      if ((kind === 'rate_limit' || kind === 'transient') && delay !== undefined && delay < remainingMs()) {
         await sleep(delay);
         continue;
       }

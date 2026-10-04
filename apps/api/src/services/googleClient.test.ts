@@ -116,4 +116,13 @@ describe('inbound mailbox scopes (mark-handled opt-in)', () => {
     expect(typeof session.gmail.users.messages.modify).toBe('function');
     expect(typeof session.identity).toBe('function');
   });
+
+  it('applies a caller deadline signal to every request of the modify session', async () => {
+    const { getInboundModifyGmailClient } = await import('./googleClient');
+    const controller = new AbortController();
+    const session = getInboundModifyGmailClient(VALID_KEY, 'support@example.com', controller.signal);
+    const opts = (session.gmail as unknown as { context: { _options: { signal?: AbortSignal; timeout?: number } } }).context._options;
+    expect(opts.signal).toBe(controller.signal);
+    expect(opts.timeout).toBe(8_000);
+  });
 });

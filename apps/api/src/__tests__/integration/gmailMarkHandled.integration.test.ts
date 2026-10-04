@@ -13,7 +13,7 @@ vi.mock('../../services/ticketMailbox/googleMailboxClient', async (importActual)
   return { ...actual, markGmailHandled: gm.markGmailHandled };
 });
 
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db as appDb, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketMailboxConnections, googleWorkspaceConnections, ticketEmailInbound } from '../../db/schema';
 import { createPartner, createOrganization } from './db-utils';
 import { getTestDb } from './setup';
@@ -47,7 +47,7 @@ async function seed(parseStatus: string | null, credentialStatus = 'active') {
     }
     const email = { provider: 'gmail', providerMessageId } as unknown as NormalizedInboundEmail;
     const generation = { provider: 'gmail' as const, connectionId: conn!.id, partnerId: partner.id, tenantId: null, consentAttemptId: conn!.consentAttemptId };
-    return { email, generation, connId: conn!.id };
+    return { email, generation, connId: conn!.id, orgId: org.id };
   });
 }
 
@@ -149,6 +149,91 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     };
     expect(await markIngestedGmailHandled(email, generation, retryDeps)).toBe('not_ticketed');
     expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the credential current at the call, and an in-place replacement during the call waits for it', async () => {
+    const { email, generation, orgId } = await seed('created');
+    const replacedKey = JSON.stringify({ client_email: 'sa2@y.iam.gserviceaccount.com', private_key: 'k2' });
+    const seenKeys: string[] = [];
+    let replace: Promise<unknown> | undefined;
+    let replaceDone = false;
+    let doneDuringCall: boolean | undefined;
+    const trackingDeps = {
+      sleep: async () => {},
+      modifyClient: (saKey: string) => { seenKeys.push(saKey); return sessionFor(SUB)(); },
+    };
+    gm.markGmailHandled.mockImplementationOnce(async () => {
+      replace = runOutsideDbContext(() => withSystemDbAccessContext(() => db.update(googleWorkspaceConnections)
+        .set({ serviceAccountKey: encryptSecret(replacedKey, { aad: 'google_workspace_connections.service_account_key' }) } as never)
+        .where(eq(googleWorkspaceConnections.orgId, orgId))))
+        .then(() => { replaceDone = true; });
+      await new Promise((r) => setTimeout(r, 300));
+      doneDuringCall = replaceDone;
+    });
+    expect(await markIngestedGmailHandled(email, generation, trackingDeps)).toBe('marked');
+    expect(doneDuringCall).toBe(false);
+    await replace;
+    expect(replaceDone).toBe(true);
+    // The next mark builds its session from the replaced credential.
+    expect(await markIngestedGmailHandled(email, generation, trackingDeps)).toBe('marked');
+    expect(JSON.parse(seenKeys[0]!).client_email).toBe('sa@x.iam.gserviceaccount.com');
+    expect(JSON.parse(seenKeys[1]!).client_email).toBe('sa2@y.iam.gserviceaccount.com');
+  });
+
+  it('stops retrying once the overall time budget is spent', async () => {
+    const { email, generation } = await seed('created');
+    let t = 0;
+    gm.markGmailHandled.mockImplementation(async () => { t += 15_000; throw Object.assign(new Error('backend'), { code: 503 }); });
+    try {
+      expect(await markIngestedGmailHandled(email, generation, { ...deps, now: () => t })).toBe('failed');
+      expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+    } finally {
+      gm.markGmailHandled.mockReset();
+      gm.markGmailHandled.mockImplementation(async (..._a: unknown[]) => {});
+    }
+  });
+
+  it('aborts an in-flight Gmail call at the deadline and does not retry past it', async () => {
+    const { email, generation } = await seed('created');
+    let signal: AbortSignal | undefined;
+    const started = Date.now();
+    gm.markGmailHandled.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+    const result = await markIngestedGmailHandled(email, generation, {
+      sleep: async () => {},
+      budgetMs: 300,
+      modifyClient: (_k: string, _m: string, s?: AbortSignal) => { signal = s; return sessionFor(SUB)(); },
+    });
+    expect(result).toBe('failed');
+    expect(signal?.aborted).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lock held by another transaction cannot hold the mark past its deadline', async () => {
+    const { email, generation, connId } = await seed('created');
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    // A reconnect-like writer holds the connection row (FOR UPDATE) for 3 s.
+    const holder = runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      // appDb (not the test client) so the row lock lives in this transaction.
+      await appDb.select({ id: ticketMailboxConnections.id }).from(ticketMailboxConnections)
+        .where(eq(ticketMailboxConnections.id, connId)).for('update');
+      locked();
+      await Promise.race([held, new Promise((r) => setTimeout(r, 3_000))]);
+    }));
+    await lockTaken;
+    const started = Date.now();
+    const result = await markIngestedGmailHandled(email, generation, { ...deps, budgetMs: 400 });
+    const elapsed = Date.now() - started;
+    release();
+    await holder;
+    expect(result).toBe('failed');
+    expect(elapsed).toBeLessThan(2_000);
+    expect(gm.markGmailHandled).not.toHaveBeenCalled();
   });
 
   it('does nothing when the feature is off', async () => {

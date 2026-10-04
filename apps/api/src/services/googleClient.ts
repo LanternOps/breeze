@@ -149,11 +149,12 @@ export interface InboundMailboxSession {
 export function getInboundModifyGmailClient(
   decryptedKeyJson: string,
   targetMailboxEmail: string,
+  signal?: AbortSignal,
 ): InboundMailboxSession {
   return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [
     ...GMAIL_INBOUND_MODIFY_SCOPES,
     ...GMAIL_INBOUND_SCOPES.filter((sc) => sc !== 'https://www.googleapis.com/auth/gmail.readonly'),
-  ]);
+  ], GMAIL_MODIFY_REQUEST_TIMEOUT_MS, signal);
 }
 
 export function getInboundMailboxSession(
@@ -163,10 +164,16 @@ export function getInboundMailboxSession(
   return buildInboundSession(decryptedKeyJson, targetMailboxEmail, [...GMAIL_INBOUND_SCOPES]);
 }
 
+/** Per-request timeout for the best-effort mark-handled session: short, because
+ *  it runs inside the shared inbound worker and holds a row lock. */
+export const GMAIL_MODIFY_REQUEST_TIMEOUT_MS = 8_000;
+
 function buildInboundSession(
   decryptedKeyJson: string,
   targetMailboxEmail: string,
   scopes: string[],
+  timeoutMs: number = GMAIL_REQUEST_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): InboundMailboxSession {
   const key = parseServiceAccountKey(decryptedKeyJson);
   const auth = new gmailAuth.JWT({
@@ -176,7 +183,9 @@ function buildInboundSession(
     subject: targetMailboxEmail, // DWD: impersonate the mailbox
   });
   return {
-    gmail: gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS }),
+    // `signal` (optional) aborts every request of this session at once, so a
+    // caller can bound the whole operation, not just each request.
+    gmail: gmail({ version: 'v1', auth, timeout: timeoutMs, ...(signal ? { signal } : {}) }),
     async identity(): Promise<MailboxIdentity> {
       // `openid` makes the DWD token carry the impersonated user's identity; the
       // OpenID UserInfo endpoint returns that account's immutable `sub`. Uses the
@@ -184,7 +193,8 @@ function buildInboundSession(
       // extra @googleapis package is pulled in.
       const res = await auth.request<{ sub?: unknown; email?: unknown }>({
         url: 'https://openidconnect.googleapis.com/v1/userinfo',
-        timeout: GMAIL_REQUEST_TIMEOUT_MS,
+        timeout: timeoutMs,
+        ...(signal ? { signal } : {}),
       });
       const sub = res.data?.sub;
       if (typeof sub !== 'string' || sub.length === 0) {
