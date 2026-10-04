@@ -51,6 +51,7 @@ export type SuggestionRowProps = {
   onMarkDone: (suggestion: RemediationSuggestion) => void;
   onRequestApproval: (suggestion: RemediationSuggestion) => void;
   onSaveReviewed: (suggestion: RemediationSuggestion) => void;
+  onDraftScript: (suggestion: RemediationSuggestion) => void | Promise<void>;
 };
 
 /** Proven-fix track record text for a row whose evidence carries the memory stats. */
@@ -79,7 +80,7 @@ export default function SuggestionRow(props: SuggestionRowProps) {
   const {
     suggestion, approvalStatus, editDraft, setEditDraft, busy, reviewed, reviewedChoice, onReviewedChoice,
     savingReviewed, setSavingReviewed, savingReviewedBusy, canManagePartnerWide,
-    onUpdate, onBeginEdit, onCancelEdit, onSaveEdit, onExecute, onVote, onMarkDone, onRequestApproval, onSaveReviewed,
+    onUpdate, onBeginEdit, onCancelEdit, onSaveEdit, onExecute, onVote, onMarkDone, onRequestApproval, onSaveReviewed, onDraftScript,
   } = props;
       const approvalPending = requiresExecutionApproval(suggestion) && suggestion.elevationRequestId && approvalStatus === 'pending';
     const editing = editDraft;
@@ -351,10 +352,9 @@ export default function SuggestionRow(props: SuggestionRowProps) {
               </button>
             )}
             {suggestion.targetType === 'script_draft' && (
-              // Seam for Task 20 part 2: the hand-off handler is wired there.
               <button
                 type="button"
-                disabled
+                onClick={() => void onDraftScript(suggestion)}
                 data-testid={`suggestion-draft-${suggestion.id}`}
                 className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
               >

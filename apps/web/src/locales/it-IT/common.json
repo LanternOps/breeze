@@ -2404,9 +2404,11 @@
           "updateFailed": "Impossibile aggiornare la correzione suggerita",
           "executeFailed": "Impossibile eseguire la correzione suggerita",
           "approvalFailed": "Impossibile richiedere l'approvazione",
-          "researchFailed": "Impossibile avviare la ricerca"
+          "researchFailed": "Impossibile avviare la ricerca",
+          "draftFailed": "Impossibile aprire la bozza dello script."
         },
         "messages": {
+          "draftCopied": "L’archiviazione è bloccata: il riepilogo è stato copiato; incollalo nel generatore di script.",
           "disabled": "Le correzioni suggerite sono disabilitate",
           "generated": "Correzioni suggerite generate",
           "accepted": "Correzione suggerita accettata",

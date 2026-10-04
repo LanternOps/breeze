@@ -2404,9 +2404,11 @@
           "updateFailed": "Der vorgeschlagene Fix konnte nicht aktualisiert werden",
           "executeFailed": "Der vorgeschlagene Fix konnte nicht ausgeführt werden",
           "approvalFailed": "Die Genehmigung konnte nicht angefordert werden",
-          "researchFailed": "Recherche konnte nicht gestartet werden"
+          "researchFailed": "Recherche konnte nicht gestartet werden",
+          "draftFailed": "Der Skriptentwurf konnte nicht geöffnet werden."
         },
         "messages": {
+          "draftCopied": "Speicher ist blockiert — der Auftrag wurde kopiert; füge ihn im Skript-Builder ein.",
           "disabled": "Vorgeschlagene Korrekturen sind deaktiviert",
           "generated": "Vorgeschlagene Korrekturen generiert",
           "accepted": "Vorgeschlagener Fix akzeptiert",

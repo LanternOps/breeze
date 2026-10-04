@@ -5,6 +5,7 @@ import { RefreshCw, Sparkles } from 'lucide-react';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
+import { draftPrompt, stashScriptDraft } from '../../lib/scriptDraftHandoff';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import ResearchControls from './ResearchControls';
 import SuggestionRow from './SuggestionRow';
@@ -287,6 +288,24 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
     }
   }
 
+  // A read (GET), not a mutation: runAction does not apply, but failure is still toasted.
+  async function draftScript(suggestion: RemediationSuggestion) {
+    try {
+      const res = await fetchWithAuth(`/remediation-suggestions/${suggestion.id}/draft-brief`);
+      if (!res.ok) throw new Error('draft-brief failed');
+      const { data } = await res.json();
+      const handoff = { brief: data.brief, language: data.language, title: data.title, suggestionId: suggestion.id };
+      if (stashScriptDraft(handoff)) {
+        window.location.assign('/scripts/new');
+        return;
+      }
+      await navigator.clipboard?.writeText(draftPrompt(handoff));
+      showToast({ type: 'warning', message: t('longTail.remediation.RemediationSuggestionsPanel.messages.draftCopied') });
+    } catch {
+      showToast({ type: 'error', message: t('longTail.remediation.RemediationSuggestionsPanel.errors.draftFailed') });
+    }
+  }
+
   async function markDone(suggestion: RemediationSuggestion) {
     if (!canMarkDone(suggestion)) return;
     setMarkingDoneId(suggestion.id);
@@ -408,6 +427,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
       onMarkDone={markDone}
       onRequestApproval={requestApproval}
       onSaveReviewed={saveReviewedSteps}
+      onDraftScript={draftScript}
     />
   );
 

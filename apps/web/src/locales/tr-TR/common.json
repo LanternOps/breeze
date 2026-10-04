@@ -2404,9 +2404,11 @@
           "updateFailed": "Önerilen düzeltme güncellenemedi",
           "executeFailed": "Önerilen düzeltme yürütülemedi",
           "approvalFailed": "Onay istenemedi",
-          "researchFailed": "Araştırma başlatılamadı"
+          "researchFailed": "Araştırma başlatılamadı",
+          "draftFailed": "Betik taslağı açılamadı."
         },
         "messages": {
+          "draftCopied": "Depolama engelli — özet kopyalandı; betik oluşturucuya yapıştırın.",
           "disabled": "Önerilen düzeltmeler devre dışı bırakıldı",
           "generated": "Önerilen düzeltmeler oluşturuldu",
           "accepted": "Önerilen düzeltme kabul edildi",

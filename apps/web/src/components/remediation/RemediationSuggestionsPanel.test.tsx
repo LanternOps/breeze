@@ -809,4 +809,47 @@ describe('RemediationSuggestionsPanel', () => {
     expect(screen.queryByTestId('research-state-credits')).toBeNull();
     expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
+
+  describe('Draft a script hand-off', () => {
+    const draftRow = { ...suggestion, id: 'd', origin: 'ai_research', targetType: 'script_draft', scriptId: null, parameters: { brief: 'Clear queue', language: 'powershell' }, outcome: null };
+    const briefUrl = '/remediation-suggestions/d/draft-brief';
+    const serveBrief = (brief: Response) => serveW2({ list: [draftRow], extra: (url) => (url === briefUrl ? brief : undefined) });
+    const assign = vi.fn();
+    beforeEach(() => {
+      sessionStorage.clear();
+      assign.mockReset();
+      Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true });
+    });
+
+    it('fetches the brief, stashes it and navigates to the builder', async () => {
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      const button = await screen.findByTestId('suggestion-draft-d');
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(button);
+      await waitFor(() => expect(assign).toHaveBeenCalledWith('/scripts/new'));
+      expect(JSON.parse(sessionStorage.getItem('breeze.scriptDraftHandoff')!)).toMatchObject({ brief: 'Clear queue', suggestionId: 'd' });
+    });
+
+    it('toasts an error and does not navigate when the brief cannot be fetched', async () => {
+      serveBrief(makeJsonResponse({ error: 'nope' }, false, 500));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Could not open the script draft.' })));
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('copies the prompt to the clipboard when storage is blocked', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('Write a PowerShell script for this fix: Clear queue'));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+      expect(assign).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+  });
 });

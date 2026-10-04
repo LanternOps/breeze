@@ -2404,9 +2404,11 @@
           "updateFailed": "Could not update suggested fix",
           "executeFailed": "Could not execute suggested fix",
           "approvalFailed": "Could not request approval",
-          "researchFailed": "Could not start research"
+          "researchFailed": "Could not start research",
+          "draftFailed": "Could not open the script draft."
         },
         "messages": {
+          "draftCopied": "Storage is blocked — the brief was copied; paste it into the script builder.",
           "disabled": "Suggested fixes are disabled",
           "generated": "Suggested fixes generated",
           "accepted": "Suggested fix accepted",

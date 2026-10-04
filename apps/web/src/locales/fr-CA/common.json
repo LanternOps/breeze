@@ -2404,9 +2404,11 @@
           "updateFailed": "Impossible de mettre à jour la solution suggérée",
           "executeFailed": "Impossible d’exécuter la solution suggérée",
           "approvalFailed": "Impossible de demander l’approbation",
-          "researchFailed": "Impossible de lancer la recherche"
+          "researchFailed": "Impossible de lancer la recherche",
+          "draftFailed": "Impossible d’ouvrir le brouillon du script."
         },
         "messages": {
+          "draftCopied": "Le stockage est bloqué : le résumé a été copié; collez-le dans le générateur de scripts.",
           "disabled": "Les solutions proposées sont désactivées",
           "generated": "Corrections suggérées générées",
           "accepted": "Solution suggérée acceptée",
