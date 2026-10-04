@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RemediationSuggestionsPanel from './RemediationSuggestionsPanel';
 import { fetchWithAuth } from '../../stores/auth';
@@ -815,10 +815,18 @@ describe('RemediationSuggestionsPanel', () => {
     const briefUrl = '/remediation-suggestions/d/draft-brief';
     const serveBrief = (brief: Response) => serveW2({ list: [draftRow], extra: (url) => (url === briefUrl ? brief : undefined) });
     const assign = vi.fn();
+    const originalLocation = window.location;
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     beforeEach(() => {
       sessionStorage.clear();
       assign.mockReset();
-      Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true });
+      Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true, configurable: true });
+    });
+    afterEach(() => {
+      vi.restoreAllMocks(); // Storage.prototype.setItem spy
+      Object.defineProperty(window, 'location', { value: originalLocation, writable: true, configurable: true });
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      else delete (navigator as unknown as { clipboard?: unknown }).clipboard;
     });
 
     it('fetches the brief, stashes it and navigates to the builder', async () => {
@@ -849,7 +857,26 @@ describe('RemediationSuggestionsPanel', () => {
       await waitFor(() => expect(writeText).toHaveBeenCalledWith('Write a PowerShell script for this fix: Clear queue'));
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
       expect(assign).not.toHaveBeenCalled();
-      vi.restoreAllMocks();
+    });
+
+    it('shows the failure toast, not "copied", when storage is blocked and there is no Clipboard API', async () => {
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'powershell', title: 'Clear print queue' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Could not open the script draft.' })));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed brief without stashing or navigating', async () => {
+      serveBrief(makeJsonResponse({ data: { brief: 'Clear queue', language: 'ruby', title: 'x' } }));
+      render(<RemediationSuggestionsPanel sourceType="anomaly" sourceId="anomaly-1" />);
+      fireEvent.click(await screen.findByTestId('suggestion-draft-d'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(sessionStorage.getItem('breeze.scriptDraftHandoff')).toBeNull();
+      expect(assign).not.toHaveBeenCalled();
     });
   });
 });

@@ -294,12 +294,17 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
       const res = await fetchWithAuth(`/remediation-suggestions/${suggestion.id}/draft-brief`);
       if (!res.ok) throw new Error('draft-brief failed');
       const { data } = await res.json();
+      const validLanguage = ['powershell', 'bash', 'python', 'cmd'].includes(data?.language);
+      if (typeof data?.brief !== 'string' || !data.brief || typeof data?.title !== 'string' || !validLanguage) {
+        throw new Error('malformed draft brief');
+      }
       const handoff = { brief: data.brief, language: data.language, title: data.title, suggestionId: suggestion.id };
       if (stashScriptDraft(handoff)) {
         window.location.assign('/scripts/new');
         return;
       }
-      await navigator.clipboard?.writeText(draftPrompt(handoff));
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(draftPrompt(handoff));
       showToast({ type: 'warning', message: t('longTail.remediation.RemediationSuggestionsPanel.messages.draftCopied') });
     } catch {
       showToast({ type: 'error', message: t('longTail.remediation.RemediationSuggestionsPanel.errors.draftFailed') });
