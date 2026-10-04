@@ -13,7 +13,7 @@ vi.mock('../../services/ticketMailbox/googleMailboxClient', async (importActual)
   return { ...actual, markGmailHandled: gm.markGmailHandled };
 });
 
-import { withSystemDbAccessContext } from '../../db';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { ticketMailboxConnections, googleWorkspaceConnections, ticketEmailInbound } from '../../db/schema';
 import { createPartner, createOrganization } from './db-utils';
 import { getTestDb } from './setup';
@@ -95,6 +95,44 @@ describe('markIngestedGmailHandled (post-ticket, real DB)', () => {
     await withSystemDbAccessContext(() => db.update(ticketMailboxConnections).set(patch as never).where(eq(ticketMailboxConnections.id, connId)));
     expect(await markIngestedGmailHandled(email, generation, deps)).toBe('not_ticketed');
     expect(gm.markGmailHandled).not.toHaveBeenCalled();
+  });
+
+  it('a reconnect that lands during the Gmail call waits until the call has finished', async () => {
+    const { email, generation, connId } = await seed('created');
+    let reconnect: Promise<unknown> | undefined;
+    let reconnectDone = false;
+    let doneDuringCall: boolean | undefined;
+    gm.markGmailHandled.mockImplementationOnce(async () => {
+      // A reconnect on its own connection, issued while the modify is in flight.
+      reconnect = runOutsideDbContext(() => withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+        .set({ consentAttemptId: '88888888-8888-4888-8888-888888888888' } as never)
+        .where(eq(ticketMailboxConnections.id, connId))))
+        .then(() => { reconnectDone = true; });
+      await new Promise((r) => setTimeout(r, 300));
+      doneDuringCall = reconnectDone;
+    });
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('marked');
+    expect(doneDuringCall).toBe(false);
+    await reconnect;
+    expect(reconnectDone).toBe(true);
+    // A later message from the old generation is no longer modified.
+    expect(await markIngestedGmailHandled(email, generation, deps)).toBe('not_ticketed');
+    expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry after a transient error re-checks the generation and stops if it rotated', async () => {
+    const { email, generation, connId } = await seed('created');
+    gm.markGmailHandled.mockImplementationOnce(async () => { throw Object.assign(new Error('backend'), { code: 503 }); });
+    const retryDeps = {
+      modifyClient: () => ({ fake: true }) as never,
+      sleep: async () => {
+        await withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+          .set({ googleAccountSub: 'goog-sub-NEW' } as never)
+          .where(eq(ticketMailboxConnections.id, connId)));
+      },
+    };
+    expect(await markIngestedGmailHandled(email, generation, retryDeps)).toBe('not_ticketed');
+    expect(gm.markGmailHandled).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when the feature is off', async () => {

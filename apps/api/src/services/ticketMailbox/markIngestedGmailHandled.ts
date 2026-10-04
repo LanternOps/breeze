@@ -48,6 +48,19 @@ export async function markIngestedGmailHandled(
   if (!parsed) return 'skipped';
   const { sub, gmailId } = parsed;
 
+  // The SAME generation that authorized ingestion, still connected, still the
+  // same Google account: a reconnect to a different account rotates
+  // consent_attempt_id / google_account_sub, and that account's mail must never
+  // be modified with an id taken from the old one.
+  const sameGeneration = and(
+    eq(ticketMailboxConnections.id, generation.connectionId),
+    eq(ticketMailboxConnections.partnerId, generation.partnerId),
+    eq(ticketMailboxConnections.provider, 'gmail'),
+    eq(ticketMailboxConnections.status, 'connected'),
+    eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
+    eq(ticketMailboxConnections.googleAccountSub, sub),
+  );
+
   let ctx: { saKey: string; mailbox: string } | null = null;
   try {
     ctx = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
@@ -63,18 +76,7 @@ export async function markIngestedGmailHandled(
         orgId: ticketMailboxConnections.orgId,
         mailboxAddress: ticketMailboxConnections.mailboxAddress,
       }).from(ticketMailboxConnections)
-        // The SAME generation that authorized ingestion, still connected, still the
-        // same Google account: a reconnect to a different account rotates
-        // consent_attempt_id / google_account_sub, and that account's mail must
-        // never be modified with an id taken from the old one.
-        .where(and(
-          eq(ticketMailboxConnections.id, generation.connectionId),
-          eq(ticketMailboxConnections.partnerId, generation.partnerId),
-          eq(ticketMailboxConnections.provider, 'gmail'),
-          eq(ticketMailboxConnections.status, 'connected'),
-          eq(ticketMailboxConnections.consentAttemptId, generation.consentAttemptId),
-          eq(ticketMailboxConnections.googleAccountSub, sub),
-        ))
+        .where(sameGeneration)
         .limit(1);
       if (!conn?.orgId || !conn.mailboxAddress) return null;
       const cred = await loadGoogleConnection(conn.orgId);
@@ -88,13 +90,28 @@ export async function markIngestedGmailHandled(
     return 'failed';
   }
   if (!ctx) return 'not_ticketed';
+  const { saKey, mailbox } = ctx;
 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const build = deps.modifyClient ?? getInboundModifyGmailClient;
   for (let attempt = 0; ; attempt++) {
     try {
-      await markGmailHandled(build(ctx.saKey, ctx.mailbox), ctx.mailbox, gmailId, cfg);
-      return 'marked';
+      // Each attempt re-checks the generation under a FOR SHARE lock held across
+      // the Gmail call, so a reconnect (which updates this row) either commits
+      // first and this attempt stops, or waits until the call has finished. The
+      // call is bounded by GMAIL_REQUEST_TIMEOUT_MS; no lock is held while
+      // sleeping between attempts.
+      const marked = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const [live] = await db.select({ id: ticketMailboxConnections.id })
+          .from(ticketMailboxConnections)
+          .where(sameGeneration)
+          .limit(1)
+          .for('share');
+        if (!live) return false;
+        await markGmailHandled(build(saKey, mailbox), mailbox, gmailId, cfg);
+        return true;
+      }, 'gmailHandled.mark'));
+      return marked ? 'marked' : 'not_ticketed';
     } catch (err) {
       const kind = classifyGmailError(err);
       const delay = RETRY_DELAYS_MS[attempt];
