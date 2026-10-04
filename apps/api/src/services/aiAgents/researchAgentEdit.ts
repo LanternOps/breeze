@@ -60,6 +60,8 @@ export function pinResearchCreateInput(input: CreateAiAgentInput): CreateAiAgent
     mode: 'act',
     toolAllowlist: [],
     instructions: null,
+    // Model binding is not PATCH-editable for research, so it must not be user-chosen at create.
+    offeringId: null,
     cooldownSeconds: 900,
     protectedResources: aiAgentProtectedResourcesSchema.parse({}),
     triggers: aiAgentTriggersSchema.parse({}),

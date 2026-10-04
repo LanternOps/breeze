@@ -1392,3 +1392,14 @@ describe('research create pinning (W2 review)', () => {
     expect(limits.maxActionsPerRun).not.toBe(99);
   });
 });
+
+describe('research create pinning: offeringId (final fix F6)', () => {
+  it('pins offeringId to null on a research create (not PATCH-editable, so never user-chosen)', async () => {
+    state.returnedRow = { ...storedRow, kind: 'research' };
+    bindAgentOffering.mockClear();
+    await createAgent(auth(), { orgId: 'o1', partnerId: null }, {
+      ...createInput, kind: 'research', mode: 'act', name: 'Org research', offeringId: 'opus',
+    } as never);
+    expect(bindAgentOffering).toHaveBeenCalledWith({ orgId: 'o1', partnerId: null }, null, { userId: 'u1' });
+  });
+});
