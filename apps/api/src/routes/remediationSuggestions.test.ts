@@ -357,6 +357,30 @@ describe('remediation suggestion routes', () => {
     expect(body.data.status).toBe('accepted');
   });
 
+  it('carries builtinAction in the feedback metadata when a built-in suggestion is accepted', async () => {
+    const builtin = { ...baseSuggestion, targetType: 'builtin_action', builtinAction: 'restart_service', scriptId: null };
+    mockSuggestionLoad(builtin);
+    dbMocks.updateMock.mockReturnValueOnce({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...builtin, status: 'accepted', acceptedBy: 'user-1', acceptedAt: new Date('2026-06-18T12:05:00.000Z') }]),
+        }),
+      }),
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ status: 'accepted' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.emitFeedbackMock).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'suggestion.accepted',
+      metadata: expect.objectContaining({ targetType: 'builtin_action', builtinAction: 'restart_service' }),
+    }));
+  });
+
   it('creates and links a pending elevation request for accepted high-risk script suggestions', async () => {
     const accepted = {
       ...baseSuggestion,

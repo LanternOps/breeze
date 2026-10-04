@@ -1472,6 +1472,7 @@ remediationSuggestionRoutes.patch(
         sourceType: updated.sourceType,
         sourceId: updated.sourceId,
         targetType: updated.targetType,
+        builtinAction: updated.builtinAction,
         scriptId: updated.scriptId,
         playbookId: updated.playbookId,
         scriptExecutionId: updated.scriptExecutionId,
