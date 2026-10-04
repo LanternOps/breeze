@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { withSystemDbAccessContext } from '../../db';
-import { deviceCommands, devices } from '../../db/schema';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { deviceCommands, devices, users } from '../../db/schema';
 import { claimPendingCommandForDelivery } from '../../services/commandDispatch';
 import {
   assignUserToPartner,
@@ -88,25 +88,33 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
     device = await makeDevice(org.id, site.id);
   });
 
-  async function partnerTech(status: 'active' | 'disabled' = 'active') {
+  async function partnerTech(status: 'active' | 'disabled' = 'active', partnerId = partner.id) {
     const user = await createUser({
-      partnerId: partner.id,
+      partnerId,
       orgId: null,
       email: `tech-${randomUUID()}@example.com`,
       status,
     });
-    const role = await createRole({ scope: 'partner', partnerId: partner.id });
-    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const role = await createRole({ scope: 'partner', partnerId });
+    await assignUserToPartner(user.id, partnerId, role.id, 'all');
     return user;
+  }
+
+  /** A platform admin whose home partner is NOT the device's partner. */
+  async function platformAdmin(status: 'active' | 'disabled' = 'active') {
+    const home = await createPartner();
+    const admin = await partnerTech(status, home.id);
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, admin.id));
+    return admin;
   }
 
   it('control: pushes a command queued by an active technician', async () => {
     const tech = await partnerTech();
     const cmd = await queue(device.id, org.id, tech.id);
 
-    const claimed = await push(cmd.id);
+    const outcome = await push(cmd.id);
 
-    expect(claimed?.id).toBe(cmd.id);
+    expect(outcome).toMatchObject({ status: 'claimed', id: cmd.id });
     expect((await commandRow(cmd.id))?.status).toBe('sent');
   });
 
@@ -114,7 +122,7 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
     const tech = await partnerTech('disabled');
     const cmd = await queue(device.id, org.id, tech.id);
 
-    expect(await push(cmd.id)).toBeNull();
+    expect(await push(cmd.id)).toEqual({ status: 'cancelled', id: cmd.id, reason: 'requester_inactive' });
 
     const row = await commandRow(cmd.id);
     expect(row?.status).toBe('cancelled');
@@ -129,7 +137,7 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
     const otherSite = await createSite({ orgId: otherOrg.id });
     await getTestDb().update(devices).set({ orgId: otherOrg.id, siteId: otherSite.id }).where(eq(devices.id, device.id));
 
-    expect(await push(cmd.id)).toBeNull();
+    expect(await push(cmd.id)).toEqual({ status: 'cancelled', id: cmd.id, reason: 'device_moved_org' });
 
     const row = await commandRow(cmd.id);
     expect(row?.status).toBe('cancelled');
@@ -148,9 +156,74 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
       duringLock = await push(cmd.id);
     });
 
-    expect(duringLock).toBeNull();
+    expect(duringLock).toEqual({ status: 'not_claimable', id: cmd.id });
     expect((await commandRow(cmd.id))?.status).toBe('pending');
     // Once released, the push claims it normally.
-    expect((await push(cmd.id))?.id).toBe(cmd.id);
+    expect(await push(cmd.id)).toMatchObject({ status: 'claimed', id: cmd.id });
+  });
+
+  describe('platform admins', () => {
+    it('pushes an active platform admin\'s command to another partner\'s online device', async () => {
+      const admin = await platformAdmin();
+      const cmd = await queue(device.id, org.id, admin.id);
+
+      expect(await push(cmd.id)).toMatchObject({ status: 'claimed', id: cmd.id });
+      expect((await commandRow(cmd.id))?.status).toBe('sent');
+    });
+
+    it('cancels a DEACTIVATED platform admin\'s command', async () => {
+      const admin = await platformAdmin('disabled');
+      const cmd = await queue(device.id, org.id, admin.id);
+
+      expect(await push(cmd.id)).toEqual({ status: 'cancelled', id: cmd.id, reason: 'requester_inactive' });
+    });
+
+    it('still cancels an active NON-admin user of another partner', async () => {
+      const otherPartner = await createPartner();
+      const foreignTech = await partnerTech('active', otherPartner.id);
+      const cmd = await queue(device.id, org.id, foreignTech.id);
+
+      expect(await push(cmd.id)).toEqual({ status: 'cancelled', id: cmd.id, reason: 'requester_inactive' });
+    });
+  });
+
+  describe('inside a caller-held org-scoped context (scriptDispatch immediate path)', () => {
+    function orgContext() {
+      return {
+        scope: 'organization' as const,
+        orgId: org.id,
+        accessibleOrgIds: [org.id],
+        accessiblePartnerIds: [],
+        currentPartnerId: partner.id,
+      };
+    }
+
+    it('claims a valid command on the caller\'s own transaction', async () => {
+      const tech = await partnerTech();
+      const cmd = await queue(device.id, org.id, tech.id);
+
+      const outcome = await withDbAccessContext(orgContext(), () => claimPendingCommandForDelivery(cmd.id));
+
+      expect(outcome).toMatchObject({ status: 'claimed', id: cmd.id });
+      expect((await commandRow(cmd.id))?.status).toBe('sent');
+    });
+
+    it('cancels a disabled requester\'s command and the caller\'s transaction stays usable', async () => {
+      const tech = await partnerTech('disabled');
+      const cmd = await queue(device.id, org.id, tech.id);
+
+      const after = await withDbAccessContext(orgContext(), async () => {
+        const outcome = await claimPendingCommandForDelivery(cmd.id);
+        expect(outcome).toEqual({ status: 'cancelled', id: cmd.id, reason: 'requester_inactive' });
+        // The caller keeps working on the same transaction afterwards.
+        const { db } = await import('../../db');
+        return db.execute(sql`SELECT 1 AS ok`);
+      });
+
+      expect((after as unknown as Array<{ ok: number }>)[0]?.ok).toBe(1);
+      const row = await commandRow(cmd.id);
+      expect(row?.status).toBe('cancelled');
+      expect(row?.result).toMatchObject({ reason: 'requester_inactive', cancelledBy: 'claim_eligibility' });
+    });
   });
 });

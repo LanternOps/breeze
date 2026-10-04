@@ -1,3 +1,4 @@
+import { cancelledCommandError } from './commandCancelMessage';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { findVariableTokens, isSoftwareFileType, variableToken } from '@breeze/shared';
 import { db } from '../db';
@@ -176,6 +177,14 @@ export async function dispatchSoftwareInstallToDevice(
 
   if (!res.ok) {
     throw new Error(`software_install dispatch refused for device ${device.id}: ${res.error}`);
+  }
+  // The push's claim-time eligibility cancelled the row before the result row
+  // below is linked to it, so nothing else will terminalise that result: refuse
+  // like the seam's own refusals, and the caller fails it with this reason.
+  if (res.delivery === 'cancelled') {
+    throw new Error(
+      `software_install dispatch refused for device ${device.id}: ${cancelledCommandError(res.cancelReason)}`,
+    );
   }
 
   // Link the row for reconciliation, cancel purge, and the "queued — device

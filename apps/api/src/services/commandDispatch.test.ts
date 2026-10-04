@@ -180,6 +180,7 @@ describe('command dispatch helpers', () => {
     const result = await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'));
 
     expect(result).toEqual({
+      status: 'claimed',
       id: 'cmd-1',
       executedAt: new Date('2026-03-31T00:00:00Z'),
     });
@@ -573,7 +574,9 @@ describe('command dispatch helpers', () => {
       });
       const set = stubSentUpdate();
 
-      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'cancelled', id: 'cmd-1', reason: 'requester_inactive',
+      });
       expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
     });
 
@@ -586,7 +589,9 @@ describe('command dispatch helpers', () => {
       });
       const set = stubSentUpdate();
 
-      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'cancelled', id: 'cmd-1', reason: 'device_moved_org',
+      });
       expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }));
     });
 
@@ -599,7 +604,9 @@ describe('command dispatch helpers', () => {
       });
       const set = stubSentUpdate();
 
-      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'held', id: 'cmd-1', reason: 'held_maintenance_suppression',
+      });
       expect(set).not.toHaveBeenCalled();
     });
 
@@ -612,7 +619,9 @@ describe('command dispatch helpers', () => {
       });
       stubSentUpdate();
 
-      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toBeNull();
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'held', id: 'cmd-1', reason: 'power_state_barrier',
+      });
       expect(partitionClaimableMock.mock.calls[0]![3]).toEqual({ inFlight: 2 });
     });
 
@@ -621,15 +630,36 @@ describe('command dispatch helpers', () => {
       const set = stubSentUpdate();
 
       const at = new Date('2026-03-31T00:00:00Z');
-      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ id: 'cmd-1', executedAt: at });
+      expect(await claimPendingCommandForDelivery('cmd-1', at)).toEqual({ status: 'claimed', id: 'cmd-1', executedAt: at });
       expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent', executedAt: at }));
     });
 
-    it('returns null without consulting eligibility when the row is gone, locked or not pending', async () => {
+    it('a lost lock race (40P01) inside the claim is reported as held, not thrown, and nothing is pushed', async () => {
+      stubSingleClaimCandidate();
+      partitionClaimableMock.mockRejectedValue(
+        Object.assign(new Error('deadlock detected'), { code: '40P01' }),
+      );
+      const set = stubSentUpdate();
+
+      expect(await claimPendingCommandForDelivery('cmd-1', new Date('2026-03-31T00:00:00Z'))).toEqual({
+        status: 'held', id: 'cmd-1', reason: 'claim_lock_conflict',
+      });
+      expect(set).not.toHaveBeenCalled();
+    });
+
+    it('any other error inside the claim still propagates', async () => {
+      stubSingleClaimCandidate();
+      partitionClaimableMock.mockRejectedValue(Object.assign(new Error('boom'), { code: '42P01' }));
+      stubSentUpdate();
+
+      await expect(claimPendingCommandForDelivery('cmd-1')).rejects.toThrow('boom');
+    });
+
+    it('reports not_claimable without consulting eligibility when the row is gone, locked or not pending', async () => {
       stubSingleClaimCandidate(null);
       const set = stubSentUpdate();
 
-      expect(await claimPendingCommandForDelivery('cmd-1')).toBeNull();
+      expect(await claimPendingCommandForDelivery('cmd-1')).toEqual({ status: 'not_claimable', id: 'cmd-1' });
       expect(partitionClaimableMock).not.toHaveBeenCalled();
       expect(set).not.toHaveBeenCalled();
     });

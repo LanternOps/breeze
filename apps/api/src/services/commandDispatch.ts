@@ -1,7 +1,13 @@
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { deviceCommands, devices, organizations, peripheralPolicyDeviceStates } from '../db/schema';
-import { partitionClaimable, POWER_STATE_BARRIER_TYPES } from './commandClaimEligibility';
+import {
+  partitionClaimable,
+  POWER_STATE_BARRIER_TYPES,
+  type ClaimCancelReason,
+  type ClaimHoldReason,
+} from './commandClaimEligibility';
+import { isTransientLockError, pgErrorCode } from '../utils/pgErrors';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 // Side-effect import: registers the `network_diagnostic` delivery
@@ -21,19 +27,64 @@ type DeviceCommandRow = typeof deviceCommands.$inferSelect;
 /** Refused rows a parked device's claim cancels per heartbeat; the rest go on the next one. */
 const PARKED_REFUSED_CANCEL_BATCH = 100;
 
+/**
+ * What the single-command (WebSocket push) claim did with the row.
+ *
+ * - `claimed`: flipped to `sent`; the caller now owns delivering it (or
+ *   releasing the claim).
+ * - `cancelled`: claim-time eligibility TERMINALISED the row (and its owning
+ *   record) exactly as the heartbeat claim would. Terminal: never deliver it,
+ *   never wait for a result, and surface `reason` to the requester.
+ * - `held`: left `pending` for the next heartbeat claim (an eligibility lookup
+ *   failed, a per-type hold or the power-state barrier applies, or the claim
+ *   lost a lock race to a concurrent writer — `claim_lock_conflict`).
+ * - `not_claimable`: nothing done here — the row is gone, no longer `pending`,
+ *   past its deadline, invisible to this context, or locked by a concurrent
+ *   claim (which then owns its delivery).
+ */
+export type PushClaimOutcome =
+  | { status: 'claimed'; id: string; executedAt: Date }
+  | { status: 'cancelled'; id: string; reason: ClaimCancelReason }
+  | { status: 'held'; id: string; reason: ClaimHoldReason | 'claim_lock_conflict' }
+  | { status: 'not_claimable'; id: string };
+
 export async function claimPendingCommandForDelivery(
   commandId: string,
   executedAt: Date = new Date(),
-): Promise<{ id: string; executedAt: Date } | null> {
+): Promise<PushClaimOutcome> {
   // device_commands is system-scoped (agent WS path) and this runs from
   // executeCommand's runOutsideDbContext block — establish a system context so
   // the write isn't a contextless bare-pool write (#1375 warning flood).
   // The whole claim runs on ONE connection: the system context's transaction
-  // (or the caller's own context, which withSystemDbAccessContext joins), with
-  // a savepoint so `partitionClaimable` gets a real transaction handle for its
+  // (or the caller's own context, which withSystemDbAccessContext joins), in a
+  // savepoint so `partitionClaimable` gets a real transaction handle for its
   // own savepointed resolver reads. Nothing below opens a second pooled
   // connection (#1105, #7919).
-  const rows = await withSystemDbAccessContext(() => db.transaction(async (tx) => {
+  //
+  // The savepoint also bounds a lost lock race. A cancel here terminalises the
+  // owning record (script_executions / deployment_results / patch_job_results)
+  // after locking the command row, while an org move locks those children
+  // first (its devices cascade) and the command rows after — so the two can
+  // deadlock. Postgres then aborts one side; if it is this one, the savepoint
+  // rolls back (the row stays `pending`, untouched) and the push reports
+  // `held` so the next heartbeat re-evaluates it, instead of failing the
+  // caller's request.
+  return withSystemDbAccessContext(async () => {
+    try {
+      return await claimInSavepoint(commandId, executedAt);
+    } catch (err) {
+      if (!isTransientLockError(err)) throw err;
+      console.warn('[commandDispatch] push claim lost a lock race; leaving the command pending', {
+        commandId,
+        code: pgErrorCode(err),
+      });
+      return { status: 'held', id: commandId, reason: 'claim_lock_conflict' } as const;
+    }
+  });
+}
+
+async function claimInSavepoint(commandId: string, executedAt: Date): Promise<PushClaimOutcome> {
+  return db.transaction(async (tx): Promise<PushClaimOutcome> => {
     // The WebSocket push applies EXACTLY the claim-time eligibility the
     // heartbeat claim applies (`partitionClaimable`): parked-org, org drift
     // (`submitted_org_id` vs the device's CURRENT org), erased submitter org,
@@ -76,7 +127,7 @@ export async function claimPendingCommandForDelivery(
       )
       .limit(1)
       .for('update', { of: deviceCommands, skipLocked: true });
-    if (!candidate) return [];
+    if (!candidate) return { status: 'not_claimable', id: commandId };
 
     // The power-state barrier needs the device's in-flight count; only read it
     // when the candidate is a power-state command (it is ignored otherwise).
@@ -96,7 +147,7 @@ export async function claimPendingCommandForDelivery(
       inFlight = inFlightRow?.inFlight ?? 0;
     }
 
-    const { claimable } = await partitionClaimable(
+    const { claimable, cancelled, held } = await partitionClaimable(
       tx,
       {
         id: candidate.deviceId,
@@ -116,9 +167,13 @@ export async function claimPendingCommandForDelivery(
       ],
       { inFlight },
     );
-    if (!claimable.some((c) => c.id === candidate.id)) return [];
+    const cancel = cancelled.find((c) => c.id === candidate.id);
+    if (cancel) return { status: 'cancelled', id: commandId, reason: cancel.reason };
+    const hold = held.find((h) => h.id === candidate.id);
+    if (hold) return { status: 'held', id: commandId, reason: hold.reason };
+    if (!claimable.some((c) => c.id === candidate.id)) return { status: 'not_claimable', id: commandId };
 
-    return tx
+    const flipped = await tx
       .update(deviceCommands)
       .set({ status: 'sent', executedAt })
       .where(
@@ -132,9 +187,10 @@ export async function claimPendingCommandForDelivery(
         ),
       )
       .returning({ id: deviceCommands.id });
-  }));
-
-  return rows.length > 0 ? { id: commandId, executedAt } : null;
+    return flipped.length > 0
+      ? { status: 'claimed', id: commandId, executedAt }
+      : { status: 'not_claimable', id: commandId };
+  });
 }
 
 /**

@@ -230,7 +230,7 @@ commandsRoutes.post(
       // records as INSERT_FAILED for that device rather than 500-ing the whole
       // batch and losing every prior success.
       let command: QueuedCommand | undefined;
-      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | undefined;
+      let delivery: 'delivered' | 'queued_offline' | 'queued_live' | 'cancelled' | undefined;
       try {
         // `wake` never reaches here — it returns from its own relay path above.
         const res = await dispatchDeviceCommand({ deviceId, type: data.type, payload: data.payload || {}, userId: auth.user.id });
@@ -604,9 +604,11 @@ commandsRoutes.post(
       createdAt: command.createdAt,
       // #5128: how the command was handed over, and when it expires if the
       // device never comes back. 'queued_offline' is what the UI renders as
-      // "Runs when the device is online — expires <date>".
+      // "Runs when the device is online — expires <date>". 'cancelled' means
+      // the push's claim-time check refused it; `cancelReason` says why.
       delivery: res.delivery,
       deliverBy: res.deliverBy,
+      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
     }, 201);
   }
 );
@@ -877,6 +879,7 @@ commandsRoutes.post(
       createdAt: command.createdAt,
       delivery: res.delivery,
       deliverBy: res.deliverBy,
+      ...(res.cancelReason ? { cancelReason: res.cancelReason } : {}),
     }, 201);
   }
 );
