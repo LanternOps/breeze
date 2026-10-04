@@ -387,17 +387,16 @@ describe('helper routes permission derivation', () => {
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
   });
 
-  it('reports the effective enabled setting from policy, not a constant', async () => {
+  it('refuses /helper/config with helper_disabled when the effective setting is off', async () => {
     mockHelperAuthDevice();
-    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
     vi.mocked(buildHelperConfigUpdate).mockResolvedValueOnce({ enabled: false } as never);
 
     const res = await app.request('/helper/config', {
       headers: { Authorization: 'Bearer brz_agent_token' },
     });
 
-    expect(res.status).toBe(200);
-    expect((await res.json()).enabled).toBe(false);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('helper_disabled');
     expect(buildHelperConfigUpdate).toHaveBeenCalledWith('device-1', 'org-1');
   });
 

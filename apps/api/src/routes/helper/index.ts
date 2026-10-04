@@ -658,8 +658,7 @@ helperRoutes.get('/config', async (c) => {
 
   return c.json({
     // Resolved by helperAuth (services/helperSettings — same resolver as the
-    // agent heartbeat). This route stays reachable while disabled so a running
-    // Helper can learn it.
+    // agent heartbeat); helperAuth refuses a disabled device before this runs.
     enabled: c.get('helperEnabled') === true,
     permissionLevel,
     allowScreenCapture: true,

@@ -44,7 +44,6 @@ const seededOrgIds: string[] = [];
 const app = new Hono();
 app.use('*', helperAuth);
 app.get('/probe', (c) => c.json({ deviceId: c.get('helperDevice').id }));
-app.get('/helper/config', (c) => c.json({ enabled: c.get('helperEnabled') }));
 // Attempts a partner-axis UPDATE inside the AMBIENT DB context helperAuth opened,
 // so the assertion exercises the real middleware wiring, not a hand-built context.
 app.post('/forge-partner-write/:categoryId', async (c) => {
@@ -128,16 +127,12 @@ describe('helper auth device-credential lifecycle (real PostgreSQL)', () => {
     expect(await res.json()).toMatchObject({ deviceId: device.id });
   });
 
-  runDb('refuses a helper token whose device has the Helper disabled, except GET /helper/config', async () => {
+  runDb('refuses a helper token whose device has the Helper disabled', async () => {
     const { token } = await seedHelperDevice({ helperEnabled: false });
 
     const res = await probe(token);
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'helper_disabled' });
-
-    const cfg = await app.request('/helper/config', { headers: { Authorization: `Bearer ${token}` } });
-    expect(cfg.status).toBe(200);
-    expect(await cfg.json()).toEqual({ enabled: false });
   });
 
   runDb('denies a helper token whose device agent token is suspended', async () => {

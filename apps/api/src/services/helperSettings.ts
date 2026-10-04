@@ -169,7 +169,8 @@ export async function resolveDeviceHelperSettings(deviceId: string): Promise<Hel
 const HELPER_CACHE_TTL_SECONDS = 120;
 
 /**
- * Build helper config update payload for heartbeat response.
+ * Build helper config update payload for heartbeat response (also the
+ * effective setting helperAuth and GET /helper/config use).
  * Resolves helper policy settings via the config policy hierarchy.
  * Falls back to org-level helperEnabled for backward compatibility,
  * then to defaults if no policy found.
@@ -194,13 +195,13 @@ export async function buildHelperConfigUpdate(deviceId: string, orgId: string): 
   // explicit enabled:false policy must win over organizations.settings.helper
   // (previously `!settings.enabled` fell through, and the fallback also
   // discarded the four resolved UI fields).
+  //
+  // A failed read (policy resolution above, or the org flag here) throws and
+  // is never cached: it must not turn into a cached enabled:false, which
+  // helperAuth would serve as helper_disabled and the heartbeat would deliver
+  // as an uninstall. Only Redis errors are soft.
   if (settings === null) {
-    let orgEnabled = false;
-    try {
-      orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
-    } catch {
-      // defaults are fine
-    }
+    const orgEnabled = (await getOrgHelperSettings(orgId)).enabled;
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 

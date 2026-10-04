@@ -292,7 +292,6 @@ describe('helperAuth middleware', () => {
     const disabledApp = new Hono();
     disabledApp.use('*', helperAuth);
     disabledApp.get('/api/v1/helper/config', (c) => c.json({ ok: true, deviceId: c.get('helperDevice').id }));
-    disabledApp.post('/api/v1/helper/config', (c) => c.json({ ok: true }));
     disabledApp.get('/api/v1/helper/chat/sessions', (c) => c.json({ ok: true }));
     disabledApp.get('/api/v1/extensions/acme/helper/config', (c) => c.json({ ok: true }));
 
@@ -317,20 +316,14 @@ describe('helperAuth middleware', () => {
       expect(withDbAccessContext).not.toHaveBeenCalled();
     });
 
-    it('still serves GET /helper/config so the Helper can learn it is disabled', async () => {
+    it('refuses GET /helper/config too (no route is exempt)', async () => {
       mockDeviceRow();
       const res = await disabledApp.request('/api/v1/helper/config', { headers: TOKEN });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true, deviceId: 'dev-1' });
-    });
-
-    it('does not extend the allowance to other methods on /helper/config', async () => {
-      mockDeviceRow();
-      const res = await disabledApp.request('/api/v1/helper/config', { method: 'POST', headers: TOKEN });
       expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'helper_disabled' });
     });
 
-    it('does not extend the allowance to extension routes ending in /helper/config', async () => {
+    it('refuses extension /helper/* routes', async () => {
       mockDeviceRow();
       const res = await disabledApp.request('/api/v1/extensions/acme/helper/config', { headers: TOKEN });
       expect(res.status).toBe(403);
@@ -348,6 +341,7 @@ describe('helperAuth middleware', () => {
       mockDeviceRow();
       const res = await disabledApp.request('/api/v1/helper/chat/sessions', { headers: TOKEN });
       expect(res.status).toBe(503);
+      expect(res.headers.get('Retry-After')).toBe('30');
     });
   });
 });

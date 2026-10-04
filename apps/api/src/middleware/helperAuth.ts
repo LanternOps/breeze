@@ -39,22 +39,12 @@ declare module 'hono' {
 }
 
 /**
- * Routes a Helper whose device has the Helper disabled by policy may still
- * reach. Only GET /helper/config: it is how a running Helper learns it is
- * disabled (it answers `enabled: false`) and it exposes nothing beyond the
- * device's own effective Helper settings. Every other route — chat, tools,
- * screenshots, device info, extension /helper/* routes — is refused.
- * Anchored to the core mount so an extension path ending in /helper/config
- * does not match.
+ * Answer for every helper route (core and extension /helper/*) when the
+ * device's effective Helper setting is off. No route is exempt: no Helper
+ * client polls a status route, and the agent stops and uninstalls the Helper
+ * from the same setting on its next heartbeat. The code lets a client tell
+ * this refusal apart from a credential failure.
  */
-const HELPER_DISABLED_ALLOWED_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
-  { method: 'GET', pattern: /^(?:\/api\/v1)?\/helper\/config\/?$/ },
-];
-
-function isAllowedWhileHelperDisabled(method: string, path: string): boolean {
-  return HELPER_DISABLED_ALLOWED_ROUTES.some((r) => r.method === method && r.pattern.test(path));
-}
-
 export const HELPER_DISABLED_REFUSAL = {
   error: 'Breeze Helper is disabled for this device by policy',
   code: 'helper_disabled',
@@ -170,9 +160,10 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
     helperEnabled = settings.enabled === true;
   } catch (err) {
     console.error('[helperAuth] failed to resolve effective helper settings:', err instanceof Error ? err.message : err);
+    c.header('Retry-After', '30');
     return c.json({ error: 'Helper settings could not be loaded. Try again.' }, 503);
   }
-  if (!helperEnabled && !isAllowedWhileHelperDisabled(c.req.method, c.req.path)) {
+  if (!helperEnabled) {
     return c.json(HELPER_DISABLED_REFUSAL, 403);
   }
   c.set('helperEnabled', helperEnabled);
