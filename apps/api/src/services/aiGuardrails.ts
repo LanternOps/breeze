@@ -1454,10 +1454,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
-  // query_webhooks keeps devices:read though REST GET /webhooks (routes/
-  // webhooks.ts) carries no requirePermission of its own (requireScope only)
-  // — the tool requires more than the route; see the routeBinding UNBOUND entry.
-  query_webhooks: { resource: 'devices', action: 'read' },
+  // Matches REST GET /webhooks (routes/webhooks.ts — organizations:read),
+  // bound in aiGuardrails.routeBinding.contract.test.ts.
+  query_webhooks: { resource: 'organizations', action: 'read' },
   // Route requires organizations:read (routes/psa.ts:435); the tool matches
   // it (aiGuardrails.routeBinding.contract.test.ts).
   query_psa_status: { resource: 'organizations', action: 'read' },
