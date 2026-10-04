@@ -366,3 +366,111 @@ export async function resolveReferencedTextBodies(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Opt-in mark-handled (label + optional archive). Only reachable when
+// gmailHandledConfig().enabled, in which case the session was minted with
+// gmail.modify (GMAIL_INBOUND_MODIFY_SCOPES). Never called on the default
+// read-only connector.
+// ---------------------------------------------------------------------------
+
+/** Gmail system label names that must never be the handled label: a system
+ *  label (e.g. TRASH) as the target would silently dispose of ticketed mail.
+ *  CATEGORY_* is covered by the prefix check. */
+const RESERVED_LABEL_NAMES = new Set([
+  'INBOX', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT', 'SENT', 'DRAFT', 'CHAT',
+]);
+
+export function assertUsableHandledLabelName(name: string): void {
+  const upper = name.trim().toUpperCase();
+  if (!upper) throw new Error('GMAIL_HANDLED_LABEL is empty');
+  if (RESERVED_LABEL_NAMES.has(upper) || upper.startsWith('CATEGORY_')) {
+    throw new Error(`GMAIL_HANDLED_LABEL "${name}" is a Gmail system label; the handled label must be a user label`);
+  }
+}
+
+/** Resolved label ids per (mailbox, labelName). Label ids are immutable but names
+ *  are mutable, so a rename (no error) is bounded by the TTL; a deleted/recreated
+ *  label self-heals via the 400/404 retry in markGmailHandled. */
+const handledLabelIdCache = new Map<string, { id: string; at: number }>();
+const handledCacheKey = (mailbox: string, labelName: string) => `${mailbox.toLowerCase()}::${labelName}`;
+
+/** Test hook. */
+export function resetHandledLabelCache(): void {
+  handledLabelIdCache.clear();
+}
+
+async function resolveHandledLabelId(
+  gmail: gmail_v1.Gmail,
+  mailbox: string,
+  labelName: string,
+  ttlMs: number,
+): Promise<string> {
+  assertUsableHandledLabelName(labelName);
+  const cacheKey = handledCacheKey(mailbox, labelName);
+  const cached = handledLabelIdCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ttlMs) return cached.id;
+
+  const list = await gmail.users.labels.list({ userId: 'me' });
+  const labels = list.data.labels ?? [];
+  // Only a USER label may be the target; a same-named system label is refused.
+  let id = labels.find((l) => l.name === labelName && l.type === 'user')?.id ?? null;
+  if (!id) {
+    if (labels.some((l) => l.name === labelName && l.type !== 'user')) {
+      throw new Error(`Gmail label "${labelName}" is a system label, not a usable user label`);
+    }
+    try {
+      const created = await gmail.users.labels.create({
+        userId: 'me',
+        requestBody: { name: labelName, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+      });
+      id = created.data.id ?? null;
+    } catch (err) {
+      // A concurrent create races to 409 (already exists): re-list for its id.
+      if (httpStatus(err) !== 409) throw err;
+      const relist = await gmail.users.labels.list({ userId: 'me' });
+      id = (relist.data.labels ?? []).find((l) => l.name === labelName && l.type === 'user')?.id ?? null;
+    }
+  }
+  if (!id) throw new Error(`Gmail label "${labelName}" could not be resolved or created`);
+  handledLabelIdCache.set(cacheKey, { id, at: Date.now() });
+  return id;
+}
+
+export interface MarkHandledOptions {
+  labelName: string;
+  archive: boolean;
+  labelCacheTtlMs: number;
+}
+
+async function applyHandled(gmail: gmail_v1.Gmail, mailbox: string, messageId: string, o: MarkHandledOptions): Promise<void> {
+  const labelId = await resolveHandledLabelId(gmail, mailbox, o.labelName, o.labelCacheTtlMs);
+  await gmail.users.messages.modify({
+    userId: 'me',
+    id: messageId,
+    requestBody: { addLabelIds: [labelId], removeLabelIds: o.archive ? ['INBOX'] : [] },
+  });
+}
+
+/**
+ * Mark an ingested Gmail message handled: apply the user label and, when
+ * `archive`, remove INBOX. Reversible (re-adding INBOX restores it; the sweep
+ * would then see a labelAdded(INBOX) change and re-dedup it). Best-effort: the
+ * caller catches and logs, so a failure never strands ingestion. One retry after
+ * invalidating the label cache on a 400/404 (deleted/recreated label).
+ */
+export async function markGmailHandled(
+  gmail: gmail_v1.Gmail,
+  mailbox: string,
+  messageId: string,
+  o: MarkHandledOptions,
+): Promise<void> {
+  try {
+    await applyHandled(gmail, mailbox, messageId, o);
+  } catch (err) {
+    const status = httpStatus(err);
+    if (status !== 400 && status !== 404) throw err;
+    handledLabelIdCache.delete(handledCacheKey(mailbox, o.labelName));
+    await applyHandled(gmail, mailbox, messageId, o);
+  }
+}

@@ -24,6 +24,7 @@ import {
   DIRECTORY_SCOPES,
   GMAIL_USER_SCOPES,
   GMAIL_INBOUND_SCOPES,
+  GMAIL_INBOUND_MODIFY_SCOPES,
   CALENDAR_SCOPES,
   LICENSING_SCOPES,
   GOOGLE_DWD_SCOPES_CSV,
@@ -31,7 +32,7 @@ import {
 
 // Least-privilege DWD scope sets live in @breeze/shared (one list shared with the
 // web integration page). Re-exported here for existing API callers.
-export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
+export { DIRECTORY_SCOPES, GMAIL_USER_SCOPES, GMAIL_INBOUND_SCOPES, GMAIL_INBOUND_MODIFY_SCOPES, CALENDAR_SCOPES, LICENSING_SCOPES };
 export const ALL_DWD_SCOPES_CSV = GOOGLE_DWD_SCOPES_CSV;
 
 // Explicit per-request deadline for every Gmail/UserInfo call. gaxios has no
@@ -133,6 +134,26 @@ export interface InboundMailboxSession {
   gmail: gmail_v1.Gmail;
   /** Read the impersonated account's immutable identity via this session's token. */
   identity(): Promise<MailboxIdentity>;
+}
+
+/**
+ * Gmail client used ONLY to mark an ingested message handled (label + optional
+ * archive). Requests GMAIL_INBOUND_MODIFY_SCOPES (gmail.modify) and nothing else,
+ * and is separate from the read session so a missing modify grant fails only the
+ * best-effort label call, never ingestion. Only built when GMAIL_HANDLED_LABEL is set.
+ */
+export function getInboundModifyGmailClient(
+  decryptedKeyJson: string,
+  targetMailboxEmail: string,
+): gmail_v1.Gmail {
+  const key = parseServiceAccountKey(decryptedKeyJson);
+  const auth = new gmailAuth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: [...GMAIL_INBOUND_MODIFY_SCOPES],
+    subject: targetMailboxEmail,
+  });
+  return gmail({ version: 'v1', auth, timeout: GMAIL_REQUEST_TIMEOUT_MS });
 }
 
 export function getInboundMailboxSession(

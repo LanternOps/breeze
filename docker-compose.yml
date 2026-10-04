@@ -465,6 +465,12 @@ x-api-env: &api-env
   EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS: ${EMAIL_DOMAINS_AUTOSUSPEND_COMPLAINTS:-}
   # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
   TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
+  # Optional (off when unset): GMAIL_HANDLED_LABEL labels Gmail mail that became or
+  # joined a ticket and, unless GMAIL_ARCHIVE_ON_HANDLE=false, archives it out of
+  # INBOX. Needs gmail.modify added to the domain-wide delegation grant.
+  GMAIL_HANDLED_LABEL: ${GMAIL_HANDLED_LABEL:-}
+  GMAIL_ARCHIVE_ON_HANDLE: ${GMAIL_ARCHIVE_ON_HANDLE:-true}
+  GMAIL_HANDLED_LABEL_TTL_MS: ${GMAIL_HANDLED_LABEL_TTL_MS:-600000}
   MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
   INBOUND_QUEUE_MAX_PER_SEC: ${INBOUND_QUEUE_MAX_PER_SEC:-20}
   # SMS MFA + alert notifications (Twilio)

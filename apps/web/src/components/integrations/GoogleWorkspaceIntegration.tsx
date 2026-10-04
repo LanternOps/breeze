@@ -9,7 +9,7 @@ import {
   Unplug,
   Users,
 } from "lucide-react";
-import { GOOGLE_DWD_SCOPES_CSV } from "@breeze/shared";
+import { GOOGLE_DWD_SCOPES_CSV, GMAIL_INBOUND_MODIFY_SCOPES } from "@breeze/shared";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
@@ -321,6 +321,12 @@ export default function GoogleWorkspaceIntegration() {
           </p>
           <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 chart-legend-xs leading-relaxed text-muted-foreground">
             {GOOGLE_DWD_SCOPES_CSV}
+          </pre>
+          <p className="mt-2 text-muted-foreground">
+            {t("googleWorkspaceIntegration.gmailMarkHandledScopeNote")}
+          </p>
+          <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-background p-2 chart-legend-xs leading-relaxed text-muted-foreground">
+            {GMAIL_INBOUND_MODIFY_SCOPES.join(",")}
           </pre>
         </details>
 

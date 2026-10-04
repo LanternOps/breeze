@@ -53,6 +53,9 @@ vi.mock('../services/ticketMailbox/fetchInboundAttachments', () => ({
   discardUnpersistedAttachments: discardMock,
 }));
 
+const { markHandledMock } = vi.hoisted(() => ({ markHandledMock: vi.fn(async () => 'marked') }));
+vi.mock('../services/ticketMailbox/markIngestedGmailHandled', () => ({ markIngestedGmailHandled: markHandledMock }));
+
 import * as workerModule from './inboundEmailWorker';
 
 const makeEmail = (overrides: Partial<{ providerMessageId: string }> = {}) => ({
@@ -122,6 +125,26 @@ describe('inboundEmailWorker', () => {
     const email = makeEmail({ providerMessageId: 'mg-xyz-999' });
     await expect(workerModule.handleInboundEmail({ data: { email } } as any)).resolves.toBeUndefined();
     expect(processInboundEmailMock).toHaveBeenCalledWith(email, undefined);
+  });
+
+  it('gmail: runs mark-handled AFTER the pipeline, with the same generation', async () => {
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m1' }), provider: 'gmail' as const };
+    const gen = { provider: 'gmail', connectionId: 'c-1', partnerId: 'p-1', tenantId: null, consentAttemptId: 'a-1' };
+    await workerModule.handleInboundEmail({ data: { email, mailboxGeneration: gen } } as any);
+    expect(markHandledMock).toHaveBeenCalledWith(email, gen);
+    expect(markHandledMock.mock.invocationCallOrder[0]!).toBeGreaterThan(processInboundEmailMock.mock.invocationCallOrder[0]!);
+  });
+
+  it('gmail: an infra failure in the pipeline rethrows and never marks', async () => {
+    processInboundEmailMock.mockRejectedValue(new Error('db down'));
+    const email = { ...makeEmail({ providerMessageId: 'gmail:sub:m2' }), provider: 'gmail' as const };
+    await expect(workerModule.handleInboundEmail({ data: { email } } as any)).rejects.toThrow('db down');
+    expect(markHandledMock).not.toHaveBeenCalled();
+  });
+
+  it('non-gmail jobs never call mark-handled', async () => {
+    await workerModule.handleInboundEmail({ data: { email: makeEmail() } } as any);
+    expect(markHandledMock).not.toHaveBeenCalled();
   });
 
   it('passes an exact M365 mailbox generation to the transactional ingestion service', async () => {

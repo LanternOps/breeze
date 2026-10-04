@@ -350,6 +350,7 @@
     "securityAccessAndDataControlAPIControlsManage": "Sécurité → Accès et contrôle des données → API contrôles → Gérer la délégation à l’échelle du domaine → Ajouter de nouveaux",
     "pasteTheServiceAccountsClientIDAndIn": ". Collez le Client ID du compte de service, et dans OAuth Scopes, collez la liste séparée par des virgules ci-dessous, puis Authorise. ",
     "oauthScopesToAuthorize": "OAuth permet d’autoriser :",
+    "gmailMarkHandledScopeNote": "Uniquement si le serveur définit GMAIL_HANDLED_LABEL (étiqueter et archiver les e-mails de support reçus) : autorisez aussi ce champ d’application.",
     "primaryDomain": "Domaine principal",
     "superAdminEmailImpersonated": "Email super-admin (usurpé d’identité)",
     "adminExampleCom": "admin@example.com",

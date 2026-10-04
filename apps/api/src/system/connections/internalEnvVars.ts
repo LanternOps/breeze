@@ -212,6 +212,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FILESYSTEM_CLEANUP_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // FRANKFURTER_*
   FRANKFURTER_BASE_URL: 'FX API base override',
+  GMAIL_ARCHIVE_ON_HANDLE: 'gmail inbound mark-handled toggle',
+  GMAIL_HANDLED_LABEL: 'gmail inbound mark-handled label (opt-in)',
+  GMAIL_HANDLED_LABEL_TTL_MS: 'timing knob',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',

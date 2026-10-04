@@ -350,6 +350,7 @@
     "securityAccessAndDataControlAPIControlsManage": "Güvenlik → Erişim ve veri kontrolü → API kontrolleri → Etki Alanı Genelinde Yetkilendirmeyi Yönet → Yeni ekle",
     "pasteTheServiceAccountsClientIDAndIn": ". Hizmet hesabının İstemci Kimliğini yapıştırın ve aşağıdaki virgülle ayrılmış listeyi OAuth Kapsamları'na yapıştırın ve ardından Yetkilendir'i tıklayın. ",
     "oauthScopesToAuthorize": "Yetkilendirilecek OAuth kapsamları:",
+    "gmailMarkHandledScopeNote": "Yalnızca sunucu GMAIL_HANDLED_LABEL ayarlıysa (alınan destek postalarını etiketleme ve arşivleme): bu kapsamı da yetkilendirin.",
     "primaryDomain": "Birincil alan adı",
     "superAdminEmailImpersonated": "Süper yönetici e-postası (kimliğe bürünülmüş)",
     "adminExampleCom": "admin@example.com",

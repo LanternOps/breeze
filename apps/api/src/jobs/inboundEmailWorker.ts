@@ -31,6 +31,7 @@ import {
   prepareM365Attachments,
 } from '../services/ticketMailbox/fetchInboundAttachments';
 import { inboundQueueMaxPerSec } from '../config/env';
+import { markIngestedGmailHandled } from '../services/ticketMailbox/markIngestedGmailHandled';
 import { attachWorkerObservability } from './workerObservability';
 
 let worker: Worker<InboundEmailQueueJob> | null = null;
@@ -64,6 +65,13 @@ export async function handleInboundEmail(job: Job<InboundEmailQueueJob>): Promis
   // M365 attachments (#6688): Graph download + blob put happen HERE, before the
   // transaction opens, never inside it (see fetchInboundAttachments.ts). Only a
   // generation-bound job can name the tenant to fetch from.
+  if (email.provider === 'gmail') {
+    await run();
+    // Opt-in (GMAIL_HANDLED_LABEL): label/archive only mail that actually became
+    // a ticket. Never throws; runs after the pipeline's transaction has closed.
+    await markIngestedGmailHandled(email, mailboxGeneration);
+    return;
+  }
   if (email.provider !== 'm365' || !mailboxGeneration?.tenantId || !email.hasAttachments) return run();
 
   await prepareM365Attachments(email, {

@@ -14,6 +14,7 @@ const gmail = vi.hoisted(() => ({
   listInboxChanges: vi.fn(),
   getFullMessage: vi.fn(),
   forEachInboxPageSince: vi.fn(),
+  markGmailHandled: vi.fn(async (..._args: unknown[]) => {}),
 }));
 vi.mock('../../services/ticketMailbox/googleMailboxClient', async (importActual) => {
   const actual = await importActual<typeof import('../../services/ticketMailbox/googleMailboxClient')>();
@@ -23,6 +24,7 @@ vi.mock('../../services/ticketMailbox/googleMailboxClient', async (importActual)
     listInboxChanges: gmail.listInboxChanges,
     getFullMessage: gmail.getFullMessage,
     forEachInboxPageSince: gmail.forEachInboxPageSince,
+    markGmailHandled: gmail.markGmailHandled,
   };
 });
 const enqueue = vi.hoisted(() => ({ fn: vi.fn(async () => {}) }));
@@ -390,5 +392,20 @@ describe('Gmail sweep (sweepOneGmail via runMailboxSweep)', () => {
 
     expect(enqueue.fn).toHaveBeenCalledTimes(1); // only 'new'
     expect((await readConn(connId)).historyId).toBe('BASE');
+  });
+
+  it('the sweep never labels or archives, even with GMAIL_HANDLED_LABEL set (marking happens after ticketing)', async () => {
+    process.env.GMAIL_HANDLED_LABEL = 'Handled';
+    try {
+      const { connId } = await seedConnection({ historyId: 'H0' });
+      gmail.listInboxChanges.mockResolvedValue({ messageIds: ['m1'], newHistoryId: 'H9' });
+      gmail.getFullMessage.mockResolvedValue(gmailMessage('m1'));
+      await runMailboxSweep();
+      expect(enqueue.fn).toHaveBeenCalledTimes(1);
+      expect(gmail.markGmailHandled).not.toHaveBeenCalled();
+      expect((await readConn(connId)).historyId).toBe('H9');
+    } finally {
+      delete process.env.GMAIL_HANDLED_LABEL;
+    }
   });
 });
