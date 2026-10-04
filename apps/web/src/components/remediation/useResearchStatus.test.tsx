@@ -96,4 +96,31 @@ describe('useResearchStatus', () => {
     act(() => result.current.noteOutcome({ status: 'started', runId: 'r9', depth: 'deep' }));
     expect(result.current.status).toMatchObject({ runId: 'r9', depth: 'deep', status: 'queued' });
   });
+
+  it('resets when the source changes: no stale banner, no poll of B, no onTerminal from A', async () => {
+    const onTerminal = vi.fn();
+    let release: (r: Response) => void = () => undefined;
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { release = resolve; }));
+    const { result, rerender } = renderHook(({ q }) => useResearchStatus(q, onTerminal), { initialProps: { q: 'sourceId=A' } });
+    act(() => result.current.applyLoaded(run('running') as never));
+    act(() => result.current.noteOutcome({ status: 'denied', code: 'plan_gate', message: 'x' }));
+    await act(() => vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS)); // A's poll is now in flight
+    expect(researchCalls().length).toBe(1);
+    rerender({ q: 'sourceId=B' });
+    expect(result.current.status).toBeNull();
+    expect(result.current.denial).toBeNull();
+    // A's in-flight response lands as a terminal status: it must be a no-op.
+    await act(async () => { release(json(run('completed'))); });
+    expect(result.current.status).toBeNull();
+    expect(onTerminal).not.toHaveBeenCalled();
+    await act(() => vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS * 3));
+    expect(researchCalls().length).toBe(1); // B has no run, so nothing polls
+    // A late panel read for A is ignored; B's own run does poll.
+    act(() => result.current.applyLoaded(run('failed') as never, 'sourceId=A'));
+    expect(result.current.status).toBeNull();
+    act(() => result.current.applyLoaded(run('running') as never, 'sourceId=B'));
+    await act(() => vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS));
+    expect(researchCalls().length).toBe(2);
+    expect(String(researchCalls()[1][0])).toContain('sourceId=B');
+  });
 });

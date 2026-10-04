@@ -90,7 +90,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
         similar: Array.isArray(mem?.similar) ? mem.similar : [],
       });
       // Only a non-null read overwrites the research state: a failed read never erases what is on screen.
-      research.applyLoaded(researchLoaded as ResearchStatusDto | null);
+      research.applyLoaded(researchLoaded as ResearchStatusDto | null, query);
       setLoading(false);
     }
   }, [sourceId, sourceType]);

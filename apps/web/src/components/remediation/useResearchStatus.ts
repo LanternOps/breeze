@@ -44,6 +44,15 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
   const [denial, setDenial] = useState<{ code: string; message: string } | null>(null);
   const [stalled, setStalled] = useState(false);
   const [epoch, setEpoch] = useState(0);
+  // Reset everything when the source (type + id + org) changes, during render so a stale banner never paints.
+  const [scopeQuery, setScopeQuery] = useState(query);
+  if (scopeQuery !== query) {
+    setScopeQuery(query);
+    setStatus(null);
+    setDenial(null);
+    setStalled(false);
+    setEpoch((value) => value + 1);
+  }
   const queryRef = useRef(query);
   queryRef.current = query;
   const onTerminalRef = useRef(onTerminal);
@@ -80,15 +89,16 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [active, epoch]);
+  }, [active, epoch, query]);
 
   const restartPolling = useCallback(() => {
     setStalled(false);
     setEpoch((value) => value + 1);
   }, []);
 
-  /** A loaded status (non-null only: a failed/empty read never erases a state already on screen). */
-  const applyLoaded = useCallback((next: ResearchStatusDto | null) => {
+  /** A loaded status for `forQuery` (non-null only: a failed/empty read never erases a state already on screen). */
+  const applyLoaded = useCallback((next: ResearchStatusDto | null, forQuery?: string) => {
+    if (forQuery !== undefined && forQuery !== queryRef.current) return; // a response for a previous source
     if (next) setStatus(next);
   }, []);
 
