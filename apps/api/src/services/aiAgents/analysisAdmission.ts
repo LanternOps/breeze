@@ -129,6 +129,9 @@ export const SKIP_REASON_REFUSALS = {
   // AI model registry W03 — its own refusal: the setting to change is the AI
   // agents' model, not a budget or the analysis feature.
   model_unavailable: 'model_unavailable',
+  // AI Suggested Fixes W3 — only the automation ai_triage lane supplies the
+  // probe that yields this, so it is unreachable from an analysis admission.
+  proven_fix_available: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */

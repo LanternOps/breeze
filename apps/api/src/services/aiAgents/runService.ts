@@ -317,6 +317,17 @@ export interface CreateAgentRunInput {
   /** e.g. `alert:${alertId}`, `manual:${randomUUID()}`. Unique per org. */
   dedupeKey: string;
   /**
+   * AI Suggested Fixes W3 — supplied ONLY by the automation `ai_triage` lane.
+   * Asked after every opt-out gate (kill switch, enabled, mode, resource
+   * scope, circuit, trigger filters, maintenance), and only when the run would
+   * start in shadow: true means fix memory would attach a proven fix for this
+   * alert, so a shadow full run is skipped (`proven_fix_available`) and the
+   * caller attaches the fix instead. Never consulted in act mode. Runs inside
+   * admission's system context; it must open no context of its own and must
+   * not write. A throw is treated as false (the run is admitted as before).
+   */
+  provenFixProbe?: () => Promise<boolean>;
+  /**
    * AI Operator task linkage (#5205 W06, spec §6.2). TRUSTED INTERNAL INPUT —
    * `taskCoordinator.ts` is the only producer, and no HTTP surface may build
    * it: the three columns it stamps are the admission identity that
@@ -453,7 +464,12 @@ export type AgentRunSkipReason =
   // now — disabled, outside the permitted set, unpriced, its connection down,
   // or the partner's registry cutover not done yet. Published: an admin has to
   // pick another model (recipients are also notified once per agent per day).
-  | 'model_unavailable';
+  | 'model_unavailable'
+  // AI Suggested Fixes W3 (Q1 = C): a SHADOW full triage run skipped because
+  // fix memory already has an attachable proven fix for the alert; the
+  // automation lane attaches it instead. Not published: an expected,
+  // memory-served outcome, not a policy event.
+  | 'proven_fix_available';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -1378,6 +1394,21 @@ export async function createAndEnqueueAgentRun(
     // admissions never are) is likewise inert for this trigger kind in v1.
     if (effective.triggers.respectMaintenanceWindows && deviceId) {
       if (await isDeviceInMaintenanceWindow(deviceId)) return skip('maintenance_window');
+    }
+
+    // 4a. AI Suggested Fixes W3 (orchestrator decision, W3 Q1 = C): a SHADOW
+    //     full triage run is skipped when fix memory would attach a proven fix
+    //     for this alert. After every opt-out gate above, so an org that opted
+    //     out (or an alert the filters exclude) keeps its own skip; keyed on
+    //     modeAtStart, the EFFECTIVE mode (override-aware); act mode never
+    //     asks. The probe is read-only and runs on this same connection, so it
+    //     sits before the admission lock — a short-circuit inserts nothing.
+    if (modeAtStart === 'shadow' && input.provenFixProbe) {
+      const proven = await input.provenFixProbe().catch((error: unknown) => {
+        console.error('[aiAgentRunService] proven-fix probe failed; admitting the full run', { orgId, error });
+        return false;
+      });
+      if (proven) return skip('proven_fix_available');
     }
 
     // 4b. Serialize the whole check-then-insert for this (agent, org).
