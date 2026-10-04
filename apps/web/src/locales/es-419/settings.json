@@ -874,6 +874,8 @@
     "slackChannelPlaceholder": "#alertas",
     "pushoverDefaults": "Valores predeterminados de Pushover",
     "pushoverDescription": "Heredado por cualquier canal Pushover por organización que deje el campo coincidente en blanco.",
+    "pushoverTicketAssignmentFallback": "Enviar las asignaciones de tickets a la clave predeterminada cuando la persona asignada no tenga clave de Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Cada técnico puede agregar su propia clave de usuario de Pushover en su perfil; las asignaciones solo le llegan a esa persona. Actívalo para enviar las asignaciones de técnicos sin clave a la clave predeterminada de usuario o grupo indicada arriba.",
     "applicationToken": "Ficha de aplicación",
     "defaultUserKey": "Clave de usuario o grupo predeterminada",
     "defaultSound": "Sonido predeterminado",
@@ -6548,5 +6550,19 @@
     "sourceDefault": "predeterminado del producto",
     "range": "Elija entre {{min}} y {{max}} minutos.",
     "save": "Guardar"
+  },
+  "ticketPushover": {
+    "title": "Pushover para asignaciones de tickets",
+    "description": "Agrega tu clave de usuario de Pushover para recibir una notificación cuando se te asigne un ticket. Solo tú la recibes. Tu MSP debe haber configurado un token de aplicación de Pushover en Notificaciones.",
+    "statusSet": "Hay una clave de Pushover guardada.",
+    "statusNotSet": "No hay una clave de Pushover guardada.",
+    "placeholder": "Clave de usuario de Pushover de 30 caracteres",
+    "save": "Guardar clave",
+    "remove": "Quitar clave",
+    "saved": "Clave de Pushover guardada.",
+    "removed": "Clave de Pushover quitada.",
+    "invalidKey": "Una clave de usuario de Pushover tiene 30 letras o dígitos.",
+    "loadFailed": "No se pudo cargar tu configuración de Pushover.",
+    "saveFailed": "No se pudo guardar tu configuración de Pushover."
   }
 }

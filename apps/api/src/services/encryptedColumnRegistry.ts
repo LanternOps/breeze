@@ -110,6 +110,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'invoices', column: 'public_link_token_ct', kind: 'text', aadBinding: 'row', description: 'public invoice-link bearer token (row-bound: swapping ciphertext between invoices would move a live credential across tenants)' },
   { table: 'tool_sources', column: 'auth_config_encrypted', kind: 'text', aadBinding: 'row', description: 'external tool source credential JSON (#5216, spec 2026-09-07 §5.2) — AAD bound to the row id' },
   { table: 'backup_storage_credential_history', column: 'sealed_previous_secret', kind: 'text', aadBinding: 'row', description: 'replaced S3 backup destination connection settings (endpoint, bucket, key pair), kept only to check the old key is disabled — AAD bound to the row id' },
+  { table: 'ticket_push_preferences', column: 'pushover_user_key_encrypted', kind: 'text', idColumn: 'user_id', aadBinding: 'row', description: 'per-user Pushover user key for ticket-assignment pushes — AAD bound to the user id when an encryption key id is configured' },
   { table: 'backup_provider_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'external backup provider console credentials JSON (#6008 W01) — AAD bound to the row id, so a blob pasted into another partner\'s connection does not decrypt' },
   // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
   // so key rotation re-seals it.

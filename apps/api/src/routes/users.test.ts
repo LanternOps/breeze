@@ -4064,3 +4064,59 @@ describe('PATCH /me/ticket-push-preferences', () => {
     }));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-user Pushover key for ticket assignments: /me/ticket-pushover
+// ---------------------------------------------------------------------------
+
+describe('/me/ticket-pushover', () => {
+  const KEY = 'u'.repeat(30);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAsDefaultPartner();
+  });
+  const call = (method: string, body?: unknown) =>
+    new Hono().route('/users', userRoutes).request('/users/me/ticket-pushover', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+
+  it('GET reports only whether a key is set, never the key', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ pushoverUserKeyEncrypted: 'enc:v3:sealed' }]) }) }),
+    } as never);
+    const res = await call('GET');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userKeySet: true });
+  });
+
+  it('PUT rejects a malformed key and a smuggled userId', async () => {
+    expect((await call('PUT', { userKey: 'short' })).status).toBe(400);
+    expect((await call('PUT', { userKey: KEY, userId: 'someone-else' })).status).toBe(400);
+  });
+
+  it('PUT seals the key for auth.user.id, never echoes it, and keeps it out of the audit', async () => {
+    const valuesMock = vi.fn((_v: Record<string, unknown>) => ({ onConflictDoUpdate: vi.fn(() => Promise.resolve()) }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as never);
+    const res = await call('PUT', { userKey: KEY });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain(KEY);
+    expect(JSON.parse(text)).toEqual({ userKeySet: true });
+    const stored = valuesMock.mock.calls[0]![0] as { userId: string; pushoverUserKeyEncrypted: string };
+    expect(stored.userId).toBe('user-123');
+    expect(stored.pushoverUserKeyEncrypted).not.toBe(KEY);
+    expect(JSON.stringify(writeRouteAuditMock.mock.calls)).not.toContain(KEY);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'user.ticket_pushover.set', resourceId: 'user-123' }));
+  });
+
+  it('DELETE clears the key for auth.user.id', async () => {
+    const setMock = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as never);
+    const res = await call('DELETE');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ userKeySet: false });
+    expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ pushoverUserKeyEncrypted: null }));
+  });
+});

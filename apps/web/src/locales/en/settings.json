@@ -874,6 +874,8 @@
     "slackChannelPlaceholder": "#alerts",
     "pushoverDefaults": "Pushover Defaults",
     "pushoverDescription": "Inherited by any per-org Pushover channel that leaves the matching field blank.",
+    "pushoverTicketAssignmentFallback": "Send ticket assignments to the default key when the assignee has no Pushover key",
+    "pushoverTicketAssignmentFallbackHelp": "Each technician can add their own Pushover user key in their profile; assignments then reach only them. Turn this on to send assignments for technicians without a key to the default user or group key above.",
     "applicationToken": "Application Token",
     "defaultUserKey": "Default User or Group Key",
     "defaultSound": "Default Sound",
@@ -6548,5 +6550,19 @@
     "sourceDefault": "product default",
     "range": "Choose {{min}}-{{max}} minutes.",
     "save": "Save"
+  },
+  "ticketPushover": {
+    "title": "Pushover for ticket assignments",
+    "description": "Add your Pushover user key to get a push when a ticket is assigned to you. Only you receive it. Your MSP must have set a Pushover application token under Notifications.",
+    "statusSet": "A Pushover key is saved.",
+    "statusNotSet": "No Pushover key saved.",
+    "placeholder": "30-character Pushover user key",
+    "save": "Save key",
+    "remove": "Remove key",
+    "saved": "Pushover key saved.",
+    "removed": "Pushover key removed.",
+    "invalidKey": "A Pushover user key is 30 letters or digits.",
+    "loadFailed": "Could not load your Pushover setting.",
+    "saveFailed": "Could not save your Pushover setting."
   }
 }

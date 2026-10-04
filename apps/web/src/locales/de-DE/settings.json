@@ -874,6 +874,8 @@
     "slackChannelPlaceholder": "#Warnungen",
     "pushoverDefaults": "Pushover-Standardwerte",
     "pushoverDescription": "Wird von jedem Pushover-Kanal pro Organisation übernommen, der das entsprechende Feld leer lässt.",
+    "pushoverTicketAssignmentFallback": "Ticketzuweisungen an den Standardschlüssel senden, wenn die zugewiesene Person keinen Pushover-Schlüssel hat",
+    "pushoverTicketAssignmentFallbackHelp": "Jede technische Fachkraft kann im Profil einen eigenen Pushover-Benutzerschlüssel hinterlegen; Zuweisungen erreichen dann nur sie. Aktivieren Sie dies, um Zuweisungen für Personen ohne Schlüssel an den oben angegebenen Standard-Benutzer- oder Gruppenschlüssel zu senden.",
     "applicationToken": "Anwendungstoken",
     "defaultUserKey": "Standardbenutzer- oder Gruppenschlüssel",
     "defaultSound": "Standardton",
@@ -6548,5 +6550,19 @@
     "sourceDefault": "Produktstandard",
     "range": "Wählen Sie {{min}}-{{max}} Minuten.",
     "save": "Speichern"
+  },
+  "ticketPushover": {
+    "title": "Pushover für Ticketzuweisungen",
+    "description": "Hinterlegen Sie Ihren Pushover-Benutzerschlüssel, um eine Push-Nachricht zu erhalten, wenn Ihnen ein Ticket zugewiesen wird. Nur Sie erhalten sie. Ihr MSP muss unter Benachrichtigungen ein Pushover-Anwendungstoken hinterlegt haben.",
+    "statusSet": "Ein Pushover-Schlüssel ist gespeichert.",
+    "statusNotSet": "Kein Pushover-Schlüssel gespeichert.",
+    "placeholder": "30-stelliger Pushover-Benutzerschlüssel",
+    "save": "Schlüssel speichern",
+    "remove": "Schlüssel entfernen",
+    "saved": "Pushover-Schlüssel gespeichert.",
+    "removed": "Pushover-Schlüssel entfernt.",
+    "invalidKey": "Ein Pushover-Benutzerschlüssel besteht aus 30 Buchstaben oder Ziffern.",
+    "loadFailed": "Ihre Pushover-Einstellung konnte nicht geladen werden.",
+    "saveFailed": "Ihre Pushover-Einstellung konnte nicht gespeichert werden."
   }
 }

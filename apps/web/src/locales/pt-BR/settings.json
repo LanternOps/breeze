@@ -874,6 +874,8 @@
     "slackChannelPlaceholder": "#alertas",
     "pushoverDefaults": "Padrões do Pushover",
     "pushoverDescription": "Herdados por qualquer canal Pushover da organização que deixe o campo correspondente em branco.",
+    "pushoverTicketAssignmentFallback": "Enviar atribuições de chamados para a chave padrão quando o responsável não tiver chave do Pushover",
+    "pushoverTicketAssignmentFallbackHelp": "Cada técnico pode adicionar a própria chave de usuário do Pushover no perfil; as atribuições chegam somente a ele. Ative para enviar as atribuições de técnicos sem chave para a chave de usuário ou grupo padrão acima.",
     "applicationToken": "Token do aplicativo",
     "defaultUserKey": "Chave padrão de usuário ou grupo",
     "defaultSound": "Som padrão",
@@ -6548,5 +6550,19 @@
     "sourceDefault": "padrão do produto",
     "range": "Escolha entre {{min}} e {{max}} minutos.",
     "save": "Salvar"
+  },
+  "ticketPushover": {
+    "title": "Pushover para atribuições de chamados",
+    "description": "Adicione sua chave de usuário do Pushover para receber uma notificação quando um chamado for atribuído a você. Só você a recebe. Seu MSP precisa ter configurado um token de aplicativo do Pushover em Notificações.",
+    "statusSet": "Há uma chave do Pushover salva.",
+    "statusNotSet": "Nenhuma chave do Pushover salva.",
+    "placeholder": "Chave de usuário do Pushover com 30 caracteres",
+    "save": "Salvar chave",
+    "remove": "Remover chave",
+    "saved": "Chave do Pushover salva.",
+    "removed": "Chave do Pushover removida.",
+    "invalidKey": "Uma chave de usuário do Pushover tem 30 letras ou dígitos.",
+    "loadFailed": "Não foi possível carregar sua configuração do Pushover.",
+    "saveFailed": "Não foi possível salvar sua configuração do Pushover."
   }
 }

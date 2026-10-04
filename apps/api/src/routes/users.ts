@@ -11,6 +11,7 @@ import { nanoid } from 'nanoid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
+import { PUSHOVER_USER_KEY_PATTERN, sealPushoverUserKey } from '../services/ticketPushover';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -77,14 +78,14 @@ userRoutes.use('*', async (c, next) => {
   // is the field technician this feature exists for.
   //
   // A route may be added here ONLY if its subject is derived from auth.user.id
-  // and never from a path param or request body. Both /me/ticket-push-preferences
-  // handlers satisfy that: the id is auth.user.id and the PATCH schema is
+  // and never from a path param or request body. The /me/ticket-push-preferences
+  // and /me/ticket-pushover handlers satisfy that: the id is auth.user.id and the PATCH schema is
   // .strict(), so a smuggled `userId` is a 400. Do NOT widen this to
   // /\/me(\/.*)?$/ — that would auto-exempt every future /me/* route,
   // including ones whose subject is not auth.user.id. The allowlist is the point.
   const path = c.req.path;
   const isSelfServiceRoute =
-    /\/me(\/avatar|\/ticket-push-preferences)?$/.test(path) ||
+    /\/me(\/avatar|\/ticket-push-preferences|\/ticket-pushover)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();
@@ -675,6 +676,58 @@ userRoutes.patch(
     return c.json({ settings: resolveTicketPushPrefs(row ?? set) });
   }
 );
+
+// Per-user Pushover key for ticket-assignment pushes. Write-only: the key is
+// sealed at rest and never returned; reads report only whether one is set.
+// Subject is always auth.user.id (self-service exemption above).
+const setTicketPushoverSchema = z.object({
+  userKey: z.string().trim().regex(PUSHOVER_USER_KEY_PATTERN, 'Pushover user key must be 30 letters or digits'),
+}).strict();
+
+userRoutes.get('/me/ticket-pushover', async (c) => {
+  const auth = c.get('auth');
+  const rows = await db
+    .select({ pushoverUserKeyEncrypted: ticketPushPreferences.pushoverUserKeyEncrypted })
+    .from(ticketPushPreferences)
+    .where(eq(ticketPushPreferences.userId, auth.user.id))
+    .limit(1);
+  return c.json({ userKeySet: !!rows[0]?.pushoverUserKeyEncrypted });
+});
+
+userRoutes.put('/me/ticket-pushover', zValidator('json', setTicketPushoverSchema), async (c) => {
+  const auth = c.get('auth');
+  const { userKey } = c.req.valid('json');
+  const sealed = sealPushoverUserKey(auth.user.id, userKey);
+  const set = { pushoverUserKeyEncrypted: sealed, updatedAt: new Date() };
+  await db
+    .insert(ticketPushPreferences)
+    .values({ userId: auth.user.id, ...set })
+    .onConflictDoUpdate({ target: ticketPushPreferences.userId, set });
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'user.ticket_pushover.set',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { userKeySet: true },
+  });
+  return c.json({ userKeySet: true });
+});
+
+userRoutes.delete('/me/ticket-pushover', async (c) => {
+  const auth = c.get('auth');
+  await db
+    .update(ticketPushPreferences)
+    .set({ pushoverUserKeyEncrypted: null, updatedAt: new Date() })
+    .where(eq(ticketPushPreferences.userId, auth.user.id));
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'user.ticket_pushover.clear',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { userKeySet: false },
+  });
+  return c.json({ userKeySet: false });
+});
 
 userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
   const auth = c.get('auth');

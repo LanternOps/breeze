@@ -360,6 +360,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/vnc-viewer/downgrade-to-vnc': 'device credential: Viewer token (requireViewerToken) plus live session authority re-check',
   // routes/users.ts
   'PATCH /api/v1/users/me/ticket-push-preferences': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  'PUT /api/v1/users/me/ticket-pushover': 'own account: Caller sets own Pushover key only (auth.user.id)',
+  'DELETE /api/v1/users/me/ticket-pushover': 'own account: Caller clears own Pushover key only (auth.user.id)',
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'POST /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'DELETE /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
