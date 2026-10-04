@@ -984,6 +984,14 @@ export function createAgentRunPreToolUse(args: {
         });
         return { allowed: false, error: 'not available on this run' };
       }
+      // AI Suggested Fixes W2 — first submission wins. A second call would
+      // otherwise replace an already-validated outcome with whatever the model
+      // sends next; tell it so it stops instead of retrying.
+      if (toolName === 'submit_suggestions' && outcome.research !== undefined) {
+        const reason = 'submit_suggestions was already submitted for this run; the first submission is final';
+        outcome.deniedActions.push({ tool: toolName, reason });
+        return { allowed: false, error: reason };
+      }
       try {
         validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : toolName === 'submit_suggestions' ? research : design);
       } catch (e) {

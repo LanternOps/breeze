@@ -542,6 +542,21 @@ describe('remediation_research in the run loop (W2)', () => {
     await executeAgentRun(RUN_ID);
     expect(loadResearchContext).not.toHaveBeenCalled();
   });
+  it('a second submit_suggestions call is denied: first submission wins and is never overwritten', async () => {
+    seedResearchRun('quick');
+    const base = { title: 't', reasoning: 'r', riskTier: 'low' };
+    scriptQuery({ toolCalls: [
+      { tool: 'submit_suggestions', input: { summary: 'first', items: [{ kind: 'catalog', ref: { type: 'script', id: SCRIPT_OK }, ...base }] } },
+      { tool: 'submit_suggestions', input: { summary: 'second', items: [] } },
+    ] });
+    await executeAgentRun(RUN_ID);
+    const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+    expect(outcome.research?.summary).toBe('first');
+    expect(outcome.research?.items).toHaveLength(1);
+    expect(outcome.deniedActions.map((d) => d.tool)).toEqual(['submit_suggestions']);
+    expect(outcome.deniedActions[0]!.reason).toMatch(/already submitted/i);
+  });
+
   it('finalizes: accepted items are persisted; a run that never submitted is research_missing', async () => {
     seedResearchRun('quick');
     scriptQuery({ toolCalls: [{ tool: 'submit_suggestions', input: { summary: 's', items: [] } }] });
