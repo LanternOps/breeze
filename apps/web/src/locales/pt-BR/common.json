@@ -2377,7 +2377,10 @@
           "script": "Script",
           "template": "Modelo",
           "playbook": "Playbook",
-          "diagnostic": "Diagnóstico"
+          "diagnostic": "Diagnóstico",
+          "builtin": "Ação integrada",
+          "manualSteps": "Passos manuais",
+          "scriptDraft": "Rascunho de script"
         },
         "targetIdentifiers": {
           "script": "script {{id}}",
@@ -2386,7 +2389,8 @@
           "templateMissing": "modelo sem ID de modelo",
           "playbook": "playbook {{id}}",
           "playbookMissing": "playbook sem ID de playbook",
-          "diagnostic": "ação de diagnóstico"
+          "diagnostic": "ação de diagnóstico",
+          "builtin": "ação integrada {{action}}"
         },
         "targetDevices": {
           "none": "Nenhum dispositivo de destino nesta sugestão",
@@ -2398,7 +2402,8 @@
           "generateFailed": "Não foi possível gerar correções sugeridas",
           "updateFailed": "Não foi possível atualizar a correção sugerida",
           "executeFailed": "Não foi possível executar a correção sugerida",
-          "approvalFailed": "Não foi possível solicitar aprovação"
+          "approvalFailed": "Não foi possível solicitar aprovação",
+          "researchFailed": "Não foi possível iniciar a pesquisa"
         },
         "messages": {
           "disabled": "Correções sugeridas estão desativadas",
@@ -2484,6 +2489,52 @@
             "inconclusive": "inconclusivo",
             "cancelled": "cancelado"
           }
+        },
+        "groups": {
+          "proven": "Correções comprovadas",
+          "ai": "Sugestões da IA",
+          "similar": "Correções semelhantes",
+          "legacy": "Correspondências anteriores por palavras-chave"
+        },
+        "badges": {
+          "aiResearched": "Pesquisado pela IA",
+          "aiWritten": "Escrito pela IA — revise antes de seguir"
+        },
+        "track": {
+          "lastVerified": "verificado pela última vez há {{days}} d",
+          "neverVerified": "ainda não verificado"
+        },
+        "research": {
+          "running": "Pesquisando…",
+          "runningDeep": "Pesquisando em profundidade…",
+          "stalled": "Ainda pesquisando — volte em alguns minutos.",
+          "failed": "A pesquisa falhou.",
+          "noSafeFix": "A IA não encontrou uma correção segura para este problema.",
+          "checkBudget": "Verificar orçamento de IA",
+          "deeper": "Pesquisar mais a fundo",
+          "retry": "Tentar novamente",
+          "denial": {
+            "credits": "Os créditos de IA deste período de cobrança acabaram.",
+            "dailyBudget": "O orçamento diário de IA para pesquisa foi atingido.",
+            "orgBudget": "O orçamento de IA desta organização foi atingido.",
+            "autoCap": "O limite de pesquisa automática foi atingido. Você ainda pode iniciar a pesquisa manualmente.",
+            "busy": "A pesquisa está ocupada no momento. Tente novamente em alguns minutos.",
+            "permission": "Você não tem permissão para iniciar uma pesquisa de IA.",
+            "unavailable": "A pesquisa de IA está temporariamente indisponível.",
+            "modelUnavailable": "O modelo de IA para pesquisa não está disponível.",
+            "notProvisioned": "A pesquisa de IA ainda não está configurada nesta instalação."
+          }
+        },
+        "runBuiltin": "Executar {{action}}",
+        "draftScript": "Rascunhar um script",
+        "emptyHint": "Gerar verifica primeiro as correções comprovadas e depois consulta a IA.",
+        "reviewed": {
+          "pickerLabel": "Passos revisados",
+          "asWritten": "Passos como escritos (não compartilhados)",
+          "save": "Salvar como passos revisados",
+          "saved": "Salvo como passos revisados",
+          "failed": "Não foi possível salvar os passos revisados",
+          "stepsLabel": "Passos (um por linha)"
         }
       }
     },

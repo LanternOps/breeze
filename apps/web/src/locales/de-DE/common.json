@@ -2377,7 +2377,10 @@
           "script": "Skript",
           "template": "Vorlage",
           "playbook": "Spielbuch",
-          "diagnostic": "Diagnose"
+          "diagnostic": "Diagnose",
+          "builtin": "Integrierte Aktion",
+          "manualSteps": "Manuelle Schritte",
+          "scriptDraft": "Skriptentwurf"
         },
         "targetIdentifiers": {
           "script": "Skript {{id}}",
@@ -2386,7 +2389,8 @@
           "templateMissing": "Vorlage ohne Vorlagen-ID",
           "playbook": "Spielbuch {{id}}",
           "playbookMissing": "Playbook ohne Playbook-ID",
-          "diagnostic": "diagnostische Maßnahme"
+          "diagnostic": "diagnostische Maßnahme",
+          "builtin": "integrierte Aktion {{action}}"
         },
         "targetDevices": {
           "none": "In diesem Vorschlag ist kein Zielgerät enthalten",
@@ -2398,7 +2402,8 @@
           "generateFailed": "Vorgeschlagene Korrekturen konnten nicht generiert werden",
           "updateFailed": "Der vorgeschlagene Fix konnte nicht aktualisiert werden",
           "executeFailed": "Der vorgeschlagene Fix konnte nicht ausgeführt werden",
-          "approvalFailed": "Die Genehmigung konnte nicht angefordert werden"
+          "approvalFailed": "Die Genehmigung konnte nicht angefordert werden",
+          "researchFailed": "Recherche konnte nicht gestartet werden"
         },
         "messages": {
           "disabled": "Vorgeschlagene Korrekturen sind deaktiviert",
@@ -2484,6 +2489,52 @@
             "inconclusive": "nicht eindeutig",
             "cancelled": "abgebrochen"
           }
+        },
+        "groups": {
+          "proven": "Bewährte Lösungen",
+          "ai": "KI-Vorschläge",
+          "similar": "Ähnliche Lösungen",
+          "legacy": "Frühere Stichwort-Treffer"
+        },
+        "badges": {
+          "aiResearched": "KI-recherchiert",
+          "aiWritten": "Von KI verfasst — vor dem Befolgen prüfen"
+        },
+        "track": {
+          "lastVerified": "zuletzt vor {{days}} Tagen bestätigt",
+          "neverVerified": "noch nicht bestätigt"
+        },
+        "research": {
+          "running": "Recherche läuft…",
+          "runningDeep": "Ausführliche Recherche läuft…",
+          "stalled": "Recherche läuft noch — schauen Sie in einigen Minuten wieder vorbei.",
+          "failed": "Recherche fehlgeschlagen.",
+          "noSafeFix": "Die KI hat für dieses Problem keine sichere Lösung gefunden.",
+          "checkBudget": "KI-Budget prüfen",
+          "deeper": "Tiefer recherchieren",
+          "retry": "Erneut versuchen",
+          "denial": {
+            "credits": "Die KI-Guthaben für diesen Abrechnungszeitraum sind aufgebraucht.",
+            "dailyBudget": "Das tägliche KI-Budget für Recherchen ist erreicht.",
+            "orgBudget": "Das KI-Budget dieser Organisation ist erreicht.",
+            "autoCap": "Das Limit für automatische Recherchen ist erreicht. Sie können weiterhin manuell recherchieren.",
+            "busy": "Die Recherche ist gerade ausgelastet. Versuchen Sie es in einigen Minuten erneut.",
+            "permission": "Sie haben keine Berechtigung, eine KI-Recherche zu starten.",
+            "unavailable": "Die KI-Recherche ist vorübergehend nicht verfügbar.",
+            "modelUnavailable": "Das KI-Modell für die Recherche ist nicht verfügbar.",
+            "notProvisioned": "Die KI-Recherche ist für diese Installation noch nicht eingerichtet."
+          }
+        },
+        "runBuiltin": "{{action}} ausführen",
+        "draftScript": "Skript entwerfen",
+        "emptyHint": "„Generieren“ prüft zuerst bewährte Lösungen und fragt dann die KI.",
+        "reviewed": {
+          "pickerLabel": "Geprüfte Schritte",
+          "asWritten": "Schritte wie geschrieben (nicht geteilt)",
+          "save": "Als geprüfte Schritte speichern",
+          "saved": "Als geprüfte Schritte gespeichert",
+          "failed": "Geprüfte Schritte konnten nicht gespeichert werden",
+          "stepsLabel": "Schritte (einer pro Zeile)"
         }
       }
     },
