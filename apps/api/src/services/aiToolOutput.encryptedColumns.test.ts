@@ -82,6 +82,10 @@ vi.mock('./notificationChannelConfig', async (importOriginal) => ({
   ...channelConfig,
 }));
 
+// Load the registry hub first, as production does: aiToolsFixMemory reads an
+// imported constant at registration time and hits the aiTools import cycle in
+// its temporal dead zone when it is the first module to pull in './aiTools'.
+import './aiTools';
 import { compactToolResultForChat, redactAiToolOutputText } from './aiToolOutput';
 import { encryptedColumnRegistry } from './encryptedColumnRegistry';
 import { redactToolOutputFields } from './logRedaction';
