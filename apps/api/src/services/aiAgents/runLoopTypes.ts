@@ -1,5 +1,6 @@
 import type { AnalysisOutcome, RemediationTriggerKind, ResearchOutcome } from '@breeze/shared';
 import type { ResearchRunContext } from './researchContext';
+import type { RunProvenFixes } from '../fixMemory/runMemory';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
  * #4451) so the loop itself and its per-profile finalizers (`runFinalizers.ts`)
@@ -483,6 +484,13 @@ export interface RunContext {
   } | null;
   /** AI Suggested Fixes W2 — set only for a `remediation_research` run. Optional like `patch`. */
   research?: ResearchRunContext | null;
+  /**
+   * AI Suggested Fixes W3 — proven fixes for this run's alert or correlation
+   * group. Set only for `verdict`/`full` runs whose org-pinned alert or group
+   * read resolved; null otherwise, and whenever memory is off, empty or
+   * unavailable. Optional (absent ≡ null) like `research`.
+   */
+  provenFixes?: RunProvenFixes | null;
   /**
    * AI patch agent W01 (#5747) — the schedule occurrence (or manual trigger)
    * and the bounded, org-pinned patch evidence a `patch`-profile run plans

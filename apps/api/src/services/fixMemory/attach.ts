@@ -97,8 +97,16 @@ async function insertMemorySuggestion(values: Insert): Promise<void> {
   await q.onConflictDoNothing();
 }
 
-export async function attachProvenFixes(input: AttachInput): Promise<{ proven: number; attached: number }> {
-  const none = { proven: 0, attached: 0 };
+/**
+ * The read-only half of the attach: which memory rows WOULD be written for
+ * this source. Shared by `attachProvenFixes` (which writes them) and
+ * `hasAttachableProvenFix` (W3's shadow short-circuit probe), so "memory has
+ * something to attach" means exactly what the attach will do — a proven fix
+ * that cannot become a runnable row (disk_cleanup, non-Windows restart/kill,
+ * retired reviewed steps) never counts.
+ */
+async function planProvenAttachments(input: AttachInput): Promise<{ proven: number; rows: Insert[] }> {
+  const none = { proven: 0, rows: [] };
   if (!(await shouldProduceMlOutput(input.orgId, 'ml.remediation_suggestions.enabled'))) return none;
   const ref = sourceRefFor({ sourceType: input.sourceType, sourceId: input.sourceId });
   if (!ref) return none;
@@ -108,7 +116,7 @@ export async function attachProvenFixes(input: AttachInput): Promise<{ proven: n
   if (!partnerId) return none;
 
   const { proven } = await lookupFixes({ orgId: input.orgId, partnerId, signature: resolved.signature, limit: ATTACH_LIMIT });
-  let attached = 0;
+  const rows: Insert[] = [];
   for (const fix of proven) {
     const built = await memorySuggestionValues(fix, resolved, input);
     if ('skip' in built) {
@@ -117,10 +125,24 @@ export async function attachProvenFixes(input: AttachInput): Promise<{ proven: n
       });
       continue;
     }
-    await insertMemorySuggestion(built.values);
-    attached += 1;
+    rows.push(built.values);
   }
-  return { proven: proven.length, attached };
+  return { proven: proven.length, rows };
+}
+
+export async function attachProvenFixes(input: AttachInput): Promise<{ proven: number; attached: number }> {
+  const { proven, rows } = await planProvenAttachments(input);
+  for (const values of rows) await insertMemorySuggestion(values);
+  return { proven, attached: rows.length };
+}
+
+/**
+ * AI Suggested Fixes W3 — read-only: would `attachProvenFixes` write at least
+ * one row for this source? Runs on the ambient db (callers supply the
+ * context) and writes nothing.
+ */
+export async function hasAttachableProvenFix(input: AttachInput): Promise<boolean> {
+  return (await planProvenAttachments(input)).rows.length > 0;
 }
 
 /** Durable subscriber 'fix-memory-attach' on alert.triggered (W1) + auto research (W2). */

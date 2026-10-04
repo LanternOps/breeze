@@ -28,6 +28,14 @@ const TASK_ID = '00000000-0000-4000-8000-00000000f004';
 const DEVICE_ID = '00000000-0000-4000-8000-00000000f005';
 
 const loadTaskFence = vi.hoisted(() => vi.fn());
+// AI Suggested Fixes W3 — loadRunContext's proven-fix lookup. Mocked so it never
+// consumes this file's queued db rows; returns null (no memory) by default.
+const loadProvenFixesForRun = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+vi.mock('../fixMemory/runMemory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fixMemory/runMemory')>()),
+  loadProvenFixesForRun,
+}));
+
 vi.mock('../aiOperator/taskService', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadTaskFence,

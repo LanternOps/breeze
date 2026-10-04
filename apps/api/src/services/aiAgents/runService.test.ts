@@ -129,6 +129,8 @@ vi.mock('../../db', () => {
     },
     getCurrentDbAccessContext: vi.fn(() => dbMockState.ambientContext),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+    // W3: a savepoint on the ambient connection — same depth, no new context.
+    withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
     withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
       const previous = dbMockState.ambientContext;
       dbMockState.ambientContext = { scope: 'system' };
@@ -2827,5 +2829,75 @@ describe('createAndEnqueueAgentRun research-profile admission (AI Suggested Fixe
     // manual: the queue without the auto-count entry has no auto count; an extra read would throw "No queued rows"
     seedResearchAdmissionReads();
     expect(await createAndEnqueueAgentRun(researchInput({ triggerKind: 'manual', dedupeKey: 'research:manual-1' }))).toMatchObject({ created: true });
+  });
+});
+
+describe('proven-fix short-circuit for shadow triage (AI Suggested Fixes W3)', () => {
+  it('shadow + proven fix → proven_fix_available, nothing inserted, no admission lock taken', async () => {
+    let depthAtProbe = -1;
+    const probe = vi.fn(async () => { depthAtProbe = dbMockState.systemContextDepth; return true; });
+    const result = await createAndEnqueueAgentRun(input({ provenFixProbe: probe }));
+    expect(result).toEqual({ created: false, skipped: 'proven_fix_available' });
+    expect(probe).toHaveBeenCalledTimes(1);
+    // The probe joins admission's ONE system context, never a second pooled
+    // connection (W3 plan Global Constraints, "Contexts").
+    expect(depthAtProbe).toBe(1);
+    expect(dbMockState.insertValues).toEqual([]);
+    expect(dbMockState.executed).toEqual([]);
+    expect(enqueueAgentRunJob).not.toHaveBeenCalled();
+  });
+
+  it('act mode never consults the probe and admits the full run', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'act' }));
+    seedAdmissionReads();
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toMatchObject({ created: true });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['agent_disabled', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ enabled: false }))],
+    ['mode_off', () => resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ mode: 'off' }))],
+    ['circuit_open', () => isCircuitOpen.mockResolvedValue(true)],
+    ['maintenance_window', () => {
+      resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ respectMaintenanceWindows: true }) }));
+      isDeviceInMaintenanceWindow.mockResolvedValue(true);
+    }],
+  ] as const)('an admission opt-out (%s) keeps its own skip; the probe is never asked', async (reason, arrange) => {
+    arrange();
+    const probe = vi.fn(async () => true);
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: probe }))).toEqual({ created: false, skipped: reason });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('the probe runs BEFORE the dedupe insert: a redelivered shadow alert answers proven_fix_available, not duplicate', async () => {
+    // Deliberate ordering (W3 plan Task 5: probe after the opt-outs, before
+    // the admission lock). A redelivery whose dedupe row already exists would
+    // otherwise answer `duplicate`; answering proven_fix_available instead is
+    // benign — the lane's attach is idempotent and no row is inserted.
+    seedAdmissionReads();
+    dbMockState.insertRows = []; // what makes the same admission answer `duplicate` without a probe
+    expect(await createAndEnqueueAgentRun(input())).toEqual({ created: false, skipped: 'duplicate' });
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.insertConflictTargets = [];
+    expect(await createAndEnqueueAgentRun(input({ provenFixProbe: async () => true }))).toEqual({
+      created: false, skipped: 'proven_fix_available',
+    });
+    expect(dbMockState.insertConflictTargets).toEqual([]);
+  });
+
+  it('no proven fix admits the full run as today', async () => {
+    seedAdmissionReads();
+    const probe = vi.fn(async () => false);
+    expect(await createAndEnqueueAgentRun(input({ dedupeKey: 'alert:p1', provenFixProbe: probe }))).toMatchObject({ created: true });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing probe admits the full run as today', async () => {
+    seedAdmissionReads();
+    expect(await createAndEnqueueAgentRun(input({
+      dedupeKey: 'alert:p2', provenFixProbe: async () => { throw new Error('db'); },
+    }))).toMatchObject({ created: true });
   });
 });

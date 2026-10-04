@@ -132,6 +132,19 @@ describe('skipVisibility', () => {
       expect(redis.expires).toContain('breeze:ai-agents:skips:org-1');
     });
 
+    it('an expected, memory-served skip (proven_fix_available) logs at info, not warn — and is still counted', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const redis = fakeRedis();
+      redisState.redis = redis;
+      recordAgentRunSkip({ orgId: 'org-1', reason: 'proven_fix_available', alertId: 'alert-9' });
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(info.mock.calls[0]![1]).toMatchObject({ reason: 'proven_fix_available', alertId: 'alert-9' });
+      await vi.waitFor(() => {
+        expect(redis.hashes.get('breeze:ai-agents:skips:org-1')?.get('count:proven_fix_available')).toBe('1');
+      });
+    });
+
     it('never throws when Redis is unavailable', () => {
       redisState.redis = null;
       expect(() => recordAgentRunSkip({ orgId: 'org-1', reason: 'cooldown' })).not.toThrow();

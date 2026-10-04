@@ -15,6 +15,18 @@ const {
   }),
 }));
 
+// AI Suggested Fixes W3 — the shadow short-circuit's probe and attach.
+const { hasAttachableProvenFixMock, attachProvenFixesMock, systemCtxMock } = vi.hoisted(() => ({
+  hasAttachableProvenFixMock: vi.fn(async (_input: unknown) => true),
+  attachProvenFixesMock: vi.fn(async (_input: unknown) => ({ proven: 1, attached: 1 })),
+  systemCtxMock: vi.fn(async (fn: () => unknown, _label?: string) => fn()),
+}));
+vi.mock('./fixMemory/attach', () => ({
+  hasAttachableProvenFix: hasAttachableProvenFixMock,
+  attachProvenFixes: attachProvenFixesMock,
+}));
+vi.mock('./outcomeProbes', () => ({ inSystemDbContext: systemCtxMock }));
+
 vi.mock('../db', () => ({
   db: {
     insert: vi.fn(),
@@ -23,6 +35,7 @@ vi.mock('../db', () => ({
     selectDistinct: vi.fn(),
   },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbTransaction: vi.fn((fn: () => unknown) => fn()),
 }));
 
 vi.mock('./eventBus', () => ({
@@ -87,6 +100,8 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   workspace_unavailable: 'succeeded',
   // AI model registry W03: a configuration gate, not an integrity failure.
   model_unavailable: 'succeeded',
+  // AI Suggested Fixes W3: memory attached a proven fix instead of a shadow run.
+  proven_fix_available: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };
@@ -202,6 +217,8 @@ describe('executeAiTriageAction', () => {
         source: null,
       },
       dedupeKey: 'alert:alert-1',
+      // AI Suggested Fixes W3 — the shadow short-circuit probe (own describe below).
+      provenFixProbe: expect.any(Function),
     });
     // #5290 — a queued child run is NOT a completed action. The action stays
     // nonterminal and carries the correlation the ai.agent.run.* events use to
@@ -495,5 +512,87 @@ describe('executeAiTriageAction', () => {
     expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
     const actual = gateInput();
     expect(actual.alertId).toBe('alert-from-builder');
+  });
+});
+
+describe('shadow short-circuit on the ai_triage lane (AI Suggested Fixes W3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeviceTags([]);
+    hasAttachableProvenFixMock.mockResolvedValue(true);
+    attachProvenFixesMock.mockResolvedValue({ proven: 1, attached: 1 });
+  });
+
+  it('hands admission a probe that answers from fix memory for THIS alert and the device org', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: 'run-x', status: 'queued', errorCode: null } });
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    const probe = gateInput(0).provenFixProbe!;
+    expect(probe).toBeTypeOf('function');
+    await expect(probe()).resolves.toBe(true);
+    expect(hasAttachableProvenFixMock).toHaveBeenCalledWith({ sourceType: 'alert', sourceId: 'alert-1', orgId: 'org-device' });
+    hasAttachableProvenFixMock.mockResolvedValueOnce(false);
+    await expect(probe()).resolves.toBe(false);
+    // Probing is admission's business: the action itself never asked.
+    expect(attachProvenFixesMock).not.toHaveBeenCalled();
+  });
+
+  it('proven_fix_available → the proven fix is attached and the action succeeds without a run', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'proven_fix_available' });
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(out.outcome).toEqual({ status: 'succeeded' });
+    expect(attachProvenFixesMock).toHaveBeenCalledWith({ sourceType: 'alert', sourceId: 'alert-1', orgId: 'org-device' });
+    expect(systemCtxMock).toHaveBeenCalledTimes(1);
+    expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
+    expect(out.log.message).toMatch(/proven fix attached/i);
+    expect(out.log.level).toBe('info');
+  });
+
+  it('a short-circuit that then attaches nothing re-admits the full run WITHOUT the probe (an alert is never dropped)', async () => {
+    attachProvenFixesMock.mockResolvedValueOnce({ proven: 1, attached: 0 });
+    createAndEnqueueAgentRunMock
+      .mockResolvedValueOnce({ created: false, skipped: 'proven_fix_available' })
+      .mockResolvedValueOnce({ created: true, run: { id: 'run-z', status: 'queued', errorCode: null } });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(2);
+    expect(gateInput(1).provenFixProbe).toBeUndefined();
+    expect(gateInput(1)).toMatchObject({ kind: 'triage', alertId: 'alert-1', dedupeKey: 'alert:alert-1' });
+    expect(out.outcome).toMatchObject({ status: 'queued', agentRunId: 'run-z' });
+  });
+
+  it('a THROWING attach after proven_fix_available re-admits the full run without the probe', async () => {
+    attachProvenFixesMock.mockRejectedValueOnce(new Error('insert failed'));
+    createAndEnqueueAgentRunMock
+      .mockResolvedValueOnce({ created: false, skipped: 'proven_fix_available' })
+      .mockResolvedValueOnce({ created: true, run: { id: 'run-t', status: 'queued', errorCode: null } });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(2);
+    expect(gateInput(1).provenFixProbe).toBeUndefined();
+    expect(out.outcome).toMatchObject({ status: 'queued', agentRunId: 'run-t' });
+  });
+
+  it('a re-admit that is itself skipped reports that skip (no silent success)', async () => {
+    attachProvenFixesMock.mockResolvedValueOnce({ proven: 1, attached: 0 });
+    createAndEnqueueAgentRunMock
+      .mockResolvedValueOnce({ created: false, skipped: 'proven_fix_available' })
+      .mockResolvedValueOnce({ created: false, skipped: 'device_not_in_org' });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(out.outcome).toEqual({ status: 'failed', message: 'ai_triage skipped: device_not_in_org' });
+  });
+
+  it('no alert on the trigger → no probe', async () => {
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: 'run-y', status: 'queued', errorCode: null } });
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext({ trigger: { eventId: 'evt-9' } }));
+    expect(gateInput(0).provenFixProbe).toBeUndefined();
+  });
+
+  it('the patch lane never carries the probe', async () => {
+    resolveAlertCategoryMock.mockResolvedValueOnce({ category: 'patch', monitorKind: null, isPatchWork: true, source: null });
+    createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: 'run-p', status: 'queued', errorCode: null } });
+    await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
+    expect(gateInput(0)).toMatchObject({ kind: 'patch' });
+    expect(gateInput(0).provenFixProbe).toBeUndefined();
   });
 });

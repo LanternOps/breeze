@@ -24,7 +24,7 @@ const research = vi.hoisted(() => vi.fn(async (_input: unknown) => ({ status: 's
 vi.mock('../sentry', () => ({ captureException: capture }));
 vi.mock('./research', () => ({ requestResearch: research }));
 
-import { attachProvenFixes, handleAlertTriggeredForFixMemory, memoryRationale } from './attach';
+import { attachProvenFixes, handleAlertTriggeredForFixMemory, hasAttachableProvenFix, memoryRationale } from './attach';
 
 const proven = { memoryId: 'm-1', scope: 'all_clients', fixKind: 'partner_script', scriptId: 's-1', scriptName: 'Restart spooler', attempts: 8, verified: 7, successRate: 0.88, lastVerifiedAt: '2026-11-01T00:00:00.000Z' };
 const signature = { version: 1, key: 'k', broadKey: 'b', broad: false, facets: { osFamily: 'windows' } };
@@ -125,6 +125,38 @@ describe('attachProvenFixes', () => {
     expect(h.sig).not.toHaveBeenCalled();
     expect(h.partner).not.toHaveBeenCalled();
     expect(h.lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe('hasAttachableProvenFix (W3 shadow short-circuit probe)', () => {
+  const nonScript = { ...proven, scriptId: null, scriptName: null, builtinAction: null, instructionsRef: null, instructionsTitle: null };
+  const input = { sourceType: 'alert' as const, sourceId: 'a-1', orgId: 'org-1' };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.flag.mockResolvedValue(true);
+    h.partner.mockResolvedValue('p-1');
+    h.sig.mockResolvedValue({ signature, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+  });
+
+  it('true when attach would write a row — and it writes nothing itself', async () => {
+    h.lookup.mockResolvedValue({ proven: [proven], similar: [] });
+    await expect(hasAttachableProvenFix(input)).resolves.toBe(true);
+    expect(h.values).not.toHaveBeenCalled();
+  });
+
+  it('false when every proven fix is unattachable (e.g. disk_cleanup): the run must not be skipped for nothing', async () => {
+    h.sig.mockResolvedValue({ signature: { ...signature, facets: { osFamily: 'windows', discriminator: null } }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+    h.lookup.mockResolvedValue({ proven: [{ ...nonScript, fixKind: 'builtin_action', builtinAction: 'disk_cleanup' }], similar: [] });
+    await expect(hasAttachableProvenFix(input)).resolves.toBe(false);
+  });
+
+  it('false when the flag is off, the signature is broad, or nothing is proven', async () => {
+    h.flag.mockResolvedValueOnce(false);
+    await expect(hasAttachableProvenFix(input)).resolves.toBe(false);
+    h.sig.mockResolvedValueOnce({ signature: { ...signature, broad: true }, deviceId: 'd-1', alertId: 'a-1', anomalyEpisodeId: null });
+    await expect(hasAttachableProvenFix(input)).resolves.toBe(false);
+    h.lookup.mockResolvedValueOnce({ proven: [], similar: [proven] });
+    await expect(hasAttachableProvenFix(input)).resolves.toBe(false);
   });
 });
 
