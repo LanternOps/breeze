@@ -986,6 +986,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // active defense; query_devices/get_device_details cover the real
   // hostname/displayName exposure.
   get_device_context: new Set(['hostname', 'displayName']),
+  // Administrator-approved diagnostic reads: file contents and file/folder
+  // names come straight off the endpoint and are writable by local users.
+  diagnostic_read_file: new Set(['content']),
+  diagnostic_list_directory: new Set(['name', 'path']),
 } as const;
 
 /**

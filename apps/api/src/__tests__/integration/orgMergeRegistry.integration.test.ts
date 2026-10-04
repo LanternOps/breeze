@@ -265,6 +265,12 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Diagnostic access grants (2026-12-07-120000): on an org_id change, turns an
+  // active grant into revoked and a pending request into expired. Never blocks
+  // or reverts the org_id change itself; the merge fences these rows in its
+  // resolve phase first, so the repoint finds them already dead.
+  'diagnostic_access_grants.diagnostic_access_grants_fence_org_change': 'kills a live grant on org change; never reads-to-block or reverts org_id',
+  'diagnostic_access_grants.diagnostic_access_grants_expire_pending_approvals': 'BEFORE DELETE only: expires the grant\'s pending approval rows; never blocks or rewrites org_id',
   // Topology M4-D2 (2026-11-06-220000): BEFORE UPDATE OF topology_site_id only;
   // RAISEs when the site pin changes. Merge repoints org_id (never the pin),
   // and the pin's composite FK to sites(id, org_id) is DEFERRABLE, so the

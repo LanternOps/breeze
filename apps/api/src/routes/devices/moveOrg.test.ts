@@ -1468,7 +1468,13 @@ describe('POST /devices/:id/move-org', () => {
       expect(statements[9]).toBe('SELECT devices FOR update');
       expect(collapseStmt(statements[10]!)).toContain('SELECT requester_binding_id, target_binding_id FROM caller_verifications');
       expect(collapseStmt(statements[11]!)).toContain('UPDATE caller_verifications');
-      expect(statements[12]).toBe('UPDATE devices');
+      // Diagnostic access grants approved in the SOURCE org die before the flip
+      // (its trigger restamps them into the target org): pending requests
+      // expire, active grants are revoked. Other approvers' approval rows are
+      // expired post-commit in system scope (they are per-approver under RLS).
+      expect(collapseStmt(statements[12]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
+      expect(collapseStmt(statements[13]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
+      expect(statements[14]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

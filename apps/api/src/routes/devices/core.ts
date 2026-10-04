@@ -296,6 +296,11 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
 // ownership remains with the original org; pending alert admission rejects a moved
 // device. The DB discovery function has the same exclusion in migration000800.
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
+  // diagnostic_access_grants: restamped by the device-move trigger like every
+  // device_id+org_id table, but moveOrg.ts first expires/revokes the device's
+  // grants (services/diagnosticAccess/deviceMove.ts) — an approval from the old
+  // org never authorizes anything in the new one.
+  'diagnostic_access_grants',
   'topology_node_bindings',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
@@ -579,6 +584,12 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'device_metrics', 'device_software', 'device_registry_state', 'device_config_state',
   'device_commands', 'device_connections', 'device_boot_metrics',
   'device_sessions', 'device_change_log', 'device_warranty', 'device_vulnerabilities',
+  // Administrator-approved diagnostic read grants — FK device_id -> devices.id
+  // plus a deferred composite (device_id, org_id) -> devices(id, org_id), both
+  // without cascade. approval_requests rows reference it ON DELETE SET NULL;
+  // a BEFORE DELETE trigger expires their pending cards first. Grants for a
+  // deleted device are void.
+  'diagnostic_access_grants',
   // Durable external-system identity (#3257 W06) — FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
   'device_external_links',

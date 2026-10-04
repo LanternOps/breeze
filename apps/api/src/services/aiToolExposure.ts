@@ -39,6 +39,14 @@ export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, str
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Diagnostic read grants are bound to a human session or an MCP credential
+  // (services/diagnosticAccess/grants.ts beneficiaryOf); an operator agent can
+  // never request, hold, use or revoke one.
+  'request_diagnostic_access',
+  'list_diagnostic_access_grants',
+  'revoke_diagnostic_access',
+  'diagnostic_list_directory',
+  'diagnostic_read_file',
   // Execution plane (spec §5.5). FULLY DEREGISTERED as of #6086 — chat-to-agent
   // delegation is withdrawn until caller authorization can be preserved for the
   // length of a run, so no tier, schema, handler or MCP declaration remains.

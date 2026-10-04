@@ -50,6 +50,7 @@ import {
   type RiskTier,
   type SortOrder,
 } from './approvalGrouping';
+import DiagnosticAccessApprovalDetails, { isDiagnosticAccessApproval } from './DiagnosticAccessApprovalDetails';
 
 const LIVE_REFETCH_DEBOUNCE_MS = 750;
 /** WS is only a nudge; polling is the guarantee. useEventStream gives up
@@ -1113,7 +1114,9 @@ export default function ApprovalsInbox() {
                 {t('targetDevice', { hostname: approval.targetDevice.hostname })}
               </p>
             )}
-            {approval.riskSummary && (
+            {isDiagnosticAccessApproval(approval.actionToolName) ? (
+              <DiagnosticAccessApprovalDetails args={approval.actionArguments} approvalId={approval.id} />
+            ) : approval.riskSummary && (
               <p className="mt-3 max-w-3xl text-sm text-foreground/80">
                 {approval.riskSummary}
               </p>
