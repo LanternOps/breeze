@@ -586,7 +586,7 @@ import { collectAfterBankSetup, getBankAutopayOffer, startInvoiceBankSetup } fro
 import { disconnectPartnerStripe } from '../partnerStripe';
 import { pollStripeFinancialEvents } from '../stripeFinancialEventPoller';
 
-async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`, fee = '0.00') {
+async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`, fee = '0.00', last4 = '6789') {
   const seeded = await withSystemDbAccessContext(async () => {
     const token = await mintBillingLinkToken(db, {orgId: f.org.id, invoiceId: f.invoice.id,
       enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 1});
@@ -606,7 +606,7 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
     return {token, setup: setup!};
   });
   const method = {id: stripeMethodId, type: 'us_bank_account', customer: 'cus_autopay_test',
-    us_bank_account: {account_holder_type: 'company', bank_name: 'Test bank', last4: '6789'}} as Stripe.PaymentMethod;
+    us_bank_account: {account_holder_type: 'company', bank_name: 'Test bank', last4}} as Stripe.PaymentMethod;
   await persistCapturedAutopayMethod(seeded.setup.id, method, 'activated', seeded.setup.setupIntentId, `mandate_${suffix}`);
   const [saved] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods)
     .where(eq(orgPaymentMethods.stripePaymentMethodId, method.id)));
@@ -2285,4 +2285,18 @@ it('sends a staff email for an org with no autopay enrollment (F1)',async()=>{
    dedupeKey:`payment:${randomUUID()}:disputed:dp_f1`,message:'A payment was disputed.'}); }
  finally { mail.restore(); }
  expect(mail.staff()).toEqual([expect.objectContaining({to:'msp@example.test',subject:expect.stringContaining('Payment disputed')})]);
+});
+
+// F7: the B1-5 suppression is for the same account re-authorizing. A bank-pay retry that
+// links a DIFFERENT account is a method change the client and staff must hear about.
+it('a bank-pay re-authorization with a different bank account still announces the change (F7)',async()=>{
+ const f=await fixture();
+ await bankSetup(f,'first');
+ const enrolled=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox)
+  .where(eq(billingNoticeOutbox.orgId,f.org.id)))).filter(n=>n.kind==='autopay_enrolled');
+ expect(await enrolled()).toHaveLength(1);
+ await bankSetup(f,'other_account',undefined,'0.00','4321');
+ const notices=await enrolled();
+ expect(notices).toHaveLength(2);
+ expect((notices.at(-1)!.rendered as {text:string}).text).toContain('4321');
 });

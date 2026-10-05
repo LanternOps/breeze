@@ -126,9 +126,15 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));
   // Re-authorizing a bank payment for the same invoice (a changed total, a spent authority)
-  // re-runs setup under the same enrollment generation. The client already heard autopay is
-  // set up, so nothing new is sent to them or to staff; the new consent is still recorded (B1-5).
-  const [earlierBankPay]=snapshot.bankPayment&&!wasPending?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
+  // re-runs setup under the same enrollment generation. When it saved the SAME bank account the
+  // client already heard autopay is set up, so nothing new is sent to them or to staff; the new
+  // consent is still recorded (B1-5). A different account is a method change and is announced
+  // (F7). Same account: the same Stripe method, or the same bank and last four digits on the
+  // method it replaced (Financial Connections mints a new PaymentMethod id per link and no
+  // fingerprint is stored; a false match only suppresses a courtesy email).
+  const sameAccount=method.type==='us_bank_account'&&replaced.some(old=>old.id===saved!.id||(old.type==='us_bank_account'
+   &&!!old.bankLast4&&old.bankLast4===method.us_bank_account?.last4&&old.bankName===(method.us_bank_account?.bank_name??null)));
+  const [earlierBankPay]=snapshot.bankPayment&&!wasPending&&sameAccount?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
    eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,attempt.generation),
    eq(autopaySetupAttempts.outcome,'activated'),ne(autopaySetupAttempts.id,attempt.id),
    sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->>'invoiceId' = ${snapshot.bankPayment.invoiceId}`)).limit(1):[];
