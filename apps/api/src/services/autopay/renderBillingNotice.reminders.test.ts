@@ -62,6 +62,8 @@ it.each([
   expect(rendered.text).not.toContain('Please pay soon.');
   expect(rendered.html).not.toMatch(/<p>[^<]*<!doctype/i);
   if (variant === 'not_charged') {
+    // The text part names the invoice (its heading), not only the subject.
+    expect(rendered.text.startsWith("Invoice INV-1 won't be charged automatically")).toBe(true);
     expect(rendered.text).toContain('This invoice is above the automatic payment limit you authorized. The automatic payment announced for on or around November 4, 2026 will not happen. Please pay €25.05 using the invoice link.');
   }
 });

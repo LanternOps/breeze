@@ -2246,7 +2246,7 @@ it('a full refund of an unapplied autopay capture sends the client a refund noti
   .filter(n=>n.kind==='payment_receipt'&&(n.rendered as {frozen?:{variant?:string}}).frozen?.variant==='refund');
  expect(refunds).toHaveLength(1);
  const text=(refunds[0]!.rendered as {text:string}).text;
- expect(text).toContain('Refunded: USD 100.00');
+ expect(text).toContain('Refunded: $100.00');
  expect(text).toContain(`was not applied to invoice ${f.invoice.invoiceNumber}`);
  expect(text).not.toContain('Balance due');
 });

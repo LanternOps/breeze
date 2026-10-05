@@ -178,7 +178,7 @@ const reminderRenderData = z.object({
 const LOCKED_REMINDER_COPY = {
   skipped: { subject: 'Automatic payment skipped for invoice {{invoice_number}}', heading: 'This payment is skipped', buttonLabel: 'Pay invoice',
     html: '<p>Hi {{client_name}},</p><p>You skipped the automatic payment for invoice {{invoice_number}}, so {{partner_name}} won\'t charge it automatically. Please pay {{amount_due}} by {{due_date}}.</p>' },
-  not_charged: { subject: 'Automatic payment cancelled for invoice {{invoice_number}}', heading: 'This invoice won\'t be charged automatically', buttonLabel: 'Pay invoice',
+  not_charged: { subject: 'Automatic payment cancelled for invoice {{invoice_number}}', heading: 'Invoice {{invoice_number}} won\'t be charged automatically', buttonLabel: 'Pay invoice',
     html: '<p>Hi {{client_name}},</p><p>{{not_charged_reason}} The automatic payment announced{{announced_on}} will not happen. Please pay {{amount_due}} using the invoice link.</p>' },
 } as const;
 async function renderReminder(

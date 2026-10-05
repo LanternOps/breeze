@@ -115,7 +115,7 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   ...(kind==='autopay_stopped'&&extra.variant!=='request_withdrawn'?[`To turn automatic payments back on, ask ${partner.name} to send you a new setup link.`]:[])];
  const rendered=await renderBillingNotice(kind,{autopay:{partnerId:partner.id,orgId:org.id,variant:extra.variant,
   vars:{partner_name:partner.name,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),...vars},ctaUrl:url,scheduleText,feeText,stopUrl,
-  openInvoices:kind==='autopay_request'||kind==='autopay_resumed'?undefined:openInvoices??[],processingText,
+  openInvoices:kind==='autopay_request'||kind==='autopay_resumed'?undefined:openInvoices??[],processingText:processingText?.replaceAll('{{partner_name}}',partner.name),
   summary:kind==='autopay_resumed'&&extra.methodLabel?[{label:'Payment method',value:extra.methodLabel},...termsSummary(disclosures).slice(0,-2)]
    :kind==='autopay_request'?termsSummary(disclosures):undefined,
   notes:notes.length?notes:undefined}},db);
@@ -178,7 +178,7 @@ export async function requestAutopay(db:Tx,actor:InvoiceActor,input:{orgIds:stri
     const url=buildBillingLinkUrl('enroll',token.token);
     // Fee or limit (cap) terms changed (2a-1): the accepted terms stay in force until the client accepts the new ones.
     await notice(db,existing!,'autopay_request',recipient,{setup_link:url,ach_mode_text:achModeText(card.achMode)},url,undefined,
-     'Your automatic payments continue on the terms you already accepted until you review and accept the updated terms.',`${dedupeKey}:${token.id}`);
+     '{{partner_name}} has updated its payment terms. Your automatic payments continue on the terms you already accepted until you review and accept the new ones.',`${dedupeKey}:${token.id}`);
    }
    result.requested.push(orgId);continue;
   }
