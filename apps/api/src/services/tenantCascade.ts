@@ -53,6 +53,17 @@ import { deleteObjects } from './s3Storage';
 import { releaseSendingDomainsForPartner } from './emailDomains/domainRelease';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
+import {
+  captureBackupErasureFence,
+  deleteAndFenceOrgBackupRows,
+  isBackupFenceSourceTable,
+  type BackupErasureFenceCounts,
+} from './backupErasureFence';
+import {
+  findActiveBackupLegalHold,
+  findPolicyBackupLegalHoldInContext,
+  type BackupLegalHoldSource,
+} from './erasureBackupLegalHold';
 
 type StorageKeyRow = { storageKey: string | null };
 type CountRow = { count: number | string };
@@ -1408,8 +1419,8 @@ export class TenantCascadeRefusalError extends Error {
 }
 
 export const LEGAL_HOLD_ACTIVE_MESSAGE =
-  'This organization has one or more backup snapshots under legal hold. '
-  + 'Release the hold before erasing the organization.';
+  'This organization\'s backups are under legal hold (on a backup snapshot, a backup policy or a '
+  + 'configuration policy). Release the hold before erasing the organization.';
 
 /**
  * True if any `backup_snapshots` row for this org still carries an active
@@ -1454,9 +1465,31 @@ export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<n
     if (rows.some((row) => row.legal_hold === true)) {
       throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
     }
-    const result = await deleteOrgRows('backup_snapshots', orgId);
-    return extractRowCount(result);
+    // Policy-level holds (legacy backup policy, effective configuration
+    // policy) are re-checked here too, under FOR SHARE locks on every row that
+    // could carry one. Both policy kinds are still present at this point: the
+    // walk deletes backup_snapshots before backup_jobs/backup_policies (FK
+    // order) and before the configuration_policies family (pinned by
+    // backupErasureFence.integration.test.ts).
+    if (await findPolicyBackupLegalHoldInContext(orgId, { lockForShare: true })) {
+      throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
+    }
+    // Delete and fence in this one transaction (see backupErasureFence.ts).
+    const { deleted, newlyFenced } = await deleteAndFenceOrgBackupRows('backup_snapshots', orgId);
+    if (newlyFenced > 0) {
+      console.warn(`[tenantCascade] org=${orgId}: fenced ${newlyFenced} backup_snapshots target(s) created after the up-front capture`);
+    }
+    return deleted;
   });
+}
+
+/**
+ * True if ANY backup legal hold applies to the org: a snapshot hold, a legacy
+ * backup-policy hold, or a hold from a configuration policy effective for one
+ * of its devices (see erasureBackupLegalHold.ts).
+ */
+export async function hasActiveBackupLegalHold(orgId: string): Promise<boolean> {
+  return (await findActiveBackupLegalHold(orgId)) !== null;
 }
 
 /**
@@ -1478,8 +1511,10 @@ export async function cascadeDeleteOrg(
   orgId: string,
   performedBy: string,
   performedByEmail?: string,
+  opts: { erasureJobId?: string | null } = {},
 ): Promise<CascadeStats> {
-  if (await hasActiveLegalHoldSnapshots(orgId)) {
+  const holdSource: BackupLegalHoldSource | null = await findActiveBackupLegalHold(orgId);
+  if (holdSource) {
     await createAuditLog({
       orgId: null,
       actorType: 'user',
@@ -1488,7 +1523,7 @@ export async function cascadeDeleteOrg(
       action: 'tenant.erasure.refused_legal_hold',
       resourceType: 'organization',
       resourceId: orgId,
-      details: { reason: 'LEGAL_HOLD_ACTIVE' },
+      details: { reason: 'LEGAL_HOLD_ACTIVE', holdSource },
       result: 'failure',
       errorMessage: LEGAL_HOLD_ACTIVE_MESSAGE,
     });
@@ -1532,6 +1567,44 @@ export async function cascadeDeleteOrg(
   // Compute the FK-safe order from the actual catalog. If a cycle is
   // detected we throw and abort BEFORE deleting anything.
   const order = await topologicalCascadeOrder();
+
+  // 0. Fence the org's backup storage BEFORE the first destructive step.
+  //    Erasure deletes backup rows but never backup OBJECTS — deleting backup
+  //    data is a separate, explicit decision. Storage GC decides ownership of
+  //    a (possibly shared) bucket from exactly the rows this cascade deletes,
+  //    so the record of what the org owned must be durable first: one
+  //    committed transaction, captured while every source row (snapshots,
+  //    retirements, reservations, recovery media and boot media — the walk
+  //    deletes the media children BEFORE their snapshots) and every
+  //    destination still exists. Idempotent, so a re-run after a partial
+  //    cascade keeps every earlier target. A failure aborts the erasure before
+  //    anything is deleted; it is re-runnable.
+  let fenceCounts: BackupErasureFenceCounts;
+  try {
+    fenceCounts = await captureBackupErasureFence(orgId, { erasureJobId: opts.erasureJobId ?? null });
+  } catch (err) {
+    await writeErasureFailedAudit(orgId, performedBy, performedByEmail, 'backup_storage_fence', stats, err);
+    throw new Error(
+      `[tenantCascade] backup storage fence capture failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  await createAuditLog({
+    orgId: null,
+    actorType: 'user',
+    actorId: performedBy,
+    actorEmail: performedByEmail,
+    action: 'tenant.erasure.backup_manifest_captured',
+    resourceType: 'organization',
+    resourceId: orgId,
+    details: {
+      snapshotPrefixes: fenceCounts.snapshotPrefixes,
+      recoveryMediaKeys: fenceCounts.recoveryMediaKeys,
+      unresolvedIdentity: fenceCounts.unresolvedIdentity,
+    },
+    result: 'success',
+  });
 
   // 1a. Clear customer OBJECTS before ANY row is deleted anywhere (W08 #3902
   //     spec D9; widened to org_documents by service deliverables W03 spec
@@ -1739,6 +1812,16 @@ export async function cascadeDeleteOrg(
           })
         : table === 'backup_snapshots'
         ? await deleteBackupSnapshotsCascadeStep(orgId)
+        : isBackupFenceSourceTable(table)
+        // Delete + fence in one transaction: a row created after step 0 can
+        // never be deleted without its fence (see backupErasureFence.ts).
+        ? await dbModule.withSystemDbAccessContext(async () => {
+            const { deleted, newlyFenced } = await deleteAndFenceOrgBackupRows(table, orgId);
+            if (newlyFenced > 0) {
+              console.warn(`[tenantCascade] org=${orgId}: fenced ${newlyFenced} ${table} target(s) created after the up-front capture`);
+            }
+            return deleted;
+          })
         : await dbModule.withSystemDbAccessContext(async () => {
             if(table==='invoice_stripe_payments')await dbModule.db.execute(sql`SET LOCAL breeze.tenant_erasure = '1'`);
             const isAuditAdmin = AUDIT_ADMIN_REQUIRED_TABLES.has(table);

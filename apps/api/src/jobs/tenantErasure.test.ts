@@ -84,7 +84,7 @@ const { FakeTenantCascadeRefusalError } = vi.hoisted(() => ({
 
 vi.mock('../services/tenantCascade', () => ({
   cascadeDeleteOrg: (...args: unknown[]) => cascadeDeleteOrgMock(...(args as [])),
-  hasActiveLegalHoldSnapshots: (...args: unknown[]) => legalHoldMock(...(args as [])),
+  hasActiveBackupLegalHold: (...args: unknown[]) => legalHoldMock(...(args as [])),
   TenantCascadeRefusalError: FakeTenantCascadeRefusalError,
 }));
 
