@@ -20,3 +20,50 @@ export function autopayReasonKey(reason: string): string {
   for (const [marker,key] of Object.entries(pendingKeys)) if(reason===`control_pending:${marker}`)return key;
   return reasonKeys[reason] ?? 'autopay.attention';
 }
+
+// Charge now (staff invoice detail). Every response maps to staff copy; never a raw code.
+const ATTEMPTED_OUTCOMES = new Set(['failed', 'canceled', 'requires_action', 'unapplied']);
+const declineKeys: Record<string, string> = {
+  card_declined: 'autopay.chargeOutcome.cardDeclined', expired_card: 'autopay.chargeOutcome.expiredCard',
+  insufficient_funds: 'autopay.chargeOutcome.insufficientFunds', R01: 'autopay.chargeOutcome.insufficientFunds',
+};
+const refusedKeys: Record<string, string> = {
+  notice_lead: 'autopay.chargeRefused.notice_lead', renotice_required: 'autopay.chargeRefused.renotice_required',
+  collection_in_progress: 'autopay.chargeRefused.collection_in_progress',
+  checkout_session_unrevoked: 'autopay.chargeRefused.checkout_session_unrevoked',
+  retry_not_due: 'autopay.chargeRefused.retry_not_due', not_payable: 'autopay.chargeRefused.not_payable',
+  nothing_to_pay: 'autopay.chargeRefused.nothing_to_pay', enrollment_inactive: 'autopay.chargeRefused.enrollment_inactive',
+  schedule_inactive: 'autopay.chargeRefused.schedule_inactive', schedule_required: 'autopay.chargeRefused.schedule_inactive',
+  // The route's own fence answers INVALID_STATE with this message as `error`.
+  'Invoice has no eligible notice': 'autopay.chargeRefused.no_eligible_notice',
+};
+function chargeBody(body: unknown): { outcome?: string; reason: string; code?: string } {
+  const value = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const code = typeof value.code === 'string' ? value.code : undefined;
+  const error = typeof value.error === 'string' ? value.error : '';
+  return { outcome: typeof value.outcome === 'string' ? value.outcome : undefined,
+    reason: code && code !== 'INVALID_STATE' ? code : error, code };
+}
+/** A decline, confirmation request, cancellation or capture changed the invoice: refresh it. */
+export function chargeNowAttempted(body: unknown): boolean {
+  const { outcome } = chargeBody(body);
+  return !!outcome && ATTEMPTED_OUTCOMES.has(outcome);
+}
+export function chargeNowSuccessKey(body: unknown): string {
+  const state = (body as { data?: { state?: unknown } } | null)?.data?.state;
+  return state === 'succeeded' ? 'autopay.chargeOutcome.succeeded'
+    : state === 'processing' ? 'autopay.chargeOutcome.processing' : 'autopay.chargeStarted';
+}
+/** undefined = not a charge outcome (auth, permission, validation): keep the default message. */
+export function chargeNowFailureKey(body: unknown): string | undefined {
+  const { outcome, reason, code } = chargeBody(body);
+  // Stripe reports 3DS as requires_payment_method + authentication_required.
+  if (outcome === 'requires_action' || reason === 'authentication_required') return 'autopay.chargeOutcome.requiresAction';
+  if (outcome === 'failed') return declineKeys[reason] ?? 'autopay.chargeOutcome.declined';
+  if (outcome === 'canceled') return 'autopay.chargeOutcome.canceled';
+  if (outcome === 'unapplied') return 'autopay.chargeOutcome.unapplied';
+  if (refusedKeys[reason]) return refusedKeys[reason];
+  if (reasonKeys[reason]) return reasonKeys[reason];
+  if (outcome === 'deferred' || outcome === 'refused' || code === 'INVALID_STATE') return 'autopay.chargeRefused.generic';
+  return undefined;
+}

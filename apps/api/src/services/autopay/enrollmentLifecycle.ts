@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {and,eq,gt,inArray,isNull,sql} from 'drizzle-orm';
 import {db as database,runAfterDbContextExit,withSystemDbAccessContext} from '../../db';
-import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoices,stripeConnectAccounts,billingNoticeOutbox,billingLinkTokens} from '../../db/schema';
+import {organizations,partners,orgAutopayEnrollments,orgPaymentMethods,invoiceAutopaySchedules,invoiceCollectionAttempts,invoices,stripeConnectAccounts,billingNoticeOutbox,billingLinkTokens} from '../../db/schema';
 import {InvoiceServiceError,type InvoiceActor} from '../invoiceTypes';
 import {requireOrgAccess} from '../invoiceService';
 import {isHiddenOrgType} from '../unassignedPool/visibility';
@@ -21,7 +21,7 @@ import {buildAutopayDisclosure} from './consentText';
 import {lifecycleTransitionAt} from './lifecycleNoticeValidation';
 import type {AutopayNoticeContext} from './enrollmentNotices';
 import type { Tx } from './types';
-import type { AutopayPaymentMethodType } from '@breeze/shared';
+import { RESERVING_COLLECTION_ATTEMPT_STATES, type AutopayPaymentMethodType } from '@breeze/shared';
 import {announcedCharges,announcedOn,type AnnouncedCharge} from './announcedCharges';
 export const NON_TERMINAL_SCHEDULE_STATES=['awaiting_notice','scheduled','collecting','retry_scheduled','action_required'] as const;
 export function nextEnrollmentRequest(row:{status:string;generation:number}|null):number|null{
@@ -158,13 +158,17 @@ export async function pauseAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promis
   .where(eq(orgAutopayEnrollments.id,enrollment.id)).returning();
  // Read before cancelling: these schedules' charges were already announced to the client.
  const announced=await announcedCharges(db,{orgId,states:NON_TERMINAL_SCHEDULE_STATES});
+ // An invoice a payment still holds may yet be charged: it is never told "will not happen".
+ const inFlight=(await db.select({invoiceId:invoiceCollectionAttempts.invoiceId}).from(invoiceCollectionAttempts)
+  .where(and(eq(invoiceCollectionAttempts.orgId,orgId),inArray(invoiceCollectionAttempts.state,[...RESERVING_COLLECTION_ATTEMPT_STATES]))))
+  .map(row=>row.invoiceId);
  await db.update(invoiceAutopaySchedules).set({state:'cancelled',stateReason:'paused_by_msp'})
   .where(and(eq(invoiceAutopaySchedules.orgId,orgId),inArray(invoiceAutopaySchedules.state,[...NON_TERMINAL_SCHEDULE_STATES])));
  await db.update(autopaySetupAttempts).set({outcome:'stale_generation',completedAt:new Date()}).where(and(eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,enrollment.generation),isNull(autopaySetupAttempts.completedAt),sql`${autopaySetupAttempts.outcome} IS DISTINCT FROM 'pending_verification'`));
  const links=await openInvoiceLinks(db,orgId);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_paused',recipient,{stopped_by:'Your service provider',open_invoices_text:'Existing invoices remain payable using their payment links.'},undefined,links,
-  announcedChargeLines(announced,[],true),undefined,'none');
+  announcedChargeLines(announced,inFlight,true),undefined,'none');
 }
 export async function resumeAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promise<void>{
  const org=await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
@@ -209,8 +213,10 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
  const lines=links.map(link=>`${link.number}: ${link.currency} ${link.amount} — ${link.url}`);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_stopped',recipient,{stopped_by:source==='client'?'You':'Your service provider',open_invoices_text:lines.join('\n')||'There are no open invoices.'},undefined,links,
-  [pendingInvoices.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`).join('\n'),
-   announcedChargeLines(announced,pendingInvoices,false)].filter(Boolean).join('\n'),undefined,'none');
+  [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and will complete; you'll get a receipt.`),
+   ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`),
+   // D-19 lines never name an invoice a payment still holds: those lines above speak for it.
+   announcedChargeLines(announced,[...pendingInvoices.processing,...pendingInvoices.cancelling],false)].filter(Boolean).join('\n'),undefined,'none');
  const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
  await enqueueAutopayStaffNotifications(db,staffNotice);

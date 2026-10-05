@@ -5,7 +5,7 @@ import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { and, eq, inArray } from 'drizzle-orm';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox,
-  orgAutopayEnrollments, invoiceLines, contracts } from '../../db/schema';
+  orgAutopayEnrollments, invoiceLines, contracts, partners } from '../../db/schema';
 import { InvoiceServiceError, type InvoiceActor } from '../invoiceTypes';
 import { requireInvoiceAccess } from '../invoiceService';
 import { assertNoActiveCollection } from './reservation';
@@ -53,23 +53,27 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
 
 export async function getSkipInvoiceView(tx: Tx, token: string): Promise<AutopaySkipView> {
   const { invoice, schedule } = await skipAuthority(tx, token, false);
+  // partnerName: who the client contacts if the skip is refused.
+  const [partner] = await tx.select({ name: partners.name }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   // processing: a payment is already with Stripe and the skip would be refused.
   const processing = await hasUnstoppableCollection(tx, invoice.id);
   const control = pendingInvoiceControl(schedule.stateReason);
   return { status: skipViewStatus(invoice, schedule, control, processing), state: schedule.state,
-    collectOn: schedule.collectOn, control, processing };
+    collectOn: schedule.collectOn, partnerName: partner?.name ?? null, control, processing };
 }
 /** D-22: a stale skip link (paid, closed or void invoice, or one not scheduled for
- * automatic payment) reports that skipping is no longer needed instead of offering it. */
+ * automatic payment) reports that skipping is no longer needed instead of offering it.
+ * 'processing' uses the same predicate as the skip POST's 409 details.reason
+ * 'payment_processing', and wins over a pending control: that money moves regardless. */
 function skipViewStatus(invoice: typeof invoices.$inferSelect, schedule: typeof invoiceAutopaySchedules.$inferSelect,
   control: ReturnType<typeof pendingInvoiceControl>, processing: boolean): AutopaySkipViewStatus {
   if (invoice.status === 'paid' || schedule.state === 'succeeded') return 'paid';
+  if (processing) return 'processing';
   if (schedule.state === 'skipped_by_client') return 'skipped';
   if (!['sent', 'partially_paid', 'overdue'].includes(invoice.status) || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0
     || invoice.autopayExcluded || !schedule.eligible || !isControllableSchedule(schedule.state)
     || control === 'exclude' || control === 'stop') return 'not_needed';
   if (control === 'skip') return 'pending';
-  if (processing) return 'processing';
   return schedule.state === 'action_required' ? 'action_required' : 'ready';
 }
 

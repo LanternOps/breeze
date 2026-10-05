@@ -59,11 +59,11 @@ const org={id:orgId,partnerId,status:'active',type:'customer',name:'Example clie
 const enrollment={id:'33333333-3333-4333-8333-333333333333',orgId,partnerId,status:'active',generation:9,requestRecipientEmail:null};
 const invoice={id:'44444444-4444-4444-8444-444444444444',invoiceNumber:'INV-1',balance:'12.00',currencyCode:'USD'};
 function noticeRows(kind:string){h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{emailTemplates:{[kind]:{html:'<p>Replacement body only</p>'}}}}]);}
-beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue([]);h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
+beforeEach(()=>{vi.clearAllMocks();h.achMode='ach_preferred';h.rows=[];h.calls=[];h.stopSchedules.mockResolvedValue({processing:[],cancelling:[]});h.gate.mockResolvedValue(true);h.readiness.mockResolvedValue({ready:true});h.mint.mockResolvedValue({id:'66666666-6666-4666-8666-666666666666',token:'server-token'});});
 describe('lifecycle behavior',()=>{
  it.each(['pause','stop'] as const)('%s cancels future schedules without changing processing collection attempts and protects invoice links',async action=>{
   h.rows.push([org],[enrollment],[{...enrollment,status:action==='pause'?'paused':'cancelled'}],[]);
-  if(action==='pause')h.rows.push([]);
+  if(action==='pause')h.rows.push([],[]);
   if(action==='pause') h.rows.push([]); else h.rows.push([{id:'method'}]);
   h.rows.push([invoice]); noticeRows(action==='pause'?'autopay_paused':'autopay_stopped');
   await (action==='pause'?pauseAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
@@ -187,7 +187,7 @@ describe('staff email committed-state guard',()=>{
 
 it.each(['pause','resume'] as const)('renders an accurate %s notice through the lifecycle caller',async action=>{
  h.rows.push([org],[{...enrollment,status:action==='pause'?'active':'paused'}],[{...enrollment,status:action==='pause'?'paused':'active',effectiveFrom:new Date()}]);
- if(action==='pause')h.rows.push([],[],[],[]);
+ if(action==='pause')h.rows.push([],[],[],[],[]);
  h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
  h.method.mockResolvedValue({status:'active'});
  await (action==='pause'?pauseAutopay(db,actor,orgId):resumeAutopay(db,actor,orgId));
@@ -200,12 +200,15 @@ it.each(['pause','resume'] as const)('renders an accurate %s notice through the 
 });
 
 it('protects the pending Stop disclosure outside a custom notice body',async()=>{
- h.stopSchedules.mockResolvedValue(['INV-1','INV-2']);
+ h.stopSchedules.mockResolvedValue({processing:['INV-3'],cancelling:['INV-1','INV-2']});
  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[],[],[invoice]);noticeRows('autopay_stopped');
  await turnOffAutopay(db,actor,orgId);
  for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
   expect(body).toContain('Replacement body only');expect(body).toContain('invoice INV-1 is being cancelled');
   expect(body).toContain('invoice INV-2 is being cancelled');expect(body).toContain('receipt will follow');
+  // Spec 6.6: a processing payment cannot be recalled, so it is never "being cancelled".
+  expect(body).toContain('A payment for invoice INV-3 is already processing and will complete');
+  expect(body).not.toContain('invoice INV-3 is being cancelled');
  }
 });
 
@@ -239,7 +242,7 @@ it.each([
  h.rows.push([org],[{...enrollment,status:action==='resume'?'paused':'active'}]);
  if(action==='stop')h.rows.push([{...enrollment,...updated}],[],[],[]);
  else h.rows.push([{...enrollment,...updated}]);
- if(action==='pause')h.rows.push([],[],[],[]);
+ if(action==='pause')h.rows.push([],[],[],[],[]);
  h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
  h.method.mockResolvedValue({status:'active'});
  await (action==='pause'?pauseAutopay(db,actor,orgId):action==='resume'?resumeAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
@@ -253,8 +256,18 @@ it.each([
 const announced=(invoiceNumber:string,chargeDate:string)=>({invoiceId:`id-${invoiceNumber}`,invoiceNumber,kind:'invoice_autopay',seq:1,
  sentAt:new Date('2026-10-20T12:00:00Z'),rendered:{frozen:{chargeDate}}});
 describe('announced charges cancelled by a pause or stop',()=>{
+ it('the pause email never tells an invoice a payment still holds that its charge will not happen',async()=>{
+  h.rows.push([org],[enrollment],[{...enrollment,status:'paused'}],[announced('INV-7','2026-11-04'),announced('INV-8','2026-11-05')],
+   [{invoiceId:'id-INV-8'}],[],[],[invoice]);
+  noticeRows('autopay_paused');
+  await pauseAutopay(db,actor,orgId);
+  for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
+   expect(body).toContain('Invoice INV-7: the automatic payment announced');
+   expect(body).not.toContain('Invoice INV-8: the automatic payment announced');
+  }
+ });
  it('the pause email names each announced invoice and says resuming will not restore it',async()=>{
-  h.rows.push([org],[enrollment],[{...enrollment,status:'paused'}],[announced('INV-7','2026-11-04')],[],[],[invoice]);
+  h.rows.push([org],[enrollment],[{...enrollment,status:'paused'}],[announced('INV-7','2026-11-04')],[],[],[],[invoice]);
   noticeRows('autopay_paused');
   await pauseAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
@@ -263,14 +276,18 @@ describe('announced charges cancelled by a pause or stop',()=>{
   }
  });
  it('the stop email names announced invoices that will not be charged, apart from payments already in flight',async()=>{
-  h.stopSchedules.mockResolvedValue(['INV-8']);
-  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],[announced('INV-7','2026-11-04'),announced('INV-8','2026-11-05')],[],[invoice]);
+  h.stopSchedules.mockResolvedValue({processing:['INV-8'],cancelling:['INV-9']});
+  h.rows.push([org],[enrollment],[{...enrollment,status:'cancelled'}],
+   [announced('INV-7','2026-11-04'),announced('INV-8','2026-11-05'),announced('INV-9','2026-11-06')],[],[invoice]);
   noticeRows('autopay_stopped');
   await turnOffAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
    expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around 2026-11-04 will not happen.');
+   // A processing debit completes and a cancellable one may still have completed: neither is told "will not happen".
    expect(body).not.toContain('Invoice INV-8: the automatic payment announced');
-   expect(body).toContain('invoice INV-8 is being cancelled');
+   expect(body).not.toContain('Invoice INV-9: the automatic payment announced');
+   expect(body).toContain('invoice INV-8 is already processing and will complete');
+   expect(body).toContain('invoice INV-9 is being cancelled');
   }
  });
 });

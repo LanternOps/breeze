@@ -33,10 +33,23 @@ it('says a processing payment cannot be stopped before the client clicks, and of
 });
 it('lands a skip refused because the payment started processing after the page loaded',async()=>{
  vi.mocked(apiGet).mockResolvedValue({data:{state:'scheduled',processing:false}});
- vi.mocked(apiPost).mockResolvedValue({error:processingText,statusCode:409,code:'COLLECTION_IN_PROGRESS'});
+ vi.mocked(apiPost).mockResolvedValue({error:processingText,statusCode:409,code:'COLLECTION_IN_PROGRESS',errorDetails:{reason:'payment_processing'}});
  render(<AutopayActionPage token="token" action="skip"/>);
  fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
  await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent).toBe(processingText));
+ expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
+});
+// The same code refuses a skip while another change is pending (e.g. the MSP excluded an
+// invoice whose payment waits on the bank): nothing is processing and no receipt follows.
+it('says the payment is already being changed when another control is pending, without promising a receipt',async()=>{
+ vi.mocked(apiGet).mockResolvedValue({data:{state:'action_required',control:'exclude',processing:false,partnerName:'Example MSP'}});
+ vi.mocked(apiPost).mockResolvedValue({error:'Another payment control is pending',statusCode:409,code:'COLLECTION_IN_PROGRESS'});
+ render(<AutopayActionPage token="token" action="skip"/>);
+ fireEvent.click(await screen.findByTestId('autopay-skip-submit'));
+ await waitFor(()=>expect(screen.getByTestId('autopay-action-result').textContent)
+  .toBe('This payment is already being changed. Check your email for an update, or contact Example MSP.'));
+ expect(document.body.textContent).not.toContain('receipt');
+ expect(document.body.textContent).not.toContain('already processing');
  expect(screen.queryByTestId('autopay-skip-submit')).toBeNull();
 });
 it('reports pending cancellation without claiming a completed skip',async()=>{

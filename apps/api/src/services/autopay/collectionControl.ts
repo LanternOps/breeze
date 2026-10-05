@@ -50,8 +50,10 @@ export async function lockInvoicesForEnrollmentStop(tx: Tx, orgId: string): Prom
     .orderBy(invoices.id).for('update');
 }
 
-/** Caller holds invoice and enrollment locks; never release an unresolved reservation. */
-export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<string[]> {
+/** Caller holds invoice and enrollment locks; never release an unresolved reservation.
+ * Returns the invoices a payment still holds: `processing` ones complete (spec 6.6),
+ * `cancelling` ones can still be stopped. An invoice is listed under each that applies. */
+export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Promise<{ processing: string[]; cancelling: string[] }> {
   const schedules = await tx.select().from(invoiceAutopaySchedules)
     .where(and(eq(invoiceAutopaySchedules.enrollmentId, enrollmentId),
       inArray(invoiceAutopaySchedules.state, CONTROL_SCHEDULE_STATES))).for('update');
@@ -69,12 +71,15 @@ export async function stopEnrollmentSchedules(tx: Tx, enrollmentId: string): Pro
     ));
   }
   // Invoice-bound bank collections can reserve without ever having a schedule.
-  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber }).from(invoiceCollectionAttempts)
+  const pending = await tx.select({ id: invoices.id, number: invoices.invoiceNumber, state: invoiceCollectionAttempts.state }).from(invoiceCollectionAttempts)
     .innerJoin(orgPaymentMethods, eq(orgPaymentMethods.id, invoiceCollectionAttempts.paymentMethodId))
     .innerJoin(invoices, eq(invoices.id, invoiceCollectionAttempts.invoiceId))
     .where(and(eq(orgPaymentMethods.enrollmentId, enrollmentId),
       inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])));
-  return [...new Set(pending.map(invoice => invoice.number ?? invoice.id))];
+  const numbers = (unstoppable: boolean) => [...new Set(pending
+    .filter(row => (UNSTOPPABLE_ATTEMPT_STATES as readonly string[]).includes(row.state) === unstoppable)
+    .map(invoice => invoice.number ?? invoice.id))];
+  return { processing: numbers(true), cancelling: numbers(false) };
 }
 
 /** Shared by all collection producers, including confirmation of an existing PI. */

@@ -1,6 +1,6 @@
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { invoices, organizations, partners, invoiceAutopaySchedules, invoiceCollectionAttempts, billingNoticeOutbox } from '../../db/schema';
 import { sqlOpenAr } from '../../db/schema/invoices';
@@ -77,10 +77,12 @@ function invoiceCandidate() {
     )`,
     // A payment already in flight (incl. unscheduled "pay by bank" attempts and a
     // processing debit whose schedule a pause cancelled): "View & pay" would 409.
+    // Not requires_action: a payment waiting on bank (3DS) confirmation completes only
+    // if the client acts, and the invoice page offers "Continue to payment".
     sql`NOT EXISTS (
       SELECT 1 FROM ${invoiceCollectionAttempts}
       WHERE ${invoiceCollectionAttempts.invoiceId} = ${invoices.id}
-        AND ${inArray(invoiceCollectionAttempts.state, [...RESERVING_COLLECTION_ATTEMPT_STATES])}
+        AND ${inArray(invoiceCollectionAttempts.state, [...ACTIVE_COLLECTION_ATTEMPT_STATES])}
     )`,
   );
 }

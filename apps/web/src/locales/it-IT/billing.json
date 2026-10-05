@@ -2568,14 +2568,63 @@
       "inactive": "Le commissioni sulle carte restano inattive finché l’amministratore del partner non conferma entrambe le dichiarazioni seguenti.",
       "notified": "Ho informato il mio acquirer (Stripe) e i circuiti delle carte almeno 30 giorni fa",
       "cost": "Questa commissione non supera il mio costo di accettazione delle carte",
-      "rules": "Solo carte di credito. Nessuna commissione sulle carte in CA, CT, ME o MA; in Colorado il limite è del 2%. Le commissioni si applicano solo ai pagamenti automatici statunitensi idonei in USD. Lasciare vuoto eredita il valore; zero esenta questo cliente. I link di pagamento una tantum non prevedono commissioni.",
+      "rules": "Solo carte di credito. Nessuna commissione sulle carte in CA, CT, ME o MA; in Colorado il limite è del 2%. Le commissioni si applicano solo ai pagamenti automatici statunitensi idonei in USD. I link di pagamento una tantum non prevedono commissioni.",
       "legal": "Breeze non fornisce consulenza legale. Sei responsabile dell’ammissibilità dei supplementi, delle comunicazioni e del trattamento fiscale.",
       "lowerAuthorization": "Clienti con commissioni autorizzate inferiori: {{count}}. L’autorizzazione attuale resta valida fino all’accettazione dei nuovi termini.",
       "authorizedCard": "Autorizzati: {{accepted}} punti base; configurati: {{configured}}",
       "authorizedAch": "Autorizzato: USD {{accepted}}; configurato: USD {{configured}}",
       "requestAuthorization": "Richiedi autorizzazione aggiornata",
       "requestFailed": "Impossibile richiedere l’autorizzazione aggiornata. Verifica il contatto di fatturazione e la disponibilità di Stripe.",
-      "requested": "Autorizzazione aggiornata richiesta. L’autorizzazione attuale resta valida."
+      "requested": "Autorizzazione aggiornata richiesta. L’autorizzazione attuale resta valida.",
+      "attestationOnFile": "Attestazione registrata: {{name}} ha confermato entrambe le dichiarazioni il {{date}}.",
+      "attestationOnFileUnknown": "Attestazione registrata: entrambe le dichiarazioni sono state confermate il {{date}}.",
+      "reattestHelp": "Per attestare di nuovo, seleziona entrambe le dichiarazioni e salva. Viene registrata una nuova attestazione a tuo nome con la data corrente, che sostituisce quella registrata. Le commissioni autorizzate dai clienti non cambiano.",
+      "authorizedCardNone": "Nessuna autorizzazione registrata; configurati: {{configured}} punti base",
+      "authorizedAchNone": "Nessuna autorizzazione registrata; configurato: USD {{configured}}",
+      "lowerAuthorizationOrg": "Questo cliente non ha autorizzato la commissione configurata. Qualsiasi autorizzazione esistente resta valida fino all’accettazione dei nuovi termini.",
+      "blankPartner": "Se vuoto, si usa il valore predefinito di Breeze (nessuna commissione). Per esentare un cliente, imposta la sua commissione a 0 nella pagina Fatturazione del cliente.",
+      "blankOrg": "Se vuoto, si usa il valore predefinito del partner. Inserisci 0 per esentare questo cliente.",
+      "inactiveOrg": "Le commissioni sulle carte restano inattive finché un amministratore del partner non conferma entrambe le dichiarazioni sulle commissioni nella scheda Payments delle impostazioni di fatturazione del partner.",
+      "missingAuthorization": "Nessuna autorizzazione registrata: {{count}}. I pagamenti automatici non possono addebitare questi clienti finché non autorizzano il metodo di pagamento salvato.",
+      "missingAuthorizationOrg": "Questo cliente non ha un’autorizzazione registrata per il metodo di pagamento salvato. I pagamenti automatici non possono addebitarlo finché il cliente non lo autorizza.",
+      "requestMissingAuthorization": "Richiedi autorizzazione"
+    },
+    "enrollmentTitle": "Adesione al pagamento automatico",
+    "requestSentTo": "Richiesta inviata a {{email}}.",
+    "result": {
+      "paused": "Pagamenti automatici sospesi.",
+      "resumed": "Pagamenti automatici ripresi.",
+      "turnedOff": "Pagamenti automatici disattivati."
+    },
+    "needsAttention": {
+      "method_unusable": "Non è possibile addebitare il metodo di pagamento salvato.",
+      "stripe_account_changed": "L’account Stripe collegato è cambiato dopo l’adesione di questo cliente.",
+      "key_missing_permissions": "Alla chiave Stripe mancano autorizzazioni necessarie per i pagamenti automatici.",
+      "verification_failed": "La verifica del conto bancario non è riuscita."
+    },
+    "chargeOutcome": {
+      "succeeded": "Pagamento ricevuto.",
+      "processing": "Pagamento inviato. È in elaborazione e la fattura si aggiornerà quando verrà regolato.",
+      "requiresAction": "La banca del cliente richiede che confermi questo pagamento. Se è registrato un contatto di fatturazione, riceve via e-mail un link per confermarlo.",
+      "declined": "Il pagamento non è andato a buon fine.",
+      "cardDeclined": "La carta è stata rifiutata.",
+      "expiredCard": "La carta è scaduta. Chiedi al cliente di aggiornare il metodo di pagamento.",
+      "insufficientFunds": "Il pagamento è stato rifiutato per fondi insufficienti.",
+      "canceled": "Il pagamento è stato annullato prima del completamento.",
+      "unapplied": "Il pagamento è stato incassato ma richiede riconciliazione. Verificalo prima di addebitare di nuovo."
+    },
+    "chargeRefused": {
+      "notice_lead": "Il periodo di preavviso del cliente non è ancora terminato. La fattura potrà essere addebitata al termine.",
+      "no_eligible_notice": "Questa fattura non ha un avviso di pagamento automatico, quindi non può essere addebitata automaticamente.",
+      "renotice_required": "L’avviso di pagamento deve essere inviato di nuovo prima di poter addebitare questa fattura.",
+      "collection_in_progress": "Per questa fattura è già in corso un pagamento.",
+      "checkout_session_unrevoked": "Il cliente potrebbe star pagando questa fattura online in questo momento. Riprova tra qualche minuto.",
+      "retry_not_due": "Il prossimo tentativo non è ancora previsto.",
+      "not_payable": "Questa fattura non è aperta al pagamento.",
+      "nothing_to_pay": "Non resta nulla da pagare su questa fattura.",
+      "enrollment_inactive": "I pagamenti automatici non sono attivi per questo cliente.",
+      "schedule_inactive": "Questa fattura non è più programmata per il pagamento automatico.",
+      "generic": "Impossibile avviare il pagamento automatico. Aggiorna la fattura per vederne lo stato attuale."
     }
   },
   "reminders": {
@@ -2596,7 +2645,7 @@
     "sources": {
       "org": "organizzazione",
       "partner": "valore predefinito del partner",
-      "default": "valore predefinito del sistema"
+      "default": "valore predefinito di Breeze"
     },
     "save": "Salva impostazioni di pagamento",
     "saving": "Salvataggio…",

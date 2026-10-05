@@ -268,6 +268,9 @@ it.each([['confirming', true], ['processing', true], ['created', false], ['requi
     const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
     expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ state: 'collecting', processing });
   });
+it('names the provider on the skip page so a refused skip can say who to contact', async () => {
+  expect(await getSkipInvoiceView(fixture().tx, 'token')).toMatchObject({ partnerName: 'Partner' });
+});
 it('finalizes once, enqueues seq zero confirmation and one staff event, replay has no writes', async () => {
   const f = fixture();
   expect(await skipInvoice(f.tx, 'token')).toMatchObject({ status: 'skipped' });
@@ -607,4 +610,10 @@ it.each([
   const f = fixture(sched as Record<string, unknown>, [...attempts]);
   Object.assign(f.inv, inv);
   expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status });
+});
+// The skip page's GET status agrees with the skip POST's refusal: 'processing' exactly when a
+// refused skip carries details.reason 'payment_processing' (#7983), even beside a pending control.
+it.each(['exclude', 'stop'] as const)('reports a processing payment as processing even with a pending %s', async control => {
+  const f = fixture({ state: 'collecting', stateReason: `control_pending:${control}` }, [{ id: 'attempt', state: 'processing' }]);
+  expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ status: 'processing', processing: true, partnerName: 'Partner' });
 });
