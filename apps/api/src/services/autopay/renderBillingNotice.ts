@@ -18,7 +18,15 @@ interface RegisteredBillingNoticeContext {
 
 export type BillingNoticeContext = RegisteredBillingNoticeContext | { autopay: AutopayNoticeContext }
   | { charging: ChargingNoticeContext }
-  | { payment: { id: 'payment_receipt' | 'payment_failed'; vars: Record<string, string>; custom: PartnerEmailCustom | null; frozen: RenderedNotice['frozen'] } };
+  | { payment: PaymentNoticeContext };
+
+/** A failure notice's second action (e.g. update the saved method), appended
+ * outside the partner-editable body so a template edit cannot drop it or its note. */
+export interface PaymentSecondaryAction { url: string; label: string; note: string }
+export interface PaymentNoticeContext {
+  id: 'payment_receipt' | 'payment_failed'; vars: Record<string, string>; custom: PartnerEmailCustom | null;
+  frozen: RenderedNotice['frozen']; secondaryAction?: PaymentSecondaryAction;
+}
 
 export type BillingNoticeRenderer = (ctx: RegisteredBillingNoticeContext) => Promise<{
   email: Omit<RenderPartnerEmailArgs, 'bodyBeforeCta' | 'bodyAfterCta'>;
@@ -79,11 +87,17 @@ export async function renderBillingNotice(kind: BillingNoticeKind, ctx: BillingN
     const lines = kind === 'payment_receipt' ? [
       `Principal: ${p.vars.amount_paid}`, `Processing fee: ${p.vars.fee_amount}`, `Total charged: ${p.vars.total_charged}`,
     ] : [];
+    const second = p.secondaryAction ? { ...p.secondaryAction, url: checkedUrl(p.secondaryAction.url) } : null;
+    const after = [...lines.map(line => `<p>${escapeHtml(line)}</p>`),
+      ...(second ? [`<p>${escapeHtml(second.note)} <a href="${escapeHtml(second.url)}">${escapeHtml(second.label)}</a></p>`] : [])];
     const rendered = renderPartnerEmail({ id: kind, custom: p.custom, vars: p.vars,
-      ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label,
-      bodyAfterCta: lines.length ? lines.map(line => `<p>${escapeHtml(line)}</p>`).join('') : undefined });
+      ctaUrl: p.vars.action_link, ctaLabel: p.vars.action_label, bodyAfterCta: after.length ? after.join('') : undefined });
+    // Plain text names every action next to its URL; the HTML button text alone is not a link.
+    const links = kind === 'payment_failed'
+      ? [p.vars.action_link && `${p.vars.action_label || 'Pay invoice'}: ${p.vars.action_link}`, second && `${second.label}: ${second.url}`]
+      : [p.vars.action_link];
     return { ...rendered, frozen: p.frozen,
-      text: [htmlToText(rendered.html), p.vars.action_link].filter(Boolean).join('\n\n') };
+      text: [htmlToText(rendered.html), ...links].filter(Boolean).join('\n\n') };
   }
   if ('charging' in ctx) {
     if (kind !== 'invoice_autopay') throw new Error('Wrong charging notice context');
