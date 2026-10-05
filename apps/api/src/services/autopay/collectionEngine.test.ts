@@ -12,7 +12,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   balance: '100.00', reserved: '0.00', ordinal: 0,
   method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(),
-  piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(),
+  piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
 } }));
 vi.mock('../sentry', () => ({ captureException: h.capture }));
@@ -22,7 +22,7 @@ vi.mock('../stripeSettle', () => ({ assertNoHeldDbContextForStripe: () => {
 }, settlePaymentIntent: h.settle }));
 vi.mock('../orgMergeProvenance', () => ({ resolveMergedOrgIds: h.provenance }));
 vi.mock('../stripeSessionRevocation', () => ({ requestInvoiceSessionRevocation: h.revocation }));
-vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention }));
+vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, notifyPaymentAttention: h.attention, enqueueMethodUnusableNotice: h.methodNotice }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
 vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
@@ -117,7 +117,8 @@ beforeEach(() => {
   h.beforeRead.mockReset();
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
   for (const [table, rows] of [[invoices, [invoice]], [orgAutopayEnrollments, [enrollment]],
-    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:true,cardFeeBps:300,achFeeAmount:'0.00'}}]],
+    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:true,cardFeeBps:300,achFeeAmount:'0.00'},
+      scheduleTerms:{offsetDays:0,rule:'earlier',cap:{enabled:false}}}]],
     [invoiceStripePayments, []], [invoiceCollectionAttempts, []], [partners, [{ id: invoice.partnerId }]], [invoiceAutopaySchedules, [schedule]], [invoiceLines, []],
     [billingNoticeOutbox, [outbox]], [organizations, [{ id: invoice.orgId, partnerId: invoice.partnerId, status:'active',deletedAt:null,
       billingAddressCountry: 'US', billingAddressRegion: 'NY' }]]] as const) h.rows.set(table, structuredClone([...rows]));
@@ -126,7 +127,8 @@ beforeEach(() => {
   h.accountProvenance.mockResolvedValue({stripeAccountId:'acct_test',stripeCustomerId:'cus_test',methodType:'card'});
   h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true);
   h.readiness.mockResolvedValue({ ready: true, stripeAccountId: 'acct_test', accountCountry: 'US' });
-  h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
+  h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true,
+    autopayCap: { value: { enabled: false } } });
   h.retrieve.mockImplementation(async () => { expect(h.depth).toBe(0); return structuredClone(card); });
   client.mockResolvedValue({ stripeAccountId: 'acct_test', stripe: { paymentMethods: { retrieve: h.retrieve },
     paymentIntents: { create: h.create, retrieve: h.piRetrieve, confirm: h.confirm, cancel: h.cancel } } });
@@ -341,7 +343,7 @@ it.each(['ach changed', 'ach absent', 'card changed'] as const)(
       const remote = { ...pi, amount: params.amount, metadata: { ...params.metadata } };
       if (change === 'ach absent') delete remote.metadata.authority_ach_fee;
       h.settings.mockResolvedValue({ cardFeeBps: { value: change === 'card changed' ? 200 : 300 },
-        achFeeAmount: { value: '2.50' }, feeAttested: true });
+        achFeeAmount: { value: '2.50' }, feeAttested: true, autopayCap: { value: { enabled: false } } });
       h.piRetrieve.mockResolvedValue(remote);
       h.confirm.mockImplementation(async () => {
         expect(h.depth).toBe(0);
@@ -447,7 +449,7 @@ it('refuses the wrong partner before provider retrieval', async () => {
 });
 it.each(['fee', 'holder', 'contract', 'fence', 'stop'])('cancels when %s changes during create', async change => {
   recovery(); h.create.mockImplementationOnce(async () => {
-    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 200 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
+    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 200 }, achFeeAmount: { value: '0.00' }, feeAttested: true, autopayCap: { value: { enabled: false } } });
     if (change === 'holder') { h.method.mockResolvedValue({ ...method, accountHolderType: 'individual' }); update(orgPaymentMethods, { accountHolderType: 'individual' }); }
     if (change === 'contract') h.rows.set(invoiceLines, [{ id: 'excluded' }]);
     if (change === 'fence') update(invoices, { autopayExcluded: true });
@@ -808,7 +810,7 @@ function bankAuthority(reserved=false){
  const bankMethod={...method,type:'us_bank_account',stripeSetupIntentId:'seti_bank',accountHolderType:'individual',cardFunding:null};
  h.method.mockResolvedValue(bankMethod);h.rows.set(orgPaymentMethods,[bankMethod]);
  h.retrieve.mockResolvedValue({id:'pm_test',type:'us_bank_account',customer:'cus_test',us_bank_account:{account_holder_type:'individual'}});
- h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true});
+ h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true,autopayCap:{value:{enabled:false}}});
  const bankPayment={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'3.00',currency:'USD',disclosureHash:'a'.repeat(64)};
  h.rows.set(autopaySetupAttempts,[{id:clientAuthority.capture.setupAttemptId,orgId:invoice.orgId,enrollmentId:enrollment.id,generation:1,
  tokenId:clientAuthority.tokenId,outcome:'activated',stripeAccountId:'acct_test',stripeCustomerId:'cus_test',setupIntentId:'seti_bank',
@@ -911,16 +913,48 @@ it('cancels an unconfirmed intent after a definitive confirm error', async () =>
   expect(currentAttempt().state).toBe('canceled');
 });
 
-it('cancels and releases action-required attempts after the 14-day confirm TTL', async () => {
-  recovery(true); update(invoiceCollectionAttempts, { state: 'requires_action', updatedAt: new Date('2026-10-05') });
-  update(invoiceAutopaySchedules, { state: 'action_required' });
-  h.piRetrieve.mockResolvedValue({ ...pi, status: 'requires_action' });
-  await resumeCollectionAttempt(attempt.id);
+// Stripe's real off-session shape: a 402 authentication_required leaves the PI in
+// requires_payment_method (never requires_action). Both shapes must expire.
+const offSessionAuthPi = { ...pi, status: 'requires_payment_method',
+  last_payment_error: { type: 'card_error', code: 'authentication_required', decline_code: 'authentication_required' } };
+it.each([
+  ['off-session requires_payment_method + authentication_required', offSessionAuthPi],
+  ['requires_action', { ...pi, status: 'requires_action' }],
+] as const)('cancels and releases action-required attempts after the 14-day confirm TTL (%s)', async (_shape, observed) => {
+  recovery(true); update(invoiceCollectionAttempts, { state: 'requires_action', failureClass: 'auth_required',
+    failureCode: 'authentication_required', updatedAt: new Date('2026-10-05') });
+  update(invoiceAutopaySchedules, { state: 'action_required', stateReason: 'auth_required' });
+  h.piRetrieve.mockResolvedValue(structuredClone(observed));
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
   expect(h.cancel).toHaveBeenCalledOnce();
   expect(currentAttempt().state).toBe('canceled');
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'action_required_expired' });
   expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, 'expired');
   expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention' }));
+});
+it('starts the confirm TTL when the 402 is observed and reconcile passes never restart it', async () => {
+  recovery(true);
+  const enteredAt = new Date('2026-10-20T00:00Z');
+  h.confirm.mockImplementation(async () => {
+    h.piRetrieve.mockResolvedValue(structuredClone(offSessionAuthPi));
+    throw Object.assign(new Error('This payment requires authentication.'), { type: 'StripeCardError', statusCode: 402,
+      code: 'authentication_required', decline_code: 'authentication_required', payment_intent: offSessionAuthPi });
+  });
+  await resumeCollectionAttempt(attempt.id);
+  expect(currentAttempt()).toMatchObject({ state: 'requires_action', failureClass: 'auth_required', updatedAt: enteredAt });
+  expect(h.rows.get(invoiceAutopaySchedules)![0].state).toBe('action_required');
+  for (const days of [1, 7, 13]) {
+    vi.setSystemTime(new Date(enteredAt.getTime() + days * 86_400_000));
+    await applyAttemptOutcome(invoice.partnerId, attempt.id);
+    expect(currentAttempt()).toMatchObject({ state: 'requires_action', updatedAt: enteredAt });
+  }
+  expect(h.cancel).not.toHaveBeenCalled();
+  vi.setSystemTime(new Date(enteredAt.getTime() + 14 * 86_400_000));
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'action_required_expired' });
+  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, 'expired');
 });
 
 it('marks a missing provider method unusable and raises transactional attention', async () => {
@@ -1039,4 +1073,59 @@ it('reports collection_in_progress for a fully reserved invoice', async () => {
   h.reserved='100.00';h.balance='0.00';
   expect(await reserveCollection({...input,initiatedBy:'msp_charge_now'})).toMatchObject({outcome:'deferred',reason:'collection_in_progress'});
   expect(attempts()).toEqual([]);
+});
+
+// A sibling's hard decline/detach (or failed microdeposits) leaves no usable method.
+// A due schedule must not defer method_not_usable forever: it fails, the client gets
+// ONE pay + update-method notice, and the invoice joins the reminder flow.
+it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once the shared method is unusable and notices the client once', async state => {
+  const now = new Date();
+  update(invoiceAutopaySchedules, { state, nextAttemptAt: null });
+  h.persist = true;
+  h.method.mockResolvedValue(null);
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
+  expect(h.methodNotice).toHaveBeenCalledOnce();
+  expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+  vi.restoreAllMocks();
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], new Date(now.getTime() + 86_400_000));
+  expect(await runAutopayCollection(new Date(now.getTime() + 86_400_000))).toEqual({ attempted: 0, deferred: 0 });
+  expect(h.methodNotice).toHaveBeenCalledOnce();
+  expect(attempts()).toEqual([]); expect(h.create).not.toHaveBeenCalled();
+});
+it.each([
+  ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
+  ['an active method the live check did not admit', () => h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } })],
+] as const)('keeps deferring daily while %s still exists', async (_case, change) => {
+  const now = new Date();
+  h.persist = true; change();
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'scheduled', stateReason: 'method_not_usable',
+    nextAttemptAt: new Date(now.getTime() + 86_400_000) });
+  expect(h.methodNotice).not.toHaveBeenCalled();
+});
+
+// Defense in depth for the accepted cap: re-checked under the invoice lock just
+// before the money moves, so a cap raised (or a consent replaced) after planning
+// can never charge an invoice the client did not authorize.
+it.each([
+  ['above the cap the client accepted', () => update(orgAutopayConsents, { scheduleTerms: { offsetDays: 0, rule: 'earlier',
+    cap: { enabled: true, amount: '50.00', currency: 'USD' } } }), 'above_authorized_cap'],
+  ['above an MSP cap lowered after the notice', () => h.settings.mockResolvedValue({ cardFeeBps: { value: 300 },
+    achFeeAmount: { value: '0.00' }, feeAttested: true, autopayCap: { value: { enabled: true, amount: '50.00', currency: 'USD' } } }), 'over_cap'],
+  ['with unreadable accepted schedule terms', () => update(orgAutopayConsents, { scheduleTerms: { cap: 'unlimited' } }), 'consent_required'],
+] as const)('cancels before confirmation when the invoice is %s', async (_case, change, reason) => {
+  recovery(); change();
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'cancelled', stateReason: reason });
+});
+it('confirms an invoice within the accepted cap even after the MSP removed theirs', async () => {
+  recovery();
+  update(orgAutopayConsents, { scheduleTerms: { offsetDays: 0, rule: 'earlier', cap: { enabled: true, amount: '100.00', currency: 'USD' } } });
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.confirm).toHaveBeenCalledOnce(); expect(currentAttempt().state).toBe('succeeded');
 });

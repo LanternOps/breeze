@@ -64,6 +64,13 @@ export async function getBankAutopayOffer(invoiceId:string,orgId:string):Promise
       methodStatus:method?.type==='us_bank_account'&&(method.status==='active'||method.status==='pending_verification')?method.status:null};
   });
 }
+/** Invoice-bound bank-pay authority. Stripe microdeposits take 1-2 business days to
+ * arrive and then time out after 10 days unverified (Stripe ACH docs, error
+ * payment_method_microdeposit_verification_timeout), so the client needs about two
+ * weeks to verify and come back to pay. A long lifetime cannot charge different
+ * terms: the accepted principal and fee are re-checked at collection and the token
+ * is consumed once. */
+export const BANK_PAYMENT_AUTHORITY_TTL_DAYS=14;
 export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string;terms:z.infer<typeof bankPaySchema>;
   returnTo:'public'|'portal';ip:string|null;userAgent:string|null}){
   assertNoHeldDbContextForStripe('startInvoiceBankSetup');
@@ -79,7 +86,7 @@ export async function startInvoiceBankSetup(input:{invoiceId:string;orgId:string
     const contactEmail=resolveBillingEmail(org.billingContact);
     if(!contactEmail)throw new InvoiceServiceError('A billing contact is required',409,'INVALID_STATE');
     const token=await mintBillingLinkToken(db,{orgId:org.id,invoiceId:input.invoiceId,enrollmentId:enrollment.id,
-      generation:enrollment.generation,purpose:'enroll',ttlDays:1});
+      generation:enrollment.generation,purpose:'enroll',ttlDays:BANK_PAYMENT_AUTHORITY_TTL_DAYS});
     return {tokenId:token.id,contactEmail};
   });
   return withBankSetupTerms({invoiceId:input.invoiceId,orgId:input.orgId,principal:offer.principal,fee:offer.fee,
@@ -106,19 +113,25 @@ export async function collectAfterBankSetup(input: { invoiceId: string; orgId: s
   const captured=await runOutsideDbContext(()=>stripe.setupIntents.retrieve(setupIntentId));
   if(captured.id!==setupIntentId||captured.status!=='succeeded')
     throw new InvoiceServiceError('Bank payment consent unavailable',409,'INVALID_STATE');
-  const authority = await withSystemDbAccessContext(async () => {
+  const checked = await withSystemDbAccessContext(async () => {
     const [token] = await db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id, session.metadata!.token_id!)).limit(1);
     const [enrollment] = await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId, invoice.orgId)).limit(1);
     const method = await getAutopayMethod(db, invoice.orgId);
     if (!token || token.invoiceId !== invoice.id || token.orgId !== invoice.orgId
-      || token.purpose!=='enroll'||!enrollment||token.enrollmentId!==enrollment.id||enrollment.status!=='active'
-      || token.generation !== enrollment?.generation || token.consumedAt || token.revokedAt
-      || token.expiresAt <= new Date() || enrollment.stripeAccountId !== stripeAccountId
+      || token.purpose!=='enroll') throw new InvoiceServiceError('Bank authorization unavailable',409,'INVALID_STATE');
+    // Normal ways a genuine authority stops being usable are reported so the page can
+    // offer the right next step (restart setup, or check the payment already started).
+    if (token.consumedAt) return { unavailable: 'bank_authorization_used' as const };
+    if (token.revokedAt || token.expiresAt <= new Date()) return { unavailable: 'bank_authorization_expired' as const };
+    if (!enrollment||token.enrollmentId!==enrollment.id||enrollment.status!=='active'
+      || token.generation !== enrollment.generation || enrollment.stripeAccountId !== stripeAccountId
       || String(enrollment.generation) !== session.metadata!.generation
-      || method?.type !== 'us_bank_account' || method.status !== 'active') throw new InvoiceServiceError('Bank authorization unavailable',409,'INVALID_STATE');
+      || method?.type !== 'us_bank_account' || method.status !== 'active') return { unavailable: 'bank_authorization_changed' as const };
     const [setup]=await db.select().from(autopaySetupAttempts).where(and(
       eq(autopaySetupAttempts.checkoutSessionId,session.id),eq(autopaySetupAttempts.orgId,invoice.orgId),
       eq(autopaySetupAttempts.stripeAccountId,stripeAccountId),eq(autopaySetupAttempts.tokenId,token.id))).limit(1);
+    // A later setup replaced the method this authorization captured.
+    if (setup?.setupIntentId && method.stripeSetupIntentId !== setup.setupIntentId) return { unavailable: 'bank_authorization_changed' as const };
     const parsed=autopayConsentSnapshotSchema.safeParse(setup?.consentSnapshot);
     const accepted=parsed.success?parsed.data.bankPayment:null;
     if(!accepted||accepted.invoiceId!==invoice.id||accepted.orgId!==invoice.orgId||accepted.currency!==invoice.currencyCode||setup?.generation!==enrollment.generation
@@ -140,11 +153,12 @@ export async function collectAfterBankSetup(input: { invoiceId: string; orgId: s
       || session.metadata!.currency !== invoice.currencyCode) throw new InvoiceServiceError('Invalid authorized amount',409,'INVALID_STATE');
     const [org]=await db.select().from(organizations).where(eq(organizations.id,invoice.orgId)).limit(1);
     if(!org||org.deletedAt||!['active','trial'].includes(org.status))throw new InvoiceServiceError('Organization unavailable',404,'INVALID_STATE');
-    return { tokenId: token.id, invoiceId: invoice.id, generation: enrollment.generation,
+    return { authority: { tokenId: token.id, invoiceId: invoice.id, generation: enrollment.generation,
       capture:{setupAttemptId:setup.id,stripePaymentMethodId:method.stripePaymentMethodId,setupIntentId:setup.setupIntentId!,
         stripeAccountId:enrollment.stripeAccountId!,stripeCustomerId:enrollment.stripeCustomerId!},
       methodId: method.id, principal: fromMinorUnits(principalMinor, invoice.currencyCode),
-      fee: fromMinorUnits(feeMinor, invoice.currencyCode), currency: invoice.currencyCode };
+      fee: fromMinorUnits(feeMinor, invoice.currencyCode), currency: invoice.currencyCode } };
   });
-  return withClientPaymentAuthority(authority, () => attemptCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }));
+  if ('unavailable' in checked) return { attemptId: null, outcome: 'refused' as const, reason: checked.unavailable };
+  return withClientPaymentAuthority(checked.authority, () => attemptCollection({ invoiceId: invoice.id, initiatedBy: 'client_on_session' }));
 }

@@ -9,6 +9,7 @@ const reasonKeys: Record<string, string> = {
   not_enrolled:'autopay.reasons.not_enrolled', enrolled_after_issue:'autopay.reasons.enrolled_after_issue',
   consent_required:'autopay.reasons.consent_required',
   method_not_usable:'autopay.reasons.method_not_usable', over_cap:'autopay.reasons.over_cap',
+  above_authorized_cap:'autopay.reasons.above_authorized_cap',
   cap_currency_mismatch:'autopay.reasons.cap_currency_mismatch',ach_currency_unsupported:'autopay.reasons.ach_currency_unsupported',
   excluded_contract:'autopay.reasons.excluded_contract',excluded_invoice:'autopay.reasons.excluded_invoice',
   charging_disabled:'autopay.reasons.charging_disabled',stripe_unavailable:'autopay.reasons.stripe_unavailable',

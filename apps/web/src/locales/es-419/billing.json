@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Solicitudes enviadas a {{count}} clientes.",
     "chargeDate": "Cobro el {{date}} o cerca de esa fecha",
     "excludeInvoice": "Excluir esta factura de los pagos automáticos",
+    "excludeRefusedProcessing": "El pago de esta factura ya se está procesando y no se puede detener. Puede excluir la factura cuando el pago se complete o falle.",
     "excludeContract": "Excluir las facturas que incluyan este contrato",
     "failed": "No se pudo actualizar el pago automático. Inténtalo de nuevo.",
     "states": {
@@ -2521,6 +2522,7 @@
       "enrolled_after_issue": "Inscripción posterior a la emisión de la factura",
       "method_not_usable": "Método de pago no disponible",
       "over_cap": "Supera el límite de pago automático",
+      "above_authorized_cap": "Supera el límite autorizado por el cliente",
       "cap_currency_mismatch": "La moneda del límite no coincide",
       "ach_currency_unsupported": "Moneda no compatible con pagos bancarios",
       "excluded_contract": "Contrato excluido",

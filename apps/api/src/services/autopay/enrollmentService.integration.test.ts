@@ -14,6 +14,8 @@ import {getPartnerStripeClient} from '../partnerStripe';
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:vi.fn()}));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn(),enqueueAutopayStaffNotifications:vi.fn(),sendAutopayStaffEmail:vi.fn()}));
 beforeEach(()=>vi.clearAllMocks());
+// Stripe always returns wallet and network evidence for a card; collection admits only these.
+const liveCard={brand:'visa',funding:'credit',last4:'4242',exp_month:12,exp_year:2030,country:'US',wallet:null,networks:{available:['visa'],preferred:null}};
 async function connection(partnerId:string,stripeAccountId:string){
  return withSystemDbAccessContext(async()=>{const [row]=await db.insert(stripeConnectAccounts).values({partnerId,stripeAccountId,apiKey:'enc:synthetic',keyLast4:'test'}).returning();return row!;});
 }
@@ -81,7 +83,7 @@ describe('real enrollment authority fence',()=>{
     source:'setup_page',methodType,stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_current',
     consentSnapshot:{...snapshot,feeTerms:{...snapshot.feeTerms,methodType}}}).returning();return row!;
   });
-  const method={id:'pm_current',type:methodType,customer:'cus_current'} as Stripe.PaymentMethod;
+  const method={id:'pm_current',type:methodType,customer:'cus_current',...(methodType==='card'?{card:liveCard}:{})} as Stripe.PaymentMethod;
   const outcomes=await Promise.all([1,2].map(()=>persistCapturedAutopayMethod(attempt.id,method,outcome,'seti_current',null)));
   expect(outcomes).toEqual([{outcome,orgId:org.id},{outcome,orgId:org.id}]);
   const saved=await withSystemDbAccessContext(async()=>({
@@ -217,7 +219,7 @@ it('late bank verification cannot replace a newer activated card',async()=>{
   const [row]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,
    source:'portal',methodType:'card',stripeConnectionId:f.conn.id,stripeAccountId:f.conn.stripeAccountId,stripeCustomerId:'cus_verify',consentSnapshot:f.attempt.consentSnapshot}).returning();return row!;
  });
- await persistCapturedAutopayMethod(next.id,{id:'pm_new',type:'card',customer:'cus_verify'} as Stripe.PaymentMethod,'activated','seti_new',null);
+ await persistCapturedAutopayMethod(next.id,{id:'pm_new',type:'card',customer:'cus_verify',card:liveCard} as Stripe.PaymentMethod,'activated','seti_new',null);
  expect((await persistCapturedAutopayMethod(f.attempt.id,{...bank,customer:'cus_verify'},'activated','seti_verify','mandate_verify')).outcome).toBe('stale_generation');
  const rows=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods));
  expect(rows.find(m=>m.isAutopayMethod)?.stripePaymentMethodId).toBe('pm_new');
@@ -239,4 +241,44 @@ it('queues the persisted bank for detach when failed verification has no provide
   detachStripeAccountId:'acct_verify',detachStripeCustomerId:'cus_verify'});
  await vi.waitFor(()=>expect(detach).toHaveBeenCalledExactlyOnceWith('pm_verify'));
  await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledTimes(1));
+});
+
+it.each(['setup_page','pay_and_save'] as const)('refuses a Link wallet card from %s and leaves the working method and its authority intact (#7894)',async source=>{
+ const partner=await createPartner({name:'Example MSP'}),org=await createOrganization({partnerId:partner.id});
+ const conn=await connection(partner.id,'acct_link');
+ const f=await withSystemDbAccessContext(async()=>{
+  const [enrollment]=await db.insert(orgAutopayEnrollments).values({orgId:org.id,partnerId:partner.id,status:'active',effectiveFrom:new Date('2026-09-01'),
+   stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_link'}).returning();
+  const [working]=await db.insert(orgPaymentMethods).values({orgId:org.id,enrollmentId:enrollment!.id,stripePaymentMethodId:'pm_working',
+   type:'card',cardBrand:'visa',cardFunding:'credit',cardLast4:'4242',status:'active',isAutopayMethod:true}).returning();
+  await db.insert(orgAutopayConsents).values({orgId:org.id,enrollmentId:enrollment!.id,generation:1,paymentMethodId:working!.id,
+   consentTextVersion:'2026-10-01.v1',consentTextHash:'b'.repeat(64),source:'setup_page',contactEmail:'billing@example.test',
+   scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'}});
+  const token=source==='setup_page'?await mintBillingLinkToken(db,{orgId:org.id,enrollmentId:enrollment!.id,generation:1,purpose:'enroll',ttlDays:1}):null;
+  const [attempt]=await db.insert(autopaySetupAttempts).values({orgId:org.id,partnerId:partner.id,enrollmentId:enrollment!.id,generation:1,tokenId:token?.id??null,
+   source,methodType:'card',stripeConnectionId:conn.id,stripeAccountId:conn.stripeAccountId,stripeCustomerId:'cus_link',
+   consentSnapshot:{version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'c'.repeat(64),hash:'a'.repeat(64),partnerName:partner.name,
+    achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
+    feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
+    contactEmail:'billing@example.test',ip:null,userAgent:null,source,scheduleText:'On the due date.',feeText:'No fee.'}}).returning();
+  return {enrollment:enrollment!,working:working!,attempt:attempt!,token};
+ });
+ const link={id:'pm_link',type:'card',customer:'cus_link',card:{...liveCard,funding:'unknown',wallet:{type:'link'}}} as unknown as Stripe.PaymentMethod;
+ for(let replay=0;replay<2;replay++){
+  expect(await persistCapturedAutopayMethod(f.attempt.id,link,'activated',source==='setup_page'?'seti_link':null,null)).toEqual({outcome:'unsupported_method',orgId:org.id});
+ }
+ const saved=await withSystemDbAccessContext(async()=>({methods:await db.select().from(orgPaymentMethods),consents:await db.select().from(orgAutopayConsents),
+  tokens:await db.select().from(billingLinkTokens),notices:await db.select().from(billingNoticeOutbox),
+  enrollments:await db.select().from(orgAutopayEnrollments),attempts:await db.select().from(autopaySetupAttempts)}));
+ expect(saved.attempts).toEqual([expect.objectContaining({id:f.attempt.id,outcome:'unsupported_method',completedAt:expect.any(Date)})]);
+ expect(saved.methods.find(m=>m.id===f.working.id)).toMatchObject({status:'active',isAutopayMethod:true,removedAt:null});
+ // The refused card is never an autopay method; it is only queued for detach.
+ expect(saved.methods.filter(m=>m.stripePaymentMethodId==='pm_link')).toEqual([expect.objectContaining({status:'removed',isAutopayMethod:false,
+  unusableReason:'rejected_capture',detachStripeAccountId:'acct_link',detachStripeCustomerId:'cus_link'})]);
+ expect(saved.consents).toHaveLength(1);expect(saved.consents[0]!.paymentMethodId).toBe(f.working.id);
+ expect(saved.tokens.filter(t=>t.purpose==='stop_autopay')).toHaveLength(0);
+ if(f.token)expect(saved.tokens.find(t=>t.id===f.token!.id)?.consumedAt).toBeNull();
+ expect(saved.notices).toHaveLength(0);
+ expect(saved.enrollments[0]).toMatchObject({status:'active',needsAttentionReason:null,effectiveFrom:new Date('2026-09-01')});
+ expect(notifyAutopayStaff).not.toHaveBeenCalled();
 });

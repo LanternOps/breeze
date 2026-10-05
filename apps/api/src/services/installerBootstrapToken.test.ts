@@ -1,9 +1,12 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import { createHash, createHmac } from 'node:crypto';
 import {
   generateBootstrapToken,
   bootstrapTokenExpiresAt,
+  hashBootstrapToken,
   BOOTSTRAP_TOKEN_PATTERN,
 } from './installerBootstrapToken';
+import { hashEnrollmentKey } from './enrollmentKeySecurity';
 
 describe('generateBootstrapToken', () => {
   it('returns a 10-char token of [A-Z0-9]', () => {
@@ -77,5 +80,49 @@ describe('bootstrapTokenExpiresAt', () => {
   it('honours an explicit override', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '60');
     expect(minutesOut(bootstrapTokenExpiresAt())).toBe(60);
+  });
+});
+
+describe('hashBootstrapToken', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is a deterministic 64-char hex digest that never contains the raw token', () => {
+    const raw = 'A7K2XQRP4N';
+    const h = hashBootstrapToken(raw);
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashBootstrapToken(raw)).toBe(h);
+    expect(h).not.toContain(raw);
+    expect(hashBootstrapToken('A7K2XQRP4M')).not.toBe(h);
+  });
+
+  it('is keyed: an unkeyed SHA-256 of the token does not reproduce it', () => {
+    const raw = 'A7K2XQRP4N';
+    expect(hashBootstrapToken(raw)).not.toBe(createHash('sha256').update(raw).digest('hex'));
+  });
+
+  it('is keyed by ENROLLMENT_KEY_PEPPER: a different server secret gives a different digest', () => {
+    vi.stubEnv('ENROLLMENT_KEY_PEPPER', 'pepper-one');
+    const a = hashBootstrapToken('A7K2XQRP4N');
+    vi.stubEnv('ENROLLMENT_KEY_PEPPER', 'pepper-two');
+    const b = hashBootstrapToken('A7K2XQRP4N');
+    expect(a).not.toBe(b);
+    expect(b).toBe(
+      createHmac('sha256', 'pepper-two')
+        .update('breeze.installer-bootstrap-token.v1:A7K2XQRP4N')
+        .digest('hex'),
+    );
+  });
+
+  it('is domain-separated from enrollment-key hashes under the same pepper', () => {
+    vi.stubEnv('ENROLLMENT_KEY_PEPPER', 'shared-pepper');
+    expect(hashBootstrapToken('A7K2XQRP4N')).not.toBe(hashEnrollmentKey('A7K2XQRP4N'));
+  });
+
+  it('refuses to hash without a configured pepper outside tests', () => {
+    vi.stubEnv('ENROLLMENT_KEY_PEPPER', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(() => hashBootstrapToken('A7K2XQRP4N')).toThrow(/ENROLLMENT_KEY_PEPPER/);
   });
 });

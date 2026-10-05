@@ -129,7 +129,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       await runAction<{status?:string}>({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ excluded }),
       }), errorFallback: t('autopay.failed'), successMessage: result => result.status === 'pending'
-        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved') });
+        ? t(/* i18n-dynamic */ autopayReasonKey('control_pending:exclude'),{nsSeparator:false}) : t('autopay.saved'),
+        // A payment already with Stripe cannot be recalled, so the exclusion was refused, not queued.
+        friendly: (code, _message, body) => code === 'COLLECTION_IN_PROGRESS'
+          && (body as { details?: { reason?: string } } | null)?.details?.reason === 'payment_processing'
+          ? t('autopay.excludeRefusedProcessing') : undefined });
       await onChanged();
     } catch (error) { handleActionError(error, t('autopay.failed')); }
     finally { setAutopaySaving(false); }

@@ -19,10 +19,19 @@ import { users } from "./users";
  * not accepted by public installer downloads; callers must use the
  * short-lived handle flow.
  *
- * Stored as plain text (not hashed) intentionally: tokens are ephemeral
- * (24h max) and hashing adds ceremony without a meaningful security win for
- * this lifetime. Compare by equality. Note a leaked token is worth up to
- * max_usage enrollments, so keep the TTL short and the max_usage bounded.
+ * Stored as a keyed hash (`token_hash`, see `hashBootstrapToken`), never as
+ * plaintext. Tokens live up to the issuing TTL — 30 days by default
+ * (INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES), longer when an admin picks it, up
+ * to the partner cap — and each is worth up to max_usage enrollments, so the
+ * table must not hold redeemable values. The raw token exists only in memory
+ * at issuance, where it is written into the installer (filename / app bundle
+ * name / payload) and returned once; nothing can re-read it later.
+ *
+ * `token` is the pre-hashing plaintext column, kept nullable so rows issued
+ * before hashing stay redeemable until their own `expires_at`. Redemption
+ * matches `token_hash` first and falls back to `token` only for rows whose
+ * `token_hash IS NULL`. New rows never write it. DB CHECK
+ * `installer_bootstrap_tokens_token_or_hash_present` requires one of the two.
  */
 /**
  * The one `usage_kind` value whose `max_usage` is a DEVICE-SLOT BUDGET (#3034).
@@ -39,7 +48,10 @@ export const installerBootstrapTokens = pgTable(
   "installer_bootstrap_tokens",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    token: text("token").notNull().unique(),
+    /** Legacy plaintext token — NULL on every row issued after hashing. */
+    token: text("token").unique(),
+    /** HMAC-SHA256(ENROLLMENT_KEY_PEPPER, domain ‖ token), hex. */
+    tokenHash: text("token_hash").unique(),
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
@@ -90,8 +102,8 @@ export const installerBootstrapTokens = pgTable(
      *                       cannot prove, plus the column DEFAULT. Excluded from
      *                       the figure: unknown must degrade to showing nothing,
      *                       never to showing a number that might be a click
-     *                       count. Self-draining (24h default token TTL +
-     *                       nightly cleanup).
+     *                       count. Self-draining (token TTL + nightly
+     *                       cleanup).
      *
      * This lives on the TOKEN, not the parent key, because the two mint paths
      * are not separable by any property of the key: the authenticated installer

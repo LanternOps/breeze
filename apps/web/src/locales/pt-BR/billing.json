@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Solicitações enviadas a {{count}} clientes.",
     "chargeDate": "Cobrança por volta de {{date}}",
     "excludeInvoice": "Excluir esta fatura dos pagamentos automáticos",
+    "excludeRefusedProcessing": "O pagamento desta fatura já está em processamento e não pode ser interrompido. Você pode excluir a fatura quando o pagamento for concluído ou falhar.",
     "excludeContract": "Excluir faturas que contenham este contrato",
     "failed": "Não foi possível atualizar o pagamento automático. Tente novamente.",
     "states": {
@@ -2521,6 +2522,7 @@
       "enrolled_after_issue": "Inscrição após a emissão da fatura",
       "method_not_usable": "Forma de pagamento indisponível",
       "over_cap": "Acima do limite de pagamento automático",
+      "above_authorized_cap": "Acima do limite autorizado pelo cliente",
       "cap_currency_mismatch": "A moeda do limite não corresponde",
       "ach_currency_unsupported": "Moeda incompatível com pagamentos bancários",
       "excluded_contract": "Contrato excluído",

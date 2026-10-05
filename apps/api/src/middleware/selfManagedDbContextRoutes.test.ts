@@ -25,6 +25,9 @@ describe('isSelfManagedDbContextRoute', () => {
     // under the portal request transaction.
     ['POST', '/api/v1/portal/invoices/def-456/settle'],
     ['POST', '/api/v1/portal/invoices/def-456/settle/'],
+    // Invoice-page exit from an off-session 3DS payment cancels the PaymentIntent in Stripe.
+    ['POST', '/api/v1/portal/invoices/def-456/autopay-confirmation'],
+    ['POST', '/api/v1/invoices/public/tok-789/autopay-confirmation'],
     ['POST', '/api/v1/portal/quotes/def-456/pay/'],
     ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['GET', '/api/v1/portal/network/overview'],

@@ -25,6 +25,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
 import { readInFlightCollection } from '../services/autopay/reservation';
+import { releaseInvoiceConfirmation } from '../services/autopay/confirmPayment';
 
 /**
  * Unauthenticated, token-gated PUBLIC INVOICE surface — the customer's durable
@@ -161,10 +162,10 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       depositDue: inv.depositDue, amountPaid: inv.amountPaid, balance: inv.balance,
     });
     // #7824: advisory in-flight autopay state (the pay route's 409 is the gate).
-    let collectionInProgress: { amount: string } | null = null;
+    let collectionInProgress: { amount: string; actionRequired: boolean } | null = null;
     try {
       const inFlight = await readInFlightCollection(db, inv.id);
-      if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount };
+      if (inFlight.inProgress) collectionInProgress = { amount: inFlight.amount, actionRequired: inFlight.actionRequired === true };
     } catch (err) {
       console.error('[invoicesPublic] in-flight collection lookup failed', { invoiceId: inv.id, err });
     }
@@ -292,6 +293,27 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
       }
       return c.json({ error: err.message, code: err.code }, err.status);
     }
+    throw err;
+  }
+});
+
+// POST /:token/autopay-confirmation — the invoice page's way out of an
+// off-session payment waiting on bank authentication (3DS). Does what the
+// emailed confirm link does: cancels that PaymentIntent and releases the
+// reservation so the customer can pay on-session with the Pay button.
+invoicesPublicRoutes.post('/:token/autopay-confirmation', zValidator('param', tokenParam), async (c) => {
+  applyPublicLinkHeaders(c);
+  if (!(c.req.header('content-type') ?? '').includes('application/json')) {
+    return c.json({ error: 'Invalid request' }, 400);
+  }
+  const inv = await resolve(c.req.valid('param').token);
+  if (!inv) return c.json(invalidLink, 401);
+  if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
+  if (await overPublicOpLimit('autopay-confirmation', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
+  try {
+    return c.json({ data: await releaseInvoiceConfirmation({ invoiceId: inv.id, orgId: inv.orgId }) });
+  } catch (err) {
+    if (err instanceof InvoiceServiceError && err.status < 500) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }
 });

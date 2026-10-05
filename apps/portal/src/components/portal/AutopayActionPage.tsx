@@ -4,6 +4,8 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction } from '@/lib/runAction';
 type ActionResult = { success?: boolean; status?: 'pending' | 'skipped'; url?: string; processing?: boolean; paid?: boolean; notNeeded?: boolean };
 const pendingMessage = "Skip requested — a payment already in progress is being stopped; we'll confirm by email.";
+// Spec 6.6: a payment already sent to Stripe (ACH processing) cannot be recalled.
+const processingMessage = "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes.";
 export default function AutopayActionPage({ token, action }: { token: string; action: 'skip' | 'confirm' }) {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -12,10 +14,11 @@ export default function AutopayActionPage({ token, action }: { token: string; ac
   useEffect(() => {
     let canceled = false;
     setReady(false); setMessage('');
-    void apiGet<{ state: string; control?: string | null }>(endpoint, { redirectOnUnauthorized: false }).then(result => {
+    void apiGet<{ state: string; control?: string | null; processing?: boolean }>(endpoint, { redirectOnUnauthorized: false }).then(result => {
       if (canceled) return;
       if (result.data && !result.error) {
         if (action === 'skip' && result.data.control === 'skip') setMessage(pendingMessage);
+        else if (action === 'skip' && result.data.processing === true) setMessage(processingMessage);
         else if (action === 'skip' && result.data.state === 'skipped_by_client') setMessage('Automatic payment skipped. You can still pay the invoice directly.');
         else if (action === 'confirm' && ['not_needed','canceled'].includes(result.data.state)) setMessage('Payment confirmation is no longer needed.');
         else setReady(true);
@@ -26,11 +29,17 @@ export default function AutopayActionPage({ token, action }: { token: string; ac
   const submit = async () => {
     if (busy || !ready) return;
     setBusy(true);
+    let unstoppable = false;
     const result = await runAction<ActionResult>({
-      request: () => apiPost<ActionResult>(endpoint, {}, { redirectOnUnauthorized: false }),
+      request: async () => {
+        const response = await apiPost<ActionResult>(endpoint, {}, { redirectOnUnauthorized: false });
+        unstoppable = action === 'skip' && response.statusCode === 409 && response.code === 'COLLECTION_IN_PROGRESS';
+        return response;
+      },
       errorFallback: 'The request could not be completed.', successMessage: 'Request completed.',
       onOutcome: text => setMessage(text),
     });
+    if (unstoppable) { setReady(false); setMessage(processingMessage); }
     if (result) {
       if (result.url) void navigateTo(result.url);
       else {

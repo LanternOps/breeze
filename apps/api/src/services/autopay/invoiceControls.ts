@@ -13,7 +13,7 @@ import { resolveBillingLinkToken } from './linkTokens';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
-import { collectionFenced, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
+import { collectionFenced, hasUnstoppableCollection, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
 import type { Tx } from './types';
 
 export async function assertControllable(tx: Tx, invoiceId: string): Promise<void> {
@@ -51,9 +51,10 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
 }
 
 export async function getSkipInvoiceView(tx: Tx, token: string) {
-  const { schedule } = await skipAuthority(tx, token, false);
+  const { invoice, schedule } = await skipAuthority(tx, token, false);
+  // processing: a payment is already with Stripe and the skip would be refused.
   return { state: schedule.state, collectOn: schedule.collectOn,
-    control: pendingInvoiceControl(schedule.stateReason) };
+    control: pendingInvoiceControl(schedule.stateReason), processing: await hasUnstoppableCollection(tx, invoice.id) };
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {

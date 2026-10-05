@@ -2494,6 +2494,7 @@
     "requestedCount_other": "Requests sent to {{count}} clients.",
     "chargeDate": "Charge on or around {{date}}",
     "excludeInvoice": "Exclude this invoice from automatic payments",
+    "excludeRefusedProcessing": "This invoice's payment is already processing and can't be stopped. You can exclude the invoice once the payment completes or fails.",
     "excludeContract": "Exclude invoices containing this contract",
     "failed": "Could not update automatic payment. Please try again.",
     "states": {
@@ -2521,6 +2522,7 @@
       "enrolled_after_issue": "Enrolled after invoice issue",
       "method_not_usable": "Payment method unavailable",
       "over_cap": "Above automatic payment limit",
+      "above_authorized_cap": "Above the limit the client authorized",
       "cap_currency_mismatch": "Limit currency does not match",
       "ach_currency_unsupported": "Bank payment currency unsupported",
       "excluded_contract": "Contract excluded",

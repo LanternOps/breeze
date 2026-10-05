@@ -99,6 +99,17 @@ it.each(['in_progress','abandoned'])('renders %s honestly with a next action',as
  else expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href','/portal/autopay/test-token');
 });
 
+it.each([['public','/portal/autopay/test-token'],['portal','/portal/payment-methods']] as const)('explains an unsupported %s method with a way to start again',async(target,href)=>{
+ window.history.replaceState({},'',`/autopay/return?target=${target}&session_id=cs_test`);sessionStorage.setItem('autopay-return-token','test-token');
+ vi.mocked(apiPost).mockResolvedValue({data:{outcome:'unsupported_method',orgId:'org',methodLabel:null,feeText:'No usable payment method confirmed.'}});
+ render(<AutopaySetupPage mode="return"/>);fireEvent.click(screen.getByTestId('autopay-return-submit'));
+ const result=await screen.findByTestId('autopay-return-outcome');
+ expect(result).toHaveTextContent('This payment method can’t be used for automatic payments');
+ expect(screen.getByTestId('autopay-unsupported-method')).toHaveTextContent('Please enter your card details directly, or use a bank account');
+ expect(screen.getByTestId('autopay-restart')).toHaveAttribute('href',href);
+ expect(screen.queryByTestId('autopay-return-fee')).toBeNull();expect(screen.queryByTestId('autopay-return-submit')).toBeNull();
+});
+
 it.each(['stop','setup'] as const)('uses disabled-partner stop-only data in portal %s mode',async mode=>{
   vi.mocked(apiGet).mockResolvedValue({statusCode:200,data:{stopOnly:true,partnerName:'Example MSP',enrollment:{status:'paused'},method:null}});
   render(<AutopaySetupPage portal mode={mode}/>);

@@ -1,13 +1,13 @@
 import { reportCollectionError } from './collectionErrors';
 import { eq } from 'drizzle-orm';
-import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox } from '../../db/schema';
+import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox, invoiceAutopaySchedules } from '../../db/schema';
 import { toMinorUnits, fromMinorUnits } from '../stripeMoney';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken';
 import { resolveBillingEmail } from '../invoicePdf';
 import { partnerEmailCustomFromSettings } from '../emailTemplates/renderPartnerEmail';
 import { mintBillingLinkToken, buildBillingLinkUrl } from './linkTokens';
 import { enqueueBillingNotice } from './noticeOutbox';
-import { renderBillingNotice } from './renderBillingNotice';
+import { renderBillingNotice, type PaymentSecondaryAction } from './renderBillingNotice';
 import type { Tx } from './types';
 import { sendAutopayStaffEmail } from './staffNotifications';
 export function noticeDedupeKey(id: string, kind: string): string { return `${id}:${kind}:1`; }
@@ -33,9 +33,16 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
     paid_on: mapping.paymentReceivedAt!, balance_remaining: `${invoice!.currencyCode} ${invoice!.balance}` };
   const rendered = await renderBillingNotice('payment_receipt', { payment: { id: 'payment_receipt', vars,
     custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_receipt'),
-    frozen: { amount: mapping.amount, fee: mapping.feeAmount, total } } });
+    frozen: { mappingId: mapping.id, amount: mapping.amount, fee: mapping.feeAmount, total } } });
   await enqueueBillingNotice(tx, { orgId: mapping.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
+}
+const NO_AUTOMATIC_RETRY = 'There will be no automatic retry. You can pay this invoice now.';
+/** Secondary action of every update-method email. True today: a failed schedule is never
+ * re-planned, so a new method cannot collect this invoice. */
+function updateMethodAction(url: string): PaymentSecondaryAction {
+  return { url, label: 'Update payment method',
+    note: 'Updating your payment method keeps automatic payments working for future invoices. It does not pay this invoice.' };
 }
 export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   variant: 'receipt' | 'confirm' | 'update' | 'pay' | 'returned' | 'expired', returnIdentity?: string): Promise<void> {
@@ -81,24 +88,34 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
   // A merged history row may receive money notices but cannot mint collection controls.
   if ((variant === 'confirm' || variant === 'update') && !hasAuthority) return;
   let tokenId: string | null = null;
-  let actionLink: string;
-  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
-  else {
+  let methodLink: string | null = null;
+  if (variant === 'confirm' || variant === 'update') {
     const token = await mintBillingLinkToken(tx, { orgId: attempt.orgId, invoiceId: invoice!.id,
       enrollmentId: method!.enrollmentId, generation: enrollment!.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
     tokenId = token.id;
-    actionLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
+    methodLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
   }
+  // Confirm is the only way forward while that attempt holds the invoice (pay-now would 409).
+  // Every other failure leads with paying this invoice; update adds the method link second.
+  const actionLink = variant === 'confirm' ? methodLink! : buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
+  const secondaryAction: PaymentSecondaryAction | undefined = variant === 'update' ? updateMethodAction(methodLink!) : undefined;
+  // Name the retry only when this attempt's schedule really holds one (retryAt is null
+  // after the last soft/NSF retry, for hard failures and for unscheduled attempts).
+  const [schedule] = variant === 'pay' && attempt.scheduleId ? await tx.select().from(invoiceAutopaySchedules)
+    .where(eq(invoiceAutopaySchedules.id, attempt.scheduleId)).limit(1) : [];
+  const retryOn = schedule && schedule.id === attempt.scheduleId && schedule.state === 'retry_scheduled'
+    && schedule.attemptCount === attempt.attemptNo && schedule.nextAttemptAt ? schedule.nextAttemptAt.toISOString().slice(0, 10) : null;
+  const noRetry = NO_AUTOMATIC_RETRY;
+  const retryText = retryOn ? `Automatic payment will try again on or after ${retryOn} unless this invoice is paid or its automatic payment is stopped first. You can pay now instead.` : noRetry;
   const failureText = variant === 'expired' ? 'Your payment confirmation link expired. The pending payment was canceled. Please pay this invoice using the invoice link.'
     : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
     : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
-    : variant === 'update' ? 'This payment method cannot be used. Please update it or pay this invoice.'
-    : attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
-    : 'Payment could not be completed. You can pay this invoice now.';
+    : variant === 'update' ? `This payment method cannot be used for automatic payments, so this payment did not go through. ${noRetry}`
+    : `${attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds.' : 'Payment could not be completed.'} ${retryText}`;
   const vars = { org_name: org!.name, partner_name: partner!.name, invoice_number: invoice!.invoiceNumber!,
     amount_due: `${invoice!.currencyCode} ${invoice!.balance}`, failure_text: failureText,
-    action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : variant === 'update' ? 'Update payment method' : 'Pay invoice' };
-  const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
+    action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : 'Pay invoice' };
+  const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars, secondaryAction,
     custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null } } });
   await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
@@ -124,4 +141,48 @@ export async function notifyPaymentAttention(input: {
     reportCollectionError(error,{org_id:input.orgId,invoice_id:input.invoiceId,attempt_id:input.attemptId,
       autopay_phase:'staff_email',...(input.returnIdentity?{return_identity:input.returnIdentity}:{})});
   }
+}
+
+/** A due schedule failed because the org's shared autopay method became unusable
+ * (a sibling invoice's hard decline or detach, or failed bank verification). It has
+ * no attempt of its own, so this is the client's one notice for the invoice, in the
+ * update-method variant.
+ * Caller holds the invoice lock in the transaction that failed the schedule.
+ */
+export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): Promise<void> {
+  const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, scheduleId)).limit(1);
+  if (!schedule?.enrollmentId) throw new Error('Schedule not found for notice');
+  const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, schedule.invoiceId)).limit(1).for('update');
+  const [org] = await tx.select().from(organizations).where(eq(organizations.id, schedule.orgId)).limit(1);
+  if (!invoice) throw new Error('Invoice not found for notice');
+  const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+  if (!org || !partner || invoice.orgId !== schedule.orgId || org.id !== invoice.orgId || org.partnerId !== invoice.partnerId) {
+    throw new Error('Payment notice ownership mismatch');
+  }
+  const email = resolveBillingEmail(org.billingContact);
+  if (!email) return;
+  const dedupeKey = noticeDedupeKey(invoice.id, 'payment_failed:method_not_usable');
+  const [existingNotice] = await tx.select({id:billingNoticeOutbox.id}).from(billingNoticeOutbox)
+    .where(eq(billingNoticeOutbox.dedupeKey,dedupeKey)).limit(1);
+  if (existingNotice) return;
+  const [enrollment] = await tx.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.id, schedule.enrollmentId)).limit(1);
+  // A stopped or re-requested enrollment cannot mint an update-method link.
+  if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
+    || enrollment.generation !== schedule.enrollmentGeneration) return;
+  // Same 'update' layout as enqueueAttemptNotice (pay this invoice first, update link
+  // second), frozen to the schedule instead of an attempt (validatePaymentActionNotice
+  // has a schedule-bound branch). No attempt was made for this invoice.
+  const token = await mintBillingLinkToken(tx, { orgId: invoice.orgId, invoiceId: invoice.id,
+    enrollmentId: enrollment.id, generation: enrollment.generation, purpose: 'enroll', ttlDays: 14 });
+  const vars = { org_name: org.name, partner_name: partner.name, invoice_number: invoice.invoiceNumber!,
+    amount_due: `${invoice.currencyCode} ${invoice.balance}`,
+    failure_text: `Your saved payment method can no longer be used for automatic payments, so this invoice was not charged automatically. ${NO_AUTOMATIC_RETRY}`,
+    action_link: buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice, tx)).token), action_label: 'Pay invoice' };
+  const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
+    secondaryAction: updateMethodAction(buildBillingLinkUrl('enroll', token.token)),
+    custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'),
+    frozen: { attemptId: null, scheduleId: schedule.id, variant: 'update', tokenId: token.id, returnIdentity: null } } });
+  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
+    kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }

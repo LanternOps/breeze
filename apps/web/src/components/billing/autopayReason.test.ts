@@ -42,3 +42,7 @@ it('treats only outcomes that touched a payment as attempted',()=>{
   for(const outcome of ['failed','canceled','requires_action','unapplied'])expect(chargeNowAttempted({outcome})).toBe(true);
   for(const body of [{outcome:'deferred'},{outcome:'refused'},{error:'notice_lead'},null])expect(chargeNowAttempted(body)).toBe(false);
 });
+it('tells staff an invoice is above the limit the client authorized, distinct from the MSP cap',()=>{
+  expect(autopayReasonKey('above_authorized_cap')).toBe('autopay.reasons.above_authorized_cap');
+  expect(autopayReasonKey('above_authorized_cap')).not.toBe(autopayReasonKey('over_cap'));
+});
