@@ -48,6 +48,7 @@ import {
   skipInvoice,
   setInvoiceAutopayExcluded,
   getInvoiceAutopayView,
+  getSkipInvoiceView,
 } from './invoiceControls';
 import { planAutopayForInvoice } from './scheduler';
 import { collectionFenced, finalizeInvoiceControl } from './collectionControl';
@@ -217,7 +218,8 @@ it('clears notice authority and increments sequence for a scheduled due-date edi
   });
   expect(h.notice).toHaveBeenCalledExactlyOnceWith(f.tx, 'schedule');
 });
-it.each(['reserved', 'created', 'confirming', 'processing', 'requires_action'])(
+// Only attempts that have not been sent for confirmation can still be cancelled.
+it.each(['reserved', 'created', 'requires_action'])(
   'fences %s without releasing or confirming money; replay is idempotent',
   async (state) => {
     const f = fixture({}, [{ id: 'attempt', state }]);
@@ -233,6 +235,23 @@ it.each(['reserved', 'created', 'confirming', 'processing', 'requires_action'])(
     expect(h.staff).not.toHaveBeenCalled();
   },
 );
+// Spec 6.6: an attempt sent to Stripe for confirmation (ACH processing in particular)
+// cannot be recalled, so the skip is refused rather than promised.
+it.each(['confirming', 'processing'])('refuses to skip while a %s payment cannot be stopped, with no fence written', async state => {
+  const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
+  for (let i = 0; i < 2; i++) {
+    await expect(skipInvoice(f.tx, 'token')).rejects.toMatchObject({ status: 409, code: 'COLLECTION_IN_PROGRESS',
+      message: "A payment for this invoice is already processing and can't be stopped. You'll get a receipt when it completes." });
+  }
+  expect(f.writes).toEqual([]);
+  expect(f.sched).toMatchObject({ clientSkippedAt: null, stateReason: null });
+  expect(h.confirmation).not.toHaveBeenCalled(); expect(h.staff).not.toHaveBeenCalled();
+});
+it.each([['confirming', true], ['processing', true], ['created', false], ['requires_action', false]] as const)(
+  'tells the skip page before the click whether a %s payment can still be stopped', async (state, processing) => {
+    const f = fixture({ state: 'collecting' }, [{ id: 'attempt', state }]);
+    expect(await getSkipInvoiceView(f.tx, 'token')).toMatchObject({ state: 'collecting', processing });
+  });
 it('finalizes once, enqueues seq zero confirmation and one staff event, replay has no writes', async () => {
   const f = fixture();
   expect(await skipInvoice(f.tx, 'token')).toMatchObject({ status: 'skipped' });

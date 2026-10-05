@@ -154,3 +154,19 @@ it('clears an already-excluded pending control after verified cancellation and a
     expect(notices[0]).toMatchObject({ kind: 'invoice_autopay', seq: 2 });
   });
 });
+
+import { getSkipInvoiceView } from './invoiceControls';
+it.each([['processing',true],['confirming',true],['created',false]] as const)('skip against a real %s attempt: refused=%s',async(state,refused)=>{
+  const f=await fixture();
+  await withSystemDbAccessContext(async()=>{
+    await db.update(invoiceAutopaySchedules).set({state:'collecting',attemptCount:1}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+    await db.insert(invoiceCollectionAttempts).values({...f.attempt,state});
+  });
+  expect(await withSystemDbAccessContext(()=>getSkipInvoiceView(db,f.token))).toMatchObject({state:'collecting',processing:refused});
+  const skip=withSystemDbAccessContext(()=>db.transaction(tx=>skipInvoice(tx,f.token)));
+  if(refused)await expect(skip).rejects.toMatchObject({status:409,code:'COLLECTION_IN_PROGRESS'});
+  else expect(await skip).toEqual({status:'pending',control:'skip'});
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,f.schedule.id)));
+  if(refused)expect(schedule).toMatchObject({state:'collecting',stateReason:null,clientSkippedAt:null});
+  else expect(schedule).toMatchObject({state:'collecting',stateReason:'control_pending:skip'});
+});
