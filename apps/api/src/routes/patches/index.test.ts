@@ -469,6 +469,18 @@ describe('patch routes', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it('denies patch detail without devices:read', async () => {
+    mockAuthState.permissions = [{ resource: 'reports', action: 'read' }];
+
+    const res = await app.request(`/patches/${PATCH_ID}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' }
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('allows the patch list with devices:read', async () => {
     mockAuthState.permissions = [{ resource: 'devices', action: 'read' }];
     vi.mocked(db.select)
