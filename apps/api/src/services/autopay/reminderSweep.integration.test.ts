@@ -382,3 +382,25 @@ describe('stale reminder replacement', () => {
     expect(await reminderRows(f.created[0]!.id)).toHaveLength(0);
   });
 });
+
+// F-2: a schedule deferred past its collection date (the bank still unverified, charging
+// on hold, any deferral) no longer covers the invoice: the client is reminded like anyone else.
+describe('a deferred automatic payment does not silence reminders (F-2)', () => {
+  it.each(['method_not_usable', 'charging_disabled', null] as const)('scheduled for an earlier day and still waiting (%s) gets the overdue reminder', async reason => {
+    const f = await fixture(['scheduled']);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ collectOn: '2026-09-28', stateReason: reason })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    await withSystemDbAccessContext(() => db.update(invoices).set({ dueDate: '2026-09-28' }).where(eq(invoices.id, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(1);
+    const [row] = await reminderRows(target.id);
+    expect(row).toMatchObject({ kind: 'payment_overdue', seq: 1 });
+  });
+  it('a schedule collecting today or later still covers the invoice', async () => {
+    const f = await fixture(['scheduled']);
+    const target = f.created[0]!;
+    await withSystemDbAccessContext(() => db.update(invoiceAutopaySchedules).set({ collectOn: '2026-10-05', stateReason: 'method_not_usable' })
+      .where(eq(invoiceAutopaySchedules.invoiceId, target.id)));
+    expect((await runInvoiceReminderSweep(new Date('2026-10-05T06:18:00Z'))).enqueued).toBe(0);
+  });
+});

@@ -66,15 +66,19 @@ const INVOICE_PAGE = 250;
 function system<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
-function invoiceCandidate() {
+function invoiceCandidate(today: string) {
   return and(
     sqlOpenAr(invoices), gt(invoices.balance, '0'), isNotNull(invoices.dueDate),
     buildPublicLinkLiveOrgPredicate(invoices.orgId),
+    // An automatic payment covers the invoice only while it is on track. One still
+    // 'scheduled' after its collection date was deferred (a bank awaiting verification,
+    // charging on hold, any deferral): the client is reminded like anyone else (F-2).
     sql`NOT EXISTS (
       SELECT 1 FROM ${invoiceAutopaySchedules}
       WHERE ${invoiceAutopaySchedules.invoiceId} = ${invoices.id}
         AND ${invoiceAutopaySchedules.orgId} = ${invoices.orgId}
         AND ${inArray(invoiceAutopaySchedules.state, [...ACTIVE_SCHEDULES])}
+        AND NOT (${invoiceAutopaySchedules.state} = 'scheduled' AND ${invoiceAutopaySchedules.collectOn} < ${today}::date)
     )`,
     // A payment already in flight (incl. unscheduled "pay by bank" attempts and a
     // processing debit whose schedule a pause cancelled): "View & pay" would 409.
@@ -115,7 +119,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
         orgCursor ? gt(organizations.id, orgCursor) : undefined,
         buildPublicLinkLiveOrgPredicate(organizations.id),
         sql`EXISTS (SELECT 1 FROM ${invoices}
-          WHERE ${invoices.orgId} = ${organizations.id} AND ${invoiceCandidate()})`,
+          WHERE ${invoices.orgId} = ${organizations.id} AND ${invoiceCandidate(today)})`,
       )).orderBy(organizations.id).limit(ORG_PAGE));
     if (orgs.length === 0) break;
     for (const org of orgs) {
@@ -133,7 +137,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
         let invoiceCursor: string | undefined;
         for (;;) {
           const ids = await system(() => db.select({ id: invoices.id }).from(invoices).where(and(
-            eq(invoices.orgId, org.id), eq(invoices.partnerId, org.partnerId), invoiceCandidate(),
+            eq(invoices.orgId, org.id), eq(invoices.partnerId, org.partnerId), invoiceCandidate(today),
             invoiceCursor ? gt(invoices.id, invoiceCursor) : undefined,
           )).orderBy(invoices.id).limit(INVOICE_PAGE));
           if (ids.length === 0) break;
@@ -143,7 +147,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
               const created = await system(async () => {
                 const [invoice] = await db.select().from(invoices).where(and(
                   eq(invoices.id, id), eq(invoices.orgId, org.id),
-                  eq(invoices.partnerId, org.partnerId), invoiceCandidate(),
+                  eq(invoices.partnerId, org.partnerId), invoiceCandidate(today),
                 )).limit(1).for('update');
                 if (!invoice?.dueDate || !invoice.invoiceNumber) return false;
                 const due = reminderStep({

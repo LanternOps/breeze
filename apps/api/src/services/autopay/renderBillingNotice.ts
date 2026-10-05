@@ -66,6 +66,8 @@ export interface ChargingNoticeContext {
   stopUrl: string;
   /** The capitalized method label for the facts table. */
   methodLabel?: string;
+  /** 'pending_verification': the noticed bank account still awaits verification (F-2). */
+  variant?: 'pending_verification';
   /** The authorization line for this method type (card vs bank debit). */
   authorizationText: string;
   preheader?: string;
@@ -78,13 +80,14 @@ export function renderChargingNotice(ctx: ChargingNoticeContext): RenderedNotice
   checkedUrl(ctx.skipUrl); checkedUrl(ctx.stopUrl); checkedUrl(ctx.vars.invoice_link!);
   const v = ctx.vars;
   const feeFree = typeof ctx.frozen.fee === 'string' && /^0+(?:\.0+)?$/.test(ctx.frozen.fee);
-  const rendered = renderBillingEmail({ id: 'invoice_autopay', custom: ctx.custom ?? null, vars: v, brandName: v.partner_name ?? '',
+  const pending = ctx.variant === 'pending_verification';
+  const rendered = renderBillingEmail({ id: 'invoice_autopay', variant: ctx.variant, custom: ctx.custom ?? null, vars: v, brandName: v.partner_name ?? '',
     ctaUrl: v.invoice_link, preheader: ctx.preheader,
     summary: [
       { label: 'Amount', value: v.amount_due ?? '' },
       ...(feeFree ? [] : [{ label: 'Processing fee', value: `up to ${v.fee_amount}` }, { label: 'Total charge', value: `up to ${v.charge_total}` }]),
       { label: 'Payment date', value: `On or around ${v.charge_date}` },
-      { label: 'Payment method', value: ctx.methodLabel ?? capitalized(v.payment_method ?? '') },
+      { label: 'Payment method', value: `${ctx.methodLabel ?? capitalized(v.payment_method ?? '')}${pending ? ' (waiting for verification)' : ''}` },
       ...(v.due_date ? [{ label: 'Due date', value: v.due_date }] : []),
     ].filter(row => row.value),
     links: [{ label: 'Skip this payment', url: ctx.skipUrl }, { label: 'Stop automatic payments', url: ctx.stopUrl }],

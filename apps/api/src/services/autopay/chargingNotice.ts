@@ -42,6 +42,11 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
   const existing = await tx.select({ id: billingNoticeOutbox.id }).from(billingNoticeOutbox)
     .where(eq(billingNoticeOutbox.dedupeKey, `${invoice!.id}:invoice_autopay:${seq}`)).limit(1);
   if (existing[0]) return;
+  // F-2: a bank still waiting for microdeposit verification can't be charged on the date, so
+  // the notice says what to do (verify it, or pay another way), never "nothing to do".
+  const [noticedMethod] = await tx.select({ status: orgPaymentMethods.status }).from(orgPaymentMethods)
+    .where(and(eq(orgPaymentMethods.id, terms.methodId), eq(orgPaymentMethods.orgId, schedule.orgId))).limit(1);
+  const awaitingVerification = noticedMethod?.status === 'pending_verification';
   const skip = await mintBillingLinkToken(tx, { orgId: schedule.orgId, invoiceId: schedule.invoiceId,
     enrollmentId: schedule.enrollmentId, generation: schedule.enrollmentGeneration,
     purpose: 'skip_invoice', ttlDays: 90 });
@@ -60,12 +65,14 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
       due_date: emailDate(invoice!.dueDate), charge_date: chargeOn,
       payment_method: paymentMethodInSentence(methodLabel), fee_amount: emailMoney(terms.feeAmount, terms.currency),
       charge_total: emailMoney(total, terms.currency), invoice_link: buildPublicInvoiceUrl(link.token) },
-    custom: partnerEmailCustomFromSettings(partner!.settings, 'invoice_autopay'),
+    custom: awaitingVerification ? null : partnerEmailCustomFromSettings(partner!.settings, 'invoice_autopay'),
+    variant: awaitingVerification ? 'pending_verification' : undefined,
     skipUrl: buildBillingLinkUrl('skip_invoice', skip.token),
     stopUrl: buildBillingLinkUrl('stop_autopay', stop.token),
     methodLabel,
     // R12: the fee is a maximum (a debit or prepaid card pays none), so the total is "up to", as in the facts table.
-    preheader: toMinorUnits(terms.feeAmount, terms.currency) > 0
+    preheader: awaitingVerification ? 'Verify your bank account so this invoice can be paid automatically.'
+      : toMinorUnits(terms.feeAmount, terms.currency) > 0
       ? `Up to ${emailMoney(total, terms.currency)} will be charged on or around ${chargeOn}.`
       : `${emailMoney(terms.principal, terms.currency)} will be charged on or around ${chargeOn}.`,
     authorizationText: terms.methodType === 'us_bank_account'

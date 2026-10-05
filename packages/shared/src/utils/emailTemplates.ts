@@ -349,6 +349,11 @@ const VARIANT_DEFAULTS: Record<string, Partial<EmailTemplateFieldDefaults>> = {
     heading: 'Your bank account is verified', html: `<p>Hi {{client_name}},</p>
 <p>Stripe has verified your bank account, so automatic payments with {{partner_name}} are now on.</p>
 <p>Any invoice we've already emailed you about with a payment date will be charged as that email described. For new invoices, we'll email you the amount and date before each payment.</p>` },
+  // F-2: the noticed bank account still awaits microdeposit verification.
+  'invoice_autopay:pending_verification': { subject: 'Invoice {{invoice_number}} from {{partner_name}}: verify your bank account to pay it automatically',
+    heading: 'Invoice {{invoice_number}}', html: `<p>Hi {{client_name}},</p>
+<p>{{partner_name}} has sent you invoice {{invoice_number}}. It will be paid automatically on or around {{charge_date}} with your {{payment_method}} once that account is verified.</p>
+<p>Your bank account isn't verified yet. Follow the instructions Stripe emailed you to verify it, or pay the invoice now using the button.</p>` },
   // F-1: an active client's new bank account needs verifying; the working method stays in use.
   'autopay_enrolled:pending_change': { subject: 'One more step: verify your bank account for {{partner_name}}',
     heading: 'Verify your bank account', html: `<p>Hi {{client_name}},</p>
