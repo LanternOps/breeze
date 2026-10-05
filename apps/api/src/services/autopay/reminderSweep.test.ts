@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { reminderDueToday, runInvoiceReminderSweep } from './reminderSweep';
+import { reminderDueToday, reminderStep, runInvoiceReminderSweep } from './reminderSweep';
+import { RESERVING_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
+import { STALE_REMINDER_REASON } from './reminderValidation';
 
 const input = {
   dueDate: '2026-10-08', today: '2026-10-05', beforeDueDays: 3,
@@ -49,6 +51,33 @@ describe('reminderDueToday', () => {
     { repeatDays: 1.5 }, { overdueEveryDays: 32 }, { lastSentSeq: -1 },
   ])('rejects corrupt inputs %j', (patch) => {
     expect(() => reminderDueToday({ ...input, ...patch })).toThrow(RangeError);
+  });
+});
+
+describe('reminderStep', () => {
+  it.each([
+    ['2026-10-04', null],
+    ['2026-10-05', { kind: 'payment_reminder', seq: 1, onDay: true }],
+    ['2026-10-06', { kind: 'payment_reminder', seq: 1, onDay: false }],
+    ['2026-10-08', null],
+    ['2026-10-14', null],
+    ['2026-10-15', { kind: 'payment_overdue', seq: 1, onDay: true }],
+    ['2026-10-16', { kind: 'payment_overdue', seq: 1, onDay: false }],
+    ['2026-10-22', { kind: 'payment_overdue', seq: 2, onDay: true }],
+  ])('places %s on the latest cadence step', (today, expected) => {
+    expect(reminderStep({ ...input, today: today as string })).toEqual(expected);
+  });
+  it('numbers repeating upcoming steps between ticks', () => {
+    expect(reminderStep({ ...input, today: '2026-10-04', beforeDueDays: 7, repeatDays: 2 }))
+      .toEqual({ kind: 'payment_reminder', seq: 2, onDay: false });
+  });
+  it('agrees with reminderDueToday on every cadence day', () => {
+    for (let day = 1; day <= 31; day++) {
+      const today = `2026-10-${String(day).padStart(2, '0')}`;
+      const step = reminderStep({ ...input, today, beforeDueDays: 7, repeatDays: 2 });
+      expect(reminderDueToday({ ...input, today, beforeDueDays: 7, repeatDays: 2 }))
+        .toEqual(step?.onDay ? { kind: step.kind, seq: step.seq } : null);
+    }
   });
 });
 
@@ -282,5 +311,63 @@ describe('runInvoiceReminderSweep', () => {
     expect(params(firstOrgPages[2]!)).toContain(rows[250]!.id);
     expect(mock.enqueue.mock.calls.map(call => call[1].invoiceId).sort()).toEqual(rows.map(r => r.id).sort());
     expect(mock.queries.filter(q => q.locked)).toHaveLength(351);
+  });
+  it('excludes invoices with a reserving collection attempt in discovery and in the locked recheck', async () => {
+    seedMock(); await runInvoiceReminderSweep(now);
+    const dialect = new PgDialect();
+    const candidates = mock.queries.filter(q => q.table === organizations || q.table === invoices);
+    expect(candidates.length).toBeGreaterThanOrEqual(3);
+    for (const q of candidates) {
+      const query = dialect.sqlToQuery(q.predicate as Parameters<PgDialect['sqlToQuery']>[0]);
+      expect(query.sql).toContain('invoice_collection_attempts');
+      expect(query.params).toEqual(expect.arrayContaining([...RESERVING_COLLECTION_ATTEMPT_STATES]));
+    }
+  });
+  describe('stale reminder replacement', () => {
+    const overdue = { ...invoice, dueDate: '2026-09-28' }; // every 7 days: 10-05 is overdue step 1
+    function respond(today: { prior?: Record<string, unknown> | null; history: Record<string, unknown> }) {
+      let orgReads = 0; let pageReads = 0;
+      mock.respond = q => {
+        if (q.table === organizations) return orgReads++ === 0 ? [org] : [];
+        if (q.table === invoices) return q.locked ? [overdue] : pageReads++ === 0 ? [{ id: overdue.id }] : [];
+        if (q.table === billingNoticeOutbox) {
+          const params = new PgDialect().sqlToQuery(q.predicate as Parameters<PgDialect['sqlToQuery']>[0]).params;
+          if (String(params[0]).startsWith('invoice:')) return today.prior ? [today.prior] : [];
+          return [today.history];
+        }
+        return [];
+      };
+    }
+    it('replaces a stale step on its own cadence day with a revision key', async () => {
+      respond({ history: { seq: 0, atStep: 1 } });
+      expect(await runInvoiceReminderSweep(new Date('2026-10-05T07:30:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+      expect(mock.enqueue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        kind: 'payment_overdue', seq: 1, dedupeKey: `invoice:${overdue.id}:payment_overdue:1:r1` }));
+    });
+    it('replaces a stale step on the next off-cadence sweep with current values', async () => {
+      respond({ prior: { status: 'cancelled', lastError: STALE_REMINDER_REASON }, history: { seq: 0, atStep: 1 } });
+      expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 1, skippedNoContact: 0 });
+      expect(mock.enqueue).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        kind: 'payment_overdue', seq: 1, dedupeKey: `invoice:${overdue.id}:payment_overdue:1:r1` }));
+      expect(mock.render).toHaveBeenCalledWith('payment_overdue', expect.objectContaining({
+        frozen: expect.objectContaining({ daysOverdue: 8 }) }));
+      const lookup = mock.queries.find(q => q.table === billingNoticeOutbox)!;
+      expect(new PgDialect().sqlToQuery(lookup.predicate as Parameters<PgDialect['sqlToQuery']>[0]).params)
+        .toEqual([`invoice:${overdue.id}:payment_overdue:1`, org.id]);
+    });
+    it.each([
+      ['no notice was allocated (missed tick)', null],
+      ['the step was sent', { status: 'sent', lastError: null }],
+      ['the step was cancelled for another reason', { status: 'cancelled', lastError: 'Payment in progress' }],
+    ])('does not backfill an off-cadence step when %s', async (_label, prior) => {
+      respond({ prior, history: { seq: 0, atStep: 1 } });
+      expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+      expect(mock.enqueue).not.toHaveBeenCalled();
+    });
+    it('does not replace a stale step that a later revision already covers', async () => {
+      respond({ prior: { status: 'cancelled', lastError: STALE_REMINDER_REASON }, history: { seq: 1, atStep: 2 } });
+      expect(await runInvoiceReminderSweep(new Date('2026-10-06T06:18:00Z'))).toEqual({ enqueued: 0, skippedNoContact: 0 });
+      expect(mock.enqueue).not.toHaveBeenCalled();
+    });
   });
 });

@@ -228,3 +228,20 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
  expect(h.enqueue).toHaveBeenCalledTimes(1);
  expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='enroll')).toHaveLength(1);
 });
+
+it.each([
+ ['pause','autopay_paused',{status:'paused',pausedAt:new Date('2026-10-04T10:00:00.000Z')},'2026-10-04T10:00:00.000Z'],
+ ['resume','autopay_resumed',{status:'active',effectiveFrom:new Date('2026-10-04T11:00:00.000Z')},'2026-10-04T11:00:00.000Z'],
+ ['stop','autopay_stopped',{status:'cancelled',cancelledAt:new Date('2026-10-04T12:00:00.000Z')},'2026-10-04T12:00:00.000Z'],
+] as const)('freezes the %s transition so a late lifecycle email can be revalidated',async(action,kind,updated,transitionAt)=>{
+ h.rows.push([org],[{...enrollment,status:action==='resume'?'paused':'active'}]);
+ if(action==='stop')h.rows.push([{...enrollment,...updated}],[],[]);
+ else h.rows.push([{...enrollment,...updated}]);
+ if(action==='pause')h.rows.push([],[],[]);
+ h.rows.push([org],[{id:partnerId,name:'Example MSP'}],[{settings:{}}]);
+ h.method.mockResolvedValue({status:'active'});
+ await (action==='pause'?pauseAutopay(db,actor,orgId):action==='resume'?resumeAutopay(db,actor,orgId):turnOffAutopay(db,actor,orgId));
+ const notice=h.enqueue.mock.calls[0]![1];
+ expect(notice).toMatchObject({kind,seq:enrollment.generation,enrollmentId:enrollment.id});
+ expect(notice.rendered.frozen).toMatchObject({transitionAt});
+});

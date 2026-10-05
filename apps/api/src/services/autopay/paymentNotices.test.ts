@@ -19,7 +19,7 @@ it('dedupes each attempt outcome independently', () => {
 
 import { beforeEach, vi } from 'vitest';
 import { enqueueAttemptNotice, enqueueOnlineReceipt, notifyPaymentAttention } from './paymentNotices';
-import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox } from '../../db/schema';
+import { invoiceCollectionAttempts, invoiceStripePayments, invoices, organizations, partners, orgPaymentMethods, orgAutopayEnrollments, billingNoticeOutbox, invoiceAutopaySchedules } from '../../db/schema';
 import type { Tx } from './types';
 const h = vi.hoisted(() => ({ enqueue: vi.fn(), mint: vi.fn(), payLink: vi.fn(), staff: vi.fn() }));
 vi.mock('./noticeOutbox', () => ({ enqueueBillingNotice: h.enqueue }));
@@ -67,7 +67,61 @@ it('uses the transactional invoice link for pay and includes NSF copy', async ()
   await enqueueAttemptNotice(tx, 'a', 'pay');
   expect(h.payLink).toHaveBeenCalledWith(rows.get(invoices)![0], tx);
   expect(h.mint).not.toHaveBeenCalled();
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ rendered: expect.objectContaining({ text: expect.stringContaining('One retry may follow.') }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ rendered: expect.objectContaining({ text: expect.stringContaining('insufficient available funds') }) }));
+});
+const queuedText = () => (h.enqueue.mock.calls.at(-1)![1] as { rendered: { text: string; html: string } }).rendered;
+function scheduled(attempt: Record<string, unknown>, schedule: Record<string, unknown> | null) {
+  Object.assign(rows.get(invoiceCollectionAttempts)![0]!, { scheduleId: 'schedule', attemptNo: 1, ...attempt });
+  rows.set(invoiceAutopaySchedules, schedule ? [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', attemptCount: 1, ...schedule }] : []);
+}
+it.each([
+  ['an NSF bank debit', { failureClass: 'nsf', attemptNo: 1 }, 'insufficient available funds', '2026-10-09'],
+  ['a soft card decline on day 1', { failureClass: 'soft', attemptNo: 1 }, 'could not be completed', '2026-10-04'],
+  ['a soft card decline on day 3', { failureClass: 'soft', attemptNo: 2 }, 'could not be completed', '2026-10-08'],
+] as const)('states the scheduled retry date for %s', async (_label, attempt, reason, date) => {
+  scheduled(attempt, { state: 'retry_scheduled', attemptCount: attempt.attemptNo, nextAttemptAt: new Date(`${date}T14:00:00.000Z`) });
+  await enqueueAttemptNotice(tx, 'a', 'pay');
+  const { text, html } = queuedText();
+  for (const body of [text, html]) {
+    expect(body).toContain(reason);
+    expect(body).toContain(`try again on or after ${date}`);
+    expect(body).not.toContain('One retry may follow');
+  }
+});
+it.each([
+  ['an NSF retry that already failed', { failureClass: 'nsf', attemptNo: 2 }, { state: 'failed', attemptCount: 2, nextAttemptAt: null }],
+  ['the last soft-decline retry', { failureClass: 'soft', attemptNo: 3 }, { state: 'failed', attemptCount: 3, nextAttemptAt: null }],
+  ['a payment with no schedule', { failureClass: 'nsf', scheduleId: null }, null],
+  ['a retry schedule that belongs to a later attempt', { failureClass: 'soft' }, { state: 'retry_scheduled', attemptCount: 2, nextAttemptAt: new Date('2026-10-08T00:00:00Z') }],
+] as const)('says plainly there is no automatic retry for %s', async (_label, attempt, schedule) => {
+  scheduled(attempt, schedule);
+  await enqueueAttemptNotice(tx, 'a', 'pay');
+  const { text } = queuedText();
+  expect(text).toContain('There will be no automatic retry.');
+  expect(text).not.toContain('try again');
+  expect(text).not.toContain('One retry may follow');
+});
+it('gives the update-method email a pay-now link and a separate update link that does not claim to pay', async () => {
+  rows.get(invoiceCollectionAttempts)![0]!.failureClass = 'hard';
+  await enqueueAttemptNotice(tx, 'a', 'update');
+  const { text, html } = queuedText();
+  expect(html).toContain('href="https://example.test/invoice/pay"');
+  expect(html).toContain('href="https://example.test/enroll/secret"');
+  expect(text).toContain('Pay invoice: https://example.test/invoice/pay');
+  expect(text).toContain('Update payment method: https://example.test/enroll/secret');
+  for (const body of [text, html]) {
+    expect(body).toContain('future invoices');
+    expect(body).toContain('does not pay this invoice');
+    expect(body).toContain('There will be no automatic retry.');
+    expect(body).not.toContain('Please update it or pay this invoice');
+  }
+});
+it('keeps the confirm email to its single confirm action (pay-now would be refused while it is pending)', async () => {
+  await enqueueAttemptNotice(tx, 'a', 'confirm');
+  const { text, html } = queuedText();
+  expect(html).toContain('href="https://example.test/confirm_payment/secret"');
+  expect(html).not.toContain('https://example.test/invoice/pay');
+  expect(text).not.toContain('Update payment method:');
 });
 it('requires an actually applied return mapping and permits cleared method authority', async () => {
   await expect(enqueueAttemptNotice(tx, 'a', 'returned')).rejects.toThrow('identity');
@@ -80,7 +134,7 @@ it('requires an actually applied return mapping and permits cleared method autho
 });
 it('freezes exact receipt principal, fee and total, and skips unapplied mappings', async () => {
   await enqueueOnlineReceipt(tx, 'mapping');
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: { amount: '100.00', fee: '3.00', total: '103.00' } }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: { mappingId: 'mapping', amount: '100.00', fee: '3.00', total: '103.00' } }) }));
   h.enqueue.mockClear(); rows.get(invoiceStripePayments)![0]!.invoicePaymentId = null;
   await enqueueOnlineReceipt(tx, 'mapping'); expect(h.enqueue).not.toHaveBeenCalled();
 });
@@ -98,7 +152,6 @@ it('requires return identity for staff and preserves the invoice destination', a
 });
 
 import { enqueueMethodUnusableNotice } from './paymentNotices';
-import { invoiceAutopaySchedules } from '../../db/schema';
 describe('method-unusable notice for a due schedule with no attempt of its own', () => {
   beforeEach(() => {
     rows.set(invoiceAutopaySchedules, [{ id: 'schedule', invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment',
