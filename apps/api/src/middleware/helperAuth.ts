@@ -17,6 +17,7 @@ import { matchAgentTokenHash } from './agentAuth';
 import { evaluateDeviceCredentialLifecycle } from './deviceCredentialLifecycle';
 import { PARKED_DEVICE_REFUSAL } from './agentAuthParked';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
+import { buildHelperConfigUpdate } from '../services/helperSettings';
 
 export interface HelperDevice {
   id: string;
@@ -32,8 +33,22 @@ export interface HelperDevice {
 declare module 'hono' {
   interface ContextVariableMap {
     helperDevice: HelperDevice;
+    /** Effective Helper enabled setting for the device, resolved by helperAuth. */
+    helperEnabled: boolean;
   }
 }
+
+/**
+ * Answer for every helper route (core and extension /helper/*) when the
+ * device's effective Helper setting is off. No route is exempt: no Helper
+ * client polls a status route, and the agent stops and uninstalls the Helper
+ * from the same setting on its next heartbeat. The code lets a client tell
+ * this refusal apart from a credential failure.
+ */
+export const HELPER_DISABLED_REFUSAL = {
+  error: 'Breeze Helper is disabled for this device by policy',
+  code: 'helper_disabled',
+} as const;
 
 /**
  * Authenticate helper requests using the helper-scoped bearer token.
@@ -134,6 +149,24 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
   if (isUnassignedPoolOrgType(device.organizationType)) {
     return c.json(PARKED_DEVICE_REFUSAL, 403);
   }
+
+  // Effective Helper enabled setting — the same resolver (and 120s cache) the
+  // agent heartbeat uses to install/uninstall the Helper, so the two agree.
+  // Resolved under a system context anchored to the authenticated device's own
+  // org, exactly as the heartbeat does.
+  let helperEnabled: boolean;
+  try {
+    const settings = await withSystemDbAccessContext(() => buildHelperConfigUpdate(device.id, device.orgId));
+    helperEnabled = settings.enabled === true;
+  } catch (err) {
+    console.error('[helperAuth] failed to resolve effective helper settings:', err instanceof Error ? err.message : err);
+    c.header('Retry-After', '30');
+    return c.json({ error: 'Helper settings could not be loaded. Try again.' }, 503);
+  }
+  if (!helperEnabled) {
+    return c.json(HELPER_DISABLED_REFUSAL, 403);
+  }
+  c.set('helperEnabled', helperEnabled);
 
   c.set('helperDevice', {
     id: device.id,

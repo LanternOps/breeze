@@ -211,6 +211,8 @@ export interface CreateOrganizationOptions {
   deletedAt?: Date | null;
   /** ISO-4217 org billing currency (multi-currency wave 1). Defaults to 'USD'. */
   currencyCode?: string;
+  /** organizations.settings JSONB (e.g. `{ helper: { enabled: true } }`). Defaults to the column default. */
+  settings?: Record<string, unknown>;
 }
 
 export async function createOrganization(options: CreateOrganizationOptions) {
@@ -227,7 +229,8 @@ export async function createOrganization(options: CreateOrganizationOptions) {
       slug: options.slug || `test-org-${timestamp}-${rand}`,
       type: options.type || 'customer',
       status: options.status || 'active',
-      deletedAt: options.deletedAt ?? null
+      deletedAt: options.deletedAt ?? null,
+      ...(options.settings ? { settings: options.settings } : {}),
     })
     .returning();
 

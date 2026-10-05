@@ -55,11 +55,14 @@ app.post('/forge-partner-write/:categoryId', async (c) => {
   return c.json({ affected: rows.length });
 });
 
-async function seedHelperDevice(options: { orgStatus?: 'active' | 'suspended' } = {}) {
+async function seedHelperDevice(options: { orgStatus?: 'active' | 'suspended'; helperEnabled?: boolean } = {}) {
   const partner = await createPartner();
   const org = await createOrganization({
     partnerId: partner.id,
     status: options.orgStatus ?? 'active',
+    // Effective Helper setting via the legacy org flag (no helper policy linked):
+    // helperAuth refuses a device whose Helper is disabled.
+    settings: { helper: { enabled: options.helperEnabled ?? true } },
   });
   const site = await createSite({ orgId: org.id });
   seededPartnerIds.push(partner.id);
@@ -122,6 +125,14 @@ describe('helper auth device-credential lifecycle (real PostgreSQL)', () => {
     const res = await probe(token);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ deviceId: device.id });
+  });
+
+  runDb('refuses a helper token whose device has the Helper disabled', async () => {
+    const { token } = await seedHelperDevice({ helperEnabled: false });
+
+    const res = await probe(token);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'helper_disabled' });
   });
 
   runDb('denies a helper token whose device agent token is suspended', async () => {

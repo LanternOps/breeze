@@ -73,6 +73,7 @@ vi.mock("../db/schema/installerBootstrapTokens", () => ({
 vi.mock("../services/installerBootstrapToken", () => ({
   generateBootstrapToken: vi.fn(() => "ABC1234567"),
   bootstrapTokenExpiresAt: vi.fn(() => new Date("2026-04-20T00:00:00.000Z")),
+  hashBootstrapToken: vi.fn((t: string) => `hmac:${t}`),
   BOOTSTRAP_TOKEN_PATTERN: /^[A-Z0-9]{10}$/,
 }));
 
