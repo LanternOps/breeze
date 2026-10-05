@@ -56,6 +56,10 @@ describe('getCustomerInvoiceAutopay', () => {
     [{ state: 'failed', stateReason: 'hard' }, { state: 'failed' }],
     [{ state: 'skipped_by_client' }, { state: 'skipped' }],
     [{ state: 'excluded_by_msp' }, { state: 'not_included', reason: 'excluded_invoice' }],
+    // G1/G2: deferred past the grace and ended: not included, with why.
+    [{ state: 'cancelled', stateReason: 'bank_unverified' }, { state: 'not_included', reason: 'bank_unverified' }],
+    [{ state: 'cancelled', stateReason: 'charging_on_hold' }, { state: 'not_included', reason: 'charging_on_hold' }],
+    [{ state: 'cancelled', stateReason: 'service_unavailable' }, { state: 'not_included', reason: 'service_unavailable' }],
     [{ state: 'not_needed', ineligibleReason: 'enrolled_after_issue', termsSnapshot: { kind: 'placeholder', issuedAt: '2026-10-05T00:00:00Z', noticeSeq: 0 } },
       { state: 'not_included', reason: 'enrolled_after_issue' }],
   ] as const)('%j', async (schedule, expected) => {

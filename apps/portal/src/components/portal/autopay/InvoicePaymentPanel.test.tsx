@@ -269,6 +269,17 @@ it('an invoice issued before the updated authorization says so, and offers Pay',
   expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
 });
 
+// G1/G2: an automatic payment deferred past the grace was ended; the page says why and offers Pay.
+it.each([
+  ['bank_unverified', "Your bank account wasn't verified in time, so this invoice isn't paid automatically. Please pay it here."],
+  ['charging_on_hold', "Automatic payments are on hold, so this invoice isn't paid automatically. Please pay it here."],
+  ['service_unavailable', "We couldn't take the automatic payment for this invoice, so please pay it here."],
+] as const)('an automatic payment ended for %s says so, and offers Pay', (reason, text) => {
+  panel({ autopayStatus: { ...scheduled, state: 'not_included', reason } as never, autopayEnrolled: true });
+  expect(screen.getByText(text)).toBeInTheDocument();
+  expect(screen.getByTestId('public-invoice-pay')).toHaveTextContent('Pay $200.00');
+});
+
 // FP-16
 it('a scheduled bank payment states its flat fee and total exactly', () => {
   panel({ balance: '50.00', autopayStatus: { ...scheduled, fee: '1.00', methodType: 'us_bank_account', methodLabel: 'Bank account ending in 6789' } as never, autopayEnrolled: true });

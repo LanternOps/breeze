@@ -1,3 +1,4 @@
+import { isDeferralEndReason } from './notChargedNotice';
 import { and, desc, eq } from 'drizzle-orm';
 import { autopayTermsSnapshotSchema, formatPaymentMethod, type CustomerInvoiceAutopayStatus } from '@breeze/shared';
 import { invoices, invoiceAutopaySchedules, invoiceCollectionAttempts, invoiceStripePayments, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
@@ -114,6 +115,8 @@ export async function getCustomerInvoiceAutopay(db: Tx, ids: { invoiceId: string
     case 'failed': return status('failed', schedule.stateReason ?? null);
     case 'skipped_by_client': return status('skipped');
     case 'excluded_by_msp': return status('not_included', 'excluded_invoice');
+    // G1/G2: deferred past the grace and ended; the client was told why.
+    case 'cancelled': return isDeferralEndReason(schedule.stateReason) ? status('not_included', schedule.stateReason) : { enrolled, status: null };
     // FP-6: the automatic payment succeeded, then was refunded or returned: due again.
     case 'succeeded': return status('reversed', null, { amount: invoice.balance });
     case 'not_needed': {

@@ -54,6 +54,10 @@ const NOT_INCLUDED: Record<string, string> = {
   issued_before_authorization: "This invoice was issued before your updated authorization, so it isn't paid automatically. Please pay it here.",
   cap_currency_mismatch: "This invoice's currency can't be paid automatically, so please pay it here.",
   ach_currency_unsupported: "This invoice's currency can't be paid automatically from a bank account, so please pay it here.",
+  // G1/G2: an automatic payment deferred past the grace was ended (the client was emailed).
+  bank_unverified: "Your bank account wasn't verified in time, so this invoice isn't paid automatically. Please pay it here.",
+  charging_on_hold: "Automatic payments are on hold, so this invoice isn't paid automatically. Please pay it here.",
+  service_unavailable: "We couldn't take the automatic payment for this invoice, so please pay it here.",
 };
 
 const cents = (value: string | null | undefined) => Math.round(Number(value ?? 0) * 100);

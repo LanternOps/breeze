@@ -23,7 +23,7 @@ import type Stripe from 'stripe';
 import { getPartnerStripeClient } from '../partnerStripe';
 import { InvoiceServiceError } from '../invoiceTypes';
 import { enqueueAutopayStaffAttention, enqueueAutopayStaffNotifications } from './staffNotifications';
-import { isNotChargedReason, noticeChargeNotMade } from './notChargedNotice';
+import { isNotChargedReason, noticeChargeNotMade, type DeferralEndReason } from './notChargedNotice';
 import { resolveBillingEmail } from '../invoicePdf';
 import { lockInvoiceForCollection } from './reservation';
 import { getAutopayMethod, markPaymentMethodUnusable } from './paymentMethods';
@@ -1058,6 +1058,28 @@ async function renoticeCanceledAttempt(invoice: typeof invoices.$inferSelect,
   await enqueueAutopayNotice(db, schedule.id);
 }
 
+/** G1/G2: how long a charge that can't be made (automatic payments switched off, Stripe
+ * unreachable, the bank not yet verified) keeps being retried daily after it was due. Within
+ * it the schedule stays active, so the invoice is covered and gets no reminder; past it the
+ * schedule ends, the client is told once and reminders resume. Never both, so a client who
+ * pays another way after a reminder is never charged as well. */
+export const DEFERRAL_GRACE_MS = 2 * 86_400_000;
+const DAILY_DEFERRALS = new Set(['charging_disabled', 'stripe_unavailable', 'method_not_usable']);
+/** When this schedule's charge was due: its collection date, or for a retry the time the retry
+ * was planned for. Each deferral moves next_attempt_at, so the retry time is recomputed from
+ * the attempts (retryAt) rather than read back from it. */
+async function chargeDueAt(schedule: typeof invoiceAutopaySchedules.$inferSelect): Promise<Date> {
+  const collectOn = new Date(`${schedule.collectOn}T00:00:00.000Z`);
+  if (schedule.state !== 'retry_scheduled') return collectOn;
+  const tries = await db.select({ attemptNo: invoiceCollectionAttempts.attemptNo, failureClass: invoiceCollectionAttempts.failureClass,
+    createdAt: invoiceCollectionAttempts.createdAt, updatedAt: invoiceCollectionAttempts.updatedAt }).from(invoiceCollectionAttempts)
+    .where(and(eq(invoiceCollectionAttempts.scheduleId, schedule.id), eq(invoiceCollectionAttempts.orgId, schedule.orgId)))
+    .orderBy(asc(invoiceCollectionAttempts.createdAt));
+  const last = tries.find(row => row.attemptNo === schedule.attemptCount);
+  const planned = tries[0] && last?.failureClass ? retryAt(tries[0].createdAt, last.updatedAt, last.failureClass, last.attemptNo) : null;
+  return planned && planned > collectOn ? planned : collectOn;
+}
+
 export async function runAutopayCollection(now = new Date()): Promise<{ attempted: number; deferred: number }> {
   assertNoHeldDbContextForStripe('runAutopayCollection');
   await closeSettledAutopaySchedules();
@@ -1095,6 +1117,30 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
                 .returning({id:invoiceAutopaySchedules.id});
               if (failed) await failedForUnusableMethod(invoice,row.id);
               return;
+            }
+            // G1/G2: a deferral that outlasts the grace ends the schedule, measured from when the
+            // charge (or retry) was due, not by counting runs.
+            if (result.outcome==='deferred' && DAILY_DEFERRALS.has(result.reason ?? '')) {
+              const [schedule]=await db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,row.id)).limit(1);
+              if (schedule && (schedule.state==='scheduled'||schedule.state==='retry_scheduled')
+                && now.getTime()-(await chargeDueAt(schedule)).getTime()>=DEFERRAL_GRACE_MS) {
+                const method=result.reason==='method_not_usable'?await getAutopayMethod(db,invoice.orgId):null;
+                if (result.reason==='method_not_usable' && method?.status!=='pending_verification') {
+                  // A saved method that never passes admission is as good as none.
+                  const [failed]=await db.update(invoiceAutopaySchedules).set({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null})
+                    .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
+                    .returning({id:invoiceAutopaySchedules.id});
+                  if (failed) await failedForUnusableMethod(invoice,row.id);
+                  return;
+                }
+                const ended:DeferralEndReason=result.reason==='charging_disabled'?'charging_on_hold'
+                  :result.reason==='stripe_unavailable'?'service_unavailable':'bank_unverified';
+                const [stopped]=await db.update(invoiceAutopaySchedules).set({state:'cancelled',stateReason:ended,nextAttemptAt:null})
+                  .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
+                  .returning({id:invoiceAutopaySchedules.id});
+                if (stopped) await noticeChargeNotMade(db,{invoiceId:invoice.id,scheduleId:row.id,reason:ended});
+                return;
+              }
             }
             const [moved]=await db.update(invoiceAutopaySchedules).set(result.outcome==='refused'
               ? {state:'failed',stateReason:result.reason,nextAttemptAt:null}

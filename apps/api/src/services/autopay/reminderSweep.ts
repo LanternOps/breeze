@@ -12,7 +12,7 @@ import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../invoiceLinkToken
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueBillingNotice } from './noticeOutbox';
-import { STALE_REMINDER_REASON } from './reminderValidation';
+import { REMINDER_COVERING_SCHEDULES, STALE_REMINDER_REASON } from './reminderValidation';
 
 const DAY_MS = 86_400_000;
 
@@ -59,26 +59,24 @@ export function reminderDueToday(input: ReminderCadence & { lastSentSeq: number 
   return step?.onDay && step.seq > input.lastSentSeq ? { kind: step.kind, seq: step.seq } : null;
 }
 
-const ACTIVE_SCHEDULES = ['awaiting_notice', 'scheduled', 'collecting', 'retry_scheduled'] as const;
 const ORG_PAGE = 100;
 const INVOICE_PAGE = 250;
 
 function system<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
-function invoiceCandidate(today: string) {
+function invoiceCandidate() {
   return and(
     sqlOpenAr(invoices), gt(invoices.balance, '0'), isNotNull(invoices.dueDate),
     buildPublicLinkLiveOrgPredicate(invoices.orgId),
-    // An automatic payment covers the invoice only while it is on track. One still
-    // 'scheduled' after its collection date was deferred (a bank awaiting verification,
-    // charging on hold, any deferral): the client is reminded like anyone else (F-2).
+    // G1/G2: exclusive outcomes. An active automatic payment covers the invoice however late
+    // or deferred it is; one deferred past the grace is ended by collection (the client is
+    // told), and only then is the invoice reminded.
     sql`NOT EXISTS (
       SELECT 1 FROM ${invoiceAutopaySchedules}
       WHERE ${invoiceAutopaySchedules.invoiceId} = ${invoices.id}
         AND ${invoiceAutopaySchedules.orgId} = ${invoices.orgId}
-        AND ${inArray(invoiceAutopaySchedules.state, [...ACTIVE_SCHEDULES])}
-        AND NOT (${invoiceAutopaySchedules.state} = 'scheduled' AND ${invoiceAutopaySchedules.collectOn} < ${today}::date)
+        AND ${inArray(invoiceAutopaySchedules.state, [...REMINDER_COVERING_SCHEDULES])}
     )`,
     // A payment already in flight (incl. unscheduled "pay by bank" attempts and a
     // processing debit whose schedule a pause cancelled): "View & pay" would 409.
@@ -119,7 +117,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
         orgCursor ? gt(organizations.id, orgCursor) : undefined,
         buildPublicLinkLiveOrgPredicate(organizations.id),
         sql`EXISTS (SELECT 1 FROM ${invoices}
-          WHERE ${invoices.orgId} = ${organizations.id} AND ${invoiceCandidate(today)})`,
+          WHERE ${invoices.orgId} = ${organizations.id} AND ${invoiceCandidate()})`,
       )).orderBy(organizations.id).limit(ORG_PAGE));
     if (orgs.length === 0) break;
     for (const org of orgs) {
@@ -137,7 +135,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
         let invoiceCursor: string | undefined;
         for (;;) {
           const ids = await system(() => db.select({ id: invoices.id }).from(invoices).where(and(
-            eq(invoices.orgId, org.id), eq(invoices.partnerId, org.partnerId), invoiceCandidate(today),
+            eq(invoices.orgId, org.id), eq(invoices.partnerId, org.partnerId), invoiceCandidate(),
             invoiceCursor ? gt(invoices.id, invoiceCursor) : undefined,
           )).orderBy(invoices.id).limit(INVOICE_PAGE));
           if (ids.length === 0) break;
@@ -147,7 +145,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
               const created = await system(async () => {
                 const [invoice] = await db.select().from(invoices).where(and(
                   eq(invoices.id, id), eq(invoices.orgId, org.id),
-                  eq(invoices.partnerId, org.partnerId), invoiceCandidate(today),
+                  eq(invoices.partnerId, org.partnerId), invoiceCandidate(),
                 )).limit(1).for('update');
                 if (!invoice?.dueDate || !invoice.invoiceNumber) return false;
                 const due = reminderStep({

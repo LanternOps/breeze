@@ -14,6 +14,8 @@ const reasonKeys: Record<string, string> = {
   cap_currency_mismatch:'autopay.reasons.cap_currency_mismatch',ach_currency_unsupported:'autopay.reasons.ach_currency_unsupported',
   excluded_contract:'autopay.reasons.excluded_contract',excluded_invoice:'autopay.reasons.excluded_invoice',
   charging_disabled:'autopay.reasons.charging_disabled',stripe_unavailable:'autopay.reasons.stripe_unavailable',
+  bank_unverified:'autopay.reasons.bank_unverified',charging_on_hold:'autopay.reasons.charging_on_hold',
+  service_unavailable:'autopay.reasons.service_unavailable',
   skip:'autopay.reasons.skip',exclude:'autopay.reasons.exclude',stop:'autopay.reasons.stop',
   no_billing_contact:'autopay.reasons.no_billing_contact',delivery_failed:'autopay.reasons.delivery_failed',
 };

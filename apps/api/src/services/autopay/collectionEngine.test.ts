@@ -1091,8 +1091,10 @@ it('persists unapplied-money attention before the outcome transaction exits',asy
 
 // Lab regressions: transient readiness cannot permanently abandon a due invoice.
 it.each(['charging_disabled', 'stripe_unavailable'])('defers %s until the next daily tick, then collects', async reason => {
-  recovery(); h.rows.set(invoiceCollectionAttempts, [{...attempt,state:'failed',createdAt:new Date(Date.now()+86_400_000)}]); update(invoiceAutopaySchedules, {...schedule});
+  recovery(); h.rows.set(invoiceCollectionAttempts, [{...attempt,state:'failed',createdAt:new Date(Date.now()+86_400_000)}]);
   const now = new Date();
+  // Due today: within the deferral grace (G1), so it is retried rather than ended.
+  update(invoiceAutopaySchedules, {...schedule, collectOn: now.toISOString().slice(0, 10)});
   mockCollectionCandidates([schedule], now);
   if (reason === 'charging_disabled') h.gate.mockResolvedValue(false);
   else h.readiness.mockResolvedValue({ready:false});
@@ -1141,6 +1143,7 @@ it.each(['scheduled','retry_scheduled'] as const)('fails a due %s schedule once 
 // unusable so the next pass fails the schedule with the update-method notice.
 it('marks an active method the live check did not admit unusable instead of deferring forever', async () => {
   const now = new Date();
+  update(invoiceAutopaySchedules, { collectOn: now.toISOString().slice(0, 10) });
   h.persist = true; h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } });
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
   await runAutopayCollection(now);
@@ -1152,10 +1155,23 @@ it('marks an active method the live check did not admit unusable instead of defe
   const keys = h.staff.mock.calls.map(call => (call[1] as { emailDedupeKey?: string }).emailDedupeKey).filter(Boolean);
   expect(new Set(keys).size).toBe(keys.length);
 });
+// G1: past the grace, a saved method that never passes admission is as good as none: the
+// schedule fails with the update-method notice instead of deferring forever.
+it('fails a schedule past the grace whose saved method still never passes admission', async () => {
+  const now = new Date();
+  h.persist = true; h.retrieve.mockResolvedValue({ ...card, card: { ...card.card, wallet: { type: 'link' } } });
+  h.rows.set(orgPaymentMethods, [{ ...method }]);
+  mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
+  expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'method_not_usable', nextAttemptAt: null });
+  expect(h.methodNotice).toHaveBeenCalledWith(expect.anything(), schedule.id);
+});
 it.each([
   ['a pending microdeposit verification', () => h.method.mockResolvedValue({ ...method, status: 'pending_verification' })],
 ] as const)('keeps deferring daily while %s still exists', async (_case, change) => {
   const now = new Date();
+  // Within the grace (G1); past it the schedule ends, which the integration suite covers.
+  update(invoiceAutopaySchedules, { collectOn: now.toISOString().slice(0, 10) });
   h.persist = true; change();
   mockCollectionCandidates([h.rows.get(invoiceAutopaySchedules)![0]], now);
   expect(await runAutopayCollection(now)).toEqual({ attempted: 0, deferred: 1 });

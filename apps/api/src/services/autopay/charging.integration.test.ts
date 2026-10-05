@@ -2325,3 +2325,72 @@ it.each(['pause_then_resume','stop_then_rerequest'] as const)('a superseded %s e
  expect((told[0]!.rendered as {text:string}).text).toMatch(/we planned to take on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
  expect(await scheduleFor(f)).toMatchObject({state:'cancelled'});
 });
+
+// G1/G2: an invoice is either still going to be charged (schedule active, no reminders) or it
+// is not (schedule ended, client told once, reminders resume). A deferral that outlasts the
+// grace (2 days from when the charge was due) ends the schedule with the not-charged notice.
+async function deferFor(f:Awaited<ReturnType<typeof fixture>>,cause:'charging_disabled'|'stripe_unavailable'|'bank_unverified'){
+ await withSystemDbAccessContext(async()=>{
+  if(cause==='charging_disabled')await db.update(partners).set({autopayEnabled:false}).where(eq(partners.id,f.partner.id));
+  else if(cause==='stripe_unavailable')await db.update(stripeConnectAccounts).set({autopayMissingPermissions:['payment_intents.write']}).where(eq(stripeConnectAccounts.id,f.connection.id));
+  else await db.update(orgPaymentMethods).set({type:'us_bank_account',cardBrand:null,cardLast4:null,cardFunding:null,bankName:'Test Bank',bankLast4:'6789',
+   accountHolderType:'individual',status:'pending_verification'}).where(eq(orgPaymentMethods.id,f.method.id));
+ });
+}
+const endReason={charging_disabled:'charging_on_hold',stripe_unavailable:'service_unavailable',bank_unverified:'bank_unverified'} as const;
+const endLine={charging_disabled:/Automatic payments are on hold/,stripe_unavailable:/couldn't reach our payment service/,
+ bank_unverified:/bank account still isn't verified/} as const;
+it.each(['charging_disabled','stripe_unavailable','bank_unverified'] as const)('a %s deferral within the grace keeps the schedule; past it, the schedule ends and the client is told once (G1)',async cause=>{
+ const f=await fixture();
+ const due=new Date(`${f.schedule.collectOn}T00:00:00.000Z`);
+ await deferFor(f,cause);
+ // Within the grace: deferred, still covering the invoice.
+ await runAutopayCollection(new Date(due.getTime()+30*3_600_000));
+ expect(await scheduleFor(f)).toMatchObject({state:'scheduled'});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+ // Past the grace: ended, told once however many runs follow.
+ await runAutopayCollection(new Date(due.getTime()+49*3_600_000));
+ await runAutopayCollection(new Date(due.getTime()+73*3_600_000));
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:endReason[cause],nextAttemptAt:null});
+ const told=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+ expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,toEmail:'billing@example.test'})]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(endLine[cause]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/will not happen/);
+ expect(provider.create).not.toHaveBeenCalled();
+});
+it('a short switch-off within the grace still charges on the next run (G1)',async()=>{
+ const f=await fixture();
+ const due=new Date(`${f.schedule.collectOn}T00:00:00.000Z`);
+ await deferFor(f,'charging_disabled');
+ await runAutopayCollection(new Date(due.getTime()+8*3_600_000));
+ await withSystemDbAccessContext(()=>db.update(partners).set({autopayEnabled:true}).where(eq(partners.id,f.partner.id)));
+ await runAutopayCollection(new Date(due.getTime()+33*3_600_000));
+ expect((await attempts(f.invoice.id))[0]?.state).toBe('processing');
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+});
+// G2: a retry that keeps being deferred (a soft decline, then autopay switched off) is measured
+// from when the retry was due, not left 'retry_scheduled' forever.
+it.each([['within',1],['past',3]] as const)('a deferred retry %s the grace (G2)',async(_label,daysLate)=>{
+ const f=await fixture();
+ const now=new Date();
+ // The first attempt failed softly; the retry was due 3 days after it (retryAt), daysLate days ago.
+ const firstAt=new Date(now.getTime()-(3+daysLate)*86_400_000);
+ await withSystemDbAccessContext(async()=>{
+  await db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,paymentMethodId:f.method.id,
+   attemptNo:1,principalAmount:'100.00',feeAmount:'0.00',currency:'USD',idempotencyKey:`retry-${randomUUID()}`,state:'failed',
+   failureClass:'soft',failureCode:'card_declined',initiatedBy:'scheduler',createdAt:firstAt,updatedAt:firstAt});
+  await db.update(invoiceAutopaySchedules).set({state:'retry_scheduled',stateReason:'soft',attemptCount:1,
+   collectOn:firstAt.toISOString().slice(0,10),nextAttemptAt:new Date(now.getTime()-3_600_000)}).where(eq(invoiceAutopaySchedules.id,f.schedule.id));
+ });
+ await deferFor(f,'charging_disabled');
+ await runAutopayCollection(now);
+ if(daysLate===1){
+  expect(await scheduleFor(f)).toMatchObject({state:'retry_scheduled',stateReason:'charging_disabled'});
+  expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([]);
+ }else{
+  expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'charging_on_hold',nextAttemptAt:null});
+  expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toEqual([
+   expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
