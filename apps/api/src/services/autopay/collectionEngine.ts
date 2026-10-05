@@ -818,6 +818,9 @@ export async function applyAttemptOutcome(partnerId: string, attemptId: string):
   await applyObservedOutcome(data, stripe, pi);
 }
 
+/** Matches the confirm_payment link TTL minted with the 'confirm' notice. */
+const ACTION_REQUIRED_TTL_MS = 14 * 86_400_000;
+const ACTION_EXPIRY_PI_STATUSES: readonly string[] = ['requires_action', 'requires_payment_method'];
 async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observed: Stripe.PaymentIntent,
   cancellationReason: string | null = null): Promise<void> {
   if (data.attempt.failureCode === 'unapplied_refunded') return;
@@ -825,8 +828,11 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
   const attemptId = data.attempt.id;
   let pi = observed;
   await validateIntent(data, pi);
-  if (data.attempt.state === 'requires_action' && pi.status === 'requires_action'
-    && Date.now() - data.attempt.updatedAt.getTime() >= 14 * 86_400_000) {
+  // Off-session 3DS arrives as requires_payment_method + authentication_required,
+  // never requires_action. updatedAt is the moment the 402 was observed: same-class
+  // reconcile passes below write it back unchanged, so the 14-day clock never restarts.
+  if (data.attempt.state === 'requires_action' && ACTION_EXPIRY_PI_STATUSES.includes(pi.status)
+    && Date.now() - data.attempt.updatedAt.getTime() >= ACTION_REQUIRED_TTL_MS) {
     pi = await cancelOrRetrieve(stripe, pi);
     await validateIntent(data, pi);
     if (pi.status !== 'canceled' && pi.status !== 'succeeded') return;

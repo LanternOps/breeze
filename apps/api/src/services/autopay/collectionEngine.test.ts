@@ -911,16 +911,48 @@ it('cancels an unconfirmed intent after a definitive confirm error', async () =>
   expect(currentAttempt().state).toBe('canceled');
 });
 
-it('cancels and releases action-required attempts after the 14-day confirm TTL', async () => {
-  recovery(true); update(invoiceCollectionAttempts, { state: 'requires_action', updatedAt: new Date('2026-10-05') });
-  update(invoiceAutopaySchedules, { state: 'action_required' });
-  h.piRetrieve.mockResolvedValue({ ...pi, status: 'requires_action' });
-  await resumeCollectionAttempt(attempt.id);
+// Stripe's real off-session shape: a 402 authentication_required leaves the PI in
+// requires_payment_method (never requires_action). Both shapes must expire.
+const offSessionAuthPi = { ...pi, status: 'requires_payment_method',
+  last_payment_error: { type: 'card_error', code: 'authentication_required', decline_code: 'authentication_required' } };
+it.each([
+  ['off-session requires_payment_method + authentication_required', offSessionAuthPi],
+  ['requires_action', { ...pi, status: 'requires_action' }],
+] as const)('cancels and releases action-required attempts after the 14-day confirm TTL (%s)', async (_shape, observed) => {
+  recovery(true); update(invoiceCollectionAttempts, { state: 'requires_action', failureClass: 'auth_required',
+    failureCode: 'authentication_required', updatedAt: new Date('2026-10-05') });
+  update(invoiceAutopaySchedules, { state: 'action_required', stateReason: 'auth_required' });
+  h.piRetrieve.mockResolvedValue(structuredClone(observed));
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
   expect(h.cancel).toHaveBeenCalledOnce();
   expect(currentAttempt().state).toBe('canceled');
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'action_required_expired' });
   expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, 'expired');
   expect(h.staff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ event: 'autopay.needs_attention' }));
+});
+it('starts the confirm TTL when the 402 is observed and reconcile passes never restart it', async () => {
+  recovery(true);
+  const enteredAt = new Date('2026-10-20T00:00Z');
+  h.confirm.mockImplementation(async () => {
+    h.piRetrieve.mockResolvedValue(structuredClone(offSessionAuthPi));
+    throw Object.assign(new Error('This payment requires authentication.'), { type: 'StripeCardError', statusCode: 402,
+      code: 'authentication_required', decline_code: 'authentication_required', payment_intent: offSessionAuthPi });
+  });
+  await resumeCollectionAttempt(attempt.id);
+  expect(currentAttempt()).toMatchObject({ state: 'requires_action', failureClass: 'auth_required', updatedAt: enteredAt });
+  expect(h.rows.get(invoiceAutopaySchedules)![0].state).toBe('action_required');
+  for (const days of [1, 7, 13]) {
+    vi.setSystemTime(new Date(enteredAt.getTime() + days * 86_400_000));
+    await applyAttemptOutcome(invoice.partnerId, attempt.id);
+    expect(currentAttempt()).toMatchObject({ state: 'requires_action', updatedAt: enteredAt });
+  }
+  expect(h.cancel).not.toHaveBeenCalled();
+  vi.setSystemTime(new Date(enteredAt.getTime() + 14 * 86_400_000));
+  await applyAttemptOutcome(invoice.partnerId, attempt.id);
+  expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'failed', stateReason: 'action_required_expired' });
+  expect(h.attemptNotice).toHaveBeenCalledWith(expect.anything(), attempt.id, 'expired');
 });
 
 it('marks a missing provider method unusable and raises transactional attention', async () => {

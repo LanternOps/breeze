@@ -1274,7 +1274,11 @@ import { getConfirmPaymentView, confirmInvoicePayment } from './confirmPayment';
 it.each(['newer','attemptCount','generation','expired','revoked','consumed','valid'] as const)(
  'real confirm-token binding and consume race: %s',async mode=>{
  const f=await fixture();
- provider.confirm.mockImplementationOnce(async()=>{currentPi={...currentPi,status:'requires_action',last_payment_error:{code:'authentication_required'}};return currentPi;});
+ // Real off-session 3DS: Stripe answers confirm with a 402 and leaves the PI in requires_payment_method.
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'authentication_required',decline_code:'authentication_required'}};
+  throw Object.assign(new Error('This payment requires authentication.'),{type:'StripeCardError',statusCode:402,code:'authentication_required',payment_intent:currentPi});
+ });
  const result=await attemptCollection(inputFor(f));
  const [attempt]=await attempts(f.invoice.id);
  const token=await withSystemDbAccessContext(async()=>{
