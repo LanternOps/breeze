@@ -12,6 +12,8 @@
  * that matter are testable without a database.
  */
 
+import { describeEndpointUrl } from '../../utils/endpointDisplay';
+
 /** Mirrors `network_monitors_tls_state_chk`. */
 export const TLS_STATES = ['observed', 'handshake_failed', 'not_tls'] as const;
 export type TlsState = (typeof TLS_STATES)[number];
@@ -178,10 +180,12 @@ export function tlsObservationUpdate(
     const requested = readText(details?.['sslRequestedUrl']);
     const expected = options.expectedRequestUrl;
     if (requested === null || expected === null || !requestUrlMatches(requested, expected)) {
+      // Only scheme + host is logged: a monitor URL can carry credentials in
+      // its userinfo, path or query string.
       console.warn(
         `[monitorTls] Dropping TLS observation for monitor ${options.monitorId ?? 'unknown'}: `
-        + `result was produced against ${requested === null ? 'an unrecorded URL' : JSON.stringify(requested)}, `
-        + `but the monitor now points at ${JSON.stringify(options.expectedRequestUrl)}`,
+        + `result was produced against ${requested === null ? 'an unrecorded URL' : describeEndpointUrl(requested).url}, `
+        + `but the monitor now points at ${expected === null ? 'no URL' : describeEndpointUrl(expected).url}`,
       );
       return {};
     }
