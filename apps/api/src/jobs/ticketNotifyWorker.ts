@@ -150,9 +150,10 @@ export function buildAssigneeEmailHtml(
   deviceName: string | null,
 ): string {
   const url = `${dashboardBaseUrl()}/tickets/${t.id}`;
-  // slice() counts UTF-16 code units; drop a high surrogate left unpaired at
-  // the cut so an emoji at the boundary is removed whole, not corrupted.
-  const excerpt = (t.description ?? '').slice(0, 1200).replace(/[\uD800-\uDBFF]$/, '');
+  // The first 1,200 code points, so an emoji at the boundary is kept whole.
+  // Pre-cutting at 2,400 code units bounds the work; 2,400 units always hold at
+  // least 1,200 complete code points, so that pre-cut can never reach the result.
+  const excerpt = Array.from((t.description ?? '').slice(0, 2400)).slice(0, 1200).join('');
   const bodyHtml = escapeHtml(excerpt).replace(/\n/g, '<br>');
   const requester = [t.submitterName, t.submitterEmail].filter(Boolean).map(String).join(' ').trim();
   const row = (k: string, v: string) =>
