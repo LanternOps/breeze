@@ -142,7 +142,10 @@ it.each([false,true])('verifies pending microdeposits once, preserving consent/d
   consents:await db.select().from(orgAutopayConsents),tokens:await db.select().from(billingLinkTokens),notices:await db.select().from(billingNoticeOutbox)}));
  expect(saved.enrollments[0]).toMatchObject({status:paused?'paused':'active',effectiveFrom:pending!.effectiveFrom,generation:1});
  expect(saved.methods[0]).toMatchObject({status:'active',isAutopayMethod:true});expect(saved.consents).toHaveLength(1);
- expect(saved.tokens.filter(t=>t.purpose==='stop_autopay')).toHaveLength(1);expect(saved.notices.filter(n=>n.kind==='autopay_enrolled')).toHaveLength(1);
+ // D-12: the pending email at setup, then one verified email; replays add nothing.
+ expect(saved.tokens.filter(t=>t.purpose==='stop_autopay')).toHaveLength(2);
+ expect(saved.notices.filter(n=>n.kind==='autopay_enrolled').map(n=>n.dedupeKey).sort())
+  .toEqual([`${f.attempt.id}:autopay_enrolled:pending_verification`,`${f.attempt.id}:autopay_enrolled:verified`]);
  expect(saved.tokens.find(t=>t.id===f.token.id)?.consumedAt).toBeInstanceOf(Date);
  expect(await withSystemDbAccessContext(()=>resolveBillingLinkToken(db,f.token.token,'enroll'))).toBeNull();
  if(!paused)await expect(withAcceptedAutopayDisclosure('a'.repeat(64),()=>prepareAutopayCapture({orgId:f.org.id,tokenId:f.token.id,methodType:'card',consentAccepted:true,returnTo:'public',contactEmail:'billing@example.test',ip:null,userAgent:null},'setup_page'))).rejects.toThrow('Setup link expired');

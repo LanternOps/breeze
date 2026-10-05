@@ -1,3 +1,4 @@
+import { clientNameFor } from './billingEmail';
 import { isCollectionProgrammingError, reportCollectionError } from './collectionErrors';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoHeldDbContextForStripe } from '../stripeSettle';
@@ -13,8 +14,7 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
-import { announcedCharges, announcedOn } from './announcedCharges';
-import { escapeHtml } from '../emailLayout';
+import { announcedCharges } from './announcedCharges';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
@@ -186,16 +186,15 @@ async function enqueueSkippedInvoiceConfirmation(tx: Tx, invoice: typeof invoice
   const recipient = resolveBillingEmail(org.billingContact);
   if (!recipient) return;
   const link = await getOrMintInvoiceLink(invoice, tx);
+  // A reminder-kind confirmation with locked wording (partner reminder copy would be untrue).
   const rendered = await renderBillingNotice('payment_reminder', { partnerId: invoice.partnerId, orgId: invoice.orgId,
     mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
     data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
       dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-  const prefix = 'Automatic payment has been skipped for this invoice. You can pay using the invoice link.';
+      partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
+      partnerSettings: partner.settings, variant: 'skipped' } }, tx);
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient,
-    rendered: { ...rendered, subject: `Automatic payment skipped — ${invoice.invoiceNumber}`,
-      html: `<p>${prefix}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:skip:1`, toEmail: recipient, rendered });
 }
 
 /** D-19: an MSP exclusion after the pre-charge notice went out. Mirrors the skip
@@ -214,13 +213,11 @@ async function enqueueExcludedInvoiceNotice(tx: Tx, invoice: typeof invoices.$in
     mandatory: {}, frozen: { amount: invoice.balance, currency: invoice.currencyCode, dueDate: invoice.dueDate },
     data: { invoiceNumber: invoice.invoiceNumber, balance: invoice.balance, currency: invoice.currencyCode,
       dueDate: invoice.dueDate, daysOverdue: 0, payLink: buildPublicInvoiceUrl(link.token),
-      partnerName: partner.name, orgName: org.name, partnerSettings: partner.settings } }, tx);
-  const prefix = `${partner.name} will not charge this invoice automatically. The automatic payment announced${announcedOn(announced)} will not happen. You can pay using the invoice link.`;
+      partnerName: partner.name, orgName: org.name, clientName: clientNameFor(org.billingContact, org.name),
+      partnerSettings: partner.settings, variant: 'excluded', announcedFor: announced.chargeDate } }, tx);
   // One notice per announcement: a re-included, re-noticed and re-excluded invoice is told again.
   await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:exclude:${announced.noticeSeq}`, toEmail: recipient,
-    rendered: { ...rendered, subject: `Automatic payment cancelled — ${invoice.invoiceNumber}`,
-      html: `<p>${escapeHtml(prefix)}</p>${rendered.html}`, text: `${prefix}\n\n${rendered.text}` } });
+    kind: 'payment_reminder', seq: 0, dedupeKey: `invoice:${invoice.id}:exclude:${announced.noticeSeq}`, toEmail: recipient, rendered });
 }
 
 /** Recover fences using the same mapping-bound, outside-transaction provider path

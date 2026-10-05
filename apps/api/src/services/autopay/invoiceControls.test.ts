@@ -592,17 +592,15 @@ const sentNotice = { id: 'notice', invoiceId: invoice.id, kind: 'invoice_autopay
 it('tells the client an announced invoice will not be charged after an MSP exclusion (D-19)', async () => {
   const f = fixture();
   f.data.set(billingNoticeOutbox, [{ ...sentNotice }]);
+  const { renderBillingNotice } = await import('./renderBillingNotice');
   expect(await setInvoiceAutopayExcluded(f.tx, invoice.id, true, actor)).toMatchObject({ status: 'excluded' });
+  // The locked 'excluded' wording is rendered from these facts (renderBillingNotice.reminders.test).
+  expect(renderBillingNotice).toHaveBeenCalledWith('payment_reminder', expect.objectContaining({
+    data: expect.objectContaining({ variant: 'excluded', announcedFor: '2026-10-15', invoiceNumber: 'INV-1', partnerName: 'Partner' }) }), f.tx);
   expect(h.confirmation).toHaveBeenCalledExactlyOnceWith(f.tx, expect.objectContaining({
     kind: 'payment_reminder', seq: 0, invoiceId: invoice.id, dedupeKey: `invoice:${invoice.id}:exclude:1`,
-    rendered: expect.objectContaining({ subject: 'Automatic payment cancelled — INV-1' }),
+    rendered: expect.objectContaining({ subject: 'Reminder' }),
   }));
-  const { rendered } = h.confirmation.mock.calls[0]![1];
-  for (const body of [rendered.html, rendered.text]) {
-    expect(body).toContain('Partner will not charge this invoice automatically');
-    expect(body).toContain('on or around 2026-10-15 will not happen');
-    expect(body).toContain('invoice link');
-  }
 });
 it('says nothing new when the exclusion lands before any charging notice was sent', async () => {
   const f = fixture({ state: 'awaiting_notice', noticeSentAt: null });

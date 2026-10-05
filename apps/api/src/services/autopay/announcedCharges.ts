@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { billingNoticeOutbox, invoiceAutopaySchedules, invoices } from '../../db/schema';
 import type { RenderedNotice, Tx } from './types';
+import { emailDate } from './billingEmail';
 
 type ScheduleState = (typeof invoiceAutopaySchedules.$inferSelect)['state'];
 export interface AnnouncedCharge { invoiceId: string; invoiceNumber: string; chargeDate: string | null; noticeSeq: number }
@@ -36,7 +37,7 @@ export async function announcedCharges(tx: Tx,
   return [...newest.values()].map(entry => entry.charge);
 }
 
-/** "on or around 2026-11-04" as the notice put it, or nothing when the date is unknown. */
+/** " for on or around November 4, 2026" as the notice put it, or nothing when the date is unknown. */
 export function announcedOn(charge: AnnouncedCharge): string {
-  return charge.chargeDate ? ` for on or around ${charge.chargeDate}` : '';
+  return charge.chargeDate ? ` for on or around ${emailDate(charge.chargeDate)}` : '';
 }

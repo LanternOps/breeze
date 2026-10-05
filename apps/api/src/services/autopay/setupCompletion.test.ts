@@ -63,8 +63,12 @@ describe('completion fences',()=>{
   expect(rendered.subject).toContain('Example MSP');
   for(const body of [rendered.html,rendered.text]){
    expect(body).toContain('Example client');expect(body).toContain('Visa debit card ending in 1234');expect(body).not.toContain('visa debit');
-   expect(body).toContain(snapshot.scheduleText);expect(body).toContain('No processing fee applies to this card.');
+   // The client's copy of the accepted authorization, its version as a labelled reference (not a bare line), and the facts table.
+   expect(body).toContain(snapshot.text);expect(body).toContain(`(terms version ${snapshot.version})`);
+   expect(body).toContain('No fee for this card');expect(body).not.toContain('billing@example.test,');
   }
+  expect(rendered.text).toContain("When you're charged: On each invoice's due date");
+  expect(rendered.text.split(snapshot.text).length-1).toBe(1);
   m.writes.length=0;queueAuthority(attempt({outcome:'activated',completedAt:new Date()}));
   await completeAutopaySetup(attempt().partnerId,{checkoutSessionId:'cs_one'});
   expect(m.writes).toEqual([]);expect(m.enqueue).toHaveBeenCalledTimes(1);
@@ -246,14 +250,25 @@ it('fences a setup started before the current pause even with same-generation to
 it('does not append consent again when the same bank setup finishes verification',async()=>{
  const value=attempt({methodType:'us_bank_account',outcome:'pending_verification'});
  queueAuthority(value);
- m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[]);
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],[{settings:{}}]);
  m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
- m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
  m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
  expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
  expect(m.writes.filter(row=>'consentTextVersion'in row)).toEqual([]);
  expect(m.writes).toContainEqual(expect.objectContaining({outcome:'activated',completedAt:expect.any(Date)}));
- expect(m.mint).not.toHaveBeenCalled();expect(m.enqueue).not.toHaveBeenCalled();
+ // D-12: verification no longer completes silently. The client hears automatic payments are on.
+ expect(m.mint).toHaveBeenCalledExactlyOnceWith(expect.anything(),expect.objectContaining({purpose:'stop_autopay'}));
+ expect(m.enqueue).toHaveBeenCalledExactlyOnceWith(expect.anything(),expect.objectContaining({kind:'autopay_enrolled',
+  dedupeKey:`${value.id}:autopay_enrolled:verified`}));
+ const rendered=m.enqueue.mock.calls[0]![1].rendered;
+ expect(rendered.subject).toBe('Your bank account is verified: automatic payments are on with Example MSP');
+ expect(rendered.text).toContain('Payment method: Bank account ending in 6789');
+ expect(rendered.text).toContain('Stop automatic payments: https://portal.example.test/portal/autopay/token/stop');
+ // The full authorization copy went out at setup; this email references it once.
+ expect(rendered.text).not.toContain(snapshot.text);
+ expect(rendered.frozen).toMatchObject({variant:'verified'});
 });
 
 it('uses the verified debit fee in enrollment mail without rewriting accepted consent',async()=>{
@@ -269,7 +284,7 @@ it('uses the verified debit fee in enrollment mail without rewriting accepted co
   expect(await persistCapturedAutopayMethod(value.id,method,'activated','seti_one',null))
     .toEqual({outcome:'activated',orgId:value.orgId});
   for (const body of [m.enqueue.mock.calls[0]![1].rendered.html, m.enqueue.mock.calls[0]![1].rendered.text]) {
-    expect(body).toContain('No processing fee applies to this card.');
+    expect(body).toContain('No fee for this card');
     expect(body).toContain('Edited enrollment');
     expect(body).not.toContain(accepted.feeText);
   }
@@ -294,7 +309,7 @@ it('uses live credit evidence for enrollment and owned return under nonzero fees
  const {completeOwnedAutopaySetup}=await import('./customerViews');
  const result=await completeOwnedAutopaySetup({orgId:value.orgId,partnerId:value.partnerId},'cs_one');
  expect(result).toMatchObject({outcome:'activated',methodLabel:'Visa credit card ending in 1234',feeText:accepted.feeText});
- for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain(accepted.feeText);
+ for(const body of [m.enqueue.mock.calls[0]![1].rendered.html,m.enqueue.mock.calls[0]![1].rendered.text])expect(body).toContain('Up to 3% per payment');
  expect(m.writes).toContainEqual(expect.objectContaining({cardFunding:'credit'}));
  const stored=m.writes.find(row=>'cardFunding' in row)!;
  const quote=quoteProcessingFee({methodType:'card',cardFunding:stored.cardFunding as 'credit',principal:'100.00',
@@ -348,3 +363,21 @@ it('refuses a Link card saved by pay-and-save while the invoice payment stands',
 
 import {quoteProcessingFee} from './processingFee';
 import {paymentFeeLine} from './feeDisclosure';
+
+it('a bank account awaiting verification gets the one-more-step email, with its authorization copy and no start date',async()=>{
+  const value=attempt({methodType:'us_bank_account'});
+  m.rows.push([value],[{id:value.orgId,name:'Example client',status:'active',deletedAt:null,billingContact:{email:'billing@example.test',name:'Pat Lee'}}],
+    [{id:value.enrollmentId,status:'requested',generation:3,stripeAccountId:'acct_one',stripeCustomerId:'cus_one',effectiveFrom:null}],
+    [value],[{id:value.id}],[{id:value.stripeConnectionId,stripeAccountId:'acct_one',status:'connected'}],
+    [],[],[{id:'method_one'}],[],[],[],[{settings:{}}]);
+  m.mint.mockResolvedValue({id:'stop',token:'stop-token'});
+  const method={id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}} as Parameters<typeof persistCapturedAutopayMethod>[1];
+  expect(await persistCapturedAutopayMethod(value.id,method,'pending_verification','seti_one',null)).toEqual({outcome:'pending_verification',orgId:value.orgId});
+  const queued=m.enqueue.mock.calls[0]![1];
+  expect(queued.dedupeKey).toBe(`${value.id}:autopay_enrolled:pending_verification`);
+  expect(queued.rendered.subject).toBe('One more step: verify your bank account for Example MSP');
+  expect(queued.rendered.text).toContain('Hi Pat Lee,');
+  expect(queued.rendered.text).toContain('Bank account: Bank account ending in 6789 (waiting for verification)');
+  expect(queued.rendered.text).not.toContain('Starts with');
+  expect(queued.rendered.text).toContain(snapshot.text);
+});

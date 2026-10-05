@@ -1,3 +1,4 @@
+import { clientNameFor } from './billingEmail';
 import { and, eq, gt, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ACTIVE_COLLECTION_ATTEMPT_STATES } from '@breeze/shared';
@@ -181,7 +182,7 @@ export async function runInvoiceReminderSweep(now = new Date()): Promise<{ enque
                     currency: invoice.currencyCode, dueDate: invoice.dueDate,
                     daysOverdue: Math.max(0, utcDay(today) - utcDay(invoice.dueDate)),
                     payLink: buildPublicInvoiceUrl(link.token), partnerName: org.partnerName,
-                    orgName: org.name, partnerSettings: org.partnerSettings,
+                    orgName: org.name, clientName: clientNameFor(org.billingContact, org.name), partnerSettings: org.partnerSettings,
                   },
                 });
                 const result = await enqueueBillingNotice(db, {

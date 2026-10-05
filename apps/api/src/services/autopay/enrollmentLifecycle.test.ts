@@ -83,7 +83,7 @@ describe('lifecycle behavior',()=>{
   }
   expect(h.after).toHaveBeenCalledTimes(action==='pause'?0:2);
  });
- it('requests the next generation and preserves protected stop and fee context in a replacement body',async()=>{
+ it('requests the next generation and preserves protected fee context in a replacement body, with no stop link (Q5)',async()=>{
   h.rows.push([org],[{...enrollment,status:'requested'}],[{id:'connection',stripeAccountId:'acct_test'}],[{...enrollment,status:'requested',generation:10}]);
   noticeRows('autopay_request');
   expect(await requestAutopay(db,actor,{orgIds:[orgId,orgId]})).toEqual({requested:[orgId],skipped:[]});
@@ -92,8 +92,11 @@ describe('lifecycle behavior',()=>{
   const rendered=h.enqueue.mock.calls[0]![1].rendered;
   for(const content of [rendered.html,rendered.text]){
    expect(content).toContain('Replacement body only');expect(content).toContain('No processing fee applies.');
-   expect(content).toContain('https://portal.example.test/autopay/server-token/stop_autopay');
+   // A request has nothing to stop yet (owner decision Q5, lab D-10/D-15).
+   expect(content).not.toContain('stop_autopay');expect(content).not.toContain('Stop automatic payments');
+   expect(content).toContain('This link works for 30 days.');
   }
+  expect(h.mint.mock.calls.filter(([,v])=>v.purpose==='stop_autopay')).toHaveLength(0);
  });
  it.each(['active','paused'])('does not reset %s enrollment',async status=>{
   h.rows.push([org],[{...enrollment,status}]);
@@ -155,10 +158,9 @@ describe('review regressions',()=>{
   noticeRows('autopay_request');
   await requestAutopay(db,actor,{orgIds:[orgId]});
   for(const content of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   if(mode==='ach_only')expect(content).not.toContain('credit-card processing');
-   else expect(content).toContain('Card: A credit-card processing fee of up to 3% applies.');
-   if(mode==='card_only')expect(content).not.toContain('No processing fee applies.');
-   else expect(content).toContain('Bank account (ACH): No processing fee applies.');
+   if(mode==='ach_only'){expect(content).not.toContain('credit-card processing');expect(content).toMatch(/Processing fee(:|<\/td><td[^>]*>) ?No processing fee applies\./);}
+   else if(mode==='card_only'){expect(content).not.toContain('No processing fee applies.');expect(content).toMatch(/Processing fee(:|<\/td><td[^>]*>) ?A credit-card processing fee of up to 3% applies\./);}
+   else{expect(content).toMatch(/Card fee(:|<\/td><td[^>]*>) ?A credit-card processing fee of up to 3% applies\./);expect(content).toMatch(/Bank account fee(:|<\/td><td[^>]*>) ?No processing fee applies\./);}
   }
  });
  it('enqueues staff notifications on the caller executor before post-context callbacks',async()=>{
@@ -193,9 +195,9 @@ it.each(['pause','resume'] as const)('renders an accurate %s notice through the 
  await (action==='pause'?pauseAutopay(db,actor,orgId):resumeAutopay(db,actor,orgId));
  expect(h.enqueue).toHaveBeenCalledTimes(1);
  const notice=h.enqueue.mock.calls[0]![1];expect(notice.kind).toBe(action==='pause'?'autopay_paused':'autopay_resumed');
- expect(notice.rendered.subject).toContain(action==='pause'?'paused':'resumed');
+ expect(notice.rendered.subject).toContain(action==='pause'?'paused':'back on');
  for(const body of [notice.rendered.html,notice.rendered.text]){
-  expect(body).toContain(action==='pause'?'until':'future');expect(body).not.toContain('paused automatic payments stopped');
+  expect(body).toContain(action==='pause'?'nothing is charged automatically':'Invoices issued from today');expect(body).not.toContain('paused automatic payments stopped');
  }
 });
 
@@ -225,7 +227,7 @@ it.each(['active','paused'])('reauthorizes %s once without changing enrollment o
  expect(queued.kind).toBe('autopay_request');expect(queued.dedupeKey).toContain('reauthorize');
  for(const body of [queued.rendered.html,queued.rendered.text]){
   expect(body).toContain('Replacement body only');
-  expect(body).toContain('Your service provider has updated its processing fee terms; your current authorization stays in place at the previously accepted fee until you review and accept the new terms');
+  expect(body).toContain('Your automatic payments continue at the processing fee you already accepted until you review and accept the updated terms.');
   expect(body).toContain('credit-card processing fee');expect(body).toContain('server-token/enroll');
  }
  h.rows.push([org],[current],[{id:'connection',stripeAccountId:'acct_test'}],[{id:'notice'}]);
@@ -271,7 +273,7 @@ describe('announced charges cancelled by a pause or stop',()=>{
   noticeRows('autopay_paused');
   await pauseAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around 2026-11-04 will not happen, even if automatic payments resume.');
+   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around November 4, 2026 will not happen, even if automatic payments resume.');
    expect(body).toContain('Replacement body only');
   }
  });
@@ -282,7 +284,7 @@ describe('announced charges cancelled by a pause or stop',()=>{
   noticeRows('autopay_stopped');
   await turnOffAutopay(db,actor,orgId);
   for(const body of [h.enqueue.mock.calls[0]![1].rendered.html,h.enqueue.mock.calls[0]![1].rendered.text]){
-   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around 2026-11-04 will not happen.');
+   expect(body).toContain('Invoice INV-7: the automatic payment announced for on or around November 4, 2026 will not happen.');
    // A processing debit completes and a cancellable one may still have completed: neither is told "will not happen".
    expect(body).not.toContain('Invoice INV-8: the automatic payment announced');
    expect(body).not.toContain('Invoice INV-9: the automatic payment announced');

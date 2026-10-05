@@ -85,7 +85,9 @@ it.each([
   const { text, html } = queuedText();
   for (const body of [text, html]) {
     expect(body).toContain(reason);
-    expect(body).toContain(`try again on or after ${date}`);
+    // One date formatter: "October 4, 2026", never an ISO date.
+    expect(body).toContain(`try again on or after ${new Date(`${date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}`);
+    expect(body).not.toContain(date);
     expect(body).not.toContain('One retry may follow');
   }
 });
@@ -250,9 +252,10 @@ describe('client payment notices name the invoice, the provider and the method (
     expect(frozen).toMatchObject({ attemptedAmount: '92.70', attemptFee: '2.70', payNowAmount: '90.00', currency: 'USD' });
     for (const body of [html, text]) {
       expect(body).toContain('INV-1');
-      expect(body).toContain('USD 92.70');
-      expect(body).toContain('USD 2.70');
-      expect(body).toContain('USD 90.00');
+      expect(body).toContain('$92.70');
+      expect(body).toContain('$2.70');
+      expect(body).toContain('$90.00');
+      expect(body).not.toMatch(/USD \d/);
       expect(body).toContain('Nothing has been charged');
     }
   });
@@ -344,10 +347,12 @@ describe('client refund notice (D-20)', () => {
     expect(frozen).toMatchObject({ mappingId: 'mapping', variant: 'refund', refundedAmount: '51.50', refundedTotal: '51.50',
       balanceAfter: '50.00', currency: 'USD', invoiceNumber: 'INV-1', partnerName: 'Provider', methodLabel: 'Visa credit card ending in 4242' });
     expect(footerBrand(html)).toBe('Provider');
+    expect(text).toContain('Refunded: $51.50');
+    expect(text).toContain('Refunded to: Visa credit card ending in 4242');
     for (const body of [html, text]) {
-      expect(body).toContain('Refunded: USD 51.50');
-      expect(body).toContain('Refunded to: Visa credit card ending in 4242');
-      expect(body).toContain('Balance due on invoice INV-1 after this refund: USD 50.00');
+      expect(body).toContain('$51.50');
+      expect(body).toContain('Visa credit card ending in 4242');
+      expect(body).toContain('Balance due on invoice INV-1 after this refund: $50.00');
       expect(body).toContain('Provider');
       expect(body).not.toContain('Payment received');
     }

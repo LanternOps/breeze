@@ -1,5 +1,6 @@
 import type Stripe from 'stripe';
-import type {CardFundingType} from '@breeze/shared';
+import {autopayScheduleSummary,formatPercentBps,paymentMethodInSentence,type CardFundingType} from '@breeze/shared';
+import {clientNameFor,emailDate,emailMoney} from './billingEmail';
 import {formatStripePaymentMethod} from './methodLabel';
 import {and,desc,eq,inArray} from 'drizzle-orm';
 import {db,withSystemDbAccessContext,runOutsideDbContext,runAfterDbContextExit} from '../../db';
@@ -123,22 +124,40 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    needsAttentionReason:null}).where(eq(orgAutopayEnrollments.id,enrollment.id));
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));
-  if(!wasPending){
-  const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
-  const methodDescription=formatStripePaymentMethod(method);
-  const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
-  const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
-  await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
-   dedupeKey:`${attempt.id}:autopay_enrolled:${outcome}`,toEmail:snapshot.contactEmail,
-   rendered:await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-    vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:snapshot.contactEmail,payment_method:paymentMethod,schedule_text:snapshot.scheduleText,fee_text:displayFee},
-    scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
+  // The client's confirmation: set up (activated), saved but awaiting bank verification,
+  // or verified after microdeposits (D-12: that moment used to pass silently).
+  const variant=wasPending?(outcome==='activated'?'verified':null):outcome==='pending_verification'?'pending_verification':'activated';
+  if(variant){
+   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
+   const methodLabel=formatStripePaymentMethod(method);
+   const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
+   const verifiedCredit=method.type==='card'&&displayFee===snapshot.feeText&&snapshot.feeTerms.cardFeeBps>0;
+   const fee=method.type==='us_bank_account'
+    ?(Number(snapshot.feeTerms.achFeeAmount)>0?`${emailMoney(snapshot.feeTerms.achFeeAmount,snapshot.feeTerms.currency)} per payment`:'No fee')
+    :verifiedCredit?`Up to ${formatPercentBps(snapshot.feeTerms.cardFeeBps)} per payment`:'No fee for this card';
+   const acceptedOn=emailDate(attempt.createdAt??new Date());
+   const cap=snapshot.scheduleTerms.cap;
+   await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
+    dedupeKey:`${attempt.id}:autopay_enrolled:${variant==='verified'?'verified':outcome}`,toEmail:snapshot.contactEmail,
+    rendered:await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
+     variant:variant==='activated'?undefined:variant,
+     vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),
+      payment_method:paymentMethodInSentence(methodLabel),schedule_text:snapshot.scheduleText,fee_text:displayFee},
+     summary:[{label:variant==='pending_verification'?'Bank account':'Payment method',value:`${methodLabel}${variant==='pending_verification'?' (waiting for verification)':''}`},
+      {label:"When you're charged",value:autopayScheduleSummary(snapshot.scheduleTerms)},{label:'Processing fee',value:fee},
+      ...(cap.enabled?[{label:'Which invoices',value:`Up to ${emailMoney(cap.amount,cap.currency)} each`}]:[]),
+      ...(variant==='pending_verification'?[]:[{label:'Starts with',value:`Invoices issued from ${emailDate(enrollment.effectiveFrom??new Date())}`}])],
+     terms:{title:'Your authorization',paragraphs:variant==='verified'
+      ?[`You accepted these terms on ${acceptedOn} (terms version ${snapshot.version}). We sent you a copy when you set up automatic payments.`]
+      :[`You accepted these terms on ${acceptedOn} (terms version ${snapshot.version}):`,snapshot.text]},
+     scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
   }
   for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
-  if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
+  if(variant)runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
    if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.enrolled',
-    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
+    dedupeKey:`${attempt.id}:enrolled:${variant==='verified'?'verified':outcome}`,
+    message:variant==='verified'?'Automatic payments enabled: the bank account is verified.':`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
   });
   return {outcome,orgId:attempt.orgId};
  });

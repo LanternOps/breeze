@@ -173,9 +173,12 @@ it('states the total charge and freezes the invoice number, provider, method and
   await enqueueAutopayNotice(db, schedule.id);
   const rendered = (h.writes[0]!.values as { rendered: { html: string; text: string; frozen: Record<string, unknown> } }).rendered;
   expect(rendered.frozen).toMatchObject({ invoiceNumber: 'INV-1', partnerName: 'Partner', methodLabel: 'Bank ••1234', total: '101.00' });
-  for (const body of [rendered.html, rendered.text]) {
-    expect(body).toContain('Total charge: $101.00 ($100.00 + $1.00 bank processing fee)');
-    expect(body).toContain('INV-1'); expect(body).toContain('Partner');
+  // One money formatter: the facts table states amount, fee and total once each, in the same form.
+  for (const line of ['Amount: $100.00', 'Processing fee: up to $1.00', 'Total charge: up to $101.00', 'Payment method: Bank ••1234']) {
+    expect(rendered.text.split(line).length - 1, line).toBe(1);
   }
+  expect(rendered.html).toContain('>Total charge</td>');
+  expect(rendered.text).not.toMatch(/USD \d/);
+  for (const body of [rendered.html, rendered.text]) { expect(body).toContain('INV-1'); expect(body).toContain('Partner'); }
   expect(rendered.html.match(/<p style="margin: 16px 0 0;[^>]*>([^<]*)<\/p>/)?.[1]).toBe('Partner');
 });

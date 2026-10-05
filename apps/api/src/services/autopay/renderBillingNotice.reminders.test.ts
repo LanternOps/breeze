@@ -19,7 +19,10 @@ describe('reminder rendering', () => {
     expect(rendered.html).not.toContain('100.00');
     expect(rendered.html).toContain(ctx.data.payLink);
     expect(rendered.text).toContain(ctx.data.payLink);
-    expect(rendered.text).toContain(kind === 'payment_overdue' ? 'was due by' : 'is due by');
+    expect(rendered.text).toContain(kind === 'payment_overdue' ? 'was due on October 8, 2026 and is now overdue' : 'is due on October 8, 2026');
+    expect(rendered.text).toContain('Hi Example Org,');
+    expect(rendered.text.split(ctx.data.payLink).length - 1).toBe(1);
+    expect(rendered.subject).not.toMatch(/OVERDUE/);
     expect(rendered.frozen).toEqual({
       amount: '25.05', currency: 'EUR', dueDate: '2026-10-08', daysOverdue: 7,
     });
@@ -44,6 +47,20 @@ describe('reminder rendering', () => {
       ...ctx, data: { ...ctx.data, payLink: 'javascript:alert(1)' },
     })).rejects.toThrow('Invalid reminder pay URL');
   });
+});
+
+it.each([
+  ['skipped', 'Automatic payment skipped for invoice INV-1', 'You skipped the automatic payment for invoice INV-1'],
+  ['excluded', 'Automatic payment cancelled for invoice INV-1', 'Example MSP will not charge invoice INV-1 automatically'],
+] as const)('the %s confirmation has locked wording a partner reminder override cannot replace', async (variant, subject, line) => {
+  const rendered = await renderBillingNotice('payment_reminder', { ...ctx, data: { ...ctx.data, variant, announcedFor: '2026-11-04', clientName: 'Pat Lee',
+    partnerSettings: { emailTemplates: { payment_reminder: { subject: 'Friendly reminder', heading: null, buttonLabel: null, html: '<p>Please pay soon.</p>' } } } } });
+  expect(rendered.subject).toBe(subject);
+  expect(rendered.text).toContain(line);
+  expect(rendered.text).toContain('Hi Pat Lee,');
+  expect(rendered.text).not.toContain('Please pay soon.');
+  expect(rendered.html).not.toMatch(/<p>[^<]*<!doctype/i);
+  if (variant === 'excluded') expect(rendered.text).toContain('The automatic payment announced for on or around November 4, 2026 will not happen.');
 });
 
 it.each(['payment_receipt','payment_failed'] as const)('renders readable %s text from the actual template',async kind=>{

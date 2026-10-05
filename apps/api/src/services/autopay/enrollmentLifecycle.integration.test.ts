@@ -69,7 +69,7 @@ describe('lifecycle email ordering', () => {
     expect(await dispatchPendingBillingNotices(new Date(start + 10 * 60_000))).toEqual({ sent: 1, failed: 0 });
     expect(await kinds()).toEqual({ autopay_paused: 'cancelled', autopay_resumed: 'sent' });
     expect(send).toHaveBeenCalledTimes(2);
-    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ subject: expect.stringMatching(/resumed/i) }));
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ subject: expect.stringMatching(/back on/i) }));
   });
 });
 

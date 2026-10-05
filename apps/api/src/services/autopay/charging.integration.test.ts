@@ -1902,7 +1902,8 @@ it.each([['exclude', 'payment_reminder'], ['pause', 'autopay_paused'], ['stop', 
     expect(told[0]!.invoiceId ?? f.invoice.id).toBe(f.invoice.id);
     const text = (told[0]!.rendered as {text: string}).text;
     expect(text).toContain(f.invoice.invoiceNumber);
-    expect(text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+    // One date formatter: "November 4, 2026", never an ISO date.
+    expect(text).toMatch(/announced for on or around [A-Z][a-z]+ \d{1,2}, \d{4} will not happen/);
     if (kind !== 'exclude') expect(text).not.toMatch(/processing fee/i);
   });
 it('an MSP exclusion before the charging notice went out sends nothing new', async () => {
