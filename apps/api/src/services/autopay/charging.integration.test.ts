@@ -1957,6 +1957,8 @@ it('bank pay refuses a lower fee than the client authorized (B1-1)',async()=>{
 import { getInvoiceAutopayOffer } from './payAndSave';
 it('offers neither bank pay nor card pay-and-save while an unapplied attempt holds money for the invoice (B1-2)',async()=>{
  const f=await fixture();
+ // Not yet active: bank pay is never offered over a working method on active automatic payments (G3).
+ await withSystemDbAccessContext(()=>db.update(orgAutopayEnrollments).set({status:'requested'}).where(eq(orgAutopayEnrollments.id,f.enrollment.id)));
  expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true});
  expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toMatchObject({eligible:true});
  await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
@@ -2393,4 +2395,16 @@ it.each([['within',1],['past',3]] as const)('a deferred retry %s the grace (G2)'
    expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
  }
  expect(provider.create).not.toHaveBeenCalled();
+});
+// G3: bank pay makes the new account the autopay method at once (exempt from F-1's keep-working
+// rule), so the API refuses it over a working card on active automatic payments, not only the UI.
+it('refuses bank pay over a working card on active automatic payments (G3)',async()=>{
+ const f=await fixture();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toBeNull();
+ await expect(startInvoiceBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,returnTo:'public',ip:null,userAgent:null,
+  terms:{methodType:'us_bank_account',phase:'setup',consentAccepted:true,principal:'100.00',fee:'0.00',currency:'USD',disclosureHash:'a'.repeat(64)}}))
+  .rejects.toMatchObject({status:409});
+ expect(provider.sessionCreate).not.toHaveBeenCalled();
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
+ expect(method).toMatchObject({status:'active',isAutopayMethod:true});
 });

@@ -128,7 +128,8 @@ it('does not offer bank payment while money is reserved or unapplied',async()=>{
  expect(await getBankAutopayOffer(invoice.id,invoice.orgId)).toBeNull();expect(attemptCollection).not.toHaveBeenCalled();
 });
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
- completionFixture();bank.rows=[[{...invoice,balance:'90.00'}],[enrollment],[{id:invoice.orgId,status:'active'}],[]];
+ // The active bank is the one this invoice's own bank payment saved (restarting it), so G3 still offers it.
+ completionFixture();bank.rows=[[{...invoice,balance:'90.00'}],[enrollment],[{id:invoice.orgId,status:'active'}],[],[{id:'setup'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});bank.quote.mockReturnValue({feeAmount:'0.00'});
  await expect(startInvoiceBankSetup({invoiceId:invoice.id,orgId:invoice.orgId,terms:{...accepted,methodType:'us_bank_account',phase:'setup',consentAccepted:true,currency:'USD'},returnTo:'public',ip:null,userAgent:null})).rejects.toMatchObject({status:409,details:{reason:'terms_changed'}});
  expect(createAutopaySetupSession).not.toHaveBeenCalled();
@@ -156,7 +157,7 @@ it('retains pending bank verification after another payment closes the invoice',
 import {mintBillingLinkToken} from './linkTokens';
 import {resolveBillingEmail} from '../invoicePdf';
 it('mints the invoice-bound bank authority to outlive microdeposit verification',async()=>{
- completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active',deletedAt:null}],[],[enrollment],[{id:invoice.orgId,billingContact:{email:'billing@example.test'}}]];
+ completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active',deletedAt:null}],[],[{id:'setup'}],[enrollment],[{id:invoice.orgId,billingContact:{email:'billing@example.test'}}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'0.00'});
  vi.mocked(resolveBillingEmail).mockReturnValue('billing@example.test');
  vi.mocked(mintBillingLinkToken).mockResolvedValue({id:'token',token:'secret'});
@@ -177,18 +178,32 @@ it.each([
  expect(attemptCollection).not.toHaveBeenCalled();
 });
 
-// V-8: the bank-return page says which account will be debited.
+// V-8: the bank-return page says which account will be debited (the bank this invoice's own
+// bank payment just saved, so the G3 refusal below does not apply).
 it('names the saved bank account the payment will come from',async()=>{
- vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'us_bank_account',status:'active',bankLast4:'6789'} as any);
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'us_bank_account',status:'active',bankLast4:'6789',stripeSetupIntentId:'seti_bank'} as any);
  bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
- [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ [{id:'enrollment',status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[],[{id:'setup'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
  expect(await getBankAutopayOffer('invoice','org')).toMatchObject({available:true,methodStatus:'active',methodLabel:'Bank account ending in 6789'});
 });
-it('names no account when the saved method is a card',async()=>{
+it('names no account when the saved method is a card (automatic payments not yet active)',async()=>{
  vi.mocked(getAutopayMethod).mockResolvedValueOnce({type:'card',status:'active',cardLast4:'4242'} as any);
  bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
- [{status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
+ [{status:'requested',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
  expect(await getBankAutopayOffer('invoice','org')).toMatchObject({methodStatus:null,methodLabel:null});
+});
+// G3: bank pay makes the new account the autopay method at once (it is exempt from F-1's
+// keep-working rule), so the API never offers it over a working method on active automatic
+// payments; only the bank this invoice's own bank payment saved is still offered (the return page).
+it.each([
+ ['a working card',{type:'card',status:'active',cardLast4:'4242'},[]],
+ ['a working bank saved some other way',{type:'us_bank_account',status:'active',bankLast4:'1111',stripeSetupIntentId:'seti_other'},[]],
+] as const)('refuses bank pay over %s on active automatic payments (G3)',async(_label,method,setup)=>{
+ vi.mocked(getAutopayMethod).mockResolvedValueOnce(method as any);
+ bank.rows=[[{id:'invoice',orgId:'org',partnerId:'partner',currencyCode:'USD',status:'sent',balance:'140.00'}],
+ [{id:'enrollment',status:'active',stripeAccountId:'acct_test'}],[{id:'org',status:'active',deletedAt:null}],[],[...setup]];
+ bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64),text:'Accepted bank terms'});bank.quote.mockReturnValue({feeAmount:'1.00'});
+ expect(await getBankAutopayOffer('invoice','org')).toBeNull();
 });
