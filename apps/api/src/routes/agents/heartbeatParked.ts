@@ -5,6 +5,7 @@ import { devices } from '../../db/schema';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST, type AgentAuthContext } from '../../middleware/agentAuth';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { ERROR_CODES } from '@breeze/shared';
 import { computeCredentialMaintenance, type CredentialMaintenance } from './heartbeatCredentialMaintenance';
 
 /** The heartbeat body fields the parked beat reads — nothing else is looked at. */
@@ -64,7 +65,7 @@ export async function respondParkedHeartbeat(
   if (data.role && data.role !== agent.role) {
     return c.json({
       error: 'Agent credential role mismatch',
-      code: 're_enrollment_required',
+      code: ERROR_CODES.RE_ENROLLMENT_REQUIRED,
       expected: agent.role,
       declared: data.role,
     }, 401);

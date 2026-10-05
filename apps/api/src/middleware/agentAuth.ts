@@ -2,6 +2,7 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { createHash, timingSafeEqual } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
+import { ERROR_CODES } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations } from '../db/schema';
 import { getRedis, rateLimiter } from '../services';
@@ -630,7 +631,7 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, {
       message: 'Re-enrollment required: device predates token-hash migration',
       res: new Response(
-        JSON.stringify({ error: 'Re-enrollment required', code: 're_enrollment_required' }),
+        JSON.stringify({ error: 'Re-enrollment required', code: ERROR_CODES.RE_ENROLLMENT_REQUIRED }),
         { status: 401, headers: { 'content-type': 'application/json' } },
       ),
     });
