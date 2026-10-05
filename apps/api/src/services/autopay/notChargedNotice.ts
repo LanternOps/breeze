@@ -10,6 +10,8 @@ import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffAttention } from './staffNotifications';
 import { announcedCharges, announcedOn } from './announcedCharges';
 import type { Tx } from './types';
+import { db as ambientDb, getCurrentDbAccessContext } from '../../db';
+import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 
 /** Collection outcomes that stop a charge the client may already have been told about. */
 export const NOT_CHARGED_REASONS = ['above_authorized_cap', 'over_cap', 'cap_currency_mismatch', 'consent_required', 'excluded_contract'] as const;
@@ -41,6 +43,15 @@ function staffMessage(reason: NotChargedReason, clientTold: boolean): string | n
   }
 }
 
+/** The MSP's name and email settings for the notice. An org-scoped request (an org user
+ * excluding an invoice) cannot see the partner row under RLS; partner-axis reads use the
+ * sanctioned visibility escape, exactly as isAutopayEnabledForPartner does (F6). */
+async function partnerForNotice(tx: Tx, partnerId: string) {
+  const load = async (executor: Tx) => (await executor.select({ id: partners.id, name: partners.name, settings: partners.settings })
+    .from(partners).where(eq(partners.id, partnerId)).limit(1))[0];
+  return getCurrentDbAccessContext()?.scope === 'organization' ? readWithPartnerAxisVisibility(() => load(ambientDb)) : load(tx);
+}
+
 /** The single "this invoice will not be charged automatically" notice (D-19, R3, 2a-3).
  * The client was told the invoice would be charged (a charging notice actually went out) and
  * now it will not be: an MSP exclusion ('exclude'), or a collection outcome that ended the
@@ -56,7 +67,7 @@ export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; re
   const payable = ['sent', 'partially_paid', 'overdue'].includes(invoice.status) && toMinorUnits(invoice.balance, invoice.currencyCode) > 0;
   if (announced && payable) {
     const [org] = await tx.select().from(organizations).where(eq(organizations.id, invoice.orgId)).limit(1);
-    const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
+    const partner = await partnerForNotice(tx, invoice.partnerId);
     if (!org || !partner) throw new Error('Not-charged notice ownership unavailable');
     const recipient = resolveBillingEmail(org.billingContact);
     if (recipient) {
