@@ -8,6 +8,7 @@ import { invoices,organizations,partners,portalBranding,orgAutopayEnrollments,bi
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { inspectBillingLinkToken, resolveBillingLinkToken } from './linkTokens';
 import { loadAutopayBranding } from './customerBranding';
+import { buildPublicInvoiceUrl, peekInvoiceLink } from '../invoiceLinkToken';
 import { latestAutopayConsent } from './collectionFee';
 import { buildAutopayDisclosure } from './consentText';
 import { getAutopayMethod } from './paymentMethods';
@@ -107,8 +108,11 @@ export async function describeAutopayLinkFailure(token:string,purpose:BillingLin
       :failure==='revoked'?(enrollment?.status==='cancelled'?'link_used':'link_replaced')
       :'link_invalid';
     if(code==='link_invalid')return invalid;
+    // FP-4: a skip or confirm link belongs to an invoice; offer it (its link came in the same email). Read-only: never minted here.
+    const [invoice]=row.invoiceId?await db.select().from(invoices).where(and(eq(invoices.id,row.invoiceId),eq(invoices.orgId,org.id))).limit(1):[];
+    const live=invoice&&invoice.orgId===org.id&&invoice.status!=='void'?peekInvoiceLink(invoice):null;
     return {error:LINK_FAILURE_TEXT[code],code,data:{...await loadAutopayBranding(db,{orgId:org.id,partnerId:org.partnerId}),
-      enrollmentStatus:enrollment?.status??null}};
+      enrollmentStatus:enrollment?.status??null,...(live?{invoiceUrl:buildPublicInvoiceUrl(live.token)}:{})}};
   });
 }
 /** The public stop page: who is asking, what is being removed and what stays open. */

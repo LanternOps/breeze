@@ -237,3 +237,16 @@ describe('Final-A paper cuts', () => {
     expect(screen.getByTestId('invoice-payment-panel')).toHaveAttribute('data-bank-chosen', 'true');
   });
 });
+
+describe('FP-4: bank confirmation on the invoice page', () => {
+  it('the waiting notice names the fee, and that paying here has none', () => {
+    panel({ balance: '90.00', charge: { amount: '90.00', isDeposit: false }, collectionInProgress: { amount: '90.00', actionRequired: true },
+      autopayStatus: { ...scheduled, state: 'action_required', amount: '90.00', fee: '2.70', canPayNow: false } as never });
+    expect(screen.getByTestId('autopay-confirmation-notice')).toHaveTextContent('The automatic payment of $92.70 ($90.00 plus a $2.70 processing fee)');
+    expect(screen.getByTestId('autopay-confirmation-notice')).toHaveTextContent('pay $90.00 now, with no processing fee');
+  });
+  it('arriving from the emailed confirm link shows the payment was canceled', () => {
+    panel({ releasedOnArrival: true, balance: '90.00', charge: { amount: '90.00', isDeposit: false } });
+    expect(screen.getByTestId('autopay-confirmation-released')).toHaveTextContent('The automatic payment was canceled.');
+  });
+});

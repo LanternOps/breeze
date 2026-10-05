@@ -18,8 +18,8 @@ const RESULT_TEXT: Record<Exclude<AutopayConfirmationRelease['outcome'], 'releas
  * so the customer can pay on-session; their bank confirms during checkout.
  * On `released` the parent takes over (it shows the released state and Pay).
  */
-export function AutopayConfirmationNotice({ amount, currency, release, onReleased }: {
-  amount: string; currency: string;
+export function AutopayConfirmationNotice({ amount, fee, currency, release, onReleased }: {
+  amount: string; fee?: string | null; currency: string;
   release: () => Promise<ApiResponse<AutopayConfirmationRelease>>;
   onReleased: () => void | Promise<void>;
 }) {
@@ -51,7 +51,10 @@ export function AutopayConfirmationNotice({ amount, currency, release, onRelease
         </button>
       )}>
       {!settled && (
-        <p>{`The automatic payment of ${money(amount, currency)} can't finish until your bank confirms it. Nothing has been charged yet. Continue to cancel that attempt and pay now; your bank will ask you to confirm.`}</p>
+        // FP-4: the attempt includes its fee; paying here has none.
+        <p>{Number(fee) > 0
+          ? `The automatic payment of ${money(((Math.round(Number(amount) * 100) + Math.round(Number(fee) * 100)) / 100).toFixed(2), currency)} (${money(amount, currency)} plus a ${money(fee!, currency)} processing fee) can't finish until your bank confirms it. Nothing has been charged yet. Continue to cancel it and pay ${money(amount, currency)} now, with no processing fee; your bank will ask you to confirm.`
+          : `The automatic payment of ${money(amount, currency)} can't finish until your bank confirms it. Nothing has been charged yet. Continue to cancel that attempt and pay now; your bank will ask you to confirm.`}</p>
       )}
       {message && <p role={message.error ? 'alert' : undefined} data-testid="autopay-confirmation-result">{message.text}</p>}
     </Notice>

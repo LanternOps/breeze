@@ -30,7 +30,7 @@ beforeEach(()=>{vi.clearAllMocks();h.rows.clear();h.writes.length=0;h.depth=0;
  h.rows.set(invoiceAutopaySchedules,[{id:'schedule',invoiceId:'invoice',orgId:'org',enrollmentId:'enrollment',enrollmentGeneration:1,attemptCount:1}]);
 });
 it('GET resolves the frozen attempt without provider or mutation work',async()=>{
- expect(await getConfirmPaymentView('token')).toEqual({state:'requires_action',amount:'100.00',currency:'USD',invoiceNumber:null,invoiceStatus:'sent',balance:'100.00',
+ expect(await getConfirmPaymentView('token')).toEqual({state:'requires_action',amount:'100.00',fee:'0.00',currency:'USD',invoiceNumber:null,invoiceStatus:'sent',balance:'100.00',
   methodLabel:null,partnerName:'',logoUrl:null,supportEmail:null,invoiceUrl:'https://portal.example.test/invoice/token'});
  expect(h.resume).not.toHaveBeenCalled();expect(h.writes).toEqual([]);
 });
@@ -128,4 +128,10 @@ it.each([['unapplied','needs_review'],['processing_late','processing']] as const
  h.history.mockResolvedValue(kind==='unapplied'?{attempt:{...attempt,state:'unapplied'},mapping:{invoicePaymentId:null}}
   :{attempt:{...attempt,state:'requires_action'},mapping:{invoicePaymentId:null}});
  await expect(confirmInvoicePayment('token')).rejects.toMatchObject({status:409,details:{reason}});
+});
+
+// FP-4: the attempt's fee is part of what the bank asked to confirm.
+it('the confirm view carries the attempt fee',async()=>{
+ h.rows.set(invoiceCollectionAttempts,[{...attempt,principalAmount:'90.00',feeAmount:'2.70'}]);
+ expect(await getConfirmPaymentView('token')).toMatchObject({amount:'90.00',fee:'2.70'});
 });

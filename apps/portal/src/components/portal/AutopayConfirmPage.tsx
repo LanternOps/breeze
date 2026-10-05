@@ -53,7 +53,8 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     inFlight.current = true; setBusy(true); setError(false);
     const result = await apiPost<Result>(endpoint, {}, { redirectOnUnauthorized: false }).catch(() => null);
     const data = result?.data;
-    if (data?.url) { void navigateTo(data.url); return; }
+    // FP-4: the invoice page then says the automatic payment was canceled.
+    if (data?.url) { void navigateTo(`${data.url}#autopay-released`); return; }
     // R5: {paid:false} means Stripe took the money but it isn't applied to the invoice yet:
     // "received, under review", never "try again" (the client could pay twice).
     let landing: Landed = null;
@@ -119,15 +120,21 @@ export default function AutopayConfirmPage({ token }: { token: string }) {
     </StatePanel>;
   } else {
     const method = view.methodLabel ? ` with your ${paymentMethodInSentence(view.methodLabel)}` : '';
+    const total = ((Math.round(Number(view.amount) * 100) + Math.round(Number(view.fee ?? 0) * 100)) / 100).toFixed(2);
+    const withFee = Number(view.fee) > 0
+      ? `an automatic payment of ${money(total, view.currency)} (${money(view.amount, view.currency)} plus a ${money(view.fee, view.currency)} processing fee)`
+      : `the ${money(view.amount, view.currency)} payment`;
     panel = <div className="space-y-5">
       <StatePanel mark={{ tone: 'warning', label: 'Confirmation needed' }} titleText={`Confirm your payment for ${invoice}`}
         title={view.invoiceNumber ? <>Confirm your payment for invoice <Nowrap>{view.invoiceNumber}</Nowrap></> : 'Confirm your payment for this invoice'}
         summary={[...(view.invoiceNumber ? [{ label: 'Invoice', value: view.invoiceNumber }] : []),
           { label: 'Amount', value: money(view.amount, view.currency), figure: true },
           ...(view.methodLabel ? [{ label: 'Payment method', value: view.methodLabel }] : [])]}>
-        <p>{error
-          ? `Your bank asked you to confirm the ${money(view.amount, view.currency)} payment${method}. You'll finish paying on the invoice page with Stripe.`
-          : `Your bank asked you to confirm the ${money(view.amount, view.currency)} payment${method}. Nothing has been charged yet. You'll finish paying on the invoice page with Stripe.`}</p>
+        {/* FP-4: the bank asked about the automatic payment with its fee; paying on the invoice has none. */}
+        <p>{`Your bank asked you to confirm ${withFee}${method}.${error ? '' : ' Nothing has been charged yet.'}`}</p>
+        <p>{Number(view.fee) > 0
+          ? `On the invoice page you'll pay ${money(view.amount, view.currency)}, with no processing fee. Your bank may ask you to confirm it there.`
+          : "You'll finish paying on the invoice page with Stripe."}</p>
       </StatePanel>
       {error && <Notice tone="destructive" title="We couldn't confirm the payment right now"><p>Open the invoice to check its status before paying, or try again in a moment.</p></Notice>}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

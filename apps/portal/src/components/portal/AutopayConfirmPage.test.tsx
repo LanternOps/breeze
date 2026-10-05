@@ -8,7 +8,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 import AutopayConfirmPage from './AutopayConfirmPage';
 afterEach(() => { cleanup(); });
 function view(over: Record<string, unknown> = {}) {
-  return { data: { state: 'requires_action', amount: '100.00', currency: 'USD', invoiceNumber: 'INV-7', invoiceStatus: 'sent', balance: '100.00', methodLabel: 'Visa credit card ending in 3184',
+  return { data: { state: 'requires_action', amount: '100.00', fee: '0.00', currency: 'USD', invoiceNumber: 'INV-7', invoiceStatus: 'sent', balance: '100.00', methodLabel: 'Visa credit card ending in 3184',
     invoiceUrl: 'https://portal.example.test/portal/invoice/tok', partnerName: 'Example MSP', logoUrl: null, supportEmail: 'billing@msp.example', ...over } } as never;
 }
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(apiGet).mockResolvedValue(view()); });
@@ -21,7 +21,8 @@ it('explains what confirming means, then continues to pay on the invoice page on
   expect(apiPost).not.toHaveBeenCalled();
   vi.mocked(apiPost).mockResolvedValue({ data: { url: 'https://portal.example.test/portal/invoice/tok' } } as never);
   fireEvent.click(screen.getByTestId('autopay-confirm-submit'));
-  await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('https://portal.example.test/portal/invoice/tok'));
+  // FP-4: the invoice page then says the automatic payment was canceled.
+  await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('https://portal.example.test/portal/invoice/tok#autopay-released'));
   expect(apiPost).toHaveBeenCalledExactlyOnceWith('/autopay/public/token/confirm', {}, { redirectOnUnauthorized: false });
 });
 
@@ -120,4 +121,19 @@ it('a network failure re-reads the link too', async () => {
   vi.mocked(apiGet).mockResolvedValue(view({ state: 'processing' }));
   fireEvent.click(submit);
   expect(await screen.findByRole('heading', { name: 'Your payment is processing' })).toBeInTheDocument();
+});
+
+// FP-4: the bank asked about the automatic payment with its fee; paying on the invoice has none.
+it('names the automatic payment with its fee, and what paying on the invoice costs instead', async () => {
+  vi.mocked(apiGet).mockResolvedValue(view({ amount: '90.00', fee: '2.70', balance: '90.00' }));
+  render(<AutopayConfirmPage token="token" />);
+  expect(await screen.findByText(/Your bank asked you to confirm an automatic payment of \$92\.70 \(\$90\.00 plus a \$2\.70 processing fee\)/)).toBeInTheDocument();
+  expect(screen.getByText(/On the invoice page you'll pay \$90\.00, with no processing fee\./)).toBeInTheDocument();
+});
+it('a used confirm link offers its invoice', async () => {
+  vi.mocked(apiGet).mockResolvedValue({ error: 'x', code: 'link_used', statusCode: 404,
+    errorData: { partnerName: 'Example MSP', enrollmentStatus: 'active', invoiceUrl: 'https://portal.example.test/invoice/inv' } } as never);
+  render(<AutopayConfirmPage token="token" />);
+  expect(await screen.findByRole('heading', { name: 'This link was already used' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'View invoice' })).toHaveAttribute('href', 'https://portal.example.test/invoice/inv');
 });

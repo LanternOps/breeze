@@ -14,6 +14,8 @@ import {verifiedFeeText,hasSupportedCardEvidence} from './feeDisclosure';
 import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {detachPaymentMethodPostCommit,enqueueRejectedAutopayMethod} from './paymentMethods';
 import {resolveBillingEmail} from '../invoicePdf';
+import {getOrMintInvoiceLink,buildPublicInvoiceUrl} from '../invoiceLinkToken';
+import {invoices} from '../../db/schema';
 import {formatPaymentMethod} from '@breeze/shared';
 import {notifyAutopayStaff} from './staffNotifications';
 import {autopayConsentSnapshotSchema} from './types';
@@ -197,8 +199,16 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
   const locked=variant==='paused'||variant==='pending_change'||variant==='verified_change'||variant==='method_changed';
   const lockedLine=variant==='pending_change'&&previousLabel?`Until it's verified, we'll keep using your ${paymentMethodInSentence(previousLabel)} for automatic payments.`
    :(variant==='verified_change'||variant==='method_changed')&&previousLabel?`It replaces your ${paymentMethodInSentence(previousLabel)}.`:undefined;
+  // FP-7: a bank verified for a bank payment: the page promised an email to come back and pay
+  // that invoice (it was issued before automatic payments, so it isn't collected by itself).
+  const [bankPayInvoice]=baseVariant==='verified'&&snapshot.bankPayment?await db.select().from(invoices).where(and(
+   eq(invoices.id,snapshot.bankPayment.invoiceId),eq(invoices.orgId,attempt.orgId))).limit(1):[];
+  const stillToPay=bankPayInvoice&&bankPayInvoice.orgId===attempt.orgId&&['sent','partially_paid','overdue'].includes(bankPayInvoice.status)
+   &&Number(bankPayInvoice.balance)>0?bankPayInvoice:null;
   if(variant){
    const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
+   const payLink=stillToPay?{label:'Pay it by bank',url:buildPublicInvoiceUrl((await getOrMintInvoiceLink(stillToPay,db)).token),
+    note:`Invoice ${stillToPay.invoiceNumber} is still unpaid (${emailMoney(stillToPay.balance,stillToPay.currencyCode)}).`}:null;
    const methodLabel=formatStripePaymentMethod(method);
    const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
    const verifiedCredit=method.type==='card'&&displayFee===snapshot.feeText&&snapshot.feeTerms.cardFeeBps>0;
@@ -208,7 +218,7 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    const acceptedOn=emailDate(attempt.createdAt??new Date());
    const cap=snapshot.scheduleTerms.cap;
    const rendered=await renderBillingNotice('autopay_enrolled',{autopay:{partnerId:attempt.partnerId,orgId:attempt.orgId,
-     variant:variant==='activated'?undefined:variant,locked,processingText:lockedLine,
+     variant:variant==='activated'?undefined:variant,locked,processingText:lockedLine,...(payLink?{links:[payLink]}:{}),
      vars:{partner_name:snapshot.partnerName,org_name:org.name,client_name:clientNameFor(org.billingContact,org.name),
       payment_method:paymentMethodInSentence(methodLabel),schedule_text:snapshot.scheduleText,fee_text:displayFee},
      summary:[{label:variant==='pending_verification'?'Bank account':'Payment method',value:`${methodLabel}${variant==='pending_verification'?' (waiting for verification)':''}`},

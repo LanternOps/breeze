@@ -66,7 +66,11 @@ it.each(['portal','public'].flatMap(route=>['pending_verification','in_progress'
  render(<BankAutopayPayment returning/>);await screen.findByTestId('autopay-bank-confirm-pay');
  fireEvent.click(screen.getByTestId('autopay-bank-consent'));fireEvent.click(screen.getByTestId('autopay-bank-confirm-pay'));
  const control=await screen.findByTestId(reason==='abandoned'?'autopay-bank-restart':'autopay-bank-refresh');
- expect(screen.getByTestId('autopay-bank-result')).toHaveAttribute('role','alert');
+ // FP-7: pending verification is said once, by the pending notice; the others alert.
+ if(reason==='pending_verification'){
+   expect(screen.queryByTestId('autopay-bank-result')).toBeNull();
+   expect(document.body.textContent!.split('No payment has started').length-1).toBe(1);
+ }else expect(screen.getByTestId('autopay-bank-result')).toHaveAttribute('role','alert');
  expect(screen.queryByTestId('autopay-bank-confirm-pay')).toBeNull();
  expect(navigateTo).not.toHaveBeenCalled();
  if(reason==='abandoned'){

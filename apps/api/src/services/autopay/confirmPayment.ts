@@ -72,7 +72,7 @@ export async function getConfirmPaymentView(token: string): Promise<AutopayConfi
     const [method] = attempt.paymentMethodId ? await db.select().from(orgPaymentMethods).where(and(
       eq(orgPaymentMethods.id, attempt.paymentMethodId), eq(orgPaymentMethods.orgId, invoice.orgId))).limit(1) : [];
     const live = peekInvoiceLink(invoice);
-    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, currency: attempt.currency,
+    return { state: attempt.state === 'canceled' || fenced ? 'not_needed' : attempt.state, amount: attempt.principalAmount, fee: attempt.feeAmount ?? '0.00', currency: attempt.currency,
       invoiceNumber: invoice.invoiceNumber ?? null, invoiceStatus: invoice.status, balance: invoice.balance, methodLabel: method && method.orgId === invoice.orgId ? formatPaymentMethod(method) : null,
       ...await loadAutopayBranding(db, { orgId: invoice.orgId, partnerId: invoice.partnerId }),
       invoiceUrl: live ? buildPublicInvoiceUrl(live.token) : null };

@@ -173,8 +173,9 @@ export default function BankAutopayPayment({target,offer,returning=false,partner
         sessionStorage.setItem(key,JSON.stringify({...stored,...view.target,started:{total:total(view.offer),identity}}));}catch{}
       setFinished(true);
       outcome('Bank payment started. Processing may take several days.',false);return;}
+    // FP-7: the pending notice says it (once): no second "No payment has started" line.
     if(reason==='pending_verification'){setBusy(false);setView({...view,offer:{...view.offer,methodStatus:'pending_verification'}});
-      setAccepted(false);outcome('Bank verification is pending. No payment has started.',!!conflictReason);return;}
+      setAccepted(false);setMessage('');setFailed(false);return;}
     if(reason==='in_progress'||reason==='abandoned'){setBusy(false);setRecovery(reason);setAccepted(false);
       outcome(reason==='in_progress'?'Your bank setup is still being confirmed. Refresh verification before trying again.':'Bank setup was not completed. Restart bank setup to continue.',!!conflictReason);return;}
     // Only an explicit refusal (nothing reserved) or a verified provider cancellation proves this

@@ -30,7 +30,11 @@ export function linkFailureCopy(failure: LinkFailureView, purpose: BillingLinkPu
           body: [`Automatic payments to ${msp} are on. To change your payment method, sign in to your customer portal, or ask ${msp} to send you a link to change it.`],
           primary: { label: 'Sign in to your portal', href: withBase('/login'), variant: 'secondary' as const, testId: 'autopay-link-sign-in' } as PanelAction };
       }
-      return { title: 'This link was already used', body: ['Open the invoice from your email to see its current status.'], primary: contact };
+      // FP-4: a skip or confirm link offers the invoice it belongs to.
+      return failure.invoiceUrl
+        ? { title: 'This link was already used', body: ['Open the invoice to see its current status.'],
+          primary: { label: 'View invoice', href: failure.invoiceUrl, testId: 'autopay-link-invoice' } as PanelAction }
+        : { title: 'This link was already used', body: ['Open the invoice from your email to see its current status.'], primary: contact };
     // The skip route has no rollout gate (Q4), so a skip link never lands here; the
     // skip page says "on hold" itself from the view (V-37).
     case 'autopay_not_enabled':

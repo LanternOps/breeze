@@ -18,6 +18,8 @@ vi.mock('./consentText', () => ({ buildAutopayDisclosure: vi.fn() }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: vi.fn() }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: vi.fn() }));
 vi.mock('./enrollmentService', () => ({ completeAutopaySetup: vi.fn() }));
+vi.mock('../invoiceLinkToken', () => ({ peekInvoiceLink: (inv: { id: string }) => inv.id === 'invoice' ? { token: 'inv-token' } : null,
+  buildPublicInvoiceUrl: (token: string) => `https://portal.example.test/invoice/${token}` }));
 import { describeAutopayLinkFailure, getAutopayStopView } from './customerViews';
 import { invoices, organizations, orgAutopayEnrollments, partners, portalBranding } from '../../db/schema';
 
@@ -79,4 +81,12 @@ describe('getAutopayStopView', () => {
     expect(await getAutopayStopView(orgId)).toMatchObject({ enrollment: { status: 'cancelled', cancelSource: 'msp',
       cancelledAt: '2026-10-06T10:00:00.000Z' }, method: null, openInvoiceCount: 0 });
   });
+});
+
+// FP-4: a used confirm (or skip) link offers the invoice it belongs to.
+it.each(['confirm_payment', 'skip_invoice'] as const)('a used %s link names its invoice so the page can link to it', async purpose => {
+  h.inspect.mockResolvedValue({ row: { ...link, purpose, invoiceId: 'invoice' }, failure: 'consumed' });
+  h.rows.set(invoices, [{ id: 'invoice', orgId, status: 'sent' }]);
+  expect(await describeAutopayLinkFailure('token', purpose)).toMatchObject({ code: 'link_used',
+    data: { invoiceUrl: 'https://portal.example.test/invoice/inv-token' } });
 });

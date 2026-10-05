@@ -15,6 +15,7 @@ vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
 vi.mock('./enrollmentService',()=>import('./setupCompletion'));
 vi.mock('./staffNotifications',()=>({notifyAutopayStaff:vi.fn()}));
+vi.mock('../invoiceLinkToken',()=>({getOrMintInvoiceLink:vi.fn(async()=>({token:'inv-token'})),buildPublicInvoiceUrl:(t:string)=>`https://portal.example.test/invoice/${t}`}));
 import {persistCapturedAutopayMethod,completeAutopaySetup,setupAuthorityOutcome,setupIntentOutcome} from './setupCompletion';
 const snapshot={partnerName:'Example MSP',version:'2026-10-01.v1',text:'I authorize Example MSP.',textHash:'b'.repeat(64),hash:'a'.repeat(64),
  achMode:'ach_preferred',invoiceId:null,checkoutKey:null,scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:false,currency:'USD'},
@@ -415,4 +416,20 @@ it('bank verification that finishes after a pause says the account is verified a
  expect(queued.rendered.text).toContain('Example MSP has paused automatic payments');
  expect(queued.rendered.text).not.toMatch(/automatic payments are (now )?on/i);
  expect(queued.rendered.text).not.toContain('Starts with');
+});
+
+// FP-7: the bank-pay page said "we'll email you once verified; then pay the invoice by bank".
+// The verified email links that invoice while it is still unpaid.
+it('a bank verified for a bank payment links the invoice still to pay',async()=>{
+ const bankPayment={invoiceId:'10000000-0000-4000-8000-000000000001',orgId:attempt().orgId,principal:'120.00',fee:'1.00',currency:'USD',disclosureHash:'a'.repeat(64)};
+ const value=attempt({methodType:'us_bank_account',outcome:'pending_verification',consentSnapshot:{...snapshot,bankPayment}});
+ queueAuthority(value);
+ m.rows.push([{id:'bank_method',status:'pending_verification',isAutopayMethod:true}],[],[{id:'bank_method'}],[],[],
+  [{id:bankPayment.invoiceId,orgId:value.orgId,invoiceNumber:'INV-2026-0019',status:'sent',balance:'120.00',currencyCode:'USD'}],[{settings:{}}]);
+ m.intent.mockResolvedValue({...await m.intent(),mandate:'mandate'});
+ m.method.mockResolvedValue({id:'pm_one',type:'us_bank_account',customer:'cus_one',us_bank_account:{last4:'6789',bank_name:'STRIPE TEST BANK',account_holder_type:'individual'}});
+ m.mandate.mockResolvedValue({status:'active',payment_method:'pm_one'});
+ expect((await completeAutopaySetup(value.partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
+ const rendered=m.enqueue.mock.calls[0]![1].rendered;
+ expect(rendered.text).toContain('Invoice INV-2026-0019 is still unpaid ($120.00). Pay it by bank: https://portal.example.test/invoice/inv-token');
 });

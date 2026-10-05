@@ -217,6 +217,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           collectionInProgress={collectionInProgress} partnerName={branding.partnerName}
           paying={paying} onPay={save => void pay(save)} payTestId="public-invoice-pay" processingTestId="public-invoice-collection-processing"
           release={releaseConfirmation} reload={reloadAfterRelease} notices={notices}
+          releasedOnArrival={typeof window !== 'undefined' && window.location.hash === '#autopay-released'}
           download={(
             <button type="button" onClick={() => void downloadPdf()} disabled={downloading} data-testid="public-invoice-download"
               className={cn(canPay ? BTN_SECONDARY : BTN_PRIMARY, 'w-full')}>

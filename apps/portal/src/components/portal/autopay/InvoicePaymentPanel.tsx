@@ -41,6 +41,8 @@ export interface InvoicePaymentPanelProps {
   reload?: () => Promise<boolean>;
   /** Payment errors, checkout-return and settle notices from the page. */
   notices?: ReactNode;
+  /** Arrived from the emailed confirm link, which already canceled the automatic payment (FP-4). */
+  releasedOnArrival?: boolean;
   download: ReactNode;
 }
 
@@ -134,7 +136,7 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
   const msp = p.partnerName || 'your service provider';
   const [option, setOption] = useState<Option>('card');
   const [accepted, setAccepted] = useState(false);
-  const [released, setReleased] = useState<null | 'ok' | 'reload_failed'>(null);
+  const [released, setReleased] = useState<null | 'ok' | 'reload_failed'>(p.releasedOnArrival ? 'ok' : null);
   // Fresh consent whenever the offered terms change.
   useEffect(() => { setAccepted(false); }, [p.saveOffer?.disclosureHash]);
 
@@ -207,7 +209,7 @@ export function InvoicePaymentPanel(p: InvoicePaymentPanelProps) {
         </Notice>
       )}
       {waitingOnBank && p.canPay && (
-        <AutopayConfirmationNotice amount={inFlight?.amount ?? s?.amount ?? p.charge.amount} currency={p.currency}
+        <AutopayConfirmationNotice amount={inFlight?.amount ?? s?.amount ?? p.charge.amount} fee={s?.fee ?? null} currency={p.currency}
           release={p.release} onReleased={onRelease} />
       )}
       {copy && (
