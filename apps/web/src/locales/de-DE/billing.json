@@ -2595,6 +2595,30 @@
       "stripe_account_changed": "Das verbundene Stripe-Konto hat sich nach der Anmeldung dieses Kunden geändert.",
       "key_missing_permissions": "Dem Stripe-Schlüssel fehlen Berechtigungen, die automatische Zahlungen benötigen.",
       "verification_failed": "Die Verifizierung des Bankkontos ist fehlgeschlagen."
+    },
+    "chargeOutcome": {
+      "succeeded": "Zahlung eingegangen.",
+      "processing": "Zahlung übermittelt. Sie wird verarbeitet; die Rechnung wird aktualisiert, sobald sie abgeschlossen ist.",
+      "requiresAction": "Die Bank des Kunden verlangt, dass er diese Zahlung bestätigt. Ist ein Rechnungskontakt hinterlegt, erhält er per E-Mail einen Link zur Bestätigung.",
+      "declined": "Die Zahlung wurde nicht ausgeführt.",
+      "cardDeclined": "Die Karte wurde abgelehnt.",
+      "expiredCard": "Die Karte ist abgelaufen. Bitten Sie den Kunden, seine Zahlungsmethode zu aktualisieren.",
+      "insufficientFunds": "Die Zahlung wurde wegen unzureichender Deckung abgelehnt.",
+      "canceled": "Die Zahlung wurde vor dem Abschluss storniert.",
+      "unapplied": "Die Zahlung wurde eingezogen, muss aber abgeglichen werden. Prüfen Sie sie, bevor Sie erneut abbuchen."
+    },
+    "chargeRefused": {
+      "notice_lead": "Die Ankündigungsfrist für den Kunden ist noch nicht abgelaufen. Danach kann die Rechnung abgebucht werden.",
+      "no_eligible_notice": "Für diese Rechnung gibt es keine Ankündigung einer automatischen Zahlung, daher kann sie nicht automatisch abgebucht werden.",
+      "renotice_required": "Die Zahlungsankündigung muss erneut gesendet werden, bevor diese Rechnung abgebucht werden kann.",
+      "collection_in_progress": "Für diese Rechnung läuft bereits eine Zahlung.",
+      "checkout_session_unrevoked": "Der Kunde bezahlt diese Rechnung möglicherweise gerade online. Versuchen Sie es in einigen Minuten erneut.",
+      "retry_not_due": "Der nächste Wiederholungsversuch ist noch nicht fällig.",
+      "not_payable": "Diese Rechnung ist nicht zur Zahlung offen.",
+      "nothing_to_pay": "Auf dieser Rechnung ist nichts mehr zu zahlen.",
+      "enrollment_inactive": "Automatische Zahlungen sind für diesen Kunden nicht aktiv.",
+      "schedule_inactive": "Diese Rechnung ist nicht mehr für eine automatische Zahlung geplant.",
+      "generic": "Die automatische Zahlung konnte nicht gestartet werden. Aktualisieren Sie die Rechnung, um ihren aktuellen Status zu sehen."
     }
   },
   "reminders": {

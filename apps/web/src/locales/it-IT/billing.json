@@ -2595,6 +2595,30 @@
       "stripe_account_changed": "L’account Stripe collegato è cambiato dopo l’adesione di questo cliente.",
       "key_missing_permissions": "Alla chiave Stripe mancano autorizzazioni necessarie per i pagamenti automatici.",
       "verification_failed": "La verifica del conto bancario non è riuscita."
+    },
+    "chargeOutcome": {
+      "succeeded": "Pagamento ricevuto.",
+      "processing": "Pagamento inviato. È in elaborazione e la fattura si aggiornerà quando verrà regolato.",
+      "requiresAction": "La banca del cliente richiede che confermi questo pagamento. Se è registrato un contatto di fatturazione, riceve via e-mail un link per confermarlo.",
+      "declined": "Il pagamento non è andato a buon fine.",
+      "cardDeclined": "La carta è stata rifiutata.",
+      "expiredCard": "La carta è scaduta. Chiedi al cliente di aggiornare il metodo di pagamento.",
+      "insufficientFunds": "Il pagamento è stato rifiutato per fondi insufficienti.",
+      "canceled": "Il pagamento è stato annullato prima del completamento.",
+      "unapplied": "Il pagamento è stato incassato ma richiede riconciliazione. Verificalo prima di addebitare di nuovo."
+    },
+    "chargeRefused": {
+      "notice_lead": "Il periodo di preavviso del cliente non è ancora terminato. La fattura potrà essere addebitata al termine.",
+      "no_eligible_notice": "Questa fattura non ha un avviso di pagamento automatico, quindi non può essere addebitata automaticamente.",
+      "renotice_required": "L’avviso di pagamento deve essere inviato di nuovo prima di poter addebitare questa fattura.",
+      "collection_in_progress": "Per questa fattura è già in corso un pagamento.",
+      "checkout_session_unrevoked": "Il cliente potrebbe star pagando questa fattura online in questo momento. Riprova tra qualche minuto.",
+      "retry_not_due": "Il prossimo tentativo non è ancora previsto.",
+      "not_payable": "Questa fattura non è aperta al pagamento.",
+      "nothing_to_pay": "Non resta nulla da pagare su questa fattura.",
+      "enrollment_inactive": "I pagamenti automatici non sono attivi per questo cliente.",
+      "schedule_inactive": "Questa fattura non è più programmata per il pagamento automatico.",
+      "generic": "Impossibile avviare il pagamento automatico. Aggiorna la fattura per vederne lo stato attuale."
     }
   },
   "reminders": {

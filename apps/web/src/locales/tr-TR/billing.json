@@ -2595,6 +2595,30 @@
       "stripe_account_changed": "Bu müşteri kaydolduktan sonra bağlı Stripe hesabı değişti.",
       "key_missing_permissions": "Stripe anahtarında otomatik ödemelerin ihtiyaç duyduğu izinler eksik.",
       "verification_failed": "Banka hesabı doğrulaması başarısız oldu."
+    },
+    "chargeOutcome": {
+      "succeeded": "Ödeme alındı.",
+      "processing": "Ödeme gönderildi. İşleniyor; ödeme tamamlandığında fatura güncellenir.",
+      "requiresAction": "Müşterinin bankası bu ödemeyi onaylamasını istiyor. Kayıtlı bir fatura irtibat kişisi varsa onaylaması için e-postayla bir bağlantı gönderilir.",
+      "declined": "Ödeme gerçekleşmedi.",
+      "cardDeclined": "Kart reddedildi.",
+      "expiredCard": "Kartın süresi dolmuş. Müşteriden ödeme yöntemini güncellemesini isteyin.",
+      "insufficientFunds": "Ödeme yetersiz bakiye nedeniyle reddedildi.",
+      "canceled": "Ödeme tamamlanmadan iptal edildi.",
+      "unapplied": "Ödeme tahsil edildi ancak mutabakat gerekiyor. Yeniden tahsil etmeden önce inceleyin."
+    },
+    "chargeRefused": {
+      "notice_lead": "Müşterinin bildirim süresi henüz dolmadı. Süre dolduğunda fatura tahsil edilebilir.",
+      "no_eligible_notice": "Bu faturanın otomatik ödeme bildirimi yok, bu nedenle otomatik olarak tahsil edilemez.",
+      "renotice_required": "Bu fatura tahsil edilmeden önce ödeme bildiriminin yeniden gönderilmesi gerekir.",
+      "collection_in_progress": "Bu fatura için zaten devam eden bir ödeme var.",
+      "checkout_session_unrevoked": "Müşteri şu anda bu faturayı çevrimiçi ödüyor olabilir. Birkaç dakika sonra yeniden deneyin.",
+      "retry_not_due": "Sonraki yeniden denemenin zamanı henüz gelmedi.",
+      "not_payable": "Bu fatura ödemeye açık değil.",
+      "nothing_to_pay": "Bu faturada ödenecek tutar kalmadı.",
+      "enrollment_inactive": "Bu müşteri için otomatik ödemeler etkin değil.",
+      "schedule_inactive": "Bu fatura artık otomatik ödeme için planlanmış değil.",
+      "generic": "Otomatik ödeme başlatılamadı. Güncel durumunu görmek için faturayı yenileyin."
     }
   },
   "reminders": {
