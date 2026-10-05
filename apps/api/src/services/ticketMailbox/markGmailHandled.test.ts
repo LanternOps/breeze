@@ -33,6 +33,12 @@ describe('isUsableHandledLabelName', () => {
     expect(isUsableHandledLabelName('Breeze/Ticketed')).toBe(true);
     expect(isUsableHandledLabelName('x'.repeat(100))).toBe(true);
   });
+  it('counts length in characters (code points), as the DB char_length CHECK does', () => {
+    // Each emoji is one character but two UTF-16 units.
+    expect(isUsableHandledLabelName('\u{1F600}'.repeat(60))).toBe(true);
+    expect(isUsableHandledLabelName('\u{1F600}'.repeat(100))).toBe(true);
+    expect(isUsableHandledLabelName('\u{1F600}'.repeat(101))).toBe(false);
+  });
   it('refuses blank, padded, over-long and system label names (any case)', () => {
     for (const bad of ['', '   ', ' Breeze', 'x'.repeat(101), 'INBOX', 'inbox', 'Trash', 'SPAM', 'category_updates']) {
       expect(isUsableHandledLabelName(bad), bad).toBe(false);

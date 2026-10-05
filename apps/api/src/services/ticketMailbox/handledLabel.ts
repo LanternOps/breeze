@@ -26,7 +26,9 @@ export class HandledLabelError extends Error {
 /** Whether `name` may be stored and used as the handled label. */
 export function isUsableHandledLabelName(name: string): boolean {
   const trimmed = name.trim();
-  if (!trimmed || trimmed !== name || name.length > HANDLED_LABEL_MAX_LENGTH) return false;
+  // Counted in Unicode code points, as the DB CHECK's char_length counts them;
+  // String.length counts UTF-16 units and would reject e.g. 60 emoji as 120.
+  if (!trimmed || trimmed !== name || [...name].length > HANDLED_LABEL_MAX_LENGTH) return false;
   const upper = trimmed.toUpperCase();
   return !RESERVED_LABEL_NAMES.has(upper) && !upper.startsWith('CATEGORY_');
 }

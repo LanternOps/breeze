@@ -28,6 +28,7 @@ import { encryptSecret } from '../../services/secretCrypto';
 import { eq, sql } from 'drizzle-orm';
 import { markIngestedGmailHandled, parseGmailProviderMessageId } from '../../services/ticketMailbox/markIngestedGmailHandled';
 import { listMailboxConnections, updateGmailHandling } from '../../services/ticketMailbox/connectionService';
+import { isUsableHandledLabelName } from '../../services/ticketMailbox/handledLabel';
 import type { NormalizedInboundEmail } from '../../services/inboundEmail/types';
 
 let db: any;
@@ -494,5 +495,13 @@ describe('Gmail handling setting on the mailbox connection', () => {
       .set({ gmailHandledError: 'something_else' } as never).where(eq(ticketMailboxConnections.id, connId))))).toBe('23514');
     expect(await code(withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
       .set({ gmailHandledLabel: 'x'.repeat(101) } as never).where(eq(ticketMailboxConnections.id, connId))))).toBe('23514');
+    // The API's limit and the CHECK count the same unit (characters, not UTF-16 units).
+    const emoji = (n: number) => '\u{1F600}'.repeat(n);
+    expect(isUsableHandledLabelName(emoji(100))).toBe(true);
+    expect(await code(withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledLabel: emoji(100) } as never).where(eq(ticketMailboxConnections.id, connId))))).toBe('ok');
+    expect(isUsableHandledLabelName(emoji(101))).toBe(false);
+    expect(await code(withSystemDbAccessContext(() => db.update(ticketMailboxConnections)
+      .set({ gmailHandledLabel: emoji(101) } as never).where(eq(ticketMailboxConnections.id, connId))))).toBe('23514');
   });
 });

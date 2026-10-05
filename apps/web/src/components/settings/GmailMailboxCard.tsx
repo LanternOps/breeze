@@ -184,7 +184,9 @@ function GmailHandlingRow({
             id={`gmail-handling-label-${connection.id}`}
             data-testid="gmail-handling-label"
             className="rounded border p-2 text-sm"
-            maxLength={100}
+            // The browser counts UTF-16 units; 100 characters (the API and DB
+            // limit, which the API enforces) can take up to 200 of them.
+            maxLength={200}
             placeholder={t('gmailMailbox.handling.labelPlaceholder')}
             value={label}
             onChange={(e) => setLabel(e.target.value)}
