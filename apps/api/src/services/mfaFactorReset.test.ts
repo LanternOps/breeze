@@ -158,7 +158,7 @@ describe('resetAllFactorsAndInvalidate', () => {
     const result = await resetAllFactorsAndInvalidate(USER, 'admin-mfa-reset');
 
     expect(order).toEqual(['runOutsideDbContext', 'withSystemDbAccessContext', 'invalidate:begin', 'invalidate:committed', 'redis.del']);
-    expect(invalidateMock).toHaveBeenCalledWith(USER, 'admin-mfa-reset', expect.any(Function));
+    expect(invalidateMock).toHaveBeenCalledWith(USER, 'admin-mfa-reset', expect.any(Function), undefined, undefined);
     expect(redisDelMock).toHaveBeenCalledWith(`mfa:setup:${USER}`, `sms:phone-setup:${USER}`, `passkey:challenge:registration:${USER}`, `passkey:challenge:authentication:${USER}`);
     expect(result).toEqual({
       mfaEpoch: 9,

@@ -250,8 +250,6 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/dev/push': 'equivalent check: devPushAuth wraps requirePermission(DEVICES_EXECUTE)+requireMfa for API key',
   // routes/devices/customFieldValues.ts
   'PATCH /api/v1/devices/:id/custom-fields': 'equivalent check: dualAuth with devices:write permission (+MFA) in-route',
-  // routes/eventWs.ts
-  'POST /api/v1/events/ws-ticket': 'own account: Mints caller own read-only event-stream ticket; scoped to caller orgs/sites',
   // routes/externalServices.ts
   'POST /api/v1/support': 'own account: emails support as caller; rate limited, no tenant data written',
   // routes/helper/index.ts

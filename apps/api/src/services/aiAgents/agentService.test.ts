@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import { PartnerWideWriteDeniedError } from '../partnerWideAccess';
+import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 import { ResearchAgentEditError } from './researchAgentEdit';
 
@@ -300,6 +301,22 @@ describe('assertAgentWriteAllowed', () => {
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o1', partnerId: null })).not.toThrow();
     expect(() => assertAgentWriteAllowed(auth(), { orgId: 'o9', partnerId: null }))
       .toThrow(AgentAccessDeniedError);
+  });
+
+  it.each([
+    ['one site', ['s1']],
+    ['zero sites', []],
+  ])('an org caller restricted to %s cannot write an org-wide agent', (_label, siteIds) => {
+    const restricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: siteIds });
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(SITE_CEILING_WRITE_DENIED_MESSAGE);
+    expect(() => assertAgentWriteAllowed(restricted, { orgId: 'o1', partnerId: null }))
+      .toThrow(AgentAccessDeniedError);
+  });
+
+  it('an unrestricted org caller can still write its own org agent', () => {
+    const unrestricted = auth({ scope: 'organization', orgId: 'o1', partnerId: null, allowedSiteIds: undefined });
+    expect(() => assertAgentWriteAllowed(unrestricted, { orgId: 'o1', partnerId: null })).not.toThrow();
   });
 
   it('ai_agent principal can never write', () => {

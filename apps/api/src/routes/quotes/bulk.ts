@@ -8,6 +8,7 @@ import { deleteDraftQuote } from '../../services/quoteService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { writeRouteAudit, type AuthContext as AuditAuthContext } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
+import { auditBillingDocument } from '../../services/billingDocumentAudit';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
 export const quoteBulkRoutes = new Hono();
@@ -20,7 +21,9 @@ quoteBulkRoutes.post('/bulk-delete', scopes, writePerm, zValidator('json', bulkQ
     const ctx = dbAccessContextFromAuth(c.get('auth') as AuthContext);
     const actor = quoteActorFrom(c);
     const { ids } = c.req.valid('json');
-    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftQuote(id, actor)) });
+    // Audit each delete after its own transaction commits; skipped/failed ids are not audited.
+    return c.json({ data: await runBulkIsolated(ctx, ids, (id) => deleteDraftQuote(id, actor),
+      async (_id, deleted) => auditBillingDocument(c, 'quote', 'delete', deleted, { bulk: true })) });
   } catch (err) { return handleServiceError(c, err); }
 });
 
@@ -51,6 +54,7 @@ quoteBulkRoutes.post('/bulk-send', scopes, sendPerm, zValidator('json', bulkQuot
         // Never rejects (DeferredQuoteEmail's contract), so a delivery failure
         // cannot flip a committed send into a reported bulk failure.
         const delivery = await sent.deliverEmail();
+        auditBillingDocument(c, 'quote', 'send', sent.quote, { bulk: true, emailed: delivery.emailed });
         if (sent.superseded) {
           supersedeAudits.push({
             childQuoteId: id,

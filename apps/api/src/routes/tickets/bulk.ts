@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
-import { bulkTicketActionSchema } from '@breeze/shared';
+import { bulkTicketActionSchema, ERROR_CODES } from '@breeze/shared';
 import { assignTicket, changeTicketStatus, softDeleteTicket, getAssigneeForValidation, TicketServiceError } from '../../services/ticketService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { actorFrom, getScopedTicketOr404 } from './tickets';
@@ -37,7 +37,7 @@ ticketsBulkRoutes.post(
     const body = c.req.valid('json');
 
     if (auth.scope === 'organization' && !auth.orgId) {
-      return c.json({ error: 'Organization context required' }, 403);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     // 'delete' is a soft-delete and needs the elevated tickets:manage grant
@@ -48,7 +48,7 @@ ticketsBulkRoutes.post(
       const canManage = perms
         ? hasPermission(perms, PERMISSIONS.TICKETS_MANAGE.resource, PERMISSIONS.TICKETS_MANAGE.action)
         : false;
-      if (!canManage) return c.json({ error: 'Deleting tickets requires ticket management permission' }, 403);
+      if (!canManage) return c.json({ error: 'Deleting tickets requires ticket management permission', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     // Request-level assignee pre-validation: an unknown assignee (or, for
@@ -59,10 +59,10 @@ ticketsBulkRoutes.post(
     if (body.action === 'assign' && body.assigneeId) {
       const assignee = await getAssigneeForValidation(body.assigneeId);
       if (!assignee) {
-        return c.json({ error: 'Assignee not found' }, 400);
+        return c.json({ error: 'Assignee not found', code: ERROR_CODES.ASSIGNEE_NOT_FOUND }, 400);
       }
       if (auth.scope === 'partner' && auth.partnerId && assignee.partnerId !== auth.partnerId) {
-        return c.json({ error: 'Assignee must belong to the same partner as the ticket' }, 400);
+        return c.json({ error: 'Assignee must belong to the same partner as the ticket', code: ERROR_CODES.ASSIGNEE_PARTNER_MISMATCH }, 400);
       }
     }
 

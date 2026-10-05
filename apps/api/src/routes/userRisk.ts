@@ -15,6 +15,7 @@ import {
   updateUserRiskPolicy
 } from '../services/userRiskScoring';
 import { emitUserRiskFeedback } from '../services/mlFeedbackEmitters';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 
 const listScoresQuerySchema = z.object({
   orgId: z.string().guid().optional(),
@@ -443,6 +444,13 @@ userRiskRoutes.put(
   async (c) => {
     const auth = c.get('auth');
     const payload = c.req.valid('json');
+
+    // The risk policy (weights, thresholds, automatic interventions) applies
+    // to every user in the organization, so a caller limited to a subset of
+    // sites cannot edit it.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
 
     const resolved = resolveWriteOrgId(auth, payload.orgId);
     if (!resolved.orgId) {
