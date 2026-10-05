@@ -2825,7 +2825,8 @@
     "submitStepUp": "Vérifier et déplacer",
     "submitting": "En cours…",
     "cancel": "Annuler",
-    "genericError": "Impossible de déplacer l'appareil."
+    "genericError": "Impossible de déplacer l'appareil.",
+    "timeout": "Le déplacement prend plus de temps que prévu et est peut-être encore en cours sur le serveur. Attendez une minute, puis actualisez la page pour vérifier dans quelle organisation se trouve l'appareil avant de réessayer."
   },
   "networkDeviceDetailPage": {
     "approval": {

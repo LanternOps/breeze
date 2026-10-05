@@ -173,6 +173,13 @@ export default function MoveDeviceOrgDialog({
       onCompleted({ targetOrgId, targetOrgName });
       onClose();
     } catch (err) {
+      // The client gave up waiting, but the server keeps running the move
+      // transaction and may still commit it (#7988). Don't report a plain
+      // failure that invites an immediate retry.
+      if (err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        setError(t('moveDeviceOrgDialog.timeout'));
+        return;
+      }
       const status = (err as { status?: number } | null)?.status;
       const errCode = (err as { code?: string } | null)?.code;
       if (status === 403 && errCode === 'STEP_UP_REQUIRED') {
