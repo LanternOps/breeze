@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { SCHEDULE_CONTROL_MARKERS } from '@breeze/shared';
-import { invoices, invoiceCollectionAttempts, invoiceAutopaySchedules, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
+import { invoices, invoiceCollectionAttempts, invoiceAutopaySchedules, invoiceStripePayments, orgAutopayEnrollments, orgPaymentMethods } from '../../db/schema';
 import { buildPublicLinkLiveOrgPredicate } from '../publicLinkOrgGate';
 import { toMinorUnits } from '../stripeMoney';
 import type { NoticePreSendValidator } from './noticeOutbox';
@@ -16,7 +16,7 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
   )).limit(1);
   if (!invoice || invoice.orgId !== row.orgId || invoice.id !== row.invoiceId
     || !['sent', 'partially_paid', 'overdue'].includes(invoice.status)
-    || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0 || invoice.autopayExcluded) return obsolete;
+    || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0) return obsolete;
   const [attempt] = await tx.select().from(invoiceCollectionAttempts).where(and(
     eq(invoiceCollectionAttempts.id, frozen.attemptId), eq(invoiceCollectionAttempts.invoiceId, invoice.id),
     eq(invoiceCollectionAttempts.orgId, row.orgId),
@@ -26,6 +26,24 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
     .where(and(eq(invoiceCollectionAttempts.invoiceId, invoice.id), eq(invoiceCollectionAttempts.orgId, row.orgId)))
     .orderBy(desc(invoiceCollectionAttempts.createdAt), desc(invoiceCollectionAttempts.attemptNo)).limit(1);
   if (latest?.id !== attempt.id) return obsolete;
+  // returned / pay / expired report money facts about an open invoice. Stopping,
+  // pausing, skipping or excluding autopay afterwards does not make them untrue, so
+  // only the invoice, the attempt and the reversed payment decide them.
+  if (frozen.variant === 'returned') {
+    if (attempt.state !== 'succeeded' || !attempt.invoiceStripePaymentId || typeof frozen.returnIdentity !== 'string') return obsolete;
+    const [mapping] = await tx.select().from(invoiceStripePayments).where(and(
+      eq(invoiceStripePayments.id, attempt.invoiceStripePaymentId), eq(invoiceStripePayments.orgId, row.orgId),
+    )).limit(1);
+    return mapping && mapping.id === attempt.invoiceStripePaymentId && mapping.orgId === row.orgId
+      && mapping.invoiceId === invoice.id && mapping.disputeFundsWithdrawn
+      && frozen.returnIdentity.startsWith(`${mapping.id}:`) ? null : obsolete;
+  }
+  if (frozen.variant === 'expired') return attempt.state === 'canceled' ? null : obsolete;
+  if (frozen.variant === 'pay') return ['failed', 'canceled'].includes(attempt.state) ? null : obsolete;
+  if (frozen.variant !== 'confirm' && frozen.variant !== 'update') return obsolete;
+  // confirm / update ask the client to act on autopay, so they hold only while
+  // that autopay authority (invoice, schedule, enrollment generation) still does.
+  if (invoice.autopayExcluded) return obsolete;
   const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(and(
     eq(invoiceAutopaySchedules.invoiceId, invoice.id), eq(invoiceAutopaySchedules.orgId, row.orgId),
   )).limit(1);
@@ -47,7 +65,5 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
     )).limit(1);
     return method?.status === 'active' ? obsolete : null;
   }
-  if (frozen.variant === 'returned') return attempt.state === 'succeeded' ? null : obsolete;
-  if (frozen.variant === 'expired') return attempt.state === 'canceled' ? null : obsolete;
-  return frozen.variant === 'pay' && ['failed', 'canceled'].includes(attempt.state) ? null : obsolete;
+  return obsolete;
 };

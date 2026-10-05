@@ -702,3 +702,34 @@ runDb.each([
 });
 
 import {upsertConnection} from '../../services/accounting/accountingConnectionService';
+
+// Batch 2b (F): the returned-payment email reports a money fact. Stopping or
+// pausing autopay before the return arrives must not cancel it at dispatch.
+const returnMail = vi.hoisted(() => ({ send: vi.fn(async () => undefined) }));
+vi.mock('../../services/email', () => ({ getEmailService: () => ({ sendEmail: returnMail.send }) }));
+import { dispatchPendingBillingNotices } from '../../services/autopay/noticeOutbox';
+import { pauseAutopay, turnOffAutopay } from '../../services/autopay/enrollmentLifecycle';
+async function returnedFailures(invoiceId: string) {
+  const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(and(
+    eq(billingNoticeOutbox.invoiceId, invoiceId), eq(billingNoticeOutbox.kind, 'payment_failed'))));
+  return rows.filter(row => (row.rendered as { frozen: { variant?: string } }).frozen.variant === 'returned');
+}
+runDb.each(['stop', 'pause'] as const)('dispatches the returned-payment email after autopay %s', async action => {
+  returnMail.send.mockClear();
+  const f = await seedAutopayBank();
+  await withSystemDbAccessContext(() => action === 'stop'
+    ? turnOffAutopay(db, f.actor, f.orgId) : pauseAutopay(db, f.actor, f.orgId));
+  const [enrollment] = await withSystemDbAccessContext(() => db.select().from(orgAutopayEnrollments)
+    .where(eq(orgAutopayEnrollments.orgId, f.orgId)));
+  expect(enrollment!.status).toBe(action === 'stop' ? 'cancelled' : 'paused');
+  await ingestStripeFinancialEvent(financialEvent(f, { stripeEventId: `evt_after_${action}_${f.invoiceId}`,
+    eventType: 'charge.dispute.funds_withdrawn', providerCreated: 300, refundedAmountMinor: null,
+    disputeId: `dp_${f.invoiceId}`, disputeAmountMinor: 10000, disputeFundsWithdrawn: true }));
+  expect(await returnedFailures(f.invoiceId)).toHaveLength(1);
+  await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+  const [returned] = await returnedFailures(f.invoiceId);
+  expect(returned).toMatchObject({ status: 'sent', lastError: null });
+  expect(returnMail.send).toHaveBeenCalledWith(expect.objectContaining({
+    to: 'billing@example.test', text: expect.stringContaining('returned a previously completed payment'),
+  }));
+});
