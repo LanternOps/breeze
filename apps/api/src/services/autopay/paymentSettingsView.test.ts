@@ -147,3 +147,19 @@ it('lists a client with no authorization on file even when the configured fee is
     ['none-card', null, null], ['none-bank', null, null], ['other-method', null, null],
   ]);
 });
+
+// F-7: state law caps (CO 2%) or bans (CA) card fees; a client authorized at that legal
+// maximum is not "below the configured terms", and re-authorizing them changes nothing.
+it('compares card authorizations against the fee the client\'s state allows', async () => {
+  mocks.resolve.mockResolvedValue({ ...inherited, cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' } });
+  const card = (bps: number) => ({ methodType: 'card', cardFeeBps: bps, achFeeAmount: '0.00', feeAttested: true, currency: 'USD' });
+  const rows = [
+    { orgId: 'co', orgName: 'CO-Card', methodType: 'card', feeTerms: card(200), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CO' },
+    { orgId: 'ca', orgName: 'CA-Card', methodType: 'card', feeTerms: card(0), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CA' },
+    { orgId: 'co-low', orgName: 'CO below cap', methodType: 'card', feeTerms: card(100), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'CO' },
+    { orgId: 'ny', orgName: 'NY-Card', methodType: 'card', feeTerms: card(200), cardFeeBps: null, achFeeAmount: null, billingAddressCountry: 'US', billingAddressRegion: 'NY' },
+  ];
+  const chain: any = { from: () => chain, innerJoin: () => chain, leftJoin: () => chain, where: () => chain, orderBy: async () => rows };
+  expect((await feeAuthorizationGaps({ selectDistinctOn: () => chain } as unknown as typeof db, partnerId)).map(gap => [gap.orgId, gap.cardFeeBps]))
+    .toEqual([['co-low', 200], ['ny', 300]]);
+});
