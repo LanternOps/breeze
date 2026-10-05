@@ -456,6 +456,12 @@ async function processAggregateScores(): Promise<{ orgsProcessed: number }> {
   return { orgsProcessed: rows.length };
 }
 
+/**
+ * How long an approved remediation action may wait for dispatch. Approval
+ * normally dispatches within seconds; this only bites when the queue stalled.
+ */
+const REMEDIATION_APPROVAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 async function processRemediationActionInContext(data: RemediateActionJobData): Promise<{
   actionId: string;
   queued: boolean;
@@ -517,6 +523,40 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
     return { actionId: action.id, queued: false, commandId: null };
   }
 
+  const returnForReapproval = async (reason: 'approver_lacks_execute' | 'approval_expired') => {
+    await db
+      .update(cisRemediationActions)
+      .set({
+        status: 'pending_approval',
+        approvalStatus: 'pending',
+        approvedBy: null,
+        approvedAt: null,
+        approvalNote: null,
+        details: {
+          ...(action.details ?? {}),
+          returnedForReapprovalAt: new Date().toISOString(),
+          returnedForReapprovalReason: reason,
+        },
+      })
+      .where(and(
+        eq(cisRemediationActions.id, action.id),
+        eq(cisRemediationActions.status, 'queued'),
+      ));
+  };
+
+  // An approval is a decision about the device as it was when it was made.
+  // One that has waited longer than the max age without being dispatched (a
+  // stalled or backlogged queue) goes back for a fresh decision rather than
+  // running on a stale one. A missing approval time is treated as expired.
+  const approvedAtMs = action.approvedAt ? new Date(action.approvedAt).getTime() : Number.NaN;
+  if (!Number.isFinite(approvedAtMs) || Date.now() - approvedAtMs > REMEDIATION_APPROVAL_MAX_AGE_MS) {
+    console.warn(
+      `[CisJobs] processRemediationAction: action ${action.id} returned to pending — approval is older than the dispatch max age`,
+    );
+    await returnForReapproval('approval_expired');
+    return { actionId: action.id, queued: false, commandId: null };
+  }
+
   // The approval is only as good as the approver right now: active, still
   // holding devices:execute for the action's org, and still reaching the
   // device's site. This also covers actions approved before the approve route
@@ -533,24 +573,7 @@ async function processRemediationActionInContext(data: RemediateActionJobData): 
     console.warn(
       `[CisJobs] processRemediationAction: action ${action.id} returned to pending — approver no longer holds devices:execute for this device`,
     );
-    await db
-      .update(cisRemediationActions)
-      .set({
-        status: 'pending_approval',
-        approvalStatus: 'pending',
-        approvedBy: null,
-        approvedAt: null,
-        approvalNote: null,
-        details: {
-          ...(action.details ?? {}),
-          returnedForReapprovalAt: new Date().toISOString(),
-          returnedForReapprovalReason: 'approver_lacks_execute',
-        },
-      })
-      .where(and(
-        eq(cisRemediationActions.id, action.id),
-        eq(cisRemediationActions.status, 'queued'),
-      ));
+    await returnForReapproval('approver_lacks_execute');
     return { actionId: action.id, queued: false, commandId: null };
   }
 
@@ -848,6 +871,7 @@ export async function scheduleCisRemediation(actionIds: string[]): Promise<numbe
 }
 
 export const __testOnly = {
+  REMEDIATION_APPROVAL_MAX_AGE_MS,
   processRemediationAction,
   processScheduleScans,
   processRunBaselineScan,

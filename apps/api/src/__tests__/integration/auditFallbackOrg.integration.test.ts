@@ -20,10 +20,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
 
-import { auditLogs, devices } from '../../db/schema';
+import { auditLogs, devices, users } from '../../db/schema';
 import { invoiceSettingsRoutes } from '../../routes/invoices/settings';
 import { writeAuditEvent } from '../../services/auditEvents';
-import { runWithAuditRequestTracking } from '../../services/auditService';
+import { getAuditRetryQueueDepth, runWithAuditRequestTracking } from '../../services/auditService';
+import { authMiddleware } from '../../middleware/auth';
 import { resolveFallbackOrgId } from '../../services/auditFallbackOrg';
 import { createAccessToken } from '../../services/jwt';
 import type { AuthContext } from '../../middleware/auth';
@@ -48,9 +49,16 @@ const fallbackAudit = new Function('writeAuditEvent', 'runWithAuditRequestTracki
   transpile(`${indexSource.slice(helpersStart, helpersEnd)}\nreturn ${indexSource.slice(mwStart, mwEnd)};`),
 )(writeAuditEvent, runWithAuditRequestTracking, resolveFallbackOrgId) as MiddlewareHandler;
 
+// A mutating route that writes no audit of its own and whose org is not in
+// the URL — the shape of a partner-level config write (catalog, templates) or
+// a body-targeted create. Real authMiddleware, so the request runs in the
+// caller's real DB access context as breeze_app.
+const PROBE_PATH = '/api/v1/catalog/__fallback-probe';
+
 function buildApp() {
   const api = new Hono();
   api.use('*', fallbackAudit);
+  api.post('/catalog/__fallback-probe', authMiddleware, (c) => c.json({ data: { ok: true } }, 201));
   api.route('/', invoiceSettingsRoutes);
   return new Hono().route('/api/v1', api);
 }
@@ -81,6 +89,36 @@ async function fallbackRowsFor(orgId: string) {
     .select({ orgId: auditLogs.orgId, action: auditLogs.action, details: auditLogs.details, result: auditLogs.result })
     .from(auditLogs)
     .where(and(eq(auditLogs.orgId, orgId), sql`${auditLogs.details}->>'fallback' = 'true'`));
+}
+
+async function probeRowsFor(actorId: string) {
+  return getTestDb()
+    .select({
+      id: auditLogs.id,
+      orgId: auditLogs.orgId,
+      actorId: auditLogs.actorId,
+      action: auditLogs.action,
+      details: auditLogs.details,
+      result: auditLogs.result,
+      checksum: auditLogs.checksum,
+    })
+    .from(auditLogs)
+    .where(and(eq(auditLogs.actorId, actorId), sql`${auditLogs.details}->>'path' = ${PROBE_PATH}`));
+}
+
+async function chainEntryFor(auditId: string) {
+  const rows = await getTestDb().execute(sql`
+    SELECT org_id, chain_checksum FROM audit_log_chain WHERE audit_id = ${auditId}
+  `);
+  return rows as unknown as Array<{ org_id: string | null; chain_checksum: string | null }>;
+}
+
+async function postProbe(token: string) {
+  return buildApp().request(PROBE_PATH, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orgId: randomUUID(), name: 'body-only target' }),
+  });
 }
 
 async function seedDevice(orgId: string) {
@@ -180,5 +218,58 @@ describe('fallback audit org resolution (real database)', () => {
     const rlsOnly = { ...auth, canAccessOrg: () => true } as AuthContext;
     await expect(resolveFallbackOrgId(fakeContext(rlsOnly), `/api/v1/devices/${ownDevice}`)).resolves.toBe(orgB.id);
     await expect(resolveFallbackOrgId(fakeContext(rlsOnly), `/api/v1/devices/${foreignDevice}`)).resolves.toBeNull();
+  });
+});
+
+describe('fallback audit rows that resolve no org (real database, breeze_app)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function expectLandedAndSealed(actorId: string, expectedOrgId: string | null) {
+    const rows = await awaitAuditRows(() => probeRowsFor(actorId), 1);
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.orgId).toBe(expectedOrgId);
+    expect(row.result).toBe('success');
+    expect(row.action).toBe('api.post.catalog.__fallback-probe');
+    expect(row.details).toEqual(expect.objectContaining({ fallback: true, path: PROBE_PATH, statusCode: 201 }));
+    // The request body is never copied into the row.
+    expect(JSON.stringify(row.details)).not.toContain('body-only target');
+    // The content-checksum trigger ran and the commit-time chain seal
+    // accepted the row (a NULL-org row joins the shared NULL-org chain).
+    expect(row.checksum).toBeTruthy();
+    const chain = await chainEntryFor(row.id);
+    expect(chain).toHaveLength(1);
+    expect(chain[0]!.org_id ?? null).toBe(expectedOrgId);
+    expect(chain[0]!.chain_checksum).toBeTruthy();
+    // Nothing failed and got parked for a silent retry.
+    expect(getAuditRetryQueueDepth()).toBe(0);
+    return row;
+  }
+
+  it('records a partner-level (NULL-org) row for a multi-org partner user', async () => {
+    const { env, token } = await seedPartnerWithTwoOrgs();
+    const res = await postProbe(token);
+    expect(res.status).toBe(201);
+    const row = await expectLandedAndSealed(env.user.id, null);
+    expect(row.details).toEqual(expect.objectContaining({ partnerId: env.partner.id }));
+  });
+
+  it('records an org-scope user\'s body-targeted write under that user\'s org', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const res = await postProbe(env.token);
+    expect(res.status).toBe(201);
+    const row = await expectLandedAndSealed(env.user.id, env.organization.id);
+    expect(row.details).not.toHaveProperty('partnerId');
+  });
+
+  it('records a NULL-org row for a platform admin', async () => {
+    const env = await setupTestEnvironment({ scope: 'system' });
+    await getTestDb().update(users).set({ isPlatformAdmin: true }).where(eq(users.id, env.user.id));
+    const res = await postProbe(env.token);
+    expect(res.status).toBe(201);
+    const row = await expectLandedAndSealed(env.user.id, null);
+    expect(row.details).not.toHaveProperty('partnerId');
   });
 });

@@ -684,12 +684,25 @@ api.use('*', async (c, next) => {
     return;
   }
 
+  const auth = c.get('auth') as {
+    user?: { id?: string; email?: string };
+    orgId?: string | null;
+    scope?: string;
+    partnerId?: string | null;
+  } | undefined;
+
+  // A write that names no org the caller can reach — partner-level config
+  // (catalog, price books, templates, integrations) or a body-targeted route —
+  // is still recorded when a signed-in user made it: as a partner-level row
+  // (org_id NULL) rather than under a guessed org. Partner-scope callers are
+  // attributed to their own partner. Unattributable requests (no user) are
+  // still skipped.
   const orgId = await resolveFallbackOrgId(c, path);
-  if (!orgId) {
+  if (!orgId && !auth?.user?.id) {
     return;
   }
+  const partnerId = !orgId && auth?.scope === 'partner' && auth.partnerId ? auth.partnerId : undefined;
 
-  const auth = c.get('auth') as { user?: { id?: string; email?: string }; orgId?: string | null } | undefined;
   const status = c.res.status;
 
   let result: 'success' | 'denied' | 'failure';
@@ -711,13 +724,13 @@ api.use('*', async (c, next) => {
   }
 
   writeAuditEvent(c, {
-    orgId,
+    orgId: orgId ?? null,
     actorType,
     actorId: auth?.user?.id ?? undefined,
     actorEmail: auth?.user?.email,
     action: buildFallbackAction(method, path),
     resourceType: getResourceTypeFromPath(path),
-    details: { path, method, statusCode: status, fallback: true },
+    details: { path, method, statusCode: status, fallback: true, ...(partnerId ? { partnerId } : {}) },
     result
   });
 });

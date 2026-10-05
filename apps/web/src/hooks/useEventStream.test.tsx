@@ -128,3 +128,20 @@ describe('useEventStream partner scope', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('useEventStream ticket permission denial', () => {
+  it('stops after a single 403 from the ticket endpoint (no retry loop, no reconnect timer)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValue({ ok: false, status: 403, json: async () => ({}) } as Response);
+
+    renderHook(() => useEventStream({ onEvent: vi.fn() }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});

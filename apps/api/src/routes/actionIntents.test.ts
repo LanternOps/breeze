@@ -11,6 +11,7 @@ const {
   hasSealedMock,
   unsealMock,
   burnMock,
+  checkToolPermMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   getUserPermissionsMock: vi.fn(),
@@ -21,6 +22,7 @@ const {
   hasSealedMock: vi.fn(() => true),
   unsealMock: vi.fn(() => 'Tmp-Pass-1234!'),
   burnMock: vi.fn(async () => true),
+  checkToolPermMock: vi.fn((): string | null => null),
 }));
 
 vi.mock('../db', () => ({
@@ -38,6 +40,9 @@ vi.mock('../services/permissions', () => ({
   getUserPermissions: getUserPermissionsMock,
   canAccessOrg: canAccessOrgMock,
   userCanDecideApprovals: userCanDecideApprovalsMock,
+}));
+vi.mock('../services/aiGuardrails', () => ({
+  checkToolPermissionForResolvedUser: checkToolPermMock,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
 vi.mock('../services/actionIntents/metrics', () => ({
@@ -88,12 +93,12 @@ function mockIntentSelect(rows: unknown[]) {
   });
 }
 
-function buildApp(userId = 'user-1'): Hono {
+function buildApp(userId = 'user-1', scope: 'organization' | 'system' = 'organization'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
-      scope: 'organization',
-      orgId: ORG_ID,
+      scope,
+      orgId: scope === 'system' ? null : ORG_ID,
       partnerId: null,
       accessibleOrgIds: [ORG_ID],
       user: { id: userId, email: 'tech@example.com', name: 'Tech' },
@@ -117,6 +122,8 @@ beforeEach(() => {
   burnMock.mockResolvedValue(true);
   canAccessOrgMock.mockReturnValue(true);
   userCanDecideApprovalsMock.mockReturnValue(true);
+  checkToolPermMock.mockReturnValue(null);
+  getUserPermissionsMock.mockResolvedValue({ some: 'perms' });
 });
 
 describe('POST /action-intents/:id/reveal-secret', () => {
@@ -142,6 +149,67 @@ describe('POST /action-intents/:id/reveal-secret', () => {
     const evt = recordActionIntentEventMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(evt.outcome).toBe('revealed');
     expect(JSON.stringify(evt)).not.toContain(PLAINTEXT);
+  });
+
+  it('requester path re-resolves permissions live against the intent org and tool', async () => {
+    mockIntentSelect([baseIntent()]);
+    const res = await reveal(buildApp('user-1'));
+    expect(res.status).toBe(200);
+    expect(getUserPermissionsMock).toHaveBeenCalledWith('user-1', expect.objectContaining({ orgId: ORG_ID }));
+    expect(checkToolPermMock).toHaveBeenCalledWith('m365_reset_password', expect.any(Object), { some: 'perms' });
+  });
+
+  it('requester who no longer holds the permission to create the intent gets 403', async () => {
+    mockIntentSelect([baseIntent()]);
+    checkToolPermMock.mockReturnValue('Insufficient permissions: requires organizations.write');
+    const res = await reveal(buildApp('user-1'));
+    expect(res.status).toBe(403);
+    expect(burnMock).not.toHaveBeenCalled();
+    expect(unsealMock).not.toHaveBeenCalled();
+    const audit = writeRouteAuditMock.mock.calls[0]![1] as Record<string, unknown>;
+    expect(audit.result).toBe('denied');
+  });
+
+  it('requester who lost access to the intent org gets 403', async () => {
+    mockIntentSelect([baseIntent()]);
+    canAccessOrgMock.mockReturnValue(false);
+    const res = await reveal(buildApp('user-1'));
+    expect(res.status).toBe(403);
+    expect(burnMock).not.toHaveBeenCalled();
+  });
+
+  it('requester with no resolvable permissions gets 403', async () => {
+    mockIntentSelect([baseIntent()]);
+    getUserPermissionsMock.mockResolvedValue(null);
+    const res = await reveal(buildApp('user-1'));
+    expect(res.status).toBe(403);
+    expect(burnMock).not.toHaveBeenCalled();
+  });
+
+  it('platform-admin requester (system scope, no membership) resolves via the live system branch and may reveal', async () => {
+    mockIntentSelect([baseIntent()]);
+    getUserPermissionsMock.mockImplementation(async (_id: string, ctx: Record<string, unknown>) =>
+      ctx.scope === 'system' && !ctx.orgId && !ctx.partnerId ? { scope: 'system' } : null);
+    const res = await reveal(buildApp('user-1', 'system'));
+    expect(res.status).toBe(200);
+    expect(getUserPermissionsMock).toHaveBeenCalledWith('user-1', { scope: 'system' });
+  });
+
+  it('demoted ex-platform-admin (system scope, live grant gone) is denied', async () => {
+    mockIntentSelect([baseIntent()]);
+    getUserPermissionsMock.mockResolvedValue(null);
+    const res = await reveal(buildApp('user-1', 'system'));
+    expect(res.status).toBe(403);
+    expect(getUserPermissionsMock).toHaveBeenCalledWith('user-1', { scope: 'system' });
+    expect(burnMock).not.toHaveBeenCalled();
+  });
+
+  it('platform admin may reveal an API-key-requested intent via the admin fallback', async () => {
+    mockIntentSelect([baseIntent({ requestedByUserId: null, requestingApiKeyId: 'key-1' })]);
+    getUserPermissionsMock.mockImplementation(async (_id: string, ctx: Record<string, unknown>) =>
+      ctx.scope === 'system' && !ctx.orgId ? { scope: 'system' } : null);
+    const res = await reveal(buildApp('admin-1', 'system'));
+    expect(res.status).toBe(200);
   });
 
   it('a different user than the requester gets 403, burn never called, denial audited', async () => {

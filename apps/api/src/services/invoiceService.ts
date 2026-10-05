@@ -561,10 +561,12 @@ export async function removeLine(invoiceId: string, lineId: string, actor: Invoi
   });
 }
 
-export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor) {
+/** Returns the deleted invoice's id and org so the caller can audit the delete. */
+export async function deleteDraftInvoice(invoiceId: string, actor: InvoiceActor): Promise<{ id: string; orgId: string }> {
   return db.transaction(async (tx) => {
     const inv = await lockDraftInvoice(tx, invoiceId); requireInvoiceAccess(actor, inv);
     await tx.delete(invoices).where(eq(invoices.id, invoiceId)); // lines cascade
+    return { id: inv.id, orgId: inv.orgId };
   });
 }
 

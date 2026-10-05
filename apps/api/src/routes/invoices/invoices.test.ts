@@ -100,7 +100,7 @@ describe('invoice crud + lines routes', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('POST / creates a manual invoice', async () => {
-    (svc.createManualInvoice as any).mockResolvedValue({ id: INV_ID, status: 'draft' });
+    (svc.createManualInvoice as any).mockResolvedValue({ id: INV_ID, orgId: ORG_ID, status: 'draft' });
     const res = await app().request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -110,6 +110,9 @@ describe('invoice crud + lines routes', () => {
     const body = await res.json();
     expect(body.data.id).toBe(INV_ID);
     expect(svc.createManualInvoice).toHaveBeenCalledOnce();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'invoice.create', resourceType: 'invoice', resourceId: INV_ID,
+    }));
   });
 
   it('POST / rejects an invalid body (non-UUID orgId → 400, no service call)', async () => {
@@ -194,12 +197,15 @@ describe('invoice crud + lines routes', () => {
   });
 
   it('DELETE /:id deletes a draft invoice', async () => {
-    (svc.deleteDraftInvoice as any).mockResolvedValue(undefined);
+    (svc.deleteDraftInvoice as any).mockResolvedValue({ id: INV_ID, orgId: ORG_ID });
     const res = await app().request(`/${INV_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftInvoice).toHaveBeenCalledWith(INV_ID, expect.anything());
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'invoice.delete', resourceType: 'invoice', resourceId: INV_ID,
+    }));
   });
 
   it('maps an InvoiceServiceError to its status (NOTHING_TO_INVOICE → 409)', async () => {
