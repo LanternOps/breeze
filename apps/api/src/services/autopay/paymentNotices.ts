@@ -80,26 +80,12 @@ export async function enqueueAttemptNotice(tx: Tx, attemptId: string,
     && enrollment.orgId === invoice!.orgId && enrollment.status === 'active';
   // A merged history row may receive money notices but cannot mint collection controls.
   if ((variant === 'confirm' || variant === 'update') && !hasAuthority) return;
-  await enqueuePaymentFailedNotice(tx, { invoice: invoice!, org: org!, partner: partner!, email, variant,
-    enrollment: enrollment ?? null, failureClass: attempt.failureClass, dedupeKey,
-    frozen: { attemptId, returnIdentity: returnIdentity ?? null } });
-}
-
-type PaymentFailedVariant = 'confirm' | 'update' | 'pay' | 'returned' | 'expired';
-/** One renderer for every payment_failed variant, with or without an attempt. */
-async function enqueuePaymentFailedNotice(tx: Tx, input: {
-  invoice: typeof invoices.$inferSelect; org: typeof organizations.$inferSelect; partner: typeof partners.$inferSelect;
-  email: string; variant: PaymentFailedVariant; enrollment: { id: string; generation: number } | null;
-  failureClass: string | null; dedupeKey: string; frozen: Record<string, string | null>;
-}): Promise<void> {
-  const { invoice, org, partner, variant } = input;
   let tokenId: string | null = null;
   let actionLink: string;
-  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice, tx)).token);
+  if (variant === 'pay' || variant === 'returned' || variant === 'expired') actionLink = buildPublicInvoiceUrl((await getOrMintInvoiceLink(invoice!, tx)).token);
   else {
-    if (!input.enrollment) throw new Error('Payment notice collection authority missing');
-    const token = await mintBillingLinkToken(tx, { orgId: invoice.orgId, invoiceId: invoice.id,
-      enrollmentId: input.enrollment.id, generation: input.enrollment.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
+    const token = await mintBillingLinkToken(tx, { orgId: attempt.orgId, invoiceId: invoice!.id,
+      enrollmentId: method!.enrollmentId, generation: enrollment!.generation, purpose: variant === 'confirm' ? 'confirm_payment' : 'enroll', ttlDays: 14 });
     tokenId = token.id;
     actionLink = buildBillingLinkUrl(variant === 'confirm' ? 'confirm_payment' : 'enroll', token.token);
   }
@@ -107,21 +93,43 @@ async function enqueuePaymentFailedNotice(tx: Tx, input: {
     : variant === 'returned' ? 'Your bank returned a previously completed payment. The invoice balance has reopened. Please review the invoice and arrange payment.'
     : variant === 'confirm' ? 'Your bank requires confirmation before this payment can complete.'
     : variant === 'update' ? 'This payment method cannot be used. Please update it or pay this invoice.'
-    : input.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
+    : attempt.failureClass === 'nsf' ? 'The bank reported insufficient available funds. One retry may follow.'
     : 'Payment could not be completed. You can pay this invoice now.';
-  const vars = { org_name: org.name, partner_name: partner.name, invoice_number: invoice.invoiceNumber!,
-    amount_due: `${invoice.currencyCode} ${invoice.balance}`, failure_text: failureText,
+  const vars = { org_name: org!.name, partner_name: partner!.name, invoice_number: invoice!.invoiceNumber!,
+    amount_due: `${invoice!.currencyCode} ${invoice!.balance}`, failure_text: failureText,
     action_link: actionLink, action_label: variant === 'confirm' ? 'Confirm payment' : variant === 'update' ? 'Update payment method' : 'Pay invoice' };
   const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
-    custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'), frozen: { ...input.frozen, variant, tokenId } } });
-  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
-    kind: 'payment_failed', seq: 1, dedupeKey: input.dedupeKey, toEmail: input.email, rendered });
+    custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_failed'), frozen: { attemptId, variant, tokenId, returnIdentity: returnIdentity ?? null } } });
+  await enqueueBillingNotice(tx, { orgId: attempt.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
+    kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
+}
+
+export function attentionDedupeKey(attemptId: string,event: string,returnIdentity?: string): string {
+  return `autopay:${attemptId}:${event}${returnIdentity ? `:${returnIdentity}` : ''}`;
+}
+export async function notifyPaymentAttention(input: {
+  partnerId: string; orgId: string; invoiceId: string; attemptId: string; returnIdentity?: string; message?: string;
+  event: 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'autopay.needs_attention';
+}): Promise<void> {
+  if (input.event === 'payment.ach_returned' && !input.returnIdentity) throw new Error('Returned payment identity missing');
+  const message = input.event === 'payment.unapplied'
+    ? 'Stripe collected money that could not be applied. Review the payment and refund it in Stripe if appropriate.'
+    : input.event === 'payment.ach_returned' ? 'A bank payment was returned. The invoice balance has reopened.'
+    : input.event === 'payment.failed_final' ? 'Automatic payment has stopped retrying. The client can pay the invoice directly.'
+    : 'Automatic payment needs attention. Review the invoice before trying again.';
+  try { await sendAutopayStaffEmail({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
+    dedupeKey:attentionDedupeKey(input.attemptId,input.event,input.returnIdentity),
+    message:input.message ?? `${message} Invoice: ${input.invoiceId}; attempt: ${input.attemptId}`});
+  } catch(error) {
+    reportCollectionError(error,{org_id:input.orgId,invoice_id:input.invoiceId,attempt_id:input.attemptId,
+      autopay_phase:'staff_email',...(input.returnIdentity?{return_identity:input.returnIdentity}:{})});
+  }
 }
 
 /** A due schedule failed because the org's shared autopay method became unusable
  * (a sibling invoice's hard decline or detach, or failed bank verification). It has
- * no attempt of its own, so this is the client's one notice for the invoice: the
- * update-method variant, which also leads to paying the invoice directly.
+ * no attempt of its own, so this is the client's one notice for the invoice, in the
+ * update-method variant.
  * Caller holds the invoice lock in the transaction that failed the schedule.
  */
 export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): Promise<void> {
@@ -145,28 +153,17 @@ export async function enqueueMethodUnusableNotice(tx: Tx, scheduleId: string): P
   // A stopped or re-requested enrollment cannot mint an update-method link.
   if (!enrollment || enrollment.orgId !== invoice.orgId || enrollment.status !== 'active'
     || enrollment.generation !== schedule.enrollmentGeneration) return;
-  await enqueuePaymentFailedNotice(tx, { invoice, org, partner, email, variant: 'update', enrollment,
-    failureClass: null, dedupeKey, frozen: { attemptId: null, scheduleId: schedule.id, returnIdentity: null } });
-}
-
-export function attentionDedupeKey(attemptId: string,event: string,returnIdentity?: string): string {
-  return `autopay:${attemptId}:${event}${returnIdentity ? `:${returnIdentity}` : ''}`;
-}
-export async function notifyPaymentAttention(input: {
-  partnerId: string; orgId: string; invoiceId: string; attemptId: string; returnIdentity?: string; message?: string;
-  event: 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied' | 'autopay.needs_attention';
-}): Promise<void> {
-  if (input.event === 'payment.ach_returned' && !input.returnIdentity) throw new Error('Returned payment identity missing');
-  const message = input.event === 'payment.unapplied'
-    ? 'Stripe collected money that could not be applied. Review the payment and refund it in Stripe if appropriate.'
-    : input.event === 'payment.ach_returned' ? 'A bank payment was returned. The invoice balance has reopened.'
-    : input.event === 'payment.failed_final' ? 'Automatic payment has stopped retrying. The client can pay the invoice directly.'
-    : 'Automatic payment needs attention. Review the invoice before trying again.';
-  try { await sendAutopayStaffEmail({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
-    dedupeKey:attentionDedupeKey(input.attemptId,input.event,input.returnIdentity),
-    message:input.message ?? `${message} Invoice: ${input.invoiceId}; attempt: ${input.attemptId}`});
-  } catch(error) {
-    reportCollectionError(error,{org_id:input.orgId,invoice_id:input.invoiceId,attempt_id:input.attemptId,
-      autopay_phase:'staff_email',...(input.returnIdentity?{return_identity:input.returnIdentity}:{})});
-  }
+  // Same 'update' variant rendering as enqueueAttemptNotice, frozen to the schedule
+  // instead of an attempt (validatePaymentActionNotice has a schedule-bound branch).
+  const token = await mintBillingLinkToken(tx, { orgId: invoice.orgId, invoiceId: invoice.id,
+    enrollmentId: enrollment.id, generation: enrollment.generation, purpose: 'enroll', ttlDays: 14 });
+  const vars = { org_name: org.name, partner_name: partner.name, invoice_number: invoice.invoiceNumber!,
+    amount_due: `${invoice.currencyCode} ${invoice.balance}`,
+    failure_text: 'This payment method cannot be used. Please update it or pay this invoice.',
+    action_link: buildBillingLinkUrl('enroll', token.token), action_label: 'Update payment method' };
+  const rendered = await renderBillingNotice('payment_failed', { payment: { id: 'payment_failed', vars,
+    custom: partnerEmailCustomFromSettings(partner.settings, 'payment_failed'),
+    frozen: { attemptId: null, scheduleId: schedule.id, variant: 'update', tokenId: token.id, returnIdentity: null } } });
+  await enqueueBillingNotice(tx, { orgId: invoice.orgId, partnerId: invoice.partnerId, invoiceId: invoice.id,
+    kind: 'payment_failed', seq: 1, dedupeKey, toEmail: email, rendered });
 }

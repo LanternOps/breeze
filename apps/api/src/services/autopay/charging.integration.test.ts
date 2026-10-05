@@ -1703,6 +1703,16 @@ it('a sibling due after a hard decline fails once with one update-method notice,
  expect(await attempts(b.invoice.id)).toEqual([]);expect(provider.create).toHaveBeenCalledOnce();
  const {validatePaymentActionNotice}=await import('./paymentNoticeValidation');
  expect(await withSystemDbAccessContext(()=>validatePaymentActionNotice(db,failed[0]!))).toBeNull();
+ // Dispatch for real: the pre-send validator must let the attemptless notice through.
+ const sendEmail=vi.fn(async(_message:{to:string;subject:string;text:string})=>{expect(hasDbAccessContext()).toBe(false);});
+ const mail=vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+ try { await dispatchPendingBillingNotices(); } finally { mail.mockRestore(); }
+ const [sent]=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id,failed[0]!.id)));
+ expect(sent).toMatchObject({status:'sent'});expect(sent!.sentAt).toBeInstanceOf(Date);
+ const toB=sendEmail.mock.calls.map(([message])=>message).filter(message=>message.subject.includes(b.invoice.invoiceNumber!));
+ expect(toB).toHaveLength(1);
+ expect(toB[0]).toMatchObject({to:'billing@example.test'});
+ expect(toB[0]!.text).toContain('This payment method cannot be used.');
 });
 
 // The consent said "Only invoices up to X qualify": the effective cap is the lower of
