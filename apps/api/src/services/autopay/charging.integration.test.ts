@@ -563,7 +563,7 @@ import type Stripe from 'stripe';
 import { autopaySetupAttempts } from '../../db/schema/autopaySetupAttempts';
 import { persistCapturedAutopayMethod } from './setupCompletion';
 import { mintBillingLinkToken } from './linkTokens';
-import { collectAfterBankSetup } from './bankPayment';
+import { collectAfterBankSetup, getBankAutopayOffer, startInvoiceBankSetup } from './bankPayment';
 import { disconnectPartnerStripe } from '../partnerStripe';
 import { pollStripeFinancialEvents } from '../stripeFinancialEventPoller';
 
@@ -1447,6 +1447,94 @@ it.each(['unchanged', 'card metadata absent', 'ach lowered'] as const)(
       expect(provider.confirm).toHaveBeenCalledOnce();
       expect(provider.cancel).not.toHaveBeenCalled();
     }
+  });
+// #7896: an ACH fee cut cancels the on-session attempt before any provider confirm. The
+// client re-authorizes the new total with a fresh bank setup; the old authority stays spent.
+it.each(['none', 'not_needed', 'scheduled'] as const)(
+  'fee cut mid bank-pay: re-authorizing the new total collects it, the old authority never confirms (schedule=%s)', async shape => {
+    const f = await fixture(undefined, { cardFeeBps: 300 });
+    await withSystemDbAccessContext(async () => {
+      await db.update(billingPaymentSettings).set({ achFeeAmount: '2.50' }).where(eq(billingPaymentSettings.partnerId, f.partner.id));
+      // An invoice issued before the client enrolled has an ineligible, terminal schedule.
+      if (shape === 'not_needed') await db.update(invoiceAutopaySchedules).set({ state: 'not_needed', eligible: false,
+        ineligibleReason: 'enrolled_after_issue', stateReason: 'enrolled_after_issue' }).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+      if (shape === 'none') await db.delete(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    });
+    const a = await bankSetup(f, 'feecut', undefined, '2.50');
+    const create = provider.create.getMockImplementation()!;
+    provider.create.mockImplementationOnce(async (...args) => {
+      const remote = await create(...args);
+      await withSystemDbAccessContext(() => db.update(billingPaymentSettings).set({ achFeeAmount: '2.00' })
+        .where(eq(billingPaymentSettings.partnerId, f.partner.id)));
+      return remote;
+    });
+    // Stripe's view of the hosted setup B that the re-authorization creates.
+    const setupB = { id: 'cs_bank_reauth', setup_intent: 'seti_bank_reauth' };
+    const liveB = { id: 'pm_bank_reauth', type: 'us_bank_account', customer: 'cus_autopay_test',
+      us_bank_account: { account_holder_type: 'company', bank_name: 'Test bank', last4: '6789' } };
+    provider.sessionCreate.mockImplementation(async () => {
+      expect(hasDbAccessContext()).toBe(false);
+      return { ...setupB, url: 'https://checkout.stripe.com/c/setup/reauth' };
+    });
+    const sentB = () => provider.sessionCreate.mock.calls[0]![0];
+    provider.sessionRetrieve.mockImplementation(async id => id === a.session.id ? a.session
+      : { ...setupB, mode: 'setup', status: 'complete', customer: 'cus_autopay_test', metadata: sentB().metadata });
+    provider.setupRetrieve.mockImplementation(async id => id === a.intent.id ? a.intent
+      : { id: setupB.setup_intent, status: 'succeeded', customer: 'cus_autopay_test', payment_method: liveB.id,
+        mandate: 'mandate_reauth', metadata: sentB().setup_intent_data.metadata });
+    provider.methodRetrieve.mockImplementation(async id => id === a.liveMethod.id ? a.liveMethod : liveB);
+    provider.mandateRetrieve.mockImplementation(async id => ({ id, status: 'active',
+      payment_method: id === 'mandate_reauth' ? liveB.id : a.liveMethod.id }));
+    const collect = (setupSessionId: string) => collectAfterBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id, setupSessionId });
+
+    // The cut lands after reservation: the attempt is canceled before any confirm.
+    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'canceled' });
+    expect(provider.confirm).not.toHaveBeenCalled();
+    // The spent authority A can never be replayed into a provider confirm.
+    await expect(collect(a.session.id!)).rejects.toMatchObject({ status: 409 });
+    await withSystemDbAccessContext(() => db.update(billingLinkTokens).set({ consumedAt: null }).where(eq(billingLinkTokens.id, a.token.id)));
+    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_used' });
+    // A client attempt has no notice to redo: a terminal schedule keeps its history and is not
+    // left with a pending re-notice marker that would cancel every later confirm on the invoice.
+    const [schedule] = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
+      .where(eq(invoiceAutopaySchedules.invoiceId, f.invoice.id)));
+    if (shape === 'none') expect(schedule).toBeUndefined();
+    if (shape === 'not_needed') expect(schedule).toMatchObject({ state: 'not_needed', stateReason: 'enrolled_after_issue' });
+    // A live schedule is re-noticed with the new method and fee, as before.
+    if (shape === 'scheduled') expect(schedule).toMatchObject({ state: 'awaiting_notice' });
+    expect(schedule?.stateReason).not.toBe('control_pending:renotice');
+
+    // The invoice offers the new total and accepts a fresh authorization for it.
+    const offer = await getBankAutopayOffer(f.invoice.id, f.org.id);
+    expect(offer).toMatchObject({ available: true, principal: '100.00', fee: '2.00', methodStatus: 'active' });
+    expect(offer!.consentText).toContain('plus a processing fee of USD 2.00');
+    await expect(startInvoiceBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id, returnTo: 'public', ip: null, userAgent: null,
+      terms: { methodType: 'us_bank_account', phase: 'setup', consentAccepted: true, principal: '100.00', fee: '2.50', currency: 'USD',
+        disclosureHash: offer!.disclosureHash } })).rejects.toMatchObject({ status: 409 });
+    expect(await startInvoiceBankSetup({ invoiceId: f.invoice.id, orgId: f.org.id, returnTo: 'public', ip: null, userAgent: null,
+      terms: { methodType: 'us_bank_account', phase: 'setup', consentAccepted: true, principal: offer!.principal, fee: offer!.fee,
+        currency: 'USD', disclosureHash: offer!.disclosureHash } })).toEqual({ url: 'https://checkout.stripe.com/c/setup/reauth' });
+    expect(sentB().metadata).toMatchObject({ principal_minor: '10000', fee_minor: '200' });
+
+    // Collecting B charges exactly the newly accepted total, once.
+    expect(await collect(setupB.id)).toMatchObject({ outcome: 'created' });
+    expect(provider.confirm).toHaveBeenCalledOnce();
+    expect(provider.create).toHaveBeenLastCalledWith(expect.objectContaining({ amount: 10200,
+      metadata: expect.objectContaining({ authority_ach_fee: '2.00' }) }), expect.anything());
+    const rows = await attempts(f.invoice.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.idempotencyKey === `autopay-bankpay:${a.setup.id}`)).toMatchObject({ state: 'canceled', feeAmount: '2.50' });
+    const [setup] = await withSystemDbAccessContext(() => db.select().from(autopaySetupAttempts)
+      .where(eq(autopaySetupAttempts.checkoutSessionId, setupB.id)));
+    expect(rows.find(row => row.idempotencyKey === `autopay-bankpay:${setup!.id}`))
+      .toMatchObject({ state: 'processing', principalAmount: '100.00', feeAmount: '2.00' });
+
+    // B is spent by its confirmed debit: a replay, even with its token reset, starts nothing.
+    // (Terminal confirmed attempts: 'bank authority remains immutable and consumed after terminal cancellation'.)
+    await withSystemDbAccessContext(() => db.update(billingLinkTokens).set({ consumedAt: null }).where(eq(billingLinkTokens.id, setup!.tokenId!)));
+    expect(await collect(setupB.id)).toMatchObject({ attemptId: null, outcome: 'deferred', reason: 'collection_in_progress' });
+    expect(provider.confirm).toHaveBeenCalledOnce();
+    expect(await attempts(f.invoice.id)).toHaveLength(2);
   });
 it.each(['2.50', '3.00'])('binds a nonzero bank fee to complete client authorization: %s', async fee => {
   const f = await fixture();
