@@ -18,46 +18,56 @@
 --
 -- The action per edge:
 --   CASCADE  -- the child row is meaningless without its parent (per-device
---               results/compliance/rollbacks, alert notifications and
---               correlations, ticket comments, AI messages and tool runs,
---               automation runs, maintenance occurrences, role permissions,
---               access-review items, login sessions, a deleted user's
---               add-in bindings and token-exchange grants, ...).
+--               results/compliance/rollbacks, alert notifications of a
+--               deleted alert, alert correlations, ticket comments, AI
+--               messages and tool runs, automation runs, maintenance
+--               occurrences, role permissions, a deleted user's access-review
+--               items, login sessions, add-in bindings and token-exchange
+--               grants, ...).
 --   SET NULL -- a nullable attribution or back-reference on a row that has
 --               its own owner and must survive (created_by / connected_by /
 --               approved_by / verified_by on partner-level integrations and
 --               records, a rollback's originating job, the author of a
 --               ticket comment, an approval's requesting OAuth session, an
 --               AI tool execution's originating message (the execution
---               itself goes with its session), an
---               auth browser transition's current family -- both of that
---               composite FK's columns are nullable and must be NULL
---               together, which is exactly what SET NULL does).
+--               itself goes with its session), an alert notification's
+--               channel (delivery history outlives a deleted channel; the
+--               column is made nullable for it), an auth browser
+--               transition's current family -- both of that composite FK's
+--               columns are nullable and must be NULL together, which is
+--               exactly what SET NULL does).
 --
--- Deliberately NOT changed (still pinned on the ledger, each with a note):
+-- Deliberately NOT changed (still pinned or pre-cleared on the ledger, each
+-- with a note): access_review_items.role_id keeps NO ACTION -- a completed
+-- review's items are evidence and must not vanish when the reviewed role is
+-- deleted later; the role-delete route answers 409 instead, and org erasure
+-- clears the org's role items explicitly (ASSOCIATED_SYSTEM_SCOPED_TABLES);
 -- edges whose child carries UPDATE triggers that a SET NULL would fire
 -- (config_policy_assignments, config_policy_compliance_rules, patch_policies,
--- script_versions), NOT NULL attributions on partner credentials
+-- script_versions); NOT NULL attributions on partner credentials
 -- (partner_service_principals, partner_service_principal_keys -- CASCADE
--- would delete a partner's credential because its creator left), and
+-- would delete a partner's credential because its creator left); and
 -- partner_users.role_id (a partner membership must not disappear because a
 -- role was deleted).
 --
 -- Referential actions run with row security disabled, so these fire
 -- regardless of the children's RLS policies. No row is written here.
 --
--- Locking. Several parents (devices, alerts, users, tickets) take writes on
--- every heartbeat / request, and several children are large. Adding an FK
--- takes SHARE ROW EXCLUSIVE on the referenced table, and a validating add
--- would hold it for the whole scan. So, outside a transaction:
+-- Locking. Several parents (devices, alerts, users, tickets, roles) take
+-- writes on every heartbeat / request, and several children are large. So,
+-- outside a transaction:
 --   1. per table, one ALTER TABLE swaps each constraint NOT VALID (catalog
---      only, no scan). It still needs ACCESS EXCLUSIVE on the child and
---      SHARE ROW EXCLUSIVE on the parent, and a lock request queued behind a
---      long-running transaction blocks every later writer on that table, so
---      lock_timeout bounds the wait: the statement fails after 5s instead of
---      stalling heartbeats, and the file is safe to re-run. The replaced
---      constraint already guaranteed every existing row is valid; a NOT VALID
---      FK still checks new rows and still fires its ON DELETE action;
+--      only, no scan). Dropping an FK removes its RI triggers from BOTH
+--      tables, so this takes ACCESS EXCLUSIVE on the child AND on the parent
+--      (users, devices, alerts, tickets, ...) for the duration of the
+--      statement -- brief once granted, but it conflicts with every reader
+--      too, and a lock request queued behind a long-running transaction
+--      (a report, a pg_dump/backup) blocks every later reader and writer of
+--      that table. lock_timeout bounds the wait: the statement fails after
+--      5s instead of stalling heartbeats, autoMigrate aborts boot, and the
+--      file re-runs cleanly on the next start. The replaced constraint
+--      already guaranteed every existing row is valid; a NOT VALID FK still
+--      checks new rows and still fires its ON DELETE action;
 --   2. VALIDATE each constraint separately, which takes only
 --      SHARE UPDATE EXCLUSIVE on the child and ROW SHARE on the parent, so
 --      writes continue during the scan.
@@ -75,9 +85,6 @@ ALTER TABLE public.access_review_items
   DROP CONSTRAINT IF EXISTS access_review_items_reviewed_by_users_id_fk,
   ADD CONSTRAINT access_review_items_reviewed_by_users_id_fk
     FOREIGN KEY (reviewed_by) REFERENCES public.users(id) ON DELETE SET NULL NOT VALID,
-  DROP CONSTRAINT IF EXISTS access_review_items_role_id_roles_id_fk,
-  ADD CONSTRAINT access_review_items_role_id_roles_id_fk
-    FOREIGN KEY (role_id) REFERENCES public.roles(id) ON DELETE CASCADE NOT VALID,
   DROP CONSTRAINT IF EXISTS access_review_items_user_id_users_id_fk,
   ADD CONSTRAINT access_review_items_user_id_users_id_fk
     FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE NOT VALID;
@@ -111,13 +118,17 @@ ALTER TABLE public.alert_correlations
   ADD CONSTRAINT alert_correlations_parent_alert_id_alerts_id_fk
     FOREIGN KEY (parent_alert_id) REFERENCES public.alerts(id) ON DELETE CASCADE NOT VALID;
 
+-- channel_id becomes nullable (catalog-only, no scan) so deleting a channel
+-- -- possibly a partner-wide one shared by every org -- keeps the delivery
+-- history of every alert it ever paged, unlinked, instead of erasing it.
 ALTER TABLE public.alert_notifications
+  ALTER COLUMN channel_id DROP NOT NULL,
   DROP CONSTRAINT IF EXISTS alert_notifications_alert_id_alerts_id_fk,
   ADD CONSTRAINT alert_notifications_alert_id_alerts_id_fk
     FOREIGN KEY (alert_id) REFERENCES public.alerts(id) ON DELETE CASCADE NOT VALID,
   DROP CONSTRAINT IF EXISTS alert_notifications_channel_id_notification_channels_id_fk,
   ADD CONSTRAINT alert_notifications_channel_id_notification_channels_id_fk
-    FOREIGN KEY (channel_id) REFERENCES public.notification_channels(id) ON DELETE CASCADE NOT VALID;
+    FOREIGN KEY (channel_id) REFERENCES public.notification_channels(id) ON DELETE SET NULL NOT VALID;
 
 ALTER TABLE public.approval_requests
   DROP CONSTRAINT IF EXISTS approval_requests_requesting_session_id_fkey,
@@ -298,7 +309,6 @@ ALTER TABLE public.unifi_integrations
 
 -- 2. Validate (no write-blocking locks).
 ALTER TABLE public.access_review_items VALIDATE CONSTRAINT access_review_items_reviewed_by_users_id_fk;
-ALTER TABLE public.access_review_items VALIDATE CONSTRAINT access_review_items_role_id_roles_id_fk;
 ALTER TABLE public.access_review_items VALIDATE CONSTRAINT access_review_items_user_id_users_id_fk;
 ALTER TABLE public.accounting_connections VALIDATE CONSTRAINT accounting_connections_connected_by_fkey;
 ALTER TABLE public.ai_messages VALIDATE CONSTRAINT ai_messages_session_id_ai_sessions_id_fk;

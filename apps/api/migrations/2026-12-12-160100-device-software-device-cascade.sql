@@ -11,15 +11,19 @@
 -- table's size.
 --
 -- device_software is a large, agent-written table and devices takes a write on
--- every heartbeat. Re-adding the FK inside a transaction would hold
--- SHARE ROW EXCLUSIVE on devices (blocking heartbeat updates) for the whole
--- validation scan. Instead:
+-- every heartbeat. Re-adding the FK inside a transaction would hold a heavy
+-- lock on devices (blocking heartbeat updates) for the whole validation scan.
+-- Instead:
 --   1. swap the constraint NOT VALID in one ALTER TABLE statement (catalog
---      only, no scan). It still needs ACCESS EXCLUSIVE on device_software and
---      SHARE ROW EXCLUSIVE on devices, and a lock request queued behind a
---      long-running transaction blocks every later writer on that table, so
---      lock_timeout bounds the wait: the statement fails after 5s instead of
---      stalling heartbeats, and the file is safe to re-run. The constraint
+--      only, no scan). Dropping an FK removes its RI triggers from BOTH
+--      tables, so this takes ACCESS EXCLUSIVE on device_software AND on
+--      devices for the duration of the statement -- brief once granted, but
+--      it conflicts with readers too, and a lock request queued behind a
+--      long-running transaction (a report, a pg_dump/backup) blocks every
+--      later reader and writer of devices. lock_timeout bounds the wait:
+--      the statement fails after 5s instead of stalling heartbeats,
+--      autoMigrate aborts boot, and the file re-runs cleanly on the next
+--      start. The constraint
 --      being replaced already guaranteed every row is valid, and a NOT VALID
 --      FK still checks new rows and still fires its ON DELETE action;
 --   2. VALIDATE it as a separate statement, which takes only

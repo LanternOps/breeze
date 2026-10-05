@@ -30,6 +30,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { cascadeDeleteOrg, __tenantCascadeTestHooks } from '../../services/tenantCascade';
+import { isPgForeignKeyViolation } from '../../utils/pgErrors';
 
 interface Handles {
   partnerId: string;
@@ -458,6 +459,13 @@ async function seedRealistic(h: Handles): Promise<RealisticHandles> {
     INSERT INTO access_review_items (review_id, user_id, role_id, reviewed_by)
     VALUES (${review}, ${h.orgOnlyUserId}, ${orgRole}, ${h.orgOnlyUserId}) RETURNING id
   `);
+  // An item for a user who SURVIVES erasure (detached), on the erased org's
+  // role: only the role edge reaches it, and that edge has no ON DELETE
+  // action, so erasure must clear it explicitly.
+  const reviewItemSurvivingUser = await id(sql`
+    INSERT INTO access_review_items (review_id, user_id, role_id)
+    VALUES (${review}, ${h.sharedUserId}, ${orgRole}) RETURNING id
+  `);
 
   // Interactive session of the org-only user.
   const session = await id(sql`
@@ -517,7 +525,7 @@ async function seedRealistic(h: Handles): Promise<RealisticHandles> {
       { table: 'ai_tool_executions', column: 'id', values: [aiToolExecution] },
       { table: 'maintenance_occurrences', column: 'id', values: [occurrence] },
       { table: 'role_permissions', column: 'role_id', values: [orgRole] },
-      { table: 'access_review_items', column: 'id', values: [reviewItem] },
+      { table: 'access_review_items', column: 'id', values: [reviewItem, reviewItemSurvivingUser] },
       { table: 'sessions', column: 'id', values: [session] },
     ],
     selectedOnlyUserId: selectedOnly.userId,
@@ -554,7 +562,7 @@ describe('cascadeDeleteOrg — a realistic, in-use org', () => {
 
   it('completes and leaves no FK-only child row behind', async () => {
     const before = await childCounts(r);
-    expect(Object.values(before).every((n) => n === 1)).toBe(true);
+    for (const { table, values } of r.children) expect(before[table], table).toBe(values.length);
 
     await cascadeDeleteOrg(h.orgErased, h.actorUserId);
 
@@ -605,5 +613,61 @@ describe('cascadeDeleteOrg — a realistic, in-use org', () => {
     const epochAfter = await one<{ auth_epoch: number }>(sql`SELECT auth_epoch FROM users WHERE id = ${h.sharedUserId}`);
     expect(epochAfter.auth_epoch).toBe(epochBefore.auth_epoch + 1);
     expect(await count(sql`SELECT count(*) AS n FROM partner_users WHERE id = ${h.sharedMembershipId}`)).toBe(1);
+  });
+});
+
+/**
+ * The FK actions chosen for erasure must not destroy history in normal,
+ * non-erasure use.
+ */
+describe('FK actions outside erasure keep history', () => {
+  let h: Handles;
+
+  beforeEach(async () => {
+    h = await seed();
+  });
+
+  it('refuses to delete a role that access-review items still reference (the review is evidence)', async () => {
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const role = await one<{ id: string }>(sql`
+      INSERT INTO roles (partner_id, org_id, scope, name)
+      VALUES (${h.partnerId}, ${h.orgControl}, 'organization', ${`Reviewed ${suffix}`}) RETURNING id
+    `);
+    const review = await one<{ id: string }>(sql`
+      INSERT INTO access_reviews (partner_id, name) VALUES (${h.partnerId}, 'Review') RETURNING id
+    `);
+    const item = await one<{ id: string }>(sql`
+      INSERT INTO access_review_items (review_id, user_id, role_id)
+      VALUES (${review.id}, ${h.controlUserId}, ${role.id}) RETURNING id
+    `);
+
+    let caught: unknown;
+    try {
+      await getTestDb().execute(sql`DELETE FROM roles WHERE id = ${role.id}`);
+    } catch (err) {
+      caught = err;
+    }
+    expect(isPgForeignKeyViolation(caught, 'access_review_items_role_id_roles_id_fk')).toBe(true);
+    expect(await count(sql`SELECT count(*) AS n FROM access_review_items WHERE id = ${item.id}`)).toBe(1);
+  });
+
+  it('keeps alert delivery history, unlinked, when a notification channel is deleted', async () => {
+    const channel = await one<{ id: string }>(sql`
+      INSERT INTO notification_channels (partner_id, name, type) VALUES (${h.partnerId}, 'Partner pager', 'email') RETURNING id
+    `);
+    const alert = await one<{ id: string }>(sql`
+      INSERT INTO alerts (device_id, org_id, severity, title)
+      VALUES (${h.deviceControl}, ${h.orgControl}, 'high', 'CPU') RETURNING id
+    `);
+    const delivery = await one<{ id: string }>(sql`
+      INSERT INTO alert_notifications (alert_id, channel_id, status) VALUES (${alert.id}, ${channel.id}, 'sent') RETURNING id
+    `);
+
+    await getTestDb().execute(sql`DELETE FROM notification_channels WHERE id = ${channel.id}`);
+
+    const row = await one<{ channel_id: string | null; status: string }>(sql`
+      SELECT channel_id, status FROM alert_notifications WHERE id = ${delivery.id}
+    `);
+    expect(row).toEqual({ channel_id: null, status: 'sent' });
   });
 });

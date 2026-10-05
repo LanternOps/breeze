@@ -1047,6 +1047,22 @@ const ASSOCIATED_SYSTEM_SCOPED_TABLES: ReadonlyArray<{
       WHERE provider_id IN (SELECT id FROM sso_providers WHERE org_id = ${orgId})
     `,
   },
+  // access_review_items has no org_id of its own (its tenancy is its review's,
+  // which may be partner-wide), and its role_id FK deliberately has NO
+  // ON DELETE action: outside erasure a completed review's items are evidence
+  // and must survive a later role delete (routes/roles.ts answers 409). Org
+  // erasure deletes the org's own roles, so it clears the items that name
+  // them first -- including items for users who survive the erasure (e.g. a
+  // detached partner tech reviewed against this org's custom role). Items
+  // naming another org's or a partner role are untouched. Items for a user
+  // erasure deletes also go by ON DELETE CASCADE on user_id.
+  {
+    table: 'access_review_items',
+    clearSql: (orgId) => sql`
+      DELETE FROM access_review_items
+      WHERE role_id IN (SELECT id FROM roles WHERE org_id = ${orgId})
+    `,
+  },
   // psa_ticket_mappings has NO org_id/partner_id column, so neither the org
   // cascade list nor the partner-axis sweep reaches it — yet it holds THREE
   // FKs into the cascade set, every one of them declared without an explicit

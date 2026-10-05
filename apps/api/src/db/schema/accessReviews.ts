@@ -23,7 +23,7 @@ export const accessReviewItems = pgTable('access_review_items', {
   id: uuid('id').primaryKey().defaultRandom(),
   reviewId: uuid('review_id').notNull().references(() => accessReviews.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  roleId: uuid('role_id').notNull().references(() => roles.id, { onDelete: 'cascade' }),
+  roleId: uuid('role_id').notNull().references(() => roles.id),
   decision: accessReviewDecisionEnum('decision').notNull().default('pending'),
   notes: text('notes'),
   reviewedAt: timestamp('reviewed_at'),

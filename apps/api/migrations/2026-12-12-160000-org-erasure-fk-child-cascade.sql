@@ -41,12 +41,16 @@
 -- large, hot table; the remaining child edges are in 2026-12-12-160200.
 --
 -- Locking. These child tables are small, so each FK is re-added validating,
--- inside autoMigrate's per-file transaction. That holds SHARE ROW EXCLUSIVE on
--- users, scripts and script_tags (and ACCESS EXCLUSIVE on each child) until
--- the file commits, and a lock request queued behind a long-running
--- transaction blocks every later writer on that table, so wait at most a few
--- seconds for each lock rather than stall logins and heartbeats; the file is
--- idempotent and safe to retry. SET LOCAL covers every statement below.
+-- inside autoMigrate's per-file transaction. Dropping an FK removes its RI
+-- triggers from BOTH tables, so this takes ACCESS EXCLUSIVE on each child AND
+-- on the parents -- users, scripts, script_tags, mobile_devices -- and holds
+-- it until the file commits (the in-transaction validation of the small
+-- children included). ACCESS EXCLUSIVE conflicts with readers too, and a
+-- lock request queued behind a long-running transaction (a report, a
+-- pg_dump/backup) blocks every later reader and writer of that table, so
+-- wait at most a few seconds for each lock: on timeout autoMigrate aborts
+-- boot and the idempotent file re-runs cleanly on the next start. SET LOCAL
+-- covers every statement below.
 SET LOCAL lock_timeout = '5s';
 
 DO $$

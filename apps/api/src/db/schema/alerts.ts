@@ -379,7 +379,7 @@ export const escalationPolicies = pgTable('escalation_policies', {
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
   alertId: uuid('alert_id').notNull().references(() => alerts.id, { onDelete: 'cascade' }),
-  channelId: uuid('channel_id').notNull().references(() => notificationChannels.id, { onDelete: 'cascade' }),
+  channelId: uuid('channel_id').references(() => notificationChannels.id, { onDelete: 'set null' }),
   escalationStep: integer('escalation_step').notNull().default(0),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   sentAt: timestamp('sent_at'),

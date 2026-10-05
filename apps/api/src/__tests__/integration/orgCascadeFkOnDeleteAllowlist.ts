@@ -371,6 +371,17 @@ export const ORG_CASCADE_FK_PRE_CLEARED: ReadonlyArray<OrgCascadeFkRef> = Object
       + 'guarantee the schema does not enforce.',
   },
   { childTable: 'psa_ticket_mappings', constraint: 'psa_ticket_mappings_connection_id_psa_connections_id_fk', parentTable: 'psa_connections', reason: 'pre-cleared', allColumnsNullable: false },
+  {
+    childTable: 'access_review_items',
+    constraint: 'access_review_items_role_id_roles_id_fk',
+    parentTable: 'roles',
+    reason: 'pre-cleared',
+    allColumnsNullable: false,
+    note:
+      'NO ACTION on purpose: outside erasure a review item is evidence and must survive a later role '
+      + 'delete (the role-delete route answers 409). The pre-clear keys off role_id IN the org\'s roles, '
+      + 'the same column as this FK.',
+  },
   { childTable: 'deployment_results', constraint: 'deployment_results_deployment_id_software_deployments_id_fk', parentTable: 'software_deployments', reason: 'pre-cleared', allColumnsNullable: false },
   { childTable: 'software_deployments', constraint: 'software_deployments_install_method_id_fkey', parentTable: 'software_install_methods', reason: 'pre-cleared', allColumnsNullable: true },
   { childTable: 'sso_sessions', constraint: 'sso_sessions_provider_id_sso_providers_id_fk', parentTable: 'sso_providers', reason: 'pre-cleared', allColumnsNullable: false },
