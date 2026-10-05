@@ -109,8 +109,12 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: dbMocks.writeRouteAuditMock,
 }));
 
+const { RemediationSourceDeviceErrorMock } = vi.hoisted(() => ({
+  RemediationSourceDeviceErrorMock: class RemediationSourceDeviceError extends Error {},
+}));
 vi.mock('../services/remediationSuggestions', () => ({
   generateRemediationSuggestions: dbMocks.generateMock,
+  RemediationSourceDeviceError: RemediationSourceDeviceErrorMock,
 }));
 
 vi.mock('../services/fixMemory/research', () => ({
@@ -1678,6 +1682,28 @@ describe('research / memory / draft-brief routes', () => {
       expect(dbMocks.generateMock).not.toHaveBeenCalled();
     });
 
+    it('Generate for an RCA 404s when the supplied deviceId sits outside the allowed sites', async () => {
+      const res = await app.request('/remediation-suggestions/generate', post({
+        sourceType: 'rca', sourceId: ALERT, orgId: ORG, deviceId: '77777777-7777-4777-8777-777777777777',
+      }));
+      expect(res.status).toBe(404);
+      expect(dbMocks.generateMock).not.toHaveBeenCalled();
+    });
+
+    it('Generate for an RCA with an in-site deviceId proceeds', async () => {
+      dbMocks.selectMock.mockReset();
+      dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [{ siteId: 'site-allowed' }] }) }) });
+      dbMocks.generateMock.mockResolvedValueOnce({ orgId: ORG, sourceType: 'rca', sourceId: ALERT, skipped: false, suggestions: [], research: null });
+      const res = await app.request('/remediation-suggestions/generate', post({
+        sourceType: 'rca', sourceId: ALERT, orgId: ORG, deviceId: '77777777-7777-4777-8777-777777777777',
+      }));
+      expect(res.status).toBe(201);
+      expect(dbMocks.generateMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceType: 'rca', deviceId: '77777777-7777-4777-8777-777777777777' }),
+        expect.anything(),
+      );
+    });
+
     it('F4: fails CLOSED (404, nothing started) when the source or its device cannot be resolved', async () => {
       for (const unresolved of [null, { deviceId: null }]) {
         dbMocks.requestResearchMock.mockClear();
@@ -1700,6 +1726,15 @@ describe('research / memory / draft-brief routes', () => {
   it('GET /draft-brief 404s an unknown suggestion', async () => {
     dbMocks.selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ limit: async () => [] }) }) });
     expect((await app.request(`/remediation-suggestions/${baseSuggestion.id}/draft-brief`, auth)).status).toBe(404);
+  });
+
+  it('Generate answers 400 when the RCA deviceId does not belong to the source', async () => {
+    dbMocks.generateMock.mockRejectedValueOnce(new RemediationSourceDeviceErrorMock('not part of this source'));
+    const res = await app.request('/remediation-suggestions/generate', post({
+      sourceType: 'rca', sourceId: ALERT, orgId: ORG, deviceId: '77777777-7777-4777-8777-777777777777',
+    }));
+    expect(res.status).toBe(400);
+    expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   describe('A2: research-starting POSTs are self-managed (no context held across requestResearch)', () => {
