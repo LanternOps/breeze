@@ -417,7 +417,9 @@ it.each(['skip', 'exclude', 'stop'] as const)('%s finalizes immediately and fenc
   expect(provider.confirm).not.toHaveBeenCalled();
 });
 
-it.each(['skip', 'exclude', 'stop'] as const)('%s stays pending until cancellation is verified, then finalizes once', async kind => {
+// Skip is refused once an attempt is confirming (spec 6.6); MSP exclude and stop
+// still fence and cancel. The skip refusal for this exact state is covered below.
+it.each(['exclude', 'stop'] as const)('%s stays pending until cancellation is verified, then finalizes once', async kind => {
   const f = await fixture();
   provider.confirm.mockRejectedValueOnce(new Error('crash before confirm'));
   await expect(attemptCollection(inputFor(f))).rejects.toThrow('crash before confirm');
@@ -439,12 +441,20 @@ it.each(['skip', 'exclude', 'stop'] as const)('%s stays pending until cancellati
   expect(provider.confirm).toHaveBeenCalledTimes(1);
 });
 
-it('settles succeeded-during-pending instead of sending a skip confirmation', async () => {
+it.each(['confirming', 'processing'] as const)('refuses a client skip once the attempt is %s; the payment completes with no skip confirmation', async state => {
   const f = await fixture();
-  await attemptCollection(inputFor(f));
-  await withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'skip', actor: f.actor}));
+  if (state === 'confirming') provider.confirm.mockRejectedValueOnce(new Error('crash before confirm'));
+  await (state === 'confirming' ? expect(attemptCollection(inputFor(f))).rejects.toThrow('crash before confirm') : attemptCollection(inputFor(f)));
+  expect((await attempts(f.invoice.id))[0]!.state).toBe(state);
+  await expect(withSystemDbAccessContext(() => requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'skip', actor: f.actor})))
+    .rejects.toMatchObject({status: 409, code: 'COLLECTION_IN_PROGRESS'});
+  expect(await scheduleFor(f)).toMatchObject({state: 'collecting', stateReason: null, clientSkippedAt: null});
+  // No fence was written, so the ordinary reconcile path finishes the payment.
+  const [attempt] = await attempts(f.invoice.id);
+  if (state === 'confirming') await resumeCollectionAttempt(attempt!.id);
   currentPi = {...currentPi, status: 'succeeded', amount_received: 10000};
   await reconcilePendingControls();
+  await applyAttemptOutcome(f.partner.id, attempt!.id);
   expect((await attempts(f.invoice.id))[0]!.state).toBe('succeeded');
   expect(await scheduleFor(f)).toMatchObject({state: 'succeeded', nextAttemptAt: null});
   const notices = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox));
