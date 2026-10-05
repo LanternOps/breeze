@@ -55,8 +55,7 @@ import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
 import { captureMessage } from './sentry';
 import {
   captureBackupErasureFence,
-  deleteAndFenceOrgBackupRows,
-  isBackupFenceSourceTable,
+  setBackupErasureContext,
   type BackupErasureFenceCounts,
 } from './backupErasureFence';
 import {
@@ -1474,14 +1473,22 @@ export async function deleteBackupSnapshotsCascadeStep(orgId: string): Promise<n
     if (await findPolicyBackupLegalHoldInContext(orgId, { lockForShare: true })) {
       throw new TenantCascadeRefusalError('LEGAL_HOLD_ACTIVE', LEGAL_HOLD_ACTIVE_MESSAGE);
     }
-    // Delete and fence in this one transaction (see backupErasureFence.ts).
-    const { deleted, newlyFenced } = await deleteAndFenceOrgBackupRows('backup_snapshots', orgId);
-    if (newlyFenced > 0) {
-      console.warn(`[tenantCascade] org=${orgId}: fenced ${newlyFenced} backup_snapshots target(s) created after the up-front capture`);
-    }
-    return deleted;
+    // The on-delete fence trigger records any row the up-front capture did
+    // not see (a backup that finished mid-erasure), in this transaction.
+    await setBackupErasureContext(orgId);
+    const result = await deleteOrgRows('backup_snapshots', orgId);
+    return extractRowCount(result);
   });
 }
+
+/**
+ * Test seams for the erasure scenarios in backupErasureFence.integration.test.ts.
+ * Never set in production code.
+ */
+export const __tenantCascadeTestHooks: {
+  /** After a walk step for `table` has committed. */
+  afterTableStep?: (table: string, orgId: string) => Promise<void>;
+} = {};
 
 /**
  * True if ANY backup legal hold applies to the org: a snapshot hold, a legacy
@@ -1599,6 +1606,9 @@ export async function cascadeDeleteOrg(
     resourceType: 'organization',
     resourceId: orgId,
     details: {
+      // Erasure deletes the org's backup ROWS but keeps every backup OBJECT
+      // (expired ones included) until an explicit deletion removes them.
+      objectsRetained: true,
       snapshotPrefixes: fenceCounts.snapshotPrefixes,
       recoveryMediaKeys: fenceCounts.recoveryMediaKeys,
       unresolvedIdentity: fenceCounts.unresolvedIdentity,
@@ -1728,6 +1738,7 @@ export async function cascadeDeleteOrg(
   for (const assoc of ASSOCIATED_SYSTEM_SCOPED_TABLES) {
     try {
       const count = await dbModule.withSystemDbAccessContext(async () => {
+        await setBackupErasureContext(orgId);
         const result = await dbModule.db.execute(assoc.clearSql(orgId));
         return extractRowCount(result);
       });
@@ -1812,17 +1823,11 @@ export async function cascadeDeleteOrg(
           })
         : table === 'backup_snapshots'
         ? await deleteBackupSnapshotsCascadeStep(orgId)
-        : isBackupFenceSourceTable(table)
-        // Delete + fence in one transaction: a row created after step 0 can
-        // never be deleted without its fence (see backupErasureFence.ts).
-        ? await dbModule.withSystemDbAccessContext(async () => {
-            const { deleted, newlyFenced } = await deleteAndFenceOrgBackupRows(table, orgId);
-            if (newlyFenced > 0) {
-              console.warn(`[tenantCascade] org=${orgId}: fenced ${newlyFenced} ${table} target(s) created after the up-front capture`);
-            }
-            return deleted;
-          })
         : await dbModule.withSystemDbAccessContext(async () => {
+            // Every walk transaction is marked as this org's erasure, so the
+            // on-delete fence trigger records any backup source row deleted in
+            // it — including through an ON DELETE CASCADE from this table.
+            await setBackupErasureContext(orgId);
             if(table==='invoice_stripe_payments')await dbModule.db.execute(sql`SET LOCAL breeze.tenant_erasure = '1'`);
             const isAuditAdmin = AUDIT_ADMIN_REQUIRED_TABLES.has(table);
             if (isAuditAdmin) {
@@ -1838,6 +1843,7 @@ export async function cascadeDeleteOrg(
           });
       stats.tablesDeleted[table] = (stats.tablesDeleted[table] ?? 0) + count;
       stats.totalRowsDeleted += count;
+      await __tenantCascadeTestHooks.afterTableStep?.(table, orgId);
     } catch (err) {
       // A precondition refusal (the `backup_snapshots` re-check above found a
       // hold that appeared mid-walk) is not a failure — it's the same

@@ -141,25 +141,17 @@ vi.mock('./auditService', () => ({
 
 // Backup storage fence capture and the policy-level legal-hold sources are
 // proven against real Postgres (backupErasureFence.integration.test.ts). Here
-// the fence step is a no-op and every source table's delete still goes
-// through db.execute, so the queued rowCount fixtures below line up exactly
-// as they did before the fence step existed.
+// the fence step is a no-op, so the queued rowCount fixtures below line up
+// exactly as they did before the fence step existed.
 const { captureFenceMock } = vi.hoisted(() => ({
   captureFenceMock: vi.fn(async () => ({ snapshotPrefixes: 0, recoveryMediaKeys: 0, unresolvedIdentity: 0 })),
 }));
-vi.mock('./backupErasureFence', async () => {
-  const { sql: sqlTag } = await import('drizzle-orm');
-  const dbMod = await import('../db');
-  const { extractRowCount } = await import('../db/rowCount');
-  return {
-    captureBackupErasureFence: captureFenceMock,
-    isBackupFenceSourceTable: () => false,
-    deleteAndFenceOrgBackupRows: async (table: string, orgId: string) => {
-      const result = await dbMod.db.execute(sqlTag`DELETE FROM ${sqlTag.raw(`"${table}"`)} WHERE org_id = ${orgId}`);
-      return { deleted: extractRowCount(result), newlyFenced: 0 };
-    },
-  };
-});
+vi.mock('./backupErasureFence', () => ({
+  captureBackupErasureFence: captureFenceMock,
+  // Sets a transaction-local GUC the on-delete fence trigger reads; no row
+  // effect, so it must not consume a queued rowCount response.
+  setBackupErasureContext: vi.fn(async () => undefined),
+}));
 vi.mock('./erasureBackupLegalHold', () => ({
   findActiveBackupLegalHold: vi.fn(async () => ((mockState.legalHoldRows ?? []).length > 0 ? 'snapshot' : null)),
   findPolicyBackupLegalHoldInContext: vi.fn(async () => null),

@@ -21,13 +21,14 @@ import { sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { __backupGcTestHooks, sweepUnreferencedBackupObjects } from '../../jobs/backupRetention';
 import {
+  __tenantCascadeTestHooks,
   cascadeDeleteOrg,
   deleteBackupSnapshotsCascadeStep,
   TenantCascadeRefusalError,
   topologicalCascadeOrder,
 } from '../../services/tenantCascade';
-import { captureBackupErasureFence, deleteAndFenceOrgBackupRows } from '../../services/backupErasureFence';
-import { withSystemDbAccessContext } from '../../db';
+import { captureBackupErasureFence, setBackupErasureContext } from '../../services/backupErasureFence';
+import { db, withSystemDbAccessContext } from '../../db';
 import * as orgMergeModule from '../../services/orgMerge';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -404,19 +405,68 @@ describe('erasure fence capture', () => {
        ORDER BY timestamp DESC LIMIT 1
     `);
     expect(audit?.org_id).toBeNull();
-    expect(audit?.details).toEqual({ snapshotPrefixes: 4, recoveryMediaKeys: 5, unresolvedIdentity: 0 });
+    expect(audit?.details).toEqual({ objectsRetained: true, snapshotPrefixes: 4, recoveryMediaKeys: 5, unresolvedIdentity: 0 });
   });
 
-  runDb('a backup row created after the up-front capture is fenced by the same transaction that deletes it', async () => {
+  runDb('rows created after the up-front capture and deleted by a PARENT step\'s ON DELETE CASCADE are fenced', async () => {
     const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
     const a = await seedOrg(await seedPartner(), root);
-    await insertSnapshot(a, 'LATE-S0');
-    await captureBackupErasureFence(a.orgId);
-    await insertSnapshot(a, 'LATE-S1'); // a backup finishing mid-erasure
+    const baseSnapDbId = await insertSnapshot(a, 'LATE-S0');
+    const tokenId = await insertRecoveryToken(a, baseSnapDbId);
+    const [job] = await exec<{ id: string }>(sql`
+      INSERT INTO backup_jobs (org_id, config_id, device_id, status) VALUES (${a.orgId}, ${a.configId}, ${a.deviceId}, 'running') RETURNING id
+    `);
 
-    const result = await withSystemDbAccessContext(() => deleteAndFenceOrgBackupRows('backup_snapshots', a.orgId));
-    expect(result).toEqual({ deleted: 2, newlyFenced: 1 });
-    expect((await targetsFor(a.orgId)).map((t) => t.snapshot_id).sort()).toEqual(['LATE-S0', 'LATE-S1']);
+    // Each row appears AFTER its own table's walk step has run, so only the
+    // parent's cascade (backup_jobs → backup_snapshots, devices →
+    // reservations, backup_snapshots → recovery media) can remove it.
+    __tenantCascadeTestHooks.afterTableStep = async (table) => {
+      if (table === 'backup_snapshots') {
+        await exec(sql`
+          INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, backup_type)
+          VALUES (${a.orgId}, ${job!.id}, ${a.deviceId}, ${a.configId}, 'LATE-S1', ${a.identity}, 'file')
+        `);
+      }
+      if (table === 'backup_snapshot_id_reservations') {
+        await exec(sql`
+          INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state)
+          VALUES ('LATE-RES', ${a.orgId}, ${a.deviceId}, ${a.configId}, ${a.identity}, 'server_minted', 'reserved')
+        `);
+      }
+      if (table === 'recovery_media_artifacts') {
+        await exec(sql`
+          INSERT INTO recovery_media_artifacts (org_id, token_id, snapshot_id, platform, architecture, status, storage_key, checksum_storage_key)
+          VALUES (${a.orgId}, ${tokenId}, ${baseSnapDbId}, 'linux', 'amd64', 'ready', 'late-media/bundle.tar.gz', 'late-media/CHECKSUM.txt')
+        `);
+      }
+    };
+    try {
+      await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+    } finally {
+      delete __tenantCascadeTestHooks.afterTableStep;
+    }
+
+    expect(await exec(sql`SELECT id FROM organizations WHERE id = ${a.orgId}`)).toHaveLength(0);
+    const targets = await targetsFor(a.orgId);
+    expect(targets.filter((t) => t.kind === 'snapshot_prefix').map((t) => t.snapshot_id).sort())
+      .toEqual(['LATE-RES', 'LATE-S0', 'LATE-S1']);
+    expect(targets.filter((t) => t.kind === 'recovery_media_key').map((t) => t.object_key).sort())
+      .toEqual(['late-media/CHECKSUM.txt', 'late-media/bundle.tar.gz']);
+  });
+
+  runDb('control: the on-delete trigger records nothing outside an erasure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
+    const a = await seedOrg(await seedPartner(), root);
+    await insertSnapshot(a, 'NOERASE-S1');
+    await exec(sql`DELETE FROM backup_snapshots WHERE org_id = ${a.orgId}`);
+    expect(await targetsFor(a.orgId)).toEqual([]);
+    // …and only for the org the erasure names.
+    await insertSnapshot(a, 'NOERASE-S2');
+    await withSystemDbAccessContext(async () => {
+      await setBackupErasureContext(randomUUID());
+      await db.execute(sql`DELETE FROM backup_snapshots WHERE org_id = ${a.orgId}`);
+    });
+    expect(await targetsFor(a.orgId)).toEqual([]);
   });
 
   runDb('the walk deletes backup_snapshots before every table a policy-level hold lives in', async () => {
@@ -568,5 +618,134 @@ describe('org merge', () => {
       if (prior === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
       else process.env.ORG_MERGE_FENCE_DRAIN_MS = prior;
     }
+  });
+});
+
+describe('an erasure that aborts after the up-front capture', () => {
+  afterEach(() => {
+    clearHooks();
+    delete __tenantCascadeTestHooks.afterTableStep;
+  });
+
+  runDb('leaves the still-existing org\'s own GC working, while sibling orgs still never touch its prefixes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
+    const partnerId = await seedPartner();
+    const a = await seedOrg(partnerId, root);
+    await seedOrg(partnerId, root); // sibling B on the same identity
+
+    const liveKeys = await writeSnapshotObjects(root, 'ABORT-LIVE', THIRTY_DAYS_MS);
+    await insertSnapshot(a, 'ABORT-LIVE');
+    // A legacy NULL-identity row: fenced, but still A's own — it must not
+    // push A's unit into deferred mode.
+    const nullKeys = await writeSnapshotObjects(root, 'ABORT-NULL', THIRTY_DAYS_MS);
+    await insertSnapshot(a, 'ABORT-NULL', { identity: null });
+    // A retired prefix A's own retention already expired.
+    const retiredKeys = await writeSnapshotObjects(root, 'ABORT-RET', THIRTY_DAYS_MS);
+    await exec(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, backup_type, reason)
+      VALUES (${a.orgId}, ${a.configId}, ${a.deviceId}, 'ABORT-RET', ${a.identity}, 'file', 'expired')
+    `);
+    // A retired prefix whose retirement row the aborted cascade had ALREADY
+    // deleted: its only owner now is the fence, so it stays kept.
+    const goneKeys = await writeSnapshotObjects(root, 'ABORT-GONE', THIRTY_DAYS_MS);
+    await exec(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, backup_type, reason)
+      VALUES (${a.orgId}, ${a.configId}, ${a.deviceId}, 'ABORT-GONE', ${a.identity}, 'file', 'expired')
+    `);
+
+    // Abort the walk right after its first step.
+    let aborted = false;
+    __tenantCascadeTestHooks.afterTableStep = async () => {
+      if (aborted) return;
+      aborted = true;
+      throw new Error('injected mid-cascade failure');
+    };
+    await expect(cascadeDeleteOrg(a.orgId, PERFORMED_BY)).rejects.toThrow(/injected mid-cascade failure/);
+    delete __tenantCascadeTestHooks.afterTableStep;
+    expect(await exec(sql`SELECT id FROM organizations WHERE id = ${a.orgId}`)).toHaveLength(1);
+    expect((await targetsFor(a.orgId)).map((t) => t.snapshot_id).sort())
+      .toEqual(['ABORT-GONE', 'ABORT-LIVE', 'ABORT-NULL', 'ABORT-RET']);
+    await exec(sql`DELETE FROM backup_snapshot_retirements WHERE snapshot_id = 'ABORT-GONE'`);
+
+    await sweepUnreferencedBackupObjects();
+
+    const remaining = await listAll(root);
+    for (const key of retiredKeys) expect(remaining).not.toContain(key); // A's own GC reclaimed its expired prefix
+    for (const key of [...liveKeys, ...nullKeys, ...goneKeys]) expect(remaining).toContain(key);
+    // The NULL-identity row resolved and self-healed: A's unit was not deferred.
+    const [healed] = await exec<{ storage_identity: string | null }>(sql`
+      SELECT storage_identity FROM backup_snapshots WHERE snapshot_id = 'ABORT-NULL'
+    `);
+    expect(healed?.storage_identity).toBe(a.identity);
+  });
+});
+
+describe('referenced keys of fenced snapshots', () => {
+  runDb('are resolved once and stored; later runs keep them even when the manifest is no longer readable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
+    const partnerId = await seedPartner();
+    const a = await seedOrg(partnerId, root);
+    await seedOrg(partnerId, root);
+    await writeAged(root, 'snapshots/REF-A0/manifest.json', THIRTY_DAYS_MS, JSON.stringify({
+      files: [{ backupPath: 'snapshots/REF-A0/files/base.dat' }],
+    }));
+    await writeAged(root, 'snapshots/REF-A0/files/base.dat', THIRTY_DAYS_MS);
+    await writeSnapshotObjects(root, 'REF-A2', THIRTY_DAYS_MS, ['snapshots/REF-A0/files/base.dat']);
+    await insertSnapshot(a, 'REF-A2');
+    await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+
+    await sweepUnreferencedBackupObjects();
+    const [stored] = await exec<{ state: string; referenced_keys: string[] }>(sql`
+      SELECT state, referenced_keys FROM backup_erasure_fence_refs WHERE snapshot_id = 'REF-A2'
+    `);
+    expect(stored).toEqual({ state: 'resolved', referenced_keys: ['snapshots/REF-A0/files/base.dat'] });
+
+    // The fenced manifest becomes unreadable; the stored set still protects
+    // the base object, and the run neither fails nor defers.
+    await writeAged(root, 'snapshots/REF-A2/manifest.json', THIRTY_DAYS_MS, '{not json');
+    await writeAged(root, 'snapshots/REF-ORPHAN/manifest.json', TEN_DAYS_MS, JSON.stringify({ files: [] }));
+    const result = await sweepUnreferencedBackupObjects();
+    expect(result.blockedIdentities).toBe(0);
+    const remaining = await listAll(root);
+    expect(remaining).toContain('snapshots/REF-A0/files/base.dat');
+    expect(remaining).not.toContain('snapshots/REF-ORPHAN/manifest.json');
+  });
+
+  runDb('an unreadable fenced manifest is retried with backoff and defers reclamation instead of failing sibling sweeps', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
+    const partnerId = await seedPartner();
+    const a = await seedOrg(partnerId, root);
+    const b = await seedOrg(partnerId, root);
+    await writeAged(root, 'snapshots/BAD-A1/manifest.json', THIRTY_DAYS_MS, '{not json');
+    await writeAged(root, 'snapshots/BAD-A1/files/a.dat', THIRTY_DAYS_MS);
+    await insertSnapshot(a, 'BAD-A1');
+    await cascadeDeleteOrg(a.orgId, PERFORMED_BY);
+    // B's retired prefix would normally be reclaimed this run.
+    const bRetired = await writeSnapshotObjects(root, 'BAD-BRET', THIRTY_DAYS_MS);
+    await exec(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, backup_type, reason)
+      VALUES (${b.orgId}, ${b.configId}, ${b.deviceId}, 'BAD-BRET', ${b.identity}, 'file', 'expired')
+    `);
+
+    const result = await sweepUnreferencedBackupObjects();
+    expect(result.blockedIdentities).toBe(0);
+    expect(result.deferredIdentities).toBeGreaterThanOrEqual(1);
+    const remaining = await listAll(root);
+    expect(remaining).toContain('snapshots/BAD-A1/manifest.json');
+    expect(remaining).toContain('snapshots/BAD-A1/files/a.dat');
+    for (const key of bRetired) expect(remaining).toContain(key); // deferred, not reclaimed
+    const [row] = await exec<{ state: string; attempts: number; next_attempt_at: Date }>(sql`
+      SELECT state, attempts, next_attempt_at FROM backup_erasure_fence_refs WHERE snapshot_id = 'BAD-A1'
+    `);
+    expect(row?.state).toBe('unreadable');
+    expect(row?.attempts).toBe(1);
+    expect(new Date(row!.next_attempt_at).getTime()).toBeGreaterThan(Date.now() + 30 * 60 * 1000);
+
+    // Within the backoff the manifest is not re-read (attempts unchanged).
+    await sweepUnreferencedBackupObjects();
+    const [again] = await exec<{ attempts: number }>(sql`
+      SELECT attempts FROM backup_erasure_fence_refs WHERE snapshot_id = 'BAD-A1'
+    `);
+    expect(again?.attempts).toBe(1);
   });
 });

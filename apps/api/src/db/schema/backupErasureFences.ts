@@ -1,4 +1,4 @@
-import { bigint, boolean, index, integer, pgTable, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -61,4 +61,25 @@ export const backupErasureTargets = pgTable('backup_erasure_targets', {
   objectKeyIdx: index('backup_erasure_targets_object_key_idx').on(table.objectKey).where(sql`kind = 'recovery_media_key'`),
   subjectIdx: index('backup_erasure_targets_subject_idx').on(table.subjectOrgId),
   manifestIdx: index('backup_erasure_targets_manifest_idx').on(table.manifestId),
+}));
+
+/**
+ * Cache of the keys a fenced snapshot's manifests reference OUTSIDE its own
+ * prefix, per physical storage identity — resolved once, so storage GC does
+ * not re-read every fenced manifest every run. 'unreadable' rows carry a retry
+ * backoff. Not evidence: system scope may update; nobody may delete.
+ */
+export const backupErasureFenceRefs = pgTable('backup_erasure_fence_refs', {
+  storageIdentity: text('storage_identity').notNull(),
+  snapshotId: text('snapshot_id').notNull(),
+  /** resolved | unreadable */
+  state: text('state').notNull(),
+  referencedKeys: text('referenced_keys').array().notNull().default(sql`'{}'::text[]`),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'backup_erasure_fence_refs_pk', columns: [table.storageIdentity, table.snapshotId] }),
 }));

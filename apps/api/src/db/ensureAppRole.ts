@@ -221,6 +221,12 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_targets') THEN
           REVOKE UPDATE, DELETE, TRUNCATE ON TABLE backup_erasure_targets FROM breeze_app;
         END IF;
+        -- Its referenced-key cache may be updated (retry state) but never
+        -- deleted: removing a resolved row is harmless (GC re-reads), but the
+        -- table is not the app's to prune.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='backup_erasure_fence_refs') THEN
+          REVOKE DELETE, TRUNCATE ON TABLE backup_erasure_fence_refs FROM breeze_app;
+        END IF;
         -- #4371 — WRITER-PATH MATRIX for the six tables re-revoked below.
         --
         -- The original bug: pam_actuation_results shipped a migration REVOKE

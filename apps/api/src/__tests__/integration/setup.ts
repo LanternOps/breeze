@@ -236,6 +236,7 @@ const CLEANUP_TABLES = [
   // same-id prefix in every later test.
   'backup_erasure_targets',
   'backup_erasure_manifests',
+  'backup_erasure_fence_refs',
   'device_commands',
   'device_group_memberships',
   'device_groups',

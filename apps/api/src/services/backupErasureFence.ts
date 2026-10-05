@@ -14,25 +14,36 @@
  * the cascade) and gives GC the readers it needs to honour it. A fenced
  * target is never reclaimed by GC. Nothing here deletes an object.
  *
- * Capture runs twice per erasure, both idempotent (INSERT … ON CONFLICT DO
- * NOTHING on (kind, identity, snapshot id / object key)):
+ * Two mechanisms, both idempotent:
  *   1. `captureBackupErasureFence` — before the cascade's FIRST destructive
- *      step, in one committed transaction, from every source table at once.
- *      The cascade deletes children first, so recovery-media rows are gone
- *      before backup_snapshots; capturing up front is the only point where
- *      every source row and every destination (backup_configs) still exists.
- *   2. `deleteAndFenceOrgBackupRows` — each source table's own cascade step
- *      deletes with RETURNING and fences the returned rows in the SAME
- *      transaction, so a row inserted after step 1 (a backup finishing
- *      mid-erasure) can never be deleted without its fence committing with
- *      the delete.
+ *      step, in one committed transaction, from every source table at once,
+ *      resolving each destination through backup_configs while they still
+ *      exist. The cascade deletes children first, so recovery-media rows are
+ *      gone before backup_snapshots; capturing up front is the only point where
+ *      every source row and every destination still exists.
+ *   2. The `breeze_backup_erasure_fence_on_delete` BEFORE DELETE trigger on the
+ *      five source tables (migration 2026-12-11-100000). Every cascade
+ *      transaction sets `breeze.backup_erasure_org` LOCAL
+ *      (`setBackupErasureContext`); while it names the row's org, ANY delete of
+ *      a source row — its own table's step, or an ON DELETE CASCADE from
+ *      backup_jobs / devices / backup_configs / recovery_tokens /
+ *      backup_snapshots — records the fence in the deleting transaction. This
+ *      is what covers a row created after step 1 (a backup finishing, an id
+ *      reserved mid-erasure). One trigger rather than per-step
+ *      DELETE … RETURNING, because RETURNING sees only the step's own table and
+ *      misses every FK-cascaded delete.
  * Together: every source row the cascade deletes was fenced no later than the
  * transaction that deleted it, and normally long before. GC's ordering rule
  * (see jobs/backupRetention.ts, "erasure fences") relies on exactly this.
+ *
+ * Fences carry their subject org. GC treats a fenced id as foreign for every
+ * org EXCEPT the subject org's own sweep while it still holds a live row for
+ * that id — so an erasure that aborts after step 1 leaves the still-existing
+ * org's own retention and GC working normally.
  */
 import { inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { backupErasureTargets, type BackupErasureTargetSource } from '../db/schema/backupErasureFences';
+import { backupErasureFenceRefs, backupErasureTargets, type BackupErasureTargetSource } from '../db/schema/backupErasureFences';
 import { asRecord, getStringValue, normalizeStorageIdentity } from './backupStorageIdentity';
 
 function rowsOf<T>(result: unknown): T[] {
@@ -41,18 +52,14 @@ function rowsOf<T>(result: unknown): T[] {
   return Array.isArray(rows) ? (rows as T[]) : [];
 }
 
-/** Tables whose rows name backup storage an erased org owned. */
-export const BACKUP_FENCE_SOURCE_TABLES = [
-  'backup_snapshot_id_reservations',
-  'backup_snapshot_retirements',
-  'backup_snapshots',
-  'recovery_boot_media_artifacts',
-  'recovery_media_artifacts',
-] as const;
-export type BackupFenceSourceTable = (typeof BACKUP_FENCE_SOURCE_TABLES)[number];
-
-export function isBackupFenceSourceTable(table: string): table is BackupFenceSourceTable {
-  return (BACKUP_FENCE_SOURCE_TABLES as readonly string[]).includes(table);
+/**
+ * Marks the CURRENT transaction as part of `orgId`'s erasure, so the on-delete
+ * fence trigger records every backup source row of that org deleted in it
+ * (directly or through an FK cascade). Transaction-local (set_config … true);
+ * must run inside a DB context.
+ */
+export async function setBackupErasureContext(orgId: string): Promise<void> {
+  await dbModule.db.execute(sql`SELECT set_config('breeze.backup_erasure_org', ${orgId}, true)`);
 }
 
 export interface BackupErasureFenceCounts {
@@ -374,72 +381,11 @@ export async function captureBackupErasureFence(
   }, 'tenantErasure.backupFenceCapture');
 }
 
-/**
- * Step 2: the cascade step for one source table. Deletes the org's rows with
- * RETURNING and fences exactly the returned rows, in the CURRENT transaction —
- * the delete and its fences commit or roll back together. Must run inside the
- * caller's system DB context. Returns { deleted, newlyFenced }; a non-zero
- * `newlyFenced` means a row appeared after step 1 (logged by the caller).
- */
-export async function deleteAndFenceOrgBackupRows(
-  table: BackupFenceSourceTable,
-  orgId: string,
-): Promise<{ deleted: number; newlyFenced: number }> {
-  const manifestId = await ensureManifest(orgId, null);
-  const del = (columns: ReturnType<typeof sql.raw>) => dbModule.db.execute(sql`
-    DELETE FROM ${sql.raw(`"${table}"`)} WHERE org_id = ${orgId}::uuid RETURNING ${columns}
-  `);
-  const empty = { snapshots: [] as SnapshotRow[], retirements: [] as IdRow[], reservations: [] as IdRow[], media: [] as ArtifactRow[], bootMedia: [] as ArtifactRow[] };
-  let deleted = 0;
-  let input = empty;
-  switch (table) {
-    case 'backup_snapshots': {
-      const rows = rowsOf<SnapshotRow>(await del(SNAPSHOT_COLUMNS));
-      deleted = rows.length;
-      input = { ...empty, snapshots: rows };
-      break;
-    }
-    case 'backup_snapshot_retirements': {
-      const rows = rowsOf<IdRow>(await del(ID_COLUMNS));
-      deleted = rows.length;
-      input = { ...empty, retirements: rows };
-      break;
-    }
-    case 'backup_snapshot_id_reservations': {
-      const rows = rowsOf<IdRow>(await del(ID_COLUMNS));
-      deleted = rows.length;
-      input = { ...empty, reservations: rows };
-      break;
-    }
-    case 'recovery_media_artifacts': {
-      const rows = rowsOf<ArtifactRow>(await del(ARTIFACT_COLUMNS));
-      deleted = rows.length;
-      input = { ...empty, media: rows };
-      break;
-    }
-    case 'recovery_boot_media_artifacts': {
-      const rows = rowsOf<ArtifactRow>(await del(ARTIFACT_COLUMNS));
-      deleted = rows.length;
-      input = { ...empty, bootMedia: rows };
-      break;
-    }
-  }
-  if (deleted === 0) return { deleted: 0, newlyFenced: 0 };
-  const snapshotsById = new Map(input.snapshots.map((s) => [s.id, s]));
-  const missing = [...input.media, ...input.bootMedia]
-    .map((a) => a.snapshot_db_id)
-    .filter((id): id is string => !!id && !snapshotsById.has(id));
-  for (const [id, row] of await loadSnapshotsById(missing)) snapshotsById.set(id, row);
-  const targets = await buildTargets({ manifestId, orgId, ...input, snapshotsById });
-  const newlyFenced = await insertTargets(targets);
-  return { deleted, newlyFenced };
-}
-
 // ── Readers for storage GC ──────────────────────────────────────────────────
 
 export interface BackupErasureFenceSet {
-  /** Fenced snapshot ids among those asked about (prefix snapshots/<id>/). */
-  snapshotIds: Set<string>;
+  /** Fenced snapshot ids among those asked about (prefix snapshots/<id>/) → the org(s) whose erasure fenced them. */
+  snapshotSubjects: Map<string, Set<string>>;
   /** Fenced recovery-media object keys among those asked about (or all, when none were passed). */
   objectKeys: Set<string>;
 }
@@ -458,13 +404,21 @@ export async function loadBackupErasureFences(
   objectKeys?: Iterable<string>,
 ): Promise<BackupErasureFenceSet> {
   const ids = [...new Set(snapshotIds)];
-  const fencedIds = new Set<string>();
+  const snapshotSubjects = new Map<string, Set<string>>();
   for (let i = 0; i < ids.length; i += 1000) {
     const rows = await dbModule.db
-      .select({ snapshotId: backupErasureTargets.snapshotId })
+      .select({ snapshotId: backupErasureTargets.snapshotId, subjectOrgId: backupErasureTargets.subjectOrgId })
       .from(backupErasureTargets)
       .where(sql`${backupErasureTargets.kind} = 'snapshot_prefix' AND ${inArray(backupErasureTargets.snapshotId, ids.slice(i, i + 1000))}`);
-    for (const row of rows) if (row.snapshotId) fencedIds.add(row.snapshotId);
+    for (const row of rows) {
+      if (!row.snapshotId) continue;
+      let subjects = snapshotSubjects.get(row.snapshotId);
+      if (!subjects) {
+        subjects = new Set();
+        snapshotSubjects.set(row.snapshotId, subjects);
+      }
+      subjects.add(row.subjectOrgId);
+    }
   }
   const fencedKeys = new Set<string>();
   if (objectKeys === undefined) {
@@ -483,5 +437,115 @@ export async function loadBackupErasureFences(
       for (const row of rows) if (row.objectKey) fencedKeys.add(row.objectKey);
     }
   }
-  return { snapshotIds: fencedIds, objectKeys: fencedKeys };
+  return { snapshotSubjects, objectKeys: fencedKeys };
+}
+
+/**
+ * The fenced ids one (identity, org) sweep must treat as foreign: every fenced
+ * id, EXCEPT one fenced by this org's own erasure for which the org still
+ * holds a live row (snapshot, unswept retirement or NULL-identity row). That
+ * exception keeps an erasure that aborted after the up-front capture from
+ * freezing the still-existing org's own retention: its rows already establish
+ * ownership toward every other org, and its own GC keeps deciding for them
+ * exactly as before. A fenced id whose row is gone stays foreign even to its
+ * subject org.
+ */
+export function fencedIdsForeignTo(
+  snapshotSubjects: ReadonlyMap<string, ReadonlySet<string>>,
+  unitOrgId: string,
+  unitOwnedSnapshotIds: ReadonlySet<string>,
+): Set<string> {
+  const foreign = new Set<string>();
+  for (const [snapshotId, subjects] of snapshotSubjects) {
+    if (subjects.has(unitOrgId) && unitOwnedSnapshotIds.has(snapshotId)) continue;
+    foreign.add(snapshotId);
+  }
+  return foreign;
+}
+
+/**
+ * Which of `snapshotIds` the org holds a live row for RIGHT NOW (a snapshot or
+ * an unswept retirement). Used by GC's pre-delete recheck so the
+ * own-erasure exception in `fencedIdsForeignTo` is never decided from state
+ * read before an erasure deleted the row. System DB context.
+ */
+export async function loadOrgLiveSnapshotIds(orgId: string, snapshotIds: string[]): Promise<Set<string>> {
+  const owned = new Set<string>();
+  for (let i = 0; i < snapshotIds.length; i += 1000) {
+    const chunk = snapshotIds.slice(i, i + 1000);
+    const list = sql.join(chunk.map((id) => sql`${id}`), sql`, `);
+    const rows = rowsOf<{ snapshot_id: string }>(await dbModule.db.execute(sql`
+      SELECT snapshot_id FROM backup_snapshots WHERE org_id = ${orgId}::uuid AND snapshot_id IN (${list})
+      UNION
+      SELECT snapshot_id FROM backup_snapshot_retirements
+       WHERE org_id = ${orgId}::uuid AND swept_at IS NULL AND snapshot_id IN (${list})
+    `));
+    for (const row of rows) owned.add(row.snapshot_id);
+  }
+  return owned;
+}
+
+// ── Referenced-key cache for fenced snapshots ───────────────────────────────
+
+export type FenceRefsRow =
+  | { snapshotId: string; state: 'resolved'; referencedKeys: string[] }
+  | { snapshotId: string; state: 'unreadable'; attempts: number; nextAttemptAt: Date | null };
+
+/** Stored resolution state for these fenced ids on one physical identity. System DB context. */
+export async function loadFenceRefs(storageIdentity: string, snapshotIds: string[]): Promise<Map<string, FenceRefsRow>> {
+  const out = new Map<string, FenceRefsRow>();
+  for (let i = 0; i < snapshotIds.length; i += 1000) {
+    const rows = await dbModule.db
+      .select()
+      .from(backupErasureFenceRefs)
+      .where(sql`${backupErasureFenceRefs.storageIdentity} = ${storageIdentity} AND ${inArray(backupErasureFenceRefs.snapshotId, snapshotIds.slice(i, i + 1000))}`);
+    for (const row of rows) {
+      out.set(row.snapshotId, row.state === 'resolved'
+        ? { snapshotId: row.snapshotId, state: 'resolved', referencedKeys: row.referencedKeys }
+        : { snapshotId: row.snapshotId, state: 'unreadable', attempts: row.attempts, nextAttemptAt: row.nextAttemptAt });
+    }
+  }
+  return out;
+}
+
+/** Records a resolved reference set. A resolved row is never overwritten. System DB context. */
+export async function recordFenceRefsResolved(storageIdentity: string, snapshotId: string, referencedKeys: string[]): Promise<void> {
+  await dbModule.db
+    .insert(backupErasureFenceRefs)
+    .values({ storageIdentity, snapshotId, state: 'resolved', referencedKeys, attempts: 0 })
+    .onConflictDoUpdate({
+      target: [backupErasureFenceRefs.storageIdentity, backupErasureFenceRefs.snapshotId],
+      set: { state: 'resolved', referencedKeys, lastError: null, nextAttemptAt: null, updatedAt: new Date() },
+      setWhere: sql`${backupErasureFenceRefs.state} <> 'resolved'`,
+    });
+}
+
+/** Exponential retry backoff for an unreadable fenced manifest: 1h, 2h, 4h … capped at 7 days. */
+export function fenceRefsRetryDelayMs(attempts: number): number {
+  const hour = 60 * 60 * 1000;
+  return Math.min(hour * 2 ** Math.max(0, attempts - 1), 7 * 24 * hour);
+}
+
+/**
+ * Records a failed resolution attempt and schedules the next one with
+ * backoff. Never downgrades a resolved row. Returns the attempt count.
+ * System DB context.
+ */
+export async function recordFenceRefsUnreadable(storageIdentity: string, snapshotId: string, error: string, nowMs: number): Promise<number> {
+  const [existing] = await dbModule.db
+    .select({ state: backupErasureFenceRefs.state, attempts: backupErasureFenceRefs.attempts })
+    .from(backupErasureFenceRefs)
+    .where(sql`${backupErasureFenceRefs.storageIdentity} = ${storageIdentity} AND ${backupErasureFenceRefs.snapshotId} = ${snapshotId}`);
+  if (existing?.state === 'resolved') return existing.attempts;
+  const attempts = (existing?.attempts ?? 0) + 1;
+  const nextAttemptAt = new Date(nowMs + fenceRefsRetryDelayMs(attempts));
+  await dbModule.db
+    .insert(backupErasureFenceRefs)
+    .values({ storageIdentity, snapshotId, state: 'unreadable', attempts, lastError: error, nextAttemptAt })
+    .onConflictDoUpdate({
+      target: [backupErasureFenceRefs.storageIdentity, backupErasureFenceRefs.snapshotId],
+      set: { attempts, lastError: error, nextAttemptAt, updatedAt: new Date() },
+      setWhere: sql`${backupErasureFenceRefs.state} <> 'resolved'`,
+    });
+  return attempts;
 }

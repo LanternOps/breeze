@@ -48,7 +48,14 @@ import {
 } from '../services/backupSnapshotStorage';
 import { asRecord, getStringValue } from '../services/recoveryBootstrap';
 import { normalizeStorageIdentity } from '../services/backupStorageIdentity';
-import { loadBackupErasureFences, type BackupErasureFenceSet } from '../services/backupErasureFence';
+import {
+  fencedIdsForeignTo,
+  loadBackupErasureFences,
+  loadFenceRefs,
+  loadOrgLiveSnapshotIds,
+  recordFenceRefsResolved,
+  recordFenceRefsUnreadable,
+} from '../services/backupErasureFence';
 
 // Re-exported: jobs/backupWorker.ts and existing tests import it from here.
 export { normalizeStorageIdentity };
@@ -724,8 +731,13 @@ export function computeExpiresAt(
 //             foreign-owned on EVERY identity, forever: never a group of any
 //             org's sweep, never an orphan. Its manifests are still marked
 //             (markErasureFencedSnapshots) so objects it references under
-//             other prefixes stay live. Fences are read after the unit's
-//             ownership state and re-read before every delete call.
+//             other prefixes stay live (resolved once per identity and
+//             stored in backup_erasure_fence_refs). Fences are read after the
+//             unit's ownership state and re-read before every delete call.
+//             Exception: an id fenced by an org's OWN erasure (one that
+//             aborted after capture) stays that org's own while it still
+//             holds a live row for it. While any fenced manifest on an
+//             identity is unreadable, the identity is deferred.
 //   Deferred: while ANY unresolved (manifest not found in this run's listing)
 //             NULL-identity row exists for this identity, OR any device with
 //             a recent/in-flight backup_jobs row on this identity runs a
@@ -1649,7 +1661,7 @@ async function sweepStorageIdentity(
   // every delete call and drops any candidate fenced since this sweep began.
   fenceProtection: {
     extraLiveKeys: ReadonlySet<string>;
-    recheck: (snapshotIds: string[], objectKeys: string[]) => Promise<BackupErasureFenceSet>;
+    recheck: (snapshotIds: string[], objectKeys: string[]) => Promise<{ snapshotIds: Set<string>; objectKeys: Set<string> }>;
   } | null = null,
 ): Promise<{
   deleted: number;
@@ -2153,36 +2165,73 @@ export const __backupGcTestHooks: {
 } = {};
 
 /**
- * Keys referenced by erasure-fenced snapshots on one physical identity. A
- * fenced snapshot is never a sweep group of any org (it is foreign-owned),
- * but it can still reference objects under OTHER prefixes — an incremental's
- * manifest points into its older bases, and a base may be a row-less legacy
- * prefix that nobody fenced. The org that owned the snapshot used to keep
- * those objects alive by marking it as one of its roots; with that org gone,
- * every sweep on the identity marks it instead. Only fenced ids whose manifest
- * is in THIS run's listing are marked (no manifest, nothing referenced).
- * Results are cached per physical identity across the orgs sharing it.
- * Returns null on any manifest fetch/parse failure — the caller fails closed.
+ * Keys referenced by erasure-fenced snapshots on one physical identity,
+ * OUTSIDE each snapshot's own prefix. A fenced snapshot is never a sweep group
+ * of any org (it is foreign-owned), so keys under its own prefix are already
+ * safe; but its manifests can reference objects under OTHER prefixes — an
+ * incremental points into its older bases, and a base may be a row-less
+ * legacy prefix nobody fenced. The org that owned the snapshot used to keep
+ * those alive by marking it as a root; with that org gone, every sweep on the
+ * identity protects them instead.
+ *
+ * Each fenced manifest is read ONCE per identity and its out-of-prefix keys
+ * stored (backup_erasure_fence_refs); later runs use the stored set and make
+ * no storage request. A manifest that cannot be read is recorded with an
+ * exponential retry backoff and reported as unresolved — the caller defers
+ * retired/orphan reclamation on the identity while any are unresolved, rather
+ * than failing every sibling sweep. Only fenced ids whose manifest is in THIS
+ * run's listing are considered (no manifest, nothing referenced). `cache`
+ * carries results across the orgs sharing one physical identity in a run.
  */
-async function markErasureFencedSnapshots(
+async function resolveErasureFencedReferences(
   identity: { provider: string; providerConfig: unknown },
-  fencedSnapshotIds: ReadonlySet<string>,
+  physicalKey: string,
+  fencedSnapshotIds: Iterable<string>,
   groups: Map<string, BackupGcSnapshotSummary>,
-  cache: Map<string, Set<string>>,
-): Promise<Set<string> | null> {
-  const live = new Set<string>();
-  for (const snapshotId of fencedSnapshotIds) {
-    if (!groups.get(snapshotId)?.manifestItem) continue;
-    let keys = cache.get(snapshotId);
-    if (!keys) {
+  cache: Map<string, Set<string> | 'unresolved'>,
+  nowMs: number,
+): Promise<{ liveKeys: Set<string>; unresolved: string[] }> {
+  const fencedIds = [...new Set(fencedSnapshotIds)];
+  const pending = fencedIds.filter((id) => groups.get(id)?.manifestItem && !cache.has(id));
+  if (pending.length > 0) {
+    const stored = await withSystemDbAccessContext(() => loadFenceRefs(physicalKey, pending));
+    for (const snapshotId of pending) {
+      const row = stored.get(snapshotId);
+      if (row?.state === 'resolved') {
+        cache.set(snapshotId, new Set(row.referencedKeys));
+        continue;
+      }
+      if (row?.state === 'unreadable' && row.nextAttemptAt && row.nextAttemptAt.getTime() > nowMs) {
+        cache.set(snapshotId, 'unresolved');
+        continue;
+      }
       const marked = await markLiveBackupObjects(identity, [snapshotId]);
-      if (marked === null) return null;
-      keys = marked;
-      cache.set(snapshotId, keys);
+      if (marked === null) {
+        const attempts = await withSystemDbAccessContext(() =>
+          recordFenceRefsUnreadable(physicalKey, snapshotId, 'manifest fetch/parse failed', nowMs));
+        const message =
+          `[BackupGC] identity ${physicalKey}: manifest of erasure-fenced snapshot ${snapshotId} could not be read ` +
+          `(attempt ${attempts}); its own prefix stays protected, retired/orphan reclamation on this identity is ` +
+          'deferred until it resolves.';
+        console.error(message);
+        captureException(new Error(message));
+        cache.set(snapshotId, 'unresolved');
+        continue;
+      }
+      const ownPrefix = `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}/`;
+      const outside = [...marked].filter((key) => !key.startsWith(ownPrefix) && key !== bareSnapshotKey(snapshotId));
+      await withSystemDbAccessContext(() => recordFenceRefsResolved(physicalKey, snapshotId, outside));
+      cache.set(snapshotId, new Set(outside));
     }
-    for (const key of keys) live.add(key);
   }
-  return live;
+  const liveKeys = new Set<string>();
+  const unresolved: string[] = [];
+  for (const snapshotId of fencedIds) {
+    const entry = cache.get(snapshotId);
+    if (entry === 'unresolved') unresolved.push(snapshotId);
+    else if (entry) for (const key of entry) liveKeys.add(key);
+  }
+  return { liveKeys, unresolved };
 }
 
 /**
@@ -2481,7 +2530,7 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
     }
 
     for (const identity of orgIdentities) listedIdsByIdentityKey.set(identity.key, new Set(groups.keys()));
-    const fencedMarkCache = new Map<string, Set<string>>();
+    const fencedRefsCache = new Map<string, Set<string> | 'unresolved'>();
 
     for (const identity of orgIdentities) {
       if (deletesRemaining <= 0) {
@@ -2502,16 +2551,42 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
         // the pre-delete recheck in sweepStorageIdentity.
         const fences = await withSystemDbAccessContext(() => loadBackupErasureFences(groups.keys()));
         await __backupGcTestHooks.afterFenceRead?.(identity);
-        const fencedLiveKeys = await markErasureFencedSnapshots(representative, fences.snapshotIds, groups, fencedMarkCache);
-        if (fencedLiveKeys === null) {
-          throw new Error('mark phase failed for an erasure-fenced snapshot — see prior log line for the specific snapshot/manifest');
-        }
+        // Ids this org still holds a live row for: an id fenced by this org's
+        // OWN (aborted) erasure stays this org's to decide while that row
+        // exists — see fencedIdsForeignTo.
+        const unitOwnedSnapshotIds = new Set([
+          ...state.retainedSnapshotIds,
+          ...state.retiredSnapshotIds.keys(),
+          ...state.nullIdentityRows.map((r) => r.snapshotId),
+        ]);
+        const fencedForeignIds = fencedIdsForeignTo(fences.snapshotSubjects, identity.orgId, unitOwnedSnapshotIds);
+        const fencedRefs = await resolveErasureFencedReferences(
+          representative, physicalKey, fences.snapshotSubjects.keys(), groups, fencedRefsCache, nowMs,
+        );
         const fenceProtection = {
-          extraLiveKeys: new Set([...fencedLiveKeys, ...fences.objectKeys]),
-          recheck: (snapshotIds: string[], objectKeys: string[]) =>
-            withSystemDbAccessContext(() => loadBackupErasureFences(snapshotIds, objectKeys)),
+          extraLiveKeys: new Set([...fencedRefs.liveKeys, ...fences.objectKeys]),
+          // Re-reads the fences AND, for ids fenced by this org's own
+          // erasure, whether the org still holds a live row NOW — the
+          // unit's loaded state may predate an erasure that has since
+          // deleted it.
+          recheck: (snapshotIds: string[], objectKeys: string[]) => withSystemDbAccessContext(async () => {
+            const fresh = await loadBackupErasureFences(snapshotIds, objectKeys);
+            const ownFenced = [...fresh.snapshotSubjects].filter(([, subjects]) => subjects.has(identity.orgId)).map(([id]) => id);
+            const stillOwned = await loadOrgLiveSnapshotIds(identity.orgId, ownFenced);
+            return {
+              snapshotIds: fencedIdsForeignTo(fresh.snapshotSubjects, identity.orgId, stillOwned),
+              objectKeys: fresh.objectKeys,
+            };
+          }),
         };
-        const identityDeferred = state.legacyHelper.deferred || aliasDeferred || realpathDeferred;
+        const fenceRefsDeferred = fencedRefs.unresolved.length > 0;
+        if (fenceRefsDeferred) {
+          console.warn(
+            `[BackupGC] identity ${identity.key}: reclamation deferred — ${fencedRefs.unresolved.length} erasure-fenced ` +
+            `manifest(s) not yet readable (${fencedRefs.unresolved.slice(0, 10).join(', ')})`,
+          );
+        }
+        const identityDeferred = state.legacyHelper.deferred || aliasDeferred || realpathDeferred || fenceRefsDeferred;
         if (identityDeferred) deferredIdentities++; // counted once per identity regardless of how many reasons apply
         if (state.legacyHelper.deferred) {
           console.warn(`[BackupGC] identity ${identity.key}: reclamation deferred (legacy helper ${state.legacyHelper.deviceId} ${state.legacyHelper.version})`);
@@ -2559,8 +2634,9 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
           // exactly like another org's snapshot.
           ...reservationState.protectedIds,
           // Prefixes of an erased org: owned forever by the erasure record,
-          // never this org's to reclaim.
-          ...fences.snapshotIds,
+          // never this org's to reclaim (unless it is this org's own, still
+          // live — see fencedIdsForeignTo).
+          ...fencedForeignIds,
         ]);
 
         const identityResult = await sweepStorageIdentity(
