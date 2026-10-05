@@ -51,3 +51,4 @@ export * from './vulnerabilityManagement';
 export * from './cleanupRules';
 export * from './scanPath';
 export * from './securityScanSettings';
+export * from './paymentMethodLabel';
