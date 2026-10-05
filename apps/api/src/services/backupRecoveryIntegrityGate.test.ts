@@ -78,7 +78,7 @@ describe('evaluateRecoveryIntegrity', () => {
     });
     expect(d.findAuthorizations).toHaveBeenCalledWith({ recoveryTokenId: TOKEN, recoveryId: RECOVERY });
 
-    d.findAuthorizations.mockResolvedValueOnce([{
+    vi.mocked(d.findAuthorizations).mockResolvedValueOnce([{
       id: AUTH, orgId: 'o', snapshotDbId: SNAPSHOT, deviceId: DEVICE, commandType: 'bmr_recover', reason: 'unattested_legacy',
     }]);
     expect(await evaluateRecoveryIntegrity(input({ recoveryId: RECOVERY }), d)).toEqual({
