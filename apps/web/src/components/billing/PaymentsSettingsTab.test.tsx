@@ -327,6 +327,22 @@ describe('fee attestation and authorization display (#7897)', () => {
     expect(lower[0]).toHaveTextContent('Real zero');
     expect(lower[0]).toHaveTextContent('Authorized: 0 basis points');
   });
+  it('lists a client whose accepted cap is narrower, showing only the cap when the fee matches (2a-1)', async () => {
+    const orgId = '44444444-4444-4444-8444-444444444444';
+    const capped = { orgId, orgName: 'Capped client', methodType: 'card', authorizedCardFeeBps: 300, authorizedAchFeeAmount: '0.00',
+      cardFeeBps: 300, achFeeAmount: '0.00', capGap: { authorized: { enabled: true, amount: '100.00', currency: 'USD' },
+        configured: { enabled: true, amount: '500.00', currency: 'USD' } } };
+    mountPartner(partnerView({ feeAuthorizationGaps: [capped,
+      { ...capped, orgId: '55555555-5555-4555-8555-555555555555', orgName: 'Cap removed', capGap: { ...capped.capGap, configured: { enabled: false } } }] }));
+    const group = await screen.findByTestId('autopay-fee-authorization-gaps');
+    expect(group).toHaveTextContent('lower authorized terms: 2');
+    const [first, second] = within(group).getAllByRole('listitem');
+    expect(first).toHaveTextContent('Capped client');
+    expect(first).toHaveTextContent('Authorized limit: USD 100.00; configured: USD 500.00');
+    expect(first).not.toHaveTextContent('basis points');
+    expect(second).toHaveTextContent('Authorized limit: USD 100.00; configured: no limit');
+    expect(within(group).getByTestId(`autopay-reauthorize-${orgId}`)).toBeInTheDocument();
+  });
   it('labels the no-authorization group and offers to request authorization', async () => {
     const orgId = '11111111-1111-4111-8111-111111111111';
     mountPartner(partnerView({ feeAuthorizationGaps: [{ orgId, orgName: 'No consent', methodType: 'card',
@@ -367,8 +383,8 @@ describe('fee attestation and authorization display (#7897)', () => {
       authorizedCardFeeBps: 100, authorizedAchFeeAmount: '0.00', cardFeeBps: 300, achFeeAmount: '0.00' }] })));
     mount();
     const block = await screen.findByTestId('autopay-fee-authorization-gaps');
-    expect(block).toHaveTextContent('This client has not authorized the configured fee');
-    expect(block).not.toHaveTextContent('Clients with lower authorized fees');
+    expect(block).toHaveTextContent('This client has not authorized the configured terms');
+    expect(block).not.toHaveTextContent('Clients with lower authorized terms');
   });
   it('explains blank and zero fees for the scope being edited', async () => {
     mountPartner(partnerView({}));

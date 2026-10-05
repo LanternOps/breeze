@@ -13,6 +13,7 @@ import { enqueueBillingNotice } from './noticeOutbox';
 import { renderBillingNotice } from './renderBillingNotice';
 import { enqueueAutopayStaffNotifications, type AutopayStaffNotice } from './staffNotifications';
 import type { Tx } from './types';
+import { noticeChargeNotMade } from './notChargedNotice';
 
 // Controls may fence new collections, but terminal schedule outcomes are history.
 const CONTROL_SCHEDULE_STATES: Array<(typeof invoiceAutopaySchedules.$inferSelect)['state']> =
@@ -165,7 +166,11 @@ export async function finalizeInvoiceControl(tx: Tx, invoice: typeof invoices.$i
   if (!isControllableSchedule(schedule.state)) return { status: kind === 'skip' ? 'skipped' : 'excluded' };
   await tx.update(invoiceAutopaySchedules).set({ state, nextAttemptAt: null, stateReason: kind })
     .where(eq(invoiceAutopaySchedules.id, schedule.id));
-  if (kind === 'exclude') return { status: 'excluded' };
+  if (kind === 'exclude') {
+    // D-19: a charge the client was already told about will not happen (one shared notice shape).
+    await noticeChargeNotMade(tx, { invoiceId: invoice.id, reason: 'exclude' });
+    return { status: 'excluded' };
+  }
   await enqueueSkippedInvoiceConfirmation(tx, invoice);
   const staffNotice: AutopayStaffNotice = { orgId: invoice.orgId, partnerId: invoice.partnerId,
     event: 'autopay.skipped', dedupeKey: `autopay:${invoice.id}:skipped`,

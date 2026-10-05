@@ -586,7 +586,7 @@ import { collectAfterBankSetup, getBankAutopayOffer, startInvoiceBankSetup } fro
 import { disconnectPartnerStripe } from '../partnerStripe';
 import { pollStripeFinancialEvents } from '../stripeFinancialEventPoller';
 
-async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`, fee = '0.00') {
+async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string, stripeMethodId = `pm_bank_${suffix}`, fee = '0.00', last4 = '6789') {
   const seeded = await withSystemDbAccessContext(async () => {
     const token = await mintBillingLinkToken(db, {orgId: f.org.id, invoiceId: f.invoice.id,
       enrollmentId: f.enrollment.id, generation: 1, purpose: 'enroll', ttlDays: 1});
@@ -606,7 +606,7 @@ async function bankSetup(f: Awaited<ReturnType<typeof fixture>>, suffix: string,
     return {token, setup: setup!};
   });
   const method = {id: stripeMethodId, type: 'us_bank_account', customer: 'cus_autopay_test',
-    us_bank_account: {account_holder_type: 'company', bank_name: 'Test bank', last4: '6789'}} as Stripe.PaymentMethod;
+    us_bank_account: {account_holder_type: 'company', bank_name: 'Test bank', last4}} as Stripe.PaymentMethod;
   await persistCapturedAutopayMethod(seeded.setup.id, method, 'activated', seeded.setup.setupIntentId, `mandate_${suffix}`);
   const [saved] = await withSystemDbAccessContext(() => db.select().from(orgPaymentMethods)
     .where(eq(orgPaymentMethods.stripePaymentMethodId, method.id)));
@@ -800,7 +800,8 @@ it('disconnect retains historical credentials and the real poller settles using 
   currentPi = {...currentPi, status: 'succeeded', amount_received: 10000};
   provider.eventList.mockResolvedValue({has_more: false, data: [{id: `evt_poll_${f.invoice.id}`, type: 'payment_intent.succeeded',
     account: 'acct_autopay_test', created: Math.floor(Date.now()/1000), livemode: false, data: {object: currentPi}}]});
-  expect(await pollStripeFinancialEvents()).toMatchObject({accounts: 1, events: 1});
+  // #7897: an event applied while it is ingested counts as applied, not only later replays.
+  expect(await pollStripeFinancialEvents()).toMatchObject({accounts: 1, events: 1, applied: 1});
   expect((await attempts(f.invoice.id))[0]!.state).toBe('succeeded');
   expect(vi.mocked(getPartnerStripeClient)).toHaveBeenCalledWith(f.partner.id, expect.objectContaining({
     reconciliationAccountId: 'acct_autopay_test', archivedCredentialId: mapping!.revocationCredentialId,
@@ -865,6 +866,10 @@ it('Stop fences all invoices, sends one protected notice, and detaches only afte
     // Both debits are processing when Stop runs: they complete, they are not cancelled (spec 6.6).
     expect(body).toContain('is already processing and will complete'); expect(body).toContain('receipt');
     expect(body).not.toContain('is being cancelled');
+    // D-19: the announced charge that was simply cancelled is named; in-flight ones are not told "will not happen".
+    expect(body).toContain(`Invoice ${idle.invoice.invoiceNumber}: the automatic payment announced`);
+    expect(body).not.toContain(`Invoice ${f.invoice.invoiceNumber}: the automatic payment announced`);
+    expect(body).not.toContain(`Invoice ${second.invoice.invoiceNumber}: the automatic payment announced`);
   }
   await drainAutopayMethodDetaches(); expect(provider.methodDetach).not.toHaveBeenCalled();
   provider.retrieve.mockImplementation(async id => {
@@ -1249,7 +1254,9 @@ it.each(['empty', 'canceled', 'succeeded', 'changed_account', 'missing'] as cons
       expect(provider.search).not.toHaveBeenCalled();
       await resumeCollectionAttempt(attempt!.id);
       const notices=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
-      expect(notices).toHaveLength(1);expect(notices[0]!.message).toContain(attempt!.id);expect(notices[0]!.message).toContain('Reservation retained');
+      expect(notices).toHaveLength(1);expect(notices[0]!.message).toContain('reservation is kept');
+      // P-17: named by invoice number, never by the raw attempt or invoice id.
+      expect(notices[0]!.message).toContain(f.invoice.invoiceNumber!);expect(notices[0]!.message).not.toContain(attempt!.id);
     }
     else {
       expect(provider.search).toHaveBeenCalledOnce();
@@ -1264,7 +1271,7 @@ it('re-notices with the current saved method, not the issued method snapshot', a
     const {renoticeSchedule}=await import('./invoiceControls');
     await renoticeSchedule(db,f.invoice.id);
   });
-  expect((await scheduleFor(f)).termsSnapshot).toMatchObject({last4:'9999',noticeSeq:2});
+  expect((await scheduleFor(f)).termsSnapshot).toMatchObject({last4:'9999',noticeSeq:2,methodLabel:'Visa credit card ending in 9999'});
 });
 it('orphan notice sweep retries missing contacts and canceled notices', async () => {
   const f=await fixture();
@@ -1536,7 +1543,10 @@ it.each(['none', 'not_needed', 'scheduled'] as const)(
     expect(await collect(a.session.id!)).toEqual({ attemptId: null, outcome: 'refused', reason: 'bank_authorization_used' });
     expect(provider.confirm).not.toHaveBeenCalled();
     await withSystemDbAccessContext(() => db.update(billingLinkTokens).set({ consumedAt: null }).where(eq(billingLinkTokens.id, a.token.id)));
-    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_used' });
+    // Its accepted fee (2.50) no longer matches the current one (2.00), so it is refused for
+    // the changed terms before the used-authority check; either way nothing is confirmed (B1-1).
+    expect(await collect(a.session.id!)).toMatchObject({ outcome: 'refused', reason: 'client_authorization_required' });
+    expect(provider.confirm).not.toHaveBeenCalled();
     // A client attempt has no notice to redo: a terminal schedule keeps its history and is not
     // left with a pending re-notice marker that would cancel every later confirm on the invoice.
     const [schedule] = await withSystemDbAccessContext(() => db.select().from(invoiceAutopaySchedules)
@@ -1877,4 +1887,439 @@ it.each(['expired','revoked'] as const)('a %s bank authority is a structured, re
  expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
   .toEqual({attemptId:null,outcome:'refused',reason:'bank_authorization_expired'});
  expect(await attempts(f.invoice.id)).toEqual([]);expect(provider.create).not.toHaveBeenCalled();
+});
+
+// D-17 (lab B4): after a hard decline the dead card kept is_autopay_method, so the
+// charging-notice pre-send check read the dead card and cancelled every new notice
+// ("Automatic payment notice no longer current"), re-minted each minute.
+it('after a hard-declined card is replaced, the next charging notice is sent, not cancelled (D-17)',async()=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi={...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'card_declined',decline_code:'stolen_card'}};
+  throw Object.assign(new Error('Your card was declined.'),{type:'StripeCardError',statusCode:402,code:'card_declined',decline_code:'stolen_card',payment_intent:currentPi});
+ });
+ expect(await attemptCollection(inputFor(f))).toMatchObject({outcome:'failed',failureClass:'hard'});
+ const setup=await withSystemDbAccessContext(async()=>{
+  const token=await mintBillingLinkToken(db,{orgId:f.org.id,enrollmentId:f.enrollment.id,generation:1,purpose:'enroll',ttlDays:1});
+  const [row]=await db.insert(autopaySetupAttempts).values({orgId:f.org.id,partnerId:f.partner.id,enrollmentId:f.enrollment.id,generation:1,
+   stripeConnectionId:f.connection.id,stripeAccountId:f.connection.stripeAccountId,stripeCustomerId:'cus_autopay_test',tokenId:token.id,
+   source:'setup_page',methodType:'card',setupIntentId:'seti_card_replacement',
+   consentSnapshot:{version:'2026-10-01.v1',text:'Authorization',hash:'a'.repeat(64),textHash:'b'.repeat(64),partnerName:f.partner.name,
+    scheduleText:'Due date',feeText:'No fee',achMode:'ach_preferred',scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}},
+    feeTerms:{methodType:'card',cardFeeBps:0,achFeeAmount:'0.00',feeAttested:true,currency:'USD'},source:'setup_page',
+    contactEmail:'billing@example.test',ip:null,userAgent:null,invoiceId:null,checkoutKey:null}}).returning();
+  return row!;
+ });
+ const card={id:'pm_card_replacement',type:'card',customer:'cus_autopay_test',card:{brand:'visa',funding:'credit',last4:'4444',exp_month:12,
+  exp_year:2030,country:'US',wallet:null,networks:{available:['visa'],preferred:null}}} as unknown as Stripe.PaymentMethod;
+ expect((await persistCapturedAutopayMethod(setup.id,card,'activated','seti_card_replacement',null)).outcome).toBe('activated');
+ const next=await withSystemDbAccessContext(async()=>{
+  const today=new Date().toISOString().slice(0,10);
+  const [invoice]=await db.insert(invoices).values({partnerId:f.partner.id,orgId:f.org.id,invoiceNumber:`T-${randomUUID()}`,currencyCode:'USD',
+   status:'sent',issueDate:today,dueDate:today,total:'40.00',balance:'40.00',amountPaid:'0.00'}).returning();
+  return planAutopayForInvoice(db,invoice!.id);
+ });
+ expect(next).toMatchObject({eligible:true,state:'awaiting_notice'});
+ registerAutopayNoticeHandlers();
+ const sendEmail=vi.fn(async()=>{});
+ const mail=vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+ try { await dispatchPendingBillingNotices(); } finally { mail.mockRestore(); }
+ const [notice]=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.id,next!.noticeOutboxId!)));
+ expect(notice).toMatchObject({kind:'invoice_autopay',status:'sent',lastError:null});
+ const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id,next!.id)));
+ expect(schedule).toMatchObject({state:'scheduled',noticeOutboxId:notice!.id});
+});
+
+// B1-1: a one-time bank authorization is for an exact principal and fee. Any difference,
+// lower included (a partial payment or a fee cut before collection), needs a new
+// acceptance; nothing is reserved and the page offers the new total.
+it('bank pay refuses a lower principal than the client authorized and offers the new total (B1-1)',async()=>{
+ const f=await fixture(); const a=await bankSetup(f,'lower_principal'); serveBank([a]);
+ const ctx={scope:'partner' as const,orgId:null,accessibleOrgIds:[f.org.id],accessiblePartnerIds:[f.partner.id]};
+ await withDbAccessContext(ctx,()=>recordPayment(f.invoice.id,{amount:20,method:'cash',receivedAt:new Date().toISOString().slice(0,10)},f.actor));
+ expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
+  .toEqual({attemptId:null,outcome:'refused',reason:'client_authorization_required'});
+ expect(provider.create).not.toHaveBeenCalled(); expect(await attempts(f.invoice.id)).toEqual([]);
+ const [token]=await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens).where(eq(billingLinkTokens.id,a.token.id)));
+ expect(token!.consumedAt).toBeNull();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true,principal:'80.00',fee:'0.00'});
+});
+it('bank pay refuses a lower fee than the client authorized (B1-1)',async()=>{
+ const f=await fixture(undefined,{cardFeeBps:0}); const a=await bankSetup(f,'lower_fee',undefined,'2.50'); serveBank([a]);
+ await withSystemDbAccessContext(()=>db.update(billingPaymentSettings).set({achFeeAmount:'2.00'}).where(eq(billingPaymentSettings.partnerId,f.partner.id)));
+ expect(await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}))
+  .toEqual({attemptId:null,outcome:'refused',reason:'client_authorization_required'});
+ expect(provider.create).not.toHaveBeenCalled(); expect(await attempts(f.invoice.id)).toEqual([]);
+});
+
+// B1-2: money captured but not applied still belongs to this invoice. Offering another
+// debit (bank) or a card save on it is a path to charging the client twice.
+import { getInvoiceAutopayOffer } from './payAndSave';
+it('offers neither bank pay nor card pay-and-save while an unapplied attempt holds money for the invoice (B1-2)',async()=>{
+ const f=await fixture();
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toMatchObject({available:true});
+ expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toMatchObject({eligible:true});
+ await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
+  attemptNo:1,paymentMethodId:f.method.id,idempotencyKey:`autopay_${f.schedule.id}_1`,principalAmount:'100.00',feeAmount:'0.00',
+  currency:'USD',state:'unapplied',initiatedBy:'scheduler'}));
+ expect(await getBankAutopayOffer(f.invoice.id,f.org.id)).toBeNull();
+ expect(await getInvoiceAutopayOffer(f.org.id,f.invoice.id)).toBeNull();
+ // Without an invoice (e.g. the portal payment methods page) the org-level offer is unchanged.
+ expect(await getInvoiceAutopayOffer(f.org.id)).toMatchObject({eligible:true});
+});
+
+// P-20 / W04 O4: a PaymentIntent verified as canceled can never capture, so its mapping
+// must not stay 'pending' (it reads as an open payment).
+it.each(['hard_decline','released_3ds'] as const)('marks the mapping failed once its PaymentIntent is canceled (%s)',async path=>{
+ const f=await fixture();
+ provider.confirm.mockImplementationOnce(async()=>{
+  currentPi=path==='hard_decline'
+   ?{...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'card_declined',decline_code:'stolen_card'}}
+   :{...currentPi,status:'requires_payment_method',last_payment_error:{type:'card_error',code:'authentication_required',decline_code:'authentication_required'}};
+  throw Object.assign(new Error('declined'),{type:'StripeCardError',statusCode:402,code:currentPi.last_payment_error.code,
+   decline_code:currentPi.last_payment_error.decline_code,payment_intent:currentPi});
+ });
+ await attemptCollection(inputFor(f));
+ if(path==='released_3ds')expect(await releaseInvoiceConfirmation({invoiceId:f.invoice.id,orgId:f.org.id})).toEqual({outcome:'released'});
+ const [attempt]=await attempts(f.invoice.id);
+ expect(attempt!.state).toBe(path==='hard_decline'?'failed':'canceled');
+ const [mapping]=await withSystemDbAccessContext(()=>db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.id,attempt!.invoiceStripePaymentId!)));
+ expect(mapping).toMatchObject({status:'failed',invoicePaymentId:null});
+});
+
+it.each(['scheduler','bank_pay'] as const)('the %s PaymentIntent names the invoice and the MSP in its description',async path=>{
+ const f=await fixture();
+ if(path==='scheduler')await attemptCollection(inputFor(f));
+ else { const a=await bankSetup(f,'described'); serveBank([a]);
+  await collectAfterBankSetup({invoiceId:f.invoice.id,orgId:f.org.id,setupSessionId:a.session.id!}); }
+ expect(provider.create).toHaveBeenCalledOnce();
+ expect(provider.create.mock.calls[0]![0]).toMatchObject({description:`Invoice ${f.invoice.invoiceNumber} · ${f.partner.name}`,
+  metadata:expect.objectContaining({invoice_id:f.invoice.id,attempt_id:expect.any(String)})});
+});
+
+// #7897: a card disputed at charge time (lab test card 0259) is applied as a reversed
+// payment, so the schedule records payment_reversed. Winning the dispute restores the
+// payment; the schedule must not keep saying the payment was reversed.
+it('clears payment_reversed once a won dispute restores the payment (#7897)',async()=>{
+ const f=await fixture();
+ const result=await attemptCollection(inputFor(f));
+ const dispute=(id:string,eventType:string,withdrawn:boolean,created:number)=>({partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',
+  stripeEventId:id,eventType,livemode:false,providerCreated:created,paymentIntentId:currentPi.id,chargeId:'ch_dispute_won',
+  disputeId:'du_won',currency:'USD',disputeAmountMinor:10000,disputeFundsWithdrawn:withdrawn});
+ const now=Math.floor(Date.now()/1000);
+ expect(await ingestStripeFinancialEvent(dispute(`evt_withdrawn_${f.invoice.id}`,'charge.dispute.funds_withdrawn',true,now))).toMatchObject({state:'pending'});
+ currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null};
+ await applyAttemptOutcome(f.partner.id,result.attemptId!);
+ expect(await scheduleFor(f)).toMatchObject({state:'succeeded',stateReason:'payment_reversed'});
+ expect((await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id))))[0]!.status).not.toBe('paid');
+ await ingestStripeFinancialEvent(dispute(`evt_won_${f.invoice.id}`,'charge.dispute.closed',false,now+60));
+ expect((await withSystemDbAccessContext(()=>db.select().from(invoices).where(eq(invoices.id,f.invoice.id))))[0]!.status).toBe('paid');
+ expect(await scheduleFor(f)).toMatchObject({state:'succeeded',stateReason:null});
+});
+
+// ---- S-1, R1, R2, 2a-3, R3: collection outcomes that stop a noticed charge ----
+function captureMail(){
+ const sendEmail=vi.fn(async(_message:{to:string;purpose:string;subject:string;text:string;html:string})=>{});
+ const spy=vi.spyOn(emailModule,'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+ return {restore:()=>spy.mockRestore(),staff:()=>sendEmail.mock.calls.map(([message])=>message).filter(message=>message.purpose==='staff.autopay')};
+}
+async function withStaffEmail(f:Awaited<ReturnType<typeof fixture>>){
+ await withSystemDbAccessContext(async()=>{
+  await db.update(partners).set({billingEmail:'msp@example.test'}).where(eq(partners.id,f.partner.id));
+  await createUser({partnerId:f.partner.id,withMembership:true});
+ });
+}
+const outboxFor=(invoiceId:string)=>withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,invoiceId)));
+const uuidPattern=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+it('a missing authorization at charge time emails staff once and tells each noticed client the charge will not happen (S-1, 2a-3)',async()=>{
+ const f=await fixture(undefined,{consent:'missing'}); await withStaffEmail(f);
+ const b=await siblingSchedule(f);
+ const mail=captureMail();
+ try {
+  await runAutopayCollection();
+  await vi.waitFor(()=>expect(mail.staff()).toHaveLength(1));
+ } finally { mail.restore(); }
+ expect(mail.staff()[0]).toMatchObject({to:'msp@example.test'});
+ expect(mail.staff()[0]!.text).toMatch(/authorization/i); expect(mail.staff()[0]!.text).not.toMatch(uuidPattern);
+ for(const invoice of [f.invoice,b.invoice]){
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)));
+  expect(schedule).toMatchObject({state:'failed',stateReason:'consent_required'});
+  const notices=(await outboxFor(invoice.id)).filter(n=>n.kind==='payment_reminder');
+  expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${invoice.id}:not_charged:1`,toEmail:'billing@example.test',status:'pending'})]);
+  expect((notices[0]!.rendered as {text:string}).text).toMatch(/needs your updated authorization before charging automatically\. The automatic payment announced .*will not happen\./);
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
+
+it('a method the live check rejects is marked unusable, so the due invoice fails and client and staff are told once (R1, R2)',async()=>{
+ const f=await fixture(); await withStaffEmail(f);
+ // A stored credit card whose live record now reports debit: collection can never charge it as noticed.
+ provider.methodRetrieve.mockImplementation(async id=>({id,customer:'cus_autopay_test',type:'card',
+  card:{brand:'visa',funding:'debit',wallet:null,networks:{available:['visa'],preferred:null}}}));
+ const b=await siblingSchedule(f);
+ const mail=captureMail();
+ try {
+  await runAutopayCollection(); await runAutopayCollection(new Date(Date.now()+86_400_000));
+  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(2));
+ } finally { mail.restore(); }
+ // One email per stage for the dead method, across both invoices and both runs (F3): the
+ // admission check that found it, then the invoices it left uncharged.
+ expect(mail.staff().map(message=>message.text.includes('was not charged automatically')).sort()).toEqual([false,true]);
+ const [method]=await withSystemDbAccessContext(()=>db.select().from(orgPaymentMethods).where(eq(orgPaymentMethods.id,f.method.id)));
+ expect(method).toMatchObject({status:'unusable',isAutopayMethod:true});
+ for(const invoice of [f.invoice,b.invoice]){
+  const [schedule]=await withSystemDbAccessContext(()=>db.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.invoiceId,invoice.id)));
+  expect(schedule).toMatchObject({state:'failed',stateReason:'method_not_usable',nextAttemptAt:null});
+  expect((await outboxFor(invoice.id)).filter(n=>n.dedupeKey===`${invoice.id}:payment_failed:method_not_usable:1`)).toHaveLength(1);
+  const attention=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+  expect(attention.some(n=>n.link===`/billing/invoices/${invoice.id}`&&(n.metadata as {event?:string})?.event==='autopay.needs_attention')).toBe(true);
+ }
+ expect(provider.create).not.toHaveBeenCalled();
+});
+
+it('a failed method-unusable schedule with no billing contact still tells staff, and logs that the client was not told (R2)',async()=>{
+ const f=await fixture(); await withStaffEmail(f);
+ await withSystemDbAccessContext(()=>db.update(organizations).set({billingContact:null}).where(eq(organizations.id,f.org.id)));
+ provider.methodRetrieve.mockImplementation(async id=>({id,customer:'cus_autopay_test',type:'card',
+  card:{brand:'visa',funding:'debit',wallet:null,networks:{available:['visa'],preferred:null}}}));
+ const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ const mail=captureMail();
+ try {
+  await runAutopayCollection();
+  await vi.waitFor(()=>expect(mail.staff().length).toBeGreaterThanOrEqual(1));
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining('no client notice'),expect.objectContaining({invoiceId:f.invoice.id,reason:'no_billing_contact'}));
+ } finally { mail.restore(); warn.mockRestore(); }
+ expect(await scheduleFor(f)).toMatchObject({state:'failed',stateReason:'method_not_usable'});
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_failed')).toEqual([]);
+ const attention=await withSystemDbAccessContext(()=>db.select().from(userNotifications).where(eq(userNotifications.orgId,f.org.id)));
+ expect(attention.find(n=>n.link===`/billing/invoices/${f.invoice.id}`)?.message).toMatch(/no billing contact/i);
+});
+
+it('a cap cancellation before confirm records its reason and tells the client and staff (R3)',async()=>{
+ const f=await capFixture({enabled:true,amount:'50.00',currency:'USD'}); await withStaffEmail(f);
+ const info=vi.spyOn(console,'info').mockImplementation(()=>{});
+ const mail=captureMail();
+ let result:Awaited<ReturnType<typeof attemptCollection>>;
+ try {
+  result=await attemptCollection(inputFor(f));
+  await vi.waitFor(()=>expect(mail.staff()).toHaveLength(1));
+  expect(info).toHaveBeenCalledWith(expect.stringContaining('not charged automatically'),expect.objectContaining({invoiceId:f.invoice.id,reason:'above_authorized_cap'}));
+ } finally { mail.restore(); info.mockRestore(); }
+ expect(result).toMatchObject({outcome:'canceled',reason:'above_authorized_cap'});
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'above_authorized_cap'});
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
+ const notices=(await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder');
+ expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'pending'})]);
+ const text=(notices[0]!.rendered as {text:string}).text;
+ expect(text).toContain('limit you authorized');
+ // One shape with the MSP exclusion notice (D-19): it names the announced charge that will not happen.
+ expect(text).toMatch(/The automatic payment announced for on or around \d{4}-\d{2}-\d{2} will not happen\. You can pay using the invoice link\./);
+ expect(mail.staff()[0]!.text).toMatch(/limit the client authorized/);
+ // Once per announcement, whatever the reason: a later exclusion of the same announced charge adds nothing.
+ await withSystemDbAccessContext(()=>noticeChargeNotMade(db,{invoiceId:f.invoice.id,reason:'exclude'}));
+ expect((await outboxFor(f.invoice.id)).filter(n=>n.kind==='payment_reminder')).toHaveLength(1);
+});
+import { noticeChargeNotMade } from './notChargedNotice';
+
+// B1-5 / P-18: re-authorizing a bank payment for the same invoice (a changed total, or a
+// spent authority) re-runs bank setup. It is the same enrollment, not a new one: the
+// client already got "Automatic payments are set up" and gets nothing new.
+it('a bank-pay re-authorization for the same invoice sends no second enrolled email (B1-5)',async()=>{
+ const f=await fixture();
+ const a=await bankSetup(f,'first');
+ const enrolled=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox)
+  .where(eq(billingNoticeOutbox.orgId,f.org.id)))).filter(n=>n.kind==='autopay_enrolled');
+ expect(await enrolled()).toHaveLength(1);
+ const stops=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingLinkTokens)
+  .where(eq(billingLinkTokens.orgId,f.org.id)))).filter(t=>t.purpose==='stop_autopay');
+ const stopCount=(await stops()).length;
+ const b=await bankSetup(f,'retry');
+ expect(await enrolled()).toHaveLength(1);
+ expect(await stops()).toHaveLength(stopCount);
+ // The new authorization itself is still recorded and is the active method.
+ const consents=await withSystemDbAccessContext(()=>db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.paymentMethodId,b.method.id)));
+ expect(consents).toHaveLength(1);
+ expect(b.method).toMatchObject({status:'active',isAutopayMethod:true});
+ expect(a.method.id).not.toBe(b.method.id);
+});
+
+// Batch 3b (D-19): the client was told "we will initiate payment on or around <date>".
+// An MSP exclusion, pause or stop afterwards tells them that charge will not happen.
+import { pauseAutopay } from './enrollmentLifecycle';
+it.each([['exclude', 'payment_reminder'], ['pause', 'autopay_paused'], ['stop', 'autopay_stopped']] as const)(
+  'MSP %s of an announced invoice tells the client the charge will not happen', async (kind, noticeKind) => {
+    const f = await fixture();
+    await withSystemDbAccessContext(async () => {
+      if (kind === 'exclude') expect(await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind, actor: f.actor}))
+        .toMatchObject({status: 'excluded'});
+      else if (kind === 'pause') await pauseAutopay(db, f.actor, f.org.id);
+      else await turnOffAutopay(db, f.actor, f.org.id);
+    });
+    const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.orgId, f.org.id)));
+    const told = rows.filter(row => row.kind === noticeKind);
+    expect(told).toHaveLength(1);
+    expect(told[0]!.invoiceId ?? f.invoice.id).toBe(f.invoice.id);
+    const text = (told[0]!.rendered as {text: string}).text;
+    expect(text).toContain(f.invoice.invoiceNumber);
+    expect(text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+    if (kind !== 'exclude') expect(text).not.toMatch(/processing fee/i);
+  });
+it('an MSP exclusion before the charging notice went out sends nothing new', async () => {
+  const f = await fixture();
+  await withSystemDbAccessContext(async () => {
+    await db.update(billingNoticeOutbox).set({status: 'pending', sentAt: null}).where(eq(billingNoticeOutbox.id, f.notice.id));
+    await db.update(invoiceAutopaySchedules).set({state: 'awaiting_notice', noticeSentAt: null}).where(eq(invoiceAutopaySchedules.id, f.schedule.id));
+    expect(await requestInvoiceControl(db, {invoiceId: f.invoice.id, kind: 'exclude', actor: f.actor})).toMatchObject({status: 'excluded'});
+  });
+  const rows = await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId, f.org.id)));
+  expect(rows.filter(row => row.kind === 'payment_reminder')).toHaveLength(0);
+});
+
+// Batch 3b (2b-1 / review R1): the client replaces nothing and autopay is stopped while the
+// sibling's method-unusable email waits. The failure is still true, so it is re-issued as
+// the pay variant (no update link) and delivered on the next run, never silently dropped.
+it('re-issues a waiting method-unusable email as the pay variant after autopay is stopped, and delivers it', async () => {
+  const f = await fixture();
+  provider.confirm.mockImplementationOnce(async () => {
+    currentPi = {...currentPi, status: 'requires_payment_method', last_payment_error: {type: 'card_error', code: 'card_declined', decline_code: 'stolen_card'}};
+    throw Object.assign(new Error('Your card was declined.'), {type: 'StripeCardError', statusCode: 402, code: 'card_declined', decline_code: 'stolen_card', payment_intent: currentPi});
+  });
+  const b = await siblingSchedule(f);
+  expect(await attemptCollection(inputFor(f))).toMatchObject({outcome: 'failed', failureClass: 'hard'});
+  await runAutopayCollection(new Date());
+  await withSystemDbAccessContext(() => turnOffAutopay(db, f.actor, f.org.id));
+  const sendEmail = vi.fn(async (_message: {to: string; subject: string; text: string; html: string}) => undefined);
+  const mail = vi.spyOn(emailModule, 'getEmailService').mockReturnValue({sendEmail} as unknown as NonNullable<ReturnType<typeof emailModule.getEmailService>>);
+  try {
+    await dispatchPendingBillingNotices();
+    const failures = async () => (await withSystemDbAccessContext(() => db.select().from(billingNoticeOutbox)
+      .where(eq(billingNoticeOutbox.invoiceId, b.invoice.id)))).filter(n => n.kind === 'payment_failed');
+    let rows = await failures();
+    const update = rows.find(n => (n.rendered as {frozen: {variant: string}}).frozen.variant === 'update')!;
+    expect(update).toMatchObject({status: 'cancelled', lastError: 'Re-issued without the update-method link'});
+    const pay = rows.find(n => (n.rendered as {frozen: {variant: string}}).frozen.variant === 'pay')!;
+    expect(pay).toMatchObject({dedupeKey: `${b.invoice.id}:payment_failed:method_not_usable:pay:1`, status: 'pending'});
+    await dispatchPendingBillingNotices(new Date(Date.now() + 1000));
+    rows = await failures();
+    expect(rows.find(n => n.id === pay.id)).toMatchObject({status: 'sent'});
+    const toB = sendEmail.mock.calls.map(([message]) => message).filter(message => message.subject.includes(b.invoice.invoiceNumber!));
+    expect(toB).toHaveLength(1);
+    expect(toB[0]!.text).toContain('was not charged automatically');
+    expect(toB[0]!.text).toMatch(/Pay invoice: https?:\/\/\S+\/invoice\/\S+/);
+    expect(toB[0]!.text).not.toContain('Update payment method');
+  } finally { mail.mockRestore(); }
+});
+
+// B1-2 follow-up: plain card Pay (Checkout) starts a new payment too. While Stripe holds
+// money captured for this invoice that could not be applied, a card payment would charge
+// the client twice.
+it('card Pay refuses to mint Checkout while an unapplied attempt holds the client\'s money',async()=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(()=>db.insert(invoiceCollectionAttempts).values({orgId:f.org.id,invoiceId:f.invoice.id,scheduleId:f.schedule.id,
+  attemptNo:1,paymentMethodId:f.method.id,idempotencyKey:`autopay_${f.schedule.id}_1`,principalAmount:'100.00',feeAmount:'0.00',
+  currency:'USD',state:'unapplied',initiatedBy:'scheduler'}));
+ provider.sessionCreate.mockResolvedValue({id:'cs_unapplied',url:'https://checkout.stripe.com/c/pay/unapplied',payment_intent:null});
+ await expect(createInvoicePayLink(f.invoice.id,f.actor)).rejects.toMatchObject({status:409,code:'COLLECTION_IN_PROGRESS'});
+ expect(provider.sessionCreate).not.toHaveBeenCalled();
+});
+
+// F5: money captured but never applied (the invoice was voided first), then refunded in
+// full by the MSP. The client was charged and refunded; they get a refund email that says
+// nothing was applied to the invoice.
+it('a full refund of an unapplied autopay capture sends the client a refund notice (F5)',async()=>{
+ const f=await fixture();
+ const result=await attemptCollection(inputFor(f));
+ await withSystemDbAccessContext(()=>db.update(invoices).set({status:'void'}).where(eq(invoices.id,f.invoice.id)));
+ currentPi={...currentPi,status:'succeeded',amount_received:10000,last_payment_error:null};
+ await applyAttemptOutcome(f.partner.id,result.attemptId!);
+ expect((await attempts(f.invoice.id))[0]!.state).toBe('unapplied');
+ const refund={partnerId:f.partner.id,stripeAccountId:'acct_autopay_test',stripeEventId:`evt_unapplied_refund_${f.invoice.id}`,
+  eventType:'charge.refunded',livemode:false,providerCreated:Math.floor(Date.now()/1000),paymentIntentId:currentPi.id,
+  currency:'USD',chargeAmountMinor:10000,refundedAmountMinor:10000};
+ await ingestStripeFinancialEvent(refund); await ingestStripeFinancialEvent(refund);
+ expect((await attempts(f.invoice.id))[0]).toMatchObject({state:'canceled',failureCode:'unapplied_refunded'});
+ const refunds=(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id))))
+  .filter(n=>n.kind==='payment_receipt'&&(n.rendered as {frozen?:{variant?:string}}).frozen?.variant==='refund');
+ expect(refunds).toHaveLength(1);
+ const text=(refunds[0]!.rendered as {text:string}).text;
+ expect(text).toContain('Refunded: USD 100.00');
+ expect(text).toContain(`was not applied to invoice ${f.invoice.invoiceNumber}`);
+ expect(text).not.toContain('Balance due');
+});
+
+// F4: a contract the MSP excluded from autopay after the charging notice went out. Charge
+// now (not only the scheduler) must tell the client, in the transaction that ends the schedule.
+import { contracts, invoiceLines } from '../../db/schema';
+it.each(['msp_charge_now','scheduler'] as const)('a %s attempt on an excluded contract tells the client once, in the same transaction (F4)',async initiatedBy=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  const [contract]=await db.insert(contracts).values({partnerId:f.partner.id,orgId:f.org.id,name:'Managed services',intervalMonths:1,
+   startDate:'2026-07-01',currencyCode:'USD',autopayExcluded:true}).returning({id:contracts.id});
+  await db.insert(invoiceLines).values({invoiceId:f.invoice.id,orgId:f.org.id,sourceType:'contract',sourceContractId:contract!.id,
+   description:'Managed services',quantity:'1.00',unitPrice:'100.00',lineTotal:'100.00'});
+ });
+ const result=initiatedBy==='msp_charge_now'
+  ? await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy})
+  : (await runAutopayCollection(), {outcome:'refused',reason:'excluded_contract'});
+ expect(result).toMatchObject({outcome:'refused',reason:'excluded_contract'});
+ expect(await scheduleFor(f)).toMatchObject({state:'excluded_by_msp',stateReason:'excluded_contract'});
+ const notices=(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id))))
+  .filter(n=>n.kind==='payment_reminder');
+ expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+ expect((notices[0]!.rendered as {text:string}).text).toContain('asked for this invoice to be paid directly');
+ expect(provider.create).not.toHaveBeenCalled();
+});
+
+// F1: a staff email for an org with no autopay enrollment (a pay-link card dispute) is sent,
+// not dropped because its dedupe claim had no enrollment row to live on.
+import { sendAutopayStaffEmail } from './staffNotifications';
+it('sends a staff email for an org with no autopay enrollment (F1)',async()=>{
+ const partner=await withSystemDbAccessContext(()=>createPartner());
+ const org=await withSystemDbAccessContext(()=>createOrganization({partnerId:partner.id}));
+ await withSystemDbAccessContext(()=>db.update(partners).set({billingEmail:'msp@example.test'}).where(eq(partners.id,partner.id)));
+ expect(await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,org.id)))).toEqual([]);
+ const mail=captureMail();
+ try { await sendAutopayStaffEmail({orgId:org.id,partnerId:partner.id,event:'payment.disputed',
+   dedupeKey:`payment:${randomUUID()}:disputed:dp_f1`,message:'A payment was disputed.'}); }
+ finally { mail.restore(); }
+ expect(mail.staff()).toEqual([expect.objectContaining({to:'msp@example.test',subject:expect.stringContaining('Payment disputed')})]);
+});
+
+// F7: the B1-5 suppression is for the same account re-authorizing. A bank-pay retry that
+// links a DIFFERENT account is a method change the client and staff must hear about.
+it('a bank-pay re-authorization with a different bank account still announces the change (F7)',async()=>{
+ const f=await fixture();
+ await bankSetup(f,'first');
+ const enrolled=async()=>(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox)
+  .where(eq(billingNoticeOutbox.orgId,f.org.id)))).filter(n=>n.kind==='autopay_enrolled');
+ expect(await enrolled()).toHaveLength(1);
+ await bankSetup(f,'other_account',undefined,'0.00','4321');
+ const notices=await enrolled();
+ expect(notices).toHaveLength(2);
+ expect((notices.at(-1)!.rendered as {text:string}).text).toContain('4321');
+});
+
+// F2: pause then resume (or stop then re-request) before the pause/stop email goes out. That
+// email is cancelled as superseded, but its "the payment announced for … will not happen"
+// lines were still true: the cancelled schedules are never re-planned. They are re-issued as
+// the per-invoice not-charged notice.
+import { resumeAutopay, requestAutopay } from './enrollmentLifecycle';
+it.each(['pause_then_resume','stop_then_rerequest'] as const)('a superseded %s email re-issues its announced-charge lines per invoice (F2)',async path=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  if(path==='pause_then_resume'){ await pauseAutopay(db,f.actor,f.org.id); await resumeAutopay(db,f.actor,f.org.id); }
+  else { await turnOffAutopay(db,f.actor,f.org.id); await requestAutopay(db,f.actor,{orgIds:[f.org.id]}); }
+ });
+ registerAutopayNoticeHandlers();
+ const mail=captureMail();
+ try { await dispatchPendingBillingNotices(); await dispatchPendingBillingNotices(); } finally { mail.restore(); }
+ const rows=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const lifecycle=rows.find(row=>row.kind===(path==='pause_then_resume'?'autopay_paused':'autopay_stopped'))!;
+ expect(lifecycle).toMatchObject({status:'cancelled',lastError:'Automatic payment status changed since this notice'});
+ const told=rows.filter(row=>row.kind==='payment_reminder'&&row.invoiceId===f.invoice.id);
+ expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'sent'})]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled'});
 });

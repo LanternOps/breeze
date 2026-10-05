@@ -16,6 +16,7 @@ import { persistCapturedAutopayMethod } from './setupCompletion';
 import { withAcceptedAutopayDisclosure, buildAutopayDisclosure } from './consentText';
 import { isAutopayEnabledForPartner } from './autopayGate';
 import { AUTOPAY_CHECKOUT_WALLET_OPTIONS } from './feeDisclosure';
+import { holdsClientMoney } from './reservation';
 
 export const payAndSaveSchema = z.object({
   saveForAutopay: z.boolean().default(false),
@@ -66,10 +67,12 @@ export async function prepareCardPayAndSave(invoiceId: string, orgId: string, in
   }, 'pay_and_save', invoiceId, checkoutKey));
 }
 
-export async function getInvoiceAutopayOffer(orgId: string): Promise<InvoiceAutopayOffer | null> {
+export async function getInvoiceAutopayOffer(orgId: string, invoiceId?: string): Promise<InvoiceAutopayOffer | null> {
   // orgId comes only from an authorized invoice or the verified portal identity.
   // The complete disclosure also reads partner-axis settings invisible to portal RLS.
   return readWithPartnerAxisVisibility(async () => {
+    // Same guard as the bank offer: no new payment offer while this invoice's money is in flight or unapplied.
+    if (invoiceId && await holdsClientMoney(db, invoiceId)) return null;
     const [enrollment] = await db.select().from(orgAutopayEnrollments)
       .where(eq(orgAutopayEnrollments.orgId, orgId)).limit(1);
     if (!enrollment || !['requested', 'active'].includes(enrollment.status)

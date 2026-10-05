@@ -6,8 +6,8 @@ vi.mock('../../services/autopay/bankPayment',async original=>({
 import { prepareCardPayAndSave } from '../../services/autopay/payAndSave';
 const confirmation = vi.hoisted(() => ({ release: vi.fn() }));
 vi.mock('../../services/autopay/confirmPayment', () => ({ releaseInvoiceConfirmation: confirmation.release }));
-const reservation = vi.hoisted(() => ({ assert: vi.fn(), lock: vi.fn(), inFlight: vi.fn(), invoice: null as Record<string, unknown> | null }));
-vi.mock('../../services/autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, lockInvoiceForCollection: reservation.lock, readInFlightCollection: reservation.inFlight }));
+const reservation = vi.hoisted(() => ({ assert: vi.fn(), held: vi.fn(async () => false), lock: vi.fn(), inFlight: vi.fn(), invoice: null as Record<string, unknown> | null }));
+vi.mock('../../services/autopay/reservation', () => ({ assertNoActiveCollection: reservation.assert, holdsClientMoney: reservation.held, lockInvoiceForCollection: reservation.lock, readInFlightCollection: reservation.inFlight }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { db } from '../../db';
@@ -211,6 +211,14 @@ it('portal invoice pay rejects missing authorization before Stripe', async () =>
     expect(settleCheckoutSessionMock).not.toHaveBeenCalled();
   });
 
+it('portal pay returns 409 while captured money for the invoice is unapplied, before contacting Stripe', async () => {
+  dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
+  reservation.held.mockResolvedValueOnce(true);
+  const response = await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: 'COLLECTION_IN_PROGRESS' });
+  expect(sessionsCreateMock).not.toHaveBeenCalled();
+});
 it('portal pay returns 409 for a reservation before contacting Stripe', async () => {
   dbResults.push([{ id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent', currencyCode: 'USD', balance: '100.00' }]);
   reservation.assert.mockRejectedValueOnce(new InvoiceServiceError('A payment is already processing', 409, 'COLLECTION_IN_PROGRESS'));

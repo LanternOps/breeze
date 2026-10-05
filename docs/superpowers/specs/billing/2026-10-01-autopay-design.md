@@ -172,7 +172,8 @@ in code so `consent_text_version` resolves to exact wording.
 (`credit`\|`debit`\|`prepaid`\|`unknown`), `card_country`, `bank_name`, `bank_last4`,
 `account_holder_type` (`individual`\|`company`), `stripe_mandate_id`, `stripe_setup_intent_id`,
 `status` (`pending_verification`\|`active`\|`unusable`\|`removed`), `unusable_reason`,
-`is_autopay_method` (partial unique: one per org where true and status active/pending),
+`is_autopay_method` (partial unique: one per org where true, whatever the status; an unusable
+method keeps the flag until it is replaced or removed),
 `created_at`, `removed_at`.
 
 ### 5.5 `invoice_autopay_schedules` — one per invoice, written at issue

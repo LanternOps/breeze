@@ -1,6 +1,7 @@
 import type Stripe from 'stripe';
 import type {CardFundingType} from '@breeze/shared';
-import {and,desc,eq,inArray} from 'drizzle-orm';
+import {formatStripePaymentMethod} from './methodLabel';
+import {and,desc,eq,inArray,ne,sql} from 'drizzle-orm';
 import {db,withSystemDbAccessContext,runOutsideDbContext,runAfterDbContextExit} from '../../db';
 import {organizations,stripeConnectAccounts,orgAutopayEnrollments,orgPaymentMethods,orgAutopayConsents,billingLinkTokens} from '../../db/schema';
 import {autopaySetupAttempts} from '../../db/schema/autopaySetupAttempts';
@@ -100,8 +101,10 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    await enqueueRejectedAutopayMethod(db,attempt,method);
    return {outcome:'stale_generation',orgId:attempt.orgId};
   }
+  // Retire whatever row is the current autopay method, including a hard-declined one that
+  // kept the flag as 'unusable' (D-17); one flagged row per org is a database invariant.
   const replaced=await db.update(orgPaymentMethods).set({isAutopayMethod:false,status:'removed',removedAt:new Date()})
-   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification']))).returning();
+   .where(and(eq(orgPaymentMethods.orgId,attempt.orgId),eq(orgPaymentMethods.isAutopayMethod,true),inArray(orgPaymentMethods.status,['active','pending_verification','unusable']))).returning();
   const holderType=method.us_bank_account?.account_holder_type;
   const values:typeof orgPaymentMethods.$inferInsert={orgId:attempt.orgId,enrollmentId:enrollment.id,stripePaymentMethodId:method.id,type:attempt.methodType,
    cardBrand:method.card?.brand??null,cardLast4:method.card?.last4??null,cardExpMonth:method.card?.exp_month??null,cardExpYear:method.card?.exp_year??null,
@@ -122,9 +125,23 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
    needsAttentionReason:null}).where(eq(orgAutopayEnrollments.id,enrollment.id));
   await db.update(autopaySetupAttempts).set({outcome,completedAt:outcome==='activated'?new Date():null,setupIntentId}).where(eq(autopaySetupAttempts.id,attempt.id));
   if(attempt.tokenId&&!snapshot.bankPayment)await db.update(billingLinkTokens).set({consumedAt:new Date()}).where(eq(billingLinkTokens.id,attempt.tokenId));
-  if(!wasPending){
+  // Re-authorizing a bank payment for the same invoice (a changed total, a spent authority)
+  // re-runs setup under the same enrollment generation. When it saved the SAME bank account the
+  // client already heard autopay is set up, so nothing new is sent to them or to staff; the new
+  // consent is still recorded (B1-5). A different account is a method change and is announced
+  // (F7). Same account: the same Stripe method, or the same bank and last four digits on the
+  // method it replaced (Financial Connections mints a new PaymentMethod id per link and no
+  // fingerprint is stored; a false match only suppresses a courtesy email).
+  const sameAccount=method.type==='us_bank_account'&&replaced.some(old=>old.id===saved!.id||(old.type==='us_bank_account'
+   &&!!old.bankLast4&&old.bankLast4===method.us_bank_account?.last4&&old.bankName===(method.us_bank_account?.bank_name??null)));
+  const [earlierBankPay]=snapshot.bankPayment&&!wasPending&&sameAccount?await db.select({id:autopaySetupAttempts.id}).from(autopaySetupAttempts).where(and(
+   eq(autopaySetupAttempts.enrollmentId,enrollment.id),eq(autopaySetupAttempts.generation,attempt.generation),
+   eq(autopaySetupAttempts.outcome,'activated'),ne(autopaySetupAttempts.id,attempt.id),
+   sql`${autopaySetupAttempts.consentSnapshot}->'bankPayment'->>'invoiceId' = ${snapshot.bankPayment.invoiceId}`)).limit(1):[];
+  const announce=!wasPending&&!earlierBankPay;
+  if(announce){
   const stop=await mintBillingLinkToken(db,{orgId:attempt.orgId,purpose:'stop_autopay',enrollmentId:enrollment.id,generation:enrollment.generation,ttlDays:365});
-  const methodDescription=method.card?`${method.card.brand} ${method.card.funding} ••${method.card.last4}`:`${method.us_bank_account?.bank_name??'Bank'} ••${method.us_bank_account?.last4??''}`;
+  const methodDescription=formatStripePaymentMethod(method);
   const paymentMethod=methodDescription+(outcome==='pending_verification'?' (bank verification pending; no automatic payments yet)':'');
   const displayFee=verifiedFeeText(method.type,method.card?.funding??null,snapshot.feeText,method.card);
   await enqueueBillingNotice(db,{orgId:attempt.orgId,partnerId:attempt.partnerId,enrollmentId:enrollment.id,kind:'autopay_enrolled',seq:attempt.generation,
@@ -134,10 +151,13 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
     scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
   }
   for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
-  if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
+  // Replacing another method is an update for staff, not a new enrollment (P-17).
+  const updated=replaced.some(old=>old.id!==saved!.id);
+  if(announce)runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.enrolled',
-    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
+   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:updated?'autopay.method_updated':'autopay.enrolled',
+    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:updated?`Payment method updated${outcome==='activated'?'':'; awaiting bank verification'}.`
+     :`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
   });
   return {outcome,orgId:attempt.orgId};
  });

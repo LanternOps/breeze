@@ -102,7 +102,7 @@ describe('customer token and return ownership against PostgreSQL', () => {
       return { outcome: 'activated', orgId: f.identity.orgId };
     });
     expect(await completeOwnedAutopaySetup(f.identity, f.attempt.checkoutSessionId!)).toEqual({
-      outcome: 'activated', orgId: f.identity.orgId, methodLabel: 'visa debit ••1234', feeText: 'No processing fee applies to this card.',
+      outcome: 'activated', orgId: f.identity.orgId, methodLabel: 'Visa debit card ending in 1234', feeText: 'No processing fee applies to this card.',
     });
     expect(completeAutopaySetup).toHaveBeenCalledWith(f.identity.partnerId, { checkoutSessionId: f.attempt.checkoutSessionId }, expect.any(Function));
   });

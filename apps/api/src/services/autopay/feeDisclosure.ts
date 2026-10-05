@@ -1,5 +1,6 @@
 import type Stripe from 'stripe';
 import type { FeeQuote } from './processingFee';
+import { fromMinorUnits, toMinorUnits } from '../stripeMoney';
 export function displayMoney(amount: string, currency: string): string {
   return currency === 'USD' ? `$${amount}` : `${currency} ${amount}`;
 }
@@ -33,4 +34,11 @@ export function verifiedFeeText(type: string, funding: string | null, acceptedTe
 export function paymentFeeLine(principal: string, fee: string, currency: string, methodType: string): string {
   return /^0(?:\.0+)?$/.test(fee) ? `${displayMoney(principal,currency)}; no processing fee`
     : `${displayMoney(principal,currency)} + ${displayMoney(fee,currency)} ${methodType === 'us_bank_account' ? 'bank' : 'card'} processing fee`;
+}
+/** The pre-charge notice's locked amount line: the total that will be charged, then
+ * how it splits into the invoice amount and the processing fee. */
+export function chargeTotalLine(principal: string, fee: string, currency: string, methodType: string): string {
+  const total = fromMinorUnits(toMinorUnits(principal, currency) + toMinorUnits(fee, currency), currency);
+  return /^0(?:\.0+)?$/.test(fee) ? `Total charge: ${displayMoney(principal, currency)} (no processing fee)`
+    : `Total charge: ${displayMoney(total, currency)} (${paymentFeeLine(principal, fee, currency, methodType)})`;
 }

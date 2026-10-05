@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const h = vi.hoisted(() => ({ rows: [] as unknown[][], inserts: vi.fn(), send: vi.fn(), claimed: new Set<string>(),predicates:[] as unknown[] }));
+const h = vi.hoisted(() => ({ rows: [] as unknown[][], inserts: vi.fn(), send: vi.fn(), claimed: new Set<string>(),predicates:[] as unknown[],
+  enrolled: true, redis: null as null | { set: ReturnType<typeof vi.fn>; del: ReturnType<typeof vi.fn> } }));
+vi.mock('../redis', () => ({ getRedis: () => h.redis }));
 vi.mock('../../db', () => ({
   runOutsideDbContext: (f: () => unknown) => f(),
   withSystemDbAccessContext: (f: () => unknown) => f(),
   db: {
-    execute: async (query:any) => { const {PgDialect}=await import('drizzle-orm/pg-core');const key=String(new PgDialect().sqlToQuery(query).params[0]);if(h.claimed.has(key))return [];h.claimed.add(key);return [{id:'enrollment'}]; },
+    execute: async (query:any) => { const {PgDialect}=await import('drizzle-orm/pg-core');const q=new PgDialect().sqlToQuery(query);const key=String(q.params[0]);
+      if(q.sql.includes('array_remove')){h.claimed.delete(key);return [];}
+      if(q.sql.includes('SELECT id FROM org_autopay_enrollments'))return h.enrolled?[{id:'enrollment'}]:[];
+      if(!h.enrolled||h.claimed.has(key))return [];h.claimed.add(key);return [{id:'enrollment'}]; },
     select: () => { const q: any = {}; for (const k of ['from','innerJoin','where','limit']) q[k] = (value:unknown) => {if(k==='where')h.predicates.push(value);return q;};
       q.then = (f: (x: unknown) => unknown) => Promise.resolve(h.rows.shift() ?? []).then(f); return q; },
     insert: () => ({ values: (v: unknown) => { h.inserts(v); return { onConflictDoNothing: async () => [] }; } }),
@@ -13,7 +18,7 @@ vi.mock('../../db', () => ({
 vi.mock('../email', () => ({ getEmailService: () => ({ sendEmail: h.send }) }));
 import { notifyAutopayStaff } from './staffNotifications';
 describe('autopay staff notifications', () => {
-  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.send.mockResolvedValue({}); });
+  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.enrolled = true; h.redis = null; h.send.mockResolvedValue({}); });
   it('uses billing type and stable event payload, sends only to partner billing address', async () => {
     h.rows.push([{ userId: '11111111-1111-4111-8111-111111111111' }], [{ userId: '11111111-1111-4111-8111-111111111111' }, { userId: '22222222-2222-4222-8222-222222222222' }],
       [{ name: 'Example client' }], [{ billingEmail: 'billing@example.test' }], [{ name: 'Example client' }]);
@@ -137,5 +142,77 @@ describe('staff notices name the client organization (D-13)', () => {
     h.rows.push([{ billingEmail: 'billing@example.test' }], []);
     await sendAutopayStaffEmail({ orgId, partnerId, event: 'autopay.enrolled', dedupeKey: 'enrolled:3', message: 'Automatic payments enabled.' });
     expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Automatic payments enabled' }));
+  });
+});
+
+describe('staff notices name the invoice by number, never by id (P-17)', () => {
+  const orgId = '33333333-3333-4333-8333-333333333333';
+  const partnerId = '44444444-4444-4444-8444-444444444444';
+  const invoiceId = '55555555-5555-4555-8555-555555555555';
+  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.predicates.length = 0; h.send.mockResolvedValue({}); });
+  it('adds the invoice number to the staff email and keeps the id out of it', async () => {
+    h.rows.push([{ billingEmail: 'billing@example.test' }], [{ name: 'Acme Dental' }], [{ invoiceNumber: 'INV-2026-0008' }]);
+    await sendAutopayStaffEmail({ orgId, partnerId, invoiceId, event: 'payment.failed_final', dedupeKey: 'final:1',
+      message: 'Automatic payment has stopped retrying. The client can pay the invoice directly.' });
+    const [[mail]] = h.send.mock.calls as [[{ text: string; html: string }]];
+    expect(mail.text).toContain('Invoice: INV-2026-0008'); expect(mail.html).toContain('INV-2026-0008');
+    expect(mail.text).not.toContain(invoiceId); expect(mail.html).not.toContain(invoiceId);
+  });
+  it('adds the invoice number to the in-app message', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }], [{ invoiceNumber: 'INV-2026-0008' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, invoiceId, event: 'payment.unapplied', dedupeKey: 'unapplied:1',
+      message: 'Captured money could not be applied; review the Stripe payment.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({
+      message: 'Acme Dental: Captured money could not be applied; review the Stripe payment. Invoice INV-2026-0008.',
+      link: `/billing/invoices/${invoiceId}` })]);
+  });
+  it('titles a method update as such, not as automatic payments enabled (P-17)', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.method_updated', dedupeKey: 'updated:1', message: 'Payment method updated.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({ title: 'Payment method updated: Acme Dental',
+      metadata: { event: 'autopay.method_updated' } })]);
+  });
+});
+
+// F1: the email claim lived only on org_autopay_enrollments, so an org without an autopay
+// enrollment (every pay-link card dispute) had its staff email silently dropped.
+// F3: the claim was taken before sending, so a failed send burned the key forever.
+describe('staff email claim (F1, F3)', () => {
+  const input = { orgId: '33333333-3333-4333-8333-333333333333', partnerId: '44444444-4444-4444-8444-444444444444',
+    invoiceId: undefined, event: 'payment.disputed' as const, dedupeKey: 'payment:m:disputed:dp_1', message: 'A payment was disputed.' };
+  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.enrolled = true; h.redis = null; h.send.mockResolvedValue({}); });
+  const billing = () => h.rows.push([{ billingEmail: 'billing@example.test' }], [{ name: 'Acme Dental' }]);
+  it('emails an org with no autopay enrollment once, claiming in Redis, and logs it', async () => {
+    h.enrolled = false;
+    const keys = new Set<string>();
+    h.redis = { set: vi.fn(async (key: string) => keys.has(key) ? null : (keys.add(key), 'OK')), del: vi.fn(async (key: string) => { keys.delete(key); return 1; }) };
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      billing(); await sendAutopayStaffEmail(input);
+      billing(); await sendAutopayStaffEmail(input);
+      expect(h.send).toHaveBeenCalledTimes(1);
+      expect(h.redis.set).toHaveBeenCalledWith(expect.stringContaining(input.orgId), '1', 'EX', expect.any(Number), 'NX');
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('no autopay enrollment'), expect.objectContaining({ orgId: input.orgId }));
+    } finally { info.mockRestore(); }
+  });
+  it('still emails an org with no enrollment when Redis cannot answer, and logs that it could not dedupe', async () => {
+    h.enrolled = false; h.redis = null;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      billing(); await sendAutopayStaffEmail(input);
+      expect(h.send).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be deduplicated'), expect.objectContaining({ orgId: input.orgId }));
+    } finally { warn.mockRestore(); }
+  });
+  it.each([true, false])('releases the claim when the send fails, so a retry sends (enrolled=%s)', async enrolled => {
+    h.enrolled = enrolled;
+    const keys = new Set<string>();
+    h.redis = { set: vi.fn(async (key: string) => keys.has(key) ? null : (keys.add(key), 'OK')), del: vi.fn(async (key: string) => { keys.delete(key); return 1; }) };
+    h.send.mockRejectedValueOnce(new Error('provider unavailable'));
+    billing(); await expect(sendAutopayStaffEmail(input)).rejects.toThrow('provider unavailable');
+    billing(); await sendAutopayStaffEmail(input);
+    expect(h.send).toHaveBeenCalledTimes(2);
+    billing(); await sendAutopayStaffEmail(input);
+    expect(h.send).toHaveBeenCalledTimes(2);
   });
 });

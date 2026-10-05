@@ -119,3 +119,23 @@ it('keeps the server message for other exclusion conflicts',async()=>{
  render(<InvoiceDetail detail={detail} onChanged={()=>{}}/>);fireEvent.click(screen.getByTestId('autopay-invoice-excluded'));
  await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'error',message:'Another payment control is pending'})));
 });
+
+// R4: Charge now confirms with Stripe synchronously, so a lost response can follow money
+// moving. Never say "please try again"; say the result is unknown and refresh the invoice.
+it.each([
+ ['a network failure',()=>h.fetch.mockImplementation(async(_url:string,opts?:RequestInit)=>{
+  if(opts?.method==='POST')throw new TypeError('Failed to fetch');return {ok:true,status:200,json:async()=>({data:[]})};})],
+ ['a 504 with no JSON body',()=>h.fetch.mockImplementation(async(_url:string,opts?:RequestInit)=>opts?.method==='POST'
+  ?{ok:false,status:504,json:async()=>{throw new SyntaxError('Unexpected token <');}}:{ok:true,status:200,json:async()=>({data:[]})})],
+ ['a 500 with an error body',()=>chargeWith({status:500,body:{error:'Internal server error'}})],
+])('Charge now treats %s as an unknown result and refreshes the invoice',async(_case,arrange)=>{
+ arrange();
+ const changed=vi.fn();render(<InvoiceDetail detail={chargeable} onChanged={changed}/>);
+ await waitFor(()=>expect(paymentReads()).toBe(1));
+ fireEvent.click(screen.getByTestId('autopay-charge-now'));fireEvent.click(screen.getByTestId('autopay-charge-confirm'));
+ await waitFor(()=>expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({message:expect.stringContaining('could not confirm')})));
+ expect(h.toast).not.toHaveBeenCalledWith(expect.objectContaining({message:expect.stringContaining('try again')}));
+ expect(h.toast).toHaveBeenCalledTimes(1);
+ await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
+ await waitFor(()=>expect(paymentReads()).toBe(2));
+});

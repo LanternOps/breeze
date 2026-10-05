@@ -1,5 +1,5 @@
 import { prepareCardPayAndSave, cardSaveStripeFields, bindCardPayAndSave } from './autopay/payAndSave';
-import { assertNoActiveCollection, lockInvoiceForCollection } from './autopay/reservation';
+import { assertNoActiveCollection, holdsClientMoney, lockInvoiceForCollection } from './autopay/reservation';
 import type { Tx } from './autopay/types';
 import { and, eq } from 'drizzle-orm';
 import { computeChargeNow, buildStripeCurrencyWarning, type StripeCurrencyWarning } from '@breeze/shared';
@@ -106,7 +106,14 @@ export async function createInvoicePayLink(
   // Site-axis guard: a site-restricted caller must not mint a pay link for an
   // out-of-site invoice. No-op for unrestricted (partner/system/portal) actors.
   requireSiteAccess(actor, inv.siteId);
-  await withSystemDbAccessContext(() => assertNoActiveCollection(db, inv.id));
+  await withSystemDbAccessContext(async () => {
+    await assertNoActiveCollection(db, inv.id);
+    // Card Pay starts a new payment: refuse it while Stripe holds money captured for this
+    // invoice that could not be applied, as the bank and pay-and-save offers do (B1-2).
+    if (await holdsClientMoney(db, inv.id)) {
+      throw new InvoiceServiceError('A payment for this invoice was received and is being reviewed', 409, 'COLLECTION_IN_PROGRESS');
+    }
+  });
   if (!PAYABLE.has(inv.status)) throw new InvoiceServiceError('Invoice is not payable', 409, 'NOT_PAYABLE');
   // SEC-150 producer gate. Once a transition has recorded revocation intent for
   // this invoice, minting another session would re-open the very window the

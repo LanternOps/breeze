@@ -46,3 +46,19 @@ it('tells staff an invoice is above the limit the client authorized, distinct fr
   expect(autopayReasonKey('above_authorized_cap')).toBe('autopay.reasons.above_authorized_cap');
   expect(autopayReasonKey('above_authorized_cap')).not.toBe(autopayReasonKey('over_cap'));
 });
+
+import { chargeNowResultUnknown } from './autopayReason';
+it('treats only answers that cannot say whether money moved as an unknown Charge now result (R4)', () => {
+  expect(chargeNowResultUnknown({ status: 0 })).toBe(true);
+  expect(chargeNowResultUnknown({ status: 504, body: null })).toBe(true);
+  expect(chargeNowResultUnknown({ status: 500, body: { error: 'Internal server error' } })).toBe(true);
+  expect(chargeNowResultUnknown({ status: 200 })).toBe(true);
+  expect(chargeNowResultUnknown({ status: 401 })).toBe(false);
+  expect(chargeNowResultUnknown({ status: 409, body: { error: 'card_declined', outcome: 'failed' } })).toBe(false);
+  expect(chargeNowResultUnknown({ status: 409, body: { error: 'notice_lead', code: 'INVALID_STATE' } })).toBe(false);
+});
+it('names why Charge now was canceled when the attempt carries a reason (R3)', () => {
+  expect(chargeNowFailureKey({ error: 'above_authorized_cap', code: 'above_authorized_cap', outcome: 'canceled' }))
+    .toBe('autopay.reasons.above_authorized_cap');
+  expect(chargeNowFailureKey({ error: 'canceled', code: 'canceled', outcome: 'canceled' })).toBe('autopay.chargeOutcome.canceled');
+});

@@ -1,4 +1,5 @@
 vi.mock('./staffNotifications', () => ({enqueueAutopayStaffNotifications:vi.fn()}));
+import { enqueueAutopayStaffNotifications } from './staffNotifications';
 import { beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   responses: [] as unknown[][], writes: [] as { table: unknown; values: Record<string, unknown> }[],
@@ -103,6 +104,9 @@ it('records a missing billing contact without minting links', async () => {
   await enqueueAutopayNotice(db, schedule.id);
   expect(h.writes).toEqual([{ table: invoiceAutopaySchedules, values: { stateReason: 'no_billing_contact' } }]);
   expect(h.mint).not.toHaveBeenCalled();
+  // P-17: the invoice is identified by the staff renderer, never by its raw id.
+  const [[, staff]] = vi.mocked(enqueueAutopayStaffNotifications).mock.calls as unknown as [[unknown, { invoiceId: string; message: string }]];
+  expect(staff.invoiceId).toBe(invoice.id); expect(staff.message).not.toContain(invoice.id);
 });
 it('deduplicates before minting links', async () => {
   h.responses.push([schedule], [invoice], [org], [partner], [{ id: row.id }]);
@@ -165,4 +169,17 @@ it.each(['clientSkippedAt', 'mspExcludedAt'])('does not restore notice authority
   h.responses.push([invoice], [{...schedule, [field]:new Date()}], [enrollment]);
   await invoiceAutopayNoticeSent(db, row);
   expect(h.writes).toHaveLength(0);
+});
+
+it('states the total charge and freezes the invoice number, provider, method and total (D-26)', async () => {
+  const fee = { ...schedule, termsSnapshot: { ...terms, feeAmount: '1.00', feeKind: 'ach_flat', achFeeAmount: '1.00' } };
+  h.responses.push([fee], [invoice], [org], [partner], [], [org], [{ id: row.id }], []);
+  await enqueueAutopayNotice(db, schedule.id);
+  const rendered = (h.writes[0]!.values as { rendered: { html: string; text: string; frozen: Record<string, unknown> } }).rendered;
+  expect(rendered.frozen).toMatchObject({ invoiceNumber: 'INV-1', partnerName: 'Partner', methodLabel: 'Bank ••1234', total: '101.00' });
+  for (const body of [rendered.html, rendered.text]) {
+    expect(body).toContain('Total charge: $101.00 ($100.00 + $1.00 bank processing fee)');
+    expect(body).toContain('INV-1'); expect(body).toContain('Partner');
+  }
+  expect(rendered.html.match(/<p style="margin: 16px 0 0;[^>]*>([^<]*)<\/p>/)?.[1]).toBe('Partner');
 });

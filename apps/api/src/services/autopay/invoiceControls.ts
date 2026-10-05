@@ -13,7 +13,8 @@ import { resolveBillingLinkToken } from './linkTokens';
 import { planAutopayForInvoice, noticeLeadDays } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 import { isAutopayEnabledForPartner } from './autopayGate';
-import { collectionFenced, hasUnstoppableCollection, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
+import { collectionFenced, hasUnstoppableCollection, isControllableSchedule, pendingInvoiceControl, requestInvoiceControl, type InvoiceControlResult } from './collectionControl';
+import type { AutopaySkipView, AutopaySkipViewStatus } from '@breeze/shared';
 import type { Tx } from './types';
 
 export async function assertControllable(tx: Tx, invoiceId: string): Promise<void> {
@@ -50,13 +51,30 @@ async function skipAuthority(tx: Tx, token: string, lock: boolean) {
   return { invoice, schedule };
 }
 
-export async function getSkipInvoiceView(tx: Tx, token: string) {
+export async function getSkipInvoiceView(tx: Tx, token: string): Promise<AutopaySkipView> {
   const { invoice, schedule } = await skipAuthority(tx, token, false);
   // partnerName: who the client contacts if the skip is refused.
   const [partner] = await tx.select({ name: partners.name }).from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
   // processing: a payment is already with Stripe and the skip would be refused.
-  return { state: schedule.state, collectOn: schedule.collectOn, partnerName: partner?.name ?? null,
-    control: pendingInvoiceControl(schedule.stateReason), processing: await hasUnstoppableCollection(tx, invoice.id) };
+  const processing = await hasUnstoppableCollection(tx, invoice.id);
+  const control = pendingInvoiceControl(schedule.stateReason);
+  return { status: skipViewStatus(invoice, schedule, control, processing), state: schedule.state,
+    collectOn: schedule.collectOn, partnerName: partner?.name ?? null, control, processing };
+}
+/** D-22: a stale skip link (paid, closed or void invoice, or one not scheduled for
+ * automatic payment) reports that skipping is no longer needed instead of offering it.
+ * 'processing' uses the same predicate as the skip POST's 409 details.reason
+ * 'payment_processing', and wins over a pending control: that money moves regardless. */
+function skipViewStatus(invoice: typeof invoices.$inferSelect, schedule: typeof invoiceAutopaySchedules.$inferSelect,
+  control: ReturnType<typeof pendingInvoiceControl>, processing: boolean): AutopaySkipViewStatus {
+  if (invoice.status === 'paid' || schedule.state === 'succeeded') return 'paid';
+  if (processing) return 'processing';
+  if (schedule.state === 'skipped_by_client') return 'skipped';
+  if (!['sent', 'partially_paid', 'overdue'].includes(invoice.status) || toMinorUnits(invoice.balance, invoice.currencyCode) <= 0
+    || invoice.autopayExcluded || !schedule.eligible || !isControllableSchedule(schedule.state)
+    || control === 'exclude' || control === 'stop') return 'not_needed';
+  if (control === 'skip') return 'pending';
+  return schedule.state === 'action_required' ? 'action_required' : 'ready';
 }
 
 export async function skipInvoice(tx: Tx, token: string): Promise<InvoiceControlResult> {
@@ -135,8 +153,10 @@ export async function getInvoiceAutopayView(tx: Tx, invoice: typeof invoices.$in
         && Date.now() >= schedule.noticeSentAt.getTime() + terms.noticeLeadDays * 86_400_000;
     }
   }
-  const terms = schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
-  const chargePreview = canChargeNow && terms ? {
+  // Only a chargeable schedule carries collection terms; a not_needed one holds the
+  // issuance placeholder, which parseAutopayTerms refuses (2a-4).
+  const terms = canChargeNow && schedule ? parseAutopayTerms(schedule.termsSnapshot) : null;
+  const chargePreview = terms ? {
     amount: fromMinorUnits(Math.min(toMinorUnits(invoice.balance, invoice.currencyCode),
       toMinorUnits(terms.principal, invoice.currencyCode)) + toMinorUnits(terms.feeAmount, invoice.currencyCode), invoice.currencyCode),
     currency: invoice.currencyCode, methodLabel: terms.methodLabel,
