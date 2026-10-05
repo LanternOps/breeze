@@ -655,7 +655,7 @@ it.each([
   ['void', (f: ReturnType<typeof fixture>) => { f.inv.status = 'void'; }],
   ['nothing_due', (f: ReturnType<typeof fixture>) => { f.inv.balance = '0.00'; }],
   ['excluded', (f: ReturnType<typeof fixture>) => { f.inv.autopayExcluded = true; f.sched.state = 'excluded_by_msp'; }],
-  ['excluded', (f: ReturnType<typeof fixture>) => { f.sched.state = 'collecting'; f.sched.stateReason = 'control_pending:exclude'; f.data.set(invoiceCollectionAttempts, [{ id: 'a', state: 'created' }]); }],
+  ['excluded', (f: ReturnType<typeof fixture>) => { f.sched.state = 'collecting'; (f.sched as { stateReason: string | null }).stateReason = 'control_pending:exclude'; f.data.set(invoiceCollectionAttempts, [{ id: 'a', state: 'created' }]); }],
   ['failed', (f: ReturnType<typeof fixture>) => { f.sched.state = 'failed'; }],
   ['stopped', (f: ReturnType<typeof fixture>) => { f.sched.state = 'cancelled'; }],
   ['stopped', (f: ReturnType<typeof fixture>) => { f.data.get(orgAutopayEnrollments)![0].status = 'cancelled'; }],

@@ -124,7 +124,7 @@ it('never lets invalid bank consent fall through the ordinary card branch',()=>{
 it('does not offer bank payment while money is reserved',async()=>{
  completionFixture();bank.rows=[[invoice],[enrollment],[{id:invoice.orgId,status:'active'}]];
  bank.disclosure.mockResolvedValue({achMode:'ach_preferred',hash:'a'.repeat(64)});
- vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00',actionRequired:false});
+ vi.mocked(readInFlightCollection).mockResolvedValueOnce({inProgress:true,amount:'100.00',fee:'0.00',paymentMethodId:'method',actionRequired:false});
  expect(await getBankAutopayOffer(invoice.id,invoice.orgId)).toBeNull();expect(attemptCollection).not.toHaveBeenCalled();
 });
 it('requires fresh displayed terms when the balance changed before setup',async()=>{
