@@ -1119,5 +1119,11 @@
     "cancel": "Cancelar",
     "failed": "A verificação não foi aceita. Tente novamente.",
     "unavailable": "Não foi possível iniciar a verificação. Tente novamente."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verificado",
+    "checking": "Verificando",
+    "unverified": "Não verificado",
+    "failed": "Falha na verificação de integridade"
   }
 }

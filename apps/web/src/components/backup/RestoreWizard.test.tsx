@@ -171,6 +171,31 @@ describe('RestoreWizard', () => {
     expect(bodies[1]).toMatchObject({ snapshotId: 'snap-1', confirmUnattestedRestore: true });
   });
 
+  it('shows each snapshot\'s integrity status on its card and in the review', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snap-1', label: 'Server snapshot', integrityStatus: 'unattested_legacy' },
+          { id: 'snap-2', label: 'Newer snapshot', integrityStatus: 'attested' },
+          { id: 'snap-3', label: 'Old API snapshot' },
+        ] });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({ data: [] });
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    const labels = screen.getAllByTestId('snapshot-integrity-badge').map((el) => el.textContent);
+    expect(labels).toEqual(['Not verified', 'Verified']);
+
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('Not verified');
+  });
+
   it('cancels a queued restore from the Latest restore job panel', async () => {
     const pendingJob = {
       id: 'restore-2',

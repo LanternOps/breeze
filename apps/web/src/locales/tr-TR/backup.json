@@ -1119,5 +1119,11 @@
     "cancel": "İptal",
     "failed": "Doğrulama kabul edilmedi. Yeniden deneyin.",
     "unavailable": "Doğrulama başlatılamadı. Yeniden deneyin."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Doğrulandı",
+    "checking": "Denetleniyor",
+    "unverified": "Doğrulanmadı",
+    "failed": "Bütünlük denetimi başarısız"
   }
 }

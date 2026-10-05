@@ -1119,5 +1119,11 @@
     "cancel": "Abbrechen",
     "failed": "Die Überprüfung wurde nicht akzeptiert. Versuchen Sie es erneut.",
     "unavailable": "Die Überprüfung konnte nicht gestartet werden. Versuchen Sie es erneut."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verifiziert",
+    "checking": "Wird geprüft",
+    "unverified": "Nicht verifiziert",
+    "failed": "Integritätsprüfung fehlgeschlagen"
   }
 }

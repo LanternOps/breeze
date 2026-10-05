@@ -1119,5 +1119,11 @@
     "cancel": "Annulla",
     "failed": "La verifica non è stata accettata. Riprova.",
     "unavailable": "Impossibile avviare la verifica. Riprova."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Verificato",
+    "checking": "Verifica in corso",
+    "unverified": "Non verificato",
+    "failed": "Controllo di integrità non superato"
   }
 }

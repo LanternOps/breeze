@@ -134,6 +134,22 @@ describe('VMRestoreWizard', () => {
     expect(card.textContent).toContain('512 GB');
   });
 
+  it('shows each snapshot\'s integrity status in the picker', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snapshot-1', label: 'Nightly Snapshot', createdAt: '2026-03-28T10:00:00Z', integrityStatus: 'pending' },
+          { id: 'snapshot-2', label: 'Weekly Snapshot', createdAt: '2026-03-21T10:00:00Z' },
+        ] });
+      }
+      return base(input, init);
+    });
+    render(<VMRestoreWizard />);
+    await screen.findByRole('button', { name: /Nightly Snapshot/i });
+    expect(screen.getAllByTestId('snapshot-integrity-badge').map((el) => el.textContent)).toEqual(['Checking']);
+  });
+
   it('renders alpha banner', async () => {
     render(<VMRestoreWizard />);
 

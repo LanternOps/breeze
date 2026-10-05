@@ -30,6 +30,7 @@ import {
   useUnattestedRestoreStepUp,
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
+import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
 import '../../lib/i18n';
 
 type RestoreType = 'full' | 'selective';
@@ -53,6 +54,8 @@ type Snapshot = {
   // backup completed), so the card shows when it was captured instead (#6496).
   createdAt?: string | null;
   files?: SnapshotFile[];
+  /** Integrity status from GET /backup/snapshots (absent on an older API). */
+  integrityStatus?: string | null;
 };
 
 type RestoreResultDetails = {
@@ -561,8 +564,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                         </span>
                         {snapshot.createdAt ? <span>{formatDateTime(snapshot.createdAt)}</span> : null}
                       </div>
-                      <div className="mt-2 text-sm font-semibold text-foreground">
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
                         {snapshot.label}
+                        <SnapshotIntegrityBadge status={snapshot.integrityStatus} />
                       </div>
                       {snapshot.deviceName ? (
                         <div className="mt-1 text-xs text-muted-foreground">{snapshot.deviceName}</div>
@@ -722,8 +726,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <CheckCircle2 className="h-4 w-4 text-success" />
                     {t('restoreWizard.snapshot')} </div>
-                  <p className="mt-2 text-xs text-muted-foreground">
+                  <p data-testid="restore-review-snapshot" className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
+                    <SnapshotIntegrityBadge status={selectedSnapshot?.integrityStatus} />
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">

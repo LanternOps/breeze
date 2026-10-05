@@ -19,6 +19,7 @@ import {
   useUnattestedRestoreStepUp,
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
+import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatBytes, formatTime } from './backupDashboardHelpers';
 import { formatNumber } from '@/lib/i18n/format';
@@ -46,6 +47,8 @@ type Snapshot = {
   deviceName?: string | null;
   createdAt?: string;
   timestamp?: string;
+  /** Integrity status from GET /backup/snapshots (absent on an older API). */
+  integrityStatus?: string | null;
   sizeBytes?: number | null;
   /** Sizing fields of the captured hardware profile, under the stored
    * (agent systemstate.HardwareProfile) names GET /backup/snapshots sends. */
@@ -495,7 +498,10 @@ export default function VMRestoreWizard() {
                           : 'border-muted bg-muted/20'
                       )}
                     >
-                      <div className="text-sm font-semibold text-foreground">{snap.label}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                        {snap.label}
+                        <SnapshotIntegrityBadge status={snap.integrityStatus} />
+                      </div>
                       {snap.deviceName ? (
                         <div className="mt-1 text-xs text-muted-foreground">{snap.deviceName}</div>
                       ) : null}

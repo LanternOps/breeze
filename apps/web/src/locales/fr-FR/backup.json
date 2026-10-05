@@ -1119,5 +1119,11 @@
     "cancel": "Annuler",
     "failed": "La vérification n'a pas été acceptée. Réessayez.",
     "unavailable": "Impossible de démarrer la vérification. Réessayez."
+  },
+  "snapshotIntegrityBadge": {
+    "verified": "Vérifiée",
+    "checking": "Vérification en cours",
+    "unverified": "Non vérifiée",
+    "failed": "Échec du contrôle d'intégrité"
   }
 }
