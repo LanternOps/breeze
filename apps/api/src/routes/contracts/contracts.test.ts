@@ -91,7 +91,7 @@ describe('contract crud routes', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('POST / creates a draft contract', async () => {
-    (svc.createContract as any).mockResolvedValue({ id: CONTRACT_ID, status: 'draft' });
+    (svc.createContract as any).mockResolvedValue({ id: CONTRACT_ID, orgId: ORG_ID, name: 'Monthly Managed Services', status: 'draft' });
     const res = await app().request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -108,6 +108,9 @@ describe('contract crud routes', () => {
     expect(body.data.id).toBe(CONTRACT_ID);
     expect(body.data.status).toBe('draft');
     expect(svc.createContract).toHaveBeenCalledOnce();
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'contract.create', resourceType: 'contract', resourceId: CONTRACT_ID,
+    }));
   });
 
   it('POST / rejects an invalid body (missing required fields → 400, no service call)', async () => {
@@ -162,12 +165,15 @@ describe('contract crud routes', () => {
   });
 
   it('DELETE /:id deletes a draft contract', async () => {
-    (svc.deleteDraftContract as any).mockResolvedValue(undefined);
+    (svc.deleteDraftContract as any).mockResolvedValue({ id: CONTRACT_ID, orgId: ORG_ID, name: 'Monthly Managed Services' });
     const res = await app().request(`/${CONTRACT_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ok).toBe(true);
     expect(svc.deleteDraftContract).toHaveBeenCalledWith(CONTRACT_ID, expect.anything());
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_ID, action: 'contract.delete', resourceType: 'contract', resourceId: CONTRACT_ID,
+    }));
   });
 
   it('maps a ContractServiceError to its status (CONTRACT_NOT_FOUND → 404)', async () => {
