@@ -182,6 +182,9 @@ export async function reserveCollection(input: CollectionInput)
       if (excluded) {
         await db.update(invoiceAutopaySchedules).set({ state: 'excluded_by_msp', stateReason: 'excluded_contract' })
           .where(eq(invoiceAutopaySchedules.id, schedule.id));
+        // Under the invoice lock, in the transaction that ends the schedule, for every caller
+        // (the scheduler and Charge now alike): an announced charge will not happen (F4).
+        await noticeChargeNotMade(db, { invoiceId: invoice.id, scheduleId: schedule.id, reason: 'excluded_contract' });
         return refuse('excluded_contract');
       }
     }
@@ -1097,12 +1100,11 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
               : {stateReason:result.reason,nextAttemptAt:new Date(now.getTime()+(['charging_disabled','stripe_unavailable','method_not_usable'].includes(result.reason ?? '') ? 86_400_000 : 3_600_000))})
               .where(and(eq(invoiceAutopaySchedules.id,row.id),inArray(invoiceAutopaySchedules.state,['scheduled','retry_scheduled'])))
               .returning({state:invoiceAutopaySchedules.state});
-            // A refused charge the client was told about (a missing authorization, or a contract
-            // the MSP excluded, which reserve already moved to excluded_by_msp) must not stay
-            // announced: tell the client, then normal reminders apply (2a-3). enrollment_inactive
-            // needs nothing here: stop and pause send their own emails.
-            if (result.outcome==='refused' && isNotChargedReason(result.reason)
-              && (moved?.state==='failed' || result.reason==='excluded_contract')) {
+            // A refused charge the client was told about (a missing authorization) must not stay
+            // announced: tell the client, then normal reminders apply (2a-3). An excluded contract
+            // is told inside reserveCollection; enrollment_inactive needs nothing here: stop and
+            // pause send their own emails.
+            if (result.outcome==='refused' && isNotChargedReason(result.reason) && moved?.state==='failed') {
               await noticeChargeNotMade(db,{invoiceId:invoice.id,scheduleId:row.id,reason:result.reason});
             }
             if (result.reason === 'charging_disabled') await enqueueAutopayStaffNotifications(db, {

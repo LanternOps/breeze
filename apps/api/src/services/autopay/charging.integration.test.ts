@@ -2246,3 +2246,26 @@ it('a full refund of an unapplied autopay capture sends the client a refund noti
  expect(text).toContain(`was not applied to invoice ${f.invoice.invoiceNumber}`);
  expect(text).not.toContain('Balance due');
 });
+
+// F4: a contract the MSP excluded from autopay after the charging notice went out. Charge
+// now (not only the scheduler) must tell the client, in the transaction that ends the schedule.
+import { contracts, invoiceLines } from '../../db/schema';
+it.each(['msp_charge_now','scheduler'] as const)('a %s attempt on an excluded contract tells the client once, in the same transaction (F4)',async initiatedBy=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  const [contract]=await db.insert(contracts).values({partnerId:f.partner.id,orgId:f.org.id,name:'Managed services',intervalMonths:1,
+   startDate:'2026-07-01',currencyCode:'USD',autopayExcluded:true}).returning({id:contracts.id});
+  await db.insert(invoiceLines).values({invoiceId:f.invoice.id,orgId:f.org.id,sourceType:'contract',sourceContractId:contract!.id,
+   description:'Managed services',quantity:'1.00',unitPrice:'100.00',lineTotal:'100.00'});
+ });
+ const result=initiatedBy==='msp_charge_now'
+  ? await attemptCollection({invoiceId:f.invoice.id,scheduleId:f.schedule.id,initiatedBy})
+  : (await runAutopayCollection(), {outcome:'refused',reason:'excluded_contract'});
+ expect(result).toMatchObject({outcome:'refused',reason:'excluded_contract'});
+ expect(await scheduleFor(f)).toMatchObject({state:'excluded_by_msp',stateReason:'excluded_contract'});
+ const notices=(await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.invoiceId,f.invoice.id))))
+  .filter(n=>n.kind==='payment_reminder');
+ expect(notices).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`})]);
+ expect((notices[0]!.rendered as {text:string}).text).toContain('asked for this invoice to be paid directly');
+ expect(provider.create).not.toHaveBeenCalled();
+});
