@@ -150,6 +150,15 @@ it('requires return identity for staff and preserves the invoice destination', a
   await notifyPaymentAttention({ ...input, returnIdentity: 'mapping:dp_1' });
   expect(h.staff).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: 'invoice', dedupeKey: 'autopay:a:payment.ach_returned:mapping:dp_1' }));
 });
+it.each(['payment.failed_final', 'payment.unapplied', 'payment.ach_returned', 'autopay.needs_attention'] as const)(
+  'names no raw invoice or attempt id in the %s staff message (P-17)', async event => {
+    h.staff.mockClear();
+    const ids = { invoiceId: '55555555-5555-4555-8555-555555555555', attemptId: '66666666-6666-4666-8666-666666666666' };
+    await notifyPaymentAttention({ ...ids, partnerId: 'partner', orgId: 'org', event, returnIdentity: 'mapping:dp_1' });
+    const [[sent]] = h.staff.mock.calls as [[{ message: string; invoiceId: string }]];
+    expect(sent.invoiceId).toBe(ids.invoiceId);
+    expect(sent.message).not.toContain(ids.invoiceId); expect(sent.message).not.toContain(ids.attemptId);
+  });
 
 import { enqueueMethodUnusableNotice } from './paymentNotices';
 describe('method-unusable notice for a due schedule with no attempt of its own', () => {

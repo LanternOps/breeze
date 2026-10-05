@@ -537,7 +537,7 @@ export async function applyStripeFinancialEvent(stripeEventId: string): Promise<
       returnAttention = {partnerId:invoice.partnerId,orgId:invoice.orgId,invoiceId:invoice.id,
         attemptId:attempt.id,returnIdentity,event:'payment.ach_returned'};
       await enqueueAutopayStaffNotifications(db,{...returnAttention,dedupeKey:`autopay:${attempt.id}:payment.ach_returned:${returnIdentity}`,
-        message:`A bank payment was returned. Invoice ${invoice.id}, attempt ${attempt.id}: the invoice balance has reopened.`});
+        message:'A bank payment was returned. The invoice balance has reopened.'});
     }
     await db.update(stripeFinancialEvents).set({
       status: 'applied', attemptCount: event.attemptCount + 1, lastError: null,

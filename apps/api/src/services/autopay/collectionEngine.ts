@@ -355,6 +355,8 @@ function attemptStateGuard(attempt: typeof invoiceCollectionAttempts.$inferSelec
     sql`date_trunc('milliseconds', ${invoiceCollectionAttempts.updatedAt}) = ${attempt.updatedAt.toISOString()}::timestamptz`);
 }
 
+// Staff messages never carry raw ids: the staff renderer names the invoice by number (P-17).
+const LOST_CREATE_MESSAGE = 'Verifying the original Stripe account for a lost payment creation. The reservation is kept until the provider outcome is verified.';
 async function quarantineUnknownCreate(attemptId: string): Promise<void> {
   const record = await withSystemDbAccessContext(() => loadAttemptRecord(attemptId));
   try {
@@ -421,12 +423,12 @@ async function quarantineUnknownCreate(attemptId: string): Promise<void> {
       if (!pendingInvoiceControl(schedule?.stateReason ?? null)) await db.update(invoiceAutopaySchedules)
         .set({ stateReason: 'provider_create_unknown' }).where(eq(invoiceAutopaySchedules.id, current.attempt.scheduleId));
     }
-    await enqueueOutcomeAttention('autopay.needs_attention', locked.invoice, attemptId, `Invoice ${locked.invoice.id}, attempt ${attemptId}: verifying the original Stripe account for a lost payment creation. Reservation retained until provenance and provider outcome are verified.`);
+    await enqueueOutcomeAttention('autopay.needs_attention', locked.invoice, attemptId, LOST_CREATE_MESSAGE);
     return { orgId: locked.invoice.orgId, partnerId: locked.invoice.partnerId };
   }, 'autopay.quarantine');
   if (quarantined) await notifyPaymentAttention({ ...quarantined, invoiceId: record.invoice.id,
     attemptId, event: 'autopay.needs_attention',
-    message: `Invoice ${record.invoice.id}, attempt ${attemptId}: verifying the original Stripe account for a lost payment creation. Reservation retained until provenance and provider outcome are verified.` });
+    message: LOST_CREATE_MESSAGE });
 }
 
 /** Cancellation errors never prove that money is safe to release. */
@@ -667,7 +669,7 @@ async function rejectCreate(data: Awaited<ReturnType<typeof loadAttempt>>, error
       invoiceId: locked.invoice.id, attemptId: attempt.id, event: 'payment.failed_final' as const };
     await enqueueAutopayStaffNotifications(db, { ...notice,
       dedupeKey: `autopay:${attempt.id}:payment.failed_final`,
-      message: `Automatic payment could not be created. Invoice: ${locked.invoice.id}; attempt: ${attempt.id}. The client can pay directly.` });
+      message: 'Automatic payment could not be created. The client can pay directly.' });
     return notice;
   }, 'autopay.rejectCreate');
   if (attention) await notifyPaymentAttention(attention);
@@ -960,7 +962,7 @@ async function applyObservedOutcome(data: AttemptHistory, stripe: Stripe, observ
         await enqueueAutopayStaffNotifications(db, { partnerId, orgId: locked.invoice.orgId,
           invoiceId: locked.invoice.id, event: 'autopay.needs_attention',
           dedupeKey: `autopay:${attemptId}:action_required_expired`,
-          message: `Payment confirmation expired. Invoice: ${locked.invoice.id}; attempt: ${attemptId}. The payment was canceled and the client can pay directly.` });
+          message: 'Payment confirmation expired. The payment was canceled and the client can pay directly.' });
       }
       return null;
     }
@@ -1097,5 +1099,5 @@ export async function runAutopayCollection(now = new Date()): Promise<{ attempte
 
 async function enqueueOutcomeAttention(event: 'payment.unapplied'|'payment.failed_final'|'autopay.needs_attention', invoice: typeof invoices.$inferSelect, attemptId: string, message?:string) {
   await enqueueAutopayStaffNotifications(db, {orgId:invoice.orgId,partnerId:invoice.partnerId,invoiceId:invoice.id,event,
-    dedupeKey:`autopay:${attemptId}:${event}`,message:message ?? `${event === 'payment.unapplied' ? 'Captured money could not be applied; review the Stripe payment.' : event === 'payment.failed_final' ? 'Automatic payment stopped retrying; the client can pay directly.' : 'Payment requires attention.'} Invoice: ${invoice.id}; attempt: ${attemptId}`});
+    dedupeKey:`autopay:${attemptId}:${event}`,message:message ?? (event === 'payment.unapplied' ? 'Captured money could not be applied; review the Stripe payment.' : event === 'payment.failed_final' ? 'Automatic payment stopped retrying; the client can pay directly.' : 'Payment requires attention.')});
 }

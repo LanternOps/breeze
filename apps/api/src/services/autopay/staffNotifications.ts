@@ -1,18 +1,19 @@
 import { and, eq, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
+import { invoices, organizations, organizationUsers, partnerUsers, users, partners, userNotifications } from '../../db/schema';
 import { getEmailService } from '../email';
 import { escapeHtml } from '../emailLayout';
 import type { Tx } from './types';
 export interface AutopayStaffNotice {
   orgId: string; partnerId: string; invoiceId?: string; partnerOnly?: boolean;
-  event: 'autopay.enrolled' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
+  event: 'autopay.enrolled' | 'autopay.method_updated' | 'autopay.stopped' | 'autopay.needs_attention' | 'autopay.skipped'
     | 'payment.failed_final' | 'payment.ach_returned' | 'payment.unapplied';
   dedupeKey: string; message: string;
 }
 const TITLE_MAX = 255;
 function eventTitle(event: AutopayStaffNotice['event']): string {
   return event === 'autopay.enrolled' ? 'Automatic payments enabled'
+    : event === 'autopay.method_updated' ? 'Payment method updated'
     : event === 'autopay.skipped' ? 'Automatic payment skipped'
     : event === 'autopay.stopped' ? 'Automatic payments stopped' : 'Payment needs attention';
 }
@@ -26,6 +27,13 @@ function namedTitle(event: AutopayStaffNotice['event'], orgName: string | null):
 async function orgName(db: Tx, orgId: string): Promise<string | null> {
   const [org] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return org?.name ?? null;
+}
+/** Staff read invoices by number; callers pass the id and never put it in the message (P-17). */
+async function invoiceNumber(db: Tx, input: AutopayStaffNotice): Promise<string | null> {
+  if (!input.invoiceId) return null;
+  const [invoice] = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices)
+    .where(and(eq(invoices.id, input.invoiceId), eq(invoices.orgId, input.orgId))).limit(1);
+  return invoice?.invoiceNumber ?? null;
 }
 /** Insert in the lifecycle caller's transaction so rollback/commit includes staff visibility. */
 export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopayStaffNotice): Promise<void> {
@@ -41,7 +49,9 @@ export async function enqueueAutopayStaffNotifications(db: Tx, input: AutopaySta
   const ids = [...new Set([...local,...partnerStaff].map((row) => row.userId))];
   if (!ids.length) return;
   const name = await orgName(db, input.orgId);
-  const message = name && !input.message.includes(name) ? `${name}: ${input.message}` : input.message;
+  const number = await invoiceNumber(db, input);
+  const named = name && !input.message.includes(name) ? `${name}: ${input.message}` : input.message;
+  const message = number ? `${named} Invoice ${number}.` : named;
   await db.insert(userNotifications).values(ids.map((userId) => ({
     userId, orgId: input.orgId, type: 'billing' as const,
     priority: urgent ? 'high' as const : 'normal' as const,
@@ -57,10 +67,10 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
     const [partner] = await db.select({ billingEmail: partners.billingEmail }).from(partners)
       .where(eq(partners.id,input.partnerId)).limit(1);
     if (!partner?.billingEmail) return null;
-    return { email: partner.billingEmail, name: await orgName(db, input.orgId) };
+    return { email: partner.billingEmail, name: await orgName(db, input.orgId), number: await invoiceNumber(db, input) };
   }));
   if (!recipient) return;
-  const { email, name } = recipient;
+  const { email, name, number } = recipient;
   const service = getEmailService();
   if (!service) throw new Error('Staff email transport is unavailable');
   const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
@@ -70,8 +80,8 @@ export async function sendAutopayStaffEmail(input: AutopayStaffNotice): Promise<
   if (!Array.from(claimed).length) return;
   await runOutsideDbContext(() => service.sendEmail({ to: email, purpose: 'staff.autopay',
     subject: namedTitle(input.event, name),
-    html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
-    text: name ? `Client: ${name}\n\n${input.message}` : input.message }));
+    html: `${name ? `<p><strong>Client:</strong> ${escapeHtml(name)}</p>` : ''}${number ? `<p><strong>Invoice:</strong> ${escapeHtml(number)}</p>` : ''}<p>${escapeHtml(input.message)}</p>`,
+    text: [name ? `Client: ${name}` : '', number ? `Invoice: ${number}` : ''].filter(Boolean).join('\n') + (name || number ? '\n\n' : '') + input.message }));
 }
 
 /** Compatibility adapter for callers that already run after commit. */

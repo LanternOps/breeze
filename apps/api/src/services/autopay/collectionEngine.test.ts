@@ -77,6 +77,13 @@ vi.mock('../../db', () => {
     try { return await fn(); } finally { h.depth--; }
   } };
 });
+// P-17: staff email bodies and in-app messages name invoices by number (added by the
+// staff renderer), never by a raw invoice or attempt id.
+const STAFF_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+afterEach(() => {
+  for (const call of h.staff.mock.calls) expect(String((call[1] as { message?: string })?.message ?? '')).not.toMatch(STAFF_UUID);
+  for (const call of h.attention.mock.calls) expect(String((call[0] as { message?: string })?.message ?? '')).not.toMatch(STAFF_UUID);
+});
 import { collectionNoticeAllows, reserveCollection, paymentIntentCreateParams, paymentIntentDescription, outcomeState, resumeCollectionAttempt, applyAttemptOutcome, loadAttemptForReconciliation, attemptCollection, readProviderFailure, runAutopayCollection } from './collectionEngine';
 import { reconcilePendingControls, requestInvoiceControl } from './collectionControl';
 import { db, withSystemDbAccessContext } from '../../db';

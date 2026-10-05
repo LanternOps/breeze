@@ -139,3 +139,32 @@ describe('staff notices name the client organization (D-13)', () => {
     expect(h.send).toHaveBeenCalledWith(expect.objectContaining({ subject: 'Automatic payments enabled' }));
   });
 });
+
+describe('staff notices name the invoice by number, never by id (P-17)', () => {
+  const orgId = '33333333-3333-4333-8333-333333333333';
+  const partnerId = '44444444-4444-4444-8444-444444444444';
+  const invoiceId = '55555555-5555-4555-8555-555555555555';
+  beforeEach(() => { vi.clearAllMocks(); h.rows.length = 0; h.claimed.clear(); h.predicates.length = 0; h.send.mockResolvedValue({}); });
+  it('adds the invoice number to the staff email and keeps the id out of it', async () => {
+    h.rows.push([{ billingEmail: 'billing@example.test' }], [{ name: 'Acme Dental' }], [{ invoiceNumber: 'INV-2026-0008' }]);
+    await sendAutopayStaffEmail({ orgId, partnerId, invoiceId, event: 'payment.failed_final', dedupeKey: 'final:1',
+      message: 'Automatic payment has stopped retrying. The client can pay the invoice directly.' });
+    const [[mail]] = h.send.mock.calls as [[{ text: string; html: string }]];
+    expect(mail.text).toContain('Invoice: INV-2026-0008'); expect(mail.html).toContain('INV-2026-0008');
+    expect(mail.text).not.toContain(invoiceId); expect(mail.html).not.toContain(invoiceId);
+  });
+  it('adds the invoice number to the in-app message', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }], [{ invoiceNumber: 'INV-2026-0008' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, invoiceId, event: 'payment.unapplied', dedupeKey: 'unapplied:1',
+      message: 'Captured money could not be applied; review the Stripe payment.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({
+      message: 'Acme Dental: Captured money could not be applied; review the Stripe payment. Invoice INV-2026-0008.',
+      link: `/billing/invoices/${invoiceId}` })]);
+  });
+  it('titles a method update as such, not as automatic payments enabled (P-17)', async () => {
+    h.rows.push([{ userId: 'staff' }], [], [{ name: 'Acme Dental' }]);
+    await enqueueAutopayStaffNotifications(db, { orgId, partnerId, event: 'autopay.method_updated', dedupeKey: 'updated:1', message: 'Payment method updated.' });
+    expect(h.inserts).toHaveBeenCalledWith([expect.objectContaining({ title: 'Payment method updated: Acme Dental',
+      metadata: { event: 'autopay.method_updated' } })]);
+  });
+});

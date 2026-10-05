@@ -136,7 +136,7 @@ export async function notifyPaymentAttention(input: {
     : 'Automatic payment needs attention. Review the invoice before trying again.';
   try { await sendAutopayStaffEmail({partnerId:input.partnerId,orgId:input.orgId,event:input.event,invoiceId:input.invoiceId,
     dedupeKey:attentionDedupeKey(input.attemptId,input.event,input.returnIdentity),
-    message:input.message ?? `${message} Invoice: ${input.invoiceId}; attempt: ${input.attemptId}`});
+    message:input.message ?? message});
   } catch(error) {
     reportCollectionError(error,{org_id:input.orgId,invoice_id:input.invoiceId,attempt_id:input.attemptId,
       autopay_phase:'staff_email',...(input.returnIdentity?{return_identity:input.returnIdentity}:{})});

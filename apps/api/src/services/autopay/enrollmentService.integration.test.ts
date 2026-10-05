@@ -311,6 +311,9 @@ it('replacing a hard-declined card retires it, leaving exactly one autopay metho
  const [enrollment]=await withSystemDbAccessContext(()=>db.select().from(orgAutopayEnrollments));
  expect(enrollment?.needsAttentionReason).toBeNull();
  await vi.waitFor(()=>expect(detach).toHaveBeenCalledExactlyOnceWith('pm_dead'));
+ // P-17: replacing a method is a method update for staff, not "Automatic payments enabled".
+ await vi.waitFor(()=>expect(notifyAutopayStaff).toHaveBeenCalledWith(expect.objectContaining({event:'autopay.method_updated',message:'Payment method updated.'})));
+ expect(notifyAutopayStaff).not.toHaveBeenCalledWith(expect.objectContaining({event:'autopay.enrolled'}));
 });
 async function pgCode(promise:Promise<unknown>):Promise<string|undefined>{
  try{await promise;}catch(err){const e=err as {code?:string;cause?:{code?:string}};return e.cause?.code??e.code;}

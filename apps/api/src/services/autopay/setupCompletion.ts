@@ -136,10 +136,13 @@ export async function persistCapturedAutopayMethod(attemptId:string,method:Strip
     scheduleText:snapshot.scheduleText,feeText:displayFee,stopUrl:buildBillingLinkUrl('stop_autopay',stop.token),authorizationReference:snapshot.version}})});
   }
   for(const old of replaced)if(old.id!==saved!.id)runAfterDbContextExit('autopay.detachReplaced',()=>detachPaymentMethodPostCommit(attempt.partnerId,old.id));
+  // Replacing another method is an update for staff, not a new enrollment (P-17).
+  const updated=replaced.some(old=>old.id!==saved!.id);
   if(!wasPending)runAfterDbContextExit('autopay.enrolled',async()=>{
    const [committed]=await withSystemDbAccessContext(()=>db.select().from(autopaySetupAttempts).where(eq(autopaySetupAttempts.id,attempt.id)).limit(1));
-   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:'autopay.enrolled',
-    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
+   if(committed?.outcome===outcome)await notifyAutopayStaff({orgId:attempt.orgId,partnerId:attempt.partnerId,event:updated?'autopay.method_updated':'autopay.enrolled',
+    dedupeKey:`${attempt.id}:enrolled:${outcome}`,message:updated?`Payment method updated${outcome==='activated'?'':'; awaiting bank verification'}.`
+     :`Automatic payments ${outcome==='activated'?'enabled':'await bank verification'}.`});
   });
   return {outcome,orgId:attempt.orgId};
  });

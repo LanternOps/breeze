@@ -1,4 +1,5 @@
 vi.mock('./staffNotifications', () => ({enqueueAutopayStaffNotifications:vi.fn()}));
+import { enqueueAutopayStaffNotifications } from './staffNotifications';
 import { beforeEach, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   responses: [] as unknown[][], writes: [] as { table: unknown; values: Record<string, unknown> }[],
@@ -103,6 +104,9 @@ it('records a missing billing contact without minting links', async () => {
   await enqueueAutopayNotice(db, schedule.id);
   expect(h.writes).toEqual([{ table: invoiceAutopaySchedules, values: { stateReason: 'no_billing_contact' } }]);
   expect(h.mint).not.toHaveBeenCalled();
+  // P-17: the invoice is identified by the staff renderer, never by its raw id.
+  const [[, staff]] = vi.mocked(enqueueAutopayStaffNotifications).mock.calls as unknown as [[unknown, { invoiceId: string; message: string }]];
+  expect(staff.invoiceId).toBe(invoice.id); expect(staff.message).not.toContain(invoice.id);
 });
 it('deduplicates before minting links', async () => {
   h.responses.push([schedule], [invoice], [org], [partner], [{ id: row.id }]);

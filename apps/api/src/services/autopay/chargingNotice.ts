@@ -34,7 +34,7 @@ export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<
     await tx.update(invoiceAutopaySchedules).set({ stateReason: 'no_billing_contact' })
       .where(eq(invoiceAutopaySchedules.id, schedule.id));
     await enqueueAutopayStaffNotifications(tx, {orgId:schedule.orgId,partnerId:invoice!.partnerId,invoiceId:invoice!.id,
-      event:'autopay.needs_attention',dedupeKey:`autopay:${schedule.id}:no_billing_contact`,message:`Invoice ${invoice!.id}: notice blocked: no billing contact. Delivery will be retried when a contact is added.`});
+      event:'autopay.needs_attention',dedupeKey:`autopay:${schedule.id}:no_billing_contact`,message:'The automatic payment notice is blocked: the client has no billing contact. Delivery will be retried when a contact is added.'});
     return;
   }
   const terms = parseAutopayTerms(schedule.termsSnapshot);
