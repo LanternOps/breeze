@@ -2521,6 +2521,7 @@
       "enrolled_after_issue": "Inscripción posterior a la emisión de la factura",
       "method_not_usable": "Método de pago no disponible",
       "over_cap": "Supera el límite de pago automático",
+      "above_authorized_cap": "Supera el límite autorizado por el cliente",
       "cap_currency_mismatch": "La moneda del límite no coincide",
       "ach_currency_unsupported": "Moneda no compatible con pagos bancarios",
       "excluded_contract": "Contrato excluido",

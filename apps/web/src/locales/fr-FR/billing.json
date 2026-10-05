@@ -2521,6 +2521,7 @@
       "enrolled_after_issue": "Inscrit après l’émission de la facture",
       "method_not_usable": "Moyen de paiement indisponible",
       "over_cap": "Plafond de paiement automatique dépassé",
+      "above_authorized_cap": "Au-dessus de la limite autorisée par le client",
       "cap_currency_mismatch": "La devise du plafond ne correspond pas",
       "ach_currency_unsupported": "Devise non prise en charge pour les paiements bancaires",
       "excluded_contract": "Contrat exclu",

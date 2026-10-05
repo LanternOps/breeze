@@ -117,7 +117,8 @@ beforeEach(() => {
   h.beforeRead.mockReset();
   h.balance = '100.00'; h.reserved = '0.00'; h.ordinal = 0;
   for (const [table, rows] of [[invoices, [invoice]], [orgAutopayEnrollments, [enrollment]],
-    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:true,cardFeeBps:300,achFeeAmount:'0.00'}}]],
+    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:true,cardFeeBps:300,achFeeAmount:'0.00'},
+      scheduleTerms:{offsetDays:0,rule:'earlier',cap:{enabled:false}}}]],
     [invoiceStripePayments, []], [invoiceCollectionAttempts, []], [partners, [{ id: invoice.partnerId }]], [invoiceAutopaySchedules, [schedule]], [invoiceLines, []],
     [billingNoticeOutbox, [outbox]], [organizations, [{ id: invoice.orgId, partnerId: invoice.partnerId, status:'active',deletedAt:null,
       billingAddressCountry: 'US', billingAddressRegion: 'NY' }]]] as const) h.rows.set(table, structuredClone([...rows]));
@@ -126,7 +127,8 @@ beforeEach(() => {
   h.accountProvenance.mockResolvedValue({stripeAccountId:'acct_test',stripeCustomerId:'cus_test',methodType:'card'});
   h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true);
   h.readiness.mockResolvedValue({ ready: true, stripeAccountId: 'acct_test', accountCountry: 'US' });
-  h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
+  h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true,
+    autopayCap: { value: { enabled: false } } });
   h.retrieve.mockImplementation(async () => { expect(h.depth).toBe(0); return structuredClone(card); });
   client.mockResolvedValue({ stripeAccountId: 'acct_test', stripe: { paymentMethods: { retrieve: h.retrieve },
     paymentIntents: { create: h.create, retrieve: h.piRetrieve, confirm: h.confirm, cancel: h.cancel } } });
@@ -341,7 +343,7 @@ it.each(['ach changed', 'ach absent', 'card changed'] as const)(
       const remote = { ...pi, amount: params.amount, metadata: { ...params.metadata } };
       if (change === 'ach absent') delete remote.metadata.authority_ach_fee;
       h.settings.mockResolvedValue({ cardFeeBps: { value: change === 'card changed' ? 200 : 300 },
-        achFeeAmount: { value: '2.50' }, feeAttested: true });
+        achFeeAmount: { value: '2.50' }, feeAttested: true, autopayCap: { value: { enabled: false } } });
       h.piRetrieve.mockResolvedValue(remote);
       h.confirm.mockImplementation(async () => {
         expect(h.depth).toBe(0);
@@ -447,7 +449,7 @@ it('refuses the wrong partner before provider retrieval', async () => {
 });
 it.each(['fee', 'holder', 'contract', 'fence', 'stop'])('cancels when %s changes during create', async change => {
   recovery(); h.create.mockImplementationOnce(async () => {
-    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 200 }, achFeeAmount: { value: '0.00' }, feeAttested: true });
+    if (change === 'fee') h.settings.mockResolvedValue({ cardFeeBps: { value: 200 }, achFeeAmount: { value: '0.00' }, feeAttested: true, autopayCap: { value: { enabled: false } } });
     if (change === 'holder') { h.method.mockResolvedValue({ ...method, accountHolderType: 'individual' }); update(orgPaymentMethods, { accountHolderType: 'individual' }); }
     if (change === 'contract') h.rows.set(invoiceLines, [{ id: 'excluded' }]);
     if (change === 'fence') update(invoices, { autopayExcluded: true });
@@ -808,7 +810,7 @@ function bankAuthority(reserved=false){
  const bankMethod={...method,type:'us_bank_account',stripeSetupIntentId:'seti_bank',accountHolderType:'individual',cardFunding:null};
  h.method.mockResolvedValue(bankMethod);h.rows.set(orgPaymentMethods,[bankMethod]);
  h.retrieve.mockResolvedValue({id:'pm_test',type:'us_bank_account',customer:'cus_test',us_bank_account:{account_holder_type:'individual'}});
- h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true});
+ h.settings.mockResolvedValue({cardFeeBps:{value:0},achFeeAmount:{value:'3.00'},feeAttested:true,autopayCap:{value:{enabled:false}}});
  const bankPayment={invoiceId:invoice.id,orgId:invoice.orgId,principal:'100.00',fee:'3.00',currency:'USD',disclosureHash:'a'.repeat(64)};
  h.rows.set(autopaySetupAttempts,[{id:clientAuthority.capture.setupAttemptId,orgId:invoice.orgId,enrollmentId:enrollment.id,generation:1,
  tokenId:clientAuthority.tokenId,outcome:'activated',stripeAccountId:'acct_test',stripeCustomerId:'cus_test',setupIntentId:'seti_bank',
@@ -1103,4 +1105,27 @@ it.each([
   expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'scheduled', stateReason: 'method_not_usable',
     nextAttemptAt: new Date(now.getTime() + 86_400_000) });
   expect(h.methodNotice).not.toHaveBeenCalled();
+});
+
+// Defense in depth for the accepted cap: re-checked under the invoice lock just
+// before the money moves, so a cap raised (or a consent replaced) after planning
+// can never charge an invoice the client did not authorize.
+it.each([
+  ['above the cap the client accepted', () => update(orgAutopayConsents, { scheduleTerms: { offsetDays: 0, rule: 'earlier',
+    cap: { enabled: true, amount: '50.00', currency: 'USD' } } }), 'above_authorized_cap'],
+  ['above an MSP cap lowered after the notice', () => h.settings.mockResolvedValue({ cardFeeBps: { value: 300 },
+    achFeeAmount: { value: '0.00' }, feeAttested: true, autopayCap: { value: { enabled: true, amount: '50.00', currency: 'USD' } } }), 'over_cap'],
+  ['with unreadable accepted schedule terms', () => update(orgAutopayConsents, { scheduleTerms: { cap: 'unlimited' } }), 'consent_required'],
+] as const)('cancels before confirmation when the invoice is %s', async (_case, change, reason) => {
+  recovery(); change();
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.confirm).not.toHaveBeenCalled(); expect(h.cancel).toHaveBeenCalledOnce();
+  expect(currentAttempt().state).toBe('canceled');
+  expect(h.rows.get(invoiceAutopaySchedules)![0]).toMatchObject({ state: 'cancelled', stateReason: reason });
+});
+it('confirms an invoice within the accepted cap even after the MSP removed theirs', async () => {
+  recovery();
+  update(orgAutopayConsents, { scheduleTerms: { offsetDays: 0, rule: 'earlier', cap: { enabled: true, amount: '100.00', currency: 'USD' } } });
+  await resumeCollectionAttempt(attempt.id);
+  expect(h.confirm).toHaveBeenCalledOnce(); expect(currentAttempt().state).toBe('succeeded');
 });

@@ -1692,3 +1692,37 @@ it('a sibling due after a hard decline fails once with one update-method notice,
  const {validatePaymentActionNotice}=await import('./paymentNoticeValidation');
  expect(await withSystemDbAccessContext(()=>validatePaymentActionNotice(db,failed[0]!))).toBeNull();
 });
+
+// The consent said "Only invoices up to X qualify": the effective cap is the lower of
+// the current setting and the accepted consent, enforced at planning and before confirm.
+async function capFixture(accepted:{enabled:false}|{enabled:true;amount:string;currency:string},current?:string){
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  // Consents are append-only: the newest acceptance for the method is authoritative.
+  const [prior]=await db.select().from(orgAutopayConsents).where(eq(orgAutopayConsents.orgId,f.org.id));
+  const {id:_id,createdAt:_createdAt,...rest}=prior!;
+  await db.insert(orgAutopayConsents).values({...rest,scheduleTerms:{offsetDays:0,rule:'later',cap:accepted},createdAt:new Date(Date.now()+60_000)});
+  if(current)await db.insert(billingPaymentSettings).values({partnerId:f.partner.id,orgId:null,autopayCapEnabled:true,autopayCapAmount:current,autopayCapCurrency:'USD'});
+ });
+ return f;
+}
+it.each([
+ ['MSP removed the cap the client accepted',{enabled:true,amount:'50.00',currency:'USD'},undefined,'above_authorized_cap'],
+ ['MSP raised the cap above the accepted one',{enabled:true,amount:'50.00',currency:'USD'},'500.00','above_authorized_cap'],
+ ['MSP lowered the cap below the accepted one',{enabled:true,amount:'500.00',currency:'USD'},'50.00','over_cap'],
+] as const)('planning: %s',async(_case,accepted,current,reason)=>{
+ const f=await capFixture(accepted,current);
+ const planned=await withSystemDbAccessContext(()=>planAutopayForInvoice(db,f.invoice.id,true));
+ expect(planned).toMatchObject({eligible:false,ineligibleReason:reason,state:'not_needed',stateReason:reason});
+});
+it('planning keeps an invoice within the accepted cap eligible',async()=>{
+ const f=await capFixture({enabled:true,amount:'100.00',currency:'USD'});
+ expect(await withSystemDbAccessContext(()=>planAutopayForInvoice(db,f.invoice.id,true))).toMatchObject({eligible:true,ineligibleReason:null});
+});
+it('confirm refuses an already-scheduled invoice once the accepted cap no longer covers it',async()=>{
+ const f=await capFixture({enabled:true,amount:'50.00',currency:'USD'});
+ await attemptCollection(inputFor(f));
+ expect(provider.confirm).not.toHaveBeenCalled();expect(provider.cancel).toHaveBeenCalledOnce();
+ expect((await attempts(f.invoice.id))[0]!.state).toBe('canceled');
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled',stateReason:'above_authorized_cap'});
+});

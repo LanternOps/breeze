@@ -2521,6 +2521,7 @@
       "enrolled_after_issue": "Fatura düzenlendikten sonra kaydoldu",
       "method_not_usable": "Ödeme yöntemi kullanılamıyor",
       "over_cap": "Otomatik ödeme limiti aşıldı",
+      "above_authorized_cap": "Müşterinin onayladığı limitin üzerinde",
       "cap_currency_mismatch": "Limit para birimi eşleşmiyor",
       "ach_currency_unsupported": "Banka ödemesi para birimi desteklenmiyor",
       "excluded_contract": "Sözleşme hariç tutuldu",

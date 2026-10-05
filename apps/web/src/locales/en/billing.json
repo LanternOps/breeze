@@ -2521,6 +2521,7 @@
       "enrolled_after_issue": "Enrolled after invoice issue",
       "method_not_usable": "Payment method unavailable",
       "over_cap": "Above automatic payment limit",
+      "above_authorized_cap": "Above the limit the client authorized",
       "cap_currency_mismatch": "Limit currency does not match",
       "ach_currency_unsupported": "Bank payment currency unsupported",
       "excluded_contract": "Contract excluded",

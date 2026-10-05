@@ -30,6 +30,7 @@ import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
 import { acceptedCollectionFee, clampNoticedFee, collectionFeePolicyChanged } from './collectionFee';
+import { acceptedAutopayCap, autopayCapReason } from './authorizedCap';
 import { noticeLeadDays, computeCollectOn, closeSettledAutopaySchedules } from './scheduler';
 import { enqueueAutopayNotice, type AutopayTerms } from './chargingNotice';
 export type CollectionInput = { invoiceId: string; initiatedBy: CollectionAttemptInitiator; scheduleId?: string };
@@ -579,6 +580,16 @@ async function confirmationDecision(attemptId: string, pi: Stripe.PaymentIntent)
       methodId:method.id,methodType:method.type,principal:attempt.principalAmount,currency:attempt.currency,quote:lawfulQuote,
     });
     if (!quote) return cancel('authority_changed');
+    if (attempt.scheduleId) {
+      // Defense in depth for planning: never charge an invoice above the cap the client
+      // accepted, nor above a lower current MSP cap. Unscheduled (on-session) payments
+      // carry their own per-invoice authorization and are not autopay.
+      const acceptedCap = await acceptedAutopayCap(db, { orgId: locked.invoice.orgId, enrollmentId: enrollment.id,
+        generation: enrollment.generation, methodId: method.id });
+      const capReason = acceptedCap ? autopayCapReason({ current: settings.autopayCap.value, accepted: acceptedCap,
+        total: locked.invoice.total, currency: locked.invoice.currencyCode }) : 'consent_required';
+      if (capReason) return cancel(capReason);
+    }
     const changed = !terms ? (pi.metadata.authority_generation !== String(enrollment.generation)
       || pi.metadata.authority_customer !== enrollment.stripeCustomerId
       || pi.metadata.authority_method !== method.stripePaymentMethodId

@@ -107,7 +107,8 @@ function fixture(over: Record<string, unknown> = {}, attempts: unknown[] = []) {
   const sched = { ...schedule, ...over };
   const writes: { table: unknown; patch: any }[] = [];
   const data = new Map<unknown, any[]>([
-    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:false,cardFeeBps:0,achFeeAmount:'0.00'}}]],
+    [orgAutopayConsents,[{feeTerms:{methodType:'card',currency:'USD',feeAttested:false,cardFeeBps:0,achFeeAmount:'0.00'},
+      scheduleTerms:{offsetDays:0,rule:'later',cap:{enabled:false}}}]],
     [invoices, [inv]],
     [invoiceAutopaySchedules, [sched]],
     [invoiceCollectionAttempts, attempts],

@@ -2521,6 +2521,7 @@
       "enrolled_after_issue": "Nach Rechnungsstellung angemeldet",
       "method_not_usable": "Zahlungsmethode nicht verfügbar",
       "over_cap": "Über dem Limit für automatische Zahlungen",
+      "above_authorized_cap": "Über dem vom Kunden autorisierten Limit",
       "cap_currency_mismatch": "Währung des Limits stimmt nicht überein",
       "ach_currency_unsupported": "Währung für Bankzahlungen nicht unterstützt",
       "excluded_contract": "Vertrag ausgeschlossen",
