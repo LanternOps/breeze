@@ -86,9 +86,11 @@ export default function AutopaySetupPage({ token, portal = false, mode = 'setup'
       {(!outcome||outcome.outcome==='in_progress') && <button data-testid="autopay-return-submit" disabled={busy} onClick={() => void confirmReturn()}>Confirm setup</button>}
       {outcome && <div data-testid="autopay-return-outcome">
         <h2>{({ activated: 'Automatic payments are set up', pending_verification: 'Bank verification is pending',
-          stale_generation: 'This setup request is no longer current', failed: 'Setup was not completed', in_progress: 'Your setup is still being confirmed — check back shortly', abandoned: 'This setup session expired — start again' })[outcome.outcome]}</h2>
+          stale_generation: 'This setup request is no longer current', failed: 'Setup was not completed', in_progress: 'Your setup is still being confirmed — check back shortly', abandoned: 'This setup session expired — start again',
+          unsupported_method: 'This payment method can’t be used for automatic payments' } satisfies Record<SetupOutcome['outcome'], string>)[outcome.outcome]}</h2>
         {(outcome.outcome === 'activated' || outcome.outcome === 'pending_verification') && <p data-testid="autopay-return-fee">{outcome.methodLabel} — {outcome.feeText}</p>}
-        {outcome.outcome==='abandoned'&&<a data-testid="autopay-restart" href={restartUrl}>Start again</a>}
+        {outcome.outcome === 'unsupported_method' && <p data-testid="autopay-unsupported-method">Please enter your card details directly, or use a bank account. Automatic payments were not set up with this method, and nothing was saved.</p>}
+        {(outcome.outcome==='abandoned'||outcome.outcome==='unsupported_method')&&<a data-testid="autopay-restart" href={restartUrl}>Start again</a>}
         {outcome.outcome === 'pending_verification' && <p>Follow Stripe’s verification instructions. No automatic payment can be made until verification completes.</p>}
         {outcome.outcome === 'stale_generation' && <p>This return did not restart automatic payments. Ask your service provider for a new request.</p>}
       </div>}
