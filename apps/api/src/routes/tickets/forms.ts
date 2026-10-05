@@ -151,7 +151,7 @@ ticketFormRoutes.post(
     // Fail fast, before any DB work: visibleOrgIds is only meaningful on a
     // partner-wide form (org-owned forms have no partner allowlist axis).
     if (payload.visibleOrgIds !== undefined && payload.ownerScope !== 'partner') {
-      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR, code: ERROR_CODES.VALIDATION_FAILED }, 400);
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
     }
 
     // Ownership axis (Partner-Wide First, epic #2135, mirrors software
@@ -171,7 +171,7 @@ ticketFormRoutes.post(
         owner = { orgId: auth.orgId, partnerId: null };
       } else {
         if (!requestedOrgId || !auth.canAccessOrg(requestedOrgId)) {
-          return c.json({ error: 'orgId is required and must be accessible', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+          return c.json({ error: 'orgId is required and must be accessible' }, 400);
         }
         owner = { orgId: requestedOrgId, partnerId: null };
       }
@@ -267,7 +267,7 @@ ticketFormRoutes.put(
     // visibleOrgIds is only meaningful on a partner-wide row (org-owned forms
     // have no partner allowlist axis).
     if (payload.visibleOrgIds !== undefined && row.orgId !== null) {
-      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR, code: ERROR_CODES.VALIDATION_FAILED }, 400);
+      return c.json({ error: VISIBLE_ORG_IDS_SCOPE_ERROR }, 400);
     }
 
     if (payload.categoryId) {

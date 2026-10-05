@@ -696,12 +696,12 @@ ticketsRoutes.patch(
     // hint is lost, never the 400 itself.
     const raw = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     if (raw && 'status' in raw) {
-      return c.json({ error: 'Status is not updatable via PATCH — use POST /tickets/:id/status', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+      return c.json({ error: 'Status is not updatable via PATCH — use POST /tickets/:id/status' }, 400);
     }
     if (raw && ('assigneeId' in raw || 'assignedTo' in raw)) {
-      return c.json({ error: 'Assignee is not updatable via PATCH — use POST /tickets/:id/assign', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+      return c.json({ error: 'Assignee is not updatable via PATCH — use POST /tickets/:id/assign' }, 400);
     }
-    if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+    if (Object.keys(body).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
     if (auth.scope === 'organization' && !auth.orgId) {
       return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 403);

@@ -59,10 +59,10 @@ ticketsBulkRoutes.post(
     if (body.action === 'assign' && body.assigneeId) {
       const assignee = await getAssigneeForValidation(body.assigneeId);
       if (!assignee) {
-        return c.json({ error: 'Assignee not found', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+        return c.json({ error: 'Assignee not found', code: ERROR_CODES.ASSIGNEE_NOT_FOUND }, 400);
       }
       if (auth.scope === 'partner' && auth.partnerId && assignee.partnerId !== auth.partnerId) {
-        return c.json({ error: 'Assignee must belong to the same partner as the ticket', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+        return c.json({ error: 'Assignee must belong to the same partner as the ticket', code: ERROR_CODES.ASSIGNEE_PARTNER_MISMATCH }, 400);
       }
     }
 

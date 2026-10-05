@@ -392,7 +392,7 @@ mailboxRoutes.post(
     const resolved = resolvePartnerId(auth);
     if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
     const platform = getMailboxPlatformConfig();
-    if (!platform) return c.json({ error: 'M365 ticket mailbox app is not configured', code: ERROR_CODES.VALIDATION_FAILED }, 400);
+    if (!platform) return c.json({ error: 'M365 ticket mailbox app is not configured' }, 400);
 
     const { mailboxAddress, displayName } = c.req.valid('json');
     const connection = await createPendingConnection({

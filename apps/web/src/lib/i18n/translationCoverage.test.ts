@@ -257,7 +257,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -421,7 +423,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -604,7 +608,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -804,7 +810,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -952,7 +960,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -1081,7 +1091,9 @@ const namespaceDuplicateBaselines = {
     // +5 (Part of #3859, Wave E3a): TICKET_TRIAGE_DISABLED, TICKET_TRIAGE_UNAVAILABLE,
     // TICKET_TRIAGE_PRIORITY_MISMATCH, TICKET_TRIAGE_CATEGORY_MISMATCH and
     // MAILBOX_RECONSENT_REQUIRED added as English placeholders too.
-    'errors.json': 26,
+    // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
+    // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
+    'errors.json': 28,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder

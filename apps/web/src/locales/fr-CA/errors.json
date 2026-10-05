@@ -25,6 +25,8 @@
   "TICKET_TRIAGE_PRIORITY_MISMATCH": "The suggested priority has changed — review it again before applying",
   "TICKET_TRIAGE_CATEGORY_MISMATCH": "The suggested category has changed — review it again before applying",
   "MAILBOX_RECONSENT_REQUIRED": "This mailbox needs to be reconnected to keep syncing tickets",
+  "ASSIGNEE_NOT_FOUND": "The selected assignee could not be found",
+  "ASSIGNEE_PARTNER_MISMATCH": "The assignee must belong to the same partner as the ticket",
   "tool_source_unavailable": "La source de cet outil n'est pas disponible pour le moment",
   "ai_not_configured": "L'IA n'est pas configurée sur ce serveur. Un administrateur doit ajouter une clé de fournisseur de modèles.",
   "ACCESS_REVIEW_SELF_DECISION": "Vous ne pouvez pas statuer sur votre propre accès : un autre administrateur doit examiner cet élément"
