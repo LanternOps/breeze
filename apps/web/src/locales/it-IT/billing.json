@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Questo cliente non ha autorizzato la commissione configurata. Qualsiasi autorizzazione esistente resta valida fino all’accettazione dei nuovi termini.",
       "blankPartner": "Se vuoto, si usa il valore predefinito di Breeze (nessuna commissione). Per esentare un cliente, imposta la sua commissione a 0 nella pagina Fatturazione del cliente.",
       "blankOrg": "Se vuoto, si usa il valore predefinito del partner. Inserisci 0 per esentare questo cliente."
+    },
+    "enrollmentTitle": "Adesione al pagamento automatico",
+    "requestSentTo": "Richiesta inviata a {{email}}.",
+    "result": {
+      "paused": "Pagamenti automatici sospesi.",
+      "resumed": "Pagamenti automatici ripresi.",
+      "turnedOff": "Pagamenti automatici disattivati."
+    },
+    "needsAttention": {
+      "method_unusable": "Non è possibile addebitare il metodo di pagamento salvato.",
+      "stripe_account_changed": "L’account Stripe collegato è cambiato dopo l’adesione di questo cliente.",
+      "key_missing_permissions": "Alla chiave Stripe mancano autorizzazioni necessarie per i pagamenti automatici.",
+      "verification_failed": "La verifica del conto bancario non è riuscita."
     }
   },
   "reminders": {

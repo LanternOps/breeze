@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "This client has not authorized the configured fee. Any existing authorization stays in effect until they accept updated terms.",
       "blankPartner": "Blank uses the Breeze default (no fee). To exempt one client, set its fee to 0 on that client's Billing page.",
       "blankOrg": "Blank uses the partner default. Enter 0 to exempt this client."
+    },
+    "enrollmentTitle": "Automatic payment enrollment",
+    "requestSentTo": "Request sent to {{email}}.",
+    "result": {
+      "paused": "Automatic payments paused.",
+      "resumed": "Automatic payments resumed.",
+      "turnedOff": "Automatic payments turned off."
+    },
+    "needsAttention": {
+      "method_unusable": "The saved payment method can't be charged.",
+      "stripe_account_changed": "The connected Stripe account changed after this client enrolled.",
+      "key_missing_permissions": "The Stripe key is missing permissions that automatic payments need.",
+      "verification_failed": "Bank account verification failed."
     }
   },
   "reminders": {

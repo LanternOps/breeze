@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Ce client n’a pas autorisé les frais configurés. Toute autorisation existante reste en vigueur jusqu’à l’acceptation des nouvelles conditions.",
       "blankPartner": "Un champ vide applique la valeur par défaut de Breeze (aucuns frais). Pour exempter un client, inscrivez 0 comme frais dans sa page Facturation.",
       "blankOrg": "Un champ vide reprend la valeur par défaut du partenaire. Inscrivez 0 pour exempter ce client."
+    },
+    "enrollmentTitle": "Inscription au paiement automatique",
+    "requestSentTo": "Demande envoyée à {{email}}.",
+    "result": {
+      "paused": "Paiements automatiques suspendus.",
+      "resumed": "Paiements automatiques repris.",
+      "turnedOff": "Paiements automatiques désactivés."
+    },
+    "needsAttention": {
+      "method_unusable": "Le mode de paiement enregistré ne peut pas être prélevé.",
+      "stripe_account_changed": "Le compte Stripe connecté a changé après l’inscription de ce client.",
+      "key_missing_permissions": "Il manque à la clé Stripe des autorisations nécessaires aux paiements automatiques.",
+      "verification_failed": "La vérification du compte bancaire a échoué."
     }
   },
   "reminders": {

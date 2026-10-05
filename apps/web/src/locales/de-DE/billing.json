@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Dieser Kunde hat die eingestellte Gebühr nicht autorisiert. Eine bestehende Autorisierung gilt weiter, bis er aktualisierte Bedingungen akzeptiert.",
       "blankPartner": "Leer verwendet den Breeze-Standard (keine Gebühr). Um einen einzelnen Kunden auszunehmen, setzen Sie seine Gebühr auf dessen Abrechnungsseite auf 0.",
       "blankOrg": "Leer übernimmt den Partnerstandard. Geben Sie 0 ein, um diesen Kunden auszunehmen."
+    },
+    "enrollmentTitle": "Anmeldung zur automatischen Zahlung",
+    "requestSentTo": "Anfrage an {{email}} gesendet.",
+    "result": {
+      "paused": "Automatische Zahlungen pausiert.",
+      "resumed": "Automatische Zahlungen fortgesetzt.",
+      "turnedOff": "Automatische Zahlungen deaktiviert."
+    },
+    "needsAttention": {
+      "method_unusable": "Die gespeicherte Zahlungsmethode kann nicht belastet werden.",
+      "stripe_account_changed": "Das verbundene Stripe-Konto hat sich nach der Anmeldung dieses Kunden geändert.",
+      "key_missing_permissions": "Dem Stripe-Schlüssel fehlen Berechtigungen, die automatische Zahlungen benötigen.",
+      "verification_failed": "Die Verifizierung des Bankkontos ist fehlgeschlagen."
     }
   },
   "reminders": {

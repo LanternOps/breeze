@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Este cliente no autorizó la comisión configurada. Cualquier autorización existente sigue vigente hasta que acepte los nuevos términos.",
       "blankPartner": "En blanco usa el valor predeterminado de Breeze (sin comisión). Para eximir a un cliente, establece su comisión en 0 en la página de facturación de ese cliente.",
       "blankOrg": "En blanco usa el valor predeterminado del socio. Ingresa 0 para eximir a este cliente."
+    },
+    "enrollmentTitle": "Inscripción en pago automático",
+    "requestSentTo": "Solicitud enviada a {{email}}.",
+    "result": {
+      "paused": "Pagos automáticos pausados.",
+      "resumed": "Pagos automáticos reanudados.",
+      "turnedOff": "Pagos automáticos desactivados."
+    },
+    "needsAttention": {
+      "method_unusable": "No se puede cobrar al método de pago guardado.",
+      "stripe_account_changed": "La cuenta de Stripe conectada cambió después de que este cliente se inscribiera.",
+      "key_missing_permissions": "A la clave de Stripe le faltan permisos que necesitan los pagos automáticos.",
+      "verification_failed": "La verificación de la cuenta bancaria falló."
     }
   },
   "reminders": {

@@ -8,7 +8,8 @@ export async function readAutopay<T>(path: string): Promise<T> {
   if (!response.ok) throw new Error(i18n.t('billing:autopay.error'));
   return response.json() as Promise<T>;
 }
-export function mutateAutopay<T>(path: string, body: unknown, method = 'POST'): Promise<T> {
+/** `success` names what changed (e.g. "Automatic payments paused."); the default is generic. */
+export function mutateAutopay<T>(path: string, body: unknown, method = 'POST', success?: string): Promise<T> {
   return runAction<T>({ request: () => fetchWithAuth(path, { method, body: JSON.stringify(body) }),
     errorFallback: i18n.t('billing:autopay.error'), successMessage: data => {
       // Skipped requests are explained per organization in the caller's result.
@@ -16,9 +17,9 @@ export function mutateAutopay<T>(path: string, body: unknown, method = 'POST'): 
       if (data && typeof data === 'object' && 'requested' in data && 'skipped' in data) {
         const result = data as { requested: unknown[]; skipped: unknown[] };
         return result.requested.length > 0 && result.skipped.length === 0
-          ? i18n.t('billing:autopay.requestedCount', { count: result.requested.length }) : '';
+          ? success ?? i18n.t('billing:autopay.requestedCount', { count: result.requested.length }) : '';
       }
-      return i18n.t('billing:autopay.done');
+      return success ?? i18n.t('billing:autopay.done');
     } });
 }
 export function methodLabel(method: AutopayRow['method']): string {
@@ -26,6 +27,15 @@ export function methodLabel(method: AutopayRow['method']): string {
   return method.type === 'card'
     ? `${method.cardBrand ?? i18n.t('billing:autopay.card')} ••${method.cardLast4 ?? '????'} ${method.cardExpMonth ?? ''}/${method.cardExpYear ?? ''}`
     : `${method.bankName ?? i18n.t('billing:autopay.bank')} ••${method.bankLast4 ?? '????'}`;
+}
+
+const attentionKeys: Record<string, string> = {
+  method_unusable: 'autopay.needsAttention.method_unusable', stripe_account_changed: 'autopay.needsAttention.stripe_account_changed',
+  key_missing_permissions: 'autopay.needsAttention.key_missing_permissions', verification_failed: 'autopay.needsAttention.verification_failed',
+};
+/** Staff copy for an enrollment's needs-attention reason; never the raw code. */
+export function needsAttentionReason(reason: string): string {
+  return i18n.t(/* i18n-dynamic */ `billing:${attentionKeys[reason] ?? 'autopay.status.needs_attention'}`);
 }
 
 export function skippedAutopayReason(reason:string):string{

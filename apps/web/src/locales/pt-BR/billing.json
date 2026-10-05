@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Este cliente não autorizou a taxa configurada. Qualquer autorização existente permanece válida até que ele aceite os novos termos.",
       "blankPartner": "Em branco usa o padrão do Breeze (sem taxa). Para isentar um cliente, defina a taxa dele como 0 na página de faturamento desse cliente.",
       "blankOrg": "Em branco usa o padrão do parceiro. Informe 0 para isentar este cliente."
+    },
+    "enrollmentTitle": "Adesão ao pagamento automático",
+    "requestSentTo": "Solicitação enviada para {{email}}.",
+    "result": {
+      "paused": "Pagamentos automáticos pausados.",
+      "resumed": "Pagamentos automáticos retomados.",
+      "turnedOff": "Pagamentos automáticos desativados."
+    },
+    "needsAttention": {
+      "method_unusable": "Não é possível cobrar a forma de pagamento salva.",
+      "stripe_account_changed": "A conta Stripe conectada mudou depois da adesão deste cliente.",
+      "key_missing_permissions": "A chave do Stripe não tem permissões necessárias para pagamentos automáticos.",
+      "verification_failed": "A verificação da conta bancária falhou."
     }
   },
   "reminders": {

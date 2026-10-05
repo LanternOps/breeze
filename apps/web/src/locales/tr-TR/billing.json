@@ -2582,6 +2582,19 @@
       "lowerAuthorizationOrg": "Bu müşteri yapılandırılan ücrete yetki vermedi. Mevcut yetkilendirmesi, yeni koşulları kabul edene kadar geçerli kalır.",
       "blankPartner": "Boş bırakılırsa Breeze varsayılanı kullanılır (ücret yok). Tek bir müşteriyi muaf tutmak için o müşterinin Faturalandırma sayfasında ücretini 0 yapın.",
       "blankOrg": "Boş bırakılırsa iş ortağı varsayılanı kullanılır. Bu müşteriyi muaf tutmak için 0 girin."
+    },
+    "enrollmentTitle": "Otomatik ödeme kaydı",
+    "requestSentTo": "İstek {{email}} adresine gönderildi.",
+    "result": {
+      "paused": "Otomatik ödemeler duraklatıldı.",
+      "resumed": "Otomatik ödemeler sürdürüldü.",
+      "turnedOff": "Otomatik ödemeler kapatıldı."
+    },
+    "needsAttention": {
+      "method_unusable": "Kayıtlı ödeme yönteminden tahsilat yapılamıyor.",
+      "stripe_account_changed": "Bu müşteri kaydolduktan sonra bağlı Stripe hesabı değişti.",
+      "key_missing_permissions": "Stripe anahtarında otomatik ödemelerin ihtiyaç duyduğu izinler eksik.",
+      "verification_failed": "Banka hesabı doğrulaması başarısız oldu."
     }
   },
   "reminders": {
