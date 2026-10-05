@@ -63,7 +63,7 @@ async function openInvoiceLinks(db:Tx,orgId:string):Promise<NonNullable<AutopayN
  * available method; a resume restates the client's own method; pause and stop restate
  * none (P-19: they repeated bank fee terms to card clients). */
 async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect,kind:'autopay_request'|'autopay_stopped'|'autopay_paused'|'autopay_resumed',recipient:string,vars:Record<string,string>,url?:string,openInvoices?:AutopayNoticeContext['openInvoices'],processingText?:string,dedupeKey?:string,
- terms:'all'|'none'|AutopayPaymentMethodType='all'){
+ terms:'all'|'none'|AutopayPaymentMethodType='all',announcedInvoiceIds:string[]=[]){
  const [org]=await db.select().from(organizations).where(eq(organizations.id,enrollment.orgId)).limit(1);
  const [partner]=await db.select().from(partners).where(eq(partners.id,enrollment.partnerId)).limit(1);
  if(!org||!partner)throw new Error('Autopay notice tenant disappeared');
@@ -84,14 +84,19 @@ async function notice(db:Tx,enrollment:typeof orgAutopayEnrollments.$inferSelect
   vars:{partner_name:partner.name,org_name:org.name,client_name:org.name,...vars},ctaUrl:url,scheduleText,feeText,stopUrl,openInvoices,processingText}},db);
  // Pause/resume/stop emails are revalidated at dispatch against this transition.
  if(kind!=='autopay_request')rendered.frozen={...rendered.frozen,transitionAt:lifecycleTransitionAt(kind,enrollment)};
+ // A superseded pause/stop email re-issues these invoices' announced-charge lines (F2).
+ if(announcedInvoiceIds.length)rendered.frozen={...rendered.frozen,announcedInvoiceIds:announcedInvoiceIds.join(',')};
  await enqueueBillingNotice(db,{orgId:org.id,partnerId:partner.id,enrollmentId:enrollment.id,kind,
   seq:enrollment.generation,dedupeKey:dedupeKey??`${enrollment.id}:${kind}:${enrollment.generation}:${enrollment.cancelledAt?.toISOString()??enrollment.pausedAt?.toISOString()??(kind==='autopay_resumed'?enrollment.effectiveFrom?.toISOString():'request')}`,
   toEmail:recipient,rendered});
 }
 /** D-19: one line per invoice whose charge was announced and is now cancelled. Payments
  * already in flight are excluded: the pending-payment lines speak for those. */
+function listedCharges(announced:AnnouncedCharge[],inFlight:string[]):AnnouncedCharge[]{
+ return announced.filter(charge=>!inFlight.includes(charge.invoiceNumber)&&!inFlight.includes(charge.invoiceId));
+}
 function announcedChargeLines(announced:AnnouncedCharge[],inFlight:string[],paused:boolean):string{
- return announced.filter(charge=>!inFlight.includes(charge.invoiceNumber)&&!inFlight.includes(charge.invoiceId))
+ return listedCharges(announced,inFlight)
   .map(charge=>`Invoice ${charge.invoiceNumber}: the automatic payment announced${announcedOn(charge)} will not happen${paused?', even if automatic payments resume':''}. Please pay it using its invoice link.`)
   .join('\n');
 }
@@ -169,7 +174,7 @@ export async function pauseAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promis
  const links=await openInvoiceLinks(db,orgId);
  const recipient=enrollment.requestRecipientEmail??contact(org.billingContact);
  if(recipient)await notice(db,updated!,'autopay_paused',recipient,{stopped_by:'Your service provider',open_invoices_text:'Existing invoices remain payable using their payment links.'},undefined,links,
-  announcedChargeLines(announced,inFlight,true),undefined,'none');
+  announcedChargeLines(announced,inFlight,true),undefined,'none',listedCharges(announced,inFlight).map(charge=>charge.invoiceId));
 }
 export async function resumeAutopay(db:Tx,actor:InvoiceActor,orgId:string):Promise<void>{
  const org=await lockOrg(db,orgId,actor);const enrollment=await lockEnrollment(db,orgId);
@@ -217,7 +222,8 @@ async function stop(db:Tx,orgId:string,source:'client'|'msp',actor?:InvoiceActor
   [...pendingInvoices.processing.map(number=>`A payment for invoice ${number} is already processing and will complete; you'll get a receipt.`),
    ...pendingInvoices.cancelling.map(number=>`A payment already in progress for invoice ${number} is being cancelled. A receipt will follow if it had already completed.`),
    // D-19 lines never name an invoice a payment still holds: those lines above speak for it.
-   announcedChargeLines(announced,[...pendingInvoices.processing,...pendingInvoices.cancelling],false)].filter(Boolean).join('\n'),undefined,'none');
+   announcedChargeLines(announced,[...pendingInvoices.processing,...pendingInvoices.cancelling],false)].filter(Boolean).join('\n'),undefined,'none',
+  listedCharges(announced,[...pendingInvoices.processing,...pendingInvoices.cancelling]).map(charge=>charge.invoiceId));
  const staffNotice:AutopayStaffNotice={orgId,partnerId:enrollment.partnerId,event:'autopay.stopped',
   dedupeKey:`${enrollment.id}:stopped:${enrollment.generation}`,message:`Automatic payments stopped for ${org.name}.`};
  await enqueueAutopayStaffNotifications(db,staffNotice);

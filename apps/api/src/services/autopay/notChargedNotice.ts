@@ -16,14 +16,19 @@ import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 /** Collection outcomes that stop a charge the client may already have been told about. */
 export const NOT_CHARGED_REASONS = ['above_authorized_cap', 'over_cap', 'cap_currency_mismatch', 'consent_required', 'excluded_contract'] as const;
 export type NotChargedReason = typeof NOT_CHARGED_REASONS[number];
+/** Staff actions that end an announced charge: an MSP exclusion, and a pause or stop whose
+ * email was superseded before it went out (F2). Staff did these themselves: no staff notice. */
+export type ClientControlReason = 'exclude' | 'paused' | 'stopped';
 export function isNotChargedReason(reason: string | null | undefined): reason is NotChargedReason {
   return (NOT_CHARGED_REASONS as readonly string[]).includes(reason ?? '');
 }
 
 /** Why the announced charge will not happen, in the client's words. */
-function clientReason(reason: NotChargedReason | 'exclude', partnerName: string): string {
+function clientReason(reason: NotChargedReason | ClientControlReason, partnerName: string): string {
   switch (reason) {
     case 'exclude': return `${partnerName} will not charge this invoice automatically.`;
+    case 'paused': return 'Automatic payments were paused, and this invoice will not be charged automatically even if they resume.';
+    case 'stopped': return 'Automatic payments were stopped, so this invoice will not be charged automatically.';
     case 'excluded_contract': return `${partnerName} asked for this invoice to be paid directly.`;
     case 'above_authorized_cap': return 'This invoice is above the automatic payment limit you authorized.';
     case 'over_cap': return 'This invoice is over your automatic payment limit.';
@@ -59,7 +64,7 @@ async function partnerForNotice(tx: Tx, partnerId: string) {
  * shape; nothing when no charging notice was delivered or the invoice is no longer payable.
  * Collection reasons also tell staff. Caller holds the invoice lock and has already moved the
  * schedule out of collection. Returns whether the client notice was queued. */
-export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; reason: NotChargedReason | 'exclude'; scheduleId?: string }): Promise<boolean> {
+export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; reason: NotChargedReason | ClientControlReason; scheduleId?: string }): Promise<boolean> {
   const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1);
   if (!invoice) return false;
   const [announced] = await announcedCharges(tx, { invoiceId: invoice.id });
@@ -86,7 +91,7 @@ export async function noticeChargeNotMade(tx: Tx, input: { invoiceId: string; re
       queued = true;
     }
   }
-  const staff = input.reason === 'exclude' ? null : staffMessage(input.reason, queued);
+  const staff = isNotChargedReason(input.reason) ? staffMessage(input.reason, queued) : null;
   if (staff && input.scheduleId) {
     const [schedule] = await tx.select().from(invoiceAutopaySchedules).where(eq(invoiceAutopaySchedules.id, input.scheduleId)).limit(1);
     const terms = autopayTermsSnapshotSchema.safeParse(schedule?.termsSnapshot);

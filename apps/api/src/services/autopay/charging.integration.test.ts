@@ -2300,3 +2300,26 @@ it('a bank-pay re-authorization with a different bank account still announces th
  expect(notices).toHaveLength(2);
  expect((notices.at(-1)!.rendered as {text:string}).text).toContain('4321');
 });
+
+// F2: pause then resume (or stop then re-request) before the pause/stop email goes out. That
+// email is cancelled as superseded, but its "the payment announced for … will not happen"
+// lines were still true: the cancelled schedules are never re-planned. They are re-issued as
+// the per-invoice not-charged notice.
+import { resumeAutopay, requestAutopay } from './enrollmentLifecycle';
+it.each(['pause_then_resume','stop_then_rerequest'] as const)('a superseded %s email re-issues its announced-charge lines per invoice (F2)',async path=>{
+ const f=await fixture();
+ await withSystemDbAccessContext(async()=>{
+  if(path==='pause_then_resume'){ await pauseAutopay(db,f.actor,f.org.id); await resumeAutopay(db,f.actor,f.org.id); }
+  else { await turnOffAutopay(db,f.actor,f.org.id); await requestAutopay(db,f.actor,{orgIds:[f.org.id]}); }
+ });
+ registerAutopayNoticeHandlers();
+ const mail=captureMail();
+ try { await dispatchPendingBillingNotices(); await dispatchPendingBillingNotices(); } finally { mail.restore(); }
+ const rows=await withSystemDbAccessContext(()=>db.select().from(billingNoticeOutbox).where(eq(billingNoticeOutbox.orgId,f.org.id)));
+ const lifecycle=rows.find(row=>row.kind===(path==='pause_then_resume'?'autopay_paused':'autopay_stopped'))!;
+ expect(lifecycle).toMatchObject({status:'cancelled',lastError:'Automatic payment status changed since this notice'});
+ const told=rows.filter(row=>row.kind==='payment_reminder'&&row.invoiceId===f.invoice.id);
+ expect(told).toEqual([expect.objectContaining({dedupeKey:`invoice:${f.invoice.id}:not_charged:1`,status:'sent'})]);
+ expect((told[0]!.rendered as {text:string}).text).toMatch(/announced for on or around \d{4}-\d{2}-\d{2} will not happen/);
+ expect(await scheduleFor(f)).toMatchObject({state:'cancelled'});
+});
