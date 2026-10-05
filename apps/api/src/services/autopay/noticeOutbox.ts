@@ -1,4 +1,4 @@
-import { validatePaymentActionNotice } from './paymentNoticeValidation';
+import { validatePaymentActionNotice, validateReceiptNotice } from './paymentNoticeValidation';
 import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { BillingNoticeKind } from '@breeze/shared';
 import { db, assertOutsideHeldDbContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -50,6 +50,7 @@ const validateReminder: NoticePreSendValidator = async (tx, row) => {
   return invoice ? null : 'Reminder invoice or tenant no longer eligible';
 };
 registerNoticePreSendValidator('payment_failed', validatePaymentActionNotice);
+registerNoticePreSendValidator('payment_receipt', validateReceiptNotice);
 registerNoticePreSendValidator('payment_reminder', validateReminder);
 registerNoticePreSendValidator('payment_overdue', validateReminder);
 

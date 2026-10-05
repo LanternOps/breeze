@@ -80,7 +80,7 @@ it('requires an actually applied return mapping and permits cleared method autho
 });
 it('freezes exact receipt principal, fee and total, and skips unapplied mappings', async () => {
   await enqueueOnlineReceipt(tx, 'mapping');
-  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: { amount: '100.00', fee: '3.00', total: '103.00' } }) }));
+  expect(h.enqueue).toHaveBeenCalledWith(tx, expect.objectContaining({ dedupeKey: 'mapping:payment_receipt:1', rendered: expect.objectContaining({ frozen: { mappingId: 'mapping', amount: '100.00', fee: '3.00', total: '103.00' } }) }));
   h.enqueue.mockClear(); rows.get(invoiceStripePayments)![0]!.invoicePaymentId = null;
   await enqueueOnlineReceipt(tx, 'mapping'); expect(h.enqueue).not.toHaveBeenCalled();
 });

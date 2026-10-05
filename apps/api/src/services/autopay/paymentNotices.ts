@@ -33,7 +33,7 @@ export async function enqueueOnlineReceipt(tx: Tx, mappingId: string): Promise<v
     paid_on: mapping.paymentReceivedAt!, balance_remaining: `${invoice!.currencyCode} ${invoice!.balance}` };
   const rendered = await renderBillingNotice('payment_receipt', { payment: { id: 'payment_receipt', vars,
     custom: partnerEmailCustomFromSettings(partner!.settings, 'payment_receipt'),
-    frozen: { amount: mapping.amount, fee: mapping.feeAmount, total } } });
+    frozen: { mappingId: mapping.id, amount: mapping.amount, fee: mapping.feeAmount, total } } });
   await enqueueBillingNotice(tx, { orgId: mapping.orgId, partnerId: invoice!.partnerId, invoiceId: invoice!.id,
     kind: 'payment_receipt', seq: 1, dedupeKey: noticeDedupeKey(mapping.id, 'payment_receipt'), toEmail: email, rendered });
 }

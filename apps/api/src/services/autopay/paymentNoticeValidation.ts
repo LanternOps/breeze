@@ -6,7 +6,7 @@ import { toMinorUnits } from '../stripeMoney';
 import type { NoticePreSendValidator } from './noticeOutbox';
 import type { RenderedNotice } from './types';
 
-/** Receipts deliberately do not use this validator: they report money already moved. */
+/** Receipts use validateReceiptNotice below: they report money already moved. */
 export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, row) => {
   const obsolete = 'Payment action no longer needed';
   const frozen = (row.rendered as RenderedNotice).frozen;
@@ -66,4 +66,20 @@ export const validatePaymentActionNotice: NoticePreSendValidator = async (tx, ro
     return method?.status === 'active' ? obsolete : null;
   }
   return obsolete;
+};
+
+/** A receipt stays a true record after a refund (or a card chargeback), so this
+ * cancels only when the payment it reports never really completed: an ACH return
+ * withdrew the funds, or the payment failed, before the receipt went out. A return
+ * held until after capture is applied post-commit, so it can land before dispatch.
+ * The returned-payment email is a separate notice and is not affected. */
+export const validateReceiptNotice: NoticePreSendValidator = async (tx, row) => {
+  const mappingId = (row.rendered as RenderedNotice).frozen?.mappingId;
+  if (typeof mappingId !== 'string') return null;
+  const [mapping] = await tx.select().from(invoiceStripePayments)
+    .where(eq(invoiceStripePayments.id, mappingId)).limit(1);
+  if (!mapping) return null;
+  if (mapping.orgId !== row.orgId || mapping.invoiceId !== row.invoiceId) return 'Receipt payment ownership mismatch';
+  const returned = mapping.paymentMethodType === 'us_bank_account' && mapping.disputeFundsWithdrawn;
+  return returned || mapping.status === 'failed' ? 'Receipt payment was returned or failed' : null;
 };

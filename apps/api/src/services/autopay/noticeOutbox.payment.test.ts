@@ -112,3 +112,28 @@ it.each([
  payment('returned');change();
  await dispatchPendingBillingNotices();expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
 });
+
+// K: a receipt is a true record unless the payment it reports never really
+// completed (ACH return or failure) before the receipt went out.
+function receipt(mapping:Record<string,unknown>={}){
+ h.row.kind='payment_receipt';h.row.invoiceId='invoice';h.row.rendered.frozen={mappingId:'mapping',amount:'100.00',fee:'0.00',total:'100.00'};
+ h.rows.set(invoiceStripePayments,[{id:'mapping',invoiceId:'invoice',orgId:'org',status:'succeeded',paymentMethodType:'us_bank_account',disputeFundsWithdrawn:false,...mapping}]);
+}
+it.each([
+ ['an ACH return withdrew the funds',{status:'disputed',disputeFundsWithdrawn:true}],
+ ['a partial ACH return withdrew funds',{status:'partially_disputed',disputeFundsWithdrawn:true}],
+ ['the payment failed',{status:'failed'}],
+ ['the payment belongs to another org',{orgId:'other'}],
+] as [string,Record<string,unknown>][])('cancels a receipt when %s before dispatch',async(_label,mapping)=>{
+ receipt(mapping);
+ expect(await dispatchPendingBillingNotices()).toEqual({sent:0,failed:0});expect(h.row.status).toBe('cancelled');expect(h.send).not.toHaveBeenCalled();
+});
+it.each([
+ ['the payment is unchanged',{}],
+ ['the payment was refunded',{status:'refunded'}],
+ ['the payment was partially refunded',{status:'partially_refunded'}],
+ ['a card chargeback withdrew the funds',{status:'disputed',paymentMethodType:'card',disputeFundsWithdrawn:true}],
+] as [string,Record<string,unknown>][])('still sends a receipt when %s',async(_label,mapping)=>{
+ receipt(mapping);
+ expect(await dispatchPendingBillingNotices()).toEqual({sent:1,failed:0});expect(h.send).toHaveBeenCalledOnce();
+});
