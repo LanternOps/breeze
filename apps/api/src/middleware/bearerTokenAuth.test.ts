@@ -937,6 +937,34 @@ describe('bearerTokenAuthMiddleware', () => {
       expect.objectContaining({
         scope: 'partner',
         accessibleOrgIds: [],
+        // No membership row → no partner axis either, consistent with the
+        // empty org list.
+        accessiblePartnerIds: [],
+      }),
+      expect.any(Function)
+    );
+  });
+
+  it('keeps the partner axis for a member whose orgAccess is none', async () => {
+    dbState.rows = [[{ orgAccess: 'none', orgIds: null }]];
+
+    const token = await mintToken({
+      sub: userId,
+      partner_id: partnerId,
+      org_id: null,
+      scope: 'mcp:read',
+      jti: 'member-no-orgs-jti',
+    });
+    const c = createContext({ Authorization: `Bearer ${token}` });
+    const next = vi.fn();
+
+    await bearerTokenAuthMiddleware(c, next);
+
+    expect(withDbAccessContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'partner',
+        accessibleOrgIds: [],
+        accessiblePartnerIds: [partnerId],
       }),
       expect.any(Function)
     );
